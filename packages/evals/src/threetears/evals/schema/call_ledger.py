@@ -102,10 +102,12 @@ class CallLedger(EvalDocumentModel, CoreShapeModel):
         The parameters are deep-copied, so a caller that goes on mutating the dict it passed cannot
         rewrite what the candidate is recorded as having asked for.
 
-        Args:
-            tool: The tool the call went to.
-            action: The action called.
-            params: The parameters it passed; ``None`` records a call that passed none.
+        :param tool: The tool the call went to.
+        :ptype tool: str
+        :param action: The action called.
+        :ptype action: str
+        :param params: The parameters it passed; ``None`` records a call that passed none.
+        :ptype params: dict[str, Any] | None
         """
         self.calls.append(RecordedCall(tool=tool, action=action, params=copy.deepcopy(params or {})))
 
@@ -115,11 +117,14 @@ class CallLedger(EvalDocumentModel, CoreShapeModel):
         Recorded where the refusal is decided, before it is raised to the candidate, so no refusal leaves the
         cell unrecorded. The parameters are deep-copied, as :meth:`record` copies them.
 
-        Args:
-            tool: The tool the call went to.
-            action: The action called.
-            params: The parameters it passed; ``None`` records a call that passed none.
-            reason: Why the tool refused it.
+        :param tool: The tool the call went to.
+        :ptype tool: str
+        :param action: The action called.
+        :ptype action: str
+        :param params: The parameters it passed; ``None`` records a call that passed none.
+        :ptype params: dict[str, Any] | None
+        :param reason: Why the tool refused it.
+        :ptype reason: str
         """
         refusal = RefusedCall(
             tool=tool, action=action, params=copy.deepcopy(params or {}), reason=reason, position=len(self.calls)
@@ -135,8 +140,8 @@ class CallLedger(EvalDocumentModel, CoreShapeModel):
         A kind records it when its candidate says it passes, in whatever form its host gives a pass, so a check
         asks ``passed()`` rather than knowing the host's spelling.
 
-        Args:
-            reason: The candidate's stated reason, kept on the entry; ``None`` for none.
+        :param reason: The candidate's stated reason, kept on the entry; ``None`` for none.
+        :ptype reason: str | None
         """
         self.record(PASS_TOOL, PASS_ACTION, {} if reason is None else {"reason": reason})
 

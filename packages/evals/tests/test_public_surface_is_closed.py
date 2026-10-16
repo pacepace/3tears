@@ -14,7 +14,7 @@ engine type found:
 * every Pydantic field and dataclass field, and every annotation a Protocol declares — the
   class's own and those its engine-defined bases declare (a base itself is never named by a host,
   so it is walked through, not required);
-* every exception named in a ``Raises:`` section of a public docstring.
+* every exception named in a ``:raises`` field of a public docstring.
 
 An annotation token counts when it resolves to a class, or a module-level type alias, defined
 under ``threetears.evals``. Exempt, because a host never needs the name: a ``TypeVar``, and an
@@ -23,7 +23,7 @@ validator). A PRIVATE engine class reachable from a public signature fails as a 
 exported, so the signature has to change.
 
 **What this cannot see.** A type that appears only inside a function body, a ``dict[str, Any]`` a
-lens returns (its keys are not types), and a type named only in prose outside a ``Raises:`` section.
+lens returns (its keys are not types), and a type named only in prose outside a ``:raises`` field.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ import threetears.evals
 PUBLIC_ROOTS = ("threetears.evals", *threetears.evals.PUBLIC_ROOTS)
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_RAISES_ENTRY = re.compile(r"^\s{4}([A-Za-z_][A-Za-z0-9_.]*):")
+_RAISES_ENTRY = re.compile(r"^:raises ([A-Za-z_][A-Za-z0-9_.]*):", re.MULTILINE)
 _BUILTIN_BASES = (str, int, float, bool, bytes, dict, list, tuple, set, frozenset, type(None))
 
 
@@ -168,13 +168,7 @@ class _Walk:
         self._raises(label, inspect.getdoc(function) or "", namespace)
 
     def _raises(self, label: str, doc: str, namespace: dict[str, Any]) -> None:
-        section = re.search(r"^Raises:\n((?:[ \t]+.*\n?)+)", doc, re.MULTILINE)
-        if not section:
-            return
-        for line in section.group(1).splitlines():
-            entry = _RAISES_ENTRY.match(line)
-            if not entry:
-                continue
+        for entry in _RAISES_ENTRY.finditer(doc):
             name = entry.group(1).rsplit(".", 1)[-1]
             candidates = [namespace[name]] if inspect.isclass(namespace.get(name)) else []
             candidates = candidates or self.classes_by_name.get(name, [])

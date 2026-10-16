@@ -73,11 +73,13 @@ class LearnedSettings:
     ) -> None:
         """Know nothing yet; name the client and what declared its facts, for the log.
 
-        Args:
-            client: The event name a learned fact's WARNING begins with, naming the client that learned it (the
-                shipped client's is ``eval.providers``).
-            declared_by: What the declared facts are called in the log (``registry=unknown``, ``declared=refuses``).
-            contradiction: What the log says when a refusal contradicts a declared fact: where to correct it.
+        :param client: The event name a learned fact's WARNING begins with, naming the client that learned it (the
+            shipped client's is ``eval.providers``).
+        :ptype client: str
+        :param declared_by: What the declared facts are called in the log (``registry=unknown``, ``declared=refuses``).
+        :ptype declared_by: str
+        :param contradiction: What the log says when a refusal contradicts a declared fact: where to correct it.
+        :ptype contradiction: str
         """
         self._client = client
         self._declared_by = declared_by
@@ -88,12 +90,12 @@ class LearnedSettings:
     def facts(self, provider: str, model: str) -> SettingFacts:
         """What has been learned of ``model`` on ``provider``; every fact unknown until a refusal.
 
-        Args:
-            provider: The provider as the caller names it (:func:`negotiate`'s ``provider``).
-            model: The model id.
-
-        Returns:
-            The learned facts.
+        :param provider: The provider as the caller names it (:func:`negotiate`'s ``provider``).
+        :ptype provider: str
+        :param model: The model id.
+        :ptype model: str
+        :return: The learned facts.
+        :rtype: SettingFacts
         """
         with self._lock:
             return self._facts.get((provider, model), SettingFacts())
@@ -113,12 +115,16 @@ class LearnedSettings:
         a whole body), what the declared facts said of it, and what the served request carried in its place. An
         ``enforcement`` refusal is never kept, whoever hands it here: enforcement is dropped per call.
 
-        Args:
-            provider: The provider as the caller names it.
-            model: The model id.
-            refusals: The call's refusals the served request proved, in the order met.
-            declared: What the caller declared of the model, for the log.
-            sent: What the served request carried.
+        :param provider: The provider as the caller names it.
+        :ptype provider: str
+        :param model: The model id.
+        :ptype model: str
+        :param refusals: The call's refusals the served request proved, in the order met.
+        :ptype refusals: Sequence[SettingRefusal]
+        :param declared: What the caller declared of the model, for the log.
+        :ptype declared: SettingFacts
+        :param sent: What the served request carried.
+        :ptype sent: WireSettings
         """
         for refusal in refusals:
             if refusal.setting == "enforcement":
@@ -182,14 +188,13 @@ def _settings_text(sent: WireSettings) -> str:
 class Negotiated[R]:
     """A served request: the caller's reply, and what the request that produced it carried.
 
-    Attributes:
-        reply: What the caller's ``send`` returned for the served request.
-        wire: The settings the served request was built from.
-        notes: Why each setting of ``wire`` moved from what was asked, one sentence each, for a log.
-        refusals: The refusals the served request answered, in the order met: what it was sent without, or moved
-            for. A temperature dropped for a router's 404 and then put back, since dropping it alone did not place
-            the request, is not among them. Each but ``enforcement`` is learned, except a temperature dropped for a
-            404 when a later refusal was answered before the request was served (it proved nothing).
+    :ivar reply: What the caller's ``send`` returned for the served request.
+    :ivar wire: The settings the served request was built from.
+    :ivar notes: Why each setting of ``wire`` moved from what was asked, one sentence each, for a log.
+    :ivar refusals: The refusals the served request answered, in the order met: what it was sent without, or moved
+        for. A temperature dropped for a router's 404 and then put back, since dropping it alone did not place
+        the request, is not among them. Each but ``enforcement`` is learned, except a temperature dropped for a
+        404 when a later refusal was answered before the request was served (it proved nothing).
     """
 
     reply: R
@@ -256,26 +261,30 @@ async def negotiate[R](
     did not carry or the call already answered, one that would teach nothing new, and the one after the
     :data:`MAX_RESENDS`-th resend, is raised as ``send`` raised it, and nothing is learned from the call.
 
-    Args:
-        asked: What the client was asked for, ``strict_output`` being this call's own enforcement.
-        provider_family: The request shape the client speaks.
-        model: The model id, as ``learned`` keys it.
-        provider: The provider as the caller names it, which ``learned`` keys the model under and the log names;
-            ``None`` for the family itself.
-        send: The caller's request: given the settings to send and the facts they were chosen under, it sends one
-            request and returns its reply, or raises what its transport raised.
-        read_refusal: The caller's reading of what ``send`` raised: a :class:`SettingRefusal`, or ``None`` for anything
-            else. Usually one of the shipped readers over the status and body the exception carries.
-        learned: The store of learned facts, shared as the caller chooses.
-        declared: What the caller knows of the model before any request (a registry's capabilities, a router's
-            catalogue through :func:`~threetears.evals.negotiation.facts_from_router_catalogue`), below what was
-            learned; ``None`` for nothing.
-
-    Returns:
-        The reply, with the settings the served request carried.
-
-    Raises:
-        Exception: What ``send`` raised, unchanged, for a failure the loop does not answer.
+    :param asked: What the client was asked for, ``strict_output`` being this call's own enforcement.
+    :ptype asked: WireSettings
+    :param provider_family: The request shape the client speaks.
+    :ptype provider_family: ProviderFamily
+    :param model: The model id, as ``learned`` keys it.
+    :ptype model: str
+    :param provider: The provider as the caller names it, which ``learned`` keys the model under and the log names;
+        ``None`` for the family itself.
+    :ptype provider: str | None
+    :param send: The caller's request: given the settings to send and the facts they were chosen under, it sends one
+        request and returns its reply, or raises what its transport raised.
+    :ptype send: Callable[[WireSettings, SettingFacts], Awaitable[R]]
+    :param read_refusal: The caller's reading of what ``send`` raised: a :class:`SettingRefusal`, or ``None`` for
+        anything else. Usually one of the shipped readers over the status and body the exception carries.
+    :ptype read_refusal: Callable[[Exception], SettingRefusal | None]
+    :param learned: The store of learned facts, shared as the caller chooses.
+    :ptype learned: LearnedSettings
+    :param declared: What the caller knows of the model before any request (a registry's capabilities, a router's
+        catalogue through :func:`~threetears.evals.negotiation.facts_from_router_catalogue`), below what was
+        learned; ``None`` for nothing.
+    :ptype declared: SettingFacts | None
+    :return: The reply, with the settings the served request carried.
+    :rtype: Negotiated[R]
+    :raises Exception: What ``send`` raised, unchanged, for a failure the loop does not answer.
     """
     known = declared if declared is not None else SettingFacts()
     key = provider if provider is not None else provider_family
@@ -318,12 +327,16 @@ def _answerable(
 ) -> SettingRefusal | None:
     """The refusal to answer with a resend, resolved to the setting it is of, or ``None`` to raise what was raised.
 
-    Args:
-        refusal: What the caller's reader made of the failure.
-        wire: What the refused request carried.
-        facts: What was known of the model when it was chosen.
-        family: The request shape.
-        answered: The refusals this call answered that still stand, in order.
+    :param refusal: What the caller's reader made of the failure.
+    :ptype refusal: SettingRefusal | None
+    :param wire: What the refused request carried.
+    :ptype wire: WireSettings
+    :param facts: What was known of the model when it was chosen.
+    :ptype facts: SettingFacts
+    :param family: The request shape.
+    :ptype family: ProviderFamily
+    :param answered: The refusals this call answered that still stand, in order.
+    :ptype answered: Sequence[SettingRefusal]
     """
     if refusal is None:
         return None

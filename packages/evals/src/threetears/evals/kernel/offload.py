@@ -40,15 +40,17 @@ async def run_blocking[**P, T](
     flag that decides whether a tool actuates for real, the request id that correlates traces, the
     active span — and dropping them would not fail, it would run the call under their defaults.
 
-    Args:
-        executor: Where to run it; ``None`` for the loop's default executor.
-        fn: The blocking callable.
-        *args: Positional arguments for ``fn``.
-        **kwargs: Keyword arguments for ``fn``.
-
-    Returns:
-        What ``fn`` returned. Typed through ``fn``'s own signature, so a call missing an argument
+    :param executor: Where to run it; ``None`` for the loop's default executor.
+    :ptype executor: Executor | None
+    :param fn: The blocking callable.
+    :ptype fn: Callable[P, T]
+    :param *args: Positional arguments for ``fn``.
+    :ptype args: P.args
+    :param **kwargs: Keyword arguments for ``fn``.
+    :ptype kwargs: P.kwargs
+    :return: What ``fn`` returned. Typed through ``fn``'s own signature, so a call missing an argument
         ``fn`` requires is a type error at the call site rather than a ``TypeError`` on a worker.
+    :rtype: T
     """
     context = contextvars.copy_context()
     call = functools.partial(context.run, fn, *args, **kwargs)
@@ -64,22 +66,21 @@ async def wait_through_cancellation(work: asyncio.Future[Any]) -> bool:
     wait is shielded and resumed until the work ends, and the caller is TOLD it was cancelled, to
     deliver that cancellation itself once it has recorded what the work did.
 
-    Args:
-        work: The future of the blocking call, typically from :func:`run_blocking`.
+    :param work: The future of the blocking call, typically from :func:`run_blocking`.
+    :ptype work: asyncio.Future[Any]
 
-    Not the same contract as the job manager's terminal-status write (:mod:`threetears.evals.run.jobs`), on purpose: that one
-    ABSORBS the caller's cancel, because its caller (a terminal status write) is the last thing a
+
+    Not the same contract as the job manager's terminal-status write (:mod:`threetears.evals.run.jobs`), on purpose:
+    that one ABSORBS the caller's cancel, because its caller (a terminal status write) is the last thing a
     job does and re-raises its own cancel afterwards. This one REPORTS it, because its callers have
     more to do after the write and must not carry on as if uncancelled. Pick by whether the caller
     re-raises on its own.
 
-    Returns:
-        Whether a cancellation aimed at the waiter arrived while it waited. The caller owes a
+    :return: Whether a cancellation aimed at the waiter arrived while it waited. The caller owes a
         ``raise asyncio.CancelledError`` once it has read ``work``'s outcome.
-
-    Raises:
-        asyncio.CancelledError: ``work`` itself was cancelled — a queued work item the executor
-            dropped — so there is no outcome to record.
+    :rtype: bool
+    :raises asyncio.CancelledError: ``work`` itself was cancelled — a queued work item the executor
+        dropped — so there is no outcome to record.
     """
     cancelled = False
     # ``asyncio.wait``, not ``shield``: it neither cancels what it waits on when the waiter is

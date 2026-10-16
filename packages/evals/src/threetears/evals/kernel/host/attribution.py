@@ -48,8 +48,8 @@ class HostAttributed:
         at all. Idempotent for a repeated bind of the same id, which is the common case:
         one profile rebuilt over one module-level registry.
 
-        Args:
-            host_id: The binding profile's opaque id.
+        :param host_id: The binding profile's opaque id.
+        :ptype host_id: str
         """
         # `bool(...)`, not the bare set. `set() and X` evaluates to the SET OBJECT, so a bare
         # capture holds a live reference that the very next line mutates — and an empty set

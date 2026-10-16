@@ -43,11 +43,10 @@ def serialized_campaign_write[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     already threads. Two launches of one campaign, or a launch beside ``campaign_add_runs``, would
     otherwise each read the membership list and the later save would drop the earlier's runs.
 
-    Args:
-        fn: The writer.
-
-    Returns:
-        ``fn``, serialized.
+    :param fn: The writer.
+    :ptype fn: Callable[P, R]
+    :return: ``fn``, serialized.
+    :rtype: Callable[P, R]
     """
 
     @functools.wraps(fn)

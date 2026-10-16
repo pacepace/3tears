@@ -23,11 +23,10 @@ def load_script(name: str) -> ModuleType:
     """Execute ``scripts/<name>`` as a module registered under its stem, its ``main`` not run. The shared module is
     executed once, so every script loaded reads the same one.
 
-    Args:
-        name: The file's name, ``"generate_reference.py"``.
-
-    Returns:
-        The module.
+    :param name: The file's name, ``"generate_reference.py"``.
+    :ptype name: str
+    :return: The module.
+    :rtype: ModuleType
     """
     if SHARED not in sys.modules:
         _load(SCRIPTS / f"{SHARED}.py", SHARED)

@@ -88,10 +88,9 @@ DEFAULT_PREFIX = "evals"
 class Caller:
     """Who is calling, and the scope they act in — resolved by the host for every call.
 
-    Attributes:
-        scope_id: The scope every read and write of the call is in. The host decides it from the caller;
-            no action takes it as a parameter, so an agent cannot reach another scope by naming it.
-        identity: Who the caller is, as the host knows them — recorded where a write records an author.
+    :ivar scope_id: The scope every read and write of the call is in. The host decides it from the caller;
+        no action takes it as a parameter, so an agent cannot reach another scope by naming it.
+    :ivar identity: Who the caller is, as the host knows them — recorded where a write records an author.
     """
 
     scope_id: str
@@ -100,8 +99,7 @@ class Caller:
     def __post_init__(self) -> None:
         """Refuse a blank identity. The scope is opaque to the engine, which never reads its value.
 
-        Raises:
-            ValueError: The identity is blank.
+        :raises ValueError: The identity is blank.
         """
         if not self.identity.strip():
             raise ValueError("Caller.identity is blank; the host names who is calling")
@@ -121,11 +119,10 @@ class ConformanceSample:
     runs must finish in a few seconds under the host the kit builds and be judged — through the host's completion
     clients — on at least one dimension, so a second judge and a temperature comparison have scores to read.
 
-    Attributes:
-        template_id: A template in the caller's scope whose kind the host launches.
-        subject_id: The subject its runs measure.
-        models: The candidate models, one arm each; at least one, since a sweep's arm names its model.
-        second_judge_model: A judge model other than the run's own, for a second judge's pass and a drift check.
+    :ivar template_id: A template in the caller's scope whose kind the host launches.
+    :ivar subject_id: The subject its runs measure.
+    :ivar models: The candidate models, one arm each; at least one, since a sweep's arm names its model.
+    :ivar second_judge_model: A judge model other than the run's own, for a second judge's pass and a drift check.
     """
 
     template_id: str
@@ -136,8 +133,7 @@ class ConformanceSample:
     def __post_init__(self) -> None:
         """Refuse a sample naming no model.
 
-        Raises:
-            ValueError: ``models`` is empty.
+        :raises ValueError: ``models`` is empty.
         """
         if not self.models:
             raise ValueError("a conformance sample names at least one candidate model; a sweep's arm needs one")
@@ -147,10 +143,9 @@ class ConformanceSample:
 class ConformanceStage:
     """What a :data:`HappyPath` is handed: the host the kit built, the caller, and the host's sample launch.
 
-    Attributes:
-        host: The host the action's handler will run in, its completion clients guarded by the kit.
-        caller: Who the kit calls as.
-        sample: The host's sample launch (:class:`ConformanceSample`).
+    :ivar host: The host the action's handler will run in, its completion clients guarded by the kit.
+    :ivar caller: Who the kit calls as.
+    :ivar sample: The host's sample launch (:class:`ConformanceSample`).
     """
 
     host: OpsHost
@@ -162,8 +157,8 @@ class ConformanceStage:
 
         The runs execute as jobs, so their judges' requests are a job's. Arranged before the call under test.
 
-        Returns:
-            The first run's id; it finished, and was judged when the host's judge answered.
+        :return: The first run's id; it finished, and was judged when the host's judge answered.
+        :rtype: str
         """
         launch = self.host.launch
         runs = await start_run(
@@ -187,25 +182,24 @@ HappyPath = Callable[[ConformanceStage], Awaitable[Mapping[str, Any]]]
 class Action:
     """One action: what it is called, what it takes and returns, who may call it, and how it reads back.
 
-    Attributes:
-        name: ``noun_verb`` (:data:`ACTION_NAME`), unique in the catalogue.
-        summary: One line, shown in the help index.
-        workflow: The help index's group: the step of the work this action belongs to.
-        permission: Its class: ``read``, ``spend``, ``write`` or ``destructive``.
-        params: Its parameters, as a flat pydantic model: every field described, none a nested model.
-            A ``destructive`` action's model declares a required ``confirm``.
-        result: The model its handler returns.
-        handler: Carries it out.
-        render: Its result as the text an agent reads. Long work need not declare one: every action returning
-            :class:`~threetears.evals.ops.JobsStarted` reads back the same way, so it defaults to
-            :func:`~threetears.evals.actions.render.render_jobs_started`, which only such an action may use.
-        example: A call's parameters (without ``action``) that validate against ``params`` — shown in help
-            and in every refusal of a bad call.
-        long_running: Whether its work outlives the call; such an action returns
-            :class:`~threetears.evals.ops.JobsStarted`, and no other may.
-        detail: More help, shown on the action's own page.
-        happy_path: For a ``spend`` action, required: what reaches its work, for the jobs conformance kit.
-            ``None`` for every other class.
+    :ivar name: ``noun_verb`` (:data:`ACTION_NAME`), unique in the catalogue.
+    :ivar summary: One line, shown in the help index.
+    :ivar workflow: The help index's group: the step of the work this action belongs to.
+    :ivar permission: Its class: ``read``, ``spend``, ``write`` or ``destructive``.
+    :ivar params: Its parameters, as a flat pydantic model: every field described, none a nested model.
+        A ``destructive`` action's model declares a required ``confirm``.
+    :ivar result: The model its handler returns.
+    :ivar handler: Carries it out.
+    :ivar render: Its result as the text an agent reads. Long work need not declare one: every action returning
+        :class:`~threetears.evals.ops.JobsStarted` reads back the same way, so it defaults to
+        :func:`~threetears.evals.actions.render.render_jobs_started`, which only such an action may use.
+    :ivar example: A call's parameters (without ``action``) that validate against ``params`` — shown in help
+        and in every refusal of a bad call.
+    :ivar long_running: Whether its work outlives the call; such an action returns
+        :class:`~threetears.evals.ops.JobsStarted`, and no other may.
+    :ivar detail: More help, shown on the action's own page.
+    :ivar happy_path: For a ``spend`` action, required: what reaches its work, for the jobs conformance kit.
+        ``None`` for every other class.
     """
 
     name: str
@@ -224,13 +218,12 @@ class Action:
     def __post_init__(self) -> None:
         """Refuse an action no transport could mount honestly.
 
-        Raises:
-            ValueError: The name is not ``noun_verb``; the summary is blank or more than one line; the
-                class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
-                nested model; a destructive action declares no required ``confirm``; ``long_running``
-                disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
-                declares no ``render`` of its own; a spend action declares no ``happy_path``; or the example
-                does not validate.
+        :raises ValueError: The name is not ``noun_verb``; the summary is blank or more than one line; the
+            class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
+            nested model; a destructive action declares no required ``confirm``; ``long_running``
+            disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
+            declares no ``render`` of its own; a spend action declares no ``happy_path``; or the example
+            does not validate.
         """
         where = f"action {self.name!r}"
         if not ACTION_NAME.fullmatch(self.name):
@@ -278,10 +271,9 @@ class Action:
 class ToolSpec:
     """One tool a transport mounts: its name, its short description and the classes of action it carries.
 
-    Attributes:
-        name: The tool's name (:data:`TOOL_NAME`).
-        description: What the tool is for, in a sentence or two; the tool adds how to get help.
-        permissions: The classes of action it mounts.
+    :ivar name: The tool's name (:data:`TOOL_NAME`).
+    :ivar description: What the tool is for, in a sentence or two; the tool adds how to get help.
+    :ivar permissions: The classes of action it mounts.
     """
 
     name: str
@@ -291,8 +283,7 @@ class ToolSpec:
     def __post_init__(self) -> None:
         """Refuse a malformed name, a blank description or a set of classes that is empty or unknown.
 
-        Raises:
-            ValueError: As described.
+        :raises ValueError: As described.
         """
         if not TOOL_NAME.fullmatch(self.name):
             raise ValueError(f"tool name {self.name!r} is not a lowercase identifier")
@@ -309,11 +300,10 @@ class ToolSpec:
 def standard_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec, ToolSpec]:
     """The two tools a host mounts by default: ``<prefix>`` and ``<prefix>_admin``.
 
-    Args:
-        prefix: The host's prefix for its eval tools.
-
-    Returns:
-        ``<prefix>`` — read, spend and write — and ``<prefix>_admin`` — the destructive actions.
+    :param prefix: The host's prefix for its eval tools.
+    :ptype prefix: str
+    :return: ``<prefix>`` — read, spend and write — and ``<prefix>_admin`` — the destructive actions.
+    :rtype: tuple[ToolSpec, ToolSpec]
     """
     return (
         ToolSpec(
@@ -332,11 +322,10 @@ def standard_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec, ToolSpec]:
 def read_only_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec]:
     """One tool carrying only the ``read`` actions, for an agent that may look but not act.
 
-    Args:
-        prefix: The host's prefix for its eval tools.
-
-    Returns:
-        ``<prefix>``, read actions only.
+    :param prefix: The host's prefix for its eval tools.
+    :ptype prefix: str
+    :return: ``<prefix>``, read actions only.
+    :rtype: tuple[ToolSpec]
     """
     return (
         ToolSpec(
@@ -355,10 +344,9 @@ class Refusal:
     REST mapping's status, a metric's label, an audit row — which would otherwise parse that text, or
     lose the difference between a run that does not exist and a launch the process has no room for.
 
-    Attributes:
-        kind: Which public error refused it (:data:`RefusalKind`).
-        status: The HTTP-style status the error carries (``status_code``), so every surface reports one
-            refusal with one status without owning a table of its own.
+    :ivar kind: Which public error refused it (:data:`RefusalKind`).
+    :ivar status: The HTTP-style status the error carries (``status_code``), so every surface reports one
+        refusal with one status without owning a table of its own.
     """
 
     kind: KnownRefusalKind
@@ -373,8 +361,7 @@ class Refusal:
     def __post_init__(self) -> None:
         """Refuse a kind outside the closed set.
 
-        Raises:
-            ValueError: ``kind`` is not one of :data:`REFUSAL_KINDS`.
+        :raises ValueError: ``kind`` is not one of :data:`REFUSAL_KINDS`.
         """
         if self.kind not in REFUSAL_KINDS:
             raise ValueError(f"refusal kind {self.kind!r} is none of {', '.join(REFUSAL_KINDS)}")
@@ -383,12 +370,11 @@ class Refusal:
     def of(cls, error: EvalServiceError) -> Refusal:
         """The refusal an engine error makes: the kind of its nearest public class, and its own status.
 
-        Args:
-            error: The error a handler raised.
-
-        Returns:
-            The refusal. A host's own subclass of a public error takes that error's kind, and keeps the
+        :param error: The error a handler raised.
+        :ptype error: EvalServiceError
+        :return: The refusal. A host's own subclass of a public error takes that error's kind, and keeps the
             status it was raised with.
+        :rtype: Refusal
         """
         return cls(kind=refusal_kind(error), status=error.status_code)
 
@@ -416,11 +402,10 @@ class ActionOutcome:
     recording its candidate's refused calls (``CallLedger.record_refusal``) records an outcome whose ``ending`` is
     ``refused`` and no other: a raised one is the rig's fault, never the candidate's.
 
-    Attributes:
-        text: The rendering — the result's, a help page's, or a refusal that teaches.
-        structured: The result model's JSON form; ``None`` for help and for a refusal.
-        refusal: Why the call was refused, as data; ``None`` for a call that was not.
-        action: The action called, when the call named one the tool has.
+    :ivar text: The rendering — the result's, a help page's, or a refusal that teaches.
+    :ivar structured: The result model's JSON form; ``None`` for help and for a refusal.
+    :ivar refusal: Why the call was refused, as data; ``None`` for a call that was not.
+    :ivar action: The action called, when the call named one the tool has.
     """
 
     text: str
@@ -431,8 +416,7 @@ class ActionOutcome:
     def __post_init__(self) -> None:
         """Refuse an outcome that is both a result and a refusal.
 
-        Raises:
-            ValueError: ``structured`` and ``refusal`` are both set.
+        :raises ValueError: ``structured`` and ``refusal`` are both set.
         """
         if self.structured is not None and self.refusal is not None:
             raise ValueError("an outcome carries a result or a refusal, never both")
@@ -455,10 +439,9 @@ class ActionOutcome:
 class ToolHints:
     """The MCP behaviour hints a mounted tool's actions earn.
 
-    Attributes:
-        read_only: Every action is ``read``.
-        destructive: Some action is ``destructive``.
-        open_world: Some action spends on a provider outside the host.
+    :ivar read_only: Every action is ``read``.
+    :ivar destructive: Some action is ``destructive``.
+    :ivar open_world: Some action spends on a provider outside the host.
     """
 
     read_only: bool
@@ -487,11 +470,10 @@ class MountedTool:
 
     Built by :meth:`ActionCatalogue.mount`, which checks the tool's flat parameters mean one thing each.
 
-    Attributes:
-        spec: The tool.
-        actions: Its actions, in catalogue order.
-        catalogue: The catalogue it was cut from, so a refusal can say where an action it lacks lives.
-        properties: Its actions' parameters, flat, by name — each one's schema without title or default.
+    :ivar spec: The tool.
+    :ivar actions: Its actions, in catalogue order.
+    :ivar catalogue: The catalogue it was cut from, so a refusal can say where an action it lacks lives.
+    :ivar properties: Its actions' parameters, flat, by name — each one's schema without title or default.
     """
 
     spec: ToolSpec
@@ -527,9 +509,9 @@ class MountedTool:
     def input_schema(self) -> dict[str, Any]:
         """The tool's input: ``action`` and ``topic``, then every action's parameters, flat and described.
 
-        Returns:
-            A JSON Schema object. Nothing beyond ``action`` is required at the tool: each action holds
+        :return: A JSON Schema object. Nothing beyond ``action`` is required at the tool: each action holds
             the call to its own required parameters.
+        :rtype: dict[str, Any]
         """
         names = [HELP_ACTION, *(action.name for action in self.actions)]
         properties: dict[str, Any] = {
@@ -546,14 +528,11 @@ class MountedTool:
     def help_page(self, name: str) -> str:
         """One action's help page: its parameters, what it returns and an example call.
 
-        Args:
-            name: The action.
-
-        Returns:
-            The page.
-
-        Raises:
-            KeyError: This tool has no such action.
+        :param name: The action.
+        :ptype name: str
+        :return: The page.
+        :rtype: str
+        :raises KeyError: This tool has no such action.
         """
         action = self.action(name)
         if action is None:
@@ -572,13 +551,13 @@ class MountedTool:
         — so a caller reads, and a client branches on, a host's refusal as it does the engine's, and no transport
         builds one of its own.
 
-        Args:
-            refused: The error the host raised.
-            action: The call's ``action`` argument, as given: it was never checked, so it may name nothing.
-
-        Returns:
-            The refused outcome, carrying ``action`` when it names one of this tool's actions and ``None`` otherwise,
-            as any outcome does.
+        :param refused: The error the host raised.
+        :ptype refused: EvalServiceError
+        :param action: The call's ``action`` argument, as given: it was never checked, so it may name nothing.
+        :ptype action: object
+        :return: The refused outcome, carrying ``action`` when it names one of this tool's actions and ``None``
+            otherwise, as any outcome does.
+        :rtype: ActionOutcome
         """
         named = self.action(action) if isinstance(action, str) else None
         return ActionOutcome(
@@ -592,16 +571,17 @@ class MountedTool:
 
         A refusal the engine raises (:class:`~threetears.evals.kernel.EvalServiceError`) is a refused
         call, rendered with its reason and carrying its kind and status (:meth:`Refusal.of`); a call the
-        catalogue turns away is ``validation_failed`` (422). Anything else the handler raises propagates: it is a defect, and
-        the transport's error path is where a defect belongs.
+        catalogue turns away is ``validation_failed`` (422). Anything else the handler raises propagates: it is a
+        defect, and the transport's error path is where a defect belongs.
 
-        Args:
-            arguments: The call's arguments, ``action`` among them.
-            host: The host the action works in.
-            caller: Who is calling, and their scope.
-
-        Returns:
-            The outcome.
+        :param arguments: The call's arguments, ``action`` among them.
+        :ptype arguments: Mapping[str, Any]
+        :param host: The host the action works in.
+        :ptype host: OpsHost
+        :param caller: Who is calling, and their scope.
+        :ptype caller: Caller
+        :return: The outcome.
+        :rtype: ActionOutcome
         """
         given = dict(arguments)
         name = given.pop("action", None)
@@ -655,11 +635,9 @@ class ActionCatalogue:
 
         No action can be named ``help``: it is one word, and an action's name is ``noun_verb``.
 
-        Args:
-            actions: The actions, in the order help lists them within a workflow.
-
-        Raises:
-            ValueError: Two actions share a name.
+        :param actions: The actions, in the order help lists them within a workflow.
+        :ptype actions: Iterable[Action]
+        :raises ValueError: Two actions share a name.
         """
         held: dict[str, Action] = {}
         for action in actions:
@@ -683,29 +661,23 @@ class ActionCatalogue:
     def extended(self, actions: Iterable[Action]) -> ActionCatalogue:
         """This catalogue with a host's actions added after the engine's.
 
-        Args:
-            actions: The host's actions.
-
-        Returns:
-            The new catalogue.
-
-        Raises:
-            ValueError: A host action's name is already in the catalogue, or two of them share one.
+        :param actions: The host's actions.
+        :ptype actions: Iterable[Action]
+        :return: The new catalogue.
+        :rtype: ActionCatalogue
+        :raises ValueError: A host action's name is already in the catalogue, or two of them share one.
         """
         return ActionCatalogue([*self._actions.values(), *actions])
 
     def mount(self, spec: ToolSpec) -> MountedTool:
         """Cut one tool from the catalogue: the actions whose class the tool mounts.
 
-        Args:
-            spec: The tool.
-
-        Returns:
-            The mounted tool.
-
-        Raises:
-            ValueError: No action has a class the tool mounts, or two of its actions declare one
-                parameter name with different meanings (type or description).
+        :param spec: The tool.
+        :ptype spec: ToolSpec
+        :return: The mounted tool.
+        :rtype: MountedTool
+        :raises ValueError: No action has a class the tool mounts, or two of its actions declare one
+            parameter name with different meanings (type or description).
         """
         actions = tuple(action for action in self._actions.values() if action.permission in spec.permissions)
         if not actions:
@@ -728,14 +700,11 @@ class ActionCatalogue:
     def mount_all(self, specs: Sequence[ToolSpec]) -> tuple[MountedTool, ...]:
         """Mount several tools, refusing two that share a name.
 
-        Args:
-            specs: The tools.
-
-        Returns:
-            The mounted tools, in order.
-
-        Raises:
-            ValueError: Two tools share a name, or :meth:`mount` refuses one.
+        :param specs: The tools.
+        :ptype specs: Sequence[ToolSpec]
+        :return: The mounted tools, in order.
+        :rtype: tuple[MountedTool, ...]
+        :raises ValueError: Two tools share a name, or :meth:`mount` refuses one.
         """
         names = [spec.name for spec in specs]
         if len(set(names)) != len(names):

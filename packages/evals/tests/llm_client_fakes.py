@@ -18,10 +18,9 @@ from __future__ import annotations
 class ReleasableClientMixin:
     """Gives a fake LLM client the release half of the client protocol.
 
-    Attributes:
-        aclose_calls: How many times ``aclose`` was awaited. Zero means the call
-            site under test leaked; more than one is safe (the real ``aclose`` is
-            idempotent) but usually means two owners think they own the client.
+    :ivar aclose_calls: How many times ``aclose`` was awaited. Zero means the call
+        site under test leaked; more than one is safe (the real ``aclose`` is
+        idempotent) but usually means two owners think they own the client.
     """
 
     aclose_calls: int = 0

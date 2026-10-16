@@ -146,12 +146,11 @@ class TraceSink(Protocol):
         apparatus work carries the cell's identity even though it is deliberately outside
         the collection window.
 
-        Args:
-            cell: The execution the scope belongs to.
-
-        Returns:
-            A context manager yielding nothing. Nesting is not required of it: the engine
+        :param cell: The execution the scope belongs to.
+        :ptype cell: CellIdentity
+        :return: A context manager yielding nothing. Nesting is not required of it: the engine
             opens exactly one per cell.
+        :rtype: AbstractContextManager[None]
         """
         ...
 
@@ -169,12 +168,11 @@ class TraceSink(Protocol):
         programming error rather than a way to say "nothing": the empty record already says
         that, and the engine reads through what it is given rather than checking.
 
-        Args:
-            cell: The execution being collected.
-
-        Returns:
-            A context manager yielding the record to fill. A body that raises leaves the
+        :param cell: The execution being collected.
+        :ptype cell: CellIdentity
+        :return: A context manager yielding the record to fill. A body that raises leaves the
             engine's read unreached and the cell recording no trace — the same answer as a
             cell that never ran its turns.
+        :rtype: AbstractContextManager[CellTrace]
         """
         ...

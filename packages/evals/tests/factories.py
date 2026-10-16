@@ -123,13 +123,14 @@ def make_subject(
     The engine-shaped stand-in for "a run of this subject": a host's adapter would also fill
     ``components`` with the subject's variant coordinates, and a test about those passes them.
 
-    Args:
-        subject_id: The subject's stable id.
-        subject_label: Its display label.
-        **overrides: Any other ``SubjectSnapshot`` field.
-
-    Returns:
-        The subject.
+    :param subject_id: The subject's stable id.
+    :ptype subject_id: str
+    :param subject_label: Its display label.
+    :ptype subject_label: str
+    :param **overrides: Any other ``SubjectSnapshot`` field.
+    :ptype overrides: Any
+    :return: The subject.
+    :rtype: SubjectSnapshot
     """
     fields: dict[str, Any] = dict(
         subject_id=subject_id, subject_label=subject_label, state={}, captured_at=DEFAULT_SUBJECT.captured_at
@@ -181,12 +182,12 @@ def make_template(**overrides: Any) -> EvalTemplate:
 def declared(dim: RubricDim, judge: JudgeDeclaration = "builtin") -> RubricDim:
     """``dim`` declaring its judge, as a template a run launches from must (``RubricDim.judge``).
 
-    Args:
-        dim: A rubric dimension, declared or not.
-        judge: The judge it declares: the built-in prompt unless the test authors a config for it.
-
-    Returns:
-        A copy declaring ``judge``.
+    :param dim: A rubric dimension, declared or not.
+    :ptype dim: RubricDim
+    :param judge: The judge it declares: the built-in prompt unless the test authors a config for it.
+    :ptype judge: JudgeDeclaration
+    :return: A copy declaring ``judge``.
+    :rtype: RubricDim
     """
     return dim.model_copy(update={"judge": judge})
 
@@ -326,19 +327,26 @@ def make_scored_result(
     through :func:`make_eval_result`, whose non-zero ``cost_usd`` default would be a cost nobody
     asked for under a result built to make a point about pass^k.
 
-    Args:
-        test_case_id: The case this result measured.
-        model: The model under test.
-        run_id: The run it belongs to.
-        k: The iteration index within the run.
-        goal_passes: One flag per goal-state expression, in order.
-        rubric_scores: ``(dim, score)`` pairs the judge returned.
-        candidate_error: Set when the subject failed -- a scored outcome, not an exclusion.
-        infra_error: Set when the harness failed -- excluded from scoring.
-        judge_error: Set when the judge failed -- its scores are dropped.
-
-    Returns:
-        The result, carrying nothing the scoring functions do not read.
+    :param test_case_id: The case this result measured.
+    :ptype test_case_id: str
+    :param model: The model under test.
+    :ptype model: str
+    :param run_id: The run it belongs to.
+    :ptype run_id: str
+    :param k: The iteration index within the run.
+    :ptype k: int
+    :param goal_passes: One flag per goal-state expression, in order.
+    :ptype goal_passes: tuple[bool, ...]
+    :param rubric_scores: ``(dim, score)`` pairs the judge returned.
+    :ptype rubric_scores: tuple[tuple[str, int], ...]
+    :param candidate_error: Set when the subject failed -- a scored outcome, not an exclusion.
+    :ptype candidate_error: str | None
+    :param infra_error: Set when the harness failed -- excluded from scoring.
+    :ptype infra_error: str | None
+    :param judge_error: Set when the judge failed -- its scores are dropped.
+    :ptype judge_error: str | None
+    :return: The result, carrying nothing the scoring functions do not read.
+    :rtype: EvalResult
     """
     return EvalResult(
         scope_id="u",
@@ -385,17 +393,19 @@ def minimal_declaration(
     key its run resolves (:func:`~threetears.evals.analysis.variant_key_of_run`) -- a hand-written
     key joins nothing.
 
-    Args:
-        control: The declared control variant key, or None.
-        control_levers: The control's pre-image, as ``control_from_run_id`` records it, or None for a
-            typed key.
-        control_identity_version: The predicate the key was computed under; None lets the
-            declaration date it with this build's, as it dates any key typed without one.
-        axis_id: The axis to declare. Defaults to the candidate model, the one lever every host
-            declares.
-
-    Returns:
-        The declaration.
+    :param control: The declared control variant key, or None.
+    :ptype control: str | None
+    :param control_levers: The control's pre-image, as ``control_from_run_id`` records it, or None for a
+        typed key.
+    :ptype control_levers: dict[str, SweepableValue] | None
+    :param control_identity_version: The predicate the key was computed under; None lets the
+        declaration date it with this build's, as it dates any key typed without one.
+    :ptype control_identity_version: int | None
+    :param axis_id: The axis to declare. Defaults to the candidate model, the one lever every host
+        declares.
+    :ptype axis_id: str | None
+    :return: The declaration.
+    :rtype: CampaignDesign
     """
     return CampaignDesign(
         axes=[SweptAxis(axis_id=axis_id or CANDIDATE_MODEL_LEVER, values=[SweepableValue.of("glm", display="GLM")])],
@@ -409,12 +419,12 @@ def minimal_declaration(
 def as_listed(runs: Any, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]:
     """What a storage LISTING returns for ``runs``: each payload without the elided paths, marked.
 
-    Args:
-        runs: The runs the stand-in would otherwise return.
-        elide_payload: The host's listing elisions, as ``EvalService.list_runs`` passes them.
-
-    Returns:
-        The listed copies; the originals are untouched.
+    :param runs: The runs the stand-in would otherwise return.
+    :ptype runs: Any
+    :param elide_payload: The host's listing elisions, as ``EvalService.list_runs`` passes them.
+    :ptype elide_payload: frozenset[str]
+    :return: The listed copies; the originals are untouched.
+    :rtype: list[EvalRun]
     """
     if not elide_payload:
         return list(runs)
@@ -431,14 +441,16 @@ def load_listed(
 ) -> list[EvalRun]:
     """What a storage BATCH read returns: every id ``load_one`` resolves, listed as :func:`as_listed` lists.
 
-    Args:
-        load_one: The stand-in's own ``(run_id, scope_id) -> EvalRun | None`` lookup.
-        run_ids: The ids the batch asks for; an unresolved one is skipped, as the store skips it.
-        scope_id: The scope to read in.
-        elide_payload: The host's listing elisions, as the batch reader passes them.
-
-    Returns:
-        The listed copies of the runs that resolved.
+    :param load_one: The stand-in's own ``(run_id, scope_id) -> EvalRun | None`` lookup.
+    :ptype load_one: Any
+    :param run_ids: The ids the batch asks for; an unresolved one is skipped, as the store skips it.
+    :ptype run_ids: Any
+    :param scope_id: The scope to read in.
+    :ptype scope_id: str
+    :param elide_payload: The host's listing elisions, as the batch reader passes them.
+    :ptype elide_payload: frozenset[str]
+    :return: The listed copies of the runs that resolved.
+    :rtype: list[EvalRun]
     """
     return as_listed([run for run_id in run_ids if (run := load_one(run_id, scope_id)) is not None], elide_payload)
 

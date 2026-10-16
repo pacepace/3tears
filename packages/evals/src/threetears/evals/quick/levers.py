@@ -35,15 +35,12 @@ class CallableLevers(BaseModel):
 def refuse_unusable_lever_names(names: Iterable[str]) -> tuple[str, ...]:
     """The lever names, refusing one no overlay field could carry or that would read as the model.
 
-    Args:
-        names: The levers' names, as a caller spells them.
-
-    Returns:
-        The names, in the order given.
-
-    Raises:
-        ValueError: A name that is not an identifier, is a keyword, starts with ``_``, is ``model`` or one
-            of a model's own attributes, or is given twice.
+    :param names: The levers' names, as a caller spells them.
+    :ptype names: Iterable[str]
+    :return: The names, in the order given.
+    :rtype: tuple[str, ...]
+    :raises ValueError: A name that is not an identifier, is a keyword, starts with ``_``, is ``model`` or one
+        of a model's own attributes, or is given twice.
     """
     if isinstance(names, str):
         raise ValueError("levers are a collection of names, not one string")
@@ -70,14 +67,11 @@ def refuse_unusable_lever_names(names: Iterable[str]) -> tuple[str, ...]:
 def levers_model(names: Iterable[str]) -> type[CallableLevers]:
     """The overlay model declaring one required, non-blank string level per lever name.
 
-    Args:
-        names: The levers' names.
-
-    Returns:
-        The model, for a callable kind's :class:`~threetears.evals.kernel.host.KindContract`.
-
-    Raises:
-        ValueError: As :func:`refuse_unusable_lever_names`.
+    :param names: The levers' names.
+    :ptype names: Iterable[str]
+    :return: The model, for a callable kind's :class:`~threetears.evals.kernel.host.KindContract`.
+    :rtype: type[CallableLevers]
+    :raises ValueError: As :func:`refuse_unusable_lever_names`.
     """
     fields: dict[str, object] = {
         name: (str, Field(pattern=r"\S", description=f"the {name} level the arm ran at, as its caller named it"))

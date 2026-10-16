@@ -63,14 +63,13 @@ DocLifecycle = Literal["kept", "durable", "regenerable"]
 class DocTypeFacts:
     """The facts of one stored document type.
 
-    Attributes:
-        origin: Where a document of this type comes from.
-        lifecycle: Whether a later release reads it until a core baseline reset (``kept``), forever (``durable``),
-            or it is made again (``regenerable``).
-        suppresses: For a tombstone, the ``doc_type`` it suppresses: the definition whose slot it holds so a seed
-            does not write a deleted key back. ``None`` for every other type. A tombstone and the type it
-            suppresses are read together, so they share their origin and lifecycle (``tests/test_doc_type_facts.py``)
-            and whatever separates documents by facts must keep them in one place.
+    :ivar origin: Where a document of this type comes from.
+    :ivar lifecycle: Whether a later release reads it until a core baseline reset (``kept``), forever (``durable``),
+        or it is made again (``regenerable``).
+    :ivar suppresses: For a tombstone, the ``doc_type`` it suppresses: the definition whose slot it holds so a seed
+        does not write a deleted key back. ``None`` for every other type. A tombstone and the type it
+        suppresses are read together, so they share their origin and lifecycle (``tests/test_doc_type_facts.py``)
+        and whatever separates documents by facts must keep them in one place.
     """
 
     origin: DocOrigin
@@ -80,9 +79,8 @@ class DocTypeFacts:
     def __post_init__(self) -> None:
         """Refuse a value outside the vocabulary, and a derived document that claims to be kept or durable.
 
-        Raises:
-            ValueError: ``origin`` or ``lifecycle`` is not one of its values, or a ``derived`` type is ``kept`` or
-                ``durable``: what is computed from stored documents is computed again, never migrated.
+        :raises ValueError: ``origin`` or ``lifecycle`` is not one of its values, or a ``derived`` type is ``kept`` or
+            ``durable``: what is computed from stored documents is computed again, never migrated.
         """
         if self.origin not in get_args(DocOrigin):
             raise ValueError(f"origin is one of {get_args(DocOrigin)}, not {self.origin!r}")

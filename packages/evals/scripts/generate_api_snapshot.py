@@ -57,14 +57,16 @@ def write_snapshot(
     """Write ``installed`` as the snapshot, and its tiers as the shipped tier map, unless a finding needs more than a
     regeneration.
 
-    Args:
-        installed: The surface to record.
-        findings: Every finding over it (:func:`public_surface.all_findings`).
-        path: Where the snapshot is written.
-        tier_map_path: Where the tier map the wheel ships is written.
-
-    Returns:
-        Whether they were written: ``False`` while any finding is one regenerating does not fix.
+    :param installed: The surface to record.
+    :ptype installed: dict[str, SurfaceEntry]
+    :param findings: Every finding over it (:func:`public_surface.all_findings`).
+    :ptype findings: list[Finding]
+    :param path: Where the snapshot is written.
+    :ptype path: Path
+    :param tier_map_path: Where the tier map the wheel ships is written.
+    :ptype tier_map_path: Path
+    :return: Whether they were written: ``False`` while any finding is one regenerating does not fix.
+    :rtype: bool
     """
     if any(not f.regenerating_fixes for f in findings):
         return False

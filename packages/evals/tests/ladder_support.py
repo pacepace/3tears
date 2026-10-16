@@ -31,13 +31,14 @@ _LIVE_VARIABLES = ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", 
 def offline_copy(rung: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy ``examples/<rung>`` into ``tmp_path``, make it the working directory and ``sys.path``'s head, offline.
 
-    Args:
-        rung: The rung's directory name, ``"3-invoices"``.
-        tmp_path: The test's temporary directory.
-        monkeypatch: The test's monkeypatch, which undoes all of it.
-
-    Returns:
-        The copy.
+    :param rung: The rung's directory name, ``"3-invoices"``.
+    :ptype rung: str
+    :param tmp_path: The test's temporary directory.
+    :ptype tmp_path: Path
+    :param monkeypatch: The test's monkeypatch, which undoes all of it.
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: The copy.
+    :rtype: Path
     """
     copy = tmp_path / rung
     shutil.copytree(EXAMPLES / rung, copy, ignore=shutil.ignore_patterns(".evals", "report", "__pycache__"))
@@ -51,13 +52,14 @@ def offline_copy(rung: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 def load(path: Path, name: str, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     """Execute ``path`` as module ``name``, registered so a sibling's ``from <name> import ...`` finds this one.
 
-    Args:
-        path: The file.
-        name: The module name its siblings import it by.
-        monkeypatch: Unregisters the module when the test ends.
-
-    Returns:
-        The module.
+    :param path: The file.
+    :ptype path: Path
+    :param name: The module name its siblings import it by.
+    :ptype name: str
+    :param monkeypatch: Unregisters the module when the test ends.
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: The module.
+    :rtype: ModuleType
     """
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
@@ -77,12 +79,12 @@ class Served:
 def count_calls(model: Any, monkeypatch: pytest.MonkeyPatch) -> Served:
     """Count every call ``model`` (a :class:`~threetears.evals.Model`) serves from here on.
 
-    Args:
-        model: The rung's model.
-        monkeypatch: Restores the model's own ``generate`` when the test ends.
-
-    Returns:
-        The tally, filled as calls are served.
+    :param model: The rung's model.
+    :ptype model: Any
+    :param monkeypatch: Restores the model's own ``generate`` when the test ends.
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: The tally, filled as calls are served.
+    :rtype: Served
     """
     served = Served()
     generate: Callable[..., Awaitable[Any]] = model.generate
@@ -99,8 +101,7 @@ def count_calls(model: Any, monkeypatch: pytest.MonkeyPatch) -> Served:
 def recorded_spend(recording: Path) -> tuple[int, float]:
     """How many calls a recording holds and what they cost, read from each line's own ``cost_usd``.
 
-    Raises:
-        AssertionError: A call the recording holds unpriced, which no docstring could total.
+    :raises AssertionError: A call the recording holds unpriced, which no docstring could total.
     """
     lines = [json.loads(line) for line in recording.read_text(encoding="utf-8").splitlines() if line.strip()]
     costs = [line["result"]["cost_usd"] for line in lines]

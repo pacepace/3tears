@@ -29,13 +29,12 @@ class OutOfRunSpendTotals(EvalBaseModel):
     nothing, and may have been billed), are counted in ``n_unpriced`` and left out of ``priced_usd``,
     so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0.
 
-    Attributes:
-        n_calls: The calls.
-        n_raised: Those that raised rather than returning.
-        n_unpriced: Those whose cost is unknown — a completed call that reported none, or a raised call.
-        priced_usd: The reported cost of the priced calls, summed.
-        ceiling_usd: The ceilings the calls were admitted at, summed over those the client could price.
-        n_unbounded: Those admitted with no ceiling (the client could not price them and no cap was enforced).
+    :ivar n_calls: The calls.
+    :ivar n_raised: Those that raised rather than returning.
+    :ivar n_unpriced: Those whose cost is unknown — a completed call that reported none, or a raised call.
+    :ivar priced_usd: The reported cost of the priced calls, summed.
+    :ivar ceiling_usd: The ceilings the calls were admitted at, summed over those the client could price.
+    :ivar n_unbounded: Those admitted with no ceiling (the client could not price them and no cap was enforced).
     """
 
     n_calls: int
@@ -49,11 +48,10 @@ class OutOfRunSpendTotals(EvalBaseModel):
     def of(cls, rows: Sequence[OutOfRunSpend]) -> OutOfRunSpendTotals:
         """Sum ``rows``.
 
-        Args:
-            rows: Ledger rows.
-
-        Returns:
-            Their totals.
+        :param rows: Ledger rows.
+        :ptype rows: Sequence[OutOfRunSpend]
+        :return: Their totals.
+        :rtype: OutOfRunSpendTotals
         """
         return cls(
             n_calls=len(rows),
@@ -72,16 +70,15 @@ class OutOfRunSpendReport(EvalBaseModel):
     Read off the out-of-run ledger (``EvalStorage.query_out_of_run_spend``), the one record of spend no run's
     cost carries: a run's results sum what its cells spent, never what was spent writing its cases.
 
-    Attributes:
-        scope_id: The scope read.
-        purpose: The purpose the read was narrowed to, or ``None`` for every purpose.
-        launch_group_id: The launch the read was narrowed to, or ``None`` for every launch.
-        template_id: The template the read was narrowed to, or ``None`` for every template.
-        rows: Every matching call, oldest first.
-        totals: Every matching call, summed.
-        by_purpose: The totals per purpose that appears, in the order purposes first appear.
-        by_launch: The totals per launch group that appears (case generations; a proposal or an analysis belongs to none, and
-            is not listed here), in the order launches first appear.
+    :ivar scope_id: The scope read.
+    :ivar purpose: The purpose the read was narrowed to, or ``None`` for every purpose.
+    :ivar launch_group_id: The launch the read was narrowed to, or ``None`` for every launch.
+    :ivar template_id: The template the read was narrowed to, or ``None`` for every template.
+    :ivar rows: Every matching call, oldest first.
+    :ivar totals: Every matching call, summed.
+    :ivar by_purpose: The totals per purpose that appears, in the order purposes first appear.
+    :ivar by_launch: The totals per launch group that appears (case generations; a proposal or an analysis belongs to
+        none, and is not listed here), in the order launches first appear.
     """
 
     scope_id: str
@@ -104,15 +101,18 @@ def scope_out_of_run_spend(
 ) -> OutOfRunSpendReport:
     """What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
 
-    Args:
-        host: The host whose store holds the ledger.
-        scope_id: The scope to read.
-        purpose: Only calls made for this purpose (``variation``, ``proposer`` or ``analysis``).
-        launch_group_id: Only the calls one launch's case generation made; its runs carry the same group id.
-        template_id: Only calls made for this template.
-
-    Returns:
-        The report.
+    :param host: The host whose store holds the ledger.
+    :ptype host: EvalHost
+    :param scope_id: The scope to read.
+    :ptype scope_id: str
+    :param purpose: Only calls made for this purpose (``variation``, ``proposer`` or ``analysis``).
+    :ptype purpose: KnownOutOfRunPurpose | None
+    :param launch_group_id: Only the calls one launch's case generation made; its runs carry the same group id.
+    :ptype launch_group_id: str | None
+    :param template_id: Only calls made for this template.
+    :ptype template_id: str | None
+    :return: The report.
+    :rtype: OutOfRunSpendReport
     """
     rows = host.storage.query_out_of_run_spend(
         scope_id, purpose=purpose, launch_group_id=launch_group_id, template_id=template_id
@@ -149,11 +149,10 @@ def _totals_line(totals: OutOfRunSpendTotals) -> str:
 def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
     """The scope's out-of-run spend as an operator reads it: the totals, per purpose and launch, then each call.
 
-    Args:
-        report: What :func:`scope_out_of_run_spend` returned.
-
-    Returns:
-        The text.
+    :param report: What :func:`scope_out_of_run_spend` returned.
+    :ptype report: OutOfRunSpendReport
+    :return: The text.
+    :rtype: str
     """
     narrowed = ", ".join(
         f"{name} {value}"

@@ -150,15 +150,12 @@ class SweptAxis(EvalDocumentModel, CoreShapeModel):
         megabyte. A path that needs a hard bound drops ``raw`` and keeps the hash, which the model
         already supports and every snapshot path already does.
 
-        Args:
-            values: The authored levels, before validation.
-
-        Returns:
-            The levels, with any content-authored one replaced by its addressed value.
-
-        Raises:
-            ValueError: A level carries neither ``content_hash`` nor ``content``, so there is
-                nothing to identify it by.
+        :param values: The authored levels, before validation.
+        :ptype values: Any
+        :return: The levels, with any content-authored one replaced by its addressed value.
+        :rtype: Any
+        :raises ValueError: A level carries neither ``content_hash`` nor ``content``, so there is
+            nothing to identify it by.
         """
         if not isinstance(values, list):
             return values
@@ -330,11 +327,10 @@ PROSE_RULE_MARK = "decision rule:"
 def states_a_prose_rule(question: Question) -> bool:
     """Whether a question carries its decision rule in its words and none as :attr:`Question.decision`.
 
-    Args:
-        question: The declared question.
-
-    Returns:
-        True when its text says ``Decision rule:`` (any case) and it declares no typed rule.
+    :param question: The declared question.
+    :ptype question: Question
+    :return: True when its text says ``Decision rule:`` (any case) and it declares no typed rule.
+    :rtype: bool
     """
     # prose-canary: allow — Question.text is the question its author declared, not text a model wrote
     return question.decision is None and PROSE_RULE_MARK in question.text.casefold()
@@ -422,12 +418,12 @@ def axis_in_question_scope(axis: MeritAxis | None, question_axes: Sequence[Merit
     The bundle's comparison families read it, and so does the exploratory label, so the two cannot disagree
     about which readings a question covers.
 
-    Args:
-        axis: The reading's merit axis, or None when it serves none.
-        question_axes: The axes the question names; empty for an unscoped question.
-
-    Returns:
-        True when the question covers the reading.
+    :param axis: The reading's merit axis, or None when it serves none.
+    :ptype axis: MeritAxis | None
+    :param question_axes: The axes the question names; empty for an unscoped question.
+    :ptype question_axes: Sequence[MeritAxis]
+    :return: True when the question covers the reading.
+    :rtype: bool
     """
     return axis is not None and (not question_axes or axis in question_axes)
 
@@ -440,12 +436,12 @@ def exploratory_reading(axis: MeritAxis | None, questions: Sequence[Question]) -
     learn to skip). A guardrail is never exploratory: it is held because it was declared one, not because
     something happened to move.
 
-    Args:
-        axis: The reading's merit axis, or None when it serves none.
-        questions: The campaign's live questions.
-
-    Returns:
-        True when no question covers the reading.
+    :param axis: The reading's merit axis, or None when it serves none.
+    :ptype axis: MeritAxis | None
+    :param questions: The campaign's live questions.
+    :ptype questions: Sequence[Question]
+    :return: True when no question covers the reading.
+    :rtype: bool
     """
     return not any(axis_in_question_scope(axis, question.merit_axes) for question in questions)
 
@@ -480,13 +476,11 @@ class ControlDeclaration(EvalDocumentModel, CoreShapeModel):
     def _an_uncontrolled_stimulus_states_what_varied(self) -> ControlDeclaration:
         """An uncontrolled stimulus must say what that means, or it is a label with no content.
 
-        Returns:
-            The validated declaration.
-
-        Raises:
-            ValueError: The stimulus is uncontrolled and no reason was given, so a reader learns
-                that something varied but not what — which is worse than not asking, because it
-                reads as disclosed.
+        :return: The validated declaration.
+        :rtype: ControlDeclaration
+        :raises ValueError: The stimulus is uncontrolled and no reason was given, so a reader learns
+            that something varied but not what — which is worse than not asking, because it
+            reads as disclosed.
         """
         if self.stimulus == "uncontrolled" and not self.stimulus_reason.strip():
             raise ValueError(
@@ -664,13 +658,11 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
     def _questions_do_not_collide_or_dangle(self) -> CampaignDesign:
         """Question ids are unique and every ``supersedes`` names a question in this design.
 
-        Returns:
-            The validated design.
-
-        Raises:
-            ValueError: Two questions share an id, so an analysis resolving one cannot say which
-                it answered; or a question supersedes an id nothing here declares, which renders
-                a lineage with a hole in it.
+        :return: The validated design.
+        :rtype: CampaignDesign
+        :raises ValueError: Two questions share an id, so an analysis resolving one cannot say which
+            it answered; or a question supersedes an id nothing here declares, which renders
+            a lineage with a hole in it.
         """
         ids = [q.id for q in self.questions]
         if duplicates := sorted({qid for qid in ids if ids.count(qid) > 1}):
@@ -697,14 +689,11 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         A run id is the mistake this most expects, and it is named, because ``control`` held one
         for the whole of its previous life.
 
-        Args:
-            value: The authored control, or None.
-
-        Returns:
-            The validated key, or None.
-
-        Raises:
-            ValueError: The value is not a 64-character lowercase hex digest.
+        :param value: The authored control, or None.
+        :ptype value: str | None
+        :return: The validated key, or None.
+        :rtype: str | None
+        :raises ValueError: The value is not a 64-character lowercase hex digest.
         """
         if value is None:
             return None
@@ -730,11 +719,10 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         caller state one (:func:`~threetears.evals.analysis.campaigns.update_campaign` carries the
         stored date of a key it keeps, and refuses any other).
 
-        Args:
-            data: The authored or stored fields, before validation.
-
-        Returns:
-            The fields, with ``control_identity_version`` stamped where a control has none.
+        :param data: The authored or stored fields, before validation.
+        :ptype data: Any
+        :return: The fields, with ``control_identity_version`` stamped where a control has none.
+        :rtype: Any
         """
         if (
             isinstance(data, Mapping)
@@ -753,14 +741,12 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         would refuse every control declared before a bump — the exact document the map is kept
         to rescue.
 
-        Returns:
-            The validated design.
-
-        Raises:
-            ValueError: A lever map or an identity version is given with no control, so it
-                describes a key nobody declared; or the map, under this build's predicate, does
-                not digest to the control, so it is some other arm's pre-image and re-keying from
-                it would move the control onto that arm.
+        :return: The validated design.
+        :rtype: CampaignDesign
+        :raises ValueError: A lever map or an identity version is given with no control, so it
+            describes a key nobody declared; or the map, under this build's predicate, does
+            not digest to the control, so it is some other arm's pre-image and re-keying from
+            it would move the control onto that arm.
         """
         if self.control is None:
             if self.control_levers is not None or self.control_identity_version is not None:
@@ -792,12 +778,10 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         nothing decides which governs — while the R10 gate's own dict comprehension silently
         dedupes, so the refusal an operator might expect never comes.
 
-        Returns:
-            The validated design.
-
-        Raises:
-            ValueError: An axis id, a measure id, a guardrail margin's dimension or a merit-priority axis appears
-                twice.
+        :return: The validated design.
+        :rtype: CampaignDesign
+        :raises ValueError: An axis id, a measure id, a guardrail margin's dimension or a merit-priority axis appears
+            twice.
         """
         axes = [axis.axis_id for axis in self.axes]
         if duplicates := sorted({axis for axis in axes if axes.count(axis) > 1}):
@@ -829,29 +813,25 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
     def _skipped_cells_name_declared_levels(self) -> CampaignDesign:
         """Each skipped cell names every declared axis once, at a level that axis declares — or it is refused.
 
-        Returns:
-            The validated design.
-
-        Raises:
-            ValueError: A skipped cell names an axis the design does not declare, leaves one out, or names a
-                level its axis does not declare (or that matches more than one of them).
+        :return: The validated design.
+        :rtype: CampaignDesign
+        :raises ValueError: A skipped cell names an axis the design does not declare, leaves one out, or names a
+            level its axis does not declare (or that matches more than one of them).
         """
         for cell in self.skipped_cells:
             self.cell_identity(cell)
         return self
 
     def cell_identity(self, cell: Mapping[str, str]) -> tuple[str, ...]:
-        """A cell, authored as ``{axis_id: level content_hash or display}``, as its levels' content hashes in axis order.
+        """A cell, authored as ``{axis_id: level content_hash or display}``, as its levels' content hashes in axis
+        order.
 
-        Args:
-            cell: The cell.
-
-        Returns:
-            One content hash per declared axis, in the order the axes are declared.
-
-        Raises:
-            ValueError: The cell does not name exactly the declared axes, or names a level its axis does not
-                declare, or one that matches more than one declared level.
+        :param cell: The cell.
+        :ptype cell: Mapping[str, str]
+        :return: One content hash per declared axis, in the order the axes are declared.
+        :rtype: tuple[str, ...]
+        :raises ValueError: The cell does not name exactly the declared axes, or names a level its axis does not
+            declare, or one that matches more than one declared level.
         """
         axes = [axis.axis_id for axis in self.axes]
         if sorted(cell) != sorted(axes):
@@ -879,12 +859,11 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
     def skipped_by_design(self, cell: tuple[str, ...]) -> bool:
         """Whether the design left ``cell`` (one content hash per axis, in axis order) out on purpose.
 
-        Args:
-            cell: The combination.
-
-        Returns:
-            True when ``skipped_cells`` names it, or ``crossing`` is ``star`` and it differs from the centre (each
+        :param cell: The combination.
+        :ptype cell: tuple[str, ...]
+        :return: True when ``skipped_cells`` names it, or ``crossing`` is ``star`` and it differs from the centre (each
             axis's first declared level) on more than one axis.
+        :rtype: bool
         """
         if cell in {self.cell_identity(skipped) for skipped in self.skipped_cells}:
             return True
@@ -900,11 +879,10 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         words that were asked. The id stands in only where nothing here says what it asked, so a reference that
         no longer resolves stays citable rather than going blank.
 
-        Args:
-            question_id: The id an answer or a comparison family names.
-
-        Returns:
-            The question's text, else the id.
+        :param question_id: The id an answer or a comparison family names.
+        :ptype question_id: str
+        :return: The question's text, else the id.
+        :rtype: str
         """
         return next((question.text for question in self.questions if question.id == question_id), question_id)
 
@@ -915,8 +893,8 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         requiring new ones. Superseded questions drop out too — the replacement carries the
         obligation, and demanding both would have every analysis answer the same thing twice.
 
-        Returns:
-            The live questions, in declaration order.
+        :return: The live questions, in declaration order.
+        :rtype: list[Question]
         """
         superseded = {q.supersedes for q in self.questions if q.supersedes}
         return [q for q in self.questions if q.retired_at is None and q.id not in superseded]
@@ -979,11 +957,10 @@ class ResolvedControl(EvalBaseModel):
     def matched(self, carried: Collection[str]) -> str | None:
         """The key that names the control's arm among ``carried`` — the first of :attr:`variant_keys` one carries.
 
-        Args:
-            carried: The variant keys the campaign's cells carry.
-
-        Returns:
-            The control's key in this campaign, or None when no cell carries any key that names it.
+        :param carried: The variant keys the campaign's cells carry.
+        :ptype carried: Collection[str]
+        :return: The control's key in this campaign, or None when no cell carries any key that names it.
+        :rtype: str | None
         """
         return next((key for key in self.variant_keys if key in carried), None)
 
@@ -1021,11 +998,10 @@ def resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl:
     declaration, so an undated key exists only as an in-process copy this build made, and this build's
     predicate is the only one it can be under.
 
-    Args:
-        design: The declaration, or None for a campaign that declares none.
-
-    Returns:
-        The resolved control.
+    :param design: The declaration, or None for a campaign that declares none.
+    :ptype design: CampaignDesign | None
+    :return: The resolved control.
+    :rtype: ResolvedControl
     """
     if design is None or design.control is None:
         return ResolvedControl(variant_keys=[], identity_version=None, source="undeclared")
@@ -1054,8 +1030,8 @@ def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -
     """Fold an authored question list onto the stored one without ever rewriting a question.
 
     A question's text does not change, nor its decision rule, which is part of what was asked. An analysis
-    resolves a question BY ID, so editing either in place would leave that resolution pointing at a sentence nobody asked when it was
-    written — the answer would silently re-attach to a different question. An edit therefore
+    resolves a question BY ID, so editing either in place would leave that resolution pointing at a sentence nobody
+    asked when it was written — the answer would silently re-attach to a different question. An edit therefore
     MINTS a replacement carrying ``supersedes``, the original stays exactly as asked, and
     :meth:`CampaignDesign.live_questions` drops the superseded one so nothing is answered twice.
 
@@ -1071,18 +1047,16 @@ def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -
     question is retired and never deleted — an analysis holds its id. Retiring is an edit like
     any other: send it back with ``retired_at`` set.
 
-    Args:
-        stored: The questions the campaign already carries, in declaration order.
-        incoming: The questions the author supplied, which must name every stored id.
-
-    Returns:
-        The reconciled list — every stored question verbatim or with its non-historical fields
+    :param stored: The questions the campaign already carries, in declaration order.
+    :ptype stored: list[Question]
+    :param incoming: The questions the author supplied, which must name every stored id.
+    :ptype incoming: list[Question]
+    :return: The reconciled list — every stored question verbatim or with its non-historical fields
         updated, the newly authored ones, and one minted replacement per edited text, appended
         after the originals they supersede.
-
-    Raises:
-        ValueError: ``incoming`` omits a stored question id, which would delete a question some
-            analysis may already reference. The message names the ids and the way to retire one.
+    :rtype: list[Question]
+    :raises ValueError: ``incoming`` omits a stored question id, which would delete a question some
+        analysis may already reference. The message names the ids and the way to retire one.
     """
     by_id = {q.id: q for q in stored}
     if dropped := sorted(set(by_id) - {q.id for q in incoming}):
@@ -1147,12 +1121,11 @@ _COVARIATE_MEASURES: frozenset[str] = COVARIATE_KEYS
 class BarName:
     """A bar name a result can carry: which kind it is, and the descriptor that says which way it runs.
 
-    Attributes:
-        name: The name, exactly as the bar spells it.
-        kind: Which of the three kinds it resolved as — which is also where it is read; see
-            :data:`BarNameKind`.
-        descriptor: The measure's descriptor. Its ``higher_is_better`` is never ``None`` here, since
-            a name with no better end is refused rather than resolved.
+    :ivar name: The name, exactly as the bar spells it.
+    :ivar kind: Which of the three kinds it resolved as — which is also where it is read; see
+        :data:`BarNameKind`.
+    :ivar descriptor: The measure's descriptor. Its ``higher_is_better`` is never ``None`` here, since
+        a name with no better end is refused rather than resolved.
     """
 
     name: str
@@ -1169,10 +1142,9 @@ class BarName:
 class UnreadableBarName:
     """A bar name no verdict can be given on, and why — the text an author or a reader is shown.
 
-    Attributes:
-        name: The name, exactly as the bar spells it.
-        refusal: Which of the three reasons applies; see :data:`BarNameRefusal`.
-        reason: One sentence saying why, naming what the name is where anything describes it.
+    :ivar name: The name, exactly as the bar spells it.
+    :ivar refusal: Which of the three reasons applies; see :data:`BarNameRefusal`.
+    :ivar reason: One sentence saying why, naming what the name is where anything describes it.
     """
 
     name: str
@@ -1215,8 +1187,8 @@ def _host_measure_names(measures: MeasureRegistry) -> frozenset[str]:
     in a descriptor tells the two apart, so every name the host declares is admitted. A bar on one
     its kind never emits is admitted here and adjudicated as carried by no result.
 
-    Args:
-        measures: The host's measure registry.
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
     """
     names = measures.names
     # A host catalogue may re-declare the engine's core, and the core wins that tie wherever a name
@@ -1234,8 +1206,8 @@ def _per_result_measure_names(measures: MeasureRegistry) -> frozenset[str]:
     a report-level accuracy — is described and never carried by any one result, so a bar on it is
     never read.
 
-    Args:
-        measures: The host's measure registry.
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
     """
     return _carried_field_names() | DERIVED_PER_RESULT_MEASURES | _COVARIATE_MEASURES | _host_measure_names(measures)
 
@@ -1279,8 +1251,8 @@ def mechanism_measure_names(measures: MeasureRegistry) -> frozenset[str]:
     row, one per role — because comparing a lever's levels needs one value per result, and pooling one
     role's count with another's describes no mechanism.
 
-    Args:
-        measures: The host's measure registry.
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
     """
     return (
         _single_carried_field_names()
@@ -1320,17 +1292,19 @@ def resolve_bar_name(
     it: a judge-mediated summary such as ``mean_score``, a composite such as ``pass_hat_k``, or a
     run-level statistic such as ``mean_total_ms`` is described and still never lands on a result.
 
-    Args:
-        name: What the bar names.
-        rubric_dimensions: The judged dimensions in play and the scale each is answered on — the
-            template's rubric at authoring time, the dimensions the results were scored on at
-            adjudication.
-        goal_state_checks: The goal-state check texts in play, on the same two readings.
-        measures: The host's measure registry, whose declarations join the engine's core.
-
-    Returns:
-        A :class:`BarName` when a result can carry the name with a direction, else an
+    :param name: What the bar names.
+    :ptype name: str
+    :param rubric_dimensions: The judged dimensions in play and the scale each is answered on — the
+        template's rubric at authoring time, the dimensions the results were scored on at
+        adjudication.
+    :ptype rubric_dimensions: Mapping[str, RubricScale]
+    :param goal_state_checks: The goal-state check texts in play, on the same two readings.
+    :ptype goal_state_checks: Collection[str]
+    :param measures: The host's measure registry, whose declarations join the engine's core.
+    :ptype measures: MeasureRegistry
+    :return: A :class:`BarName` when a result can carry the name with a direction, else an
         :class:`UnreadableBarName`.
+    :rtype: BarName | UnreadableBarName
     """
     # A check's published measure name reads as the check itself: the bundle and a memo cite a check
     # as `goal_state:<check>`, and a bar declared by that name holds the same check to the threshold.
@@ -1428,11 +1402,11 @@ NO_TEMPLATE_REMEDY = (
 
 
 def _refuse_unreadable_guardrail_margins(design: CampaignDesign, template: EvalTemplate | None) -> None:
-    """Refuse a guardrail margin on anything but a boundary dimension of the campaign's template, or wider than its scale.
+    """Refuse a guardrail margin on anything but a boundary dimension of the campaign's template, or wider than its
+    scale.
 
-    Raises:
-        ValueError: A margin names a dimension the template does not declare, or one on the capability axis (a
-            margin there would be read by nothing); or it is as wide as the dimension's scale, so every arm holds.
+    :raises ValueError: A margin names a dimension the template does not declare, or one on the capability axis (a
+        margin there would be read by nothing); or it is as wide as the dimension's scale, so every arm holds.
     """
     if not design.guardrail_margins:
         return
@@ -1474,12 +1448,12 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     better end, either end, or a pass/fail scorer or grader), by its key. Exactly the rates
     :func:`~threetears.evals.analysis.report.decision.rule_readings` gives a rule, which reads the same function.
 
-    Args:
-        template: The campaign's template; None when it names none that could be read.
-        profile: The host whose measures are read.
-
-    Returns:
-        The names, checks first, then dimensions, then measures, each sorted.
+    :param template: The campaign's template; None when it names none that could be read.
+    :ptype template: EvalTemplate | None
+    :param profile: The host whose measures are read.
+    :ptype profile: HostProfile
+    :return: The names, checks first, then dimensions, then measures, each sorted.
+    :rtype: list[str]
     """
     checks = sorted(template.goal_state_checks) if template is not None else []
     dims = (
@@ -1499,9 +1473,8 @@ def _refuse_unreadable_rule_readings(
     A misspelled reading would otherwise reach the page as a clause that never settles; refused here, it is fixed
     before a run is paid for. A clause reading every pass rate (``reading`` None) names nothing to check.
 
-    Raises:
-        DesignRefused: A clause names a reading :func:`decision_readings` does not offer, naming it and listing what
-            is offered.
+    :raises DesignRefused: A clause names a reading :func:`decision_readings` does not offer, naming it and listing what
+        is offered.
     """
     offered = decision_readings(template, profile)
     unread = [
@@ -1582,29 +1555,30 @@ def refuse_an_undeclarable_design(
     validator on the model. A model validator would have to name a registry, and the whole
     contract is that the engine does not know whose registry it is holding.
 
-    Args:
-        design: The declaration to check.
-        behavior: The campaign's behavior, which is the scope a registered bar is keyed under.
-        template: The campaign's template, whose rubric dimensions and goal-state checks are the
-            judged and checked names its results will carry. Required, so no caller can reach
-            this gate without deciding which template it is authoring against. ``None`` means the
-            campaign has no template the caller could read — none named, or a reference that does
-            not resolve — so no name of either kind is known and a bar on one is refused, saying
-            that rather than calling the rubric empty.
-        profile: The host whose levers, measures and bars the declaration is checked against.
-
-    Raises:
-        UndeclarableAxisError: An axis the host will not accept — neither a registered lever nor a
-            recognised open-family member — naming the
-            axis and carrying the registry's own ``axis_remedy`` as the vocabulary to pick from.
-        ValueError: A bar names nothing a verdict can be given on, naming the bar, why, and every
-            set it could have named; a bar is looser than the registered incumbent, quoting the
-            registered value; a bar contradicts the declared better-direction of what it names,
-            naming it and which way its descriptor runs; or a bar, a live question or the merit priority
-            asks about latency in a design that does not declare ``measure_latency``, naming each and the
-            setting to turn on; or a live question writes its decision rule as prose (``Decision rule:`` in its
-            text) and declares none as ``Question.decision``; or a ``RateDrop`` names a reading
-            :func:`decision_readings` does not offer.
+    :param design: The declaration to check.
+    :ptype design: CampaignDesign
+    :param behavior: The campaign's behavior, which is the scope a registered bar is keyed under.
+    :ptype behavior: str
+    :param template: The campaign's template, whose rubric dimensions and goal-state checks are the
+        judged and checked names its results will carry. Required, so no caller can reach
+        this gate without deciding which template it is authoring against. ``None`` means the
+        campaign has no template the caller could read — none named, or a reference that does
+        not resolve — so no name of either kind is known and a bar on one is refused, saying
+        that rather than calling the rubric empty.
+    :ptype template: EvalTemplate | None
+    :param profile: The host whose levers, measures and bars the declaration is checked against.
+    :ptype profile: HostProfile
+    :raises UndeclarableAxisError: An axis the host will not accept — neither a registered lever nor a
+        recognised open-family member — naming the
+        axis and carrying the registry's own ``axis_remedy`` as the vocabulary to pick from.
+    :raises ValueError: A bar names nothing a verdict can be given on, naming the bar, why, and every
+        set it could have named; a bar is looser than the registered incumbent, quoting the
+        registered value; a bar contradicts the declared better-direction of what it names,
+        naming it and which way its descriptor runs; or a bar, a live question or the merit priority
+        asks about latency in a design that does not declare ``measure_latency``, naming each and the
+        setting to turn on; or a live question writes its decision rule as prose (``Decision rule:`` in its
+        text) and declares none as ``Question.decision``; or a ``RateDrop`` names a reading
+        :func:`decision_readings` does not offer.
     """
     # A rule in words is read by nothing: the engine settles only a typed rule. Refused here, where a design is
     # declared, and never on a read, so a question stored before the rule was typed still loads and reads as having
@@ -1850,18 +1824,16 @@ def preregistered_questions(design: CampaignDesign, first_run_at: str | None) ->
     order, the exploratory disclosure) reads this, never :meth:`CampaignDesign.live_questions` alone, so none can
     count a question another treats as post hoc.
 
-    Args:
-        design: The campaign's declaration.
-        first_run_at: The earliest ``created_at`` among the campaign's member runs (ISO-8601), or ``None`` when no
-            run's time is to hand: a campaign with no run yet, where nothing can have been asked after one.
-
-    Returns:
-        The live questions asked at or before ``first_run_at``, in declaration order; every live question when it is
-        ``None``.
-
-    Raises:
-        ValueError: ``first_run_at`` or a question's ``asked_at`` is not an ISO-8601 time with an offset, so which
-            came first cannot be said.
+    :param design: The campaign's declaration.
+    :ptype design: CampaignDesign
+    :param first_run_at: The earliest ``created_at`` among the campaign's member runs (ISO-8601), or ``None`` when no
+        run's time is to hand: a campaign with no run yet, where nothing can have been asked after one.
+    :ptype first_run_at: str | None
+    :return: The live questions asked at or before ``first_run_at``, in declaration order; every live question when it
+        is ``None``.
+    :rtype: list[Question]
+    :raises ValueError: ``first_run_at`` or a question's ``asked_at`` is not an ISO-8601 time with an offset, so which
+        came first cannot be said.
     """
     live = design.live_questions()
     if first_run_at is None:

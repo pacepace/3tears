@@ -755,13 +755,14 @@ def _class_def(source: str, module: str, name: str) -> ast.ClassDef | None:
     Top-level only: a declared type is a module's public shape, and reaching a nested class would
     let an entry silently cover something nobody named.
 
-    Args:
-        source: The module's source text.
-        module: The module path, for the parser's error messages.
-        name: The class to find.
-
-    Returns:
-        The node, or ``None``.
+    :param source: The module's source text.
+    :ptype source: str
+    :param module: The module path, for the parser's error messages.
+    :ptype module: str
+    :param name: The class to find.
+    :ptype name: str
+    :return: The node, or ``None``.
+    :rtype: ast.ClassDef | None
     """
     return next(
         (
@@ -776,14 +777,15 @@ def _class_def(source: str, module: str, name: str) -> ast.ClassDef | None:
 def _scan_type(module: str, source: str, name: str) -> list[Violation]:
     """Scan one class body inside an otherwise-unscanned module.
 
-    Args:
-        module: The module path, relative to ``threetears/evals/``.
-        source: The module's source text.
-        name: The class to scan.
-
-    Returns:
-        The violations, labelled ``module::ClassName`` so a register entry names the type rather
+    :param module: The module path, relative to ``threetears/evals/``.
+    :ptype module: str
+    :param source: The module's source text.
+    :ptype source: str
+    :param name: The class to scan.
+    :ptype name: str
+    :return: The violations, labelled ``module::ClassName`` so a register entry names the type rather
         than the file it happens to live in.
+    :rtype: list[Violation]
     """
     node = _class_def(source, module, name)
     if node is None:
@@ -854,12 +856,12 @@ def _host_module_imports(source: str, path: Path) -> set[str]:
     this replaced sliced the package by a computed index, so a level that walked above the
     repository root produced a *truncated* package name instead of nothing.
 
-    Args:
-        source: The module's source text.
-        path: Its path, used to anchor a relative import against its own package.
-
-    Returns:
-        The absolute ``discodon.*`` module names it reaches outside ``threetears.evals``.
+    :param source: The module's source text.
+    :ptype source: str
+    :param path: Its path, used to anchor a relative import against its own package.
+    :ptype path: Path
+    :return: The absolute ``discodon.*`` module names it reaches outside ``threetears.evals``.
+    :rtype: set[str]
     """
     root = EVAL_ROOT.parent.parent
     found: set[str] = set()

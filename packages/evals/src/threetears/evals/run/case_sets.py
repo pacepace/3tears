@@ -32,14 +32,15 @@ def _refuse_cases_outside(
 ) -> None:
     """Refuse ids that resolve to no case in the scope, or to a case of another template.
 
-    Args:
-        cases: The ids that resolved, with their cases.
-        test_case_ids: Every id the set names.
-        template_id: The template the set belongs to.
-        what: The set, as a refusal names it.
-
-    Raises:
-        ValidationFailedError: Naming every missing id, or every case of another template.
+    :param cases: The ids that resolved, with their cases.
+    :ptype cases: dict[str, EvalTestCase]
+    :param test_case_ids: Every id the set names.
+    :ptype test_case_ids: Sequence[str]
+    :param template_id: The template the set belongs to.
+    :ptype template_id: str
+    :param what: The set, as a refusal names it.
+    :ptype what: str
+    :raises ValidationFailedError: Naming every missing id, or every case of another template.
     """
     if missing := [case_id for case_id in test_case_ids if case_id not in cases]:
         raise ValidationFailedError(
@@ -75,25 +76,28 @@ def mint_case_set(
 ) -> CaseSet:
     """Store the next version of the case set ``name``: version 1 for a new name, else one past the latest.
 
-    Args:
-        storage: Where sets and their cases live.
-        scope_id: The scope the set lives in.
-        name: The set's name.
-        template_id: The template whose cases it lists. Every version of one name lists cases of one template name:
-            the latest version's template, or a revision of it (a set re-minted after its template's reset lists the
-            newer revision's cases).
-        test_case_ids: The cases, in order — each a stored case of the template in the scope.
-        tracked: Whether the set is followed over time or made for one launch (metadata only).
-        seed_digest: The digest of the seeded content this version was minted from, when a seed or a definition
-            reset mints it; None otherwise.
-
-    Returns:
-        The stored version.
-
-    Raises:
-        ValidationFailedError: The list is empty or repeats a case, a case does not resolve or is another
-            template's, the name belongs to another template, or the list is the latest version's unchanged.
-        ConflictError: Another writer stored this version first.
+    :param storage: Where sets and their cases live.
+    :ptype storage: CaseSetStore
+    :param scope_id: The scope the set lives in.
+    :ptype scope_id: str
+    :param name: The set's name.
+    :ptype name: str
+    :param template_id: The template whose cases it lists. Every version of one name lists cases of one template name:
+        the latest version's template, or a revision of it (a set re-minted after its template's reset lists the
+        newer revision's cases).
+    :ptype template_id: str
+    :param test_case_ids: The cases, in order — each a stored case of the template in the scope.
+    :ptype test_case_ids: Sequence[str]
+    :param tracked: Whether the set is followed over time or made for one launch (metadata only).
+    :ptype tracked: bool
+    :param seed_digest: The digest of the seeded content this version was minted from, when a seed or a definition
+        reset mints it; None otherwise.
+    :ptype seed_digest: str | None
+    :return: The stored version.
+    :rtype: CaseSet
+    :raises ValidationFailedError: The list is empty or repeats a case, a case does not resolve or is another
+        template's, the name belongs to another template, or the list is the latest version's unchanged.
+    :raises ConflictError: Another writer stored this version first.
     """
     versions = storage.query_case_sets(scope_id, name=name)
     latest = versions[0] if versions else None
@@ -132,19 +136,19 @@ def resolve_case_set(
 ) -> tuple[CaseSet, list[EvalTestCase]]:
     """The set a launch names, and its cases in its order — or the refusal.
 
-    Args:
-        storage: Where sets and their cases live.
-        ref: The set the launch names.
-        template: The template the launch runs.
-        scope_id: The scope the launch runs in.
-
-    Returns:
-        The stored set, and its cases in the set's order.
-
-    Raises:
-        NotFoundError: No such version of the set in the scope.
-        ValidationFailedError: The set lists another template's cases, or a case of it no longer resolves (every
-            missing id named).
+    :param storage: Where sets and their cases live.
+    :ptype storage: CaseSetStore
+    :param ref: The set the launch names.
+    :ptype ref: CaseSetRef
+    :param template: The template the launch runs.
+    :ptype template: EvalTemplate
+    :param scope_id: The scope the launch runs in.
+    :ptype scope_id: str
+    :return: The stored set, and its cases in the set's order.
+    :rtype: tuple[CaseSet, list[EvalTestCase]]
+    :raises NotFoundError: No such version of the set in the scope.
+    :raises ValidationFailedError: The set lists another template's cases, or a case of it no longer resolves (every
+        missing id named).
     """
     case_set = storage.load_case_set(ref.name, ref.version, scope_id)
     if case_set is None:

@@ -162,10 +162,12 @@ class UnreadableRecordError(EvalServiceError):
     def __init__(self, message: str, *, remedy: str, details: dict[str, Any] | None = None):
         """Build a 500.
 
-        Args:
-            message: Which record, in which scope, and why.
-            remedy: What the caller does about it.
-            details: Structured facts about the record, for a host's code.
+        :param message: Which record, in which scope, and why.
+        :ptype message: str
+        :param remedy: What the caller does about it.
+        :ptype remedy: str
+        :param details: Structured facts about the record, for a host's code.
+        :ptype details: dict[str, Any] | None
         """
         super().__init__(message=message, status_code=500, details=details or {}, remedy=remedy)
 
@@ -177,14 +179,16 @@ class UnreadableRecordError(EvalServiceError):
         loops tell a refused row from a lost race by it: a surface that reads a job record through one of them
         translates it here.
 
-        Args:
-            kind: The job kind's name (``sweep``, ``launch``, ...).
-            record_id: The record asked for.
-            scope_id: The scope read.
-            refused: What the model said.
-
-        Returns:
-            The error, its remedy :data:`~threetears.evals.kernel.remedies.UNREADABLE_JOB_RECORD`.
+        :param kind: The job kind's name (``sweep``, ``launch``, ...).
+        :ptype kind: str
+        :param record_id: The record asked for.
+        :ptype record_id: str
+        :param scope_id: The scope read.
+        :ptype scope_id: str
+        :param refused: What the model said.
+        :ptype refused: ValidationError
+        :return: The error, its remedy :data:`~threetears.evals.kernel.remedies.UNREADABLE_JOB_RECORD`.
+        :rtype: UnreadableRecordError
         """
         return cls(
             f"the {kind} job record {record_id!r} in scope {scope_id!r}, or a run it names, does not validate under "
@@ -204,16 +208,16 @@ class UnreadableRunError(UnreadableRecordError):
     (:data:`~threetears.evals.kernel.remedies.FIND_UNREADABLE_RUNS`): the stored rows are what is wrong, not the
     call, so the caller's next step is to see which and why.
 
-    Attributes:
-        run_ids: The ids the refused rows state, as read off the rows; empty when none stated one.
+    :ivar run_ids: The ids the refused rows state, as read off the rows; empty when none stated one.
     """
 
     def __init__(self, message: str, *, run_ids: Sequence[str]):
         """Build a 500 naming the rows.
 
-        Args:
-            message: Which rows, in which scope, and why.
-            run_ids: The ids the refused rows state.
+        :param message: Which rows, in which scope, and why.
+        :ptype message: str
+        :param run_ids: The ids the refused rows state.
+        :ptype run_ids: Sequence[str]
         """
         self.run_ids = list(run_ids)
         super().__init__(message, remedy=FIND_UNREADABLE_RUNS, details={"run_ids": self.run_ids})
@@ -222,12 +226,12 @@ class UnreadableRunError(UnreadableRecordError):
     def of_rows(cls, scope_id: str, rows: Sequence[RefusedRow]) -> UnreadableRunError:
         """The refusal of a read that met ``rows``, each named with its reasons.
 
-        Args:
-            scope_id: The scope read.
-            rows: The rows the model refused, at least one.
-
-        Returns:
-            The error.
+        :param scope_id: The scope read.
+        :ptype scope_id: str
+        :param rows: The rows the model refused, at least one.
+        :ptype rows: Sequence[RefusedRow]
+        :return: The error.
+        :rtype: UnreadableRunError
         """
         named = "; ".join(f"{row.row_id or '(no id on the row)'}: {', '.join(row.reasons)}" for row in rows)
         return cls(
@@ -245,13 +249,14 @@ class UnreadableRunError(UnreadableRecordError):
         and the job loops tell a refused row from a lost race by it: a surface that reads a run through one of them
         translates it here, so its caller is refused as by every other run read.
 
-        Args:
-            scope_id: The scope read.
-            run_id: The run asked for.
-            refused: What the model said, of the stored run or of writing it lost.
-
-        Returns:
-            The error.
+        :param scope_id: The scope read.
+        :ptype scope_id: str
+        :param run_id: The run asked for.
+        :ptype run_id: str
+        :param refused: What the model said, of the stored run or of writing it lost.
+        :ptype refused: ValidationError
+        :return: The error.
+        :rtype: UnreadableRunError
         """
         return cls(
             f"stored eval run {run_id!r} in scope {scope_id!r} does not validate under this build's model, as read "
@@ -263,12 +268,12 @@ class UnreadableRunError(UnreadableRecordError):
     def of_settling(cls, scope_id: str, refused: ValidationError) -> UnreadableRunError:
         """The refusal of a read whose runs read, but one of which a model refused while it was written lost.
 
-        Args:
-            scope_id: The scope read.
-            refused: What the model said.
-
-        Returns:
-            The error.
+        :param scope_id: The scope read.
+        :ptype scope_id: str
+        :param refused: What the model said.
+        :ptype refused: ValidationError
+        :return: The error.
+        :rtype: UnreadableRunError
         """
         return cls(
             f"a stored eval run in scope {scope_id!r} read, but writing it lost was refused by this build's model, "
@@ -337,16 +342,17 @@ def save_document(
     is a :class:`StorageError`. A write that reported failure as ``False`` let a
     caller that never looked at the value report a success that did not happen.
 
-    Args:
-        repo: The store to write through.
-        document: The document, carrying its ``id`` and ``doc_type``.
-        if_match: The etag the stored document must still have, for a conditional write.
-        create_only: Write only if nothing is stored under the document's scope and id.
-
-    Raises:
-        ConflictError: ``if_match`` was given and the stored document has moved on, or ``create_only`` was
-            set and a document is stored there.
-        StorageError: Any other backend failure.
+    :param repo: The store to write through.
+    :ptype repo: DocumentStore
+    :param document: The document, carrying its ``id`` and ``doc_type``.
+    :ptype document: dict[str, Any]
+    :param if_match: The etag the stored document must still have, for a conditional write.
+    :ptype if_match: str | None
+    :param create_only: Write only if nothing is stored under the document's scope and id.
+    :ptype create_only: bool
+    :raises ConflictError: ``if_match`` was given and the stored document has moved on, or ``create_only`` was
+        set and a document is stored there.
+    :raises StorageError: Any other backend failure.
     """
     try:
         if create_only:
@@ -741,16 +747,15 @@ class EvalStorage:
     def __init__(self, store: DocumentStore, *, host_doc_types: Sequence[str] = ()):
         """Initialize storage over the store the host supplies.
 
-        Args:
-            store: The one store every eval document is read from and written to.
-            host_doc_types: The ``doc_type`` values of documents the host keeps in the same store.
-                This class never reads or writes them; :meth:`nuke_all_eval_data` sweeps them, so a
-                wipe leaves nothing of the host's behind. Empty means the host keeps none there,
-                which is a statement about the host rather than a default standing in for one.
-
-        Raises:
-            ValueError: A host type is also one of :data:`EVAL_DOC_TYPES` — the engine's own, which
-                the host does not get to declare twice.
+        :param store: The one store every eval document is read from and written to.
+        :ptype store: DocumentStore
+        :param host_doc_types: The ``doc_type`` values of documents the host keeps in the same store.
+            This class never reads or writes them; :meth:`nuke_all_eval_data` sweeps them, so a
+            wipe leaves nothing of the host's behind. Empty means the host keeps none there,
+            which is a statement about the host rather than a default standing in for one.
+        :ptype host_doc_types: Sequence[str]
+        :raises ValueError: A host type is also one of :data:`EVAL_DOC_TYPES` — the engine's own, which
+            the host does not get to declare twice.
         """
         claimed = set(host_doc_types) & set(EVAL_DOC_TYPES)
         if claimed:
@@ -765,8 +770,7 @@ class EvalStorage:
         Every read and write here reaches the store through this property, so no method can call it
         on the loop, whichever store the host handed in.
 
-        Raises:
-            StoreCalledOnEventLoop: The calling thread is running an event loop.
+        :raises StoreCalledOnEventLoop: The calling thread is running an event loop.
         """
         refuse_on_event_loop()
         return self._document_store
@@ -854,13 +858,14 @@ class EvalStorage:
     ) -> tuple[R | None, str | None]:
         """Load one job record of ``model``'s type plus the token a conditional write of it must present.
 
-        Args:
-            model: The record's model — :class:`EvalRun`, :class:`EvalSweep` or :class:`EvalAnalysisAttempt`.
-            record_id: Its id.
-            scope_id: The scope it lives in.
-
-        Returns:
-            ``(record, etag)``, or ``(None, None)`` when no record of that type resolves there (:meth:`_of_type`).
+        :param model: The record's model — :class:`EvalRun`, :class:`EvalSweep` or :class:`EvalAnalysisAttempt`.
+        :ptype model: type[R]
+        :param record_id: Its id.
+        :ptype record_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: ``(record, etag)``, or ``(None, None)`` when no record of that type resolves there (:meth:`_of_type`).
+        :rtype: tuple[R | None, str | None]
         """
         data, etag = self._store.get_with_etag(record_id, scope_id)
         data = self._of_type(model, data)
@@ -876,10 +881,9 @@ class EvalStorage:
         lacks payload a listing left out. A job's first write is ``create_only``: it starts the job, and a record
         already stored under its id is a job already started, never one to write over.
 
-        Raises:
-            ConflictError: ``if_match`` was given and the stored record has moved on, or ``create_only`` was given
-                and a record is already stored under the id.
-            StorageError: Any other write failure.
+        :raises ConflictError: ``if_match`` was given and the stored record has moved on, or ``create_only`` was given
+            and a record is already stored under the id.
+        :raises StorageError: Any other write failure.
         """
         self._save(document, if_match=if_match, create_only=create_only)
 
@@ -889,16 +893,15 @@ class EvalStorage:
         Unconditional, as :meth:`~threetears.evals.schema.store_port.DocumentStore.merge_fields` is, and it mints
         a new etag, so the holder's next conditional write re-reads and sees the request.
 
-        Args:
-            record_id: The record's id.
-            scope_id: The scope it lives in.
-            fields: The fields and their new values.
-
-        Returns:
-            ``True`` when the record was written; ``False`` when there is no such document.
-
-        Raises:
-            StorageError: The write failed.
+        :param record_id: The record's id.
+        :ptype record_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :param fields: The fields and their new values.
+        :ptype fields: dict[str, Any]
+        :return: ``True`` when the record was written; ``False`` when there is no such document.
+        :rtype: bool
+        :raises StorageError: The write failed.
         """
         try:
             return self._store.merge_fields(record_id, scope_id, fields)
@@ -913,11 +916,9 @@ class EvalStorage:
         A store offering :class:`~threetears.evals.schema.store_port.StoreClock` is asked, so every process sharing it
         reads one clock; any other store is read on this process's clock, in UTC.
 
-        Returns:
-            An aware datetime, in UTC.
-
-        Raises:
-            StorageError: The store's clock answered a naive datetime, which names no instant.
+        :return: An aware datetime, in UTC.
+        :rtype: datetime
+        :raises StorageError: The store's clock answered a naive datetime, which names no instant.
         """
         if not isinstance(self._store, StoreClock):
             return datetime.now(UTC)
@@ -1146,8 +1147,7 @@ class EvalStorage:
         both pass it, and the later write lands — the window a host serialises minting against if it allows
         concurrent writers to one name.
 
-        Raises:
-            ConflictError: That version of that set is already stored.
+        :raises ConflictError: That version of that set is already stored.
         """
         if self._store.get(case_set.id, case_set.scope_id) is not None:
             raise ConflictError(
@@ -1174,9 +1174,8 @@ class EvalStorage:
     def save_sweep(self, sweep: EvalSweep, *, if_match: str | None = None) -> None:
         """Persist a sweep's record in the scope it names; conditionally when ``if_match`` is given.
 
-        Raises:
-            ConflictError: ``if_match`` was given and the stored record has moved on.
-            StorageError: Any other write failure.
+        :raises ConflictError: ``if_match`` was given and the stored record has moved on.
+        :raises StorageError: Any other write failure.
         """
         self._save(sweep.to_dict(), if_match=if_match)
 
@@ -1241,12 +1240,12 @@ class EvalStorage:
         operator uses to find the insight to delete. A document that does not resolve answers
         ``None``; one with no ``archived`` field was never archived.
 
-        Args:
-            analysis_id: The analysis to ask about.
-            scope_id: The scope it lives in.
-
-        Returns:
-            ``True`` or ``False`` for a stored analysis, ``None`` when none resolves.
+        :param analysis_id: The analysis to ask about.
+        :ptype analysis_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: ``True`` or ``False`` for a stored analysis, ``None`` when none resolves.
+        :rtype: bool | None
         """
         data = self._of_type(EvalAnalysis, self._store.get(analysis_id, scope_id))
         if data is None:
@@ -1271,9 +1270,8 @@ class EvalStorage:
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.
 
-        Raises:
-            ConflictError: ``if_match`` was given and the stored record has moved on.
-            StorageError: Any other write failure.
+        :raises ConflictError: ``if_match`` was given and the stored record has moved on.
+        :raises StorageError: Any other write failure.
         """
         self._save(attempt.to_dict(), if_match=if_match)
 
@@ -1289,9 +1287,8 @@ class EvalStorage:
         Never unconditional: a slot that does not exist is created with a create-only write, so of two processes
         creating it at once exactly one lands.
 
-        Raises:
-            ConflictError: Another start claimed the slot first; re-read it.
-            StorageError: Any other write failure.
+        :raises ConflictError: Another start claimed the slot first; re-read it.
+        :raises StorageError: Any other write failure.
         """
         if if_match is None:
             self._save(slot.to_dict(), create_only=True)
@@ -1339,13 +1336,14 @@ class EvalStorage:
         added to end. Whoever bounds this read owes that filter a substring channel in the same
         change.
 
-        Args:
-            scope_id: The scope whose insights to read.
-            subject_id: Optional equality filter on the subject.
-            source_campaign_id: Optional equality filter on the minting campaign.
-
-        Returns:
-            The matching insights, newest observation first — all of them.
+        :param scope_id: The scope whose insights to read.
+        :ptype scope_id: str
+        :param subject_id: Optional equality filter on the subject.
+        :ptype subject_id: str | None
+        :param source_campaign_id: Optional equality filter on the minting campaign.
+        :ptype source_campaign_id: str | None
+        :return: The matching insights, newest observation first — all of them.
+        :rtype: list[EvalInsight]
         """
         field_eq: dict[str, Any] = {}
         if subject_id is not None:
@@ -1389,17 +1387,19 @@ class EvalStorage:
         Unlimited, like every agreement input: a paged read would compute agreement over the first
         page and report it as the dimension's.
 
-        Args:
-            scope_id: The scope to read.
-            run_id: Optional equality filter on the rated result's run.
-            result_id: Optional equality filter on the rated result.
-            label_key: Optional filter on the output and criterion the rating was given on (#628): every
-                label of a byte-identical judged output on the same criterion, whichever result it was given
-                on — the read a frozen judge case makes (build the key with
-                :func:`~threetears.evals.schema.models.label_key_of`). A rating with no key never matches.
-
-        Returns:
-            The matching ratings, ordered by when they were rated.
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param run_id: Optional equality filter on the rated result's run.
+        :ptype run_id: str | None
+        :param result_id: Optional equality filter on the rated result.
+        :ptype result_id: str | None
+        :param label_key: Optional filter on the output and criterion the rating was given on (#628): every
+            label of a byte-identical judged output on the same criterion, whichever result it was given
+            on — the read a frozen judge case makes (build the key with
+            :func:`~threetears.evals.schema.models.label_key_of`). A rating with no key never matches.
+        :ptype label_key: LabelKey | None
+        :return: The matching ratings, ordered by when they were rated.
+        :rtype: list[CalibrationRating]
         """
         field_eq: dict[str, Any] = {}
         if run_id is not None:
@@ -1435,12 +1435,12 @@ class EvalStorage:
 
         Unlimited: the bundle looks a judge's profile up among them, and a paged read would miss one.
 
-        Args:
-            scope_id: The scope to read.
-            rubric_dim: Optional equality filter on the criterion's dim.
-
-        Returns:
-            The matching profiles, ordered by when they were recorded.
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param rubric_dim: Optional equality filter on the criterion's dim.
+        :ptype rubric_dim: str | None
+        :return: The matching profiles, ordered by when they were recorded.
+        :rtype: list[EvalJudgeProfile]
         """
         field_eq: dict[str, Any] = {}
         if rubric_dim is not None:
@@ -1470,14 +1470,16 @@ class EvalStorage:
 
         Unlimited: a paged read summed into a spend total would report the first page as the whole.
 
-        Args:
-            scope_id: The scope to read.
-            purpose: Only calls made for this purpose.
-            launch_group_id: Only the calls a launch's case generation made; its runs carry the same id.
-            template_id: Only calls made for this template.
-
-        Returns:
-            The matching rows, ordered by when they were written.
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param purpose: Only calls made for this purpose.
+        :ptype purpose: KnownOutOfRunPurpose | None
+        :param launch_group_id: Only the calls a launch's case generation made; its runs carry the same id.
+        :ptype launch_group_id: str | None
+        :param template_id: Only calls made for this template.
+        :ptype template_id: str | None
+        :return: The matching rows, ordered by when they were written.
+        :rtype: list[OutOfRunSpend]
         """
         field_eq: dict[str, Any] = {}
         if purpose is not None:
@@ -1546,12 +1548,12 @@ class EvalStorage:
         campaign's strata pays for two short strings a case rather than the host's whole stimulus.
         Absent ids are skipped, as :meth:`load_test_cases_by_ids` skips them.
 
-        Args:
-            test_case_ids: The cases to read. Empty asks the store nothing.
-            scope_id: The scope they live in.
-
-        Returns:
-            One entry per case that resolved.
+        :param test_case_ids: The cases to read. Empty asks the store nothing.
+        :ptype test_case_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: One entry per case that resolved.
+        :rtype: list[EvalCaseStratum]
         """
         if not test_case_ids:
             return []
@@ -1575,10 +1577,9 @@ class EvalStorage:
         the upsert succeeds only if the document's ``_etag`` still matches, and a
         lost race raises :class:`ConflictError` (see :meth:`_save`).
 
-        Raises:
-            ValueError: ``run`` came from a listing that left payload paths out
-                (:attr:`EvalRun.elided_payload_paths`). Writing it back would delete them from the
-                stored run for good; save a run read whole with :meth:`load_eval_run`.
+        :raises ValueError: ``run`` came from a listing that left payload paths out
+            (:attr:`EvalRun.elided_payload_paths`). Writing it back would delete them from the
+            stored run for good; save a run read whole with :meth:`load_eval_run`.
         """
         if run.elided_payload_paths:
             raise ValueError(
@@ -1590,9 +1591,8 @@ class EvalStorage:
     def load_eval_run(self, run_id: str, scope_id: str) -> EvalRun | None:
         """Load an eval run by id + scope; ``None`` when the id names no run there (:meth:`_of_type`).
 
-        Raises:
-            UnreadableRunError: The stored run does not validate under this build's model, or writing it lost did
-                not.
+        :raises UnreadableRunError: The stored run does not validate under this build's model, or writing it lost did
+            not.
         """
         data = self._of_type(EvalRun, self._store.get(run_id, scope_id))
         if data is None:
@@ -1627,21 +1627,20 @@ class EvalStorage:
     ) -> list[EvalRun]:
         """Return eval runs in a scope, optionally filtered by status.
 
-        Args:
-            scope_id: The scope whose runs to read.
-            status: Only runs with this status; ``None`` reads every run.
-            elide_payload: Paths relative to ``host_payload`` the store leaves out of every
-                returned run — the host's declared listing elisions. Each returned run records
-                them (:attr:`EvalRun.elided_payload_paths`), so a reader that needs one refuses
-                instead of mistaking its absence for "never recorded".
-
-        Returns:
-            The matching runs.
-
-        Raises:
-            UnreadableRunError: A matched row does not validate under this build's model, or writing a run lost
-                did not: the listing refuses rather than answer without it, naming every such row it matched.
-                :meth:`query_eval_runs_isolating` leaves them out and names them instead.
+        :param scope_id: The scope whose runs to read.
+        :ptype scope_id: str
+        :param status: Only runs with this status; ``None`` reads every run.
+        :ptype status: EvalRunStatus | None
+        :param elide_payload: Paths relative to ``host_payload`` the store leaves out of every
+            returned run — the host's declared listing elisions. Each returned run records
+            them (:attr:`EvalRun.elided_payload_paths`), so a reader that needs one refuses
+            instead of mistaking its absence for "never recorded".
+        :ptype elide_payload: frozenset[str]
+        :return: The matching runs.
+        :rtype: list[EvalRun]
+        :raises UnreadableRunError: A matched row does not validate under this build's model, or writing a run lost
+            did not: the listing refuses rather than answer without it, naming every such row it matched.
+            :meth:`query_eval_runs_isolating` leaves them out and names them instead.
         """
         runs = self._hydrate_runs(self._run_rows(scope_id, status, elide_payload), elide_payload, scope_id)
         return [run for run in runs if not status or run.status == status]
@@ -1662,17 +1661,16 @@ class EvalStorage:
         :meth:`scan_eval_runs` go through (:meth:`_hydrate_isolating`), so the rows left out are ones
         ``runs_unreadable`` names.
 
-        Args:
-            scope_id: The scope whose runs to read.
-            status: As :meth:`query_eval_runs` takes it. A refused row is named when its stored status is the one
-                asked for, or for any status when none is.
-            elide_payload: As :meth:`query_eval_runs` takes it.
-
-        Returns:
-            The runs that read, settled, and each matched row that did not.
-
-        Raises:
-            UnreadableRunError: A run read, but writing it lost was refused by a model.
+        :param scope_id: The scope whose runs to read.
+        :ptype scope_id: str
+        :param status: As :meth:`query_eval_runs` takes it. A refused row is named when its stored status is the one
+            asked for, or for any status when none is.
+        :ptype status: EvalRunStatus | None
+        :param elide_payload: As :meth:`query_eval_runs` takes it.
+        :ptype elide_payload: frozenset[str]
+        :return: The runs that read, settled, and each matched row that did not.
+        :rtype: RunsRead
+        :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
         """
         read, refused = self._hydrate_isolating(EvalRun, self._run_rows(scope_id, status, elide_payload))
         runs = self._settled_runs(read, elide_payload, scope_id)
@@ -1713,19 +1711,18 @@ class EvalStorage:
         members, or one run whose scalars are all a surface renders. Absent ids are skipped, as a
         miss is for :meth:`load_eval_run`; the order is the store's, not ``run_ids``'.
 
-        Args:
-            run_ids: The runs to load. Empty asks the store nothing.
-            scope_id: The scope they live in.
-            elide_payload: Paths relative to ``host_payload`` the store leaves out of every returned
-                run, with the meaning :meth:`query_eval_runs` gives them: each returned run records
-                them, and a reader that needs one refuses.
-
-        Returns:
-            The runs that resolved.
-
-        Raises:
-            UnreadableRunError: A resolved row does not validate under this build's model, or writing a run lost
-                did not.
+        :param run_ids: The runs to load. Empty asks the store nothing.
+        :ptype run_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :param elide_payload: Paths relative to ``host_payload`` the store leaves out of every returned
+            run, with the meaning :meth:`query_eval_runs` gives them: each returned run records
+            them, and a reader that needs one refuses.
+        :ptype elide_payload: frozenset[str]
+        :return: The runs that resolved.
+        :rtype: list[EvalRun]
+        :raises UnreadableRunError: A resolved row does not validate under this build's model, or writing a run lost
+            did not.
         """
         exclude = _payload_exclusions(elide_payload) if elide_payload else ()
         items = self._store.get_many("eval_run", list(run_ids), scope_id, exclude=exclude)
@@ -1738,12 +1735,12 @@ class EvalStorage:
         of a many-run cohort's shape pays for three scalars a run rather than the run. Absent ids
         are skipped.
 
-        Args:
-            run_ids: The runs to read. Empty asks the store nothing.
-            scope_id: The scope they live in.
-
-        Returns:
-            One stamp per run that resolved.
+        :param run_ids: The runs to read. Empty asks the store nothing.
+        :ptype run_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: One stamp per run that resolved.
+        :rtype: list[EvalRunStamp]
         """
         items = self._store.get_many("eval_run", list(run_ids), scope_id, keep=list(EvalRunStamp.model_fields))
         return self._hydrate_all(EvalRunStamp, items)
@@ -1757,16 +1754,15 @@ class EvalStorage:
         re-reads and keeps the flag. A writer that saves the run with no ``if_match`` is not
         refused, and can put the old flag back.
 
-        Args:
-            run_id: The run to curate.
-            scope_id: The scope it lives in.
-            archived: The flag's new value.
-
-        Returns:
-            ``True`` when the run was written; ``False`` when there is no such run.
-
-        Raises:
-            StorageError: The write failed.
+        :param run_id: The run to curate.
+        :ptype run_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :param archived: The flag's new value.
+        :ptype archived: bool
+        :return: ``True`` when the run was written; ``False`` when there is no such run.
+        :rtype: bool
+        :raises StorageError: The write failed.
         """
         try:
             return self._store.merge_fields(run_id, scope_id, {"archived": archived})
@@ -1835,18 +1831,16 @@ class EvalStorage:
         so every row that scan counts unreadable (one stored ``pending`` or ``running``) is named here, beside the
         terminal ones it never reads. Nothing is settled or written: a run read here is counted, not returned.
 
-        Args:
-            scope_id: The scope whose runs to read.
-            elide_payload: Paths relative to ``host_payload`` the store leaves out of every row, with the meaning
-                :meth:`query_eval_runs` gives them. The payload is opaque to the model, so leaving part of it out
-                never changes whether a row reads; it only keeps a scan of a large scope from holding every run's
-                heavy payload at once.
-
-        Returns:
-            How many rows read, and each refused row with why.
-
-        Raises:
-            StorageError: The store failed to answer — never an empty scan.
+        :param scope_id: The scope whose runs to read.
+        :ptype scope_id: str
+        :param elide_payload: Paths relative to ``host_payload`` the store leaves out of every row, with the meaning
+            :meth:`query_eval_runs` gives them. The payload is opaque to the model, so leaving part of it out
+            never changes whether a row reads; it only keeps a scan of a large scope from holding every run's
+            heavy payload at once.
+        :ptype elide_payload: frozenset[str]
+        :return: How many rows read, and each refused row with why.
+        :rtype: EvalRunScan
+        :raises StorageError: The store failed to answer — never an empty scan.
         """
         store = self._store
         field_eq: dict[str, Any] = {"exclude": _payload_exclusions(elide_payload)} if elide_payload else {}
@@ -1859,19 +1853,20 @@ class EvalStorage:
         return EvalRunScan(readable=len(read), unreadable=refused)
 
     def scan_eval_run(self, run_id: str, scope_id: str) -> EvalRunScan:
-        """Read one run by id without letting the model's refusal raise: whether it reads, or why not, or that it is absent.
+        """Read one run by id without letting the model's refusal raise: whether it reads, or why not, or that it is
+        absent.
 
         :meth:`scan_eval_runs` for one id, through the same isolating read, so a run named here as refused is one
         ``runs_unreadable`` names. For a surface that must act on a run this build cannot read — its delete — where
         :meth:`load_eval_run` refuses. Nothing is settled or written.
 
-        Args:
-            run_id: The run.
-            scope_id: The scope it lives in.
-
-        Returns:
-            ``readable`` 1 when it reads; one ``unreadable`` row, with why, when the model refuses it; neither when
+        :param run_id: The run.
+        :ptype run_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: ``readable`` 1 when it reads; one ``unreadable`` row, with why, when the model refuses it; neither when
             no run of that id is stored there.
+        :rtype: EvalRunScan
         """
         data = self._of_type(EvalRun, self._store.get(run_id, scope_id))
         if data is None:
@@ -1952,17 +1947,16 @@ class EvalStorage:
         and a later re-judge of it refuses, since the judge evidence it would resend was in
         the payload that did not land.
 
-        Args:
-            result: The result to persist. Never mutated — the marker is applied to
-                a copy, so a caller holding this object cannot be surprised by it.
-            trace: The sibling payload, or ``None`` for a cell that produced none.
-                An entirely empty trace writes no document: there is nothing to
-                fetch, and a row per empty payload is the row count this split
-                exists to keep down.
-
-        Raises:
-            StorageError: The RESULT was not persisted. A trace-write failure is logged
-                by :meth:`_save` and reads as ``missing`` through ``has_trace``, not raised.
+        :param result: The result to persist. Never mutated — the marker is applied to
+            a copy, so a caller holding this object cannot be surprised by it.
+        :ptype result: EvalResult
+        :param trace: The sibling payload, or ``None`` for a cell that produced none.
+            An entirely empty trace writes no document: there is nothing to
+            fetch, and a row per empty payload is the row count this split
+            exists to keep down.
+        :ptype trace: EvalTrace | None
+        :raises StorageError: The RESULT was not persisted. A trace-write failure is logged
+            by :meth:`_save` and reads as ``missing`` through ``has_trace``, not raised.
         """
         produced = trace is not None and bool(
             trace.trace
@@ -2014,16 +2008,15 @@ class EvalStorage:
         rewritten result as having no trace while its trace document still exists. Here
         the result's own ``has_trace`` is written as read.
 
-        Args:
-            result: The result as it should now stand.
-            if_match: The token :meth:`load_eval_result_with_etag` returned with it. ``None`` writes
-                unconditionally; every store hands a found document's token back
-                (:meth:`~threetears.evals.schema.store_port.DocumentStore.get_with_etag`), so a
-                rewrite of a result just read is always conditional.
-
-        Raises:
-            ConflictError: Something else wrote the result since it was read.
-            StorageError: The write failed for any other reason.
+        :param result: The result as it should now stand.
+        :ptype result: EvalResult
+        :param if_match: The token :meth:`load_eval_result_with_etag` returned with it. ``None`` writes
+            unconditionally; every store hands a found document's token back
+            (:meth:`~threetears.evals.schema.store_port.DocumentStore.get_with_etag`), so a
+            rewrite of a result just read is always conditional.
+        :ptype if_match: str | None
+        :raises ConflictError: Something else wrote the result since it was read.
+        :raises StorageError: The write failed for any other reason.
         """
         self._save(result.to_dict(), if_match=if_match)
 
@@ -2068,15 +2061,13 @@ class EvalStorage:
         either: :meth:`delete_eval_result` works from the stored row, so finding them by the run id they carry is
         all the cascade needs, and a refused result never stops it.
 
-        Args:
-            run_id: The run.
-            scope_id: The scope it lives in.
-
-        Returns:
-            Each result row's id, in the store's order.
-
-        Raises:
-            StorageError: The store failed to answer, or a row matched carries no id as text.
+        :param run_id: The run.
+        :ptype run_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: Each result row's id, in the store's order.
+        :rtype: list[str]
+        :raises StorageError: The store failed to answer, or a row matched carries no id as text.
         """
         store = self._store
         try:
@@ -2128,12 +2119,10 @@ class EvalStorage:
         stray trace under it is still removed. A raising trace delete or read propagates
         before the result is touched.
 
-        Returns:
-            ``True`` when the result was deleted; ``False`` when there was no result.
-
-        Raises:
-            StorageError: The result says it has a trace, and the trace survived its
-                delete. The result was not deleted; a retry is safe.
+        :return: ``True`` when the result was deleted; ``False`` when there was no result.
+        :rtype: bool
+        :raises StorageError: The result says it has a trace, and the trace survived its
+            delete. The result was not deleted; a retry is safe.
         """
         stored = self._of_type(EvalResult, self._store.get(result_id, scope_id))
         has_trace = bool(stored.get("has_trace")) if stored is not None else False
@@ -2169,8 +2158,7 @@ class EvalStorage:
     def save_cassette(self, cassette: EvalCassette) -> None:
         """Persist a cassette in the scope it names, replacing any recording of the same key.
 
-        Raises:
-            StorageError: The write failed.
+        :raises StorageError: The write failed.
         """
         self._save(cassette.to_dict())
 
@@ -2180,16 +2168,14 @@ class EvalStorage:
         A point read by the key's deterministic id. Strict like every read: a stored row that no
         longer loads raises rather than reaching a replay half-understood.
 
-        Args:
-            key: The ask whose recording to read.
-            scope_id: The scope the corpus lives in.
-
-        Returns:
-            The recording, or ``None``.
-
-        Raises:
-            StorageError: The store failed to answer.
-            ValueError: The stored row does not load as this build's :class:`EvalCassette`.
+        :param key: The ask whose recording to read.
+        :ptype key: CassetteKey
+        :param scope_id: The scope the corpus lives in.
+        :ptype scope_id: str
+        :return: The recording, or ``None``.
+        :rtype: EvalCassette | None
+        :raises StorageError: The store failed to answer.
+        :raises ValueError: The stored row does not load as this build's :class:`EvalCassette`.
         """
         try:
             data = self._store.get(key.doc_id, scope_id)
@@ -2232,14 +2218,16 @@ class EvalStorage:
         Reads this case's rows only, so a stale row recorded for another case cannot break a read
         of this one.
 
-        Args:
-            corpus_id: The capture run whose corpus to read.
-            template_id: The template it ran.
-            test_case_id: The case.
-            scope_id: The scope the corpus lives in.
-
-        Returns:
-            The case's recordings.
+        :param corpus_id: The capture run whose corpus to read.
+        :ptype corpus_id: str
+        :param template_id: The template it ran.
+        :ptype template_id: str
+        :param test_case_id: The case.
+        :ptype test_case_id: str
+        :param scope_id: The scope the corpus lives in.
+        :ptype scope_id: str
+        :return: The case's recordings.
+        :rtype: list[EvalCassette]
         """
         items = self._store.by_doc_type(
             "eval_cassette",
@@ -2259,17 +2247,17 @@ class EvalStorage:
         A row that does not load as this build's :class:`EvalCassette` is returned as why (:class:`CaseRecordings`),
         so it fails the call that asks for it and no other, as a point read of it would.
 
-        Args:
-            corpus_id: The capture run whose corpus to read.
-            template_id: The template it ran.
-            test_case_id: The case.
-            scope_id: The scope the corpus lives in.
-
-        Returns:
-            The case's rows, read and refused.
-
-        Raises:
-            StorageError: The store failed to answer.
+        :param corpus_id: The capture run whose corpus to read.
+        :ptype corpus_id: str
+        :param template_id: The template it ran.
+        :ptype template_id: str
+        :param test_case_id: The case.
+        :ptype test_case_id: str
+        :param scope_id: The scope the corpus lives in.
+        :ptype scope_id: str
+        :return: The case's rows, read and refused.
+        :rtype: CaseRecordings
+        :raises StorageError: The store failed to answer.
         """
         try:
             items = self._store.by_doc_type(
@@ -2301,17 +2289,17 @@ class EvalStorage:
         Deletes by id without loading a row, so a row this build can no longer read — written
         under another schema, say — is cleared like any other rather than blocking the clear.
 
-        Args:
-            corpus_id: The capture run whose corpus to clear.
-            template_id: The template it ran.
-            test_case_id: The case.
-            scope_id: The scope the corpus lives in.
-
-        Returns:
-            How many recordings were deleted.
-
-        Raises:
-            StorageError: The store failed to list or delete them.
+        :param corpus_id: The capture run whose corpus to clear.
+        :ptype corpus_id: str
+        :param template_id: The template it ran.
+        :ptype template_id: str
+        :param test_case_id: The case.
+        :ptype test_case_id: str
+        :param scope_id: The scope the corpus lives in.
+        :ptype scope_id: str
+        :return: How many recordings were deleted.
+        :rtype: int
+        :raises StorageError: The store failed to list or delete them.
         """
         try:
             items = self._store.by_doc_type(
@@ -2351,13 +2339,13 @@ class EvalStorage:
         Callers must gate this behind explicit operator confirmation — the
         action is unrecoverable.
 
-        Args:
-            scopes: The scopes to wipe.
-            include_durable: Whether the durable types are deleted too. Required.
-
-        Returns:
-            ``{doc_type: count_deleted, ...}`` for each swept doc_type, summed over the scopes. A durable type
+        :param scopes: The scopes to wipe.
+        :ptype scopes: Iterable[str]
+        :param include_durable: Whether the durable types are deleted too. Required.
+        :ptype include_durable: bool
+        :return: ``{doc_type: count_deleted, ...}`` for each swept doc_type, summed over the scopes. A durable type
             kept is not a key; how many of each were kept is logged.
+        :rtype: dict[str, int]
         """
         swept = [*EVAL_DOC_TYPES, *self._host_doc_types]
         if not include_durable:
@@ -2378,12 +2366,11 @@ class EvalStorage:
 
         Callers must gate this behind explicit operator confirmation — the action is unrecoverable for the core.
 
-        Args:
-            scopes: The scopes to reset.
-
-        Returns:
-            ``{doc_type: count_deleted, ...}`` for each core and regenerable type, summed over the scopes. How many
+        :param scopes: The scopes to reset.
+        :ptype scopes: Iterable[str]
+        :return: ``{doc_type: count_deleted, ...}`` for each core and regenerable type, summed over the scopes. How many
             durable documents were kept is logged, per type.
+        :rtype: dict[str, int]
         """
         swept = [doc_type for doc_type in EVAL_DOC_TYPES if doc_type in CORE_RESET_DOC_TYPES]
         return self._sweep("reset_core", list(scopes), swept)
@@ -2414,11 +2401,10 @@ class EvalStorage:
 
         Callers must gate this behind explicit operator confirmation — the action is unrecoverable.
 
-        Args:
-            scopes: The scopes whose analyses to drop.
-
-        Returns:
-            How many analyses were deleted.
+        :param scopes: The scopes whose analyses to drop.
+        :ptype scopes: Iterable[str]
+        :return: How many analyses were deleted.
+        :rtype: int
         """
         deleted = 0
         for scope_id in scopes:

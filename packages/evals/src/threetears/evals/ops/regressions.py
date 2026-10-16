@@ -104,8 +104,8 @@ class RegressionSink(Protocol):
     async def __call__(self, alert: RegressionAlert) -> None:
         """Deliver one regression.
 
-        Args:
-            alert: What regressed, on which step, and the verdict behind it.
+        :param alert: What regressed, on which step, and the verdict behind it.
+        :ptype alert: RegressionAlert
         """
         ...  # pragma: no cover — protocol
 
@@ -135,13 +135,12 @@ class RegressionWatch:
     :class:`~threetears.evals.run.launch.LaunchHost` that launches the host's runs (``on_run_end=``). See the
     module docstring for which runs, steps and measures fire.
 
-    Attributes:
-        host: The host whose store and vocabulary are read — the launching host's own ``eval_host``.
-        sink: Where each regression is delivered.
-        measures: The measures to track, each one :func:`~threetears.evals.ops.scope_history` accepts. Refused
-            when empty or when one cannot be seriesed, here rather than at the first completed run.
-        min_absolute_change: The smallest move a regression counts, in the measure's unit, as the history takes it.
-        min_relative_change: The smallest move relative to the baseline a regression counts, as a fraction.
+    :ivar host: The host whose store and vocabulary are read — the launching host's own ``eval_host``.
+    :ivar sink: Where each regression is delivered.
+    :ivar measures: The measures to track, each one :func:`~threetears.evals.ops.scope_history` accepts. Refused
+        when empty or when one cannot be seriesed, here rather than at the first completed run.
+    :ivar min_absolute_change: The smallest move a regression counts, in the measure's unit, as the history takes it.
+    :ivar min_relative_change: The smallest move relative to the baseline a regression counts, as a fraction.
     """
 
     host: EvalHost
@@ -153,8 +152,7 @@ class RegressionWatch:
     def __post_init__(self) -> None:
         """Refuse a watch that tracks nothing, a measure the history cannot series, or a negative threshold.
 
-        Raises:
-            ValueError: As above.
+        :raises ValueError: As above.
         """
         if not self.measures:
             raise ValueError("a regression watch tracks at least one measure; name the measures to check")
@@ -170,10 +168,12 @@ class RegressionWatch:
     async def __call__(self, run_id: str, scope_id: str, status: str) -> None:
         """Check a run that ended, and deliver each regression found, each on its own.
 
-        Args:
-            run_id: The run.
-            scope_id: Its scope.
-            status: The terminal status recorded. Anything but ``completed`` is not a point on the history.
+        :param run_id: The run.
+        :ptype run_id: str
+        :param scope_id: Its scope.
+        :ptype scope_id: str
+        :param status: The terminal status recorded. Anything but ``completed`` is not a point on the history.
+        :ptype status: str
         """
         if status != "completed":
             return
@@ -196,13 +196,13 @@ class RegressionWatch:
         Synchronous and side-effect free — it reads the store and delivers nothing — so a host can ask it
         directly of a run that has already ended.
 
-        Args:
-            run_id: The run whose step to check.
-            scope_id: Its scope.
-
-        Returns:
-            One alert per tracked measure and contestant whose step into the run reads ``regressed`` and may
+        :param run_id: The run whose step to check.
+        :ptype run_id: str
+        :param scope_id: Its scope.
+        :ptype scope_id: str
+        :return: One alert per tracked measure and contestant whose step into the run reads ``regressed`` and may
             fire, in the order the measures were named.
+        :rtype: list[RegressionAlert]
         """
         alerts: list[RegressionAlert] = []
         tiers = None

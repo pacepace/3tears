@@ -173,8 +173,8 @@ def _paired_test(
       scale's span, which never moves zero in or out).
     - **Where every case moved by one amount** no t exists, and the bounded test by betting reads both
       (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`, and
-      :func:`~threetears.evals.analysis.stats.bounded_separation_p` with its stakes at the same tail): valid for the mean at
-      every n on the scale's range. The exact sign-flip p is not read here: it is a test of symmetry, not of the
+      :func:`~threetears.evals.analysis.stats.bounded_separation_p` with its stakes at the same tail): valid for the
+      mean at every n on the scale's range. The exact sign-flip p is not read here: it is a test of symmetry, not of the
       mean: twenty cases each up one point arise about one time in ninety from a judge whose mean did not move (up one
       point four times in five, down four the fifth), where the sign flip states one in half a million. The
       price is the truth about a uniform move on a 1-5 scale: twenty cases do not show it, thirty do (with two
@@ -183,8 +183,8 @@ def _paired_test(
     Spread is decided on exact values (:func:`~threetears.evals.analysis.stats.no_spread_p`), so a float residue
     in per-case means cannot pass for a t-test's spread.
 
-    Returns:
-        ``(interval, p)``, or None below two cases.
+    :return: ``(interval, p)``, or None below two cases.
+    :rtype: tuple[tuple[float, float], float] | None
     """
     if len(a) < 2:
         return None
@@ -205,12 +205,12 @@ def _paired_test(
 def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift:
     """Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
 
-    Args:
-        results: The results whose second-judge scores to read.
-        pass_id: Read only this pass's pairs; ``None`` for every pass.
-
-    Returns:
-        The movement per (dimension, scale, first judge, second judge), tested as one family.
+    :param results: The results whose second-judge scores to read.
+    :ptype results: Iterable[EvalResult]
+    :param pass_id: Read only this pass's pairs; ``None`` for every pass.
+    :ptype pass_id: str | None
+    :return: The movement per (dimension, scale, first judge, second judge), tested as one family.
+    :rtype: JudgeDrift
     """
     pairs: dict[SecondJudgeGroup, dict[str, list[tuple[int, int]]]] = {}
     unanswered: dict[SecondJudgeGroup, int] = {}

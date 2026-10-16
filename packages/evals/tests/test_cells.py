@@ -34,14 +34,16 @@ def _observation(
 ) -> Observation:
     """One observation at a named class.
 
-    Args:
-        obs_id: The observation's id.
-        klass: The apparatus class it was measured under.
-        variant: Its variant coordinate.
-        case_ref: The case it exercised, or None for a host with no battery.
-
-    Returns:
-        The observation.
+    :param obs_id: The observation's id.
+    :ptype obs_id: str
+    :param klass: The apparatus class it was measured under.
+    :ptype klass: ApparatusClass
+    :param variant: Its variant coordinate.
+    :ptype variant: str
+    :param case_ref: The case it exercised, or None for a host with no battery.
+    :ptype case_ref: str | None
+    :return: The observation.
+    :rtype: Observation
     """
     return Observation(
         id=obs_id,
@@ -57,12 +59,12 @@ def _pool(
 ) -> tuple[list[Cell], list, list[NextExperiment]]:
     """Pool observations against the classes they reference.
 
-    Args:
-        *observations: The observations.
-        classes: Every class referenced.
-
-    Returns:
-        The three-part pooling result.
+    :param *observations: The observations.
+    :ptype observations: Observation
+    :param classes: Every class referenced.
+    :ptype classes: tuple[ApparatusClass, ...]
+    :return: The three-part pooling result.
+    :rtype: tuple[list[Cell], list, list[NextExperiment]]
     """
     return pool_observations(list(observations), {c.apparatus_class_id: c for c in classes})
 

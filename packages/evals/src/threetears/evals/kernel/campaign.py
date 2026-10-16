@@ -101,11 +101,10 @@ EvidenceTier = Literal["mechanical", "calibrated", "separation", "undetermined",
 def evidence_tier_of(rows: list[JudgedEvidenceTier | None]) -> EvidenceTier:
     """The tier a verdict resting on these evidence rows stands on: the weakest among them.
 
-    Args:
-        rows: Per evidence row, in any order: ``None`` for a measure, the row's judged tier for a judged score.
-
-    Returns:
-        ``none`` for no rows; the weakest judged tier when any row is judged; otherwise ``mechanical``.
+    :param rows: Per evidence row, in any order: ``None`` for a measure, the row's judged tier for a judged score.
+    :ptype rows: list[JudgedEvidenceTier | None]
+    :return: ``none`` for no rows; the weakest judged tier when any row is judged; otherwise ``mechanical``.
+    :rtype: EvidenceTier
     """
     if not rows:
         return "none"
@@ -281,12 +280,11 @@ def derive_window(run_created_ats: list[str]) -> CampaignWindow | None:
     :func:`~threetears.evals.schema.models.utc_now_iso` (UTC, ``+00:00`` offset), so a
     lexicographic min/max is a chronological one.
 
-    Args:
-        run_created_ats: The member runs' ``created_at`` values.
-
-    Returns:
-        A :class:`CampaignWindow`, or ``None`` when the list is empty — a campaign
+    :param run_created_ats: The member runs' ``created_at`` values.
+    :ptype run_created_ats: list[str]
+    :return: A :class:`CampaignWindow`, or ``None`` when the list is empty — a campaign
         with no (resolvable) runs has no window.
+    :rtype: CampaignWindow | None
     """
     if not run_created_ats:
         return None
@@ -489,8 +487,7 @@ class EvidenceRow(EvalDocumentModel):
         The finding's tier is read off this field, so a judged row with none would compose as mechanical,
         and a measure row with one would weaken a finding no judge touched.
 
-        Raises:
-            ValueError: ``judged_tier`` is absent on a judged row or present on a measure row.
+        :raises ValueError: ``judged_tier`` is absent on a judged row or present on a measure row.
         """
         if (self.reading == "judged") != (self.judged_tier is not None):
             raise ValueError(
@@ -612,8 +609,8 @@ class VariantIndexEntry(EvalDocumentModel):
         instead gets one opaque surface hash per arm and no mention of the knob a campaign swept, so
         every arm of a one-key tool-config sweep reads alike.
 
-        Returns:
-            Lever name → level, sorted by name.
+        :return: Lever name → level, sorted by name.
+        :rtype: dict[str, SweepableValue]
         """
         named = {name: level for name, level in self.levers.items() if name not in self.folded}
         named.update(self.swept)
@@ -636,12 +633,10 @@ class VariantIndexEntry(EvalDocumentModel):
         was minted by a predicate this process does not have, so recomputing would prove nothing
         either way.
 
-        Returns:
-            The validated entry.
-
-        Raises:
-            ValueError: The levels digest to some other key, an entry declaring its levels
-                unavailable carries levers anyway, or an entry folds a lever it does not carry.
+        :return: The validated entry.
+        :rtype: VariantIndexEntry
+        :raises ValueError: The levels digest to some other key, an entry declaring its levels
+            unavailable carries levers anyway, or an entry folds a lever it does not carry.
         """
         if stranded := sorted(set(self.folded) - set(self.levers)):
             raise ValueError(
@@ -817,13 +812,11 @@ class EvalAnalysis(EvalDocumentModel):
     def check_positions(self) -> EvalAnalysis:
         """Refuse a link that points nowhere, a resolution that does not match its finding, or a gating cycle.
 
-        Returns:
-            This analysis, unchanged.
-
-        Raises:
-            ValueError: A position is out of range, a finding invalidates itself, the ``invalidates``
-                relation cycles, ``resolutions`` does not have one entry per finding, or a resolution's
-                rows are not the readings its finding names.
+        :return: This analysis, unchanged.
+        :rtype: EvalAnalysis
+        :raises ValueError: A position is out of range, a finding invalidates itself, the ``invalidates``
+            relation cycles, ``resolutions`` does not have one entry per finding, or a resolution's
+            rows are not the readings its finding names.
         """
         findings = self.document.findings
         count = len(findings)
@@ -1011,12 +1004,10 @@ class EvalAnalysisAttempt(CoreDocumentModel):
     def check_outcome_fields(self) -> EvalAnalysisAttempt:
         """Refuse an attempt whose analysis link or error disagrees with its outcome.
 
-        Returns:
-            This attempt, unchanged.
-
-        Raises:
-            ValueError: A stored attempt names no analysis or carries an error, an ended unstored one names an
-                analysis or carries no error, a running one names either, or a refused one records no refusal.
+        :return: This attempt, unchanged.
+        :rtype: EvalAnalysisAttempt
+        :raises ValueError: A stored attempt names no analysis or carries an error, an ended unstored one names an
+            analysis or carries no error, a running one names either, or a refused one records no refusal.
         """
         if self.outcome == "running":
             if self.analysis_id is not None or self.error is not None:
@@ -1074,8 +1065,7 @@ class EvalGenerationSlot(CoreDocumentModel):
     def check_slot_id(self) -> EvalGenerationSlot:
         """Refuse a slot stored anywhere but its campaign's one id.
 
-        Raises:
-            ValueError: ``id`` is not ``generation_slot_id(campaign_id)``.
+        :raises ValueError: ``id`` is not ``generation_slot_id(campaign_id)``.
         """
         if self.id != generation_slot_id(self.campaign_id):
             raise ValueError(f"a generation slot's id is {generation_slot_id(self.campaign_id)!r}; got {self.id!r}")

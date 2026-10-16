@@ -106,13 +106,14 @@ def judge_identities_today() -> dict[str, str]:
 def moved_without_a_note(released: dict[str, str], today: dict[str, str], notes: list[str]) -> list[str]:
     """The fingerprints a release shipped that moved since, when no note carries the sentence; else none.
 
-    Args:
-        released: The fingerprints the newest final release shipped.
-        today: The fingerprints this tree writes.
-        notes: The unreleased section's ``notes``.
-
-    Returns:
-        The moved keys, sorted, while no note carries :data:`JUDGE_WORDING_CHANGE_SENTENCE`.
+    :param released: The fingerprints the newest final release shipped.
+    :ptype released: dict[str, str]
+    :param today: The fingerprints this tree writes.
+    :ptype today: dict[str, str]
+    :param notes: The unreleased section's ``notes``.
+    :ptype notes: list[str]
+    :return: The moved keys, sorted, while no note carries :data:`JUDGE_WORDING_CHANGE_SENTENCE`.
+    :rtype: list[str]
     """
     moved = sorted(key for key, value in released.items() if key in today and today[key] != value)
     if any(JUDGE_WORDING_CHANGE_SENTENCE in note for note in notes):
@@ -126,11 +127,10 @@ def judge_table_in(source: str) -> dict[str, str] | None:
     The released tree's own pin held that literal equal to what the tree computed, so reading it is reading the
     fingerprints the release wrote, without installing the release.
 
-    Args:
-        source: A copy of this file.
-
-    Returns:
-        The table, or None when the copy assigns no ``JUDGE_IDENTITIES`` literal.
+    :param source: A copy of this file.
+    :ptype source: str
+    :return: The table, or None when the copy assigns no ``JUDGE_IDENTITIES`` literal.
+    :rtype: dict[str, str] | None
     """
     for node in ast.parse(source).body:
         if "JUDGE_IDENTITIES" in surface.assigned_names(node) and isinstance(node, ast.AnnAssign) and node.value:
@@ -142,15 +142,12 @@ def judge_table_in(source: str) -> dict[str, str] | None:
 def released_judge_identities(tag: str) -> dict[str, str] | None:
     """Every judge fingerprint the release ``tag`` shipped, computed from its tree, never typed.
 
-    Args:
-        tag: A final release tag (:data:`RELEASED_AT`).
-
-    Returns:
-        The table, or None when the release shipped no 3tears-evals and so no judge.
-
-    Raises:
-        AssertionError: The checkout lacks ``tag``, which says nothing about what it shipped; or the release shipped
-            the package without a readable pin table, so what it wrote cannot be told.
+    :param tag: A final release tag (:data:`RELEASED_AT`).
+    :ptype tag: str
+    :return: The table, or None when the release shipped no 3tears-evals and so no judge.
+    :rtype: dict[str, str] | None
+    :raises AssertionError: The checkout lacks ``tag``, which says nothing about what it shipped; or the release shipped
+        the package without a readable pin table, so what it wrote cannot be told.
     """
     assert surface.tag_exists(tag), (
         f"{tag} is not a tag in this checkout, so the judge fingerprints it shipped cannot be read: fetch the tags "
@@ -171,13 +168,14 @@ def released_judge_identities(tag: str) -> dict[str, str] | None:
 def released_table_disagreement(tag: str, computed: dict[str, str] | None, typed: dict[str, str]) -> str | None:
     """Why the typed released table is not the one ``tag`` shipped, or None when it is.
 
-    Args:
-        tag: The release the tables are taken at.
-        computed: What :func:`released_judge_identities` read from its tree; None when it shipped no judge.
-        typed: :data:`RELEASED_JUDGE_IDENTITIES`.
-
-    Returns:
-        The failure, with its remedy, or None.
+    :param tag: The release the tables are taken at.
+    :ptype tag: str
+    :param computed: What :func:`released_judge_identities` read from its tree; None when it shipped no judge.
+    :ptype computed: dict[str, str] | None
+    :param typed: :data:`RELEASED_JUDGE_IDENTITIES`.
+    :ptype typed: dict[str, str]
+    :return: The failure, with its remedy, or None.
+    :rtype: str | None
     """
     if computed is None:
         if not typed:

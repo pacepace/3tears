@@ -40,12 +40,12 @@ def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int
     Not covered: whatever the caller does around the generation (assembling the bundle, storing the
     result).
 
-    Args:
-        request_s: The host's ceiling for one request on its client, by output cap.
-        generator_max_tokens: The generator's output cap, as its clients are built with.
-
-    Returns:
-        The ceiling in seconds: ``MAX_GENERATION_CALLS * request_s(generator_max_tokens)``.
+    :param request_s: The host's ceiling for one request on its client, by output cap.
+    :ptype request_s: RequestCeiling
+    :param generator_max_tokens: The generator's output cap, as its clients are built with.
+    :ptype generator_max_tokens: int
+    :return: The ceiling in seconds: ``MAX_GENERATION_CALLS * request_s(generator_max_tokens)``.
+    :rtype: float
     """
     return MAX_GENERATION_CALLS * request_s(generator_max_tokens)
 
@@ -66,16 +66,19 @@ def judge_phase_ceiling_s(
     client spends on it. Every kind whose cell ends in a judge phase adds this to its ceiling, since the
     cell's deadline bounds the judging too, and a ceiling without it cuts a slow cell off while it is scored.
 
-    Args:
-        judge_dims: Dimensions the judge scores on each cell.
-        judge_concurrency: Judge requests in flight at once.
-        judge_call_attempts: Requests one judge dimension can make, its parse retries included.
-        judge_max_tokens: The judge's output cap, as its requests are built with.
-        request_s: The host's ceiling for one request on its client, by output cap.
-
-    Returns:
-        The judge phase's ceiling in seconds: ``waves * judge_call_attempts * request_s(judge_max_tokens)``,
+    :param judge_dims: Dimensions the judge scores on each cell.
+    :ptype judge_dims: int
+    :param judge_concurrency: Judge requests in flight at once.
+    :ptype judge_concurrency: int
+    :param judge_call_attempts: Requests one judge dimension can make, its parse retries included.
+    :ptype judge_call_attempts: int
+    :param judge_max_tokens: The judge's output cap, as its requests are built with.
+    :ptype judge_max_tokens: int
+    :param request_s: The host's ceiling for one request on its client, by output cap.
+    :ptype request_s: RequestCeiling
+    :return: The judge phase's ceiling in seconds: ``waves * judge_call_attempts * request_s(judge_max_tokens)``,
         with ``waves`` the dimensions over the concurrency, rounded up.
+    :rtype: float
     """
     judge_waves = -(-max(judge_dims, 0) // max(judge_concurrency, 1))
     return judge_waves * judge_call_attempts * request_s(judge_max_tokens)

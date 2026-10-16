@@ -115,13 +115,12 @@ class LatencyPartition(EvalBaseModel):
 def decompose_total_ms(latency: LatencyMetrics | None) -> LatencyPartition:
     """Split one result's ``total_ms`` into its parts and the named remainder.
 
-    Args:
-        latency: The result's captured latency, or ``None`` for a cell that timed
-            nothing whatever.
-
-    Returns:
-        A :class:`LatencyPartition` carrying either the four numbers or a sentence
+    :param latency: The result's captured latency, or ``None`` for a cell that timed
+        nothing whatever.
+    :ptype latency: LatencyMetrics | None
+    :return: A :class:`LatencyPartition` carrying either the four numbers or a sentence
         naming why they were withheld.
+    :rtype: LatencyPartition
     """
     if latency is None:
         return LatencyPartition(withheld="this cell timed nothing, so there is no total to partition.")

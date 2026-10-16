@@ -210,9 +210,8 @@ class JudgeCaseSource(EvalBaseModel):
     def _a_result_or_an_author(self) -> Self:
         """Refuse a source naming both a stored result and an author, or neither, or an authored one claiming a judge.
 
-        Raises:
-            ValueError: The source is not exactly one of a stored result (its run and result) or an author, or an
-                authored source records a test case or a first judge, which no hand-written case has.
+        :raises ValueError: The source is not exactly one of a stored result (its run and result) or an author, or an
+            authored source records a test case or a first judge, which no hand-written case has.
         """
         stored = self.run_id is not None and self.result_id is not None
         if self.authored is None:
@@ -251,9 +250,8 @@ AuthoredVerdict = Annotated[int, Field(strict=True)] | Literal["pass", "fail"]
 def _verdict_score(dim: str, scale: RubricScale, verdict: int | str) -> int:
     """``verdict`` as the score it stands for on ``scale``, refused when the scale cannot hold it.
 
-    Raises:
-        ValueError: The verdict is ``"pass"`` / ``"fail"`` on an ordinal criterion, or a score outside the scale's
-            bounds — named with the criterion and its scale, never moved onto the nearest value the scale holds.
+    :raises ValueError: The verdict is ``"pass"`` / ``"fail"`` on an ordinal criterion, or a score outside the scale's
+        bounds — named with the criterion and its scale, never moved onto the nearest value the scale holds.
     """
     spec = SCALES[scale]
     low, high = spec.scores
@@ -318,8 +316,7 @@ class AuthoredJudgeCase(EvalBaseModel):
     def _a_verdict_its_scale_holds(self) -> Self:
         """Refuse a verdict the criterion's scale cannot hold, and an output no judge reads.
 
-        Raises:
-            ValueError: The verdict is off the criterion's scale, naming both; or the artifact is declared unjudged.
+        :raises ValueError: The verdict is off the criterion's scale, naming both; or the artifact is declared unjudged.
         """
         _verdict_score(self.criterion.name, self.criterion.scale, self.expected)
         if self.judged_artifact is JudgedArtifact.UNJUDGED:
@@ -373,11 +370,11 @@ class JudgeCase(EvalBaseModel):
 
     @model_validator(mode="after")
     def _an_authored_case_is_labelled_by_its_verdict(self) -> Self:
-        """Refuse an authored case whose labels are not its one verdict, and a stored one with a label read from no rating.
+        """Refuse an authored case whose labels are not its one verdict, and a stored one with a label read from no
+        rating.
 
-        Raises:
-            ValueError: An authored case carries other than exactly one label, by its author and with no rating id,
-                on the criterion's scale; or a case frozen from a stored result carries a label with no rating id.
+        :raises ValueError: An authored case carries other than exactly one label, by its author and with no rating id,
+            on the criterion's scale; or a case frozen from a stored result carries a label with no rating id.
         """
         authored = self.source.authored
         if authored is None:
@@ -399,12 +396,11 @@ class JudgeCase(EvalBaseModel):
     def from_authored(cls, authored: AuthoredJudgeCase) -> Self:
         """The case a hand-written calibration case freezes into, read from no run.
 
-        Args:
-            authored: The case as its author wrote it, its verdict already held to its criterion's scale.
-
-        Returns:
-            The case: the criterion and scenario as written, the output judged as the authored artifact declares,
+        :param authored: The case as its author wrote it, its verdict already held to its criterion's scale.
+        :ptype authored: AuthoredJudgeCase
+        :return: The case: the criterion and scenario as written, the output judged as the authored artifact declares,
             no variation and no goal outcomes, and the expected verdict as its one label.
+        :rtype: Self
         """
         return cls(
             dim=authored.criterion.name,
@@ -427,14 +423,15 @@ class JudgeCase(EvalBaseModel):
     def from_rated(cls, rated: RatedOutput, labels: list[JudgeCaseLabel], source: JudgeCaseSource) -> Self:
         """The case a durable label's rated content freezes into, read from no result.
 
-        Args:
-            rated: What the label's rater read (``CalibrationRating.rated``), proven against its label key when
-                the rating was written.
-            labels: The person labels on that output and criterion.
-            source: Where the content came from, as provenance (a label's run and result, which may be gone).
-
-        Returns:
-            The case, its content field for field the rated content's.
+        :param rated: What the label's rater read (``CalibrationRating.rated``), proven against its label key when
+            the rating was written.
+        :ptype rated: RatedOutput
+        :param labels: The person labels on that output and criterion.
+        :ptype labels: list[JudgeCaseLabel]
+        :param source: Where the content came from, as provenance (a label's run and result, which may be gone).
+        :ptype source: JudgeCaseSource
+        :return: The case, its content field for field the rated content's.
+        :rtype: Self
         """
         return cls(
             dim=rated.dim,
@@ -455,8 +452,8 @@ class JudgeCase(EvalBaseModel):
         Two cases of one dim worded differently are two criteria, so a readout never pools a judge's answers to
         two questions under one name.
 
-        Returns:
-            The digest.
+        :return: The digest.
+        :rtype: str
         """
         return judge_criterion_digest(self.dim, self.scale, self.criterion)
 
@@ -468,8 +465,8 @@ class JudgeCase(EvalBaseModel):
         digests as it did before the field existed (the digest-default rule of
         :mod:`~threetears.evals.schema.versioning`).
 
-        Returns:
-            The digest.
+        :return: The digest.
+        :rtype: str
         """
         frozen = self.model_dump(mode="json")
         for added in ("first_judge_sent_settings", "authored"):
@@ -485,14 +482,15 @@ def judge_criterion_digest(dim: str, scale: RubricScale, criterion: RubricDim | 
     campaign whose judge read a template's rubric dimension finds the profile measured on cases frozen from it, and
     a dimension reworded since is another criterion whose profile it never reads.
 
-    Args:
-        dim: The criterion's id: a rubric dim's name, or a reserved axis id.
-        scale: The scale it is answered on.
-        criterion: The rubric dimension as the template words it; None for a reserved axis, whose criterion is
-            the engine's own.
-
-    Returns:
-        The digest.
+    :param dim: The criterion's id: a rubric dim's name, or a reserved axis id.
+    :ptype dim: str
+    :param scale: The scale it is answered on.
+    :ptype scale: RubricScale
+    :param criterion: The rubric dimension as the template words it; None for a reserved axis, whose criterion is
+        the engine's own.
+    :ptype criterion: RubricDim | None
+    :return: The digest.
+    :rtype: str
     """
     wording = None if criterion is None else criterion.model_dump(mode="json")
     return canonical_digest({"dim": dim, "scale": scale, "criterion": wording})
@@ -504,11 +502,10 @@ def judge_case_payload(case: JudgeCase) -> dict[str, Any]:
     The one writer of the payload :func:`judge_case_of` reads back, so the judge kind reads no key it does not own
     (the self-keyed lane of the engine's opaque-payload gate, which the reporter kind's case takes too).
 
-    Args:
-        case: The case to store.
-
-    Returns:
-        The payload.
+    :param case: The case to store.
+    :ptype case: JudgeCase
+    :return: The payload.
+    :rtype: dict[str, Any]
     """
     return {JUDGE_CASE_KEY: case.model_dump(mode="json")}
 
@@ -516,14 +513,11 @@ def judge_case_payload(case: JudgeCase) -> dict[str, Any]:
 def judge_case_of(test_case: EvalTestCase) -> JudgeCase | None:
     """The judge case a test case carries, or ``None`` when it carries none.
 
-    Args:
-        test_case: A stored case.
-
-    Returns:
-        The case, or ``None`` when its ``host_payload`` holds nothing under :data:`JUDGE_CASE_KEY`.
-
-    Raises:
-        ValueError: It holds something there that is not a judge case this build can read.
+    :param test_case: A stored case.
+    :ptype test_case: EvalTestCase
+    :return: The case, or ``None`` when its ``host_payload`` holds nothing under :data:`JUDGE_CASE_KEY`.
+    :rtype: JudgeCase | None
+    :raises ValueError: It holds something there that is not a judge case this build can read.
     """
     payload = test_case.host_payload
     if not isinstance(payload, dict) or JUDGE_CASE_KEY not in payload:
@@ -595,15 +589,12 @@ class JudgeTrial(EvalBaseModel):
 def judge_trial_of(kind_payload: object) -> JudgeTrial | None:
     """The judge trial a result's ``kind_payload`` carries, or ``None`` when it carries none.
 
-    Args:
-        kind_payload: A result's ``kind_payload``.
-
-    Returns:
-        The trial, or ``None`` when the result carries no ``kind_payload`` object at all.
-
-    Raises:
-        ValueError: It carries one that is not a judge trial this build can read — named apart from carrying none,
-            as :func:`judge_case_of` names an unreadable case, so a reader can say why it left the result out.
+    :param kind_payload: A result's ``kind_payload``.
+    :ptype kind_payload: object
+    :return: The trial, or ``None`` when the result carries no ``kind_payload`` object at all.
+    :rtype: JudgeTrial | None
+    :raises ValueError: It carries one that is not a judge trial this build can read — named apart from carrying none,
+        as :func:`judge_case_of` names an unreadable case, so a reader can say why it left the result out.
     """
     if not isinstance(kind_payload, dict):
         return None

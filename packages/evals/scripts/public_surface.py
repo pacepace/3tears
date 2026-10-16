@@ -207,27 +207,22 @@ def class_field_sources(cls: type) -> dict[str, tuple[str, str]]:
 
 
 def attributes_section(doc: str | None) -> dict[str, str]:
-    """The ``Attributes:`` section of a Google-style docstring: name → its description, joined onto one line."""
+    """The ``:ivar name:`` fields of a docstring: name → its description, joined onto one line."""
     if not doc:
         return {}
-    lines = inspect.cleandoc(doc).splitlines()
     out: dict[str, str] = {}
-    inside = False
     current: str | None = None
-    for line in lines:
-        if line.strip() == "Attributes:":
-            inside = True
-            continue
-        if not inside:
-            continue
-        if line and not line.startswith(" "):
-            break
-        match = re.match(r"^ {4}(\w+)(?: \([^)]*\))?: ?(.*)$", line)
+    for line in inspect.cleandoc(doc).splitlines():
+        match = re.match(r"^:ivar (\w+): ?(.*)$", line)
         if match:
             current = match.group(1)
             out[current] = match.group(2).strip()
-        elif current and line.strip():
+        elif not line.strip():
+            continue
+        elif current and line.startswith(" "):
             out[current] += " " + line.strip()
+        else:
+            current = None
     return out
 
 
@@ -359,12 +354,11 @@ def describe(root: str, name: str, obj: Any) -> Item:
 class FieldRow:
     """One field of a Pydantic model or a dataclass, as declared.
 
-    Attributes:
-        name: The field's attribute name.
-        annotation: Its annotation as written in the source.
-        default: ``"required"``, ``"derived"`` (a dataclass field outside ``__init__``), or the default rendered.
-        factory: The default factory, when the default is made rather than stated; ``default`` is then empty.
-        description: Its description: the field's own, the schema's, the ``Attributes:`` entry or its docstring.
+    :ivar name: The field's attribute name.
+    :ivar annotation: Its annotation as written in the source.
+    :ivar default: ``"required"``, ``"derived"`` (a dataclass field outside ``__init__``), or the default rendered.
+    :ivar factory: The default factory, when the default is made rather than stated; ``default`` is then empty.
+    :ivar description: Its description: the field's own, the schema's, the ``:ivar`` entry or its docstring.
     """
 
     name: str
@@ -454,14 +448,13 @@ TIERS: tuple[Tier, ...] = typing.get_args(Tier)
 class SurfaceEntry:
     """One public name as the snapshot records it: what it is, how it is called or built, and what it promises.
 
-    Attributes:
-        kind: The reference's kind: ``model``, ``protocol``, ``function``, ``literal``, ``constant (int)`` and so on.
-        signature: How a caller uses it: a function's signature; a model's, dataclass's or typed dict's fields
-            with their annotations as written and their defaults; a protocol's members; an enum's or a literal's
-            values; a type alias's definition; a class's or exception's constructor. Empty for a constant, whose
-            value is data rather than a contract (a schema version moves on every bump).
-        tier: Its stability tier (:data:`Tier`): ``host-contract`` when :data:`HOST_CONTRACT` lists it, ``stable``
-            when :data:`STABLE` does, otherwise ``provisional``, which is what a name nobody has promised is.
+    :ivar kind: The reference's kind: ``model``, ``protocol``, ``function``, ``literal``, ``constant (int)`` and so on.
+    :ivar signature: How a caller uses it: a function's signature; a model's, dataclass's or typed dict's fields
+        with their annotations as written and their defaults; a protocol's members; an enum's or a literal's
+        values; a type alias's definition; a class's or exception's constructor. Empty for a constant, whose
+        value is data rather than a contract (a schema version moves on every bump).
+    :ivar tier: Its stability tier (:data:`Tier`): ``host-contract`` when :data:`HOST_CONTRACT` lists it, ``stable``
+        when :data:`STABLE` does, otherwise ``provisional``, which is what a name nobody has promised is.
     """
 
     kind: str
@@ -1476,11 +1469,10 @@ def render_tier_map(surface: dict[str, SurfaceEntry]) -> str:
 class Finding:
     """One way the installed surface and its record disagree.
 
-    Attributes:
-        problem: What is wrong and what to do about it.
-        regenerating_fixes: Whether regenerating the snapshot is the whole remedy. A name added, or a kind,
-            signature or tier changed, is: the diff the regeneration makes is the record. A name that left a root is not
-            until ``MIGRATIONS.toml`` records it, and the generator refuses to write while any finding is not.
+    :ivar problem: What is wrong and what to do about it.
+    :ivar regenerating_fixes: Whether regenerating the snapshot is the whole remedy. A name added, or a kind,
+        signature or tier changed, is: the diff the regeneration makes is the record. A name that left a root is not
+        until ``MIGRATIONS.toml`` records it, and the generator refuses to write while any finding is not.
     """
 
     problem: str
@@ -1495,17 +1487,19 @@ def snapshot_findings(
 ) -> list[Finding]:
     """How the installed surface differs from the snapshot, each difference with its remedy.
 
-    Args:
-        installed: The surface the package exports now.
-        recorded: The checked-in snapshot.
-        newest: ``MIGRATIONS.toml``'s first section, where a name leaving a root now is recorded.
-        released: Every ``root.name`` the final release the newest section follows exported
-            (:func:`released_names`), or ``None`` when that is not known, and then every name that left needs a
-            record. A name outside it never shipped in a release: it may leave with only a regeneration, and
-            ``MIGRATIONS.toml`` must not record it.
-
-    Returns:
-        The findings: removals in snapshot order, then additions and changes in walk order.
+    :param installed: The surface the package exports now.
+    :ptype installed: dict[str, SurfaceEntry]
+    :param recorded: The checked-in snapshot.
+    :ptype recorded: dict[str, SurfaceEntry]
+    :param newest: ``MIGRATIONS.toml``'s first section, where a name leaving a root now is recorded.
+    :ptype newest: Release
+    :param released: Every ``root.name`` the final release the newest section follows exported
+        (:func:`released_names`), or ``None`` when that is not known, and then every name that left needs a
+        record. A name outside it never shipped in a release: it may leave with only a regeneration, and
+        ``MIGRATIONS.toml`` must not record it.
+    :ptype released: set[str] | None
+    :return: The findings: removals in snapshot order, then additions and changes in walk order.
+    :rtype: list[Finding]
     """
     findings: list[Finding] = []
     moved = {m.old: m for m in newest.migrations()}
@@ -1625,13 +1619,14 @@ def duplicate_findings(
     re-exports the analysis results its operations hand back, because ``actions`` may reach analysis only
     through ``ops``). Two different objects under one name is never a re-export: rename one.
 
-    Args:
-        exports: Each public name → (root, object) for every root that exports it.
-        homes: Each name exported twice → the root holding its defining module.
-        reexports: The declarations.
-
-    Returns:
-        The findings, by name. None of them is fixed by regenerating the snapshot.
+    :param exports: Each public name → (root, object) for every root that exports it.
+    :ptype exports: dict[str, list[tuple[str, Any]]]
+    :param homes: Each name exported twice → the root holding its defining module.
+    :ptype homes: dict[str, str]
+    :param reexports: The declarations.
+    :ptype reexports: ReExports
+    :return: The findings, by name. None of them is fixed by regenerating the snapshot.
+    :rtype: list[Finding]
     """
     findings = []
     for name, where in sorted(exports.items()):
@@ -1722,8 +1717,7 @@ def tag_exists(tag: str) -> bool:
 def package_at(tag: str) -> bool:
     """Whether the package is in the tree at ``tag``: a release from before it was added shipped none of its names.
 
-    Raises:
-        SystemExit: When the checkout lacks ``tag``, which says nothing about the package.
+    :raises SystemExit: When the checkout lacks ``tag``, which says nothing about the package.
     """
     if not tag_exists(tag):
         raise SystemExit(f"{tag} is not a tag in this checkout: fetch the tags (git fetch --tags)")
@@ -1805,11 +1799,14 @@ def section_findings(
     each new home it names must export the name in ``after``. A name that was not in ``before`` never shipped,
     so it has not left whatever happened to it since, and recording it is refused.
 
-    Args:
-        release: The section, with its ``since``.
-        before: The surface at ``since`` (:func:`exports_at`); empty when the package was not in that release.
-        after: The surface at the section's own tag, or the working tree before it is tagged.
-        after_label: How ``after`` is named in a finding.
+    :param release: The section, with its ``since``.
+    :ptype release: Release
+    :param before: The surface at ``since`` (:func:`exports_at`); empty when the package was not in that release.
+    :ptype before: dict[str, set[str]]
+    :param after: The surface at the section's own tag, or the working tree before it is tagged.
+    :ptype after: dict[str, set[str]]
+    :param after_label: How ``after`` is named in a finding.
+    :ptype after_label: str
     """
     left = departures(before, after)
     recorded = {m.old: m for m in release.migrations()}
@@ -1892,12 +1889,12 @@ def newest_release_tag(every: Iterable[str], version: str) -> str | None:
     the tree prepares has shipped, and the tree's records follow it. A pre-release tag is not a release
     (:data:`_RELEASE_TAG`) and is never followed, wherever it is.
 
-    Args:
-        every: Every tag in the checkout, on any ref.
-        version: The version the tree prepares, as ``pyproject.toml`` states it.
-
-    Returns:
-        The newest such tag, or ``None`` when there is none.
+    :param every: Every tag in the checkout, on any ref.
+    :ptype every: Iterable[str]
+    :param version: The version the tree prepares, as ``pyproject.toml`` states it.
+    :ptype version: str
+    :return: The newest such tag, or ``None`` when there is none.
+    :rtype: str | None
     """
     prepared = _version_key(f"v{version}")
     finals = {
@@ -1929,11 +1926,13 @@ def labelling_findings(migrations: Migrations, tag: str | None, *, shipped: bool
     before, and ``release_notes.py v<tag>`` finds nothing. So once the tree follows a tag, that tag must have a
     section of its own, and an ``unreleased`` section must start at it.
 
-    Args:
-        migrations: The sections.
-        tag: The newest release the tree follows, or ``None`` when the checkout has no release tag.
-        shipped: Whether the package was in the tree at ``tag`` (:func:`package_at`). A release from before the
-            package existed shipped nothing of it and has no section; the package's first section starts at it.
+    :param migrations: The sections.
+    :ptype migrations: Migrations
+    :param tag: The newest release the tree follows, or ``None`` when the checkout has no release tag.
+    :ptype tag: str | None
+    :param shipped: Whether the package was in the tree at ``tag`` (:func:`package_at`). A release from before the
+        package existed shipped nothing of it and has no section; the package's first section starts at it.
+    :ptype shipped: bool
     """
     if tag is None:
         return [

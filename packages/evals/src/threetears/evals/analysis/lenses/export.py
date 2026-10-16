@@ -104,19 +104,18 @@ def export_records_csv(records: list[ScoreRecord] | list[dict[str, Any]]) -> str
     exist only when some record carries one, so an export of judge-graded runs alone is
     byte-identical to what it was before the grade had anywhere to go.
 
-    Args:
-        records: The projection rows, as :class:`ScoreRecord` instances or their
-            JSON-safe dumps. Both are accepted because the service dumps the
-            projection to JSON before the surfaces render it, while a direct
-            caller has the models in hand.
-
-    Returns:
-        CSV text with a header row. A ``None`` value renders as an empty cell —
+    :param records: The projection rows, as :class:`ScoreRecord` instances or their
+        JSON-safe dumps. Both are accepted because the service dumps the
+        projection to JSON before the surfaces render it, while a direct
+        caller has the models in hand.
+    :ptype records: list[ScoreRecord] | list[dict[str, Any]]
+    :return: CSV text with a header row. A ``None`` value renders as an empty cell —
         never ``0`` or ``"None"`` — so an unmeasured observation is blank, not a
         fabricated zero, and ingests into pandas as ``NaN``. A cell whose text
         would trigger a spreadsheet formula (leading ``=``/``+``/``-``/``@``) is
         forced to text via :func:`_csv_safe`, except a legitimate number, which is
         left verbatim.
+    :rtype: str
     """
     rows = [record.model_dump(mode="json") if isinstance(record, ScoreRecord) else record for record in records]
     factor_keys = sorted({key for row in rows for key in (row.get("factors") or {})})
@@ -151,15 +150,13 @@ def serialize_export(projection: ScoreProjection, *, fmt: str) -> str:
     same misreading the counts exist to prevent everywhere else. CSV is the flat
     rows alone; a reader who needs the exclusion accounting takes JSON.
 
-    Args:
-        projection: The rows to export, plus what the projection dropped.
-        fmt: ``"csv"`` or ``"json"``.
-
-    Returns:
-        The serialized body.
-
-    Raises:
-        ExportError: ``fmt`` is not one this surface can emit.
+    :param projection: The rows to export, plus what the projection dropped.
+    :ptype projection: ScoreProjection
+    :param fmt: ``"csv"`` or ``"json"``.
+    :ptype fmt: str
+    :return: The serialized body.
+    :rtype: str
+    :raises ExportError: ``fmt`` is not one this surface can emit.
     """
     match export_format(fmt):
         case "csv":
@@ -171,14 +168,11 @@ def serialize_export(projection: ScoreProjection, *, fmt: str) -> str:
 def export_format(fmt: str) -> ExportFormat:
     """The export format a caller named, or the refusal naming the ones there are.
 
-    Args:
-        fmt: The format as the caller spelled it.
-
-    Returns:
-        It, as an :data:`ExportFormat`.
-
-    Raises:
-        ExportError: ``fmt`` is not one this surface can emit.
+    :param fmt: The format as the caller spelled it.
+    :ptype fmt: str
+    :return: It, as an :data:`ExportFormat`.
+    :rtype: ExportFormat
+    :raises ExportError: ``fmt`` is not one this surface can emit.
     """
     for known in EXPORT_FORMATS:
         if fmt == known:
@@ -206,15 +200,13 @@ class ScoreExport(EvalBaseModel):
 def export_projection(projection: ScoreProjection, *, fmt: str) -> ScoreExport:
     """Serialize a projection in the named format, with the counts that qualify its rows.
 
-    Args:
-        projection: The rows to export, plus what the projection dropped.
-        fmt: ``"csv"`` or ``"json"``.
-
-    Returns:
-        The export.
-
-    Raises:
-        ExportError: ``fmt`` is not one this surface can emit.
+    :param projection: The rows to export, plus what the projection dropped.
+    :ptype projection: ScoreProjection
+    :param fmt: ``"csv"`` or ``"json"``.
+    :ptype fmt: str
+    :return: The export.
+    :rtype: ScoreExport
+    :raises ExportError: ``fmt`` is not one this surface can emit.
     """
     known = export_format(fmt)
     return ScoreExport(

@@ -53,12 +53,12 @@ _DELIBERATE_MENTIONS = {
 def _sources(root: Path, *globs: str) -> list[Path]:
     """Every source file under ``root`` matching ``globs``, excluding build output.
 
-    Args:
-        root: The tree to walk.
-        *globs: Patterns to collect.
-
-    Returns:
-        The matching paths, sorted.
+    :param root: The tree to walk.
+    :ptype root: Path
+    :param *globs: Patterns to collect.
+    :ptype globs: str
+    :return: The matching paths, sorted.
+    :rtype: list[Path]
     """
     found: list[Path] = []
     for pattern in globs:

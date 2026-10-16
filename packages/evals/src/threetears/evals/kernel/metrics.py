@@ -289,13 +289,13 @@ def measure_title(name: str, reader_name: str | None = None) -> str:
     bare beside an arm reads as what the arm costs, and in a judged run it is that plus what the judge cost. So
     wherever it is shown at all it is labelled measuring spend, apart from the candidate's own.
 
-    Args:
-        name: The measure's key.
-        reader_name: Its reader-facing name, when it has one.
-
-    Returns:
-        The reader-facing name, else the key, with ``, measuring spend`` after it for a
+    :param name: The measure's key.
+    :ptype name: str
+    :param reader_name: Its reader-facing name, when it has one.
+    :ptype reader_name: str | None
+    :return: The reader-facing name, else the key, with ``, measuring spend`` after it for a
         :data:`MEASURING_SPEND_MEASURES` member whose title does not already say so.
+    :rtype: str
     """
     title = reader_name or name
     if name in MEASURING_SPEND_MEASURES and "measuring spend" not in title.casefold():
@@ -527,11 +527,10 @@ class MetricDescriptor(EvalBaseModel):
         """Whether one observation of this check is on its wrong side: False (or 0) where higher is better, True
         (or above 0) where lower is. Never for a measure that is no check, nor for a text value.
 
-        Args:
-            value: The observation.
-
-        Returns:
-            Whether it fails its trial.
+        :param value: The observation.
+        :ptype value: bool | float | str
+        :return: Whether it fails its trial.
+        :rtype: bool
         """
         if not self.is_check or isinstance(value, str):
             return False
@@ -621,14 +620,11 @@ def strictest_class(*classes: TransferabilityClass) -> TransferabilityClass:
     it can only ever refuse a pooling that would have been allowed, never permit one that
     should have been refused.
 
-    Args:
-        *classes: One or more transferability classes.
-
-    Returns:
-        The strictest class among them.
-
-    Raises:
-        ValueError: If no classes are given — there is no honest answer to return.
+    :param *classes: One or more transferability classes.
+    :ptype classes: TransferabilityClass
+    :return: The strictest class among them.
+    :rtype: TransferabilityClass
+    :raises ValueError: If no classes are given — there is no honest answer to return.
     """
     if not classes:
         raise ValueError("strictest_class() requires at least one class")
@@ -711,13 +707,14 @@ def _compare_trio(base: str, label: str, cls: TransferabilityClass) -> tuple[Met
     span rather than the base's bounds, and "higher is better" only holds because it is
     oriented B minus A.
 
-    Args:
-        base: The underlying measure name (e.g. ``composite``).
-        label: Human phrase for the measure, used in the generated descriptions.
-        cls: The base measure's transferability class, carried to all three.
-
-    Returns:
-        The ``_a``, ``_b`` and ``_delta`` descriptors.
+    :param base: The underlying measure name (e.g. ``composite``).
+    :ptype base: str
+    :param label: Human phrase for the measure, used in the generated descriptions.
+    :ptype label: str
+    :param cls: The base measure's transferability class, carried to all three.
+    :ptype cls: TransferabilityClass
+    :return: The ``_a``, ``_b`` and ``_delta`` descriptors.
+    :rtype: tuple[MetricDescriptor, ...]
     """
     side = tuple(
         MetricDescriptor(
@@ -2053,11 +2050,10 @@ METRIC_DESCRIPTORS: dict[str, MetricDescriptor] = {d.name: d for d in _SEED}
 def declaration_of(descriptor: MetricDescriptor) -> MeasureDeclaration:
     """The reading-side half of a host's descriptor, as a run launched under it freezes it.
 
-    Args:
-        descriptor: A measure the host declares.
-
-    Returns:
-        Its direction, merit axis, guardrail flag, margin and range.
+    :param descriptor: A measure the host declares.
+    :ptype descriptor: MetricDescriptor
+    :return: Its direction, merit axis, guardrail flag, margin and range.
+    :rtype: MeasureDeclaration
     """
     return MeasureDeclaration(
         higher_is_better=descriptor.higher_is_better,
@@ -2071,12 +2067,12 @@ def declaration_of(descriptor: MetricDescriptor) -> MeasureDeclaration:
 def read_as_declared(descriptor: MetricDescriptor, declaration: MeasureDeclaration) -> MetricDescriptor:
     """The descriptor read on a stored declaration: everything the reading host says of it, but how to read it.
 
-    Args:
-        descriptor: The reading host's descriptor of the measure.
-        declaration: How the runs being read were launched to read it (``EvalRun.declared_measures``).
-
-    Returns:
-        The descriptor with the declaration's direction, merit axis, guardrail flag, margin and range.
+    :param descriptor: The reading host's descriptor of the measure.
+    :ptype descriptor: MetricDescriptor
+    :param declaration: How the runs being read were launched to read it (``EvalRun.declared_measures``).
+    :ptype declaration: MeasureDeclaration
+    :return: The descriptor with the declaration's direction, merit axis, guardrail flag, margin and range.
+    :rtype: MetricDescriptor
     """
     return descriptor.model_copy(update=declaration.model_dump())
 
@@ -2117,11 +2113,10 @@ def reader_name_defects(descriptors: Iterable[MetricDescriptor]) -> list[str]:
     without case — two columns headed alike are one column to a reader, and a chart naming both twice refuses
     to draw.
 
-    Args:
-        descriptors: The descriptors to check, together.
-
-    Returns:
-        Human-readable defects, empty when every descriptor names itself and no two names collide.
+    :param descriptors: The descriptors to check, together.
+    :ptype descriptors: Iterable[MetricDescriptor]
+    :return: Human-readable defects, empty when every descriptor names itself and no two names collide.
+    :rtype: list[str]
     """
     listed = list(descriptors)
     defects = [
@@ -2179,12 +2174,12 @@ def is_code_graded(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
     :class:`MeasureFamily` the host declared on ``measures``. A measure with no family — one nobody
     described — is not code-graded: there is nothing to say it is.
 
-    Args:
-        descriptor: The measure's descriptor.
-        measures: The host's measure registry, which holds its declared families.
-
-    Returns:
-        True for a code-graded family.
+    :param descriptor: The measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :param measures: The host's measure registry, which holds its declared families.
+    :ptype measures: MeasureRegistry
+    :return: True for a code-graded family.
+    :rtype: bool
     """
     if descriptor.family is None:
         return False
@@ -2208,12 +2203,12 @@ def summary_population(descriptor: MetricDescriptor, undeclared: MeasurePopulati
     Every other measure is read over its declared population, else ``undeclared``, the population of the
     surface asking.
 
-    Args:
-        descriptor: The measure's descriptor.
-        undeclared: The population of the surface asking, for a measure that declares none.
-
-    Returns:
-        The population the summary is computed over, and states.
+    :param descriptor: The measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :param undeclared: The population of the surface asking, for a measure that declares none.
+    :ptype undeclared: MeasurePopulation
+    :return: The population the summary is computed over, and states.
+    :rtype: MeasurePopulation
     """
     if reads_turns(descriptor) and descriptor.population != "all_observed":
         return "delivered"
@@ -2235,12 +2230,12 @@ def materiality(threshold: float | None, delta: float) -> Materiality:
     conservative — a host that has not said what is too small to matter gets every difference
     treated as one that might.
 
-    Args:
-        threshold: The measure's declared threshold, in its own units, or None when it declared none.
-        delta: The difference, in the measure's own units. Its sign is ignored.
-
-    Returns:
-        ``immaterial`` only below a declared threshold.
+    :param threshold: The measure's declared threshold, in its own units, or None when it declared none.
+    :ptype threshold: float | None
+    :param delta: The difference, in the measure's own units. Its sign is ignored.
+    :ptype delta: float
+    :return: ``immaterial`` only below a declared threshold.
+    :rtype: Materiality
     """
     return "immaterial" if threshold is not None and abs(delta) < threshold else "material"
 
@@ -2254,12 +2249,12 @@ def run_margin_refusal(name: str, margin: object) -> str | None:
     which no guardrail is and whose descriptor declares no margin of its own. ``accuracy`` is the one today. The
     range is what lets its equivalence test hold its error rate, and it is already declared.
 
-    Args:
-        name: The measure, by its key.
-        margin: The margin, in the measure's units.
-
-    Returns:
-        The refusal, naming what can carry a margin; None when the margin can be declared.
+    :param name: The measure, by its key.
+    :ptype name: str
+    :param margin: The margin, in the measure's units.
+    :ptype margin: object
+    :return: The refusal, naming what can carry a margin; None when the margin can be declared.
+    :rtype: str | None
     """
     descriptor = METRIC_DESCRIPTORS.get(name)
     if descriptor is None:
@@ -2301,12 +2296,12 @@ def containment_defects(descriptor: MetricDescriptor, catalog: Mapping[str, Metr
     whole would never have been asked. A registry validates its own catalogue, and the engine
     validates its own — same rule, each over what it can actually see.
 
-    Args:
-        descriptor: The descriptor to check.
-        catalog: The catalogue its ``contained_by`` must resolve within.
-
-    Returns:
-        Human-readable defects, empty when the declaration holds.
+    :param descriptor: The descriptor to check.
+    :ptype descriptor: MetricDescriptor
+    :param catalog: The catalogue its ``contained_by`` must resolve within.
+    :ptype catalog: Mapping[str, MetricDescriptor]
+    :return: Human-readable defects, empty when the declaration holds.
+    :rtype: list[str]
     """
     if descriptor.contained_by is None:
         return []
@@ -2346,8 +2341,7 @@ def _require_name(name: str) -> None:
     for it would push the problem downstream to a surface that renders a blank row, so it
     fails here where the caller can still see why.
 
-    Raises:
-        ValueError: If the name is empty or whitespace-only.
+    :raises ValueError: If the name is empty or whitespace-only.
     """
     if not name.strip():
         raise ValueError("measure name must be a non-empty string")
@@ -2367,15 +2361,13 @@ def describe_rubric_dim(name: str, *, scale: RubricScale) -> MetricDescriptor:
     The scale is required, not defaulted: a pass/fail dimension's values are 1/0 and its mean is a
     pass rate, so describing it as 1-5 would mislabel every axis and bar drawn from it.
 
-    Args:
-        name: The dimension name, or a reserved dual-score axis id.
-        scale: How the dimension is answered. Ignored for a reserved axis, which is 1-5.
-
-    Returns:
-        The descriptor for that dimension.
-
-    Raises:
-        ValueError: If the name is blank.
+    :param name: The dimension name, or a reserved dual-score axis id.
+    :ptype name: str
+    :param scale: How the dimension is answered. Ignored for a reserved axis, which is 1-5.
+    :ptype scale: RubricScale
+    :return: The descriptor for that dimension.
+    :rtype: MetricDescriptor
+    :raises ValueError: If the name is blank.
     """
     _require_name(name)
     seeded = METRIC_DESCRIPTORS.get(name)
@@ -2400,14 +2392,11 @@ def describe_rubric_dim(name: str, *, scale: RubricScale) -> MetricDescriptor:
 def describe_goal_state(expression: str) -> MetricDescriptor:
     """Describe a goal-state check, whose measure name is the expression itself.
 
-    Args:
-        expression: The goal-state DSL expression as declared on the template.
-
-    Returns:
-        The descriptor for that check.
-
-    Raises:
-        ValueError: If the expression is blank.
+    :param expression: The goal-state DSL expression as declared on the template.
+    :ptype expression: str
+    :return: The descriptor for that check.
+    :rtype: MetricDescriptor
+    :raises ValueError: If the expression is blank.
     """
     _require_name(expression)
     return MetricDescriptor(
@@ -2443,14 +2432,11 @@ _REFERENCE_UNESCAPE = re.compile("|".join(re.escape(code) for code in _REFERENCE
 def goal_check_measure(expression: str) -> str:
     """The measure name a goal-state check's pass rate is reported under.
 
-    Args:
-        expression: The check, verbatim as its template or candidate kind wrote it.
-
-    Returns:
-        ``goal_state:<expression>``.
-
-    Raises:
-        ValueError: If the expression is blank.
+    :param expression: The check, verbatim as its template or candidate kind wrote it.
+    :ptype expression: str
+    :return: ``goal_state:<expression>``.
+    :rtype: str
+    :raises ValueError: If the expression is blank.
     """
     _require_name(expression)
     escaped = expression
@@ -2462,11 +2448,10 @@ def goal_check_measure(expression: str) -> str:
 def goal_check_of(name: str) -> str | None:
     """The check a measure name was minted for by :func:`goal_check_measure`, or None.
 
-    Args:
-        name: Any measure name.
-
-    Returns:
-        The check's verbatim text, or None when the name is not a check's measure.
+    :param name: Any measure name.
+    :ptype name: str
+    :return: The check's verbatim text, or None when the name is not a check's measure.
+    :rtype: str | None
     """
     if not name.startswith(GOAL_CHECK_MEASURE_PREFIX):
         return None
@@ -2485,14 +2470,11 @@ def describe_goal_check_rate(expression: str) -> MetricDescriptor:
     which is why the ``goal_state`` family is ranked on (:data:`CODE_GRADED_FAMILIES`). Defined by
     the check's own scenario, so two checks' rates never pool and neither transfers.
 
-    Args:
-        expression: The check, verbatim.
-
-    Returns:
-        The descriptor, named by :func:`goal_check_measure`.
-
-    Raises:
-        ValueError: If the expression is blank.
+    :param expression: The check, verbatim.
+    :ptype expression: str
+    :return: The descriptor, named by :func:`goal_check_measure`.
+    :rtype: MetricDescriptor
+    :raises ValueError: If the expression is blank.
     """
     return MetricDescriptor(
         name=goal_check_measure(expression),
@@ -2593,15 +2575,13 @@ def confusion_cell(expected: str, predicted: str) -> str:
     at a label's ends, which a stored result would otherwise strip; :func:`confusion_of` reads the two
     labels back exactly.
 
-    Args:
-        expected: The label the case expected.
-        predicted: The label the candidate gave.
-
-    Returns:
-        The cell, as one categorical value.
-
-    Raises:
-        ValueError: Either label is blank.
+    :param expected: The label the case expected.
+    :ptype expected: str
+    :param predicted: The label the candidate gave.
+    :ptype predicted: str
+    :return: The cell, as one categorical value.
+    :rtype: str
+    :raises ValueError: Either label is blank.
     """
     if not expected.strip() or not predicted.strip():
         raise ValueError("a confusion cell needs both an expected and a predicted label")
@@ -2611,11 +2591,10 @@ def confusion_cell(expected: str, predicted: str) -> str:
 def confusion_of(cell: str) -> tuple[str, str] | None:
     """The ``(expected, predicted)`` labels of a value :func:`confusion_cell` made, or None for anything else.
 
-    Args:
-        cell: A ``confusion_cell`` value.
-
-    Returns:
-        The two labels, or None when the value is not one confusion cell.
+    :param cell: A ``confusion_cell`` value.
+    :ptype cell: str
+    :return: The two labels, or None when the value is not one confusion cell.
+    :rtype: tuple[str, str] | None
     """
     parts = cell.split(CONFUSION_SEPARATOR)
     if len(parts) != 2 or not all(part.strip() for part in parts):
@@ -2638,16 +2617,14 @@ def classifier_label_measure(statistic: ClassifierStatistic, label: str) -> str:
     Minted rather than authored, like :func:`goal_check_measure`: a label set is the host's and open,
     so the registry names each label's statistic and is the one reader of the name.
 
-    Args:
-        statistic: ``precision``, ``recall`` or ``f1``.
-        label: The label.
-
-    Returns:
-        ``classifier:<statistic>:<label>``, the label escaped as a figure reference requires and with the
+    :param statistic: ``precision``, ``recall`` or ``f1``.
+    :ptype statistic: ClassifierStatistic
+    :param label: The label.
+    :ptype label: str
+    :return: ``classifier:<statistic>:<label>``, the label escaped as a figure reference requires and with the
         whitespace at its ends encoded, so a summary's stripped name still names this label and no other.
-
-    Raises:
-        ValueError: The label is blank.
+    :rtype: str
+    :raises ValueError: The label is blank.
     """
     _require_name(label)
     escaped = label
@@ -2659,11 +2636,10 @@ def classifier_label_measure(statistic: ClassifierStatistic, label: str) -> str:
 def classifier_label_of(name: str) -> tuple[ClassifierStatistic, str] | None:
     """The ``(statistic, label)`` a name was minted for by :func:`classifier_label_measure`, or None.
 
-    Args:
-        name: Any measure name.
-
-    Returns:
-        The statistic and the label, verbatim, or None when the name is not a per-label measure.
+    :param name: Any measure name.
+    :ptype name: str
+    :return: The statistic and the label, verbatim, or None when the name is not a per-label measure.
+    :rtype: tuple[ClassifierStatistic, str] | None
     """
     if not name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX):
         return None
@@ -2677,12 +2653,12 @@ def classifier_label_of(name: str) -> tuple[ClassifierStatistic, str] | None:
 def describe_classifier_label(statistic: ClassifierStatistic, label: str) -> MetricDescriptor:
     """Describe one label's precision, recall or F1 — derived from a cell's confusion matrix.
 
-    Args:
-        statistic: ``precision``, ``recall`` or ``f1``.
-        label: The label.
-
-    Returns:
-        The descriptor, named by :func:`classifier_label_measure`, carrying the core statistic's meaning.
+    :param statistic: ``precision``, ``recall`` or ``f1``.
+    :ptype statistic: ClassifierStatistic
+    :param label: The label.
+    :ptype label: str
+    :return: The descriptor, named by :func:`classifier_label_measure`, carrying the core statistic's meaning.
+    :rtype: MetricDescriptor
     """
     core = METRIC_DESCRIPTORS[statistic]
     return core.model_copy(
@@ -2710,12 +2686,12 @@ def engine_owned_names(names: Iterable[str], *, written_by_the_engine: frozenset
     such a name in an open map reads under the core's meaning and pools into the engine's own distribution of it,
     ``n`` inflated. ``written_by_the_engine`` names the keys the map legitimately carries under core names.
 
-    Args:
-        names: The keys an open map carries.
-        written_by_the_engine: The core-named keys that map's own writer lands there.
-
-    Returns:
-        The engine-owned keys, less those.
+    :param names: The keys an open map carries.
+    :ptype names: Iterable[str]
+    :param written_by_the_engine: The core-named keys that map's own writer lands there.
+    :ptype written_by_the_engine: frozenset[str]
+    :return: The engine-owned keys, less those.
+    :rtype: list[str]
     """
     return sorted(
         name
@@ -2735,11 +2711,10 @@ def undeclarable_host_measures(names: Iterable[str]) -> list[str]:
     :func:`engine_owned_names` over ``host_measures``, whose one legitimate core-named write is the classifier
     track's own (:data:`CLASSIFIER_TRACK_MEASURES`).
 
-    Args:
-        names: The keys a kind landed.
-
-    Returns:
-        The engine-owned keys among them, the classifier track's excepted.
+    :param names: The keys a kind landed.
+    :ptype names: Iterable[str]
+    :return: The engine-owned keys among them, the classifier track's excepted.
+    :rtype: list[str]
     """
     return engine_owned_names(names, written_by_the_engine=CLASSIFIER_TRACK_MEASURES)
 
@@ -2768,13 +2743,14 @@ def partition_components(whole: str, *extra: dict[str, MetricDescriptor], measur
     carrying descriptors the registry does not seed (phase timings, resolved at read time)
     can contribute components without ever narrowing the set.
 
-    Args:
-        whole: The end-to-end measure name to find components of.
-        *extra: Additional descriptor maps to consider alongside the registry.
-        measures: The host's measure registry, whose declarations join the core's.
-
-    Returns:
-        The component names in sorted order; empty when nothing declares ``whole`` its container.
+    :param whole: The end-to-end measure name to find components of.
+    :ptype whole: str
+    :param *extra: Additional descriptor maps to consider alongside the registry.
+    :ptype extra: dict[str, MetricDescriptor]
+    :param measures: The host's measure registry, whose declarations join the core's.
+    :ptype measures: MeasureRegistry
+    :return: The component names in sorted order; empty when nothing declares ``whole`` its container.
+    :rtype: list[str]
     """
     found = {name for name, d in _describable_measures(measures).items() if d.contained_by == whole}
     for catalog in extra:
@@ -2808,15 +2784,18 @@ def remainder_withheld_reason(
     one is the other two's movement, attributed to measures this registry names, and calling it
     "unattributed" states the wrong conclusion.
 
-    Args:
-        part: The subsystem measure's name.
-        whole: The end-to-end measure's name.
-        described: ``part``'s descriptor as the caller resolves it, or None when it has none.
-        *extra: Descriptor maps whose components join the registry's (see :func:`partition_components`).
-        measures: The host's measure registry.
-
-    Returns:
-        The sentence a reader is owed in place of the number, or None when the remainder is sound.
+    :param part: The subsystem measure's name.
+    :ptype part: str
+    :param whole: The end-to-end measure's name.
+    :ptype whole: str
+    :param described: ``part``'s descriptor as the caller resolves it, or None when it has none.
+    :ptype described: MetricDescriptor | None
+    :param *extra: Descriptor maps whose components join the registry's (see :func:`partition_components`).
+    :ptype extra: dict[str, MetricDescriptor]
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
+    :return: The sentence a reader is owed in place of the number, or None when the remainder is sound.
+    :rtype: str | None
     """
     if described is None or described.contained_by != whole:
         return (
@@ -2844,12 +2823,12 @@ def describe_reported_measure(name: str, measures: MeasureRegistry) -> MetricDes
     unclassified while the summary reports it as measured. The bundle's catalog and the chart
     compiler both resolve through this, so they describe one measure one way.
 
-    Args:
-        name: A measure name appearing in a report.
-        measures: The host's measure registry.
-
-    Returns:
-        Its descriptor.
+    :param name: A measure name appearing in a report.
+    :ptype name: str
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
+    :return: Its descriptor.
+    :rtype: MetricDescriptor
     """
     seeded = describe_measure(name, measures)
     return seeded if seeded.family is not None else describe_phase_timing(name)
@@ -2865,14 +2844,11 @@ def describe_phase_timing(key: str) -> MetricDescriptor:
     inside the async delivery p95 elapsed phase" that does not exist. Only the caller holding the
     ``phase_timings`` mapping knows a key really is a phase, so only it may say so.
 
-    Args:
-        key: A key from ``EvalResult.phase_timings``.
-
-    Returns:
-        The descriptor for that phase.
-
-    Raises:
-        ValueError: If the key is blank.
+    :param key: A key from ``EvalResult.phase_timings``.
+    :ptype key: str
+    :return: The descriptor for that phase.
+    :rtype: MetricDescriptor
+    :raises ValueError: If the key is blank.
     """
     _require_name(key)
     seeded = METRIC_DESCRIPTORS.get(key)
@@ -2908,11 +2884,10 @@ def is_latency_measure(descriptor: MetricDescriptor) -> bool:
     does not declare latency under test), and what the analysis withholds from a result read under
     concurrency.
 
-    Args:
-        descriptor: The measure's descriptor.
-
-    Returns:
-        True for a measure of elapsed time.
+    :param descriptor: The measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :return: True for a measure of elapsed time.
+    :rtype: bool
     """
     return descriptor.merit_axis == "latency" or descriptor.unit in TIME_UNITS
 
@@ -2927,12 +2902,12 @@ def _host_declared(name: str, measures: MeasureRegistry) -> MetricDescriptor | N
     but would put the composition in the hot path, and the drift this guards against is in
     WHICH catalogues are consulted, which a test can see.
 
-    Args:
-        name: The measure to ask the host about.
-        measures: The host's measure registry.
-
-    Returns:
-        The host's descriptor, or ``None``.
+    :param name: The measure to ask the host about.
+    :ptype name: str
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
+    :return: The host's descriptor, or ``None``.
+    :rtype: MetricDescriptor | None
     """
     return measures.get(name)
 
@@ -2946,11 +2921,10 @@ def _describable_measures(measures: MeasureRegistry) -> dict[str, MetricDescript
     (:class:`~threetears.evals.quick.contract.Eval`) refuses a grader so named before anything runs. The order
     here is that rule stated where it can be read, not a second defence.
 
-    Args:
-        measures: The host's measure registry.
-
-    Returns:
-        ``{name: descriptor}``. The core alone for a host that declares no measures.
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
+    :return: ``{name: descriptor}``. The core alone for a host that declares no measures.
+    :rtype: dict[str, MetricDescriptor]
     """
     host = {name: d for name in measures.names if (d := measures.get(name)) is not None}
     return {**host, **METRIC_DESCRIPTORS}
@@ -2994,15 +2968,13 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
     be silently wrong — so resolve through the family-specific function whenever the family
     is known, and treat this one as the fallback for names arriving without context.
 
-    Args:
-        name: Any measure name.
-        measures: The host's measure registry.
-
-    Returns:
-        A descriptor. Never ``None``, and never raises merely because a name is unknown.
-
-    Raises:
-        ValueError: If the name is blank — see :func:`_require_name`.
+    :param name: Any measure name.
+    :ptype name: str
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
+    :return: A descriptor. Never ``None``, and never raises merely because a name is unknown.
+    :rtype: MetricDescriptor
+    :raises ValueError: If the name is blank — see :func:`_require_name`.
     """
     _require_name(name)
     seeded = METRIC_DESCRIPTORS.get(name)
@@ -3050,11 +3022,10 @@ def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
     lower-is-better boolean's passes are its false count and a pass/fail scorer's the trials it passed. The one list
     a rule's declared readings are checked against and the page's readings are drawn from, so the two never disagree.
 
-    Args:
-        descriptors: The measures, as their catalogue describes them.
-
-    Returns:
-        Measure name -> ``True`` where a pass is its higher end, ``False`` where it is its lower.
+    :param descriptors: The measures, as their catalogue describes them.
+    :ptype descriptors: Iterable[MetricDescriptor]
+    :return: Measure name -> ``True`` where a pass is its higher end, ``False`` where it is its lower.
+    :rtype: dict[str, bool]
     """
     return {
         descriptor.name: bool(descriptor.higher_is_better)
@@ -3088,14 +3059,15 @@ def list_metrics(
     the unfiltered call still returns every measure. The two filters compose, so a caller can ask
     for a family's subsystem-isolated measures alone.
 
-    Args:
-        measures: The host's measure registry.
-        family: Restrict to a single family, or None for all.
-        attribution_scope: Restrict to ``subsystem``-isolated or ``end_to_end`` measures, or
-            None for both.
-
-    Returns:
-        Descriptors sorted by name.
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
+    :param family: Restrict to a single family, or None for all.
+    :ptype family: MetricFamily | None
+    :param attribution_scope: Restrict to ``subsystem``-isolated or ``end_to_end`` measures, or
+        None for both.
+    :ptype attribution_scope: AttributionScope | None
+    :return: Descriptors sorted by name.
+    :rtype: list[MetricDescriptor]
     """
     values = list(_describable_measures(measures).values())
     if family is not None:

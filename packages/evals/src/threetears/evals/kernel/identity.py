@@ -109,15 +109,14 @@ def compute_content_hash(variation_params: dict[str, str] | None) -> str | None:
     ``variation_params`` is the whole of a test case's generated content — the
     opening utterance is rendered from the template at run time, not stored.
 
-    Args:
-        variation_params: The case's frozen axis values.
-
-    Returns:
-        The digest, or ``None`` when there is no generated content to pin. An
+    :param variation_params: The case's frozen axis values.
+    :ptype variation_params: dict[str, str] | None
+    :return: The digest, or ``None`` when there is no generated content to pin. An
         empty mapping returns ``None`` rather than the digest of ``{}``: such a
         case was never generated from axes at all, so its identity is its
         template plus its id, and giving it a content hash would invent a
         provenance it does not have.
+    :rtype: str | None
     """
     if not variation_params:
         return None
@@ -159,13 +158,12 @@ def compute_variant_key(levers: Mapping[str, SweepableValue]) -> str:
     different labels are the same variant, and hashing :attr:`SweepableValue.display` would split
     a cohort on a rename — the same reason a subject's label has never been part of a key.
 
-    Args:
-        levers: Axis name → the level this observation carried. Every value is already
-            content-addressed by the host, which is what lets a host the engine cannot see into
-            supply one at all (R9).
-
-    Returns:
-        A 64-character hex digest.
+    :param levers: Axis name → the level this observation carried. Every value is already
+        content-addressed by the host, which is what lets a host the engine cannot see into
+        supply one at all (R9).
+    :ptype levers: Mapping[str, SweepableValue]
+    :return: A 64-character hex digest.
+    :rtype: str
     """
     return canonical_digest({name: value.content_hash for name, value in levers.items()})
 
@@ -226,118 +224,133 @@ def compute_context_components(
 ) -> ContextComponents:
     """Compute each pinned condition separately so a mismatch names itself.
 
-    Args:
-        subject_id: Who was measured — the engine's own pooling boundary, which
-            :class:`~threetears.evals.schema.subject.SubjectSnapshot` requires and refuses to let be
-            blank. In the key because two subjects carrying nothing otherwise produce an identical
-            context key and pool as one condition, while a cross-subject composite is not a valid
-            measurement. The subject's LABEL is deliberately not here: a rename is a label change
-            and must not split a cohort.
-        subject_state: What the subject carried INTO the run, keyed by the host's own names and
-            already content-addressed by it. The symmetric sibling of the variant key's component
-            map: that one is what the subject *is*, this one is what it brought, and the split is
-            the one every host draws, since state hashed into the variant would mint a new variant
-            every time the subject remembered something. Stored as the MAP rather than digested,
-            because a comparison surface exists to badge WHICH condition moved and one hash over
-            the host's names cannot. ``{}`` is a recording — this subject carries nothing outside
-            its variant components — and ``None`` is an absence, which drops the component.
-        seeded_world: What this run froze before the subject's first turn — the world it
-            seeded, keyed by carrier, the turns it perturbed before, and the spec its kind validated.
-            Every entry is part of what the subject faced, so part of the
-            condition its results describe; a run that froze nothing passes an empty value per
-            carrier rather than omitting the argument, because "seeded nothing" is a condition
-            and not an absence. That is also why this is its own component rather than riding
-            beside a host value that a capture can fail to record: the two halves had different
-            availability, and sharing a component hid it. One mapping rather than a parameter per
-            carrier: a second consumer's async tool seeds a carrier this engine has never heard
-            of, and a named parameter for each would make the predicate grow a signature entry
-            per host tool.
-        template_id: The run's template, or ``None`` for an ad-hoc run.
-        test_case_ids: The frozen case set. Sorted before hashing so the order
-            they were resolved in cannot split an otherwise identical basis.
-        judge_model: The RESOLVED run-level judge — the model any dimension
-            without its own ``JudgeConfig`` is scored by. Resolved for the same
-            reason the simulator is: a declared value's ``None`` means "role
-            default", so two runs that both inherited would compare equal across
-            a change to that default. This names the run's PIN; which model
-            each dim was requested from is ``effective_judges``.
-        effective_judges: Per-dim attribution, ``{dim_id: resolved_model}`` — the
-            model each dim was REQUESTED from once the cascade (role default <
-            run pin < per-dim ``JudgeConfig.model``) is applied. A floating alias
-            can be served by a different model; ``RubricScore.served_model``
-            records the one that scored, and this key does not. Composed because
-            the pin alone would let two runs whose rubric dims were judged
-            by different models share a key and pool as one condition. Only
-            ``recorded`` attribution is eligible: a reconstruction infers what
-            each dim was requested from, from stored records, so hashing it would put an
-            inference in the namespace of measurements. ``None`` for a run that recorded none, which is a
-            reason to drop the component, not to hash around it.
-        judge_config_ids: The ``JudgeConfig`` set the run pinned at launch,
-            ``{dim_id: config_id}`` over the dims that carry one. Composed because
-            ``effective_judges`` names the model each dim was
-            requested from and says nothing about the prompt it was scored with — so two runs
-            differing only in their judge configuration would hash alike, which is the
-            difference a judge A/B exists to create. ``{}`` is a value here, not an
-            absence: it records that no scored dim carried a config. ``None`` is
-            the absence, and drops the component.
-        judge_temperature: The temperature every dim with no ``JudgeConfig`` was requested at. Composed
-            because a config's temperature rides its config id but an unconfigured dim's does not, so
-            without it a run judged at the provider's default and one judged at 0 would hash alike while
-            their judges sampled differently. The REQUEST, as ``judge_model`` is the pin: what each call was
-            sent at is on its score, and with the model pinned beside it the request decides what is sent.
-            ``None`` on an unjudged run, which records none (``EvalRun`` requires it on a judged one).
-        simulator_model: The RESOLVED simulator model.
-        cassette_mode: Whether tool output was live, captured, or replayed.
-        cassette_corpus_id: The corpus a replay run serves — ``None`` for a capture run, whose tools ran
-            live, and for a run with cassettes off.
-        tools_allowed: The tool allowlist frozen onto the run at launch, or ``None`` for a run that
-            bound nothing. It is frozen on the run BECAUSE the template is mutable, so
-            ``template_id`` in the case basis cannot stand for it: two runs on one template
-            spanning an edit to its allowlist would otherwise share a key while one candidate
-            could reach for capabilities the other could not — one name over two contents, which
-            is a wrong merge. ``None`` here is the one absence in this signature that is a
-            recorded LEVEL rather than a gap, so this component is always composed and two
-            unbounded runs hash equal.
-        scope_id: The storage scope the run executed in, carried into the ``scope``
-            component verbatim. Uninterpreted but **not** unused: it is part of the
-            context key's pre-image, so two scopes do not pool as one condition. The
-            analysis layer's scope really is inert metadata; this one is not, and the
-            two are the same value wearing different jobs.
-        world_placements: What the run did with each dimension the host's world declares —
-            seeded-and-perceived, seeded-and-unperceived, perceived-and-unseeded, or neither.
-            Composed because the world a subject is placed in is stimulus and two runs
-            that placed it differently are not repetitions of one condition. ``{}`` is a value
-            here, not an absence: it records that this host's world held nothing this run could
-            place. ``None`` is the absence — a run whose writer placed nothing — and drops the component.
-        apparatus_settings: The host-declared apparatus values the run's launch set, by dimension. ``{}``
-            is a level — the launch set none — so the component is always composed and two runs that set
-            none hash equal. Sorted for the reason ``effective_judges`` is.
-        omitted_roles: The declared apparatus dimensions this run does not HAVE — pinned to a rig seat
-            its kind does not fill — by
-            :meth:`~threetears.evals.kernel.host.profile.HostProfile.omits_apparatus` over what the run
-            recorded. Their inputs leave the roles pre-image entirely rather than hashing as
-            ``None``, because a host that grades with code has no judge pin — it did not fail to
-            record one. A host omitting every role input still composes the component, over an
-            empty pre-image: "this host pins no model roles" is a real and stable condition that
-            all its runs share, and it is distinct in shape from the absent component
-            ``include_roles=False`` produces.
-        include_roles: ``False`` omits the roles component entirely, for a run
-            missing any of its inputs — a simulator model its writer never recorded,
-            attribution that was never recorded or was only reconstructed, or a
-            judged run with no configuration set recorded. A roles digest built from whichever inputs
-            survived would be a *different* component wearing the same name, so
-            the honest move is to leave it absent.
-
-    Returns:
-        The populated components. Time is deliberately absent — it is a
+    :param subject_id: Who was measured — the engine's own pooling boundary, which
+        :class:`~threetears.evals.schema.subject.SubjectSnapshot` requires and refuses to let be
+        blank. In the key because two subjects carrying nothing otherwise produce an identical
+        context key and pool as one condition, while a cross-subject composite is not a valid
+        measurement. The subject's LABEL is deliberately not here: a rename is a label change
+        and must not split a cohort.
+    :ptype subject_id: str
+    :param subject_state: What the subject carried INTO the run, keyed by the host's own names and
+        already content-addressed by it. The symmetric sibling of the variant key's component
+        map: that one is what the subject *is*, this one is what it brought, and the split is
+        the one every host draws, since state hashed into the variant would mint a new variant
+        every time the subject remembered something. Stored as the MAP rather than digested,
+        because a comparison surface exists to badge WHICH condition moved and one hash over
+        the host's names cannot. ``{}`` is a recording — this subject carries nothing outside
+        its variant components — and ``None`` is an absence, which drops the component.
+    :ptype subject_state: Mapping[str, SweepableValue] | None
+    :param seeded_world: What this run froze before the subject's first turn — the world it
+        seeded, keyed by carrier, the turns it perturbed before, and the spec its kind validated.
+        Every entry is part of what the subject faced, so part of the
+        condition its results describe; a run that froze nothing passes an empty value per
+        carrier rather than omitting the argument, because "seeded nothing" is a condition
+        and not an absence. That is also why this is its own component rather than riding
+        beside a host value that a capture can fail to record: the two halves had different
+        availability, and sharing a component hid it. One mapping rather than a parameter per
+        carrier: a second consumer's async tool seeds a carrier this engine has never heard
+        of, and a named parameter for each would make the predicate grow a signature entry
+        per host tool.
+    :ptype seeded_world: Mapping[str, Any]
+    :param template_id: The run's template, or ``None`` for an ad-hoc run.
+    :ptype template_id: str | None
+    :param test_case_ids: The frozen case set. Sorted before hashing so the order
+        they were resolved in cannot split an otherwise identical basis.
+    :ptype test_case_ids: list[str]
+    :param judge_model: The RESOLVED run-level judge — the model any dimension
+        without its own ``JudgeConfig`` is scored by. Resolved for the same
+        reason the simulator is: a declared value's ``None`` means "role
+        default", so two runs that both inherited would compare equal across
+        a change to that default. This names the run's PIN; which model
+        each dim was requested from is ``effective_judges``.
+    :ptype judge_model: str | None
+    :param effective_judges: Per-dim attribution, ``{dim_id: resolved_model}`` — the
+        model each dim was REQUESTED from once the cascade (role default <
+        run pin < per-dim ``JudgeConfig.model``) is applied. A floating alias
+        can be served by a different model; ``RubricScore.served_model``
+        records the one that scored, and this key does not. Composed because
+        the pin alone would let two runs whose rubric dims were judged
+        by different models share a key and pool as one condition. Only
+        ``recorded`` attribution is eligible: a reconstruction infers what
+        each dim was requested from, from stored records, so hashing it would put an
+        inference in the namespace of measurements. ``None`` for a run that recorded none, which is a
+        reason to drop the component, not to hash around it.
+    :ptype effective_judges: dict[str, str] | None
+    :param judge_config_ids: The ``JudgeConfig`` set the run pinned at launch,
+        ``{dim_id: config_id}`` over the dims that carry one. Composed because
+        ``effective_judges`` names the model each dim was
+        requested from and says nothing about the prompt it was scored with — so two runs
+        differing only in their judge configuration would hash alike, which is the
+        difference a judge A/B exists to create. ``{}`` is a value here, not an
+        absence: it records that no scored dim carried a config. ``None`` is
+        the absence, and drops the component.
+    :ptype judge_config_ids: dict[str, str] | None
+    :param judge_temperature: The temperature every dim with no ``JudgeConfig`` was requested at. Composed
+        because a config's temperature rides its config id but an unconfigured dim's does not, so
+        without it a run judged at the provider's default and one judged at 0 would hash alike while
+        their judges sampled differently. The REQUEST, as ``judge_model`` is the pin: what each call was
+        sent at is on its score, and with the model pinned beside it the request decides what is sent.
+        ``None`` on an unjudged run, which records none (``EvalRun`` requires it on a judged one).
+    :ptype judge_temperature: float | None
+    :param simulator_model: The RESOLVED simulator model.
+    :ptype simulator_model: str | None
+    :param cassette_mode: Whether tool output was live, captured, or replayed.
+    :ptype cassette_mode: str
+    :param cassette_corpus_id: The corpus a replay run serves — ``None`` for a capture run, whose tools ran
+        live, and for a run with cassettes off.
+    :ptype cassette_corpus_id: str | None
+    :param tools_allowed: The tool allowlist frozen onto the run at launch, or ``None`` for a run that
+        bound nothing. It is frozen on the run BECAUSE the template is mutable, so
+        ``template_id`` in the case basis cannot stand for it: two runs on one template
+        spanning an edit to its allowlist would otherwise share a key while one candidate
+        could reach for capabilities the other could not — one name over two contents, which
+        is a wrong merge. ``None`` here is the one absence in this signature that is a
+        recorded LEVEL rather than a gap, so this component is always composed and two
+        unbounded runs hash equal.
+    :ptype tools_allowed: list[str] | None
+    :param scope_id: The storage scope the run executed in, carried into the ``scope``
+        component verbatim. Uninterpreted but **not** unused: it is part of the
+        context key's pre-image, so two scopes do not pool as one condition. The
+        analysis layer's scope really is inert metadata; this one is not, and the
+        two are the same value wearing different jobs.
+    :ptype scope_id: str
+    :param world_placements: What the run did with each dimension the host's world declares —
+        seeded-and-perceived, seeded-and-unperceived, perceived-and-unseeded, or neither.
+        Composed because the world a subject is placed in is stimulus and two runs
+        that placed it differently are not repetitions of one condition. ``{}`` is a value
+        here, not an absence: it records that this host's world held nothing this run could
+        place. ``None`` is the absence — a run whose writer placed nothing — and drops the component.
+    :ptype world_placements: Mapping[str, str] | None
+    :param apparatus_settings: The host-declared apparatus values the run's launch set, by dimension. ``{}``
+        is a level — the launch set none — so the component is always composed and two runs that set
+        none hash equal. Sorted for the reason ``effective_judges`` is.
+    :ptype apparatus_settings: Mapping[str, Any]
+    :param omitted_roles: The declared apparatus dimensions this run does not HAVE — pinned to a rig seat
+        its kind does not fill — by
+        :meth:`~threetears.evals.kernel.host.profile.HostProfile.omits_apparatus` over what the run
+        recorded. Their inputs leave the roles pre-image entirely rather than hashing as
+        ``None``, because a host that grades with code has no judge pin — it did not fail to
+        record one. A host omitting every role input still composes the component, over an
+        empty pre-image: "this host pins no model roles" is a real and stable condition that
+        all its runs share, and it is distinct in shape from the absent component
+        ``include_roles=False`` produces.
+    :ptype omitted_roles: Collection[str]
+    :param include_roles: ``False`` omits the roles component entirely, for a run
+        missing any of its inputs — a simulator model its writer never recorded,
+        attribution that was never recorded or was only reconstructed, or a
+        judged run with no configuration set recorded. A roles digest built from whichever inputs
+        survived would be a *different* component wearing the same name, so
+        the honest move is to leave it absent.
+    :ptype include_roles: bool
+    :return: The populated components. Time is deliberately absent — it is a
         recorded coordinate for bucketing, and hashing it would make every key
         unique.
+    :rtype: ContextComponents
 
-    Note:
-        ``subject_state`` needs no ``include_`` gate beside it, and that is not an omission.
-        ``include_roles`` exists because a caller declares whether the roles component is
-        composable separately from the composer that builds it, so the two can disagree; the state
-        map's own nullity IS the declaration, so there is nothing for it to disagree with.
+    ``subject_state`` needs no ``include_`` gate beside it, and that is not an omission.
+    ``include_roles`` exists because a caller declares whether the roles component is
+    composable separately from the composer that builds it, so the two can disagree; the state
+    map's own nullity IS the declaration, so there is nothing for it to disagree with.
     """
     return ContextComponents(
         # The MAP, reduced to its identities. Not a digest of it: `ContextComponents` exists so a
@@ -407,26 +420,28 @@ def _roles_payload(
     same name as a complete one while meaning something narrower — a failure that
     would otherwise be silent.
 
-    Args:
-        judge_model: The resolved run-level pin.
-        simulator_model: The resolved simulator model.
-        effective_judges: Per-dim attribution, ``recorded`` provenance only.
-        judge_config_ids: The pinned config set. An empty dict is a value and
-            hashes; only ``None`` is absent.
-        judge_temperature: The temperature unconfigured dims were requested at.
-        omitted: The declared dimensions this host does not have. Their entries leave the
-            pre-image rather than hashing as ``None``, and are exempt from the refusal above:
-            an input a host never had is not an input it failed to record, and the two must not
-            produce the same digest. Named by DIMENSION, since that is what a host declares; the
-            attribution map is the value of ``judge_dim_divergence``, whose declared reader is
-            the one that reads it.
-
-    Returns:
-        The mapping to digest — ``{}`` when this host has none of the roles inputs, which is a
+    :param judge_model: The resolved run-level pin.
+    :ptype judge_model: str | None
+    :param simulator_model: The resolved simulator model.
+    :ptype simulator_model: str | None
+    :param effective_judges: Per-dim attribution, ``recorded`` provenance only.
+    :ptype effective_judges: dict[str, str] | None
+    :param judge_config_ids: The pinned config set. An empty dict is a value and
+        hashes; only ``None`` is absent.
+    :ptype judge_config_ids: dict[str, str] | None
+    :param judge_temperature: The temperature unconfigured dims were requested at.
+    :ptype judge_temperature: float | None
+    :param omitted: The declared dimensions this host does not have. Their entries leave the
+        pre-image rather than hashing as ``None``, and are exempt from the refusal above:
+        an input a host never had is not an input it failed to record, and the two must not
+        produce the same digest. Named by DIMENSION, since that is what a host declares; the
+        attribution map is the value of ``judge_dim_divergence``, whose declared reader is
+        the one that reads it.
+    :ptype omitted: Collection[str]
+    :return: The mapping to digest — ``{}`` when this host has none of the roles inputs, which is a
         recording rather than an absence and pools that host's runs with each other.
-
-    Raises:
-        ValueError: An input this host HAS is absent.
+    :rtype: dict[str, Any]
+    :raises ValueError: An input this host HAS is absent.
     """
     # ONE enumeration of the four, carrying the dimension a host declares, the pre-image key, and
     # the value. Building the refusal from one list and the payload from another is how the two
@@ -501,12 +516,11 @@ def missing_context_components(components: ContextComponents) -> list[str]:
     learned about it — so a stamped key read as complete where the identical derived key read as
     partial, and the badge an operator sees is built from whichever branch they happened to hit.
 
-    Args:
-        components: The components, stamped or freshly computed.
-
-    Returns:
-        The absent component names, in :data:`_ALL_OR_NONE_COMPONENTS` order. Empty means the
+    :param components: The components, stamped or freshly computed.
+    :ptype components: ContextComponents
+    :return: The absent component names, in :data:`_ALL_OR_NONE_COMPONENTS` order. Empty means the
         context is complete.
+    :rtype: list[str]
     """
     return [name for name in _ALL_OR_NONE_COMPONENTS if getattr(components, name) is None]
 
@@ -519,11 +533,10 @@ def compute_context_key(components: ContextComponents) -> str:
     can never collide with a complete one that happens to match on everything
     else — the two have different shapes, not merely different values.
 
-    Args:
-        components: The separately-computed pieces.
-
-    Returns:
-        A 64-character hex digest.
+    :param components: The separately-computed pieces.
+    :ptype components: ContextComponents
+    :return: A 64-character hex digest.
+    :rtype: str
     """
     present = {k: v for k, v in components.model_dump(mode="json").items() if v is not None}
     return canonical_digest(present)
@@ -600,12 +613,11 @@ def _refuse_undeclared_state(state: Mapping[str, SweepableValue] | None, profile
     instead — one table drives both the snapshot writer and the declarations — which is why this
     function can be narrow without leaving the hole its variant sibling closes by checking.
 
-    Args:
-        state: The subject's carried-state map, or ``None`` for a capture that has none.
-        profile: The host whose registry declares the apparatus inputs.
-
-    Raises:
-        StateCoordinateError: A name in ``state`` carries no ``apparatus`` declaration.
+    :param state: The subject's carried-state map, or ``None`` for a capture that has none.
+    :ptype state: Mapping[str, SweepableValue] | None
+    :param profile: The host whose registry declares the apparatus inputs.
+    :ptype profile: HostProfile
+    :raises StateCoordinateError: A name in ``state`` carries no ``apparatus`` declaration.
     """
     # ``is None`` and never truthiness, the rule this component states everywhere it is
     # described: ``{}`` is a recording — the subject carried no state outside its variant
@@ -625,13 +637,12 @@ def _refuse_undeclared_state(state: Mapping[str, SweepableValue] | None, profile
 def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContextIdentity:
     """Derive a run's context key from what was persisted, writing nothing.
 
-    Args:
-        run: The run to derive for, stamped or not.
-        profile: The host whose declarations decide which role inputs it has and which state
-            names are apparatus.
-
-    Returns:
-        The derived identity. ``partial`` is ``True`` and the component is absent
+    :param run: The run to derive for, stamped or not.
+    :ptype run: EvalRun
+    :param profile: The host whose declarations decide which role inputs it has and which state
+        names are apparatus.
+    :ptype profile: HostProfile
+    :return: The derived identity. ``partial`` is ``True`` and the component is absent
         for each of two independently-recoverable groups. ``roles`` is absent
         when a roles input **this host HAS** is unrecorded: a run whose writer
         recorded no simulator model, no judge model, no per-dim attribution (or
@@ -651,15 +662,13 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         state-less host's subject carried is not recoverable from anything
         stored now, so the component drops rather than being built from a
         subset.
+    :rtype: DerivedContextIdentity
+    :raises StateCoordinateError: The snapshot's state map names something the host's registry does
+        not declare as apparatus.
 
-    Raises:
-        StateCoordinateError: The snapshot's state map names something the host's registry does
-            not declare as apparatus.
-
-    Note:
-        Derivation replays the *current* predicate over the *stored* inputs, which is
-        why derived keys are labelled rather than stamped: a key the launch recorded is
-        evidence about conditions as they were, and a derivation is a reading of them.
+    Derivation replays the *current* predicate over the *stored* inputs, which is
+    why derived keys are labelled rather than stamped: a key the launch recorded is
+    evidence about conditions as they were, and a derivation is a reading of them.
     """
     # All the roles inputs THIS HOST HAS, or none: the component is "the roles this run held
     # fixed", and a digest over a partial set answers a question nobody asked while looking like
@@ -810,13 +819,13 @@ def resolve_context_identity(run: EvalRun, profile: HostProfile) -> DerivedConte
     its key as ``partial`` instead of sitting alongside complete ones. Which
     version did which is on :data:`IDENTITY_VERSION`.
 
-    Args:
-        run: The run to resolve.
-        profile: The host a re-derivation reads; unread for a run stamped at this version.
-
-    Returns:
-        The identity, with ``source`` recording whether it was recorded at
+    :param run: The run to resolve.
+    :ptype run: EvalRun
+    :param profile: The host a re-derivation reads; unread for a run stamped at this version.
+    :ptype profile: HostProfile
+    :return: The identity, with ``source`` recording whether it was recorded at
         launch or reconstructed here.
+    :rtype: DerivedContextIdentity
     """
     if run.context_key is not None and run.context_components is not None and run.identity_version == IDENTITY_VERSION:
         # The same predicate the derived branch uses, not a second reading of the same question:
@@ -844,20 +853,18 @@ def derive_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVar
     a lever is: without it, a host could put an axis into the key that it never declared, and no
     reader of the registry would be able to tell.
 
-    Args:
-        run: The run whose observations the key describes; every one of them shares it, since a
-            run is one arm.
-        profile: The host whose lever reader resolves the levels and whose registry checks them.
-
-    Returns:
-        The derived identity, carrying the resolved lever map beside the key so a caller can
+    :param run: The run whose observations the key describes; every one of them shares it, since a
+        run is one arm.
+    :ptype run: EvalRun
+    :param profile: The host whose lever reader resolves the levels and whose registry checks them.
+    :ptype profile: HostProfile
+    :return: The derived identity, carrying the resolved lever map beside the key so a caller can
         place the variant on an axis rather than holding an opaque digest.
-
-    Raises:
-        LeverCoordinateError: The host's reader resolved a lever the engine resolves itself, the
-            composed map named an axis the registry does not declare as a lever, it omitted a
-            declared one that carries no waiver, or the subject carries a component no lever carries
-            as itself.
+    :rtype: DerivedVariantIdentity
+    :raises LeverCoordinateError: The host's reader resolved a lever the engine resolves itself, the
+        composed map named an axis the registry does not declare as a lever, it omitted a
+        declared one that carries no waiver, or the subject carries a component no lever carries
+        as itself.
     """
     levers = profile.engine_levels(run)
     hosts = profile.variant_levers(run) if profile.variant_levers is not None else {}
@@ -937,20 +944,18 @@ def resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVa
     The version reported is therefore the one that RECORDED the map, not this build's: the map
     was resolved by that predicate and saying otherwise would date it wrongly.
 
-    Args:
-        run: The run whose observations the identity describes.
-        profile: The host the derived path reads; unread when the run recorded a map.
-
-    Returns:
-        The identity, carrying the recorded lever map when the run has one and the freshly
+    :param run: The run whose observations the identity describes.
+    :ptype run: EvalRun
+    :param profile: The host the derived path reads; unread when the run recorded a map.
+    :ptype profile: HostProfile
+    :return: The identity, carrying the recorded lever map when the run has one and the freshly
         derived map otherwise.
-
-    Raises:
-        ValueError: The run records a lever map but no ``identity_version``.
-        LeverCoordinateError: Only on the derived path — see :func:`derive_variant_identity`. A
-            recorded map is not checked against today's registry, because the registry describes
-            what a lever is NOW and the map records what one WAS; refusing the second against the
-            first is the same version coupling this function exists to remove.
+    :rtype: DerivedVariantIdentity
+    :raises ValueError: The run records a lever map but no ``identity_version``.
+    :raises LeverCoordinateError: Only on the derived path — see :func:`derive_variant_identity`. A
+        recorded map is not checked against today's registry, because the registry describes
+        what a lever is NOW and the map records what one WAS; refusing the second against the
+        first is the same version coupling this function exists to remove.
     """
     recorded = run.variant_levers
     if recorded is not None:
@@ -975,17 +980,15 @@ def variant_levers_of_run(run: EvalRun, profile: HostProfile) -> dict[str, Sweep
     the only one: stamping is a single deliberate write at the moment the run is assembled and
     every input is frozen, which is the rule this module opens with.
 
-    Args:
-        run: The assembled run, after its world placements are stamped.
-        profile: The host whose lever reader resolves the map.
-
-    Returns:
-        The resolved lever map.
-
-    Raises:
-        LeverCoordinateError: The host's map disagrees with its own registry — see
-            :func:`derive_variant_identity`. Raised at LAUNCH, where it belongs: the same
-            registry would refuse every observation this run is about to write.
+    :param run: The assembled run, after its world placements are stamped.
+    :ptype run: EvalRun
+    :param profile: The host whose lever reader resolves the map.
+    :ptype profile: HostProfile
+    :return: The resolved lever map.
+    :rtype: dict[str, SweepableValue]
+    :raises LeverCoordinateError: The host's map disagrees with its own registry — see
+        :func:`derive_variant_identity`. Raised at LAUNCH, where it belongs: the same
+        registry would refuse every observation this run is about to write.
     """
     return derive_variant_identity(run=run, profile=profile).levers
 

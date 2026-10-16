@@ -81,25 +81,26 @@ def set_reporter_case_archived(
     on restore, since a reason outliving the retirement describes a state the case is no longer in.
     No optimistic-concurrency guard: a case is written once by its freeze and never again but here.
 
-    Args:
-        storage: Anything satisfying :class:`ReporterCaseStore`.
-        test_case_id: The stored case.
-        scope_id: The partition it lives in.
-        archived: ``True`` retires it, ``False`` restores it.
-        reason: Why, in the operator's words. Recorded when retiring; cleared when restoring.
-
-    Returns:
-        The case as persisted.
-
-    Raises:
-        NotFoundError: No such case in that scope.
-        ValidationFailedError: It carries no reporter case — the reporter case bank is the one
-            launch path that reads the flag, so retiring any other case would record a retirement
-            no launch honours — or carries one under no template, which is in no bank for the same
-            reason, or carries one this build cannot read, or restoring it would make a second live
-            case of its pair (or its template holds a case this build cannot read, so that cannot be
-            decided).
-        StorageError: The updated case could not be persisted.
+    :param storage: Anything satisfying :class:`ReporterCaseStore`.
+    :ptype storage: ReporterCaseStore
+    :param test_case_id: The stored case.
+    :ptype test_case_id: str
+    :param scope_id: The partition it lives in.
+    :ptype scope_id: str
+    :param archived: ``True`` retires it, ``False`` restores it.
+    :ptype archived: bool
+    :param reason: Why, in the operator's words. Recorded when retiring; cleared when restoring.
+    :ptype reason: str | None
+    :return: The case as persisted.
+    :rtype: EvalTestCase
+    :raises NotFoundError: No such case in that scope.
+    :raises ValidationFailedError: It carries no reporter case — the reporter case bank is the one
+        launch path that reads the flag, so retiring any other case would record a retirement
+        no launch honours — or carries one under no template, which is in no bank for the same
+        reason, or carries one this build cannot read, or restoring it would make a second live
+        case of its pair (or its template holds a case this build cannot read, so that cannot be
+        decided).
+    :raises StorageError: The updated case could not be persisted.
     """
     from threetears.evals.schema.models import EvalTestCase
 

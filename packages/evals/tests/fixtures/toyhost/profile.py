@@ -155,26 +155,28 @@ def toyhost_profile(
 
     Every call builds a **fresh** world, so a test that seeds one cannot leak into the next.
 
-    Args:
-        with_world: When False, omit the world entirely — the shape a consumer that evaluates
-            production traffic has, whose representability is ``inapplicable`` rather than
-            ``uncovered``. Note this is not the same as registering an empty world, which says
-            the host HAS one and seeds nothing in it. Both shapes are real and the engine must
-            not collapse them.
-        optional_capabilities: When False, the same world registered without the optional host
-            capabilities conformance can use — no perturbation, no way to fire a condition. The
-            *hosts-without* half of the obligations table, and a real shape rather than a
-            degraded one. See :func:`~packages.evals.tests.fixtures.toyhost.world.toyhost_world`.
-        tunable_retrieval: When True, register retrieval tuning — an open family and the resolved
-            configuration it is merged into (see ``packages.evals.tests.fixtures.toyhost.sweepables``). Off by
-            default, so a suite that never sweeps retrieval carries no coordinate for it.
-        every_seat: When True, the extractor kind declares no seats and is held to every one — the shape a
-            suite exercising the judged variant (``packages.evals.tests.fixtures.toyhost.judge``) needs, whose
-            rubric a model scores. Off by default: the standard extractor is graded by a comparison rule and
-            fills no seat.
-
-    Returns:
-        A profile the engine cannot distinguish from any other host's except by its contents.
+    :param with_world: When False, omit the world entirely — the shape a consumer that evaluates
+        production traffic has, whose representability is ``inapplicable`` rather than
+        ``uncovered``. Note this is not the same as registering an empty world, which says
+        the host HAS one and seeds nothing in it. Both shapes are real and the engine must
+        not collapse them.
+    :ptype with_world: bool
+    :param optional_capabilities: When False, the same world registered without the optional host
+        capabilities conformance can use — no perturbation, no way to fire a condition. The
+        *hosts-without* half of the obligations table, and a real shape rather than a
+        degraded one. See :func:`~packages.evals.tests.fixtures.toyhost.world.toyhost_world`.
+    :ptype optional_capabilities: bool
+    :param tunable_retrieval: When True, register retrieval tuning — an open family and the resolved
+        configuration it is merged into (see ``packages.evals.tests.fixtures.toyhost.sweepables``). Off by
+        default, so a suite that never sweeps retrieval carries no coordinate for it.
+    :ptype tunable_retrieval: bool
+    :param every_seat: When True, the extractor kind declares no seats and is held to every one — the shape a
+        suite exercising the judged variant (``packages.evals.tests.fixtures.toyhost.judge``) needs, whose
+        rubric a model scores. Off by default: the standard extractor is graded by a comparison rule and
+        fills no seat.
+    :ptype every_seat: bool
+    :return: A profile the engine cannot distinguish from any other host's except by its contents.
+    :rtype: HostProfile
     """
     world, _state = toyhost_world(optional_capabilities=optional_capabilities)
     return HostProfile(

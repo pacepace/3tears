@@ -95,16 +95,13 @@ _LAZY_EXPORTS: Mapping[str, str] = MappingProxyType(
 def __getattr__(name: str) -> Any:  # Any: __version__ is a str, and a lazy export is whatever its module defines
     """Resolve :data:`__version__` from the distribution's metadata, and each name of ``_LAZY_EXPORTS``, on first read.
 
-    Args:
-        name: The attribute asked for: ``__version__``, or one of the exported names (``Eval``, ``Model``, ...).
-
-    Returns:
-        The installed distribution's version string, or the exported object.
-
-    Raises:
-        AttributeError: For any other name, as a module normally would.
-        importlib.metadata.PackageNotFoundError: When no ``3tears-evals`` distribution is installed, so the
-            version cannot be stated; a host records the version only from an installed build.
+    :param name: The attribute asked for: ``__version__``, or one of the exported names (``Eval``, ``Model``, ...).
+    :ptype name: str
+    :return: The installed distribution's version string, or the exported object.
+    :rtype: Any
+    :raises AttributeError: For any other name, as a module normally would.
+    :raises importlib.metadata.PackageNotFoundError: When no ``3tears-evals`` distribution is installed, so the
+        version cannot be stated; a host records the version only from an installed build.
     """
     if name == "__version__":
         return _distribution_version("3tears-evals")
@@ -144,13 +141,12 @@ PUBLIC_ROOTS: tuple[str, ...] = (
 class RootExtra:
     """What one optional public root needs installed before it imports: the extra, and the modules it brings.
 
-    Attributes:
-        extra: The extra to install, as ``pip install "3tears-evals[<extra>]"`` names it.
-        modules: Every module the root imports that the base install does not provide, by the absolute name an
-            ``import`` statement gives it (``fastmcp``), sorted: what must be importable for the root to import. A
-            gate checks each with ``importlib.util.find_spec`` rather than read the manifest. The root may fail on
-            any one of them first, so a gate that checks only the extra's own distribution misses an install that
-            has it and lacks another.
+    :ivar extra: The extra to install, as ``pip install "3tears-evals[<extra>]"`` names it.
+    :ivar modules: Every module the root imports that the base install does not provide, by the absolute name an
+        ``import`` statement gives it (``fastmcp``), sorted: what must be importable for the root to import. A
+        gate checks each with ``importlib.util.find_spec`` rather than read the manifest. The root may fail on
+        any one of them first, so a gate that checks only the extra's own distribution misses an install that
+        has it and lacks another.
     """
 
     extra: str
@@ -184,8 +180,7 @@ _TIERS = ("host-contract", "stable", "provisional")
 def _tier_map() -> Mapping[str, str]:
     """The shipped tier map, read once: ``root.name`` to its tier.
 
-    Raises:
-        ValueError: The shipped file is not the tier map this reader knows (a damaged install).
+    :raises ValueError: The shipped file is not the tier map this reader knows (a damaged install).
     """
     document = json.loads(files(__name__).joinpath(_TIER_MAP).read_text(encoding="utf-8"))
     tiers = document.get("tiers") if isinstance(document, dict) and document.get("format") == 1 else None
@@ -201,15 +196,12 @@ def surface_tier(qualified_name: str) -> Literal["host-contract", "stable", "pro
     release, recorded and never shimmed; ``provisional`` is exported and promised nothing. What a host's own test
     reads to gate its imports by tier against the version it runs, rather than a copy of the repository's snapshot.
 
-    Args:
-        qualified_name: The name as its root exports it: ``threetears.evals.kernel.host.EvalHost``, or
-            ``threetears.evals.Eval`` for the package's own.
-
-    Returns:
-        Its tier.
-
-    Raises:
-        KeyError: No public root of this build exports that name: it is below a root, misspelled, or gone.
+    :param qualified_name: The name as its root exports it: ``threetears.evals.kernel.host.EvalHost``, or
+        ``threetears.evals.Eval`` for the package's own.
+    :ptype qualified_name: str
+    :return: Its tier.
+    :rtype: Literal['host-contract', 'stable', 'provisional']
+    :raises KeyError: No public root of this build exports that name: it is below a root, misspelled, or gone.
     """
     tier = _tier_map().get(qualified_name)
     if tier is None:
@@ -220,8 +212,8 @@ def surface_tier(qualified_name: str) -> Literal["host-contract", "stable", "pro
 def declared_names() -> frozenset[str]:
     """Every declared public name of the installed build (``host-contract`` and ``stable``), by ``root.name``.
 
-    Returns:
-        The names a release promises something about; every other public name is ``provisional``.
+    :return: The names a release promises something about; every other public name is ``provisional``.
+    :rtype: frozenset[str]
     """
     return frozenset(name for name, tier in _tier_map().items() if tier != "provisional")
 

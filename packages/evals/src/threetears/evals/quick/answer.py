@@ -26,17 +26,16 @@ from threetears.evals.kernel import CandidateTelemetry, RoleUsageLedger
 class Answer:
     """What a candidate returns to report its own spend beside its answer.
 
-    Attributes:
-        value: The answer itself: what is graded, and what the run stores as the cell's output.
-        model: The model the call went to, which the usage row is attributed to; ``None`` when there is none.
-        input_tokens: Prompt tokens; ``None`` when unreported.
-        output_tokens: Completion tokens, any thinking included; ``None`` when unreported.
-        cost_usd: What the call cost in US dollars, as you priced it; ``None`` when unpriced, which the
-            engine records as unknown and never as $0.
-        served_model: The model the provider's RESPONSE named as having answered (a completion's
-            ``served_model``), never the one requested. ``None`` when the response named none: the run then records
-            only the id asked for, and its summary says which model answered is unconfirmed, since a provider may
-            answer an id with a model of its choosing.
+    :ivar value: The answer itself: what is graded, and what the run stores as the cell's output.
+    :ivar model: The model the call went to, which the usage row is attributed to; ``None`` when there is none.
+    :ivar input_tokens: Prompt tokens; ``None`` when unreported.
+    :ivar output_tokens: Completion tokens, any thinking included; ``None`` when unreported.
+    :ivar cost_usd: What the call cost in US dollars, as you priced it; ``None`` when unpriced, which the
+        engine records as unknown and never as $0.
+    :ivar served_model: The model the provider's RESPONSE named as having answered (a completion's
+        ``served_model``), never the one requested. ``None`` when the response named none: the run then records
+        only the id asked for, and its summary says which model answered is unconfirmed, since a provider may
+        answer an id with a model of its choosing.
     """
 
     value: Any
@@ -49,8 +48,7 @@ class Answer:
     def __post_init__(self) -> None:
         """Refuse a spend no usage row can hold, so the candidate that built it fails rather than the run.
 
-        Raises:
-            ValueError: A negative or non-integer token count, or a negative or non-finite cost.
+        :raises ValueError: A negative or non-integer token count, or a negative or non-finite cost.
         """
         for name in ("input_tokens", "output_tokens"):
             count = getattr(self, name)
@@ -66,12 +64,11 @@ class Answer:
 def unwrap_answer(returned: Any) -> tuple[Any, CandidateTelemetry]:
     """What a candidate returned, as the answer to grade and the telemetry its spend lands on.
 
-    Args:
-        returned: The candidate's return value: an :class:`Answer`, or a plain answer.
-
-    Returns:
-        The answer's value and a telemetry carrying its ``candidate`` usage row; a plain answer as given,
+    :param returned: The candidate's return value: an :class:`Answer`, or a plain answer.
+    :ptype returned: Any
+    :return: The answer's value and a telemetry carrying its ``candidate`` usage row; a plain answer as given,
         with telemetry that reports no usage.
+    :rtype: tuple[Any, CandidateTelemetry]
     """
     if not isinstance(returned, Answer):
         return returned, CandidateTelemetry()

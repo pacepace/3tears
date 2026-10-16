@@ -82,14 +82,13 @@ def difference_was_declared_at_launch(origins: Iterable[str | None]) -> bool:
     whole difference undeclared, because the comparison cannot claim to be sweeping an
     axis one of its arms was never pointed at.
 
-    Args:
-        origins: One origin per compared run, as the run recorded it. ``None`` means the
-            run recorded no origin and therefore declared nothing that can be read.
-
-    Returns:
-        ``True`` when every origin is :data:`DECLARED_INPUT_ORIGIN`. ``False`` for an
+    :param origins: One origin per compared run, as the run recorded it. ``None`` means the
+        run recorded no origin and therefore declared nothing that can be read.
+    :ptype origins: Iterable[str | None]
+    :return: ``True`` when every origin is :data:`DECLARED_INPUT_ORIGIN`. ``False`` for an
         empty set — nothing declared anything — so a caller can never read silence as a
         declaration.
+    :rtype: bool
     """
     listed = list(origins)
     return bool(listed) and all(origin == DECLARED_INPUT_ORIGIN for origin in listed)
@@ -256,35 +255,37 @@ def compute_comparison_sets(
     Runs with no captured subject identity are excluded, for the reason given in
     :func:`project_score_records`.
 
-    Args:
-        runs: Runs to group. Order is irrelevant; output is sorted for stability.
-        results: The results those runs produced, in any order and from any run —
-            they are indexed by ``eval_run_id`` here. **A caller that omits them
-            asks a narrower question**: the measurement-window badge cannot be
-            decided without them, and an undecidable badge is silent, so a group
-            reads as sharing a clock when nothing checked. Every production caller
-            supplies the scope's results; the default exists for callers whose
-            question really is only about the run documents.
-        full_windows: List every measurement span rather than summarising above
-            :data:`MAX_INLINE_MEASUREMENT_WINDOWS`. Off by default because this
-            surface groups a whole scope — the group that most needs the
-            disclosure is the one with the most runs, and so the one the listing
-            form renders unreadable.
-        scope_run_ids: Narrow every group to these runs before badging — the run
-            ids of the set actually under analysis, typically a campaign's members
-            resolved by the caller. ``None`` groups and badges every supplied run,
-            which is the unscoped behaviour and is unchanged. **Run ids rather than
-            a campaign id deliberately**: this module knows nothing about
-            campaigns and must not learn — new eval machinery lands host-agnostic,
-            and resolving a grouping concept
-            to its members is the caller's one lookup. A scope naming runs that are
-            not here is logged rather than refused: unlike an unknown run *status*,
-            which names nothing that can exist, a member absent from the scope
-            is a real and reachable state.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        A :class:`ComparisonSetsResult` — one :class:`ComparisonSet` per
+    :param runs: Runs to group. Order is irrelevant; output is sorted for stability.
+    :ptype runs: list[EvalRun]
+    :param results: The results those runs produced, in any order and from any run —
+        they are indexed by ``eval_run_id`` here. **A caller that omits them
+        asks a narrower question**: the measurement-window badge cannot be
+        decided without them, and an undecidable badge is silent, so a group
+        reads as sharing a clock when nothing checked. Every production caller
+        supplies the scope's results; the default exists for callers whose
+        question really is only about the run documents.
+    :ptype results: Sequence[EvalResult]
+    :param full_windows: List every measurement span rather than summarising above
+        :data:`MAX_INLINE_MEASUREMENT_WINDOWS`. Off by default because this
+        surface groups a whole scope — the group that most needs the
+        disclosure is the one with the most runs, and so the one the listing
+        form renders unreadable.
+    :ptype full_windows: bool
+    :param scope_run_ids: Narrow every group to these runs before badging — the run
+        ids of the set actually under analysis, typically a campaign's members
+        resolved by the caller. ``None`` groups and badges every supplied run,
+        which is the unscoped behaviour and is unchanged. **Run ids rather than
+        a campaign id deliberately**: this module knows nothing about
+        campaigns and must not learn — new eval machinery lands host-agnostic,
+        and resolving a grouping concept
+        to its members is the caller's one lookup. A scope naming runs that are
+        not here is logged rather than refused: unlike an unknown run *status*,
+        which names nothing that can exist, a member absent from the scope
+        is a real and reachable state.
+    :ptype scope_run_ids: Iterable[str] | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: A :class:`ComparisonSetsResult` — one :class:`ComparisonSet` per
         (subject, template) group, sorted by subject then template, plus the
         count of runs excluded for having no captured subject identity, plus
         ``out_of_scope_run_ids`` naming what a scope left out — at the result
@@ -294,6 +295,7 @@ def compute_comparison_sets(
         because a group with no in-scope run has nothing to say about the set the
         caller asked about — its members are still named at the result level, so
         the narrowing stays visible rather than becoming a group that vanished.
+    :rtype: ComparisonSetsResult
     """
     results_by_run: dict[str, list[EvalResult]] = {}
     for result in results:

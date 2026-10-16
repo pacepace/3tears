@@ -95,13 +95,14 @@ class _ScriptedJudge:
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
         """Record the call; answer a score of 4, or unparseable text for a failing dim.
 
-        Args:
-            system: The system prompt, which names the dim's JSON key.
-            user: The evidence as placed for the judge.
-            response_format: Ignored.
-
-        Returns:
-            A completion in the shape the provider port reads.
+        :param system: The system prompt, which names the dim's JSON key.
+        :ptype system: str
+        :param user: The evidence as placed for the judge.
+        :ptype user: str
+        :param response_format: Ignored.
+        :ptype response_format: Any
+        :return: A completion in the shape the provider port reads.
+        :rtype: Any
         """
         match = re.search(r'the single key "(.+?)"', system)
         dim = match.group(1) if match else "?"
@@ -134,8 +135,8 @@ class _JudgedKind:
     def __init__(self, judged_artifact: JudgedArtifact) -> None:
         """Declare what a judge reads of this kind.
 
-        Args:
-            judged_artifact: The declaration.
+        :param judged_artifact: The declaration.
+        :ptype judged_artifact: JudgedArtifact
         """
         self.judged_artifact = judged_artifact
 
@@ -151,24 +152,29 @@ class _JudgedKind:
     ) -> None:
         """Nothing to build.
 
-        Args:
-            subject_snapshot: Ignored.
-            variant_config: Ignored.
-            world_seed: Ignored.
-            span_window: Ignored.
-            cassettes: Ignored.
+        :param subject_snapshot: Ignored.
+        :ptype subject_snapshot: Any
+        :param variant_config: Ignored.
+        :ptype variant_config: VariantConfig
+        :param world_seed: Ignored.
+        :ptype world_seed: Any
+        :param span_window: Ignored.
+        :ptype span_window: CellSpanWindow
+        :param cassettes: Ignored.
+        :ptype cassettes: CellCassettes | None
         """
 
     async def invoke(self, instance: None, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Hand back one output and the evidence a judge reads of it.
 
-        Args:
-            instance: Ignored.
-            test_case: Ignored.
-            sink: Ignored.
-
-        Returns:
-            The output and its evidence.
+        :param instance: Ignored.
+        :ptype instance: None
+        :param test_case: Ignored.
+        :ptype test_case: EvalTestCase
+        :param sink: Ignored.
+        :ptype sink: CellSink
+        :return: The output and its evidence.
+        :rtype: CandidateOutput
         """
         return CandidateOutput(output=[{"rendered": "elsewhere"}], judge_evidence=_EVIDENCE)
 
@@ -182,16 +188,19 @@ async def _judged_and_stored(
 ) -> tuple[EvalHost, EvalResult]:
     """Run one judged cell through the real runner, judge it with ``judge``, and store it as a run would.
 
-    Args:
-        judged_artifact: The kind's declaration.
-        judge: The judge the cell's judge phase calls, and the host's client for a re-judge.
-        rubric: The template's rubric, :data:`_DIM` alone when omitted.
-        configs: The versioned judge config per dim the cell's judge is asked by, stored and recorded on the run;
-            ``None`` for the built-in prompt everywhere.
-        **run_fields: Fields the run records beyond the defaults below.
-
-    Returns:
-        The host holding the stored records, and the stored result.
+    :param judged_artifact: The kind's declaration.
+    :ptype judged_artifact: JudgedArtifact
+    :param judge: The judge the cell's judge phase calls, and the host's client for a re-judge.
+    :ptype judge: _ScriptedJudge
+    :param rubric: The template's rubric, :data:`_DIM` alone when omitted.
+    :ptype rubric: list[RubricDim] | None
+    :param configs: The versioned judge config per dim the cell's judge is asked by, stored and recorded on the run;
+        ``None`` for the built-in prompt everywhere.
+    :ptype configs: dict[str, JudgeConfig] | None
+    :param **run_fields: Fields the run records beyond the defaults below.
+    :ptype run_fields: Any
+    :return: The host holding the stored records, and the stored result.
+    :rtype: tuple[EvalHost, EvalResult]
     """
     host = toyhost_host(clients=lambda role, model, *, temperature=None: judge)
     template = EvalTemplate(

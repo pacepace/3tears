@@ -55,8 +55,8 @@ from threetears.evals.schema.values import SweepableValue
 def _now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string.
 
-    Returns:
-        The timestamp.
+    :return: The timestamp.
+    :rtype: str
     """
     return datetime.now(UTC).isoformat()
 
@@ -127,14 +127,11 @@ class SubjectSnapshot(CoreShapeModel):
         before constructing. Refused rather than stripped: a blank key is the coordinate that cannot
         be defaulted.
 
-        Args:
-            value: The submitted key or label.
-
-        Returns:
-            The value, unchanged.
-
-        Raises:
-            ValueError: The value is empty after stripping whitespace.
+        :param value: The submitted key or label.
+        :ptype value: str
+        :return: The value, unchanged.
+        :rtype: str
+        :raises ValueError: The value is empty after stripping whitespace.
         """
         if not value.strip():
             raise ValueError("must not be blank or whitespace only")
@@ -153,8 +150,8 @@ class SubjectSnapshot(CoreShapeModel):
         mechanism behind it — which is the shape ``.claude/rules/learnings/`` names — and would send a
         maintainer here to change what the key hashes.
 
-        Returns:
-            Component name → content hash, unordered.
+        :return: Component name → content hash, unordered.
+        :rtype: dict[str, str]
         """
         return {name: value.content_hash for name, value in self.components.items()}
 

@@ -54,8 +54,7 @@ class EvalServiceError(Exception):
     def __post_init__(self) -> None:
         """Refuse a blank remedy — a refusal that names nothing to do is the defect this field exists against.
 
-        Raises:
-            ValueError: ``remedy`` is blank.
+        :raises ValueError: ``remedy`` is blank.
         """
         if not self.remedy.strip():
             raise ValueError(f"a refusal names its remedy; this one ({self.message!r}) names a blank one")
@@ -74,19 +73,20 @@ class EvalServiceError(Exception):
 class NotFoundError(EvalServiceError):
     """Resource not found (status 404).
 
-    Attributes:
-        resource: What kind of record was asked for (``template``, ``run``).
-        resource_id: The id it was asked by.
+    :ivar resource: What kind of record was asked for (``template``, ``run``).
+    :ivar resource_id: The id it was asked by.
     """
 
     def __init__(self, resource: str, resource_id: str, *, remedy: str):
         """Build a 404 with a ``"<resource> '<id>' not found"`` message.
 
-        Args:
-            resource: What kind of record was asked for.
-            resource_id: The id it was asked by.
-            remedy: How the caller finds the id of one that exists — required, because a bare "not found" leaves
-                its reader nothing to do but ask again (:mod:`threetears.evals.kernel.remedies` holds the engine's).
+        :param resource: What kind of record was asked for.
+        :ptype resource: str
+        :param resource_id: The id it was asked by.
+        :ptype resource_id: str
+        :param remedy: How the caller finds the id of one that exists — required, because a bare "not found" leaves
+            its reader nothing to do but ask again (:mod:`threetears.evals.kernel.remedies` holds the engine's).
+        :ptype remedy: str
         """
         self.resource = resource
         self.resource_id = resource_id
@@ -99,10 +99,11 @@ class ConflictError(EvalServiceError):
     def __init__(self, message: str, *, remedy: str):
         """Build a 409 with the given message.
 
-        Args:
-            message: What the conflict is.
-            remedy: What the caller does about it — required: a conflict is a state the caller can always do
-                something about, if only read the record again.
+        :param message: What the conflict is.
+        :ptype message: str
+        :param remedy: What the caller does about it — required: a conflict is a state the caller can always do
+            something about, if only read the record again.
+        :ptype remedy: str
         """
         super().__init__(message=message, status_code=409, remedy=remedy)
 
@@ -113,10 +114,12 @@ class ValidationFailedError(EvalServiceError):
     def __init__(self, message: str, details: dict[str, Any] | None = None, *, remedy: str):
         """Build a 422.
 
-        Args:
-            message: What was wrong with the request.
-            details: An optional structured payload.
-            remedy: What the caller sends instead, or does first — required, as on every refusal.
+        :param message: What was wrong with the request.
+        :ptype message: str
+        :param details: An optional structured payload.
+        :ptype details: dict[str, Any] | None
+        :param remedy: What the caller sends instead, or does first — required, as on every refusal.
+        :ptype remedy: str
         """
         super().__init__(message=message, status_code=422, details=details or {}, remedy=remedy)
 
@@ -168,21 +171,23 @@ class AdmissionRefusedError(EvalServiceError):
     numbers ride on the error as well as in its message, so a surface that wants to render
     them differently does not have to parse prose.
 
-    Attributes:
-        requested: How many runs the refused launch would have admitted.
-        admitted: How many runs were admitted and unfinished (pending or running) when it asked.
-        limit: The ceiling it was measured against.
+    :ivar requested: How many runs the refused launch would have admitted.
+    :ivar admitted: How many runs were admitted and unfinished (pending or running) when it asked.
+    :ivar limit: The ceiling it was measured against.
     """
 
     def __init__(self, *, requested: int, admitted: int, limit: int, limit_name: str):
         """Build a 429 naming the ceiling, the current count and the knob that raises it.
 
-        Args:
-            requested: Runs the launch would admit.
-            admitted: Runs already admitted and unfinished.
-            limit: The ceiling.
-            limit_name: What an operator sets to change the ceiling — supplied by the host,
-                because the engine does not know its host's configuration names.
+        :param requested: Runs the launch would admit.
+        :ptype requested: int
+        :param admitted: Runs already admitted and unfinished.
+        :ptype admitted: int
+        :param limit: The ceiling.
+        :ptype limit: int
+        :param limit_name: What an operator sets to change the ceiling — supplied by the host,
+            because the engine does not know its host's configuration names.
+        :ptype limit_name: str
         """
         self.requested = requested
         self.admitted = admitted
@@ -221,20 +226,18 @@ class RefusedInput(ValueError):
     layer knows reaches the caller as a remedy rather than as prose inside a message. A :class:`ValueError`, so a
     caller that needs only the words reads ``str()``: the fault, then the remedy.
 
-    Attributes:
-        fault: What was wrong with what the caller asked.
-        remedy: What the caller asks instead, or does first.
+    :ivar fault: What was wrong with what the caller asked.
+    :ivar remedy: What the caller asks instead, or does first.
     """
 
     def __init__(self, fault: str, *, remedy: str) -> None:
         """Hold the fault and the remedy apart.
 
-        Args:
-            fault: What was wrong.
-            remedy: What the caller does instead.
-
-        Raises:
-            ValueError: ``remedy`` is blank.
+        :param fault: What was wrong.
+        :ptype fault: str
+        :param remedy: What the caller does instead.
+        :ptype remedy: str
+        :raises ValueError: ``remedy`` is blank.
         """
         if not remedy.strip():
             raise ValueError(f"a refusal names its remedy; this one ({fault!r}) names a blank one")

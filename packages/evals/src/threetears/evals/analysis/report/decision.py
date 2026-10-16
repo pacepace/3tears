@@ -73,11 +73,10 @@ def keep_is_the_default(control: str) -> str:
     """What the page's Decision section says once, under the clauses: what an unsettled rule means for the reader,
     and why a clause can read keep or unsettled beside a contrast the contrasts table calls not separated.
 
-    Args:
-        control: The control, by the name the page gives it.
-
-    Returns:
-        Two sentences.
+    :param control: The control, by the name the page gives it.
+    :ptype control: str
+    :return: Two sentences.
+    :rtype: str
     """
     return (
         f"Keep is the default: a switch needs every clause shown, so an unsettled rule keeps {control} for now. A "
@@ -227,14 +226,15 @@ def clause_statement(clause: DecisionClause, *, candidate: str, readings: RuleRe
     """One clause as the page says it, naming the arm: ``no pass rate drops by more than 2 points``,
     ``no tone rate drops by more than 2 points``, ``v2 costs less per reply``.
 
-    Args:
-        clause: The clause.
-        candidate: The arm it is read on, by name; ``it`` where the sentence names several.
-        readings: What the clause is read against, whose rate names a named reading is said by; None to say it
-            from its key.
-
-    Returns:
-        The clause, lower case, with no closing stop.
+    :param clause: The clause.
+    :ptype clause: DecisionClause
+    :param candidate: The arm it is read on, by name; ``it`` where the sentence names several.
+    :ptype candidate: str
+    :param readings: What the clause is read against, whose rate names a named reading is said by; None to say it
+        from its key.
+    :ptype readings: RuleReadings | None
+    :return: The clause, lower case, with no closing stop.
+    :rtype: str
     """
     if isinstance(clause, CostLower):
         return f"{candidate} costs less per reply"
@@ -250,14 +250,16 @@ def rule_statement(
     ``Switch to v2 only if no pass rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on
     v1.`` With several arms the switch names each, and a cost clause says ``it``.
 
-    Args:
-        rule: The declared rule.
-        control: The control, by name.
-        candidates: Every other arm, by name.
-        readings: The first arm's readings, whose rate names a named reading is said by.
-
-    Returns:
-        Two sentences: when to switch, and otherwise.
+    :param rule: The declared rule.
+    :ptype rule: DecisionRule
+    :param control: The control, by name.
+    :ptype control: str
+    :param candidates: Every other arm, by name.
+    :ptype candidates: Sequence[str]
+    :param readings: The first arm's readings, whose rate names a named reading is said by.
+    :ptype readings: RuleReadings | None
+    :return: Two sentences: when to switch, and otherwise.
+    :rtype: str
     """
     subject = candidates[0] if len(candidates) == 1 else "it"
     target = " or ".join(candidates) if candidates else "another arm"
@@ -269,14 +271,16 @@ def rule_statement(
 def evaluate_rule(rule: DecisionRule, readings: RuleReadings, *, control: str, candidate: str) -> RuleVerdict:
     """Settle each clause of ``rule`` on ``readings``, then the rule.
 
-    Args:
-        rule: The declared rule.
-        readings: The control's and the arm's figures.
-        control: The control, by the name the page gives it, which a reason says.
-        candidate: The arm, likewise.
-
-    Returns:
-        The rule's outcome and each clause's, with reasons naming the arms.
+    :param rule: The declared rule.
+    :ptype rule: DecisionRule
+    :param readings: The control's and the arm's figures.
+    :ptype readings: RuleReadings
+    :param control: The control, by the name the page gives it, which a reason says.
+    :ptype control: str
+    :param candidate: The arm, likewise.
+    :ptype candidate: str
+    :return: The rule's outcome and each clause's, with reasons naming the arms.
+    :rtype: RuleVerdict
     """
     verdicts = tuple(_clause(clause, readings, control, candidate) for clause in rule.clauses)
     outcomes = {verdict.outcome for verdict in verdicts}
@@ -475,15 +479,17 @@ def rule_readings(
     overall pass rate's is its ``trial`` contrast). Cost is each arm's cost per reply, with
     the cost contrast's interval. Each arm carries its usable cases.
 
-    Args:
-        bundle: The campaign's evidence.
-        control: The control's variant key.
-        candidate: The candidate's variant key.
-        question_id: The question the rule is stated in, whose family alone the intervals are read from; None for
-            the campaign-wide family.
-
-    Returns:
-        The readings.
+    :param bundle: The campaign's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param control: The control's variant key.
+    :ptype control: str
+    :param candidate: The candidate's variant key.
+    :ptype candidate: str
+    :param question_id: The question the rule is stated in, whose family alone the intervals are read from; None for
+        the campaign-wide family.
+    :ptype question_id: str | None
+    :return: The readings.
+    :rtype: RuleReadings
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
     if control not in boards or candidate not in boards:

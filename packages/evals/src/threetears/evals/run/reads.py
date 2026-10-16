@@ -49,15 +49,12 @@ def _listing_status_filter(status: str | None) -> EvalRunStatus | None:
     predicate: ``status=all`` was matched as a literal status, so a scope of
     9 runs answered HTTP 200 with an empty list — as did ``status=banana``.
 
-    Args:
-        status: Raw filter from the caller, straight off the wire.
-
-    Returns:
-        ``None`` to list every run, else the status to filter on.
-
-    Raises:
-        ValidationFailedError: The value is not a status a run can carry, nor
-            ``"all"``.
+    :param status: Raw filter from the caller, straight off the wire.
+    :ptype status: str | None
+    :return: ``None`` to list every run, else the status to filter on.
+    :rtype: EvalRunStatus | None
+    :raises ValidationFailedError: The value is not a status a run can carry, nor
+        ``"all"``.
     """
     try:
         return validate_status_filter(status)
@@ -109,23 +106,24 @@ def list_runs(
     Resolution and the refusal of anything else live in
     :func:`_listing_status_filter`.
 
-    Args:
-        host: The host: its storage, and the listing elisions its profile declares.
-        scope_id: Partition key — the scope whose runs to list.
-        status: Optional run status filter (e.g. ``"completed"``). Unspecified,
-            blank, or ``"all"`` (any case) lists every run.
-        include_archived: Include operator-archived runs (default: exclude).
-        label: Only runs an operator gave this label (``EvalRun.labels``), compared after stripping it; None lists
-            every run. Like the archive predicate, it runs in Python over what the store returns.
-
-    Returns:
-        Eval runs in the scope matching the filters.
-
-    Raises:
-        ValidationFailedError: ``status`` is not one a run can carry, nor
-            ``"all"``.
-        UnreadableRunError: A run the listing matched does not validate under this build's model; the inventory
-            that leaves it out and names it instead is :func:`list_runs_disclosing`.
+    :param host: The host: its storage, and the listing elisions its profile declares.
+    :ptype host: EvalHost
+    :param scope_id: Partition key — the scope whose runs to list.
+    :ptype scope_id: str
+    :param status: Optional run status filter (e.g. ``"completed"``). Unspecified,
+        blank, or ``"all"`` (any case) lists every run.
+    :ptype status: str | None
+    :param include_archived: Include operator-archived runs (default: exclude).
+    :ptype include_archived: bool
+    :param label: Only runs an operator gave this label (``EvalRun.labels``), compared after stripping it; None lists
+        every run. Like the archive predicate, it runs in Python over what the store returns.
+    :ptype label: str | None
+    :return: Eval runs in the scope matching the filters.
+    :rtype: list[EvalRun]
+    :raises ValidationFailedError: ``status`` is not one a run can carry, nor
+        ``"all"``.
+    :raises UnreadableRunError: A run the listing matched does not validate under this build's model; the inventory
+        that leaves it out and names it instead is :func:`list_runs_disclosing`.
     """
     runs = host.storage.query_eval_runs(
         scope_id, status=_listing_status_filter(status), elide_payload=host.profile.listing_elisions
@@ -154,19 +152,20 @@ def list_runs_disclosing(
     document that does not read, so the archive and label filters cannot be applied to it, and it is returned
     whatever they ask.
 
-    Args:
-        host: As :func:`list_runs` takes it.
-        scope_id: As :func:`list_runs` takes it.
-        status: As :func:`list_runs` takes it.
-        include_archived: As :func:`list_runs` takes it.
-        label: As :func:`list_runs` takes it.
-
-    Returns:
-        The runs listed, and each matched row the model refused.
-
-    Raises:
-        ValidationFailedError: ``status`` is not one a run can carry, nor ``"all"``.
-        UnreadableRunError: A run read, but writing it lost was refused by a model.
+    :param host: As :func:`list_runs` takes it.
+    :ptype host: EvalHost
+    :param scope_id: As :func:`list_runs` takes it.
+    :ptype scope_id: str
+    :param status: As :func:`list_runs` takes it.
+    :ptype status: str | None
+    :param include_archived: As :func:`list_runs` takes it.
+    :ptype include_archived: bool
+    :param label: As :func:`list_runs` takes it.
+    :ptype label: str | None
+    :return: The runs listed, and each matched row the model refused.
+    :rtype: RunsRead
+    :raises ValidationFailedError: ``status`` is not one a run can carry, nor ``"all"``.
+    :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
     """
     read = host.storage.query_eval_runs_isolating(
         scope_id, status=_listing_status_filter(status), elide_payload=host.profile.listing_elisions
@@ -188,13 +187,14 @@ def _narrowed(runs: list[EvalRun], *, include_archived: bool, label: str | None)
 def list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalResult]:
     """List every result for one eval run within its scope.
 
-    Args:
-        storage: Eval storage backend.
-        run_id: The eval run whose results to list.
-        scope_id: Partition key — the scope the run lives in.
-
-    Returns:
-        Every :class:`~threetears.evals.schema.models.EvalResult` produced by the run.
+    :param storage: Eval storage backend.
+    :ptype storage: ResultStore
+    :param run_id: The eval run whose results to list.
+    :ptype run_id: str
+    :param scope_id: Partition key — the scope the run lives in.
+    :ptype scope_id: str
+    :return: Every :class:`~threetears.evals.schema.models.EvalResult` produced by the run.
+    :rtype: list[EvalResult]
     """
     return storage.query_eval_results_by_run(run_id, scope_id)
 
@@ -202,16 +202,15 @@ def list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalR
 def get_result(storage: ResultStore, result_id: str, scope_id: str) -> EvalResult:
     """Load one eval result by id within its scope.
 
-    Args:
-        storage: Eval storage backend.
-        result_id: The result's UUID.
-        scope_id: Partition key — the scope the result lives in.
-
-    Returns:
-        The loaded :class:`~threetears.evals.schema.models.EvalResult`.
-
-    Raises:
-        NotFoundError: No result with that id in the scope.
+    :param storage: Eval storage backend.
+    :ptype storage: ResultStore
+    :param result_id: The result's UUID.
+    :ptype result_id: str
+    :param scope_id: Partition key — the scope the result lives in.
+    :ptype scope_id: str
+    :return: The loaded :class:`~threetears.evals.schema.models.EvalResult`.
+    :rtype: EvalResult
+    :raises NotFoundError: No result with that id in the scope.
     """
     result = storage.load_eval_result(result_id, scope_id)
     if result is None:
@@ -235,12 +234,12 @@ def get_result_trace(storage: ResultStore, result: EvalResult) -> EvalTrace | No
     half. Both read surfaces would otherwise render that as "this result has no
     trace", silently, which is the one reading that is certainly wrong.
 
-    Args:
-        storage: Eval storage backend.
-        result: The result whose payload to load.
-
-    Returns:
-        The payload, or ``None`` when the result recorded none.
+    :param storage: Eval storage backend.
+    :ptype storage: ResultStore
+    :param result: The result whose payload to load.
+    :ptype result: EvalResult
+    :return: The payload, or ``None`` when the result recorded none.
+    :rtype: EvalTrace | None
     """
     payload = storage.load_eval_trace(result.id, result.scope_id)
     if payload is None and result.has_trace:

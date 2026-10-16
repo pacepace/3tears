@@ -50,17 +50,17 @@ class AsyncStoreBridge:
 
     Built by :func:`bridge_async_store`, which also decides whether it offers the store's clock.
 
-    Attributes:
-        store: The async store each call is made on.
-        loop: The loop each call runs on: the one the store's connections belong to.
+    :ivar store: The async store each call is made on.
+    :ivar loop: The loop each call runs on: the one the store's connections belong to.
     """
 
     def __init__(self, store: AsyncDocumentStore, loop: asyncio.AbstractEventLoop) -> None:
         """Bridge ``store``, whose calls run on ``loop``.
 
-        Args:
-            store: The async store.
-            loop: The loop its calls run on.
+        :param store: The async store.
+        :ptype store: AsyncDocumentStore
+        :param loop: The loop its calls run on.
+        :ptype loop: asyncio.AbstractEventLoop
         """
         self.store = store
         self.loop = loop
@@ -68,18 +68,15 @@ class AsyncStoreBridge:
     def _call[T](self, make: Callable[[], Coroutine[Any, Any, T]]) -> T:
         """Run the coroutine ``make`` builds as a task on :attr:`loop`, in the caller's context, and wait for it.
 
-        Args:
-            make: Builds the store call's coroutine; called on the loop, inside the task.
-
-        Returns:
-            What the coroutine returned.
-
-        Raises:
-            StoreCalledOnEventLoop: The calling thread is running an event loop.
-            RuntimeError: :attr:`loop` is not running, so the call would never start.
-            concurrent.futures.CancelledError: The task was cancelled on its loop before it answered.
-            Exception: Whatever the store raised, unchanged — a :class:`~threetears.evals.schema.StoreConflict`
-                included.
+        :param make: Builds the store call's coroutine; called on the loop, inside the task.
+        :ptype make: Callable[[], Coroutine[Any, Any, T]]
+        :return: What the coroutine returned.
+        :rtype: T
+        :raises StoreCalledOnEventLoop: The calling thread is running an event loop.
+        :raises RuntimeError: :attr:`loop` is not running, so the call would never start.
+        :raises concurrent.futures.CancelledError: The task was cancelled on its loop before it answered.
+        :raises Exception: Whatever the store raised, unchanged — a :class:`~threetears.evals.schema.StoreConflict`
+            included.
         """
         refuse_on_event_loop()
         if not self.loop.is_running():
@@ -192,17 +189,15 @@ def bridge_async_store(store: AsyncDocumentStore, loop: asyncio.AbstractEventLoo
     (``asyncio.get_running_loop()``) — and keep the engine's blocking executor a thread pool, so its calls
     arrive off that loop.
 
-    Args:
-        store: The async adapter.
-        loop: The loop its calls run on.
-
-    Returns:
-        The bridge: one that offers :class:`~threetears.evals.schema.StoreClock` exactly when ``store`` offers
+    :param store: The async adapter.
+    :ptype store: AsyncDocumentStore
+    :param loop: The loop its calls run on.
+    :ptype loop: asyncio.AbstractEventLoop
+    :return: The bridge: one that offers :class:`~threetears.evals.schema.StoreClock` exactly when ``store`` offers
         :class:`~threetears.evals.schema.AsyncStoreClock`.
-
-    Raises:
-        TypeError: ``store`` has a ``now`` that is not a coroutine function: an async store's clock is awaited,
-            and a synchronous one would be the calling process's time passed off as the database's.
+    :rtype: AsyncStoreBridge
+    :raises TypeError: ``store`` has a ``now`` that is not a coroutine function: an async store's clock is awaited,
+        and a synchronous one would be the calling process's time passed off as the database's.
     """
     if isinstance(store, AsyncStoreClock):
         if not inspect.iscoroutinefunction(store.now):

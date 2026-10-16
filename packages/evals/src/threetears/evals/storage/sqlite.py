@@ -79,8 +79,7 @@ def _path(field: str) -> str:
 def _predicate(field: str, value: Any) -> tuple[str, list[Any]]:
     """One equality predicate on the stored JSON type, as SQL and its parameters.
 
-    Raises:
-        TypeError: ``value`` is not a scalar the port compares (``str``, ``int``, ``float``, ``bool``, ``None``).
+    :raises TypeError: ``value`` is not a scalar the port compares (``str``, ``int``, ``float``, ``bool``, ``None``).
     """
     path = _path(field)
     if value is None:
@@ -97,12 +96,10 @@ def _predicate(field: str, value: Any) -> tuple[str, list[Any]]:
 class SqliteDocumentStore:
     """A :class:`~threetears.evals.schema.store_port.DocumentStore` over one SQLite file.
 
-    Args:
-        path: The database file, created with its table when absent. ``":memory:"`` keeps it in this
-            process's memory, which is the in-memory store with SQLite's semantics.
-
-    Raises:
-        ValueError: The file was written by a layout this store does not read.
+    :param path: The database file, created with its table when absent. ``":memory:"`` keeps it in this
+        process's memory, which is the in-memory store with SQLite's semantics.
+    :ptype path: str | os.PathLike[str]
+    :raises ValueError: The file was written by a layout this store does not read.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
@@ -140,12 +137,12 @@ class SqliteDocumentStore:
     def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
         """Return one document by id within a scope, or ``None`` if absent.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
-
-        Returns:
-            The stored document, or ``None``.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: The stored document, or ``None``.
+        :rtype: dict[str, Any] | None
         """
         document, _etag = self.get_with_etag(doc_id, scope_id)
         return document
@@ -153,12 +150,12 @@ class SqliteDocumentStore:
     def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
         """Return one document plus the token a conditional write must present.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
-
-        Returns:
-            ``(document, etag)``, or ``(None, None)`` when there is no such document.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: ``(document, etag)``, or ``(None, None)`` when there is no such document.
+        :rtype: tuple[dict[str, Any] | None, str | None]
         """
         with self._lock:
             row = self._db.execute(
@@ -179,18 +176,19 @@ class SqliteDocumentStore:
     ) -> list[dict[str, Any]]:
         """Return the documents of one type whose ids are in ``doc_ids``, within a scope.
 
-        Args:
-            doc_type: The discriminator every returned document carries.
-            doc_ids: The ids to fetch; an absent one is skipped, and one named twice is returned once.
-            scope_id: The scope to read.
-            exclude: Dotted paths left out of every returned document.
-            keep: When given, the only top-level fields each returned document carries.
-
-        Returns:
-            The matching documents, projected as asked.
-
-        Raises:
-            ValueError: Both ``exclude`` and ``keep`` were given.
+        :param doc_type: The discriminator every returned document carries.
+        :ptype doc_type: str
+        :param doc_ids: The ids to fetch; an absent one is skipped, and one named twice is returned once.
+        :ptype doc_ids: Sequence[str]
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param exclude: Dotted paths left out of every returned document.
+        :ptype exclude: Sequence[str]
+        :param keep: When given, the only top-level fields each returned document carries.
+        :ptype keep: Sequence[str]
+        :return: The matching documents, projected as asked.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: Both ``exclude`` and ``keep`` were given.
         """
         if exclude and keep:
             raise ValueError("get_many takes exclude or keep, never both")
@@ -230,20 +228,23 @@ class SqliteDocumentStore:
         never matches its text. A ``None`` predicate matches a field that is absent or null. Under ``order_by``,
         documents without the field (or with it null) sort as lower than every document that has it.
 
-        Args:
-            doc_type: The discriminator to select on.
-            scope_id: The scope to read.
-            order_by: The field to sort by, or ``None`` for insertion order.
-            descending: Sort direction when ``order_by`` is given.
-            limit: Maximum documents to return; ``None`` is unbounded.
-            exclude: Dotted paths left out of every returned document.
-            **field_eq: Field-equality predicates.
-
-        Returns:
-            The matching documents.
-
-        Raises:
-            TypeError: A predicate's value is not a scalar.
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param order_by: The field to sort by, or ``None`` for insertion order.
+        :ptype order_by: str | None
+        :param descending: Sort direction when ``order_by`` is given.
+        :ptype descending: bool
+        :param limit: Maximum documents to return; ``None`` is unbounded.
+        :ptype limit: int | None
+        :param exclude: Dotted paths left out of every returned document.
+        :ptype exclude: Sequence[str]
+        :param **field_eq: Field-equality predicates.
+        :ptype field_eq: Any
+        :return: The matching documents.
+        :rtype: list[dict[str, Any]]
+        :raises TypeError: A predicate's value is not a scalar.
         """
         clauses = ["scope_id = ?", "doc_type = ?"]
         params: list[Any] = [scope_id, doc_type]
@@ -269,13 +270,13 @@ class SqliteDocumentStore:
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.
 
-        Args:
-            doc_type: The discriminator to sweep.
-            scope_id: The scope to sweep.
-
-        Yields:
-            Document ids, from a snapshot taken when iteration starts, so deleting each as it is
+        :param doc_type: The discriminator to sweep.
+        :ptype doc_type: str
+        :param scope_id: The scope to sweep.
+        :ptype scope_id: str
+        :yield: Document ids, from a snapshot taken when iteration starts, so deleting each as it is
             yielded is safe.
+        :rtype: Iterator[str]
         """
         with self._lock:
             ids = [
@@ -289,20 +290,20 @@ class SqliteDocumentStore:
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Write a document under the scope and id it carries, creating or replacing it.
 
-        Args:
-            document: The document to store; it supplies its own ``scope_id`` and ``id``.
-            if_match: A token from :meth:`get_with_etag`; when given, the write lands only if the
-                stored document still carries it.
-            create_only: When True, the write lands only if nothing is stored under its scope and id: a
-                plain ``INSERT``, which the table's unique key refuses, so the check and the write are one
-                statement between threads and between processes.
-
-        Raises:
-            StoreConflict: ``if_match`` was given and the stored document no longer carries it, or is gone;
-                or ``create_only`` was set and a document is stored there.
-            ValueError: Both ``if_match`` and ``create_only`` were given.
-            KeyError: The document carries no ``scope_id`` or no ``id``.
-            TypeError: The document holds a value JSON cannot.
+        :param document: The document to store; it supplies its own ``scope_id`` and ``id``.
+        :ptype document: dict[str, Any]
+        :param if_match: A token from :meth:`get_with_etag`; when given, the write lands only if the
+            stored document still carries it.
+        :ptype if_match: str | None
+        :param create_only: When True, the write lands only if nothing is stored under its scope and id: a
+            plain ``INSERT``, which the table's unique key refuses, so the check and the write are one
+            statement between threads and between processes.
+        :ptype create_only: bool
+        :raises StoreConflict: ``if_match`` was given and the stored document no longer carries it, or is gone;
+            or ``create_only`` was set and a document is stored there.
+        :raises ValueError: Both ``if_match`` and ``create_only`` were given.
+        :raises KeyError: The document carries no ``scope_id`` or no ``id``.
+        :raises TypeError: The document holds a value JSON cannot.
         """
         if if_match is not None and create_only:
             raise ValueError("a write is conditional on an etag or on absence, never both")
@@ -339,16 +340,15 @@ class SqliteDocumentStore:
     def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
         """Set top-level fields on one stored document, leaving every other field as stored.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
-            fields: Top-level fields and their new values.
-
-        Returns:
-            ``True`` when the document was written; ``False`` when there is no such document.
-
-        Raises:
-            ValueError: ``fields`` is empty or names a field that locates the document.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :param fields: Top-level fields and their new values.
+        :ptype fields: dict[str, Any]
+        :return: ``True`` when the document was written; ``False`` when there is no such document.
+        :rtype: bool
+        :raises ValueError: ``fields`` is empty or names a field that locates the document.
         """
         if not fields:
             raise ValueError("merge_fields needs at least one field")
@@ -379,12 +379,12 @@ class SqliteDocumentStore:
     def delete(self, doc_id: str, scope_id: str) -> bool:
         """Delete one document by id within a scope.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
-
-        Returns:
-            ``True`` when a document was deleted, ``False`` when there was none.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: ``True`` when a document was deleted, ``False`` when there was none.
+        :rtype: bool
         """
         with self._lock:
             deleted = self._db.execute("DELETE FROM documents WHERE scope_id = ? AND id = ?", (scope_id, doc_id))

@@ -202,11 +202,10 @@ def _normalised(node: Any) -> Any:
 def core_shape_digest(model: type[EvalBaseModel]) -> str:
     """The digest of a core type's validation JSON schema, without descriptions, titles or examples.
 
-    Args:
-        model: A core stored model.
-
-    Returns:
-        A sha256 hex digest; it moves when what the model accepts moves, and not when its prose does.
+    :param model: A core stored model.
+    :ptype model: type[EvalBaseModel]
+    :return: A sha256 hex digest; it moves when what the model accepts moves, and not when its prose does.
+    :rtype: str
     """
     return canonical_digest(_normalised(model.model_json_schema(mode="validation")))
 

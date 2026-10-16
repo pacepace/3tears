@@ -377,11 +377,10 @@ def _reads_at(
 def scope_value_reads(source: str) -> Iterator[tuple[int, str]]:
     """Every place ``source`` interprets a scope's value, as ``(line, what)``.
 
-    Args:
-        source: Python source.
-
-    Yields:
-        One entry per violation.
+    :param source: Python source.
+    :ptype source: str
+    :yield: One entry per violation.
+    :rtype: Iterator[tuple[int, str]]
     """
 
     lines = source.splitlines()

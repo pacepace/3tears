@@ -247,9 +247,9 @@ def _launching_with(
 ) -> tuple[LaunchHost, EvalStorage, list[LaunchRequest]]:
     """The toy launch host with a launcher that hands the tail whatever ``wire`` resolves.
 
-    Returns:
-        The host, its store, and every request the launcher was handed — so a refusal made before
+    :return: The host, its store, and every request the launcher was handed — so a refusal made before
         the launcher ran is distinguishable from one the launcher made.
+    :rtype: tuple[LaunchHost, EvalStorage, list[LaunchRequest]]
     """
     host, storage = _launching()
     handed: list[LaunchRequest] = []

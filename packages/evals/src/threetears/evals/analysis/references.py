@@ -118,11 +118,10 @@ def cell_aliases(cells: Iterable[CellFacts]) -> dict[str, str]:
     meaningful only against the bundle it was minted from, which is why the generator translates
     every alias to the full ``cell_ref`` before anything is stored.
 
-    Args:
-        cells: The cells, in the order to number them.
-
-    Returns:
-        ``alias -> cell_ref``, in minted order.
+    :param cells: The cells, in the order to number them.
+    :ptype cells: Iterable[CellFacts]
+    :return: ``alias -> cell_ref``, in minted order.
+    :rtype: dict[str, str]
     """
     aliases: dict[str, str] = {}
     seen: set[str] = set()
@@ -140,15 +139,13 @@ def cell_of_alias(surface: DecisionSurface, alias: str) -> str:
     The one place an alias is read: evidence rows, charts, decisions and figure references in prose
     all come through here.
 
-    Args:
-        surface: The analysis's decision surface.
-        alias: The cell as the writer named it.
-
-    Returns:
-        The cell's full ``cell_ref``.
-
-    Raises:
-        UnresolvableReference: No cell carries that alias.
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param alias: The cell as the writer named it.
+    :ptype alias: str
+    :return: The cell's full ``cell_ref``.
+    :rtype: str
+    :raises UnresolvableReference: No cell carries that alias.
     """
     aliases = cell_aliases(surface.cells)
     ref = aliases.get(alias)
@@ -171,12 +168,12 @@ def in_writer_terms(text: str, surface: DecisionSurface) -> str:
     the provenance of the analysis that round produced — and nowhere else: the tally and the attempt
     record keep the full refs, since an alias is meaningful only against the bundle it was minted from.
 
-    Args:
-        text: The refusal as the resolver worded it.
-        surface: The surface the aliases were minted from.
-
-    Returns:
-        The text with each full ``cell_ref`` replaced by its alias.
+    :param text: The refusal as the resolver worded it.
+    :ptype text: str
+    :param surface: The surface the aliases were minted from.
+    :ptype surface: DecisionSurface
+    :return: The text with each full ``cell_ref`` replaced by its alias.
+    :rtype: str
     """
     for alias, ref in cell_aliases(surface.cells).items():
         text = text.replace(ref, alias)
@@ -186,11 +183,10 @@ def in_writer_terms(text: str, surface: DecisionSurface) -> str:
 def cell_index(surface: DecisionSurface) -> dict[str, CellFacts]:
     """Key a surface's cells by the ``cell_ref`` a reference carries.
 
-    Args:
-        surface: The analysis's decision surface.
-
-    Returns:
-        ``cell_ref -> CellFacts`` for every cell.
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :return: ``cell_ref -> CellFacts`` for every cell.
+    :rtype: dict[str, CellFacts]
     """
     return {cell_ref(cell.variant_key, cell.apparatus_class_id): cell for cell in surface.cells}
 
@@ -198,15 +194,13 @@ def cell_index(surface: DecisionSurface) -> dict[str, CellFacts]:
 def require_cell(surface: DecisionSurface, ref: str) -> CellFacts:
     """Return the cell a reference names, or refuse naming the cells that exist.
 
-    Args:
-        surface: The analysis's decision surface.
-        ref: The reference's cell (a ``cell_ref``).
-
-    Returns:
-        The cell's facts.
-
-    Raises:
-        UnresolvableReference: No cell carries that ref.
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param ref: The reference's cell (a ``cell_ref``).
+    :ptype ref: str
+    :return: The cell's facts.
+    :rtype: CellFacts
+    :raises UnresolvableReference: No cell carries that ref.
     """
     cells = cell_index(surface)
     cell = cells.get(ref)
@@ -223,23 +217,23 @@ def resolve_reading(
 ) -> ResolvedReading:
     """Read one numeric reading off the surface.
 
-    Args:
-        surface: The analysis's decision surface.
-        ref: The cell the reference names (a ``cell_ref``).
-        measure_id: The measure (or judged dimension) it names.
-        reading: Which of the cell's two namespaces to read — already a :data:`ReadingKind`, because
-            every model-authored kind is validated against the authored models before it gets here.
-
-    Returns:
-        The resolved reading.
-
-    Raises:
-        UnresolvableReference: The cell, or the reading in it, does not exist; the measure is
-            categorical (it has no point estimate); or it has no mean (nothing was scored).
-        ValueError: ``reading`` is neither kind — a caller that bypassed the authored models,
-            which no repair round can correct.
-        RuntimeError: The surface holds a reading with no facts entry for its name — see
-            :func:`_measure_facts`.
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param ref: The cell the reference names (a ``cell_ref``).
+    :ptype ref: str
+    :param measure_id: The measure (or judged dimension) it names.
+    :ptype measure_id: str
+    :param reading: Which of the cell's two namespaces to read — already a :data:`ReadingKind`, because
+        every model-authored kind is validated against the authored models before it gets here.
+    :ptype reading: ReadingKind
+    :return: The resolved reading.
+    :rtype: ResolvedReading
+    :raises UnresolvableReference: The cell, or the reading in it, does not exist; the measure is
+        categorical (it has no point estimate); or it has no mean (nothing was scored).
+    :raises ValueError: ``reading`` is neither kind — a caller that bypassed the authored models,
+        which no repair round can correct.
+    :raises RuntimeError: The surface holds a reading with no facts entry for its name — see
+        :func:`_measure_facts`.
     """
     cell = require_cell(surface, ref)
     if reading == "judged":
@@ -254,8 +248,7 @@ def resolve_reading(
 def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measure_id: str) -> ResolvedReading:
     """Resolve a ``measure`` reading.
 
-    Raises:
-        UnresolvableReference: See :func:`resolve_reading`.
+    :raises UnresolvableReference: See :func:`resolve_reading`.
     """
     summary = _find_measure(cell, measure_id)
     if summary is None:
@@ -312,8 +305,7 @@ def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measur
 def _resolve_judged(surface: DecisionSurface, cell: CellFacts, ref: str, dimension: str) -> ResolvedReading:
     """Resolve a ``judged`` reading, computing its interval the way a measure's is computed.
 
-    Raises:
-        UnresolvableReference: See :func:`resolve_reading`.
+    :raises UnresolvableReference: See :func:`resolve_reading`.
     """
     judged = _find_judged(cell, dimension)
     if judged is None:
@@ -368,8 +360,7 @@ def _measure_facts(surface: DecisionSurface, measure_id: str) -> MeasureFacts:
     unknown-polarity measure one thing or another. So it is a hard error rather than a repairable
     refusal — a repair round would regenerate against the same surface and meet the same gap.
 
-    Raises:
-        RuntimeError: The surface holds no entry for ``measure_id``.
+    :raises RuntimeError: The surface holds no entry for ``measure_id``.
     """
     facts = surface.measures.get(measure_id)
     if facts is None:
@@ -383,8 +374,7 @@ def _measure_facts(surface: DecisionSurface, measure_id: str) -> MeasureFacts:
 def _dimension_facts(surface: DecisionSurface, dimension: str) -> JudgedDimensionFacts:
     """The surface's facts for a judged dimension a cell scored — which the surface guarantees exist.
 
-    Raises:
-        RuntimeError: The surface holds no entry for ``dimension``; see :func:`_measure_facts`.
+    :raises RuntimeError: The surface holds no entry for ``dimension``; see :func:`_measure_facts`.
     """
     facts = surface.dimensions.get(dimension)
     if facts is None:
@@ -412,8 +402,8 @@ def _dispersion(
     beside it; the one case it explains is the interval a single case cannot have. The figures are spelled in
     ``unit`` where the row states one — a percent's interval reads ``[88.1%, 100%]`` — and bare otherwise.
 
-    Returns:
-        The dispersion text an evidence row carries.
+    :return: The dispersion text an evidence row carries.
+    :rtype: str
     """
     if ci_low is None or ci_high is None:
         if n_cases == 1 and n > 1:
@@ -441,13 +431,15 @@ def restated_dispersion(reading: ResolvedReading, factor: float, *, unit: str = 
     The evidence table states a reading's value on the one ruler the report states its measure on, so its spread
     beside it is restated with it: a value in s beside an interval in ms is the two-ruler defect within one row.
 
-    Args:
-        reading: The resolved reading.
-        factor: Its measure's ruler factor (``1.0`` where the ruler is the measure's own unit).
-        unit: The ruler's unit, which the restated figures are spelled in; empty for a bare number.
-
-    Returns:
-        :attr:`ResolvedReading.dispersion` where nothing is restated; otherwise the same words over restated figures.
+    :param reading: The resolved reading.
+    :ptype reading: ResolvedReading
+    :param factor: Its measure's ruler factor (``1.0`` where the ruler is the measure's own unit).
+    :ptype factor: float
+    :param unit: The ruler's unit, which the restated figures are spelled in; empty for a bare number.
+    :ptype unit: str
+    :return: :attr:`ResolvedReading.dispersion` where nothing is restated; otherwise the same words over restated
+        figures.
+    :rtype: str
     """
     if factor == 1.0 or reading.ci_low is None or reading.ci_high is None:
         return reading.dispersion

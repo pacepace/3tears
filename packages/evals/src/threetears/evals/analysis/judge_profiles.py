@@ -142,14 +142,15 @@ def judge_profiles_of(
 ) -> JudgeProfileDrafts:
     """The profiles a judge campaign's readout records: one per judge and criterion whose judge can be named.
 
-    Args:
-        readings: The judge campaign's readout (:func:`~threetears.evals.analysis.judge_kind_readings`).
-        scope_id: The scope the campaign's runs live in, which the profiles are stored in.
-        recorded_at: When the profiles are recorded; now when omitted.
-
-    Returns:
-        The profiles, and every reading skipped with why: a judge whose responses named no served model, or whose
+    :param readings: The judge campaign's readout (:func:`~threetears.evals.analysis.judge_kind_readings`).
+    :ptype readings: JudgeKindReadings
+    :param scope_id: The scope the campaign's runs live in, which the profiles are stored in.
+    :ptype scope_id: str
+    :param recorded_at: When the profiles are recorded; now when omitted.
+    :ptype recorded_at: str | None
+    :return: The profiles, and every reading skipped with why: a judge whose responses named no served model, or whose
         calls' temperature was not recorded, is a judge nothing could match to the judge another campaign used.
+    :rtype: JudgeProfileDrafts
     """
     stamp = recorded_at or utc_now_iso()
     drafts = JudgeProfileDrafts()
@@ -202,13 +203,14 @@ def judged_criteria(
     template, or whose template was edited after the run was created, read a wording nothing records, so its
     judges' criterion is unknown. A judge whose scores were asked two wordings across the runs is unknown too.
 
-    Args:
-        runs: The campaign's resolved runs.
-        results_by_run: Each run's results.
-        templates: The runs' templates by id, as loaded; a template absent here did not load.
-
-    Returns:
-        Every judge behind a judged score, mapped to its criterion's digest, or None when it cannot be told.
+    :param runs: The campaign's resolved runs.
+    :ptype runs: Sequence[EvalRun]
+    :param results_by_run: Each run's results.
+    :ptype results_by_run: Mapping[str, Sequence[EvalResult]]
+    :param templates: The runs' templates by id, as loaded; a template absent here did not load.
+    :ptype templates: Mapping[str, EvalTemplate]
+    :return: Every judge behind a judged score, mapped to its criterion's digest, or None when it cannot be told.
+    :rtype: dict[JudgeKey, str | None]
     """
     criteria: dict[JudgeKey, str | None] = {}
     for run in runs:
@@ -236,13 +238,14 @@ def tiers_with_judge_profiles(
     See the module docstring for when a profile is read. Every entry keeps its place and its judge; an entry read
     from a profile carries the profile's two criteria and tier, and names the profile in ``from_profile``.
 
-    Args:
-        tiers: The campaign's own tiers (:func:`~threetears.evals.analysis.judge_evidence_tiers`).
-        profiles: The stored profiles of the campaign's scope.
-        criteria: The criterion each judge was asked (:func:`judged_criteria`).
-
-    Returns:
-        The tiers, in the order given.
+    :param tiers: The campaign's own tiers (:func:`~threetears.evals.analysis.judge_evidence_tiers`).
+    :ptype tiers: Iterable[JudgeEvidenceTier]
+    :param profiles: The stored profiles of the campaign's scope.
+    :ptype profiles: Iterable[EvalJudgeProfile]
+    :param criteria: The criterion each judge was asked (:func:`judged_criteria`).
+    :ptype criteria: Mapping[JudgeKey, str | None]
+    :return: The tiers, in the order given.
+    :rtype: list[JudgeEvidenceTier]
     """
     by_id = {profile.id: profile for profile in profiles}
     read: list[JudgeEvidenceTier] = []
@@ -340,14 +343,16 @@ def judged_ratings(
     Read per run, in run order, then the scope's other ratings oldest first, so the list is deterministic; the scope
     is read only when a score carries a key at all.
 
-    Args:
-        storage: The store.
-        scope_id: The scope.
-        runs: The runs, in order.
-        results: Their results.
-
-    Returns:
-        The ratings, each once.
+    :param storage: The store.
+    :ptype storage: TierReadStore
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param runs: The runs, in order.
+    :ptype runs: Sequence[EvalRun]
+    :param results: Their results.
+    :ptype results: Sequence[EvalResult]
+    :return: The ratings, each once.
+    :rtype: list[CalibrationRating]
     """
     ratings = [rating for run in runs for rating in storage.query_calibration_ratings(scope_id, run_id=run.id)]
     keys = {
@@ -377,14 +382,16 @@ def judges_tiers(
     reads a judged figure outside a campaign — a scope's frontier — reads its judges' tiers here, so it says the tier
     a campaign over the same runs would.
 
-    Args:
-        storage: The store.
-        scope_id: The scope.
-        runs: The runs, in order.
-        results: Their results.
-
-    Returns:
-        One tier per judge and dimension.
+    :param storage: The store.
+    :ptype storage: TierReadStore
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param runs: The runs, in order.
+    :ptype runs: Sequence[EvalRun]
+    :param results: Their results.
+    :ptype results: Sequence[EvalResult]
+    :return: One tier per judge and dimension.
+    :rtype: list[JudgeEvidenceTier]
     """
     keys = {
         key

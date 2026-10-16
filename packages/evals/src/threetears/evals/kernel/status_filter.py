@@ -83,17 +83,14 @@ def validate_status_filter(status: str | None) -> EvalRunStatus | None:
     instead of refusing it would buy nothing now that a refusal names the
     vocabulary: the operator learns ``completed`` in one round-trip either way.
 
-    Args:
-        status: Raw filter from the caller. ``None``, empty, or ``"all"`` (any
-            case) all mean every run; anything else must be a status a run can
-            actually carry.
-
-    Returns:
-        ``None`` to apply no filter at all, else the status to filter on.
-
-    Raises:
-        StatusFilterError: The value is neither ``"all"`` nor a member of
-            :data:`~threetears.evals.schema.models.RUN_STATUSES`.
+    :param status: Raw filter from the caller. ``None``, empty, or ``"all"`` (any
+        case) all mean every run; anything else must be a status a run can
+        actually carry.
+    :ptype status: str | None
+    :return: ``None`` to apply no filter at all, else the status to filter on.
+    :rtype: EvalRunStatus | None
+    :raises StatusFilterError: The value is neither ``"all"`` nor a member of
+        :data:`~threetears.evals.schema.models.RUN_STATUSES`.
     """
     cleaned = (status or "").strip()
     if not cleaned or cleaned.lower() == ALL_STATUSES:
@@ -123,17 +120,14 @@ def normalize_status_filter(status: str | None) -> EvalRunStatus | None:
     exists to catch. One seam, two callers — and one place the validation can be
     added without five adapters each growing their own copy of it.
 
-    Args:
-        status: Raw filter from the caller. ``None`` or empty means unspecified;
-            ``"all"`` (any case) lifts the filter entirely; anything else must be
-            a status a run can actually carry.
-
-    Returns:
-        ``None`` to group every run, else the status to filter on.
-
-    Raises:
-        StatusFilterError: The value is neither ``"all"`` nor a member of
-            :data:`~threetears.evals.schema.models.RUN_STATUSES`.
+    :param status: Raw filter from the caller. ``None`` or empty means unspecified;
+        ``"all"`` (any case) lifts the filter entirely; anything else must be
+        a status a run can actually carry.
+    :ptype status: str | None
+    :return: ``None`` to group every run, else the status to filter on.
+    :rtype: EvalRunStatus | None
+    :raises StatusFilterError: The value is neither ``"all"`` nor a member of
+        :data:`~threetears.evals.schema.models.RUN_STATUSES`.
     """
     if not (status or "").strip():
         return DEFAULT_COMPARISON_STATUS

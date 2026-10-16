@@ -45,16 +45,15 @@ def worded(words: dict[str, str], annotation: Any, what: str) -> dict[str, str]:
     A value added to the model and not here would otherwise reach the page as its raw token — the very vocabulary
     a reader's layout exists to keep from them.
 
-    Args:
-        words: Value → its words.
-        annotation: The ``Literal`` the values come from.
-        what: What the values are, for the refusal.
-
-    Returns:
-        ``words``, unchanged.
-
-    Raises:
-        RuntimeError: The table and the ``Literal`` disagree.
+    :param words: Value → its words.
+    :ptype words: dict[str, str]
+    :param annotation: The ``Literal`` the values come from.
+    :ptype annotation: Any
+    :param what: What the values are, for the refusal.
+    :ptype what: str
+    :return: ``words``, unchanged.
+    :rtype: dict[str, str]
+    :raises RuntimeError: The table and the ``Literal`` disagree.
     """
     if set(words) != _literal_values(annotation):
         raise RuntimeError(
@@ -101,12 +100,12 @@ EVIDENCE_TIER_WORDS = worded(
 def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
     """What a finding stands on, as a reader says it.
 
-    Args:
-        analysis: The analysis the tier was stored in.
-        tier: The finding's tier.
-
-    Returns:
-        The words.
+    :param analysis: The analysis the tier was stored in.
+    :ptype analysis: EvalAnalysis
+    :param tier: The finding's tier.
+    :ptype tier: EvidenceTier
+    :return: The words.
+    :rtype: str
     """
     return EVIDENCE_TIER_WORDS[tier]
 
@@ -134,14 +133,16 @@ def comparison_words(verdict: ComparisonVerdict, arm: str, control: str, *, high
     """A contrast's verdict in words, each arm by its label: ``v2 better than v1``, ``v2 worse than v1 (lower is
     better)``, ``v2 and v1 not separated``.
 
-    Args:
-        verdict: What the contrast's test came to.
-        arm: The arm read against the control, as the page names it.
-        control: The control, as the page names it.
-        higher_is_better: The reading's direction; a lower-is-better reading's better end is said in brackets.
-
-    Returns:
-        The words.
+    :param verdict: What the contrast's test came to.
+    :ptype verdict: ComparisonVerdict
+    :param arm: The arm read against the control, as the page names it.
+    :ptype arm: str
+    :param control: The control, as the page names it.
+    :ptype control: str
+    :param higher_is_better: The reading's direction; a lower-is-better reading's better end is said in brackets.
+    :ptype higher_is_better: bool
+    :return: The words.
+    :rtype: str
     """
     better_end = "" if higher_is_better else LOWER_IS_BETTER
     return COMPARISON_VERDICT_WORDS[verdict].format(arm=arm, control=control, better_end=better_end)
@@ -192,13 +193,15 @@ def reading_heading(surface: DecisionSurface, name: str, reading: str = "measure
     each trial ended (a ``trial`` reading) as the decision rule names it, "the pass rate"; any other reading by the
     surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
 
-    Args:
-        surface: The decision surface the reading is on.
-        name: The measure's key, or a judged dimension's name.
-        reading: ``judged`` for a judged dimension, ``trial`` for the overall pass rate; anything else reads a measure.
-
-    Returns:
-        The heading.
+    :param surface: The decision surface the reading is on.
+    :ptype surface: DecisionSurface
+    :param name: The measure's key, or a judged dimension's name.
+    :ptype name: str
+    :param reading: ``judged`` for a judged dimension, ``trial`` for the overall pass rate; anything else reads a
+        measure.
+    :ptype reading: str
+    :return: The heading.
+    :rtype: str
     """
     if reading == "trial":
         return "the pass rate"
@@ -214,12 +217,12 @@ def cell_arm_labels(surface: DecisionSurface, variant_index: Sequence[VariantInd
     :func:`~threetears.evals.analysis.arms.arm_names`, so one arm reads alike in every table of the report and in
     the memo the reporter eval's judge reads.
 
-    Args:
-        surface: The decision surface whose cells to name.
-        variant_index: The variant index, which says what each cell's arm carried.
-
-    Returns:
-        ``cell_ref -> label`` for every cell.
+    :param surface: The decision surface whose cells to name.
+    :ptype surface: DecisionSurface
+    :param variant_index: The variant index, which says what each cell's arm carried.
+    :ptype variant_index: Sequence[VariantIndexEntry]
+    :return: ``cell_ref -> label`` for every cell.
+    :rtype: dict[str, str]
     """
     multi = multi_rig_variants(surface.cells)
     names = arm_names(variant_index)
@@ -236,11 +239,10 @@ def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
     A reference naming a variant the analysis's surface does not hold is named by the variant index's labeller,
     in its own words, rather than printed as the reference.
 
-    Args:
-        analysis: The analysis whose references to name.
-
-    Returns:
-        A function from a cell reference to its arm's name.
+    :param analysis: The analysis whose references to name.
+    :ptype analysis: EvalAnalysis
+    :return: A function from a cell reference to its arm's name.
+    :rtype: Callable[[str], str]
     """
     labels = cell_arm_labels(analysis.decision_surface, analysis.variant_index)
     names = arm_names(analysis.variant_index)
@@ -276,13 +278,14 @@ def evidence_rows(
     reply on the scale its heading names; a judged score on its dimension's; a goal check's
     pass rate is its count (``11 of 12``), as the scoreboard counts.
 
-    Args:
-        analysis: The analysis the evidence was resolved under.
-        evidence: One finding's resolved evidence rows, in the order code resolved them.
-        arm: The analysis's :func:`arm_namer`.
-
-    Returns:
-        One row per evidence row, in order.
+    :param analysis: The analysis the evidence was resolved under.
+    :ptype analysis: EvalAnalysis
+    :param evidence: One finding's resolved evidence rows, in the order code resolved them.
+    :ptype evidence: Sequence[EvidenceRow]
+    :param arm: The analysis's :func:`arm_namer`.
+    :ptype arm: Callable[[str], str]
+    :return: One row per evidence row, in order.
+    :rtype: list[dict[str, TableCell]]
     """
     surface = analysis.decision_surface
     rulers = analysis_rulers(analysis)

@@ -166,10 +166,10 @@ class MeasureSummary(EvalDocumentModel):
         every measure invites a reader to compare ``delivered_items``' p95 — its BEST
         outcome — against a latency p95, its worst, as though both moved the same way.
 
-        Returns:
-            p05 when higher is better, p95 when lower is better, None for a categorical
+        :return: p05 when higher is better, p95 when lower is better, None for a categorical
             measure, one with no declared direction, or one with too few observations to
             estimate that tail (below 13).
+        :rtype: float | None
         """
         if self.higher_is_better is None:
             return None
@@ -184,9 +184,8 @@ class MeasureSummary(EvalDocumentModel):
         the catalog's ``data_type`` — and they disagree the first time a half-populated summary
         appears. Enforcing it here makes the shape unrepresentable rather than merely undocumented.
 
-        Raises:
-            ValueError: If more than one shape is populated, or none is, or a boolean's count does not
-                match its rate.
+        :raises ValueError: If more than one shape is populated, or none is, or a boolean's count does not
+            match its rate.
         """
         numeric = any(value is not None for value in (self.mean, self.p05, self.p50, self.p95, self.max))
         boolean = self.rate is not None or self.n_true is not None
@@ -376,8 +375,7 @@ class BarVerdict(EvalDocumentModel):
     def _decided_on_its_interval(self) -> Self:
         """Refuse a decision with no interval: a verdict is the interval against the line, never the mean.
 
-        Raises:
-            ValueError: ``cleared`` is set while either end of the interval is missing.
+        :raises ValueError: ``cleared`` is set while either end of the interval is missing.
         """
         if self.cleared is not None and (self.ci_low is None or self.ci_high is None):
             raise ValueError("a bar verdict is decided on its interval: cleared is set only beside ci_low and ci_high")

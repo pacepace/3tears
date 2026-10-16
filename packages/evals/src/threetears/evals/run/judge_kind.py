@@ -159,17 +159,21 @@ def judge_case_labels(
     (:func:`~threetears.evals.analysis.judge_agreement`). A rating on another scale than the criterion is asked on
     is left out, since it answers a different question.
 
-    Args:
-        storage: The store the ratings live in.
-        scope_id: The scope the result lives in.
-        result: The judged result the case replays.
-        dim: The criterion.
-        scale: The scale the case asks the criterion on.
-        label_key: The key of the output the case replays read on the criterion; ``None`` finds labels by the
-            result alone.
-
-    Returns:
-        The labels, oldest first, at most one per rater.
+    :param storage: The store the ratings live in.
+    :ptype storage: EvalStorage
+    :param scope_id: The scope the result lives in.
+    :ptype scope_id: str
+    :param result: The judged result the case replays.
+    :ptype result: EvalResult
+    :param dim: The criterion.
+    :ptype dim: str
+    :param scale: The scale the case asks the criterion on.
+    :ptype scale: str
+    :param label_key: The key of the output the case replays read on the criterion; ``None`` finds labels by the
+        result alone.
+    :ptype label_key: LabelKey | None
+    :return: The labels, oldest first, at most one per rater.
+    :rtype: list[CalibrationRating]
     """
     found = storage.query_calibration_ratings(scope_id, result_id=result.id)
     if label_key is not None:
@@ -243,9 +247,8 @@ def _cases_of_result(
 ) -> list[tuple[str, JudgeCase]]:
     """Every case one stored result freezes into: one per judged dim, refusing what its run cannot reproduce.
 
-    Raises:
-        ValidationFailedError: The result's judge input cannot be rebuilt from what its run recorded.
-        NotFoundError: A record the run names does not load.
+    :raises ValidationFailedError: The result's judge input cannot be rebuilt from what its run recorded.
+    :raises NotFoundError: A record the run names does not load.
     """
     # The configs are the arm's, not the source's, so none needs to load; everything the judge READ must.
     inputs = reproducible_judge_inputs(storage, result, run, scope_id, request_settings="as_recorded", config_dims=())
@@ -361,8 +364,8 @@ def _cases_of_labels(
     content, and a rating with no label key, cannot be frozen, and each such rating is skipped by name with the
     reason its rating states.
 
-    Returns:
-        ``(source result id, case)`` per case, and the skipped labels.
+    :return: ``(source result id, case)`` per case, and the skipped labels.
+    :rtype: tuple[list[tuple[str, JudgeCase]], list[JudgeCaseSkip]]
     """
     skipped: list[JudgeCaseSkip] = []
     by_key: dict[LabelKey, list[CalibrationRating]] = {}
@@ -421,24 +424,30 @@ def author_judge_case(
     """One hand-written judge case, its criterion read from the template that words it: the one door every authored
     case passes, ``judge_case_author`` and the definition seed's ``judge_cases`` alike.
 
-    Args:
-        criterion_template: The subject template whose rubric words the criterion.
-        criterion: The rubric dimension's name on it.
-        output: The output under review.
-        case_material: What the output is judged against.
-        expected: The verdict it must get, on the dimension's scale.
-        note: Why it must get that verdict.
-        author: Who wrote it: the label's rater.
-        scenario: The scenario the judge reads; ``None`` reads the template's intent.
-        subject: Who or what produced the output, or ``None``.
-        judged_artifact: A document or a transcript.
-
-    Returns:
-        The case, validated.
-
-    Raises:
-        ValidationFailedError: The template has no such rubric dimension, or its scale cannot hold the verdict (naming
-            both), or the case is otherwise not one a judge reads.
+    :param criterion_template: The subject template whose rubric words the criterion.
+    :ptype criterion_template: EvalTemplate
+    :param criterion: The rubric dimension's name on it.
+    :ptype criterion: str
+    :param output: The output under review.
+    :ptype output: str
+    :param case_material: What the output is judged against.
+    :ptype case_material: str
+    :param expected: The verdict it must get, on the dimension's scale.
+    :ptype expected: AuthoredVerdict
+    :param note: Why it must get that verdict.
+    :ptype note: str
+    :param author: Who wrote it: the label's rater.
+    :ptype author: str
+    :param scenario: The scenario the judge reads; ``None`` reads the template's intent.
+    :ptype scenario: str | None
+    :param subject: Who or what produced the output, or ``None``.
+    :ptype subject: str | None
+    :param judged_artifact: A document or a transcript.
+    :ptype judged_artifact: JudgedArtifact
+    :return: The case, validated.
+    :rtype: AuthoredJudgeCase
+    :raises ValidationFailedError: The template has no such rubric dimension, or its scale cannot hold the verdict
+        (naming both), or the case is otherwise not one a judge reads.
     """
     criteria = {dim.name: dim for dim in criterion_template.rubric}
     dim = criteria.get(criterion)
@@ -472,19 +481,20 @@ def freeze_seeded_judge_case(
     """Freeze one seed corpus judge case into its judge template as :func:`freeze_judge_cases` freezes an authored one,
     recording the corpus name it was seeded as on the stored case (``EvalTestCase.seed_name``).
 
-    Args:
-        storage: Where the case is written.
-        template: The judge template, loaded.
-        scope_id: The scope the case is stored in.
-        authored: The case, built through ``author_judge_case``.
-        seed_name: Its corpus name, or None for an unnamed corpus case.
-
-    Returns:
-        The case: created, or already stored (then left as it is).
-
-    Raises:
-        ValidationFailedError: The template is not of the judge kind.
-        StorageError: The case could not be persisted.
+    :param storage: Where the case is written.
+    :ptype storage: EvalStorage
+    :param template: The judge template, loaded.
+    :ptype template: EvalTemplate
+    :param scope_id: The scope the case is stored in.
+    :ptype scope_id: str
+    :param authored: The case, built through ``author_judge_case``.
+    :ptype authored: AuthoredJudgeCase
+    :param seed_name: Its corpus name, or None for an unnamed corpus case.
+    :ptype seed_name: str | None
+    :return: The case: created, or already stored (then left as it is).
+    :rtype: FrozenJudgeCase
+    :raises ValidationFailedError: The template is not of the judge kind.
+    :raises StorageError: The case could not be persisted.
     """
     _judge_template(template)
     case = JudgeCase.from_authored(authored)
@@ -530,27 +540,32 @@ def freeze_judge_cases(
     in order — the set a launch targets, so cases a later freeze superseded are not run by it. A freeze whose cases
     the latest version already lists exactly is answered with that version.
 
-    Args:
-        storage: The store the runs, their results and ratings live in, and the cases are written to.
-        template: The judge template the cases belong to, loaded.
-        run_ids: The judged runs whose results to freeze; empty with ``from_labels``.
-        scope_id: The scope the runs live in, and the cases are stored in.
-        dims: The criteria to freeze; ``None`` for every dim each result was judged on.
-        result_ids: The results to freeze; ``None`` for every result of the runs.
-        case_set: The case set to mint over the frozen cases, or ``None`` for none.
-        from_labels: Freeze from the scope's durable person labels instead of from runs.
-        authored: Hand-written cases to freeze beside whatever else is frozen, each validated when it was built (its
-            verdict on its criterion's scale).
-
-    Returns:
-        The cases, the set, and every result skipped with why.
-
-    Raises:
-        ValidationFailedError: The template is not of the judge kind; no run, no labels and no authored case are
-            named (or, from labels, a run or a result is); ``result_ids`` names a result outside the runs; or
-            nothing could be frozen.
-        NotFoundError: A run does not load.
-        StorageError: A case or the set could not be persisted.
+    :param storage: The store the runs, their results and ratings live in, and the cases are written to.
+    :ptype storage: EvalStorage
+    :param template: The judge template the cases belong to, loaded.
+    :ptype template: EvalTemplate
+    :param run_ids: The judged runs whose results to freeze; empty with ``from_labels``.
+    :ptype run_ids: Sequence[str]
+    :param scope_id: The scope the runs live in, and the cases are stored in.
+    :ptype scope_id: str
+    :param dims: The criteria to freeze; ``None`` for every dim each result was judged on.
+    :ptype dims: Collection[str] | None
+    :param result_ids: The results to freeze; ``None`` for every result of the runs.
+    :ptype result_ids: Collection[str] | None
+    :param case_set: The case set to mint over the frozen cases, or ``None`` for none.
+    :ptype case_set: str | None
+    :param from_labels: Freeze from the scope's durable person labels instead of from runs.
+    :ptype from_labels: bool
+    :param authored: Hand-written cases to freeze beside whatever else is frozen, each validated when it was built (its
+        verdict on its criterion's scale).
+    :ptype authored: Sequence[AuthoredJudgeCase]
+    :return: The cases, the set, and every result skipped with why.
+    :rtype: JudgeCaseFreezeReport
+    :raises ValidationFailedError: The template is not of the judge kind; no run, no labels and no authored case are
+        named (or, from labels, a run or a result is); ``result_ids`` names a result outside the runs; or
+        nothing could be frozen.
+    :raises NotFoundError: A run does not load.
+    :raises StorageError: A case or the set could not be persisted.
     """
     _judge_template(template)
     if from_labels and (run_ids or result_ids is not None):
@@ -665,13 +680,14 @@ class _CellClient:
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         """Forward one call and keep its completion, or the exception it raised.
 
-        Args:
-            system: The system prompt.
-            user: The user message.
-            response_format: The provider directive.
-
-        Returns:
-            The provider's completion, unchanged.
+        :param system: The system prompt.
+        :ptype system: str
+        :param user: The user message.
+        :ptype user: str
+        :param response_format: The provider directive.
+        :ptype response_format: dict[str, Any] | None
+        :return: The provider's completion, unchanged.
+        :rtype: Any
         """
         try:
             completion = await self.inner.generate(system=system, user=user, response_format=response_format)
@@ -685,13 +701,14 @@ class _CellClient:
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The ceiling of one request on the client this forwards to, or ``None`` when it cannot say.
 
-        Args:
-            system: The system prompt.
-            user: The user message.
-            response_format: The provider directive.
-
-        Returns:
-            The kind's client's own ceiling for the pair.
+        :param system: The system prompt.
+        :ptype system: str
+        :param user: The user message.
+        :ptype user: str
+        :param response_format: The provider directive.
+        :ptype response_format: dict[str, Any] | None
+        :return: The kind's client's own ceiling for the pair.
+        :rtype: float | None
         """
         return call_ceiling(self.inner, system=system, user=user, response_format=response_format)
 
@@ -739,20 +756,22 @@ class JudgeKind:
     ) -> None:
         """Bind the judge under test.
 
-        Args:
-            clients: The host's client factory; every call is asked of a ``judge``-role client bound to ``model``.
-            model: The judge's model — the run's candidate model, which every criterion is sent to.
-            failure_describer: The host's reading of what a judge client raises — the only thing that can say a call
-                was refused for the calling account.
-            configs: criterion -> the versioned config whose prompt asks it; a criterion absent from the map is
-                asked with the built-in prompt.
-            temperature: The temperature every call is requested at; ``None`` for what each criterion's prompt asks
-                for (its config's, else the default an unconfigured criterion is judged at).
-
-        Raises:
-            ValueError: A config is keyed by another criterion than the one it asks, or names a model of its own other
-                than ``model`` — the judge under test is the one named here, and a config pinning another would
-                score that criterion with a judge the run does not name.
+        :param clients: The host's client factory; every call is asked of a ``judge``-role client bound to ``model``.
+        :ptype clients: CompletionClients
+        :param model: The judge's model — the run's candidate model, which every criterion is sent to.
+        :ptype model: str
+        :param failure_describer: The host's reading of what a judge client raises — the only thing that can say a call
+            was refused for the calling account.
+        :ptype failure_describer: ProviderFailureDescriber
+        :param configs: criterion -> the versioned config whose prompt asks it; a criterion absent from the map is
+            asked with the built-in prompt.
+        :ptype configs: Mapping[str, JudgeConfig] | None
+        :param temperature: The temperature every call is requested at; ``None`` for what each criterion's prompt asks
+            for (its config's, else the default an unconfigured criterion is judged at).
+        :ptype temperature: float | None
+        :raises ValueError: A config is keyed by another criterion than the one it asks, or names a model of its own
+            other than ``model`` — the judge under test is the one named here, and a config pinning another would
+            score that criterion with a judge the run does not name.
         """
         configs = dict(configs or {})
         for dim, config in configs.items():
@@ -819,19 +838,21 @@ class JudgeKind:
     ) -> PreparedJudge:
         """Bind this cell's windows, refusing a cell recorded against another model than this judge's.
 
-        Args:
-            subject_snapshot: Unread — the judge under test is the one this kind holds.
-            variant_config: This cell's contestant stack; its model is the judge's.
-            world_seed: Unread — a judge perceives no world.
-            span_window: This cell's tracing windows, opened in :meth:`invoke`.
-            cassettes: Unwired — a judge calls no tool a cassette could record, so the engine refuses a cassette run.
-            world: Unread.
-
-        Returns:
-            The cell's bound model and windows.
-
-        Raises:
-            CandidatePreparationFailed: The cell's model is not this judge's.
+        :param subject_snapshot: Unread — the judge under test is the one this kind holds.
+        :ptype subject_snapshot: Any
+        :param variant_config: This cell's contestant stack; its model is the judge's.
+        :ptype variant_config: VariantConfig
+        :param world_seed: Unread — a judge perceives no world.
+        :ptype world_seed: Any
+        :param span_window: This cell's tracing windows, opened in :meth:`invoke`.
+        :ptype span_window: CellSpanWindow
+        :param cassettes: Unwired — a judge calls no tool a cassette could record, so the engine refuses a cassette run.
+        :ptype cassettes: CellCassettes | None
+        :param world: Unread.
+        :ptype world: Any
+        :return: The cell's bound model and windows.
+        :rtype: PreparedJudge
+        :raises CandidatePreparationFailed: The cell's model is not this judge's.
         """
         if variant_config.candidate_model != self._model:
             raise CandidatePreparationFailed(
@@ -849,16 +870,13 @@ class JudgeKind:
         (:attr:`~threetears.evals.run.LaunchableKind.price_largest_call`): a call whose ceiling is above the run's
         cap on its own is one the run could never make.
 
-        Args:
-            test_case: The cell's case, carrying the judge case in its ``host_payload``.
-
-        Returns:
-            The ceiling in dollars, every attempt included; ``None`` when the client cannot price the call.
-
-        Raises:
-            ValueError: The case carries no readable judge case, or its criterion cannot be asked — the plan refuses
-                every such case before this is asked (:func:`launchable_judge_kind`), so reaching one is a defect —
-                or the client priced the call at an amount no reservation could hold.
+        :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
+        :ptype test_case: EvalTestCase
+        :return: The ceiling in dollars, every attempt included; ``None`` when the client cannot price the call.
+        :rtype: float | None
+        :raises ValueError: The case carries no readable judge case, or its criterion cannot be asked — the plan refuses
+            every such case before this is asked (:func:`launchable_judge_kind`), so reaching one is a defect —
+            or the client priced the call at an amount no reservation could hold.
         """
         case = judge_case_of(test_case)
         if case is None:
@@ -891,15 +909,16 @@ class JudgeKind:
         that came back is a measurement whatever it says: a score, a "can't tell", or a reply that broke the
         protocol, which is what parse validity counts.
 
-        Args:
-            instance: What :meth:`prepare` bound.
-            test_case: The cell's case, carrying the judge case in its ``host_payload``.
-            sink: This cell's sink, which holds the one call against the run's cost cap: reserved at its
-                ceiling before it is sent, settled to what it cost when it returns.
-
-        Returns:
-            The answer, its code grade on ``host_measures``, the trial on ``kind_payload``, and the call's spend as
+        :param instance: What :meth:`prepare` bound.
+        :ptype instance: PreparedJudge
+        :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
+        :ptype test_case: EvalTestCase
+        :param sink: This cell's sink, which holds the one call against the run's cost cap: reserved at its
+            ceiling before it is sent, settled to what it cost when it returns.
+        :ptype sink: CellSink
+        :return: The answer, its code grade on ``host_measures``, the trial on ``kind_payload``, and the call's spend as
             the ``judge`` role's usage.
+        :rtype: CandidateOutput
         """
         scopes = instance.span_window
         with scopes.identity():
@@ -1062,21 +1081,23 @@ def judge_kind(
 ) -> JudgeKind:
     """The judge kind for one arm, its configs loaded from the store: what a launcher builds per arm.
 
-    Args:
-        storage: The store the configs live in.
-        clients: The host's client factory.
-        model: The arm's judge model (its candidate model).
-        scope_id: The scope the configs live in.
-        failure_describer: The host's reading of what a judge client raises.
-        overlays: The arm's overlays — its prompt per criterion and its temperature; ``None`` for the built-in
-            prompt on every criterion at each prompt's own temperature.
-
-    Returns:
-        The kind, owning the clients it builds.
-
-    Raises:
-        NotFoundError: A config the overlays name does not load.
-        ValidationFailedError: A config asks another criterion than it is named for, or pins another model.
+    :param storage: The store the configs live in.
+    :ptype storage: EvalStorage
+    :param clients: The host's client factory.
+    :ptype clients: CompletionClients
+    :param model: The arm's judge model (its candidate model).
+    :ptype model: str
+    :param scope_id: The scope the configs live in.
+    :ptype scope_id: str
+    :param failure_describer: The host's reading of what a judge client raises.
+    :ptype failure_describer: ProviderFailureDescriber
+    :param overlays: The arm's overlays — its prompt per criterion and its temperature; ``None`` for the built-in
+        prompt on every criterion at each prompt's own temperature.
+    :ptype overlays: JudgeKindOverlays | None
+    :return: The kind, owning the clients it builds.
+    :rtype: JudgeKind
+    :raises NotFoundError: A config the overlays name does not load.
+    :raises ValidationFailedError: A config asks another criterion than it is named for, or pins another model.
     """
     overlays = overlays if overlays is not None else JudgeKindOverlays()
     configs: dict[str, JudgeConfig] = {}
@@ -1129,8 +1150,7 @@ def _unaskable(case: EvalTestCase) -> str | None:
 def _refuse_unaskable(template: EvalTemplate, cases: list[EvalTestCase]) -> None:
     """Refuse an arm any of whose cases the judge kind could not ask, naming every one — before anything is spent.
 
-    Raises:
-        ValidationFailedError: A case carries no readable judge case, or no criterion to ask.
+    :raises ValidationFailedError: A case carries no readable judge case, or no criterion to ask.
     """
     if reasons := [reason for case in cases if (reason := _unaskable(case)) is not None]:
         raise ValidationFailedError(
@@ -1145,12 +1165,12 @@ def _judge_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
     A judge arm's subject is not something the host holds — the snapshot is built from the label itself — so there
     is nothing to look up, and only a blank label, which no run could group by, is refused.
 
-    Args:
-        subject_id: The label the launch names its judge by.
-        _scope_id: Unused; a label is a label in every scope.
-
-    Returns:
-        ``None`` for a non-blank label; an :class:`~threetears.evals.run.UnknownSubject` for a blank one.
+    :param subject_id: The label the launch names its judge by.
+    :ptype subject_id: str
+    :param _scope_id: Unused; a label is a label in every scope.
+    :ptype _scope_id: str
+    :return: ``None`` for a non-blank label; an :class:`~threetears.evals.run.UnknownSubject` for a blank one.
+    :rtype: UnknownSubject | None
     """
     if subject_id.strip():
         return None
@@ -1166,12 +1186,11 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
     its candidate model. The arm runs its launch's case set when it names one, else every live judge case of the
     template. No simulator, no judge of its own (the judge is the candidate), no cassette, and no generated case.
 
-    Args:
-        launch_host: Returns the launch host the entry is registered on, which the launcher hands the launch tail;
-            a callable because the host is built with its registry, this entry in it.
-
-    Returns:
-        The registry entry.
+    :param launch_host: Returns the launch host the entry is registered on, which the launcher hands the launch tail;
+        a callable because the host is built with its registry, this entry in it.
+    :ptype launch_host: Callable[[], LaunchHost]
+    :return: The registry entry.
+    :rtype: LaunchableKind
     """
 
     def plan(request: LaunchRequest) -> ArmPlan:

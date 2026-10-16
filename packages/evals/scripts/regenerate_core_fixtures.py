@@ -99,13 +99,13 @@ class ReleasedCorpusError(RuntimeError):
 def released_corpus_refusal(version: int, tag: str | None) -> str | None:
     """Why the ``v{version}`` corpus must not be regenerated because a release shipped it, or None when none did.
 
-    Args:
-        version: The current ``CORE_SCHEMA_VERSION``.
-        tag: The newest final release tag the working tree follows (:func:`public_surface.newest_tag`), or None
-            when the checkout has none.
-
-    Returns:
-        The refusal, naming the release and the remedy, or None while no release's tree holds the corpus.
+    :param version: The current ``CORE_SCHEMA_VERSION``.
+    :ptype version: int
+    :param tag: The newest final release tag the working tree follows (:func:`public_surface.newest_tag`), or None
+        when the checkout has none.
+    :ptype tag: str | None
+    :return: The refusal, naming the release and the remedy, or None while no release's tree holds the corpus.
+    :rtype: str | None
     """
     corpus = f"{CORPUS_IN_REPO}/v{version}"
     if tag is None:
@@ -127,12 +127,12 @@ def released_corpus_refusal(version: int, tag: str | None) -> str | None:
 def newer_corpus_dirs(root: Path, version: int) -> list[Path]:
     """The ``v<N>`` corpus directories under ``root`` with ``N`` above ``version``.
 
-    Args:
-        root: The corpus root (``tests/fixtures/core_documents``).
-        version: The current ``CORE_SCHEMA_VERSION``.
-
-    Returns:
-        Those directories, oldest first.
+    :param root: The corpus root (``tests/fixtures/core_documents``).
+    :ptype root: Path
+    :param version: The current ``CORE_SCHEMA_VERSION``.
+    :ptype version: int
+    :return: Those directories, oldest first.
+    :rtype: list[Path]
     """
     newer = [
         path
@@ -149,11 +149,10 @@ def spelling(value: str) -> str:
     or six fractional digits against none, do not. A UUID keeps its version digit, because the masked form of a uuid4
     and a uuid7 is otherwise the same.
 
-    Args:
-        value: A timestamp or a UUID.
-
-    Returns:
-        Its spelling.
+    :param value: A timestamp or a UUID.
+    :ptype value: str
+    :return: Its spelling.
+    :rtype: str
     """
     masked = _DRAWN.sub("#", value)
     if _UUID.fullmatch(value):
@@ -164,13 +163,13 @@ def spelling(value: str) -> str:
 def same_document(kept: Any, sampled: Any) -> bool:
     """Whether two documents agree in structure and in every value but a drawn clock reading or generated id.
 
-    Args:
-        kept: The fixture on disk, parsed.
-        sampled: The new sample.
-
-    Returns:
-        ``True`` when they have the same keys and types throughout and differ only where both hold a timestamp or
+    :param kept: The fixture on disk, parsed.
+    :ptype kept: Any
+    :param sampled: The new sample.
+    :ptype sampled: Any
+    :return: ``True`` when they have the same keys and types throughout and differ only where both hold a timestamp or
         both hold a UUID, spelled alike (:func:`spelling`).
+    :rtype: bool
     """
     if isinstance(kept, dict) and isinstance(sampled, dict):
         return kept.keys() == sampled.keys() and all(same_document(kept[key], sampled[key]) for key in kept)
@@ -187,19 +186,18 @@ def same_document(kept: Any, sampled: Any) -> bool:
 def write_corpus(root: Path, version: int, *, rewrite_all: bool = False) -> dict[str, str]:
     """Write the ``v{version}`` corpus from ``stored_sample`` and return each core type's shape digest.
 
-    Args:
-        root: The corpus root (``tests/fixtures/core_documents``).
-        version: The current ``CORE_SCHEMA_VERSION``.
-        rewrite_all: Write every fixture, including one :func:`same_document` reads as unchanged.
-
-    Returns:
-        ``doc_type`` to :func:`core_shape_digest`, for every core type.
-
-    Raises:
-        SupersededCorpusError: A ``v<N>`` directory above ``version`` exists; nothing is written.
-        ReleasedCorpusError: The newest final release's tree holds ``v{version}``, or the checkout has no release
-            tag to tell by (:func:`released_corpus_refusal`); nothing is written.
-        RuntimeError: A core type in ``CORE_DOC_TYPES`` has no stored model, or a stored core model is not in it.
+    :param root: The corpus root (``tests/fixtures/core_documents``).
+    :ptype root: Path
+    :param version: The current ``CORE_SCHEMA_VERSION``.
+    :ptype version: int
+    :param rewrite_all: Write every fixture, including one :func:`same_document` reads as unchanged.
+    :ptype rewrite_all: bool
+    :return: ``doc_type`` to :func:`core_shape_digest`, for every core type.
+    :rtype: dict[str, str]
+    :raises SupersededCorpusError: A ``v<N>`` directory above ``version`` exists; nothing is written.
+    :raises ReleasedCorpusError: The newest final release's tree holds ``v{version}``, or the checkout has no release
+        tag to tell by (:func:`released_corpus_refusal`); nothing is written.
+    :raises RuntimeError: A core type in ``CORE_DOC_TYPES`` has no stored model, or a stored core model is not in it.
     """
     newer = newer_corpus_dirs(root, version)
     if newer:
@@ -240,11 +238,10 @@ def write_corpus(root: Path, version: int, *, rewrite_all: bool = False) -> dict
 def fixture_digests(root: Path) -> dict[str, str]:
     """The sha256 of every ``v*/*.json`` under ``root``, by its path relative to it.
 
-    Args:
-        root: The corpus root.
-
-    Returns:
-        Relative POSIX path to sha256 hex digest, sorted by path.
+    :param root: The corpus root.
+    :ptype root: Path
+    :return: Relative POSIX path to sha256 hex digest, sorted by path.
+    :rtype: dict[str, str]
     """
     return {
         path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -255,13 +252,14 @@ def fixture_digests(root: Path) -> dict[str, str]:
 def render_table(name: str, annotation: str, table: dict[str, str]) -> str:
     """A digest table as the pins test spells it: the annotated name, sorted keys, one entry per line.
 
-    Args:
-        name: The module-level name (``CORE_SHAPE_DIGESTS``).
-        annotation: Its annotation (``dict[str, str]``).
-        table: The entries.
-
-    Returns:
-        The assignment's source, without a trailing newline.
+    :param name: The module-level name (``CORE_SHAPE_DIGESTS``).
+    :ptype name: str
+    :param annotation: Its annotation (``dict[str, str]``).
+    :ptype annotation: str
+    :param table: The entries.
+    :ptype table: dict[str, str]
+    :return: The assignment's source, without a trailing newline.
+    :rtype: str
     """
     rows = "".join(f'    "{key}": "{value}",\n' for key, value in sorted(table.items()))
     return f"{name}: {annotation} = {{\n{rows}}}"
@@ -270,16 +268,15 @@ def render_table(name: str, annotation: str, table: dict[str, str]) -> str:
 def repin(source: str, name: str, table: dict[str, str]) -> str:
     """``source`` with the dict literal assigned to ``name`` replaced by ``table``.
 
-    Args:
-        source: The pins test's source.
-        name: The table to replace.
-        table: Its new entries.
-
-    Returns:
-        The new source.
-
-    Raises:
-        RuntimeError: ``name`` is not assigned a ``dict[str, str]`` literal exactly once.
+    :param source: The pins test's source.
+    :ptype source: str
+    :param name: The table to replace.
+    :ptype name: str
+    :param table: Its new entries.
+    :ptype table: dict[str, str]
+    :return: The new source.
+    :rtype: str
+    :raises RuntimeError: ``name`` is not assigned a ``dict[str, str]`` literal exactly once.
     """
     pattern = re.compile(rf"^{name}: dict\[str, str\] = \{{\n(?:    .*\n)*?\}}", re.MULTILINE)
     if len(pattern.findall(source)) != 1:

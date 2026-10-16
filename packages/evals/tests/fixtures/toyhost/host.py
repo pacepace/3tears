@@ -50,19 +50,22 @@ def toyhost_host(
 ) -> EvalHost:
     """The toy host as the engine receives it.
 
-    Args:
-        profile: The vocabulary. ``None`` is :func:`toyhost_profile`; a caller passes its own to
-            hold one registration to a different value (an apparatus map emptied, say), or to keep
-            the world's read handles it built.
-        storage: Where documents live. ``None`` is a fresh in-memory store, empty and scoped.
-        trace_sink: The host's tracing, or ``None`` for none — a decision rather than a default.
-        clients: The completion-client factory, for a drive that judges or analyses through the
-            engine. The standard matrix calls no model.
-        template_checks: The checks a template is admitted under; :data:`TOYHOST_TEMPLATE_CHECKS` (each admits)
-            unless a test holds a template to a check of its own, or ``None`` for a host supplying none.
-
-    Returns:
-        The host.
+    :param profile: The vocabulary. ``None`` is :func:`toyhost_profile`; a caller passes its own to
+        hold one registration to a different value (an apparatus map emptied, say), or to keep
+        the world's read handles it built.
+    :ptype profile: HostProfile | None
+    :param storage: Where documents live. ``None`` is a fresh in-memory store, empty and scoped.
+    :ptype storage: EvalStorage | None
+    :param trace_sink: The host's tracing, or ``None`` for none — a decision rather than a default.
+    :ptype trace_sink: TraceSink | None
+    :param clients: The completion-client factory, for a drive that judges or analyses through the
+        engine. The standard matrix calls no model.
+    :ptype clients: CompletionClients | None
+    :param template_checks: The checks a template is admitted under; :data:`TOYHOST_TEMPLATE_CHECKS` (each admits)
+        unless a test holds a template to a check of its own, or ``None`` for a host supplying none.
+    :ptype template_checks: TemplateChecks | None
+    :return: The host.
+    :rtype: EvalHost
     """
     return EvalHost(
         profile=profile if profile is not None else toyhost_profile(),

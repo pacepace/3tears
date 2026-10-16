@@ -30,21 +30,22 @@ class EvalCellTimeout(Exception):
     comes from the host. A type the host owned would make the engine name a module it cannot be
     installed without.
 
-    Attributes:
-        budget_s: The budget that was breached, in seconds.
-        elapsed_s: Wall-clock seconds spent before it fired.
-        attribution: What the host names as innermost when the deadline hit, for a host whose
-            timeouts carry names; ``None`` when it has none to give, which is the case for
-            :func:`default_cell_timeout`.
+    :ivar budget_s: The budget that was breached, in seconds.
+    :ivar elapsed_s: Wall-clock seconds spent before it fired.
+    :ivar attribution: What the host names as innermost when the deadline hit, for a host whose
+        timeouts carry names; ``None`` when it has none to give, which is the case for
+        :func:`default_cell_timeout`.
     """
 
     def __init__(self, budget_s: float, elapsed_s: float, attribution: str | None = None) -> None:
         """Record the breached budget, the time spent under it, and the host's attribution.
 
-        Args:
-            budget_s: The budget that was breached, in seconds.
-            elapsed_s: Wall-clock seconds spent before it fired.
-            attribution: The host's name for what was innermost, or ``None``.
+        :param budget_s: The budget that was breached, in seconds.
+        :ptype budget_s: float
+        :param elapsed_s: Wall-clock seconds spent before it fired.
+        :ptype elapsed_s: float
+        :param attribution: The host's name for what was innermost, or ``None``.
+        :ptype attribution: str | None
         """
         super().__init__(f"cell exceeded its {budget_s:.0f}s budget after {elapsed_s:.0f}s")
         self.budget_s = budget_s
@@ -80,15 +81,12 @@ async def default_cell_timeout(budget_s: float) -> AsyncIterator[float]:
     What the engine ships to a host that supplies no timeout of its own: no named operation, no
     nesting and no attribution, because those are a host's concerns.
 
-    Args:
-        budget_s: Wall-clock ceiling for the cell, in seconds.
-
-    Yields:
-        The budget.
-
-    Raises:
-        ValueError: If ``budget_s`` is not positive — on entry, before the body runs.
-        EvalCellTimeout: If the body outlives the budget.
+    :param budget_s: Wall-clock ceiling for the cell, in seconds.
+    :ptype budget_s: float
+    :yield: The budget.
+    :rtype: AsyncIterator[float]
+    :raises ValueError: If ``budget_s`` is not positive — on entry, before the body runs.
+    :raises EvalCellTimeout: If the body outlives the budget.
     """
     if budget_s <= 0:
         raise ValueError(f"cell timeout budget must be positive, got {budget_s}")

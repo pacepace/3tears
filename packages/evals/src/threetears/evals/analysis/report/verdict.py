@@ -133,8 +133,7 @@ FAIL_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
 def _covers(words: dict[str, CauseWords], values: Sequence[str], what: str) -> None:
     """Refuse, at import, a word table that does not cover exactly the causes it words.
 
-    Raises:
-        RuntimeError: The table and the vocabulary disagree.
+    :raises RuntimeError: The table and the vocabulary disagree.
     """
     if set(words) != set(values):
         raise RuntimeError(f"the report's words for {what} {sorted(words)} do not match the causes {sorted(values)}")
@@ -157,12 +156,11 @@ def arm_exclusions(bundle: AnalysisContextBundle) -> dict[str, list[ArmExclusion
 def cap_words(exclusions: Iterable[ArmExclusions] = ()) -> str:
     """The output cap a judge was sent on an arm's truncated trials, as ``N tokens`` — or that it went unreported.
 
-    Args:
-        exclusions: The arm's cells' exclusions, whose ``truncated_sent_caps`` and ``truncated_cap_unreported`` say
-            what the cut-off judge calls were sent, as their completions reported it.
-
-    Returns:
-        The cap in words; never filled from what the run asked for.
+    :param exclusions: The arm's cells' exclusions, whose ``truncated_sent_caps`` and ``truncated_cap_unreported`` say
+        what the cut-off judge calls were sent, as their completions reported it.
+    :ptype exclusions: Iterable[ArmExclusions]
+    :return: The cap in words; never filled from what the run asked for.
+    :rtype: str
     """
     cells = list(exclusions)
     known = [str(cap) for cap in sorted({cap for cell in cells for cap in cell.truncated_sent_caps})]
@@ -176,15 +174,16 @@ def cap_words(exclusions: Iterable[ArmExclusions] = ()) -> str:
 def loss_words(cause: str, *, exclusions: Iterable[ArmExclusions] = (), arms: int = 2) -> CauseWords:
     """Why trials were lost to ``cause``, in words, with its remedy.
 
-    Args:
-        cause: The loss cause.
-        exclusions: The arm's cells' losses (:func:`arm_exclusions`), which carry the cap a ``truncated`` judge was
-            sent.
-        arms: How many arms the campaign ran, which the remedy names.
-
-    Returns:
-        The words. A cause this build has no words for is named as itself and says so, rather than taking another
+    :param cause: The loss cause.
+    :ptype cause: str
+    :param exclusions: The arm's cells' losses (:func:`arm_exclusions`), which carry the cap a ``truncated`` judge was
+        sent.
+    :ptype exclusions: Iterable[ArmExclusions]
+    :param arms: How many arms the campaign ran, which the remedy names.
+    :ptype arms: int
+    :return: The words. A cause this build has no words for is named as itself and says so, rather than taking another
         cause's remedy.
+    :rtype: CauseWords
     """
     worded = LOSS_CAUSE_WORDS.get(cause)
     if worded is None:
@@ -249,15 +248,18 @@ def verdict_line(
 ) -> VerdictLine:
     """The verdict line, by the first rule that fires (the module docstring's order).
 
-    Args:
-        bundle: The campaign's evidence.
-        arm: Names an arm by its variant key, as every table of the report does.
-        name: The eval's name, which a one-arm line leads with.
-        case_name: Names a case by its id, as the cases table does; its id where None.
-        model: Names an arm by its model, where it has one, for the counts a settled rule states; ``arm`` where None.
-
-    Returns:
-        The rule and its sentences.
+    :param bundle: The campaign's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param arm: Names an arm by its variant key, as every table of the report does.
+    :ptype arm: Callable[[str], str]
+    :param name: The eval's name, which a one-arm line leads with.
+    :ptype name: str
+    :param case_name: Names a case by its id, as the cases table does; its id where None.
+    :ptype case_name: Callable[[str], str] | None
+    :param model: Names an arm by its model, where it has one, for the counts a settled rule states; ``arm`` where None.
+    :ptype model: Callable[[str], str] | None
+    :return: The rule and its sentences.
+    :rtype: VerdictLine
     """
     boards = bundle.scoreboard
     if not boards:
@@ -288,15 +290,15 @@ def verdict_line(
 def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
     """What qualifies the verdict, said under the scoreboard in normal weight: never bold, never first.
 
-    Args:
-        bundle: The campaign's evidence.
-        arm: Names an arm by its variant key.
-
-    Returns:
-        The lines: today, that an arm is under the case floor. A "too few" line says what is withheld and why, in
+    :param bundle: The campaign's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param arm: Names an arm by its variant key.
+    :ptype arm: Callable[[str], str]
+    :return: The lines: today, that an arm is under the case floor. A "too few" line says what is withheld and why, in
         the reader's terms, never a bare count: under the floor no interval is estimated, so a rate is shown as a
         count and no gap between the arms is sized. Where a declared rule settled keep on every candidate, the line
         says keep follows from the counts and only how much worse the candidate has no estimate.
+    :rtype: list[str]
     """
     small = [board for board in bundle.scoreboard if board.usable_cases < MIN_CASES]
     if not small:
@@ -429,16 +431,20 @@ def rule_sentence(
     reply``). Each sentence keeps its clauses only while it stays within the page's numeral and length limits
     (:func:`~threetears.evals.analysis.style.lint_prose`): the decision table below carries every clause.
 
-    Args:
-        verdict: The rule read on one candidate.
-        control: The control, by name.
-        candidate: The candidate, by name.
-        bundle: The campaign's evidence, for the cost of more cases.
-        control_model: The control by its model, which a keep's counts name it by; ``control`` where None.
-        candidate_model: The candidate by its model, likewise; ``candidate`` where None.
-
-    Returns:
-        The sentence.
+    :param verdict: The rule read on one candidate.
+    :ptype verdict: RuleVerdict
+    :param control: The control, by name.
+    :ptype control: str
+    :param candidate: The candidate, by name.
+    :ptype candidate: str
+    :param bundle: The campaign's evidence, for the cost of more cases.
+    :ptype bundle: AnalysisContextBundle
+    :param control_model: The control by its model, which a keep's counts name it by; ``control`` where None.
+    :ptype control_model: str | None
+    :param candidate_model: The candidate by its model, likewise; ``candidate`` where None.
+    :ptype candidate_model: str | None
+    :return: The sentence.
+    :rtype: str
     """
 
     if verdict.outcome == "keep":

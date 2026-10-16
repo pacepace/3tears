@@ -100,17 +100,19 @@ class WorldSession:
     def __init__(self, registry: WorldRegistry, *, provenance: ApparatusProvenance, read_at_seed: bool = False) -> None:
         """Bind the session to the host's world, under the apparatus of the run its cell belongs to.
 
-        Args:
-            registry: The host's world registry (``profile.world``).
-            provenance: The apparatus provenance of the cell's run
-                (:attr:`~threetears.evals.schema.models.EvalRun.apparatus_provenance`): ``commissioned``
-                when the runner drives the cell, ``witnessed`` when a host grades a session it observed.
-                Required, with no default, for the reason the run's own field has none — a default would
-                let a witnessed cell's firings read as a rig's.
-            read_at_seed: Read the world back through every attached dimension's ``read`` handle the moment
-                :meth:`seed` has settled it — the world at t=0, before the candidate's first turn — and keep
-                it as :attr:`seeded_state`. The runner asks for it when the template declares preconditions,
-                which it asserts against that reading; otherwise nothing is read until the end.
+        :param registry: The host's world registry (``profile.world``).
+        :ptype registry: WorldRegistry
+        :param provenance: The apparatus provenance of the cell's run
+            (:attr:`~threetears.evals.schema.models.EvalRun.apparatus_provenance`): ``commissioned``
+            when the runner drives the cell, ``witnessed`` when a host grades a session it observed.
+            Required, with no default, for the reason the run's own field has none — a default would
+            let a witnessed cell's firings read as a rig's.
+        :ptype provenance: ApparatusProvenance
+        :param read_at_seed: Read the world back through every attached dimension's ``read`` handle the moment
+            :meth:`seed` has settled it — the world at t=0, before the candidate's first turn — and keep
+            it as :attr:`seeded_state`. The runner asks for it when the template declares preconditions,
+            which it asserts against that reading; otherwise nothing is read until the end.
+        :ptype read_at_seed: bool
         """
         self._registry = registry
         self._provenance: ApparatusProvenance = provenance
@@ -148,17 +150,14 @@ class WorldSession:
         :meth:`~threetears.evals.kernel.host.world.WorldRegistry.with_bindings`: exactly the handles
         the profile binds, each callable in its role's shape.
 
-        Args:
-            bindings: This cell's table — ``{handle: callable}``, closing over this cell's world.
-
-        Returns:
-            The session-local registry, also :attr:`registry` from here on.
-
-        Raises:
-            WorldSessionError: The session was already bound, or already seeded — a bind after the seed
-                would move every later call to a world the seed never wrote.
-            WorldRegistrationError: The table's handle set differs from the declaration's, or a callable
-                cannot be called in its role's shape.
+        :param bindings: This cell's table — ``{handle: callable}``, closing over this cell's world.
+        :ptype bindings: Mapping[str, Callable[..., Any]]
+        :return: The session-local registry, also :attr:`registry` from here on.
+        :rtype: WorldRegistry
+        :raises WorldSessionError: The session was already bound, or already seeded — a bind after the seed
+            would move every later call to a world the seed never wrote.
+        :raises WorldRegistrationError: The table's handle set differs from the declaration's, or a callable
+            cannot be called in its role's shape.
         """
         if self._bound:
             raise WorldSessionError("this cell's world was already bound; a world session binds once per cell")
@@ -237,19 +236,17 @@ class WorldSession:
         per cell, from ``prepare``, with the empty seed when the case sets nothing: it is also how the
         cell says which carriers its subject holds, which the end state is read over.
 
-        Args:
-            world_seed: The case's seed, as ``prepare`` received it.
-            attached: The carriers the subject attaches.
-
-        Returns:
-            The writes made, in the seed's order.
-
-        Raises:
-            SeedRefused: The seed walk refused a value. Nothing has been written.
-            WorldSessionError: The session was already seeded; the host's world binds per cell and this
-                session was never bound; ``attached`` names a carrier no declared dimension names; the
-                seed schedules ambient perturbation and the host's world has no ambient-perturbation handle;
-                or a triggered dimension's seed handle returned no event identity.
+        :param world_seed: The case's seed, as ``prepare`` received it.
+        :ptype world_seed: WorldSeed
+        :param attached: The carriers the subject attaches.
+        :ptype attached: Collection[str]
+        :return: The writes made, in the seed's order.
+        :rtype: tuple[SeedWrite, ...]
+        :raises SeedRefused: The seed walk refused a value. Nothing has been written.
+        :raises WorldSessionError: The session was already seeded; the host's world binds per cell and this
+            session was never bound; ``attached`` names a carrier no declared dimension names; the
+            seed schedules ambient perturbation and the host's world has no ambient-perturbation handle;
+            or a triggered dimension's seed handle returned no event identity.
         """
         if self._attached is not None:
             raise WorldSessionError("this cell's world was already seeded; a world session seeds once per cell")
@@ -301,14 +298,11 @@ class WorldSession:
         A kind calls it before each candidate turn, counted from 1. The perturbation scheduled for a turn is
         applied once, however often that turn is announced.
 
-        Args:
-            turn: The turn about to be taken.
-
-        Returns:
-            The perturbation recorded, or None when none was due.
-
-        Raises:
-            WorldSessionError: The world is not open, or is already closed.
+        :param turn: The turn about to be taken.
+        :ptype turn: int
+        :return: The perturbation recorded, or None when none was due.
+        :rtype: WorldEvent | None
+        :raises WorldSessionError: The world is not open, or is already closed.
         """
         self._require_open("announce a turn")
         self._announced.add(turn)
@@ -354,13 +348,11 @@ class WorldSession:
 
         Called by the runner once ``invoke`` has returned, for a world the kind opened.
 
-        Args:
-            ran_its_course: Whether the cell ran to its own end — see above. The runner derives it from the
-                kind's output and the cell's sink.
-
-        Raises:
-            WorldSessionError: The seed scheduled perturbation and a cell that ran its course announced no
-                turn, or any cell announced turns with a gap (they must run 1, 2, … without one).
+        :param ran_its_course: Whether the cell ran to its own end — see above. The runner derives it from the
+            kind's output and the cell's sink.
+        :ptype ran_its_course: bool
+        :raises WorldSessionError: The seed scheduled perturbation and a cell that ran its course announced no
+            turn, or any cell announced turns with a gap (they must run 1, 2, … without one).
         """
         if not self._ambient_turns:
             return
@@ -382,18 +374,16 @@ class WorldSession:
     async def fire(self, dimension: str, *, turn: int | None = None) -> WorldEvent:
         """Make a triggered dimension's condition happen, through the host's ``fire`` handle, and record it.
 
-        Args:
-            dimension: The triggered dimension.
-            turn: The candidate turn it fired before or during, counted from 1; None for a kind with no turns.
-
-        Returns:
-            The firing recorded.
-
-        Raises:
-            WorldSessionError: The world is not open or is closed; the dimension is undeclared, not
-                triggered, or on a carrier this cell did not attach; it has no fire handle (a ``human``
-                trigger never does — record a person's act with :meth:`observe`); or this cell's seed did
-                not arm it.
+        :param dimension: The triggered dimension.
+        :ptype dimension: str
+        :param turn: The candidate turn it fired before or during, counted from 1; None for a kind with no turns.
+        :ptype turn: int | None
+        :return: The firing recorded.
+        :rtype: WorldEvent
+        :raises WorldSessionError: The world is not open or is closed; the dimension is undeclared, not
+            triggered, or on a carrier this cell did not attach; it has no fire handle (a ``human``
+            trigger never does — record a person's act with :meth:`observe`); or this cell's seed did
+            not arm it.
         """
         declared, trigger = self._triggered(dimension, verb="fire")
         if trigger.fire is None:
@@ -422,17 +412,16 @@ class WorldSession:
         this cell — the seed's own event, on this dimension or one it also moves — and not when the world
         fired an event of its own on a dimension the seed also armed.
 
-        Args:
-            dimension: The triggered dimension.
-            event: The host's identity of the event that fired, as the world reports it.
-            turn: The candidate turn it fired before or during, counted from 1; None for a kind with no turns.
-
-        Returns:
-            The firing recorded.
-
-        Raises:
-            WorldSessionError: The world is not open or is closed; the dimension is undeclared, not
-                triggered, or on a carrier this cell did not attach; or ``event`` is not a non-empty string.
+        :param dimension: The triggered dimension.
+        :ptype dimension: str
+        :param event: The host's identity of the event that fired, as the world reports it.
+        :ptype event: str
+        :param turn: The candidate turn it fired before or during, counted from 1; None for a kind with no turns.
+        :ptype turn: int | None
+        :return: The firing recorded.
+        :rtype: WorldEvent
+        :raises WorldSessionError: The world is not open or is closed; the dimension is undeclared, not
+            triggered, or on a carrier this cell did not attach; or ``event`` is not a non-empty string.
         """
         declared, trigger = self._triggered(dimension, verb="observe")
         if not isinstance(event, str) or not event:
@@ -448,12 +437,10 @@ class WorldSession:
         Read once. The first call reads and closes the world; every later call — the runner's after
         ``invoke``, when the kind read it first to grade — returns the same reading.
 
-        Returns:
-            Dimension name → value, in registration order, a copy.
-
-        Raises:
-            WorldSessionError: The world was never opened, or a read handle returned a value storage cannot
-                hold as JSON.
+        :return: Dimension name → value, in registration order, a copy.
+        :rtype: dict[str, Any]
+        :raises WorldSessionError: The world was never opened, or a read handle returned a value storage cannot
+            hold as JSON.
         """
         if self._attached is None:
             raise WorldSessionError("this cell's world was never seeded, so it has no end state to read")
@@ -464,8 +451,7 @@ class WorldSession:
     async def _read_attached(self) -> dict[str, Any]:
         """Every dimension of every attached carrier, read through its ``read`` handle, as storage holds it.
 
-        Raises:
-            WorldSessionError: A read handle returned a value storage cannot hold as JSON.
+        :raises WorldSessionError: A read handle returned a value storage cannot hold as JSON.
         """
         attached = set(self._attached or ())
         read = {
@@ -483,11 +469,9 @@ class WorldSession:
     def _require_open(self, action: str) -> None:
         """Refuse to move a world that is not open, or that is already closed.
 
-        Args:
-            action: What was asked, for the message.
-
-        Raises:
-            WorldSessionError: The world was never seeded, or its end state has been read.
+        :param action: What was asked, for the message.
+        :ptype action: str
+        :raises WorldSessionError: The world was never seeded, or its end state has been read.
         """
         if self._attached is None:
             raise WorldSessionError(f"cannot {action}: this cell's world was never seeded")
@@ -500,15 +484,13 @@ class WorldSession:
     def _triggered(self, dimension: str, *, verb: str) -> tuple[WorldDimension, Triggered]:
         """The declaration and trigger of a dimension a firing names, or the refusal.
 
-        Args:
-            dimension: The dimension named.
-            verb: What was asked, for the message.
-
-        Returns:
-            Its declaration and its trigger.
-
-        Raises:
-            WorldSessionError: See :meth:`fire`.
+        :param dimension: The dimension named.
+        :ptype dimension: str
+        :param verb: What was asked, for the message.
+        :ptype verb: str
+        :return: Its declaration and its trigger.
+        :rtype: tuple[WorldDimension, Triggered]
+        :raises WorldSessionError: See :meth:`fire`.
         """
         self._require_open(f"{verb} {dimension}")
         declared = self._registry.get(dimension)
@@ -529,15 +511,18 @@ class WorldSession:
     ) -> WorldEvent:
         """Append one firing to the record.
 
-        Args:
-            declared: The dimension that fired.
-            trigger: Its trigger.
-            caused_by: ``rig`` or ``world``.
-            event: The host's identity of the event that fired.
-            turn: The turn, or None.
-
-        Returns:
-            The record, ``armed`` when ``event`` is one the seed armed.
+        :param declared: The dimension that fired.
+        :ptype declared: WorldDimension
+        :param trigger: Its trigger.
+        :ptype trigger: Triggered
+        :param caused_by: ``rig`` or ``world``.
+        :ptype caused_by: str
+        :param event: The host's identity of the event that fired.
+        :ptype event: str
+        :param turn: The turn, or None.
+        :ptype turn: int | None
+        :return: The record, ``armed`` when ``event`` is one the seed armed.
+        :rtype: WorldEvent
         """
         record = WorldEvent.model_validate(
             {

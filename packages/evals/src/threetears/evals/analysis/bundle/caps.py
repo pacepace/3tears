@@ -56,13 +56,14 @@ def _capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None)
     entries are the ``cap`` heaviest by ``weight`` (earlier entries winning ties), or the first ``cap`` when
     there is no weight, and they keep their order in ``items``.
 
-    Args:
-        items: The full list, in the order it is reported.
-        cap: How many may be reported.
-        weight: What ranks an entry for keeping, heaviest first; None keeps the leading entries.
-
-    Returns:
-        ``(kept, omitted)``.
+    :param items: The full list, in the order it is reported.
+    :ptype items: list[T]
+    :param cap: How many may be reported.
+    :ptype cap: int
+    :param weight: What ranks an entry for keeping, heaviest first; None keeps the leading entries.
+    :ptype weight: Callable[[T], float] | None
+    :return: ``(kept, omitted)``.
+    :rtype: tuple[list[T], int]
     """
     if len(items) <= cap:
         return items, 0
@@ -76,12 +77,12 @@ def _capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None)
 def capped_text(text: str, cap: int) -> str:
     """``text`` cut to at most ``cap`` characters, ending in :data:`ELLIPSIS` when it was cut.
 
-    Args:
-        text: The text.
-        cap: The most characters it may keep, the marker included.
-
-    Returns:
-        The text, whole when it fits.
+    :param text: The text.
+    :ptype text: str
+    :param cap: The most characters it may keep, the marker included.
+    :ptype cap: int
+    :return: The text, whole when it fits.
+    :rtype: str
     """
     if len(text) <= cap:
         return text
@@ -94,12 +95,12 @@ def tail_text(text: str, cap: int) -> str:
     The tail rather than the head because what a judge was handed ends where the conversation did, and a cut-off reply
     shows there.
 
-    Args:
-        text: The text.
-        cap: The most characters of it to keep.
-
-    Returns:
-        The text whole when it fits; else ``[… N characters earlier]`` and its last ``cap`` characters.
+    :param text: The text.
+    :ptype text: str
+    :param cap: The most characters of it to keep.
+    :ptype cap: int
+    :return: The text whole when it fits; else ``[… N characters earlier]`` and its last ``cap`` characters.
+    :rtype: str
     """
     if len(text) <= cap:
         return text

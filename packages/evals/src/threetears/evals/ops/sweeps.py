@@ -134,9 +134,8 @@ class SweepArguments(SweepSettings):
     def _distinct_arms(self) -> SweepArguments:
         """Name every arm, and refuse two arms that are one condition, or two arms under one name.
 
-        Raises:
-            ValueError: Two arms set every setting alike, two share a label, or a case set is named without its
-                version (or the reverse).
+        :raises ValueError: Two arms set every setting alike, two share a label, or a case set is named without its
+            version (or the reverse).
         """
         if (self.case_set_name is None) != (self.case_set_version is None):
             raise ValueError("case_set_name and case_set_version name one version of one set together")
@@ -161,14 +160,14 @@ def _arm_label(arm: SweepArm) -> str:
 async def _refuse_what_any_arm_would_refuse(host: OpsHost, arguments: SweepArguments, scope_id: str) -> None:
     """Quote every arm by the launch's own rule before anything is created, and refuse the sweep on any refusal.
 
-    Args:
-        host: The launching host.
-        arguments: The sweep.
-        scope_id: The scope it runs in.
-
-    Raises:
-        ValidationFailedError: An arm's launch would be refused, named with its arm.
-        NotFoundError: The template, or the case set, is not in the scope.
+    :param host: The launching host.
+    :ptype host: OpsHost
+    :param arguments: The sweep.
+    :ptype arguments: SweepArguments
+    :param scope_id: The scope it runs in.
+    :ptype scope_id: str
+    :raises ValidationFailedError: An arm's launch would be refused, named with its arm.
+    :raises NotFoundError: The template, or the case set, is not in the scope.
     """
     settings = host.launch.settings()
     if arguments.max_concurrent_arms > settings.max_admitted_runs:
@@ -209,20 +208,20 @@ async def _refuse_what_any_arm_would_refuse(host: OpsHost, arguments: SweepArgum
 async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, *, created_by: str) -> JobsStarted:
     """Create the sweep's campaign and start the job that launches its arms in order.
 
-    Args:
-        host: The launching host.
-        arguments: The sweep.
-        scope_id: The scope the template is read in and the runs and campaign live in.
-        created_by: Who is starting it, recorded on the campaign.
-
-    Returns:
-        The sweep's one job (``sweep:<sweep id>``), whose target is the campaign its runs join; polling it reports
+    :param host: The launching host.
+    :ptype host: OpsHost
+    :param arguments: The sweep.
+    :ptype arguments: SweepArguments
+    :param scope_id: The scope the template is read in and the runs and campaign live in.
+    :ptype scope_id: str
+    :param created_by: Who is starting it, recorded on the campaign.
+    :ptype created_by: str
+    :return: The sweep's one job (``sweep:<sweep id>``), whose target is the campaign its runs join; polling it reports
         the arms launched and finished.
-
-    Raises:
-        ValidationFailedError: An arm's launch would be refused, concurrency above the host's admission ceiling,
-            or the campaign definition is refused.
-        NotFoundError: The template or the case set is not in the scope.
+    :rtype: JobsStarted
+    :raises ValidationFailedError: An arm's launch would be refused, concurrency above the host's admission ceiling,
+        or the campaign definition is refused.
+    :raises NotFoundError: The template or the case set is not in the scope.
     """
     await _refuse_what_any_arm_would_refuse(host, arguments, scope_id)
     eval_host, manager = host.eval_host, host.launch.job_manager
@@ -284,11 +283,14 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
     timeout; when it runs out the arms in flight are stopped (:data:`SWEEP_TIMEOUT_REASON`), none is launched after,
     and the sweep ends ``timed_out``, its detail naming the budget — never ``cancelled``, which is someone deciding.
 
-    Args:
-        host: The launching host.
-        arguments: The sweep.
-        sweep: Its record, as started.
-        budget_s: The sweep's wall-clock budget.
+    :param host: The launching host.
+    :ptype host: OpsHost
+    :param arguments: The sweep.
+    :ptype arguments: SweepArguments
+    :param sweep: Its record, as started.
+    :ptype sweep: EvalSweep
+    :param budget_s: The sweep's wall-clock budget.
+    :ptype budget_s: float
     """
     eval_host, manager = host.eval_host, host.launch.job_manager
     scope_id = sweep.scope_id

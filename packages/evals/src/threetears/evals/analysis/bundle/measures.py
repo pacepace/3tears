@@ -97,13 +97,13 @@ def _percentile(sorted_values: list[float], q: float) -> float | None:
     95th percentile 0.84 (n=5), 0.73 (n=15) and 0.68 (n=30) of the time — a tail figure that understates
     the tail. The median is unchanged by the switch: type 8 and linear interpolation place it alike.
 
-    Args:
-        sorted_values: Ascending-sorted values, at least one element.
-        q: Quantile in (0, 1) — NOT 0-100.
-
-    Returns:
-        The estimate, or ``None`` for ``p05``/``p95`` below 13 observations, where no estimate is
+    :param sorted_values: Ascending-sorted values, at least one element.
+    :ptype sorted_values: list[float]
+    :param q: Quantile in (0, 1) — NOT 0-100.
+    :ptype q: float
+    :return: The estimate, or ``None`` for ``p05``/``p95`` below 13 observations, where no estimate is
         median-unbiased; ``max`` beside it is then the worst case seen, under its own name.
+    :rtype: float | None
     """
     return median_unbiased_quantile(sorted_values, q)
 
@@ -308,12 +308,12 @@ def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool
 def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult]) -> list[GoalCheckProofReading]:
     """Each goal check the runs' results graded, with the proof its runs froze at launch, in the order first met.
 
-    Args:
-        runs: The member runs.
-        results: Their results.
-
-    Returns:
-        One reading per check.
+    :param runs: The member runs.
+    :ptype runs: Sequence[EvalRun]
+    :param results: Their results.
+    :ptype results: Iterable[EvalResult]
+    :return: One reading per check.
+    :rtype: list[GoalCheckProofReading]
     """
     graded: dict[str, list[str]] = {}
     for result in results:
@@ -412,11 +412,10 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
 
     Copied, never written back: what the kind stored is untouched.
 
-    Args:
-        results_by_run: Each run's stored results.
-
-    Returns:
-        The same results, each such failure replaced by a copy carrying ``match`` False.
+    :param results_by_run: Each run's stored results.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :return: The same results, each such failure replaced by a copy carrying ``match`` False.
+    :rtype: dict[str, list[EvalResult]]
     """
     classified_cases = {
         result.test_case_id
@@ -470,11 +469,10 @@ def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, boo
     the walk sees it (:func:`_failures_as_misses`). A failed observation still carrying no ``match`` is of a
     kind that classifies nothing, and yields nothing: an accuracy for it would be invented.
 
-    Args:
-        result: The observation.
-
-    Yields:
-        ``("accuracy", 1.0 | 0.0, True, "host_measures", "result")`` at most once.
+    :param result: The observation.
+    :ptype result: EvalResult
+    :yield: ``("accuracy", 1.0 | 0.0, True, "host_measures", "result")`` at most once.
+    :rtype: Iterator[tuple[str, float | str, bool, str, str]]
     """
     matched = result.host_measures.get(MATCH_MEASURE)
     if isinstance(matched, bool):
@@ -491,12 +489,11 @@ def _candidate_output_throughput(result: EvalResult) -> float | None:
     never zero, when either half went unmeasured: a result with no candidate token count has no
     rate, and zero would read as a provider that produced nothing.
 
-    Args:
-        result: The observation.
-
-    Returns:
-        Tokens per second, or None when the candidate's output tokens or a non-zero ``llm_ms``
+    :param result: The observation.
+    :ptype result: EvalResult
+    :return: Tokens per second, or None when the candidate's output tokens or a non-zero ``llm_ms``
         is missing.
+    :rtype: float | None
     """
     llm_ms = result.latency.llm_ms if result.latency is not None else None
     counted = [
@@ -522,15 +519,15 @@ def _withheld_derived(results: list[EvalResult], reported: Collection[str]) -> l
     anything at all, nothing was withheld — the campaign simply has no latency, which
     ``absent_scopes`` is the right place for.
 
-    Args:
-        results: The results the collection was built from.
-        reported: Measure names the walk successfully summarised.
-
-    Returns:
-        Entries of the form ``name (reason)``, empty when nothing was withheld. The
+    :param results: The results the collection was built from.
+    :ptype results: list[EvalResult]
+    :param reported: Measure names the walk successfully summarised.
+    :ptype reported: Collection[str]
+    :return: Entries of the form ``name (reason)``, empty when nothing was withheld. The
         reason is carried only when every withholding result gave the SAME one —
         otherwise the name alone, since a single reason chosen from several would be a
         claim about results it does not describe.
+    :rtype: list[str]
     """
     if "orchestration_ms" in reported:
         return []
@@ -629,11 +626,10 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
     the plain name could not carry it, because the engine's own measure of that name is usually pooled
     beside it and the bare name would read as a gap in the engine's reading rather than a drop of the host's.
 
-    Args:
-        results: The results the walk read.
-
-    Returns:
-        One entry per dropped key, sorted.
+    :param results: The results the walk read.
+    :ptype results: Sequence[EvalResult]
+    :return: One entry per dropped key, sorted.
+    :rtype: list[str]
     """
     names = {name for result in results for name in undeclarable_host_measures(result.host_measures)}
     covariates = {name for result in results for name in undeclarable_covariates(result.covariates)}
@@ -655,13 +651,13 @@ def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
     — a refusal, a model error — is in every population but that one, and a failure that took a turn (one
     its budget ended, its output cap cut, its deadline struck mid-call) is in all three.
 
-    Args:
-        population: The population the measure's summary is computed over
-            (:func:`~threetears.evals.kernel.metrics.summary_population`).
-        result: The result.
-
-    Returns:
-        True when the result's observations of the measure count.
+    :param population: The population the measure's summary is computed over
+        (:func:`~threetears.evals.kernel.metrics.summary_population`).
+    :ptype population: MeasurePopulation
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: True when the result's observations of the measure count.
+    :rtype: bool
     """
     if population == "delivered":
         return delivered_a_turn(result)
@@ -863,19 +859,19 @@ def _classifier_label_summaries(
     :func:`~threetears.evals.analysis.confusion.label_statistics`, the one count the run summary reads
     too. Precision and recall are
     proportions, so each is a boolean-shaped summary: its rate, the count behind it, and its interval
-    over the cases (:func:`~threetears.evals.analysis.stats.proportion_interval`). F1 is not a proportion of anything, so it is a numeric summary with a mean and no
-    spread — it has none by construction, at any n. It is the harmonic mean of precision and recall, so a
-    label missing either has no F1 either, rather than an F1 of 0.0 stated over no evidence; its ``n`` is
-    the label's support across both — the observations predicted or expected as it
+    over the cases (:func:`~threetears.evals.analysis.stats.proportion_interval`). F1 is not a proportion of anything,
+    so it is a numeric summary with a mean and no spread — it has none by construction, at any n. It is the harmonic
+    mean of precision and recall, so a label missing either has no F1 either, rather than an F1 of 0.0 stated over no
+    evidence; its ``n`` is the label's support across both — the observations predicted or expected as it
     (``predicted + expected - hits``), which is what its value is computed over.
 
-    Args:
-        confusion: The ``confusion_cell`` summary.
-        observations: The ``(confusion_cell, test_case_id)`` observations it summarises.
-
-    Returns:
-        The derived summaries, named by :func:`~threetears.evals.kernel.metrics.classifier_label_measure`.
+    :param confusion: The ``confusion_cell`` summary.
+    :ptype confusion: MeasureSummary
+    :param observations: The ``(confusion_cell, test_case_id)`` observations it summarises.
+    :ptype observations: Sequence[tuple[str, str]]
+    :return: The derived summaries, named by :func:`~threetears.evals.kernel.metrics.classifier_label_measure`.
         A label never predicted has no precision; one never expected has no recall; either has no F1.
+    :rtype: list[MeasureSummary]
     """
     derived: list[MeasureSummary] = []
     for statistics in label_statistics(observations):
@@ -933,15 +929,17 @@ def _measure_summary(
     is read on ``n_independent - 1`` degrees of freedom. Where every case was observed once, both are
     the unclustered forms exactly.
 
-    Args:
-        descriptor: The measure's registry descriptor, carried onto the summary.
-        values: Its observations, at least one.
-        cases: Each observation's test case, aligned with ``values``.
-        population: The population those observations were drawn from, stated on the summary.
-
-    Returns:
-        A categorical summary (counts), a boolean one (rate + interval), a text one (every
+    :param descriptor: The measure's registry descriptor, carried onto the summary.
+    :ptype descriptor: MetricDescriptor
+    :param values: Its observations, at least one.
+    :ptype values: list[float | str]
+    :param cases: Each observation's test case, aligned with ``values``.
+    :ptype cases: list[str]
+    :param population: The population those observations were drawn from, stated on the summary.
+    :ptype population: MeasurePopulation
+    :return: A categorical summary (counts), a boolean one (rate + interval), a text one (every
         observation listed, nothing aggregated) or a numeric one (distribution + SEM + interval).
+    :rtype: MeasureSummary
     """
     shape: dict[str, Any]
     if descriptor.data_type == "text":

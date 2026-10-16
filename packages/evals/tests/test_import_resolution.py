@@ -59,11 +59,14 @@ def test_a_relative_import_resolves_to_what_it_actually_names(
 ):
     """The resolver's arithmetic, checked against Python's import semantics.
 
-    Args:
-        source: Source-root-relative path of the file the import is written in.
-        level: The ``ImportFrom`` level; 0 is an absolute import.
-        module: The dotted name after the dots, or ``None`` for ``from . import x``.
-        expected: The absolute module the import names.
+    :param source: Source-root-relative path of the file the import is written in.
+    :ptype source: str
+    :param level: The ``ImportFrom`` level; 0 is an absolute import.
+    :ptype level: int
+    :param module: The dotted name after the dots, or ``None`` for ``from . import x``.
+    :ptype module: str | None
+    :param expected: The absolute module the import names.
+    :ptype expected: str
     """
     node = ast.ImportFrom(module=module, names=[ast.alias(name="x")], level=level)
     assert absolute_module(_REPO_ROOT / source, node, root=_REPO_ROOT) == expected

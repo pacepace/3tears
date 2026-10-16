@@ -76,13 +76,14 @@ class _PaddedExtractorKind(ToyExtractorKind):
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Extract as the toy does, then pad the stored record.
 
-        Args:
-            instance: As the toy kind takes it.
-            test_case: As the toy kind takes it.
-            sink: As the toy kind takes it.
-
-        Returns:
-            The toy's output, its one document carrying ``padding_bytes`` of padding.
+        :param instance: As the toy kind takes it.
+        :ptype instance: ToyExtractorInstance
+        :param test_case: As the toy kind takes it.
+        :ptype test_case: EvalTestCase
+        :param sink: As the toy kind takes it.
+        :ptype sink: CellSink
+        :return: The toy's output, its one document carrying ``padding_bytes`` of padding.
+        :rtype: CandidateOutput
         """
         produced = await super().invoke(instance, test_case, sink)
         # A fresh string per cell, so no two cells share one object the heap would count once.
@@ -93,12 +94,12 @@ class _PaddedExtractorKind(ToyExtractorKind):
 async def _peak_bytes(tmp_path: Path, *, padding_bytes: int) -> int:
     """Run the fixed matrix at one trace volume and return the Python heap's peak while it ran.
 
-    Args:
-        tmp_path: Where the run's SQLite store is written.
-        padding_bytes: Each cell's stored padding.
-
-    Returns:
-        The peak traced heap, in bytes, above what was allocated when the run started.
+    :param tmp_path: Where the run's SQLite store is written.
+    :ptype tmp_path: Path
+    :param padding_bytes: Each cell's stored padding.
+    :ptype padding_bytes: int
+    :return: The peak traced heap, in bytes, above what was allocated when the run started.
+    :rtype: int
     """
     store = SqliteDocumentStore(tmp_path / f"probe-{padding_bytes}.sqlite3")
     host = toyhost_host(storage=EvalStorage(store))

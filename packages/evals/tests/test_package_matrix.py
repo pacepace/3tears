@@ -334,11 +334,10 @@ def path_climbs(root: Path) -> list[str]:
     nowhere higher: a ``.parents[...]`` or ``.parent.parent`` over ``__file__`` reaches a directory
     the package does not ship -- and the import walk above cannot see it, because nothing is imported.
 
-    Args:
-        root: The directory holding the ``threetears`` namespace.
-
-    Returns:
-        The offending sites, sorted.
+    :param root: The directory holding the ``threetears`` namespace.
+    :ptype root: Path
+    :return: The offending sites, sorted.
+    :rtype: list[str]
     """
     climbs: set[str] = set()
     for relative, path in eval_modules(root).items():
@@ -388,11 +387,10 @@ def public_api(root: Path) -> dict[str, frozenset[str]]:
     Read statically so the check works on a synthetic tree and on a root whose import would fail,
     which is the state a broken root is in. A root with no literal ``__all__`` declares nothing.
 
-    Args:
-        root: The directory holding the ``threetears`` namespace.
-
-    Returns:
-        Absolute root module name -> the names it declares public.
+    :param root: The directory holding the ``threetears`` namespace.
+    :ptype root: Path
+    :return: Absolute root module name -> the names it declares public.
+    :rtype: dict[str, frozenset[str]]
     """
     declared: dict[str, frozenset[str]] = {}
     for relative in ("", *PUBLIC_ROOTS):
@@ -411,11 +409,10 @@ def public_api(root: Path) -> dict[str, frozenset[str]]:
 def consumer_files(tests_root: Path) -> list[tuple[str, Path]]:
     """Every consumer source file the public-root rule binds, with a label for messages.
 
-    Args:
-        tests_root: The directory the consumer globs hang off.
-
-    Returns:
-        ``(label, file)`` pairs, sorted.
+    :param tests_root: The directory the consumer globs hang off.
+    :ptype tests_root: Path
+    :return: ``(label, file)`` pairs, sorted.
+    :rtype: list[tuple[str, Path]]
     """
     found: dict[str, Path] = {}
     for pattern in SECOND_CONSUMERS:
@@ -466,13 +463,14 @@ def public_root_violations(
     ``threetears.evals`` package declares the quick path's names, and hands out no package as a module), and a
     string literal that is a dotted path below a root (:func:`_string_addressed_imports`).
 
-    Args:
-        root: The directory holding the ``threetears`` namespace, for the roots' ``__all__``.
-        consumers: The ``(label, file)`` pairs to walk.
-        consumer_root: The directory the consumers' relative imports resolve against.
-
-    Returns:
-        The violations, in file order.
+    :param root: The directory holding the ``threetears`` namespace, for the roots' ``__all__``.
+    :ptype root: Path
+    :param consumers: The ``(label, file)`` pairs to walk.
+    :ptype consumers: list[tuple[str, Path]]
+    :param consumer_root: The directory the consumers' relative imports resolve against.
+    :ptype consumer_root: Path
+    :return: The violations, in file order.
+    :rtype: list[RootViolation]
     """
     declared = public_api(root)
     violations: list[RootViolation] = []

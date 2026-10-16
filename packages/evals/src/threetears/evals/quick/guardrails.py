@@ -34,14 +34,14 @@ def _a_number(value: object) -> bool:
 class Guardrail:
     """A reading every arm must not get worse on than the control by more than ``margin``.
 
-    Attributes:
-        margin: How much worse than the control an arm may be and still hold, in the reading's own units: a
-            positive number. On a pass/fail scorer it is a share of cases (0.02: two cases in a hundred); on a
-            judged 1-5 dimension, points of the scale. Required: no margin is ever assumed, and with none no
-            arm could ever be shown to hold.
-        direction: Which way is better on the reading: ``"higher_is_better"`` (``no_leak`` passes) or
-            ``"lower_is_better"`` (``leaked`` passes). Required, since "worse" needs one. A judged dimension
-            is scored with higher better, so it takes ``"higher_is_better"``.
+    :ivar margin: How much worse than the control an arm may be and still hold, in the reading's own units: a
+        positive number. On a pass/fail scorer it is a share of cases (0.02: two cases in a hundred); on a
+        judged 1-5 dimension, points of the scale. Required: no margin is ever assumed, and with none no
+        arm could ever be shown to hold.
+    :ivar direction: Which way is better on the reading: ``"higher_is_better"`` (``no_leak`` passes) or
+        ``"lower_is_better"`` (``leaked`` passes). Required, since "worse" needs one. A judged dimension
+        is scored with higher better, so it takes ``"higher_is_better"``.
+
 
     A scorer's range is declared beside it, as for any grader (``grader(..., range=)``): a pass/fail (``-> bool``)
     is on 0 to 1 already, and a score declared on its range is too. **A guardrail on a scorer with no range is never
@@ -57,8 +57,7 @@ class Guardrail:
     def __post_init__(self) -> None:
         """Refuse a guardrail no arm could be decided against.
 
-        Raises:
-            ValueError: A margin that is not a positive finite number, or a direction that is neither.
+        :raises ValueError: A margin that is not a positive finite number, or a direction that is neither.
         """
         if not _a_number(self.margin) or self.margin <= 0:
             raise ValueError(

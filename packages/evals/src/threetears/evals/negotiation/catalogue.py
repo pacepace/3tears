@@ -26,16 +26,15 @@ def facts_from_router_catalogue(supported_parameters: Collection[str] | None) ->
     not listed, no strict schema (the request then goes unenforced). A caller passes these as ``declared`` to
     :func:`~threetears.evals.negotiation.negotiate`, under its own registry's facts (:meth:`SettingFacts.over`).
 
-    Read the catalogue once, at a point the caller chooses (the shipped client reads it once per ``Catalogue``, at boot or
-    at its first call), and keep it: facts that change mid-run because another client happened to fetch the catalogue make two
-    calls of one run sent differently for no reason the run records.
+    Read the catalogue once, at a point the caller chooses (the shipped client reads it once per ``Catalogue``, at boot
+    or at its first call), and keep it: facts that change mid-run because another client happened to fetch the catalogue
+    make two calls of one run sent differently for no reason the run records.
 
-    Args:
-        supported_parameters: The model's ``supported_parameters`` as the catalogue lists them, or ``None`` when the
-            catalogue was not read, does not list the model, or lists it without them.
-
-    Returns:
-        The facts: every one unknown for ``None``.
+    :param supported_parameters: The model's ``supported_parameters`` as the catalogue lists them, or ``None`` when the
+        catalogue was not read, does not list the model, or lists it without them.
+    :ptype supported_parameters: Collection[str] | None
+    :return: The facts: every one unknown for ``None``.
+    :rtype: SettingFacts
     """
     if supported_parameters is None:
         return SettingFacts()

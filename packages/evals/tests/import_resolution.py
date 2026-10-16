@@ -42,18 +42,19 @@ def absolute_module(path: Path, node: ast.ImportFrom, *, root: Path) -> str:
     condition under which such a hole stays open: the gate goes green either way, so nothing
     ever asks. Resolving is barely more code than skipping and removes the question.
 
-    Args:
-        path: The file the import was written in, used to locate its package.
-        node: The ``ImportFrom`` node; ``level`` is 0 for an absolute import.
-        root: The directory the dotted name is rooted at -- the package's ``src`` here, and
-            whatever the importable tree hangs off in a consumer that vendors this file.
-            Explicit rather than derived from ``__file__`` so the resolver does not carry an
-            assumption about its own depth into a package that will place it elsewhere.
-
-    Returns:
-        The absolute dotted module name, or the empty string when the level walks above
+    :param path: The file the import was written in, used to locate its package.
+    :ptype path: Path
+    :param node: The ``ImportFrom`` node; ``level`` is 0 for an absolute import.
+    :ptype node: ast.ImportFrom
+    :param root: The directory the dotted name is rooted at -- the package's ``src`` here, and
+        whatever the importable tree hangs off in a consumer that vendors this file.
+        Explicit rather than derived from ``__file__`` so the resolver does not carry an
+        assumption about its own depth into a package that will place it elsewhere.
+    :ptype root: Path
+    :return: The absolute dotted module name, or the empty string when the level walks above
         ``root`` — which no importable module can do, so nothing downstream needs to
         distinguish that from "names no host module".
+    :rtype: str
     """
     if not node.level:
         return node.module or ""

@@ -54,11 +54,10 @@ _WORLD_DIMENSION_PREFIX = "world:"
 def world_dimension_key(dimension: str) -> str:
     """Name ``dimension`` for the apparatus maps, where sweepables and world dimensions share a namespace.
 
-    Args:
-        dimension: A world dimension name, as its host declared it.
-
-    Returns:
-        The prefixed key. See :data:`_WORLD_DIMENSION_PREFIX`.
+    :param dimension: A world dimension name, as its host declared it.
+    :ptype dimension: str
+    :return: The prefixed key. See :data:`_WORLD_DIMENSION_PREFIX`.
+    :rtype: str
     """
     return f"{_WORLD_DIMENSION_PREFIX}{dimension}"
 
@@ -141,10 +140,12 @@ class _SurfaceFolds:
     ) -> None:
         """Capture the campaign's runs, which members each family resolved on each, and each fixed knob's level.
 
-        Args:
-            runs: The campaign's resolved runs.
-            results_by_run: Each run's results, keyed by run id.
-            profile: The host whose vocabulary this reads.
+        :param runs: The campaign's resolved runs.
+        :ptype runs: list[EvalRun]
+        :param results_by_run: Each run's results, keyed by run id.
+        :ptype results_by_run: dict[str, list[EvalResult]]
+        :param profile: The host whose vocabulary this reads.
+        :ptype profile: HostProfile
         """
         self._registry = profile.sweepables
         self._surfaces = self._registry.resolution_surfaces
@@ -207,12 +208,12 @@ class _SurfaceFolds:
     def fold(self, surface: str, cohort_run_ids: Collection[str]) -> SurfaceFold:
         """Decide whether ``surface`` moved on its own across a cohort.
 
-        Args:
-            surface: A name in :attr:`surfaces`.
-            cohort_run_ids: The runs under comparison.
-
-        Returns:
-            The verdict — see :data:`SurfaceFold`.
+        :param surface: A name in :attr:`surfaces`.
+        :ptype surface: str
+        :param cohort_run_ids: The runs under comparison.
+        :ptype cohort_run_ids: Collection[str]
+        :return: The verdict — see :data:`SurfaceFold`.
+        :rtype: SurfaceFold
         """
         claimant = self._surfaces[surface]
         cohort = [run_id for run_id in dict.fromkeys(cohort_run_ids) if run_id in self._runs]
@@ -231,13 +232,13 @@ class _SurfaceFolds:
         :meth:`fold` with a comparison that could drift. ``unverified`` folds as well as
         ``explained``; the comparison is then marked by :func:`_uncontrolled_dimensions`.
 
-        Args:
-            lever: Any lever name.
-            cohort_run_ids: The runs under comparison.
-
-        Returns:
-            True only for a surface the cohort shows moved with its knob alone, checked or not; every
+        :param lever: Any lever name.
+        :ptype lever: str
+        :param cohort_run_ids: The runs under comparison.
+        :ptype cohort_run_ids: Collection[str]
+        :return: True only for a surface the cohort shows moved with its knob alone, checked or not; every
             other lever is False.
+        :rtype: bool
         """
         return lever in self._surfaces and self.fold(lever, cohort_run_ids) in _FOLDED
 
@@ -254,13 +255,14 @@ class _SurfaceFolds:
         one of the knob's levels can show the surface moving on its own, and an arm that moved
         something else cannot make this contrast's knob answer for it.
 
-        Args:
-            lever: Any lever name.
-            pair: The control's run and the contrast's.
-            contrast_cohort: The contrast's cohort for a surface, asked only for a fixed knob's.
-
-        Returns:
-            Whether the contrast's movement of ``lever`` is its knob's, seen a second time.
+        :param lever: Any lever name.
+        :ptype lever: str
+        :param pair: The control's run and the contrast's.
+        :ptype pair: Collection[str]
+        :param contrast_cohort: The contrast's cohort for a surface, asked only for a fixed knob's.
+        :ptype contrast_cohort: Callable[[str], Collection[str]]
+        :return: Whether the contrast's movement of ``lever`` is its knob's, seen a second time.
+        :rtype: bool
         """
         if lever not in self._surfaces:
             return False
@@ -279,13 +281,13 @@ class _SurfaceFolds:
         own name, as the coordinate it carries in the arm's ``levers`` (registration refuses one
         that carries none), so nothing is added beside it.
 
-        Args:
-            surface: A name in :attr:`surfaces`.
-            run_ids: The runs that carried one arm.
-
-        Returns:
-            Member name → the value named, sorted by name; empty when none of them overlaid a member,
+        :param surface: A name in :attr:`surfaces`.
+        :ptype surface: str
+        :param run_ids: The runs that carried one arm.
+        :ptype run_ids: Collection[str]
+        :return: Member name → the value named, sorted by name; empty when none of them overlaid a member,
             and for a surface a fixed lever is written into.
+        :rtype: dict[str, Any]
         """
         claimant = self._surfaces[surface]
         if claimant.open_family is None:
@@ -300,18 +302,19 @@ class _SurfaceFolds:
     def _fold_by_level(self, surface: str, lever: str, cohort: list[str]) -> SurfaceFold:
         """Whether ``surface`` held one level within each of ``lever``'s levels across the cohort.
 
-        Args:
-            surface: The surface a fixed lever is written into.
-            lever: That lever.
-            cohort: The runs under comparison, deduplicated, each one this object holds.
-
-        Returns:
-            ``undetermined`` when some run did not record the surface; ``unexplained`` when two runs at
+        :param surface: The surface a fixed lever is written into.
+        :ptype surface: str
+        :param lever: That lever.
+        :ptype lever: str
+        :param cohort: The runs under comparison, deduplicated, each one this object holds.
+        :ptype cohort: list[str]
+        :return: ``undetermined`` when some run did not record the surface; ``unexplained`` when two runs at
             one of the lever's levels carried different surfaces, or a run the lever does not apply to
             carried a surface no run of its own kind here carries; otherwise ``explained`` when some level of the
             lever was held by two or more arms. Where none was, the lever's residual reader decides when the host
             declares one (#605): ``explained`` when every run's residual is the same, ``unexplained`` when two
             differ, and ``unverified`` when some run's reader cannot say — as it is when the host declares none.
+        :rtype: SurfaceFold
         """
         levels = [self._fixed_levels.get(run_id, {}) for run_id in cohort]
         if any(level.get(surface) is None for level in levels):
@@ -351,13 +354,14 @@ class _SurfaceFolds:
     def _residual(self, surface: str, run_id: str, removed: frozenset[str]) -> str | None:
         """One run's residual, as a comparable key, memoised.
 
-        Args:
-            surface: The surface to read.
-            run_id: The run to read it off.
-            removed: The family members to take out.
-
-        Returns:
-            The residual's canonical JSON, or None when the run does not carry the surface.
+        :param surface: The surface to read.
+        :ptype surface: str
+        :param run_id: The run to read it off.
+        :ptype run_id: str
+        :param removed: The family members to take out.
+        :ptype removed: frozenset[str]
+        :return: The residual's canonical JSON, or None when the run does not carry the surface.
+        :rtype: str | None
         """
         key = (surface, run_id, removed)
         if key not in self._residuals:
@@ -372,9 +376,8 @@ class _CampaignArms(NamedTuple):
     A run carries exactly one arm (assembly refuses a member carrying several models), so a run's
     variant key is a property of the whole run and the lenses group whole runs by it.
 
-    Attributes:
-        keyed: Variant key → its runs, arms in order of their first run and runs in bundle order.
-        unplaced: Runs none of whose observations resolved a variant key, in bundle order.
+    :ivar keyed: Variant key → its runs, arms in order of their first run and runs in bundle order.
+    :ivar unplaced: Runs none of whose observations resolved a variant key, in bundle order.
     """
 
     keyed: dict[str, list[EvalRun]]
@@ -386,8 +389,8 @@ class _CampaignArms(NamedTuple):
         An unplaced run cannot pool with any other: treating two of them as one arm would invent a
         repeat nobody ran.
 
-        Returns:
-            Group key → its runs.
+        :return: Group key → its runs.
+        :rtype: dict[str, list[EvalRun]]
         """
         return {**self.keyed, **{f"run:{run.id}": [run] for run in self.unplaced}}
 
@@ -397,13 +400,14 @@ def _campaign_arms(
 ) -> _CampaignArms:
     """Group the campaign's runs by the arm each measured.
 
-    Args:
-        runs: The campaign's resolved runs, in bundle order.
-        results_by_run: Each run's results, keyed by run id — where a variant key resolves.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The grouping.
+    :param runs: The campaign's resolved runs, in bundle order.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results, keyed by run id — where a variant key resolves.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The grouping.
+    :rtype: _CampaignArms
     """
     keyed: dict[str, list[EvalRun]] = {}
     unplaced: list[EvalRun] = []
@@ -427,12 +431,11 @@ def _arm_repeats(members: list[EvalRun]) -> int:
     Read off each run's planned ``k_runs`` and case set, as the coverage map's ``k`` always has been;
     a run that delivered fewer results than it planned is disclosed by ``short_runs``, not here.
 
-    Args:
-        members: The arm's runs.
-
-    Returns:
-        The minimum, over every case any member ran, of the ``k_runs`` summed across the members that ran it;
+    :param members: The arm's runs.
+    :ptype members: list[EvalRun]
+    :return: The minimum, over every case any member ran, of the ``k_runs`` summed across the members that ran it;
         0 for no members.
+    :rtype: int
     """
     per_case: dict[str, int] = defaultdict(int)
     for run in members:
@@ -480,31 +483,37 @@ def _campaign_design(
     its first run and its other runs are its repeats. A re-run of the control therefore adds to the
     control's ``k`` rather than appearing as a contrast that moved nothing.
 
-    Args:
-        runs: The campaign's resolved runs.
-        declared_control: The declared control as the keys that name its arm
-            (:func:`~threetears.evals.kernel.declaration.resolve_declared_control`); ``undeclared`` names none.
-        results_by_run: Each run's results, keyed by run id — the observation side of
-            effective-config resolution, and where a variant key resolves.
-        arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
-        archived_control_variants: The variant keys carried by member runs an operator archived.
-            Supplied by the caller because archived runs are held out of every lens and their
-            results are not otherwise read; it is what tells a deliberate exclusion apart from a
-            variant nobody ever ran.
-        has_unresolved_members: Whether any member run failed to load at all. Such a run's
-            observations cannot be read, so whether it carried the control is unknowable — and
-            reporting that as "never run" is the conflation the ``unresolved`` arm exists to
-            prevent. A membership outliving its run is a recurring state in a real store, not a hypothetical.
-        folds: The campaign's :class:`_SurfaceFolds`, shared with the other lenses when the caller
-            has one; built from ``runs`` and ``results_by_run`` otherwise. A resolved surface whose
-            movement between the control and a contrast is its swept members' is not a second moved
-            lever — see :class:`_SurfaceFolds`.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The design. ``shape`` is ``undesignated`` whenever no control resolved. With no contrasts
+    :param runs: The campaign's resolved runs.
+    :ptype runs: list[EvalRun]
+    :param declared_control: The declared control as the keys that name its arm
+        (:func:`~threetears.evals.kernel.declaration.resolve_declared_control`); ``undeclared`` names none.
+    :ptype declared_control: ResolvedControl
+    :param results_by_run: Each run's results, keyed by run id — the observation side of
+        effective-config resolution, and where a variant key resolves.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
+    :ptype arms: _CampaignArms | None
+    :param archived_control_variants: The variant keys carried by member runs an operator archived.
+        Supplied by the caller because archived runs are held out of every lens and their
+        results are not otherwise read; it is what tells a deliberate exclusion apart from a
+        variant nobody ever ran.
+    :ptype archived_control_variants: Collection[str]
+    :param has_unresolved_members: Whether any member run failed to load at all. Such a run's
+        observations cannot be read, so whether it carried the control is unknowable — and
+        reporting that as "never run" is the conflation the ``unresolved`` arm exists to
+        prevent. A membership outliving its run is a recurring state in a real store, not a hypothetical.
+    :ptype has_unresolved_members: bool
+    :param folds: The campaign's :class:`_SurfaceFolds`, shared with the other lenses when the caller
+        has one; built from ``runs`` and ``results_by_run`` otherwise. A resolved surface whose
+        movement between the control and a contrast is its swept members' is not a second moved
+        lever — see :class:`_SurfaceFolds`.
+    :ptype folds: _SurfaceFolds | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The design. ``shape`` is ``undesignated`` whenever no control resolved. With no contrasts
         it is vacuously ``one_factor_at_a_time`` — nothing is being compared, and the empty
         ``contrasts`` list is what a reader acts on, not the shape word.
+    :rtype: RealizedDesign
     """
     grouping = arms if arms is not None else _campaign_arms(runs, results_by_run, profile=profile)
     arms_by_key = grouping.keyed
@@ -629,13 +638,14 @@ def _earlier_control(
     re-keyed one, so a matched control that is not the stored key is the re-keyed one, and the stored key's cells
     — when any member carries them — are the control as it ran before the predicate changed.
 
-    Args:
-        declared_control: The declared control's keys.
-        control_variant: The key the control arm was matched by.
-        arms_by_key: The campaign's arms.
-
-    Returns:
-        The earlier cells, named and disclosed, or None when the campaign carries one of the control's keys.
+    :param declared_control: The declared control's keys.
+    :ptype declared_control: ResolvedControl
+    :param control_variant: The key the control arm was matched by.
+    :ptype control_variant: str
+    :param arms_by_key: The campaign's arms.
+    :ptype arms_by_key: Mapping[str, list[EvalRun]]
+    :return: The earlier cells, named and disclosed, or None when the campaign carries one of the control's keys.
+    :rtype: EarlierControl | None
     """
     stored = declared_control.variant_keys[-1]
     version = declared_control.identity_version
@@ -670,12 +680,12 @@ def _is_control_referenced(lever: str, design: RealizedDesign) -> bool:
     a single-lever star, where every arm moved the one lever, has a cohort spanning every run
     AND is exactly the control-referenced contrast the campaign exists to draw.
 
-    Args:
-        lever: The lever under comparison.
-        design: The derived design.
-
-    Returns:
-        True when a control resolved and at least one arm moved this lever off it.
+    :param lever: The lever under comparison.
+    :ptype lever: str
+    :param design: The derived design.
+    :ptype design: RealizedDesign
+    :return: True when a control resolved and at least one arm moved this lever off it.
+    :rtype: bool
     """
     return design.control_arm is not None and any(lever in c.moved for c in design.contrasts)
 
@@ -705,15 +715,16 @@ def _lever_cohort(lever: str, design: RealizedDesign, all_run_ids: list[str]) ->
     cell at that level does. That is the reading a marginal comparison exists to give, so nothing
     here sets them apart, and the disclosure on the design still names them.
 
-    Args:
-        lever: The lever under comparison.
-        design: The derived design.
-        all_run_ids: Every resolved run id, in bundle order.
-
-    Returns:
-        The cohort's run ids in ``all_run_ids`` order: every run of the control arm, of each arm that
+    :param lever: The lever under comparison.
+    :ptype lever: str
+    :param design: The derived design.
+    :ptype design: RealizedDesign
+    :param all_run_ids: Every resolved run id, in bundle order.
+    :ptype all_run_ids: list[str]
+    :return: The cohort's run ids in ``all_run_ids`` order: every run of the control arm, of each arm that
         moved this lever, and of any arm that moved no lever at all. A run that measured no keyable
         arm belongs to no contrast and is left out.
+    :rtype: list[str]
     """
     if not _is_control_referenced(lever, design) or design.control_arm is None:
         return all_run_ids
@@ -765,15 +776,17 @@ def _lever_levels(
     candidate role left no usage row resolves no model, and dropping it would delete a level the
     run plainly ran. A run carries exactly one model, so binning whole runs bins whole arms.
 
-    Args:
-        runs: The campaign's resolved runs.
-        results_by_run: Each run's results, keyed by run id — the observation side of
-            effective-config resolution.
-        profile: The host whose vocabulary this reads.
-        declared_axes: The levers the campaign declared as axes, each a lever whatever its calls.
-
-    Returns:
-        ``{lever: {level: [run_id, ...]}}`` for every lever with at least two levels.
+    :param runs: The campaign's resolved runs.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results, keyed by run id — the observation side of
+        effective-config resolution.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :param declared_axes: The levers the campaign declared as axes, each a lever whatever its calls.
+    :ptype declared_axes: Collection[str]
+    :return: ``{lever: {level: [run_id, ...]}}`` for every lever with at least two levels.
+    :rtype: dict[str, dict[str, list[str]]]
     """
     levels: dict[str, dict[str, list[str]]] = {}
     configs = {run.id: _effective_config(run, results_by_run.get(run.id, []), profile=profile) for run in runs}
@@ -822,13 +835,13 @@ def _apparatus_levels(
     Values are canonicalised to strings because the raw ones are not all hashable (two of
     these are sets) and because two structurally identical values must key the same.
 
-    Args:
-        runs: The campaign's resolved runs.
-        results_by_run: Each run's results, for the dimensions observed per result.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        ``{dimension: {run_id: level_key}}`` over the host's apparatus sweepables and — under
+    :param runs: The campaign's resolved runs.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results, for the dimensions observed per result.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: ``{dimension: {run_id: level_key}}`` over the host's apparatus sweepables and — under
         :func:`world_dimension_key` — its world dimensions, whose level is the placement this run
         derived for each. A ``None`` level key means the value
         cannot be compared at all — the dimension declares that a blank means "nobody
@@ -844,6 +857,7 @@ def _apparatus_levels(
         result entirely rather than present with a ``None`` level. That absence is the claim the
         confound scan already makes about a dimension that held still, and it is what keeps the
         dimension out of the apparatus class as well, since that is built from these keys.
+    :rtype: dict[str, dict[str, str | None]]
     """
     levels: dict[str, dict[str, str | None]] = {}
     sweepables = profile.sweepables
@@ -917,16 +931,18 @@ def _name_arms(
     only within some contrasts would name some arms by their members and others by an opaque hash,
     and the table would compare two vocabularies.
 
-    Args:
-        index: The variant index, one entry per keyed variant.
-        observations: The observations the index was built from — each names its variant and the
-            run it came from, which is what says which runs carried an arm.
-        folds: The campaign's :class:`_SurfaceFolds`.
-        run_ids: Every resolved member run — the cohort a name is read against.
-
-    Returns:
-        The index, each entry carrying ``swept`` and ``folded`` where a surface folds. Entries whose
+    :param index: The variant index, one entry per keyed variant.
+    :ptype index: list[VariantIndexEntry]
+    :param observations: The observations the index was built from — each names its variant and the
+        run it came from, which is what says which runs carried an arm.
+    :ptype observations: list[Observation]
+    :param folds: The campaign's :class:`_SurfaceFolds`.
+    :ptype folds: _SurfaceFolds
+    :param run_ids: Every resolved member run — the cohort a name is read against.
+    :ptype run_ids: Collection[str]
+    :return: The index, each entry carrying ``swept`` and ``folded`` where a surface folds. Entries whose
         levels are unavailable, and every entry when nothing folds, are returned as they were.
+    :rtype: list[VariantIndexEntry]
     """
     explained = sorted(surface for surface in folds.surfaces if folds.folds_away(surface, run_ids))
     if not explained:
@@ -978,12 +994,12 @@ def _declared_level_names(index: list[VariantIndexEntry], declared: CampaignDesi
     display, and so does a lever's "not a run of this kind" level, which is the engine's and no declaration's.
     Only ``display`` changes: the variant key digests content hashes alone, so no key moves and no cell regroups.
 
-    Args:
-        index: The variant index, its arms already named by :func:`_name_arms`.
-        declared: The campaign's declaration, or None when it declared nothing.
-
-    Returns:
-        The index, each declared level displayed by its declared name; entries no declaration names unchanged.
+    :param index: The variant index, its arms already named by :func:`_name_arms`.
+    :ptype index: list[VariantIndexEntry]
+    :param declared: The campaign's declaration, or None when it declared nothing.
+    :ptype declared: CampaignDesign | None
+    :return: The index, each declared level displayed by its declared name; entries no declaration names unchanged.
+    :rtype: list[VariantIndexEntry]
     """
     if declared is None:
         return index

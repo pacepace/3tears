@@ -99,8 +99,8 @@ class CassetteMiss(ApparatusError, LookupError):
     def __init__(self, key: CassetteKey) -> None:
         """Name the key the corpus has no recording for.
 
-        Args:
-            key: What the replay looked up.
+        :param key: What the replay looked up.
+        :ptype key: CassetteKey
         """
         self.key = key
         super().__init__(
@@ -121,8 +121,8 @@ class CassetteExhausted(ApparatusError, LookupError):
     def __init__(self, key: CassetteKey) -> None:
         """Name the ask and how many answers to it were recorded.
 
-        Args:
-            key: The occurrence the replay looked up, one past the last recorded.
+        :param key: The occurrence the replay looked up, one past the last recorded.
+        :ptype key: CassetteKey
         """
         self.key = key
         self.recorded = key.occurrence
@@ -253,16 +253,16 @@ class DeliveryTicket(Protocol):
     def delivered(self, payload: Recordable) -> None:
         """Record that the work reached the candidate with ``payload``.
 
-        Args:
-            payload: The delivered payload, of the seam's declared ``payload_type``.
+        :param payload: The delivered payload, of the seam's declared ``payload_type``.
+        :ptype payload: Recordable
         """
         ...  # pragma: no cover — protocol
 
     def failed(self, error: str) -> None:
         """Record that the work ended in an error and delivered nothing.
 
-        Args:
-            error: Why it failed, as the kind would report it.
+        :param error: Why it failed, as the kind would report it.
+        :ptype error: str
         """
         ...  # pragma: no cover — protocol
 
@@ -279,12 +279,11 @@ class DeliveryRecorder(Protocol):
     def started(self, request: Mapping[str, Any]) -> DeliveryTicket:
         """Begin recording one piece of background work.
 
-        Args:
-            request: What the candidate asked the tool for — the parameters a replay must repeat to
-                be served this recording. JSON-shaped.
-
-        Returns:
-            The ticket to settle when the work ends.
+        :param request: What the candidate asked the tool for — the parameters a replay must repeat to
+            be served this recording. JSON-shaped.
+        :ptype request: Mapping[str, Any]
+        :return: The ticket to settle when the work ends.
+        :rtype: DeliveryTicket
         """
         ...  # pragma: no cover — protocol
 
@@ -293,13 +292,12 @@ class DeliveryRecorder(Protocol):
 class ReplayedDelivery[P: Recordable]:
     """One recorded piece of background work, served in place of running it.
 
-    Attributes:
-        outcome: How the work ended in the capture. A kind delivers ``payload`` for ``'delivered'``,
-            reports ``error`` for ``'failed'``, and delivers nothing for ``'undelivered'`` — the
-            capture's session ended with this work still in flight, so no payload exists.
-        payload: The recorded payload, rebuilt as the seam's ``payload_type``; set exactly when
-            ``outcome`` is ``'delivered'``.
-        error: Why the captured work failed; set exactly when ``outcome`` is ``'failed'``.
+    :ivar outcome: How the work ended in the capture. A kind delivers ``payload`` for ``'delivered'``,
+        reports ``error`` for ``'failed'``, and delivers nothing for ``'undelivered'`` — the
+        capture's session ended with this work still in flight, so no payload exists.
+    :ivar payload: The recorded payload, rebuilt as the seam's ``payload_type``; set exactly when
+        ``outcome`` is ``'delivered'``.
+    :ivar error: Why the captured work failed; set exactly when ``outcome`` is ``'failed'``.
     """
 
     outcome: DeliveryOutcome
@@ -317,16 +315,13 @@ class DeliveryReplay[P: Recordable](Protocol):
     def next(self, request: Mapping[str, Any]) -> ReplayedDelivery[P]:
         """Take the recording of this request, in place of starting live work.
 
-        Args:
-            request: What the candidate asked the tool for this time.
-
-        Returns:
-            The recording of the capture's matching ask — the Nth one for the Nth time it is asked.
-
-        Raises:
-            CassetteMiss: The capture never asked this.
-            CassetteExhausted: The capture asked this fewer times than the candidate now has.
-            CassetteCorrupt: The recording could not be read back.
+        :param request: What the candidate asked the tool for this time.
+        :ptype request: Mapping[str, Any]
+        :return: The recording of the capture's matching ask — the Nth one for the Nth time it is asked.
+        :rtype: ReplayedDelivery[P]
+        :raises CassetteMiss: The capture never asked this.
+        :raises CassetteExhausted: The capture asked this fewer times than the candidate now has.
+        :raises CassetteCorrupt: The recording could not be read back.
         """
         ...  # pragma: no cover — protocol
 
@@ -355,8 +350,8 @@ class ActionSeam(Protocol):
         Call ``wrap`` exactly once, with every tool the candidate can call: a declared recorded tool
         missing from the mapping is refused, because in replay it would run live.
 
-        Args:
-            wrap: Maps the current tools to the ones the candidate must use from now on.
+        :param wrap: Maps the current tools to the ones the candidate must use from now on.
+        :ptype wrap: ToolWrap
         """
         ...  # pragma: no cover — protocol
 
@@ -382,8 +377,8 @@ class SyncActionSeam(Protocol):
         Call ``wrap`` exactly once, with every tool the candidate can call; each recorded tool comes
         back as a proxy whose ``act_sync`` captures or replays.
 
-        Args:
-            wrap: Maps the current tools to the ones the candidate must use from now on.
+        :param wrap: Maps the current tools to the ones the candidate must use from now on.
+        :ptype wrap: SyncToolWrap
         """
         ...  # pragma: no cover — protocol
 
@@ -400,8 +395,8 @@ class DeliverySeam(Protocol):
     def arm_capture(self, recorder: DeliveryRecorder) -> None:
         """Run the tool live, reporting each piece of work to ``recorder`` where it starts and where it ends.
 
-        Args:
-            recorder: This cell's recorder for this tool.
+        :param recorder: This cell's recorder for this tool.
+        :ptype recorder: DeliveryRecorder
         """
         ...  # pragma: no cover — protocol
 
@@ -413,8 +408,8 @@ class DeliverySeam(Protocol):
         this way is reported on ``CandidateOutput.async_deliveries`` with ``substituted=True``: the
         engine knows how many it served and refuses a cell that reports fewer, or reports one live.
 
-        Args:
-            replay: This cell's replay for this tool.
+        :param replay: This cell's replay for this tool.
+        :ptype replay: DeliveryReplay[Any]
         """
         ...  # pragma: no cover — protocol
 
@@ -463,16 +458,14 @@ class CellCassettes(Protocol):
         Every refusal of the declaration is made before anything is armed, so a refused declaration
         leaves the candidate as the kind built it.
 
-        Args:
-            seams: The candidate's seams.
-
-        Raises:
-            TypeError: ``seams`` is not a :class:`CassetteSeams`, or its action seam is neither an
-                :class:`ActionSeam` nor a :class:`SyncActionSeam`.
-            ValueError: This cell was already wired; ``seams`` declares no seam at all; its action
-                seam is both an :class:`ActionSeam` and a :class:`SyncActionSeam`, or names no tool;
-                a tool is declared on both seams; or the action seam did not apply the wrap exactly
-                once over every tool it declared.
-            CassetteCorrupt: A capture could not clear the case's previous recording.
+        :param seams: The candidate's seams.
+        :ptype seams: CassetteSeams
+        :raises TypeError: ``seams`` is not a :class:`CassetteSeams`, or its action seam is neither an
+            :class:`ActionSeam` nor a :class:`SyncActionSeam`.
+        :raises ValueError: This cell was already wired; ``seams`` declares no seam at all; its action
+            seam is both an :class:`ActionSeam` and a :class:`SyncActionSeam`, or names no tool;
+            a tool is declared on both seams; or the action seam did not apply the wrap exactly
+            once over every tool it declared.
+        :raises CassetteCorrupt: A capture could not clear the case's previous recording.
         """
         ...  # pragma: no cover — protocol

@@ -285,8 +285,8 @@ async def _judged_run(
 ) -> tuple[EvalHost, str]:
     """Run ``cases`` judged cells through the real runner and store them as a finished run would.
 
-    Returns:
-        The host holding the records, and the run's id.
+    :return: The host holding the records, and the run's id.
+    :rtype: tuple[EvalHost, str]
     """
     host = toyhost_host(storage=storage, clients=lambda role, model, *, temperature=None: judge)
     if failure_describer is not None:

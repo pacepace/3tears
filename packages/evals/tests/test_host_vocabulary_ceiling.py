@@ -89,11 +89,10 @@ class Hit(NamedTuple):
 def host_terms(source: str) -> list[Hit]:
     """Every host term in ``source``, prose included, with its line.
 
-    Args:
-        source: A module's full text.
-
-    Returns:
-        One hit per occurrence, by line; on a line, the raw-matched terms come before the words.
+    :param source: A module's full text.
+    :ptype source: str
+    :return: One hit per occurrence, by line; on a line, the raw-matched terms come before the words.
+    :rtype: list[Hit]
     """
     hits: list[Hit] = []
     for number, line in enumerate(source.splitlines(), start=1):
@@ -111,11 +110,10 @@ def host_terms(source: str) -> list[Hit]:
 def measure(root: Path) -> dict[str, list[Hit]]:
     """The host terms in every module under ``root``, keyed by its path relative to ``root``.
 
-    Args:
-        root: The engine package root.
-
-    Returns:
-        Every module, including those with no hits.
+    :param root: The engine package root.
+    :ptype root: Path
+    :return: Every module, including those with no hits.
+    :rtype: dict[str, list[Hit]]
     """
     return {
         path.relative_to(root).as_posix(): host_terms(path.read_text(encoding="utf-8"))
@@ -137,12 +135,12 @@ def _row(module: str, counts: dict[str, int]) -> str:
 def verdicts(measured: dict[str, list[Hit]], register: dict[str, dict[str, int]]) -> list[str]:
     """Why ``measured`` breaks ``register``, one sentence per defect; empty when every count sits at its ceiling.
 
-    Args:
-        measured: :func:`measure`'s result.
-        register: Host terms allowed per module and term; a term left out of a row is allowed none.
-
-    Returns:
-        The failures, in module order.
+    :param measured: :func:`measure`'s result.
+    :ptype measured: dict[str, list[Hit]]
+    :param register: Host terms allowed per module and term; a term left out of a row is allowed none.
+    :ptype register: dict[str, dict[str, int]]
+    :return: The failures, in module order.
+    :rtype: list[str]
     """
     out: list[str] = []
     for module in sorted(set(measured) | set(register)):

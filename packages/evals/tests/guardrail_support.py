@@ -52,17 +52,21 @@ def two_arm_bundle(
 ) -> AnalysisContextBundle:
     """The control and one contrast over the same cases, each scored on every dimension in ``dimensions``.
 
-    Args:
-        dimensions: Each judged dimension: its name, the axis its scores are stamped with (None = judged
-            before the axis was stamped) and each arm's per-case scores, one per case, control first.
-        scale: The scale every dimension is judged on.
-        questions: The campaign's live questions; empty declares none.
-        control: Whether the control arm is declared the control.
-        host_measures: Each arm's per-case host measures, control first, when the test reads a measure.
-        profile: The host vocabulary; the toy host's when None.
-
-    Returns:
-        The assembled bundle.
+    :param dimensions: Each judged dimension: its name, the axis its scores are stamped with (None = judged
+        before the axis was stamped) and each arm's per-case scores, one per case, control first.
+    :ptype dimensions: Sequence[Scored]
+    :param scale: The scale every dimension is judged on.
+    :ptype scale: RubricScale
+    :param questions: The campaign's live questions; empty declares none.
+    :ptype questions: Sequence[Question]
+    :param control: Whether the control arm is declared the control.
+    :ptype control: bool
+    :param host_measures: Each arm's per-case host measures, control first, when the test reads a measure.
+    :ptype host_measures: tuple[Sequence[dict[str, float]], Sequence[dict[str, float]]] | None
+    :param profile: The host vocabulary; the toy host's when None.
+    :ptype profile: HostProfile | None
+    :return: The assembled bundle.
+    :rtype: AnalysisContextBundle
     """
     n_cases = len(dimensions[0][2][0]) if dimensions else len(host_measures[0]) if host_measures else 0
     runs = []

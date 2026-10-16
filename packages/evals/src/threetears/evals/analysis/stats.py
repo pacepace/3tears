@@ -132,12 +132,12 @@ def equivalence_untested_reason(margin: float | None, value_range: tuple[float, 
     One derivation for every surface that carries the refusal beside its verdict. Only the missing range is named
     here: the per-sample refusals (too few pairs, a difference outside the range) are the test's own outcome.
 
-    Args:
-        margin: The measure's declared margin, or None.
-        value_range: The measure's declared inclusive bounds, or None.
-
-    Returns:
-        :data:`EQUIVALENCE_NEEDS_RANGE` when a positive margin is declared with no range, else None.
+    :param margin: The measure's declared margin, or None.
+    :ptype margin: float | None
+    :param value_range: The measure's declared inclusive bounds, or None.
+    :ptype value_range: tuple[float, float] | None
+    :return: :data:`EQUIVALENCE_NEEDS_RANGE` when a positive margin is declared with no range, else None.
+    :rtype: str | None
     """
     return EQUIVALENCE_NEEDS_RANGE if margin is not None and margin > 0.0 and value_range is None else None
 
@@ -160,13 +160,12 @@ def standard_error_of_mean(values: list[float]) -> float | None:
     certain one. A genuinely constant sample of two or more does return ``0.0``,
     because that is a measurement, not an absence.
 
-    Args:
-        values: The sample. Must already be the quantity being averaged — pass
-            per-case means when the aggregate is a mean over cases, so the
-            dispersion describes the same estimate the value reports.
-
-    Returns:
-        ``sd / sqrt(n)`` with ``ddof=1``, or ``None`` when ``n < 2``.
+    :param values: The sample. Must already be the quantity being averaged — pass
+        per-case means when the aggregate is a mean over cases, so the
+        dispersion describes the same estimate the value reports.
+    :ptype values: list[float]
+    :return: ``sd / sqrt(n)`` with ``ddof=1``, or ``None`` when ``n < 2``.
+    :rtype: float | None
     """
     n = len(values)
     if n < 2:
@@ -254,15 +253,13 @@ def t_critical_two_sided(confidence: float, df: float) -> float:
     interval less than half its honest width and label it "95%" — an overconfident interval
     is worse than a wide one, because it reads as precision that was measured.
 
-    Args:
-        confidence: Central mass the interval should cover, e.g. ``0.95``.
-        df: Degrees of freedom (``n - 1``); must be positive.
-
-    Returns:
-        The multiplier ``t`` such that ``P(|T| <= t) == confidence``.
-
-    Raises:
-        ValueError: If ``df`` is not positive or ``confidence`` is not in ``(0, 1)``.
+    :param confidence: Central mass the interval should cover, e.g. ``0.95``.
+    :ptype confidence: float
+    :param df: Degrees of freedom (``n - 1``); must be positive.
+    :ptype df: float
+    :return: The multiplier ``t`` such that ``P(|T| <= t) == confidence``.
+    :rtype: float
+    :raises ValueError: If ``df`` is not positive or ``confidence`` is not in ``(0, 1)``.
     """
     if df <= 0.0:
         raise ValueError(f"df must be positive, got {df}")
@@ -317,15 +314,15 @@ def ci_half_width(sem: float, n_cases: int) -> float | None:
     multiplier is ~4.30, and quoting the large-sample constant would publish an interval at under half
     its true width while labelling it "95%".
 
-    Args:
-        sem: The standard error of the mean — over cases (:func:`clustered_standard_error`) when an
-            observation can repeat a case.
-        n_cases: Independent cases behind it (``n_cases - 1`` degrees of freedom). Where every case was
-            observed once that is the observation count; where cases repeat, it is the case count, never
-            the observations — counting k repeats as k draws is what narrows an interval below its truth.
-
-    Returns:
-        The half-width, or ``None`` where no interval is estimable.
+    :param sem: The standard error of the mean — over cases (:func:`clustered_standard_error`) when an
+        observation can repeat a case.
+    :ptype sem: float
+    :param n_cases: Independent cases behind it (``n_cases - 1`` degrees of freedom). Where every case was
+        observed once that is the observation count; where cases repeat, it is the case count, never
+        the observations — counting k repeats as k draws is what narrows an interval below its truth.
+    :ptype n_cases: int
+    :return: The half-width, or ``None`` where no interval is estimable.
+    :rtype: float | None
     """
     if n_cases < 2:
         return None
@@ -354,9 +351,11 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     The trials must be independent: one per case. A reading whose observations can repeat a case takes
     :func:`proportion_interval`, which is this interval wherever every case was observed once.
 
-    Args:
-        n_true: Observations that held.
-        n: Observations.
+    :param n_true: Observations that held.
+    :ptype n_true: int
+    :param n: Observations.
+    :ptype n: int
+
 
     The interval always contains the rate, exactly. Algebraically the Wilson bound at a rate of 1 is
     1 and at a rate of 0 is 0, but ``centre ± half`` reaches them through cancelling floating-point
@@ -365,11 +364,9 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     (the report's :class:`~threetears.evals.analysis.report.model.IntervalRow` among them), so the bounds are pinned
     to contain the rate rather than every consumer tolerating the noise.
 
-    Returns:
-        ``(low, high)``, or ``None`` with no observations — there is no rate to bound.
-
-    Raises:
-        ValueError: ``n_true`` is negative or above ``n``.
+    :return: ``(low, high)``, or ``None`` with no observations — there is no rate to bound.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: ``n_true`` is negative or above ``n``.
     """
     if not 0 <= n_true <= n:
         raise ValueError(f"a proportion needs 0 <= n_true <= n; got n_true={n_true}, n={n}")
@@ -398,16 +395,14 @@ def clustered_standard_error(values: Sequence[float], cases: Sequence[Hashable])
     :func:`standard_error_of_mean` (and returns exactly that). With every case observed the same number
     of times it equals the SEM of the case means, the statistic a comparison between arms runs on.
 
-    Args:
-        values: The observations.
-        cases: Each observation's case, aligned with ``values``.
-
-    Returns:
-        The standard error, or ``None`` below two cases: one case has no between-case spread to
+    :param values: The observations.
+    :ptype values: Sequence[float]
+    :param cases: Each observation's case, aligned with ``values``.
+    :ptype cases: Sequence[Hashable]
+    :return: The standard error, or ``None`` below two cases: one case has no between-case spread to
         estimate, however often it was repeated, and its repeats say nothing about another case.
-
-    Raises:
-        ValueError: ``values`` and ``cases`` differ in length.
+    :rtype: float | None
+    :raises ValueError: ``values`` and ``cases`` differ in length.
     """
     _require_aligned(values, cases)
     n = len(values)
@@ -442,15 +437,13 @@ def case_means(values: Sequence[float], cases: Sequence[Hashable]) -> list[float
     because a point carries no case identity on the chart, and an order that depended on case ids would
     move a stored document's bytes without moving anything a reader sees.
 
-    Args:
-        values: The observations.
-        cases: Each observation's case, aligned with ``values``.
-
-    Returns:
-        One mean per distinct case, ascending.
-
-    Raises:
-        ValueError: ``values`` and ``cases`` differ in length.
+    :param values: The observations.
+    :ptype values: Sequence[float]
+    :param cases: Each observation's case, aligned with ``values``.
+    :ptype cases: Sequence[Hashable]
+    :return: One mean per distinct case, ascending.
+    :rtype: list[float]
+    :raises ValueError: ``values`` and ``cases`` differ in length.
     """
     _require_aligned(values, cases)
     totals: dict[Hashable, list[float]] = {}
@@ -465,12 +458,12 @@ def small_sample_case_means(values: Sequence[float], cases: Sequence[Hashable]) 
     Recorded beside a summary only below :data:`SMALL_N_BAND_FLOOR` cases, where a chart draws points
     instead of a band; at or above it the band is drawn and per-case values would only grow the bundle.
 
-    Args:
-        values: The observations.
-        cases: Each observation's case, aligned with ``values``.
-
-    Returns:
-        The per-case means when there are 1 to ``SMALL_N_BAND_FLOOR - 1`` distinct cases, else ``None``.
+    :param values: The observations.
+    :ptype values: Sequence[float]
+    :param cases: Each observation's case, aligned with ``values``.
+    :ptype cases: Sequence[Hashable]
+    :return: The per-case means when there are 1 to ``SMALL_N_BAND_FLOOR - 1`` distinct cases, else ``None``.
+    :rtype: list[float] | None
     """
     if not 0 < len(set(cases)) < SMALL_N_BAND_FLOOR:
         return None
@@ -500,16 +493,14 @@ def proportion_interval(outcomes: Sequence[bool], cases: Sequence[Hashable]) -> 
     the Wilson interval over observations covered as little as 67%
     (``tests/test_sim_reading_intervals.py``).
 
-    Args:
-        outcomes: Each observation's outcome.
-        cases: Each observation's case, aligned with ``outcomes``.
-
-    Returns:
-        ``(low, high)``; ``None`` with no observations, or when the observations repeat a single case —
+    :param outcomes: Each observation's outcome.
+    :ptype outcomes: Sequence[bool]
+    :param cases: Each observation's case, aligned with ``outcomes``.
+    :ptype cases: Sequence[Hashable]
+    :return: ``(low, high)``; ``None`` with no observations, or when the observations repeat a single case —
         one case has no between-case spread to estimate.
-
-    Raises:
-        ValueError: ``outcomes`` and ``cases`` differ in length.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: ``outcomes`` and ``cases`` differ in length.
     """
     _require_aligned(outcomes, cases)
     n = len(outcomes)
@@ -568,17 +559,15 @@ def case_rate_interval(case_rates: Sequence[float], *, max_effective_n: float) -
     least 96% over 2–15 cases, depth 1–5 and case rates from all-alike to all-or-nothing, for about a tenth
     more width (``tests/test_simulated_frontier.py`` checks it on the engine).
 
-    Args:
-        case_rates: One estimate per case, each in ``[0, 1]``.
-        max_effective_n: The most information the cases can carry — for pass^k, the scored attempts at the
-            qualifying cases over ``k``: the number of separate ``k``-attempt runs they contain.
-
-    Returns:
-        ``(low, high)`` containing the mean of ``case_rates``, or ``None`` below two cases, where there is
+    :param case_rates: One estimate per case, each in ``[0, 1]``.
+    :ptype case_rates: Sequence[float]
+    :param max_effective_n: The most information the cases can carry — for pass^k, the scored attempts at the
+        qualifying cases over ``k``: the number of separate ``k``-attempt runs they contain.
+    :ptype max_effective_n: float
+    :return: ``(low, high)`` containing the mean of ``case_rates``, or ``None`` below two cases, where there is
         no between-case spread to estimate.
-
-    Raises:
-        ValueError: A rate is outside ``[0, 1]``.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: A rate is outside ``[0, 1]``.
     """
     stray = [rate for rate in case_rates if not 0.0 <= rate <= 1.0]
     if stray:
@@ -617,16 +606,19 @@ def mean_interval(
     ``[-0.0002991, 0.000801]`` dollars before it, a spend no arm can have. Only an interval on a mean is
     clipped; one on a difference of two means never is, since a difference can fall either way.
 
-    Args:
-        mean: The point estimate.
-        sem: Its standard error — :func:`clustered_standard_error` where observations can repeat a case.
-        n_cases: Independent cases behind it; see :func:`ci_half_width`.
-        value_range: The measure's declared inclusive bounds, or None when it declares none.
-        floor: The lowest value the measure can take where it declares no range
-            (``MetricDescriptor.interval_floor``), or None when nothing bounds it below.
-
-    Returns:
-        ``(low, high)``, or ``None`` below two cases, where no interval is estimable.
+    :param mean: The point estimate.
+    :ptype mean: float
+    :param sem: Its standard error — :func:`clustered_standard_error` where observations can repeat a case.
+    :ptype sem: float
+    :param n_cases: Independent cases behind it; see :func:`ci_half_width`.
+    :ptype n_cases: int
+    :param value_range: The measure's declared inclusive bounds, or None when it declares none.
+    :ptype value_range: tuple[float, float] | None
+    :param floor: The lowest value the measure can take where it declares no range
+        (``MetricDescriptor.interval_floor``), or None when nothing bounds it below.
+    :ptype floor: float | None
+    :return: ``(low, high)``, or ``None`` below two cases, where no interval is estimable.
+    :rtype: tuple[float, float] | None
     """
     half = ci_half_width(sem, n_cases)
     if half is None:
@@ -657,23 +649,23 @@ def observed_mean_interval(
     measure takes :func:`mean_interval` on the :func:`clustered_standard_error` over its cases, clipped to
     its declared scale, or at its floor where it is bounded below only.
 
-    Args:
-        values: The observations.
-        cases: Each observation's case, aligned with ``values`` — required, because whether fifteen
-            observations are fifteen cases or five cases three times is the difference between two
-            interval widths, and nothing in the values says which.
-        value_range: The measure's declared inclusive bounds, or None when it declares none.
-        floor: The measure's lower bound where it declares no range (``MetricDescriptor.interval_floor``),
-            or None; see :func:`mean_interval`.
-
-    Returns:
-        ``(low, high)``, or ``None`` below two observations, where no interval is estimable — the
+    :param values: The observations.
+    :ptype values: Sequence[float]
+    :param cases: Each observation's case, aligned with ``values`` — required, because whether fifteen
+        observations are fifteen cases or five cases three times is the difference between two
+        interval widths, and nothing in the values says which.
+    :ptype cases: Sequence[Hashable]
+    :param value_range: The measure's declared inclusive bounds, or None when it declares none.
+    :ptype value_range: tuple[float, float] | None
+    :param floor: The measure's lower bound where it declares no range (``MetricDescriptor.interval_floor``),
+        or None; see :func:`mean_interval`.
+    :ptype floor: float | None
+    :return: ``(low, high)``, or ``None`` below two observations, where no interval is estimable — the
         position :func:`standard_error_of_mean` takes, held for a proportion too, so a numeric
         measure's interval appears and disappears at one n whatever its values — and ``None`` when the
         observations all repeat one case, which has no between-case spread to estimate.
-
-    Raises:
-        ValueError: ``values`` and ``cases`` differ in length.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: ``values`` and ``cases`` differ in length.
     """
     _require_aligned(values, cases)
     n = len(values)
@@ -704,13 +696,12 @@ PPI_MIN_LABELLED_RESULTS: Final = 10
 class PredictionPoweredMean(NamedTuple):
     """A prediction-powered mean: the judge's mean over every observation, corrected by people's labels on some.
 
-    Attributes:
-        mean: ``judge_mean + rectifier`` — the estimate of the mean people would have given every observation.
-        judge_mean: The judge's mean over every observation, labelled or not.
-        rectifier: The mean of ``human - judge`` over the labelled observations: the judge's bias, measured.
-        sem: The estimate's cluster-robust standard error, or None below two labelled cases.
-        interval: The interval at :data:`INTERVAL_LEVEL` on ``labelled cases - 1`` degrees of freedom, clipped to
-            the declared range; None where ``sem`` is.
+    :ivar mean: ``judge_mean + rectifier`` — the estimate of the mean people would have given every observation.
+    :ivar judge_mean: The judge's mean over every observation, labelled or not.
+    :ivar rectifier: The mean of ``human - judge`` over the labelled observations: the judge's bias, measured.
+    :ivar sem: The estimate's cluster-robust standard error, or None below two labelled cases.
+    :ivar interval: The interval at :data:`INTERVAL_LEVEL` on ``labelled cases - 1`` degrees of freedom, clipped to
+        the declared range; None where ``sem`` is.
     """
 
     mean: float
@@ -751,19 +742,19 @@ def prediction_powered_mean(
     With every observation labelled the estimate is the people's mean and its standard error is
     :func:`clustered_standard_error` of their scores read on the same cases.
 
-    Args:
-        judge: The judge's score per observation.
-        cases: Each observation's case, aligned with ``judge``.
-        human: People's score per observation (a mean over raters where several rated it), or None where nobody
-            did, aligned with ``judge`` and on its scale.
-        value_range: The scale's inclusive bounds, which the interval is clipped to; the estimate itself is not,
-            since clipping it would bias it.
-
-    Returns:
-        The estimate, or None when no observation is labelled — there is nothing to combine.
-
-    Raises:
-        ValueError: ``judge``, ``cases`` and ``human`` differ in length.
+    :param judge: The judge's score per observation.
+    :ptype judge: Sequence[float]
+    :param cases: Each observation's case, aligned with ``judge``.
+    :ptype cases: Sequence[Hashable]
+    :param human: People's score per observation (a mean over raters where several rated it), or None where nobody
+        did, aligned with ``judge`` and on its scale.
+    :ptype human: Sequence[float | None]
+    :param value_range: The scale's inclusive bounds, which the interval is clipped to; the estimate itself is not,
+        since clipping it would bias it.
+    :ptype value_range: tuple[float, float] | None
+    :return: The estimate, or None when no observation is labelled — there is nothing to combine.
+    :rtype: PredictionPoweredMean | None
+    :raises ValueError: ``judge``, ``cases`` and ``human`` differ in length.
     """
     _require_aligned(judge, cases)
     _require_aligned(human, cases)
@@ -824,13 +815,14 @@ def bar_seed(mean: float, interval: tuple[float, float], *, higher_is_better: bo
     Many more cases make it commoner, since the incumbent's own error, frozen into the bar, is then the
     larger share of the difference.
 
-    Args:
-        mean: The incumbent's mean on the measure.
-        interval: Its interval on that mean, as the summary states it (:func:`observed_mean_interval`).
-        higher_is_better: The measure's declared direction.
-
-    Returns:
-        The seed threshold.
+    :param mean: The incumbent's mean on the measure.
+    :ptype mean: float
+    :param interval: Its interval on that mean, as the summary states it (:func:`observed_mean_interval`).
+    :ptype interval: tuple[float, float]
+    :param higher_is_better: The measure's declared direction.
+    :ptype higher_is_better: bool
+    :return: The seed threshold.
+    :rtype: float
     """
     low, high = interval
     if higher_is_better:
@@ -854,16 +846,18 @@ def interval_clears(
     - **None — undecided**: the interval straddles the line. The data cannot say which, and a wide
       interval on a handful of cases usually lands here. It is neither a pass nor a failure.
 
-    Args:
-        interval: The cell's interval on the mean. A cell with none (fewer than two observations) is
-            not passed here: it has no interval to read, which its caller states as such.
-        threshold: The bar's threshold, in the measure's units.
-        margin: The measure's declared margin (:attr:`MetricDescriptor.materiality_threshold`), in its
-            units, or None when it declares none — the bar is then held at the threshold itself.
-        higher_is_better: Which way clearing runs.
-
-    Returns:
-        True when cleared, False when missed, None when undecided.
+    :param interval: The cell's interval on the mean. A cell with none (fewer than two observations) is
+        not passed here: it has no interval to read, which its caller states as such.
+    :ptype interval: tuple[float, float]
+    :param threshold: The bar's threshold, in the measure's units.
+    :ptype threshold: float
+    :param margin: The measure's declared margin (:attr:`MetricDescriptor.materiality_threshold`), in its
+        units, or None when it declares none — the bar is then held at the threshold itself.
+    :ptype margin: float | None
+    :param higher_is_better: Which way clearing runs.
+    :ptype higher_is_better: bool
+    :return: True when cleared, False when missed, None when undecided.
+    :rtype: bool | None
     """
     slack = margin or 0.0
     low, high = interval
@@ -910,17 +904,17 @@ def kappa_moments(
 ) -> KappaMoments | None:
     """The disagreement moments Cohen's kappa is computed from — see :func:`cohen_kappa` for the costs.
 
-    Args:
-        pairs: ``(first, second)`` per item.
-        categories: Every category either rater could give, in order.
-        weights: ``"none"`` or ``"quadratic"``.
-        unordered: Categories outside the scale, each maximally far from every other.
-
-    Returns:
-        The moments; ``None`` with no pairs.
-
-    Raises:
-        ValueError: As :func:`cohen_kappa`.
+    :param pairs: ``(first, second)`` per item.
+    :ptype pairs: Sequence[tuple[int, int]]
+    :param categories: Every category either rater could give, in order.
+    :ptype categories: Sequence[int]
+    :param weights: ``"none"`` or ``"quadratic"``.
+    :ptype weights: Literal['none', 'quadratic']
+    :param unordered: Categories outside the scale, each maximally far from every other.
+    :ptype unordered: Sequence[int]
+    :return: The moments; ``None`` with no pairs.
+    :rtype: KappaMoments | None
+    :raises ValueError: As :func:`cohen_kappa`.
     """
     if len(categories) < 2:
         raise ValueError(f"kappa needs at least two categories; got {list(categories)}")
@@ -985,21 +979,21 @@ def cohen_kappa(
     judge declining to score — so it is at the greatest distance from every other category under
     either weighting (cost 1), and agrees only with itself (cost 0).
 
-    Args:
-        pairs: ``(first, second)`` per item.
-        categories: Every category either rater could give, in order — the scale, not merely the
-            values seen, because the quadratic cost is a distance along it.
-        weights: ``"none"`` or ``"quadratic"``.
-        unordered: Categories outside the scale, each maximally far from every other.
-
-    Returns:
-        Kappa, in ``[-1, 1]``; ``None`` with no pairs, or when chance alone predicts no
+    :param pairs: ``(first, second)`` per item.
+    :ptype pairs: Sequence[tuple[int, int]]
+    :param categories: Every category either rater could give, in order — the scale, not merely the
+        values seen, because the quadratic cost is a distance along it.
+    :ptype categories: Sequence[int]
+    :param weights: ``"none"`` or ``"quadratic"``.
+    :ptype weights: Literal['none', 'quadratic']
+    :param unordered: Categories outside the scale, each maximally far from every other.
+    :ptype unordered: Sequence[int]
+    :return: Kappa, in ``[-1, 1]``; ``None`` with no pairs, or when chance alone predicts no
         disagreement (both raters gave one and the same category to every item), where the ratio
         is undefined rather than perfect.
-
-    Raises:
-        ValueError: A pair holds a value outside ``categories`` and ``unordered``, an ``unordered``
-            category is also on the scale, or fewer than two categories.
+    :rtype: float | None
+    :raises ValueError: A pair holds a value outside ``categories`` and ``unordered``, an ``unordered``
+        category is also on the scale, or fewer than two categories.
     """
     moments = kappa_moments(pairs, categories, weights=weights, unordered=unordered)
     if moments is None or moments.expected == 0:
@@ -1032,17 +1026,15 @@ def holm_adjust(p_values: Sequence[float], *, max_true: int | None = None) -> li
     ``m + e`` hypotheses. The proof is Holm's: the first true null rejected comes after only false ones,
     so at most ``min(m + e − i + 1, max_true)`` nulls are true at that step, and that is the multiplier.
 
-    Args:
-        p_values: The raw p of every hypothesis in the family. The family is exactly
-            these: a comparison that ran no test has no p and is not passed, since it is not a
-            hypothesis this family tested.
-        max_true: The most hypotheses that can be true together, or None for no restriction.
-
-    Returns:
-        One adjusted p per input, in input order. Empty for an empty family.
-
-    Raises:
-        ValueError: A p is not a probability, or ``max_true`` is below one.
+    :param p_values: The raw p of every hypothesis in the family. The family is exactly
+        these: a comparison that ran no test has no p and is not passed, since it is not a
+        hypothesis this family tested.
+    :ptype p_values: Sequence[float]
+    :param max_true: The most hypotheses that can be true together, or None for no restriction.
+    :ptype max_true: int | None
+    :return: One adjusted p per input, in input order. Empty for an empty family.
+    :rtype: list[float]
+    :raises ValueError: A p is not a probability, or ``max_true`` is below one.
     """
     stray = [p for p in p_values if not 0.0 <= p <= 1.0]
     if stray:
@@ -1068,12 +1060,11 @@ def hedges_j(df: int) -> float | None:
     of freedom, 25% at four, 9% at nine. Multiplying by ``J`` removes the bias exactly for normal data
     (``tests/test_simulated_separation.py``).
 
-    Args:
-        df: The degrees of freedom of the SD the effect is standardized by.
-
-    Returns:
-        ``J``, or ``None`` below two degrees of freedom: at one, ``E[1/s]`` diverges, so no factor makes
+    :param df: The degrees of freedom of the SD the effect is standardized by.
+    :ptype df: int
+    :return: ``J``, or ``None`` below two degrees of freedom: at one, ``E[1/s]`` diverges, so no factor makes
         the estimate unbiased and none is reported.
+    :rtype: float | None
     """
     if df < 2:
         return None
@@ -1124,9 +1115,9 @@ class _TStatistic(NamedTuple):
 def _t_statistic(a: list[float], b: list[float], *, paired: bool) -> _TStatistic | SignificanceResult:
     """The statistic :func:`composite_significance` tests and :func:`difference_interval` bounds — one computation.
 
-    Returns:
-        The statistic, or the :class:`SignificanceResult` that stands for no test (too few observations,
+    :return: The statistic, or the :class:`SignificanceResult` that stands for no test (too few observations,
         a length mismatch, or zero spread).
+    :rtype: _TStatistic | SignificanceResult
     """
     if paired:
         if len(a) != len(b) or len(a) < 2:
@@ -1182,14 +1173,14 @@ def composite_significance(
     10 vs 10 cases and d = 1 — which falls on the fallback, not the paired design a fixed case set exists
     for.
 
-    Args:
-        sample_a: Run A's per-case composite scores. When ``paired``, aligned
-            one-to-one with ``sample_b`` (same case order).
-        sample_b: Run B's per-case composite scores.
-        paired: True for the paired test on ``b - a`` differences; False for the unpaired test.
-
-    Returns:
-        A :class:`SignificanceResult`. Every field is ``None`` when the test is
+    :param sample_a: Run A's per-case composite scores. When ``paired``, aligned
+        one-to-one with ``sample_b`` (same case order).
+    :ptype sample_a: list[float]
+    :param sample_b: Run B's per-case composite scores.
+    :ptype sample_b: list[float]
+    :param paired: True for the paired test on ``b - a`` differences; False for the unpaired test.
+    :ptype paired: bool
+    :return: A :class:`SignificanceResult`. Every field is ``None`` when the test is
         undefined — fewer than two usable observations, or zero variance with a
         non-zero mean difference (a deterministic constant gap has no finite
         effect size). A zero mean difference with zero variance returns
@@ -1198,6 +1189,7 @@ def composite_significance(
         denominator is zero — so the p stays absent rather than being invented.
         ``hedges_g`` is ``None`` beside a p where its SD has one degree of freedom (two pairs), where no
         unbiased effect size exists (:func:`hedges_j`).
+    :rtype: SignificanceResult
     """
     statistic = _t_statistic([float(x) for x in sample_a], [float(x) for x in sample_b], paired=paired)
     if isinstance(statistic, SignificanceResult):
@@ -1229,17 +1221,20 @@ def difference_interval(
     is excluded exactly when it was. It is not clipped to ``[low, high]`` itself: a difference can run
     either way.
 
-    Args:
-        sample_a: The baseline's per-case values.
-        sample_b: The compared side's, aligned with ``sample_a`` when ``paired``.
-        paired: Which test the interval belongs to.
-        confidence: The coverage, ``INTERVAL_LEVEL`` unless a family's correction asks for more.
-        value_range: The measure's declared inclusive bounds, or None when it declares none, and then the
-            interval is not clipped: no bound is known to clip it to.
-
-    Returns:
-        ``(low, high)``, or ``None`` wherever the test runs no t — too few observations, or no spread,
+    :param sample_a: The baseline's per-case values.
+    :ptype sample_a: list[float]
+    :param sample_b: The compared side's, aligned with ``sample_a`` when ``paired``.
+    :ptype sample_b: list[float]
+    :param paired: Which test the interval belongs to.
+    :ptype paired: bool
+    :param confidence: The coverage, ``INTERVAL_LEVEL`` unless a family's correction asks for more.
+    :ptype confidence: float
+    :param value_range: The measure's declared inclusive bounds, or None when it declares none, and then the
+        interval is not clipped: no bound is known to clip it to.
+    :ptype value_range: tuple[float, float] | None
+    :return: ``(low, high)``, or ``None`` wherever the test runs no t — too few observations, or no spread,
         where a zero-width interval would state certainty no data measured.
+    :rtype: tuple[float, float] | None
     """
     statistic = _t_statistic([float(x) for x in sample_a], [float(x) for x in sample_b], paired=paired)
     if isinstance(statistic, SignificanceResult):
@@ -1260,11 +1255,10 @@ def interval_permits_separation(interval: tuple[float, float] | None) -> bool:
     shown beside an interval that includes no change (#597), so a caller requires this as well as the p. Where
     no interval exists (no t: every case moved by one amount) nothing is shown to contradict the p.
 
-    Args:
-        interval: The interval on the difference the verdict is shown beside, or None.
-
-    Returns:
-        False exactly when the interval includes zero.
+    :param interval: The interval on the difference the verdict is shown beside, or None.
+    :ptype interval: tuple[float, float] | None
+    :return: False exactly when the interval includes zero.
+    :rtype: bool
     """
     return interval is None or interval[0] > 0.0 or interval[1] < 0.0
 
@@ -1289,11 +1283,10 @@ def exact_decimal(value: float | Fraction) -> Fraction:
     round-trips the float, they differ by exactly 0.5. A :class:`~fractions.Fraction` passes through, so a
     caller that already averaged exactly keeps its exact mean.
 
-    Args:
-        value: A float, or an exact value already.
-
-    Returns:
-        The exact rational.
+    :param value: A float, or an exact value already.
+    :ptype value: float | Fraction
+    :return: The exact rational.
+    :rtype: Fraction
     """
     return value if isinstance(value, Fraction) else Fraction(repr(float(value)))
 
@@ -1312,13 +1305,14 @@ def no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -
     fifth, gives twenty cases at +1 one time in 87, where this states one in 524,288). Callers read only whether
     it is None (the values have spread) or 1 (identical values).
 
-    Args:
-        a: One side's exact values, at least two.
-        b: The other's, aligned with ``a`` when ``paired``.
-        paired: Whether the two are one-to-one.
-
-    Returns:
-        The exact p, or ``None`` when the values have spread and a t-test reads them.
+    :param a: One side's exact values, at least two.
+    :ptype a: Sequence[Fraction]
+    :param b: The other's, aligned with ``a`` when ``paired``.
+    :ptype b: Sequence[Fraction]
+    :param paired: Whether the two are one-to-one.
+    :ptype paired: bool
+    :return: The exact p, or ``None`` when the values have spread and a t-test reads them.
+    :rtype: float | None
     """
     if paired:
         diffs = [y - x for x, y in zip(a, b)]
@@ -1339,13 +1333,13 @@ def contrast_samples(
     case set exists for — else each side's per-case values, unpaired. The one choice every reading of a contrast
     makes: a comparison's, a guardrail's in the bundle, and the frontier's boundary pillar.
 
-    Args:
-        control_values: The control's value per case.
-        contrast_values: The contrast's value per case.
-
-    Returns:
-        ``(control sample, contrast sample, paired)``, the two aligned by case when paired, each in its cases'
+    :param control_values: The control's value per case.
+    :ptype control_values: Mapping[str, float]
+    :param contrast_values: The contrast's value per case.
+    :ptype contrast_values: Mapping[str, float]
+    :return: ``(control sample, contrast sample, paired)``, the two aligned by case when paired, each in its cases'
         sorted order otherwise.
+    :rtype: tuple[list[float], list[float], bool]
     """
     shared = sorted(set(control_values) & set(contrast_values))
     paired = len(shared) >= 2
@@ -1369,16 +1363,14 @@ def pairing_correlation(a: Sequence[float], b: Sequence[float]) -> float | None:
     Evals*, 2024): near 1 it bought much, near 0 nothing, and a negative r means the paired test is WEAKER than an
     unpaired one would have been.
 
-    Args:
-        a: One side's per-case values.
-        b: The other side's, aligned with ``a`` case by case.
-
-    Returns:
-        r, in [-1, 1]; None below :data:`MIN_PAIRS_FOR_CORRELATION` pairs, and where either side has no spread
+    :param a: One side's per-case values.
+    :ptype a: Sequence[float]
+    :param b: The other side's, aligned with ``a`` case by case.
+    :ptype b: Sequence[float]
+    :return: r, in [-1, 1]; None below :data:`MIN_PAIRS_FOR_CORRELATION` pairs, and where either side has no spread
         (a constant has no correlation with anything).
-
-    Raises:
-        ValueError: If the two samples are not the same length.
+    :rtype: float | None
+    :raises ValueError: If the two samples are not the same length.
     """
     if len(a) != len(b):
         raise ValueError(f"a correlation pairs its samples case by case; got {len(a)} and {len(b)} values")
@@ -1436,16 +1428,15 @@ def bounded_mean_lower_bound(
     the rejected nulls are an interval from the bottom of the range, and bisection finds its end. The bound
     returned is the largest null found rejected, so it sits at or below the exact one: rounding only widens.
 
-    Args:
-        values: The observations, in an order fixed before they were seen, each inside ``value_range``.
-        value_range: The declared inclusive bounds.
-        alpha: The one-sided error rate.
-
-    Returns:
-        The bound, in ``[low, high]``.
-
-    Raises:
-        ValueError: The range is empty, or a value lies outside it (:func:`bounded_mean_p`).
+    :param values: The observations, in an order fixed before they were seen, each inside ``value_range``.
+    :ptype values: Sequence[float | Fraction]
+    :param value_range: The declared inclusive bounds.
+    :ptype value_range: tuple[float, float]
+    :param alpha: The one-sided error rate.
+    :ptype alpha: float
+    :return: The bound, in ``[low, high]``.
+    :rtype: float
+    :raises ValueError: The range is empty, or a value lies outside it (:func:`bounded_mean_p`).
     """
     scaled = _scaled_to_unit(values, value_range)
     stakes = _plug_in_stakes(scaled, alpha)
@@ -1491,15 +1482,18 @@ def bounded_difference_interval(
     width. Unpaired, each arm's mean is bounded on the range at half that rate (Bonferroni), and the difference's
     bound is the gap between them: wider, and valid with no assumption about how the two arms relate.
 
-    Args:
-        sample_a: The control's per-case values, in a fixed case order.
-        sample_b: The arm's, aligned with ``sample_a`` when ``paired``.
-        paired: Whether the two are one-to-one on the same cases.
-        value_range: The reading's declared inclusive bounds.
-        confidence: The two-sided coverage.
-
-    Returns:
-        ``(low, high)``, or None with fewer than two values a side, or a value outside the declared range.
+    :param sample_a: The control's per-case values, in a fixed case order.
+    :ptype sample_a: Sequence[float | Fraction]
+    :param sample_b: The arm's, aligned with ``sample_a`` when ``paired``.
+    :ptype sample_b: Sequence[float | Fraction]
+    :param paired: Whether the two are one-to-one on the same cases.
+    :ptype paired: bool
+    :param value_range: The reading's declared inclusive bounds.
+    :ptype value_range: tuple[float, float]
+    :param confidence: The two-sided coverage.
+    :ptype confidence: float
+    :return: ``(low, high)``, or None with fewer than two values a side, or a value outside the declared range.
+    :rtype: tuple[float, float] | None
     """
     if len(sample_a) < 2 or len(sample_b) < 2:
         return None
@@ -1547,17 +1541,21 @@ def guardrail_decision(
     (:func:`difference_interval`) is still read for a breach, which blocks an arm rather than clearing one; a
     reading the t interval would have called held is ``undecided``, saying why and naming the remedy.
 
-    Args:
-        control: The control's per-case values, in a fixed case order.
-        contrast: The arm's, aligned with ``control`` when ``paired``.
-        paired: Whether the two are one-to-one on the same cases.
-        margin: The reading's declared margin, in its units, or None when it declares none.
-        higher_is_better: Which way is better on the reading.
-        value_range: The reading's declared inclusive bounds, or None when it declares none.
-
-    Returns:
-        The decision, the interval it read (None when none exists), the interval's basis, and the refusal when
+    :param control: The control's per-case values, in a fixed case order.
+    :ptype control: Sequence[float]
+    :param contrast: The arm's, aligned with ``control`` when ``paired``.
+    :ptype contrast: Sequence[float]
+    :param paired: Whether the two are one-to-one on the same cases.
+    :ptype paired: bool
+    :param margin: The reading's declared margin, in its units, or None when it declares none.
+    :ptype margin: float | None
+    :param higher_is_better: Which way is better on the reading.
+    :ptype higher_is_better: bool
+    :param value_range: The reading's declared inclusive bounds, or None when it declares none.
+    :ptype value_range: tuple[float, float] | None
+    :return: The decision, the interval it read (None when none exists), the interval's basis, and the refusal when
         the rule itself declined to decide.
+    :rtype: GuardrailVerdict
     """
     if value_range is not None:
         interval = bounded_difference_interval(control, contrast, paired=paired, value_range=value_range)
@@ -1618,14 +1616,16 @@ def separation_test(
     (:func:`exact_decimal`): over floats a constant shift such as ``i/10`` against ``i/10 + 0.5`` carries a residue
     a t-test reads as a tiny, perfectly consistent spread, with a p near 1e-113.
 
-    Args:
-        sample_a: One side's per-case values.
-        sample_b: The other's, aligned with ``sample_a`` when ``paired``.
-        paired: Whether the two are one-to-one on the same cases.
-        value_range: The reading's declared inclusive bounds, or None when it declares none.
-
-    Returns:
-        The :class:`SeparationTest`.
+    :param sample_a: One side's per-case values.
+    :ptype sample_a: Sequence[float | Fraction]
+    :param sample_b: The other's, aligned with ``sample_a`` when ``paired``.
+    :ptype sample_b: Sequence[float | Fraction]
+    :param paired: Whether the two are one-to-one on the same cases.
+    :ptype paired: bool
+    :param value_range: The reading's declared inclusive bounds, or None when it declares none.
+    :ptype value_range: tuple[float, float] | None
+    :return: The :class:`SeparationTest`.
+    :rtype: SeparationTest
     """
     a = [exact_decimal(x) for x in sample_a]
     b = [exact_decimal(y) for y in sample_b]
@@ -1653,16 +1653,18 @@ def separation_p(
 ) -> float | None:
     """The two-sided p of the separation test between two samples (:func:`separation_test`), where one ran.
 
-    Args:
-        sample_a: One side's per-case values.
-        sample_b: The other's, aligned with ``sample_a`` when ``paired``.
-        paired: Whether the two are one-to-one on the same cases.
-        value_range: The reading's declared inclusive bounds, or None when it declares none.
-
-    Returns:
-        The p, or ``None`` where no test ran: fewer than two values a side, paired samples of different lengths,
+    :param sample_a: One side's per-case values.
+    :ptype sample_a: Sequence[float | Fraction]
+    :param sample_b: The other's, aligned with ``sample_a`` when ``paired``.
+    :ptype sample_b: Sequence[float | Fraction]
+    :param paired: Whether the two are one-to-one on the same cases.
+    :ptype paired: bool
+    :param value_range: The reading's declared inclusive bounds, or None when it declares none.
+    :ptype value_range: tuple[float, float] | None
+    :return: The p, or ``None`` where no test ran: fewer than two values a side, paired samples of different lengths,
         a spread that vanishes in floating point, or no spread on a reading with no declared range (or with a value
         outside it) — :func:`separation_test`'s ``refusal`` says which of the last two.
+    :rtype: float | None
     """
     return separation_test(sample_a, sample_b, paired=paired, value_range=value_range).p
 
@@ -1772,17 +1774,17 @@ def bounded_mean_p(
     seen: twelve leaks listed last of fifty read an interval on the difference of ``[-0.107, -0.095]`` around a
     true ``-0.24``. A fixed shuffle keeps the test reproducible and makes any listing order an equally valid one.
 
-    Args:
-        values: The observations, each inside ``value_range``.
-        null_mean: The largest mean H0 allows.
-        value_range: The declared inclusive bounds every observation lies in.
-        alpha: The level the stake is tuned for.
-
-    Returns:
-        The p, in ``[0, 1]``.
-
-    Raises:
-        ValueError: The range is empty, or a value lies outside it.
+    :param values: The observations, each inside ``value_range``.
+    :ptype values: Sequence[float | Fraction]
+    :param null_mean: The largest mean H0 allows.
+    :ptype null_mean: float | Fraction
+    :param value_range: The declared inclusive bounds every observation lies in.
+    :ptype value_range: tuple[float, float]
+    :param alpha: The level the stake is tuned for.
+    :ptype alpha: float
+    :return: The p, in ``[0, 1]``.
+    :rtype: float
+    :raises ValueError: The range is empty, or a value lies outside it.
     """
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
     scaled = _scaled_to_unit(values, value_range)
@@ -1792,8 +1794,7 @@ def bounded_mean_p(
 def _scaled_to_unit(values: Sequence[float | Fraction], value_range: tuple[float, float]) -> list[float]:
     """Values checked exactly against their declared range, then rescaled to ``[0, 1]`` for the betting.
 
-    Raises:
-        ValueError: The range is empty, or a value lies outside it.
+    :raises ValueError: The range is empty, or a value lies outside it.
     """
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
     if high <= low:
@@ -1867,8 +1868,8 @@ def paired_equivalence(
     The price is the truth about coarse data: no valid test can show a mean inside a margin that is small
     against the range from a few cases. Even n cases that all agree give p ``(1 − margin / width) ** n`` at
     best (one case in ``width / margin`` could have dropped the full width unseen), so 1-5 rubric
-    differences (width 4) within 0.5 need 23 agreeing pairs under any valid test, and 26 under this one. Below that the test
-    still runs and its p says the data could not show equivalence, which claims nothing either way.
+    differences (width 4) within 0.5 need 23 agreeing pairs under any valid test, and 26 under this one. Below that the
+    test still runs and its p says the data could not show equivalence, which claims nothing either way.
 
     **Without a declared range nothing is tested** (:data:`EQUIVALENCE_NEEDS_RANGE`). There is no
     finite-sample-valid test of a mean then (Bahadur and Savage 1956: an unbounded value can hide a rare large
@@ -1876,16 +1877,17 @@ def paired_equivalence(
     nominal 5% on skewed coarse values (#695). An ``equivalent`` reading is the one claim that two arms are
     alike, so it is never made at an error rate above α: a measure with a margin declares its range to be tested.
 
-    Args:
-        diffs: The paired differences, current minus baseline, in a fixed case order — exact
-            (:class:`~fractions.Fraction`) where the caller read its samples exactly.
-        margin: The declared margin, or None.
-        value_range: The measure's declared inclusive bounds, or None when it declares none.
-
-    Returns:
-        ``(equivalent, p)``. Both None when no test could decide: no positive margin, no declared range
+    :param diffs: The paired differences, current minus baseline, in a fixed case order — exact
+        (:class:`~fractions.Fraction`) where the caller read its samples exactly.
+    :ptype diffs: Sequence[float | Fraction]
+    :param margin: The declared margin, or None.
+    :ptype margin: float | None
+    :param value_range: The measure's declared inclusive bounds, or None when it declares none.
+    :ptype value_range: tuple[float, float] | None
+    :return: ``(equivalent, p)``. Both None when no test could decide: no positive margin, no declared range
         (:func:`equivalence_untested_reason` says so), fewer than two pairs, or a difference outside ± the
         range's width (the declared range is contradicted, so its bound is not a bound).
+    :rtype: tuple[bool | None, float | None]
     """
     n = len(diffs)
     if margin is None or margin <= 0.0 or value_range is None or n < 2:
@@ -1923,16 +1925,19 @@ def bounded_separation_p(
     twice the smaller direction's. Valid for every distribution on the range, which a t-test on coarse values is
     not, and the test that reads a move with no spread, where no t exists (:func:`separation_test`).
 
-    Args:
-        sample_a: One side's per-case values, in a fixed case order.
-        sample_b: The other's, aligned with ``sample_a`` when ``paired``.
-        paired: Whether the two are one-to-one on the same cases.
-        value_range: The reading's declared inclusive bounds.
-        alpha: The two-sided level the stakes are tuned for; the p is valid whatever it is.
-
-    Returns:
-        The p, in ``[0, 1]``; None with fewer than two values a side, paired samples of different lengths, or a value
-        outside the declared range.
+    :param sample_a: One side's per-case values, in a fixed case order.
+    :ptype sample_a: Sequence[float | Fraction]
+    :param sample_b: The other's, aligned with ``sample_a`` when ``paired``.
+    :ptype sample_b: Sequence[float | Fraction]
+    :param paired: Whether the two are one-to-one on the same cases.
+    :ptype paired: bool
+    :param value_range: The reading's declared inclusive bounds.
+    :ptype value_range: tuple[float, float]
+    :param alpha: The two-sided level the stakes are tuned for; the p is valid whatever it is.
+    :ptype alpha: float
+    :return: The p, in ``[0, 1]``; None with fewer than two values a side, paired samples of different lengths, or a
+        value outside the declared range.
+    :rtype: float | None
     """
     a = [exact_decimal(v) for v in sample_a]
     b = [exact_decimal(v) for v in sample_b]
@@ -2000,35 +2005,38 @@ def paired_change(
     the same margin a bar's verdict is read against. Only the margin licenses a
     claim of no meaningful change.
 
-    Args:
-        baseline: Earlier run's per-case values.
-        current: Later run's per-case values, aligned one-to-one with ``baseline``.
-        min_absolute_change: Smallest absolute change that counts, in the measure's
-            own unit. ``0.0`` turns the absolute gate off.
-        min_relative_change: Smallest change relative to the baseline mean that
-            counts, as a fraction. ``0.0`` turns the relative gate off. On a zero
-            baseline a nonzero move reads as an unbounded change and clears it.
-        higher_is_better: The measure's direction — ``True`` for quality (a decline
-            is the regression), ``False`` for cost/latency (an increase is).
-        equivalence_margin: The measure's declared margin, in its own unit, or None
-            when it declares none — then no equivalence test runs and no label
-            claims one.
-        value_range: The measure's declared inclusive bounds, or None. The equivalence test reads it
-            (:func:`paired_equivalence`): on a declared range its error rate holds at every n, and with
-            none it does not run, so the move never reads ``"equivalent"`` and the verdict carries
-            :data:`EQUIVALENCE_NEEDS_RANGE` as its ``equivalence_untested_reason``.
-
-    Returns:
-        A :class:`ChangeVerdict`. ``delta``/``relative_delta`` are ``None`` only
+    :param baseline: Earlier run's per-case values.
+    :ptype baseline: list[float]
+    :param current: Later run's per-case values, aligned one-to-one with ``baseline``.
+    :ptype current: list[float]
+    :param min_absolute_change: Smallest absolute change that counts, in the measure's
+        own unit. ``0.0`` turns the absolute gate off.
+    :ptype min_absolute_change: float
+    :param min_relative_change: Smallest change relative to the baseline mean that
+        counts, as a fraction. ``0.0`` turns the relative gate off. On a zero
+        baseline a nonzero move reads as an unbounded change and clears it.
+    :ptype min_relative_change: float
+    :param higher_is_better: The measure's direction — ``True`` for quality (a decline
+        is the regression), ``False`` for cost/latency (an increase is).
+    :ptype higher_is_better: bool
+    :param equivalence_margin: The measure's declared margin, in its own unit, or None
+        when it declares none — then no equivalence test runs and no label
+        claims one.
+    :ptype equivalence_margin: float | None
+    :param value_range: The measure's declared inclusive bounds, or None. The equivalence test reads it
+        (:func:`paired_equivalence`): on a declared range its error rate holds at every n, and with
+        none it does not run, so the move never reads ``"equivalent"`` and the verdict carries
+        :data:`EQUIVALENCE_NEEDS_RANGE` as its ``equivalence_untested_reason``.
+    :ptype value_range: tuple[float, float] | None
+    :return: A :class:`ChangeVerdict`. ``delta``/``relative_delta`` are ``None`` only
         when there are no pairs; ``significant`` is ``None`` below two pairs.
         ``p_value`` is the p the label was thresholded against, and is ``None``
         wherever the t-test was not evaluated — so a reader can tell a label that
         came from a test from one reasoned around it. ``equivalence_p`` is the same
         for the equivalence test.
-
-    Raises:
-        ValueError: The samples are not the same length — they must be pre-aligned
-            by the caller, and a length mismatch is a pairing bug, not missing data.
+    :rtype: ChangeVerdict
+    :raises ValueError: The samples are not the same length — they must be pre-aligned
+        by the caller, and a length mismatch is a pairing bug, not missing data.
     """
     if len(baseline) != len(current):
         raise ValueError(f"paired_change requires samples aligned one-to-one; got {len(baseline)} vs {len(current)}")
@@ -2188,18 +2196,20 @@ def level_difference[Case: Hashable](
     difference is the same decimal must not acquire a float residue a t-test would read as a tiny spread. A
     :class:`~fractions.Fraction` passes through, so a caller that averaged repeats exactly keeps that mean.
 
-    Args:
-        values_a: Case -> its value at the first level.
-        values_b: Case -> its value at the second level.
-        equivalence_margin: The measure's declared margin, or None. With one, a paired difference is also
-            tested for equivalence (:func:`paired_equivalence`); an unpaired one never is.
-        value_range: The quantity's declared inclusive bounds, or None. The equivalence test reads it
-            (:func:`paired_equivalence`): on a declared range its error rate holds at every n; with none
-            no equivalence test runs. A difference with no spread is read by the bounded test on it, and with
-            none is not separated.
-
-    Returns:
-        A :class:`LevelDifference`.
+    :param values_a: Case -> its value at the first level.
+    :ptype values_a: Mapping[Case, float | Fraction]
+    :param values_b: Case -> its value at the second level.
+    :ptype values_b: Mapping[Case, float | Fraction]
+    :param equivalence_margin: The measure's declared margin, or None. With one, a paired difference is also
+        tested for equivalence (:func:`paired_equivalence`); an unpaired one never is.
+    :ptype equivalence_margin: float | None
+    :param value_range: The quantity's declared inclusive bounds, or None. The equivalence test reads it
+        (:func:`paired_equivalence`): on a declared range its error rate holds at every n; with none
+        no equivalence test runs. A difference with no spread is read by the bounded test on it, and with
+        none is not separated.
+    :ptype value_range: tuple[float, float] | None
+    :return: A :class:`LevelDifference`.
+    :rtype: LevelDifference
     """
     shared = [case for case in values_a if case in values_b]
     paired = len(shared) >= 2
@@ -2350,16 +2360,14 @@ def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tu
     Repeats of one case are not: where cases cost differently and each is repeated, the history's spread
     and the sweep's both cluster, and the band is narrower than it should be.
 
-    Args:
-        history: Past observations, each positive.
-        n_future: How many new observations the total sums, at least one.
-
-    Returns:
-        ``(low, high)``, or ``None`` with fewer than two observations or any that is not positive — the
+    :param history: Past observations, each positive.
+    :ptype history: Sequence[float]
+    :param n_future: How many new observations the total sums, at least one.
+    :ptype n_future: int
+    :return: ``(low, high)``, or ``None`` with fewer than two observations or any that is not positive — the
         log scale cannot read a zero, and a caller that has some falls back to a band that can.
-
-    Raises:
-        ValueError: ``n_future`` is below one.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: ``n_future`` is below one.
     """
     if n_future < 1:
         raise ValueError(f"a prediction needs at least one future observation, got {n_future}")
@@ -2435,17 +2443,17 @@ def paired_t_power(n_pairs: int, effect: float, difference_sd: float, *, alpha: 
     cost band integrates over. Exact for normal differences up to that quadrature (under 0.2 points of power
     against a 4,000-panel Simpson integral, ``tests/test_power_preflight.py``).
 
-    Args:
-        n_pairs: The pairs the test reads, at least two.
-        effect: The true mean difference.
-        difference_sd: The true standard deviation of one pair's difference, positive.
-        alpha: The two-sided level the test rejects at.
-
-    Returns:
-        The probability the test rejects.
-
-    Raises:
-        ValueError: Fewer than two pairs, or a spread that is not positive.
+    :param n_pairs: The pairs the test reads, at least two.
+    :ptype n_pairs: int
+    :param effect: The true mean difference.
+    :ptype effect: float
+    :param difference_sd: The true standard deviation of one pair's difference, positive.
+    :ptype difference_sd: float
+    :param alpha: The two-sided level the test rejects at.
+    :ptype alpha: float
+    :return: The probability the test rejects.
+    :rtype: float
+    :raises ValueError: Fewer than two pairs, or a spread that is not positive.
     """
     if n_pairs < 2:
         raise ValueError(f"a paired t-test needs at least two pairs, got {n_pairs}")
@@ -2470,18 +2478,18 @@ def paired_detectable_difference(
     The inverse of :func:`paired_t_power` in the effect, by bisection: the power rises monotonically in
     ``|effect|``. It is in the unit of ``difference_sd``.
 
-    Args:
-        n_pairs: The pairs the test reads, at least two.
-        difference_sd: The standard deviation of one pair's difference, positive.
-        alpha: The two-sided level each comparison is rejected at — ``α/m`` for the first step of Holm's
-            correction over ``m`` comparisons.
-        power: The power the difference is found with.
-
-    Returns:
-        The difference.
-
-    Raises:
-        ValueError: As :func:`paired_t_power`, or a ``power`` outside ``(alpha, 1)``.
+    :param n_pairs: The pairs the test reads, at least two.
+    :ptype n_pairs: int
+    :param difference_sd: The standard deviation of one pair's difference, positive.
+    :ptype difference_sd: float
+    :param alpha: The two-sided level each comparison is rejected at — ``α/m`` for the first step of Holm's
+        correction over ``m`` comparisons.
+    :ptype alpha: float
+    :param power: The power the difference is found with.
+    :ptype power: float
+    :return: The difference.
+    :rtype: float
+    :raises ValueError: As :func:`paired_t_power`, or a ``power`` outside ``(alpha, 1)``.
     """
     if not alpha < power < 1.0:
         raise ValueError(f"power must lie between alpha and 1, got {power}")
@@ -2525,12 +2533,11 @@ def variance_components(runs: Sequence[Sequence[Sequence[float]]]) -> VarianceCo
     ``1/k`` over its cases), floored at zero, and pooled over runs by ``cases − 1``. A run is one arm, so its
     case means vary only by case and by repeat noise; two arms are never pooled into one case's level.
 
-    Args:
-        runs: Per run, per case, the values of that case's repeats.
-
-    Returns:
-        The components, or ``None`` when fewer than two cases were repeated (no within-case spread can be
+    :param runs: Per run, per case, the values of that case's repeats.
+    :ptype runs: Sequence[Sequence[Sequence[float]]]
+    :return: The components, or ``None`` when fewer than two cases were repeated (no within-case spread can be
         told from case-to-case spread then) or no run carries two cases.
+    :rtype: VarianceComponents | None
     """
     within_ss = 0.0
     within_df = 0
@@ -2573,12 +2580,12 @@ def paired_case_variance(
     sides' repeat noise; the noise's share, ``within_case · (1/k_a + 1/k_b)`` averaged over the cases, is taken
     out of the differences' sample variance, floored at zero, and the pairs pooled by ``cases − 1``.
 
-    Args:
-        pairs: Per pair of runs, ``(one run's cases, the other's)``, case-aligned, each case its repeats' values.
-        within_case: The pooled within-case variance (:func:`variance_components`).
-
-    Returns:
-        ``(variance, cases behind it)``, or ``None`` when no pair shares two cases.
+    :param pairs: Per pair of runs, ``(one run's cases, the other's)``, case-aligned, each case its repeats' values.
+    :ptype pairs: Sequence[tuple[Sequence[Sequence[float]], Sequence[Sequence[float]]]]
+    :param within_case: The pooled within-case variance (:func:`variance_components`).
+    :ptype within_case: float
+    :return: ``(variance, cases behind it)``, or ``None`` when no pair shares two cases.
+    :rtype: tuple[float, int] | None
     """
     weighted = 0.0
     df = 0

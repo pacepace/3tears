@@ -38,16 +38,15 @@ class NotLogged(ApparatusError):
 class Log:
     """A runner whose outputs an app pushed to a JSONL file, and the call that pushes one.
 
-    Attributes:
-        path: The file.
+    :ivar path: The file.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
         """Name the file the outputs are logged to and read from.
 
-        Args:
-            path: The JSONL file; created on the first output logged. A relative path is read beside the eval file
-                being loaded, else in the working directory.
+        :param path: The JSONL file; created on the first output logged. A relative path is read beside the eval file
+            being loaded, else in the working directory.
+        :ptype path: str | os.PathLike[str]
         """
         self.path = beside_eval_file(path)
         self._lock = threading.Lock()
@@ -61,14 +60,15 @@ class Log:
     ) -> None:
         """Log one output for one case: one repeat of it.
 
-        Args:
-            case: The case it answers, named by its ``id``.
-            output: The output, a JSON value.
-            cost_usd: What producing it cost, in US dollars; ``None`` when unpriced, which the run states.
-            model: The model that produced it, when there was one.
-
-        Raises:
-            ValueError: A case with no ``id``, an output JSON cannot hold, or a spend no usage row can hold.
+        :param case: The case it answers, named by its ``id``.
+        :ptype case: Mapping[str, Any]
+        :param output: The output, a JSON value.
+        :ptype output: Any
+        :param cost_usd: What producing it cost, in US dollars; ``None`` when unpriced, which the run states.
+        :ptype cost_usd: float | None
+        :param model: The model that produced it, when there was one.
+        :ptype model: str | None
+        :raises ValueError: A case with no ``id``, an output JSON cannot hold, or a spend no usage row can hold.
         """
         name = case.get("id") if isinstance(case, Mapping) else None
         if isinstance(name, bool) or not isinstance(name, str | int) or not str(name).strip():
@@ -87,11 +87,9 @@ class Log:
     def outputs(self) -> dict[str, list[Answer]]:
         """Every output logged, by case id, in the order the file holds them.
 
-        Returns:
-            Each case's outputs, as answers carrying their spend; empty when nothing has been logged yet.
-
-        Raises:
-            ValueError: A line that is not a JSON object with a non-blank ``id`` and an ``output``, named by number.
+        :return: Each case's outputs, as answers carrying their spend; empty when nothing has been logged yet.
+        :rtype: dict[str, list[Answer]]
+        :raises ValueError: A line that is not a JSON object with a non-blank ``id`` and an ``output``, named by number.
         """
         if not self.path.is_file():
             return {}
@@ -115,13 +113,14 @@ class Log:
     def runner(self, logged: Mapping[str, list[Answer]], case: str, repeat: int) -> Any:
         """The runner one cell is served by: the ``repeat``-th output logged for ``case``, or its gap.
 
-        Args:
-            logged: What :meth:`outputs` read when the run started.
-            case: The case's name.
-            repeat: Which repeat the cell is, from 1.
-
-        Returns:
-            An async function of the case returning the output.
+        :param logged: What :meth:`outputs` read when the run started.
+        :ptype logged: Mapping[str, list[Answer]]
+        :param case: The case's name.
+        :ptype case: str
+        :param repeat: Which repeat the cell is, from 1.
+        :ptype repeat: int
+        :return: An async function of the case returning the output.
+        :rtype: Any
         """
         held = logged.get(case, [])
 

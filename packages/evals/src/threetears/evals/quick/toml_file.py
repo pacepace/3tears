@@ -66,8 +66,7 @@ def _refuse(path: Path, problem: str) -> ValueError:
 def _placeholders(path: Path, prompt: str) -> list[str]:
     """The fields ``{field}`` a prompt fills from each case, refusing a placeholder that names no field.
 
-    Raises:
-        ValueError: A placeholder that is not a field's name (``{0}``, ``{a.b}``, ``{x!r}``).
+    :raises ValueError: A placeholder that is not a field's name (``{0}``, ``{a.b}``, ``{x!r}``).
     """
     fields: list[str] = []
     try:
@@ -88,9 +87,8 @@ def _placeholders(path: Path, prompt: str) -> list[str]:
 def _output_model(path: Path, output: Any) -> type[BaseModel]:
     """The answer's model, from ``[runner.output]``.
 
-    Raises:
-        ValueError: An output that is not a table, a field of no known type name, or a list of values that are not
-            non-blank strings.
+    :raises ValueError: An output that is not a table, a field of no known type name, or a list of values that are not
+        non-blank strings.
     """
     if not isinstance(output, Mapping) or not output:
         raise _refuse(path, "runner.output is a table of field = type name, or field = [allowed values]")
@@ -117,8 +115,7 @@ def _output_model(path: Path, output: Any) -> type[BaseModel]:
 def _prompt_runner(path: Path, runner: Any, recording: Path | None) -> Any:
     """The runner ``[runner]`` declares: the model answering the prompt, filled from each case.
 
-    Raises:
-        ValueError: A runner that is not a table of ``model``, ``prompt`` and, optionally, ``output``.
+    :raises ValueError: A runner that is not a table of ``model``, ``prompt`` and, optionally, ``output``.
     """
     if not isinstance(runner, Mapping) or set(runner) - {"model", "prompt", "output"}:
         raise _refuse(path, "runner is a table of model, prompt and, optionally, output")
@@ -145,8 +142,7 @@ def _prompt_runner(path: Path, runner: Any, recording: Path | None) -> Any:
 def _graders(path: Path, graders: Any, recording: Path | None) -> list[Any]:
     """The graders ``grader`` lists: names and expressions as given, and a ``{judge = {...}}`` as a Judge.
 
-    Raises:
-        ValueError: A grader that is neither a string nor a ``judge`` table, or a judge with no model or rubric.
+    :raises ValueError: A grader that is neither a string nor a ``judge`` table, or a judge with no model or rubric.
     """
     listed = graders if isinstance(graders, list) else [graders]
     built: list[Any] = []
@@ -179,15 +175,12 @@ def _judge_recording(recording: Path | None, index: int) -> Path | None:
 def load_toml(path: str | Path) -> Eval:
     """The eval a TOML file declares.
 
-    Args:
-        path: The file.
-
-    Returns:
-        The eval, not yet run.
-
-    Raises:
-        ValueError: A file that is not TOML, a key it does not take, a slot missing or malformed, a case lacking a
-            field the prompt fills, or anything the eval refuses — each naming the file.
+    :param path: The file.
+    :ptype path: str | Path
+    :return: The eval, not yet run.
+    :rtype: Eval
+    :raises ValueError: A file that is not TOML, a key it does not take, a slot missing or malformed, a case lacking a
+        field the prompt fills, or anything the eval refuses — each naming the file.
     """
     path = Path(path)
     try:

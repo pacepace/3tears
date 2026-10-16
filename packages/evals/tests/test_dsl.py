@@ -23,11 +23,10 @@ def _state_with(**dimensions: dict[str, Any]) -> dict[str, Any]:
     ``shop`` dimension and addresses ``cart`` inside its value — the longest-declared-prefix rule a
     real host's world resolves by. Calls go on ``["ledger"]``.
 
-    Args:
-        **dimensions: Dimension name -> its value.
-
-    Returns:
-        ``end_state``, ``ledger`` and ``world``, ready to splat into :func:`evaluate`.
+    :param **dimensions: Dimension name -> its value.
+    :ptype dimensions: dict[str, Any]
+    :return: ``end_state``, ``ledger`` and ``world``, ready to splat into :func:`evaluate`.
+    :rtype: dict[str, Any]
     """
     world = WorldRegistry(
         [
@@ -81,11 +80,10 @@ def _shop_world(*, composed: bool) -> WorldRegistry:
     Flat: ``stock`` and ``float``, each key naming its dimension as it is. Composed: ``shelf.stock`` and
     ``till.float``, the carrier composed in by the addressing the registry declares.
 
-    Args:
-        composed: Whether the names compose the carrier in.
-
-    Returns:
-        The registry.
+    :param composed: Whether the names compose the carrier in.
+    :ptype composed: bool
+    :return: The registry.
+    :rtype: WorldRegistry
     """
 
     def named(carrier: str, key: str) -> str:
@@ -953,8 +951,8 @@ def _docstring_examples() -> list[str]:
     module owes extraction over. Derived rather than transcribed: a hand-copied list stops
     matching the docstring the first time somebody documents a new form, and nothing says so.
 
-    Returns:
-        The example expressions, in the order they are documented.
+    :return: The example expressions, in the order they are documented.
+    :rtype: list[str]
     """
     assert _grammar.__doc__, "the dsl module docstring is the corpus these tests read"
     return [

@@ -96,11 +96,10 @@ def engine_reaches(source_root: Path) -> Iterator[str]:
     one ``quick`` makes inside a function body: the batteries build the client's ``Model`` where an eval names a model
     by id, so importing ``quick`` loads no client (:func:`test_importing_every_other_root_loads_no_client`).
 
-    Args:
-        source_root: The directory holding the ``threetears`` namespace; ``threetears/evals`` below it is walked.
-
-    Yields:
-        ``path:line: what`` for each reach.
+    :param source_root: The directory holding the ``threetears`` namespace; ``threetears/evals`` below it is walked.
+    :ptype source_root: Path
+    :yield: ``path:line: what`` for each reach.
+    :rtype: Iterator[str]
     """
     root = source_root / "threetears" / "evals"
     for path in sorted(root.rglob("*.py")):
@@ -139,12 +138,12 @@ def engine_reaches(source_root: Path) -> Iterator[str]:
 def outside_dependencies(path: Path, *, root: Path) -> Iterator[str]:
     """Every module ``path`` names that is neither the standard library, the package, nor a client dependency.
 
-    Args:
-        path: A client source file.
-        root: The directory its dotted names are rooted at.
-
-    Yields:
-        ``line: module`` for each.
+    :param path: A client source file.
+    :ptype path: Path
+    :param root: The directory its dotted names are rooted at.
+    :ptype root: Path
+    :yield: ``line: module`` for each.
+    :rtype: Iterator[str]
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
@@ -174,11 +173,10 @@ def nonpublic_engine_reaches(path: Path) -> Iterator[str]:
     A static walk: ``from M import n`` is a reach unless ``M`` is a public root and ``n`` is in its ``__all__``, and
     ``import M`` is one unless ``M`` is a public root or the package itself.
 
-    Args:
-        path: One source file, or a directory whose ``.py`` files are walked.
-
-    Yields:
-        The dotted name of each reach.
+    :param path: One source file, or a directory whose ``.py`` files are walked.
+    :ptype path: Path
+    :yield: The dotted name of each reach.
+    :rtype: Iterator[str]
     """
     files = sorted(path.rglob("*.py")) if path.is_dir() else [path]
     for file in files:

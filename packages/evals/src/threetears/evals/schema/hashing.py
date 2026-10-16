@@ -38,14 +38,11 @@ def canonical_json(payload: Any) -> str:
     ``model_dump(mode="json")`` output or a plain structure, so an unencodable value is a defect in
     that caller; raising sends it to the caller, which is where a fix belongs rather than a fallback.
 
-    Args:
-        payload: Any JSON-encodable structure.
-
-    Returns:
-        The canonical JSON encoding.
-
-    Raises:
-        UnhashableContentError: ``payload`` holds something JSON cannot encode.
+    :param payload: Any JSON-encodable structure.
+    :ptype payload: Any
+    :return: The canonical JSON encoding.
+    :rtype: str
+    :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
     """
     try:
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -64,11 +61,10 @@ def canonical_digest(payload: Any) -> str:
     grouping keys living in a JSONB column where the extra characters cost
     nothing, and collision headroom matters more than display brevity.
 
-    Args:
-        payload: Any JSON-encodable structure.
-
-    Returns:
-        A 64-character lowercase hex digest.
+    :param payload: Any JSON-encodable structure.
+    :ptype payload: Any
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
     """
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -80,11 +76,10 @@ def bytes_digest(payload: bytes) -> str:
     a structure — an opaque blob a host supplies, where there is no structure to canonicalise
     and running it through JSON would address the *encoding* of the blob rather than the blob.
 
-    Args:
-        payload: The raw bytes.
-
-    Returns:
-        A 64-character lowercase hex digest.
+    :param payload: The raw bytes.
+    :ptype payload: bytes
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
     """
     return hashlib.sha256(payload).hexdigest()
 

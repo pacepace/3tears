@@ -35,10 +35,9 @@ logging.getLogger(PACKAGE_LOGGER).addHandler(logging.NullHandler())
 def get_logger(name: str) -> logging.Logger:
     """Return the logger for a module of this package.
 
-    Args:
-        name: The module's ``__name__``.
-
-    Returns:
-        The stdlib logger of that name.
+    :param name: The module's ``__name__``.
+    :ptype name: str
+    :return: The stdlib logger of that name.
+    :rtype: logging.Logger
     """
     return logging.getLogger(name)

@@ -63,22 +63,24 @@ class ProviderError(Exception):
     request (a key it refuses, credit spent, a quota exhausted): every model behind the key would get the same
     answer, so a run stops instead of charging the candidate.
 
-    Attributes:
-        provider: The provider that answered.
-        status: The HTTP status, or the code an in-body error named (OpenRouter answers some failures with a 200).
-        message: The provider's own message, or ``None`` when its answer carried none.
-        account: Whether the account was refused: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
-            402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``.
+    :ivar provider: The provider that answered.
+    :ivar status: The HTTP status, or the code an in-body error named (OpenRouter answers some failures with a 200).
+    :ivar message: The provider's own message, or ``None`` when its answer carried none.
+    :ivar account: Whether the account was refused: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
+        402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``.
     """
 
     def __init__(self, provider: Provider, status: int, message: str | None, *, body: object = None) -> None:
         """Name the failure; ``body`` is kept for :meth:`refusal` alone and never shown.
 
-        Args:
-            provider: The provider that answered.
-            status: The HTTP status, or an in-body error's code.
-            message: The provider's own message, or ``None``.
-            body: The response body, parsed or as text, which the refusal readers read.
+        :param provider: The provider that answered.
+        :ptype provider: Provider
+        :param status: The HTTP status, or an in-body error's code.
+        :ptype status: int
+        :param message: The provider's own message, or ``None``.
+        :ptype message: str | None
+        :param body: The response body, parsed or as text, which the refusal readers read.
+        :ptype body: object
         """
         self.provider: Provider = provider
         self.status = status
@@ -102,8 +104,8 @@ class ProviderError(Exception):
         What the negotiation answers with a resend (:func:`~threetears.evals.negotiation.negotiate`): a refusal of a
         setting the request carried. Anything else (``None``) is raised as it came.
 
-        Returns:
-            The refusal, or ``None``.
+        :return: The refusal, or ``None``.
+        :rtype: SettingRefusal | None
         """
         if self.provider == "openrouter":
             return read_router_refusal(self.status, self._body)
@@ -115,13 +117,14 @@ class ProviderError(Exception):
 def error_from_response(provider: Provider, status: int, body: object) -> ProviderError:
     """The error for a response the provider answered with a failure, its message read off the body.
 
-    Args:
-        provider: The provider that answered.
-        status: The HTTP status (or an in-body error's code).
-        body: The body, parsed or as text.
-
-    Returns:
-        The error to raise.
+    :param provider: The provider that answered.
+    :ptype provider: Provider
+    :param status: The HTTP status (or an in-body error's code).
+    :ptype status: int
+    :param body: The body, parsed or as text.
+    :ptype body: object
+    :return: The error to raise.
+    :rtype: ProviderError
     """
     parsed = _parsed(body)
     message = _error_object(parsed).get("message")
@@ -139,11 +142,10 @@ def describe_failure(exc: BaseException) -> ProviderFailure:
     names the schema and the first error, leaving out the reply itself. Anything else is withheld, since its text is
     unknown, as :func:`~threetears.evals.kernel.withhold_failure_detail` does.
 
-    Args:
-        exc: Whatever the client raised, or anything else the engine caught around the call.
-
-    Returns:
-        The failure as the engine may record it.
+    :param exc: Whatever the client raised, or anything else the engine caught around the call.
+    :ptype exc: BaseException
+    :return: The failure as the engine may record it.
+    :rtype: ProviderFailure
     """
     if isinstance(exc, ProviderError):
         return ProviderFailure(str(exc), payload_withheld=False, account_refused=exc.account)

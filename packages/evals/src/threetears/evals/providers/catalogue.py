@@ -111,13 +111,12 @@ class PriceRefresh:
     A host writes its own pricing-outage line from it: a ``failure`` with no ``fetched_at`` is a first read that
     failed, so no model can be priced; one with a ``fetched_at`` is a refresh that failed, the rows read then kept.
 
-    Attributes:
-        refreshed: Whether the read fetched the rows anew (by itself, or by a load in flight it shared); ``False``
-            when the rows held were young enough to keep, when the fetch failed, and while replaying.
-        fetched_at: When the rows the catalogue now holds were fetched (UTC), or ``None`` while it holds none.
-        failure: Why the prices are not current, naming the error's class and message: the first read failed
-            (``fetched_at`` is ``None``), or the last refresh did and the rows held are stale
-            (:attr:`Catalogue.refresh_failure`). ``None`` when they are current, and while replaying.
+    :ivar refreshed: Whether the read fetched the rows anew (by itself, or by a load in flight it shared); ``False``
+        when the rows held were young enough to keep, when the fetch failed, and while replaying.
+    :ivar fetched_at: When the rows the catalogue now holds were fetched (UTC), or ``None`` while it holds none.
+    :ivar failure: Why the prices are not current, naming the error's class and message: the first read failed
+        (``fetched_at`` is ``None``), or the last refresh did and the rows held are stale
+        (:attr:`Catalogue.refresh_failure`). ``None`` when they are current, and while replaying.
     """
 
     refreshed: bool
@@ -140,14 +139,13 @@ class _Row:
 class _Usage:
     """What a reply reports it was billed for, as :meth:`Catalogue.cost` takes it.
 
-    Attributes:
-        input_tokens: Prompt tokens, cache reads and writes included.
-        output_tokens: Completion tokens, reasoning included.
-        reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when the reply does not split it.
-        cache_read_tokens: Prompt tokens read from a cache.
-        cache_write_tokens: Prompt tokens written to a cache, both lifetimes.
-        cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply does not
-            split it.
+    :ivar input_tokens: Prompt tokens, cache reads and writes included.
+    :ivar output_tokens: Completion tokens, reasoning included.
+    :ivar reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when the reply does not split it.
+    :ivar cache_read_tokens: Prompt tokens read from a cache.
+    :ivar cache_write_tokens: Prompt tokens written to a cache, both lifetimes.
+    :ivar cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply does not
+        split it.
     """
 
     input_tokens: int
@@ -311,12 +309,11 @@ class Catalogue:
     that age only when a refresh failed. ``ceiling_stale_after`` below ``refresh_after`` is refused: rows past it
     would not be due a refresh, and no call could be priced.
 
-    Attributes:
-        url: Where the catalogue is read from.
-        refresh_after: How long the rows read are kept before the next load fetches them again.
-        ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them.
-        learned: The request settings providers refused, per provider and model, for every model reading this
-            catalogue (:class:`~threetears.evals.negotiation.LearnedSettings`).
+    :ivar url: Where the catalogue is read from.
+    :ivar refresh_after: How long the rows read are kept before the next load fetches them again.
+    :ivar ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them.
+    :ivar learned: The request settings providers refused, per provider and model, for every model reading this
+        catalogue (:class:`~threetears.evals.negotiation.LearnedSettings`).
     """
 
     def __init__(
@@ -329,17 +326,18 @@ class Catalogue:
     ) -> None:
         """Know nothing yet: nothing is fetched until :meth:`load`.
 
-        Args:
-            url: The catalogue's URL.
-            http: The client to fetch it with (not closed here), or ``None`` to open one for the fetch, with a
-                timeout of :data:`CATALOGUE_FETCH_TIMEOUT_S`. A client handed in keeps its own settings.
-            refresh_after: How long the rows read are kept before the next load fetches them again; zero refreshes
-                on every load.
-            ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them; older, it answers
-                no ceiling. ``None`` is ``refresh_after``; below it is refused.
-
-        Raises:
-            ValueError: ``refresh_after`` is negative, or ``ceiling_stale_after`` is below it.
+        :param url: The catalogue's URL.
+        :ptype url: str
+        :param http: The client to fetch it with (not closed here), or ``None`` to open one for the fetch, with a
+            timeout of :data:`CATALOGUE_FETCH_TIMEOUT_S`. A client handed in keeps its own settings.
+        :ptype http: httpx.AsyncClient | None
+        :param refresh_after: How long the rows read are kept before the next load fetches them again; zero refreshes
+            on every load.
+        :ptype refresh_after: timedelta
+        :param ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them; older, it answers
+            no ceiling. ``None`` is ``refresh_after``; below it is refused.
+        :ptype ceiling_stale_after: timedelta | None
+        :raises ValueError: ``refresh_after`` is negative, or ``ceiling_stale_after`` is below it.
         """
         if refresh_after < timedelta(0):
             raise ValueError(
@@ -392,8 +390,8 @@ class Catalogue:
         """:meth:`load`, saying what it found rather than raising: whether it fetched the rows anew, when the rows
         held were fetched, and why the prices are not current. A first read that fails is logged at WARNING.
 
-        Returns:
-            The outcome (:class:`PriceRefresh`).
+        :return: The outcome (:class:`PriceRefresh`).
+        :rtype: PriceRefresh
         """
         before = self._read_at
         try:
@@ -419,9 +417,8 @@ class Catalogue:
         shorter) tries again; one that succeeds clears the mark. Loads made while one is in flight share it: one
         fetch, whose result or error each of them sees. A caller cancelled while waiting cancels only its own wait.
 
-        Raises:
-            httpx.HTTPError: The first fetch failed or answered with a failure status.
-            ValueError: The first fetch's body is not JSON, or holds no ``data`` list.
+        :raises httpx.HTTPError: The first fetch failed or answered with a failure status.
+        :raises ValueError: The first fetch's body is not JSON, or holds no ``data`` list.
         """
         if self._rows is not None and time.monotonic() < self._due:
             return
@@ -465,9 +462,8 @@ class Catalogue:
     async def _fetch(self) -> dict[str, _Row]:
         """One fetch of the catalogue, read into rows.
 
-        Raises:
-            httpx.HTTPError: The fetch failed or answered with a failure status.
-            ValueError: The body is not JSON, or holds no ``data`` list.
+        :raises httpx.HTTPError: The fetch failed or answered with a failure status.
+        :raises ValueError: The body is not JSON, or holds no ``data`` list.
         """
         if self._http is not None:
             response = await self._http.get(self.url)
@@ -488,11 +484,10 @@ class Catalogue:
     def rates(self, model_id: str) -> tuple[Decimal, Decimal] | None:
         """The model's input and output rates in dollars per token, or ``None`` (not loaded, not listed, unpriced).
 
-        Args:
-            model_id: The catalogue's id for the model (:meth:`match` finds it for a direct provider's id).
-
-        Returns:
-            ``(input, output)`` per token, or ``None``.
+        :param model_id: The catalogue's id for the model (:meth:`match` finds it for a direct provider's id).
+        :ptype model_id: str
+        :return: ``(input, output)`` per token, or ``None``.
+        :rtype: tuple[Decimal, Decimal] | None
         """
         row = self._rows.get(model_id) if self._rows is not None else None
         return row.rates if row is not None else None
@@ -503,14 +498,16 @@ class Catalogue:
         Every price the row lists is bounded (the module docstring says how), or there is no ceiling: never a lower
         one. Rows read ``ceiling_stale_after`` ago or longer bound nothing.
 
-        Args:
-            model_id: The catalogue's id for the model.
-            prompt_tokens: A bound on the call's prompt tokens, which also says which long-context tiers it can reach.
-            output_tokens: The call's output cap, reasoning included.
-
-        Returns:
-            ``(ceiling, None)``, or ``(None, why)``: not loaded, rows too old, no priced row, or a price that cannot
-            be bounded.
+        :param model_id: The catalogue's id for the model.
+        :ptype model_id: str
+        :param prompt_tokens: A bound on the call's prompt tokens, which also says which long-context tiers it can
+            reach.
+        :ptype prompt_tokens: int
+        :param output_tokens: The call's output cap, reasoning included.
+        :ptype output_tokens: int
+        :return: ``(ceiling, None)``, or ``(None, why)``: not loaded, rows too old, no priced row, or a price that
+            cannot be bounded.
+        :rtype: tuple[Decimal | None, str | None]
         """
         if self._rows is None or self._read_at is None:
             return None, "the price catalogue has not been read (await Catalogue.load() or Clients.load_prices())"
@@ -544,19 +541,24 @@ class Catalogue:
         ``pricing_stale_since``). A cache share priced at a rate the row does not list for it (the plain prompt rate,
         or the dearer of two write rates the reply does not split between) is approximate.
 
-        Args:
-            model_id: The catalogue's id for the model.
-            input_tokens: Prompt tokens, cache reads and writes included.
-            output_tokens: Completion tokens, reasoning included.
-            reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when the reply does not split it.
-            cache_read_tokens: Prompt tokens read from a cache.
-            cache_write_tokens: Prompt tokens written to a cache, both lifetimes.
-            cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply does not
-                split it.
-
-        Returns:
-            ``(cost, approximate, None)``, or ``(None, False, why)``: not loaded, no priced row, a price that cannot
-            be read or bounded, or one that applies and that the reply's counts cannot price.
+        :param model_id: The catalogue's id for the model.
+        :ptype model_id: str
+        :param input_tokens: Prompt tokens, cache reads and writes included.
+        :ptype input_tokens: int
+        :param output_tokens: Completion tokens, reasoning included.
+        :ptype output_tokens: int
+        :param reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when the reply does not split it.
+        :ptype reasoning_tokens: int | None
+        :param cache_read_tokens: Prompt tokens read from a cache.
+        :ptype cache_read_tokens: int
+        :param cache_write_tokens: Prompt tokens written to a cache, both lifetimes.
+        :ptype cache_write_tokens: int
+        :param cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply does not
+            split it.
+        :ptype cache_write_1h_tokens: int | None
+        :return: ``(cost, approximate, None)``, or ``(None, False, why)``: not loaded, no priced row, a price that
+            cannot be read or bounded, or one that applies and that the reply's counts cannot price.
+        :rtype: tuple[Decimal | None, bool, str | None]
         """
         if self._rows is None:
             return None, False, "the price catalogue has not been read"
@@ -582,11 +584,10 @@ class Catalogue:
     def supported_parameters(self, model_id: str) -> frozenset[str] | None:
         """The parameters some endpoint of the model takes, or ``None`` when the catalogue does not say.
 
-        Args:
-            model_id: The catalogue's id for the model.
-
-        Returns:
-            The listed parameters, or ``None`` (not loaded, not listed, or listed without them).
+        :param model_id: The catalogue's id for the model.
+        :ptype model_id: str
+        :return: The listed parameters, or ``None`` (not loaded, not listed, or listed without them).
+        :rtype: frozenset[str] | None
         """
         row = self._rows.get(model_id) if self._rows is not None else None
         return row.parameters if row is not None else None
@@ -594,11 +595,10 @@ class Catalogue:
     def max_output_tokens(self, model_id: str) -> int | None:
         """The model's output cap as the catalogue states it, or ``None``.
 
-        Args:
-            model_id: The catalogue's id for the model.
-
-        Returns:
-            The cap, or ``None``.
+        :param model_id: The catalogue's id for the model.
+        :ptype model_id: str
+        :return: The cap, or ``None``.
+        :rtype: int | None
         """
         row = self._rows.get(model_id) if self._rows is not None else None
         return row.max_output_tokens if row is not None else None
@@ -609,13 +609,13 @@ class Catalogue:
         Ids are compared lower case, with dots as dashes and a date suffix left off, so ``claude-haiku-5-5`` matches
         ``anthropic/claude-haiku-5.5``. Variant rows (``:batch``, ``:free``) and aliases (``~…``) never match.
 
-        Args:
-            model_id: The id as the provider names it.
-            vendor: The catalogue's vendor prefix (``anthropic``, ``openai``), or ``None`` for an endpoint whose
-                vendor is unknown (an OpenAI-compatible ``base_url``): then exactly one row of any vendor must match.
-
-        Returns:
-            The catalogue id, or ``None`` (not loaded, no row, or more than one).
+        :param model_id: The id as the provider names it.
+        :ptype model_id: str
+        :param vendor: The catalogue's vendor prefix (``anthropic``, ``openai``), or ``None`` for an endpoint whose
+            vendor is unknown (an OpenAI-compatible ``base_url``): then exactly one row of any vendor must match.
+        :ptype vendor: str | None
+        :return: The catalogue id, or ``None`` (not loaded, no row, or more than one).
+        :rtype: str | None
         """
         if self._rows is None:
             return None

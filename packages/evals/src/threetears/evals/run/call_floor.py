@@ -80,21 +80,20 @@ async def price_subject_call_floor(
     factory in the ``simulator`` role for the planned simulator model. So pass the ``host`` your launcher builds
     both on, and the ``judged_artifact`` your launcher hands ``build_judge_service``.
 
-    Args:
-        host: The host the launcher builds the judge and the simulator client on.
-        request: The arm, as planned.
-        judged_artifact: What the kind's judge reads — the declaration its launcher builds its judge with.
-
-    Returns:
-        The larger of the judge's and the simulated user's floor, flagged a lower bound
+    :param host: The host the launcher builds the judge and the simulator client on.
+    :ptype host: EvalHost
+    :param request: The arm, as planned.
+    :ptype request: LaunchRequest
+    :param judged_artifact: What the kind's judge reads — the declaration its launcher builds its judge with.
+    :ptype judged_artifact: JudgedArtifact
+    :return: The larger of the judge's and the simulated user's floor, flagged a lower bound
         (:attr:`~threetears.evals.run.CallCeiling.lower_bound`); ``None`` for an arm with no plan, or one whose
         plan names neither a judge nor a simulated user bound to speak, or whose clients cannot price a call.
-
-    Raises:
-        ValidationFailedError: The launch's judge-config selection does not fit the template (as
-            :func:`~threetears.evals.run.plan_judge` refuses it).
-        ValueError: The host supplies no completion clients, or a client priced a call at an amount no
-            reservation could hold.
+    :rtype: CallCeiling | None
+    :raises ValidationFailedError: The launch's judge-config selection does not fit the template (as
+        :func:`~threetears.evals.run.plan_judge` refuses it).
+    :raises ValueError: The host supplies no completion clients, or a client priced a call at an amount no
+        reservation could hold.
     """
     plan = request.arm_plan
     if plan is None:
@@ -193,11 +192,10 @@ def _utterance_certain(conversation: ConversationSpec) -> bool:
     begins empty, and an empty round's first speaker is an actor — under either scheduler, since a round that
     has delivered nothing cannot be declared done — whose line is an utterance call.
 
-    Args:
-        conversation: The template's conversation.
-
-    Returns:
-        Whether some round up to the turn limit is bound to call for an utterance.
+    :param conversation: The template's conversation.
+    :ptype conversation: ConversationSpec
+    :return: Whether some round up to the turn limit is bound to call for an utterance.
+    :rtype: bool
     """
     if not conversation.actors:
         return False

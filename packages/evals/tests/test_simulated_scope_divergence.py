@@ -60,8 +60,8 @@ def _sweep(rng: random.Random, *, n_cases: int, whole_shift: float) -> tuple[lis
     ``total_ms`` (the whole) shifts by ``whole_shift`` at the wide level; ``tool_ms`` (the part) does not
     move. Every observation is independent normal noise around its level, and both levels run the same cases.
 
-    Returns:
-        The chunk-width divergences the bundle publishes, and each ``(measure, level)``'s values as written.
+    :return: The chunk-width divergences the bundle publishes, and each ``(measure, level)``'s values as written.
+    :rtype: tuple[list[ScopeDivergence], _Written]
     """
     profile = toyhost_profile()
     batches = (_batch(256), _batch(1024))

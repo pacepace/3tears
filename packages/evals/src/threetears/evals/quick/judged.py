@@ -72,16 +72,16 @@ DIMENSION_CONTEXT = "answer"
 
 @dataclass(frozen=True)
 class Example:
-    """An answer the judge must grade a known way: one that must fail a dimension, or one that looks wrong and must pass.
+    """An answer the judge must grade a known way: one that must fail a dimension, or one that looks wrong and must
+    pass.
 
-    Attributes:
-        dimension: The rubric dimension it is graded on, as :attr:`Judge.rubric` names it (bare, or namespaced).
-        answer: The answer, rendered as the judge reads a runner's (a string as written, anything else as JSON).
-        expected: The verdict it must get: ``"pass"`` or ``"fail"`` on a pass/fail dimension, a score from 1 to 5 on
-            an ordinal one. One the dimension's scale cannot hold is refused when the :class:`Judge` is built.
-        note: Why: the reason its verdict is what it is, in the author's words.
-        case: The case it answers, rendered by :attr:`Judge.case_material` as a run's case is.
-        author: Who wrote it, recorded as the verdict's rater.
+    :ivar dimension: The rubric dimension it is graded on, as :attr:`Judge.rubric` names it (bare, or namespaced).
+    :ivar answer: The answer, rendered as the judge reads a runner's (a string as written, anything else as JSON).
+    :ivar expected: The verdict it must get: ``"pass"`` or ``"fail"`` on a pass/fail dimension, a score from 1 to 5 on
+        an ordinal one. One the dimension's scale cannot hold is refused when the :class:`Judge` is built.
+    :ivar note: Why: the reason its verdict is what it is, in the author's words.
+    :ivar case: The case it answers, rendered by :attr:`Judge.case_material` as a run's case is.
+    :ivar author: Who wrote it, recorded as the verdict's rater.
     """
 
     dimension: str
@@ -95,21 +95,20 @@ class Example:
 class Judge:
     """A model that grades each answer on a rubric, one call per dimension: a grader in an eval's ``grader`` list.
 
-    Attributes:
-        client: The completion client the judge calls. Lent to the engine for the run and never closed by it. The
-            judge asks for a sampling temperature on every call (0, unless a judge config states another): when the
-            client's ``generate`` takes a ``temperature`` keyword it is passed on every call, and the client reports
-            what it actually sent on each completion's ``temperature``, which every score records as part of who
-            judged.
-        model: The model ``client`` calls, as the run records it: the run's judge pin, and the arm's judge in every
-            comparison of two runs.
-        rubric: The dimensions as given: each a name and what it measures (a pass/fail), or
-            :class:`~threetears.evals.schema.RubricDim` values for a scoring guide or a 1-5 scale.
-        examples: Answers the judge must grade a known way (:class:`Example`).
-        labels: The CSV of a person's labels the judge is calibrated against, or ``None``.
-        case_material: Renders what an answer is judged against from its case, or ``None`` for the case as JSON.
-        guard: Each dimension no arm may get worse on, by its rubric key, with the margin it may: scored on the
-            boundary axis and decided against the control apart from every contrast.
+    :ivar client: The completion client the judge calls. Lent to the engine for the run and never closed by it. The
+        judge asks for a sampling temperature on every call (0, unless a judge config states another): when the
+        client's ``generate`` takes a ``temperature`` keyword it is passed on every call, and the client reports
+        what it actually sent on each completion's ``temperature``, which every score records as part of who
+        judged.
+    :ivar model: The model ``client`` calls, as the run records it: the run's judge pin, and the arm's judge in every
+        comparison of two runs.
+    :ivar rubric: The dimensions as given: each a name and what it measures (a pass/fail), or
+        :class:`~threetears.evals.schema.RubricDim` values for a scoring guide or a 1-5 scale.
+    :ivar examples: Answers the judge must grade a known way (:class:`Example`).
+    :ivar labels: The CSV of a person's labels the judge is calibrated against, or ``None``.
+    :ivar case_material: Renders what an answer is judged against from its case, or ``None`` for the case as JSON.
+    :ivar guard: Each dimension no arm may get worse on, by its rubric key, with the margin it may: scored on the
+        boundary axis and decided against the control apart from every contrast.
     """
 
     def __init__(
@@ -124,31 +123,34 @@ class Judge:
     ) -> None:
         """Declare the judge.
 
-        Args:
-            model: What judges: a model id (``"deepseek/deepseek-v4-flash"``), a
-                :class:`~threetears.evals.providers.Model` (its ``recording=`` with it), or any completion client
-                that names its model (``model_name``).
-            rubric: The dimensions, each a name and what it measures, scored pass/fail; or
-                :class:`~threetears.evals.schema.RubricDim` values, each stating its own scale. A bare name is stored
-                under ``answer.`` (``helpful`` is ``answer.helpful``), since a judge config binds to a dimension by
-                name across every template. The rubric is the template's, so it is part of what the case set's id
-                digests.
-            examples: Hard negatives, and answers that look wrong and must pass; a run judged by this judge stores
-                them as authored judge cases, the items a judge campaign calibrates it on (:meth:`authored_cases`).
-            labels: A CSV of a person's verdicts on judged answers, in the columns
-                :meth:`~threetears.evals.quick.contract.Result.write` writes ``to_label.csv`` in: the result reports
-                how far the judge agrees with them (kappa, its lower bound and the evidence tier). A file that is not
-                there yet reads as no labels, said by name. A relative path is read beside the eval file being
-                loaded, else in the working directory.
-            case_material: Renders what an answer is judged against from its case. ``None`` shows the judge the case
-                as JSON, less every top-level field holding the classifier's expected label.
-            guard: Each dimension no arm may get worse on than the control by more than its margin, by rubric key
-                (``{"grounded": 0.02}``).
-
-        Raises:
-            ValueError: A client naming no model; an empty rubric, a dimension the engine refuses, or two under one
-                name; an example naming no dimension, giving a verdict its scale cannot hold, or whose case cannot be
-                rendered; or a guard on no dimension, or one not narrower than the dimension's scale.
+        :param model: What judges: a model id (``"deepseek/deepseek-v4-flash"``), a
+            :class:`~threetears.evals.providers.Model` (its ``recording=`` with it), or any completion client
+            that names its model (``model_name``).
+        :ptype model: str | CompletionClient
+        :param rubric: The dimensions, each a name and what it measures, scored pass/fail; or
+            :class:`~threetears.evals.schema.RubricDim` values, each stating its own scale. A bare name is stored
+            under ``answer.`` (``helpful`` is ``answer.helpful``), since a judge config binds to a dimension by
+            name across every template. The rubric is the template's, so it is part of what the case set's id
+            digests.
+        :ptype rubric: Mapping[str, str] | Sequence[RubricDim]
+        :param examples: Hard negatives, and answers that look wrong and must pass; a run judged by this judge stores
+            them as authored judge cases, the items a judge campaign calibrates it on (:meth:`authored_cases`).
+        :ptype examples: Sequence[Example]
+        :param labels: A CSV of a person's verdicts on judged answers, in the columns
+            :meth:`~threetears.evals.quick.contract.Result.write` writes ``to_label.csv`` in: the result reports
+            how far the judge agrees with them (kappa, its lower bound and the evidence tier). A file that is not
+            there yet reads as no labels, said by name. A relative path is read beside the eval file being
+            loaded, else in the working directory.
+        :ptype labels: str | os.PathLike[str] | None
+        :param case_material: Renders what an answer is judged against from its case. ``None`` shows the judge the case
+            as JSON, less every top-level field holding the classifier's expected label.
+        :ptype case_material: Callable[[Mapping[str, Any]], str] | None
+        :param guard: Each dimension no arm may get worse on than the control by more than its margin, by rubric key
+            (``{"grounded": 0.02}``).
+        :ptype guard: Mapping[str, float] | None
+        :raises ValueError: A client naming no model; an empty rubric, a dimension the engine refuses, or two under one
+            name; an example naming no dimension, giving a verdict its scale cannot hold, or whose case cannot be
+            rendered; or a guard on no dimension, or one not narrower than the dimension's scale.
         """
         self.client, self.model = judge_client(model)
         self.rubric = rubric
@@ -204,27 +206,23 @@ class Judge:
     def dim_name(self, name: str) -> str:
         """``name`` as a stored dimension name: as given when it carries a context, under :attr:`context` when bare.
 
-        Args:
-            name: A rubric key.
-
-        Returns:
-            The namespaced name: under ``answer.`` when bare.
+        :param name: A rubric key.
+        :ptype name: str
+        :return: The namespaced name: under ``answer.`` when bare.
+        :rtype: str
         """
         return name if "." in name else f"{DIMENSION_CONTEXT}.{name}"
 
     def authored_cases(self, *, intent: str) -> list[AuthoredJudgeCase]:
         """The :attr:`examples` as authored judge cases: each answer as the judge reads it, its verdict its label.
 
-        Args:
-            intent: The scenario the judge reads beside each one: the run's template intent, so an example is asked
-                exactly as the run's answers are.
-
-        Returns:
-            One case per example, in order.
-
-        Raises:
-            ValueError: An example names no dimension of the rubric, gives a verdict its dimension's scale cannot
-                hold, or has a case :attr:`case_material` cannot render.
+        :param intent: The scenario the judge reads beside each one: the run's template intent, so an example is asked
+            exactly as the run's answers are.
+        :ptype intent: str
+        :return: One case per example, in order.
+        :rtype: list[AuthoredJudgeCase]
+        :raises ValueError: An example names no dimension of the rubric, gives a verdict its dimension's scale cannot
+            hold, or has a case :attr:`case_material` cannot render.
         """
         dims = {dim.name: dim for dim in self._dims}
         authored: list[AuthoredJudgeCase] = []
@@ -261,10 +259,10 @@ class Judge:
     def clients(self) -> CompletionClients:
         """The host client factory a run judged by this judge is built with: this judge's client, lent.
 
-        Returns:
-            A factory answering the judge role on :attr:`model` with :attr:`client`, and refusing every
+        :return: A factory answering the judge role on :attr:`model` with :attr:`client`, and refusing every
             other role and model, since the client calls one model and no other role is in a
             judged eval.
+        :rtype: CompletionClients
         """
 
         def lend(role: CompletionRole, model: str | None, *, temperature: float | None = None) -> BorrowedJudgeClient:
@@ -293,11 +291,13 @@ class BorrowedJudgeClient:
     def __init__(self, client: CompletionClient, *, model_name: str, temperature: float | None = None) -> None:
         """Lend ``client`` under the model it calls, at the temperature the engine asked for.
 
-        Args:
-            client: The owner's client.
-            model_name: The model it calls.
-            temperature: The sampling temperature the engine asked this client for; ``None`` for the
-                provider's default.
+        :param client: The owner's client.
+        :ptype client: CompletionClient
+        :param model_name: The model it calls.
+        :ptype model_name: str
+        :param temperature: The sampling temperature the engine asked this client for; ``None`` for the
+            provider's default.
+        :ptype temperature: float | None
         """
         self._client = client
         self.model_name = model_name
@@ -309,13 +309,14 @@ class BorrowedJudgeClient:
     ) -> CompletionResult:
         """Forward one call to the owner's client.
 
-        Args:
-            system: The judge's system prompt.
-            user: The judge's user prompt.
-            response_format: The provider directive, as the engine sends it.
-
-        Returns:
-            The owner's client's completion.
+        :param system: The judge's system prompt.
+        :ptype system: str
+        :param user: The judge's user prompt.
+        :ptype user: str
+        :param response_format: The provider directive, as the engine sends it.
+        :ptype response_format: dict[str, Any] | None
+        :return: The owner's client's completion.
+        :rtype: CompletionResult
         """
         if self.passes_temperature:
             generate: Any = self._client.generate
@@ -328,13 +329,14 @@ class BorrowedJudgeClient:
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """Unknown: the owner's client states no rate.
 
-        Args:
-            system: Unread.
-            user: Unread.
-            response_format: Unread.
-
-        Returns:
-            ``None``.
+        :param system: Unread.
+        :ptype system: str
+        :param user: Unread.
+        :ptype user: str
+        :param response_format: Unread.
+        :ptype response_format: dict[str, Any] | None
+        :return: ``None``.
+        :rtype: float | None
         """
         return None
 
@@ -352,16 +354,13 @@ class BorrowedJudgeClient:
 def judge_client(model: str | CompletionClient) -> tuple[CompletionClient, str]:
     """The client a judge calls and the model the run records it as, from what ``Judge(model=...)`` was handed.
 
-    Args:
-        model: A :class:`~threetears.evals.providers.Model`; any completion client that names its model
-            (``model_name``); or a model id, which builds a :class:`~threetears.evals.providers.Model` that calls it.
-
-    Returns:
-        The client, and its model's name.
-
-    Raises:
-        ValueError: A client that names no model, or a model id the completion client refuses (no key for its
-            provider, naming the variable).
+    :param model: A :class:`~threetears.evals.providers.Model`; any completion client that names its model
+        (``model_name``); or a model id, which builds a :class:`~threetears.evals.providers.Model` that calls it.
+    :ptype model: str | CompletionClient
+    :return: The client, and its model's name.
+    :rtype: tuple[CompletionClient, str]
+    :raises ValueError: A client that names no model, or a model id the completion client refuses (no key for its
+        provider, naming the variable).
     """
     if isinstance(model, str):
         from threetears.evals.providers import Model  # the completion client, loaded only when a judge names an id
@@ -395,19 +394,19 @@ def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any, *, expect
 
     The evidence is stored on the cell's trace exactly as sent, so a re-judge sends the same material.
 
-    Args:
-        judge: The judge, whose ``case_material`` renders the case.
-        case: The case the answer was given for.
-        answer: The candidate's answer: a string as written, anything else as JSON (its ``repr`` when
-            JSON cannot hold it).
-        expected: The case's expected label on a classifier run, ``None`` otherwise. With no
-            ``case_material``, every top-level field holding it is left out of the case shown (the answer key).
-
-    Returns:
-        The evidence.
-
-    Raises:
-        ValueError: ``case_material`` raised, or rendered no text.
+    :param judge: The judge, whose ``case_material`` renders the case.
+    :ptype judge: Judge
+    :param case: The case the answer was given for.
+    :ptype case: Mapping[str, Any]
+    :param answer: The candidate's answer: a string as written, anything else as JSON (its ``repr`` when
+        JSON cannot hold it).
+    :ptype answer: Any
+    :param expected: The case's expected label on a classifier run, ``None`` otherwise. With no
+        ``case_material``, every top-level field holding it is left out of the case shown (the answer key).
+    :ptype expected: str | None
+    :return: The evidence.
+    :rtype: JudgeEvidence
+    :raises ValueError: ``case_material`` raised, or rendered no text.
     """
     if judge.case_material is None:
         shown = {key: value for key, value in case.items() if expected is None or value != expected}

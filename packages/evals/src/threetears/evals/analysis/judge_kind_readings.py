@@ -224,8 +224,8 @@ def _reading_of_case(
 ) -> tuple[EvalResult, list[CalibrationRating]] | None:
     """One case's trials as the shape the agreement reads take: a result holding the first score, the rest as repeats.
 
-    Returns:
-        The restated result and its labels as person ratings of it, or ``None`` when no trial of the case scored.
+    :return: The restated result and its labels as person ratings of it, or ``None`` when no trial of the case scored.
+    :rtype: tuple[EvalResult, list[CalibrationRating]] | None
     """
     first_index = next((i for i, (_, trial) in enumerate(entries) if trial.outcome == "scored"), None)
     if first_index is None:
@@ -299,14 +299,14 @@ def _matching(rows: Iterable[_Row], key: JudgeKey) -> _Row | None:
 
 
 def judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings:
-    """Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
+    """Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and
+    criterion.
 
-    Args:
-        results: The judge campaign's results — every result of its runs. A result carrying no judge trial is listed
-            as unread, never guessed at.
-
-    Returns:
-        The readings, and every result left out with why.
+    :param results: The judge campaign's results — every result of its runs. A result carrying no judge trial is listed
+        as unread, never guessed at.
+    :ptype results: Iterable[EvalResult]
+    :return: The readings, and every result left out with why.
+    :rtype: JudgeKindReadings
     """
     groups: dict[_GroupKey, list[tuple[EvalResult, JudgeTrial]]] = {}
     unread: list[UnreadJudgeTrial] = []

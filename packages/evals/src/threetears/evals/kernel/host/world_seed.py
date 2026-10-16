@@ -79,13 +79,12 @@ class SeedRefused(ValueError):
     default message is host-neutral and names the path, which is enough for a host that has no
     wording of its own.
 
-    Attributes:
-        kind: Which question failed.
-        namespace: The seed namespace the refused value sits under.
-        name: The dimension the seed addressed, or None when the namespace itself is refused.
-        declared: The registry's declaration for ``name``, or None when it has none.
-        violations: The schema's sentences, each naming the path it fails at; empty unless ``nonconforming``.
-        attached: The carriers the subject attaches, sorted; empty unless ``unattached``.
+    :ivar kind: Which question failed.
+    :ivar namespace: The seed namespace the refused value sits under.
+    :ivar name: The dimension the seed addressed, or None when the namespace itself is refused.
+    :ivar declared: The registry's declaration for ``name``, or None when it has none.
+    :ivar violations: The schema's sentences, each naming the path it fails at; empty unless ``nonconforming``.
+    :ivar attached: The carriers the subject attaches, sorted; empty unless ``unattached``.
     """
 
     def __init__(
@@ -100,13 +99,18 @@ class SeedRefused(ValueError):
     ) -> None:
         """Record the refusal and compose its default sentence.
 
-        Args:
-            kind: Which question failed.
-            namespace: The seed namespace the refused value sits under.
-            name: The dimension the seed addressed, or None when the namespace itself is refused.
-            declared: The registry's declaration for ``name``, when it has one.
-            violations: The schema's sentences, for a ``nonconforming`` refusal.
-            attached: The carriers the subject does attach, for an ``unattached`` refusal.
+        :param kind: Which question failed.
+        :ptype kind: SeedRefusalKind
+        :param namespace: The seed namespace the refused value sits under.
+        :ptype namespace: str
+        :param name: The dimension the seed addressed, or None when the namespace itself is refused.
+        :ptype name: str | None
+        :param declared: The registry's declaration for ``name``, when it has one.
+        :ptype declared: WorldDimension | None
+        :param violations: The schema's sentences, for a ``nonconforming`` refusal.
+        :ptype violations: tuple[str, ...]
+        :param attached: The carriers the subject does attach, for an ``unattached`` refusal.
+        :ptype attached: tuple[str, ...]
         """
         self.kind = kind
         self.namespace = namespace
@@ -119,8 +123,8 @@ class SeedRefused(ValueError):
     def _sentence(self) -> str:
         """The host-neutral refusal, naming the path and what would have to change.
 
-        Returns:
-            The message.
+        :return: The message.
+        :rtype: str
         """
         if self.kind == "malformed":
             return f"the seed's {self.namespace!r} entry is not a mapping of dimension to value"
@@ -156,20 +160,19 @@ def check_seed(
 ) -> tuple[SeedWrite, ...]:
     """Walk a world seed against the registry: every write it would make, checked, or the first refusal.
 
-    Args:
-        registry: The world the seed writes into.
-        namespaces: Carrier → (seed key → value), as a template's world seed holds them.
-        attached: The carriers this subject attaches, or None where no subject exists yet — at
-            authoring, the registry's questions are the only ones there are to ask.
-
-    Returns:
-        One :class:`SeedWrite` per seeded value, in the seed's order. Nothing has been written.
-
-    Raises:
-        SeedRefused: The first value the walk cannot write, naming its path. Every registry refusal
-            is found before any ``unattached`` one.
-        UnsupportedSchemaError: A dimension's schema is outside the honoured subset — a defect in the
-            registration, not in the seed, so it is not translated into a refusal of the seed.
+    :param registry: The world the seed writes into.
+    :ptype registry: WorldRegistry
+    :param namespaces: Carrier → (seed key → value), as a template's world seed holds them.
+    :ptype namespaces: Mapping[str, Any]
+    :param attached: The carriers this subject attaches, or None where no subject exists yet — at
+        authoring, the registry's questions are the only ones there are to ask.
+    :ptype attached: Collection[str] | None
+    :return: One :class:`SeedWrite` per seeded value, in the seed's order. Nothing has been written.
+    :rtype: tuple[SeedWrite, ...]
+    :raises SeedRefused: The first value the walk cannot write, naming its path. Every registry refusal
+        is found before any ``unattached`` one.
+    :raises UnsupportedSchemaError: A dimension's schema is outside the honoured subset — a defect in the
+        registration, not in the seed, so it is not translated into a refusal of the seed.
     """
     writes: list[SeedWrite] = []
     for namespace, seeded in namespaces.items():

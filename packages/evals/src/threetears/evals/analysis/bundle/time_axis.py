@@ -62,29 +62,40 @@ def _time_axis(
     differ only in which observations they read. A run that measured nothing has no place in time — it
     cannot say what was measured when — and is left out of every position.
 
-    Args:
-        runs: The resolved member runs, in creation order.
-        results_by_run: Each run's results.
-        observations: Every observation the cell algebra pooled.
-        classes: Apparatus class id → the class, as the campaign's pooling read them.
-        records: The score projection, for judged dimensions.
-        design: The campaign's declaration, for the bar a judged dimension carries.
-        tiers: The judges' evidence tiers, which every judged reading carries — the campaign's own, since a
-            judge's reliability is measured over the whole campaign, not one position of it.
-        short_runs: The bundle's short-run sentences, by run id.
-        incomplete_runs: The bundle's incomplete-run statuses, by run id.
-        profile: The host, whose ``release_label`` names its builds.
-        control: The control arm's variant key as the realized design matched it
-            (``RealizedDesign.control_arm``), or None — never the declaration's own key, which can name the arm
-            by a key its cells do not carry.
-        earlier_control: The control's cells under an earlier identity predicate (``RealizedDesign.earlier_control``),
-            or None. A position holding them says so (``TimePosition.control_disclosure``), and where they are the
-            only control cells there they lead as its reference: a position from before the predicate changed
-            would otherwise read as one with no control at all.
-        names: The bundle's arm names, which order each position's cells as the whole surface's are.
-
-    Returns:
-        ``(axis, None)`` when the measuring runs span two or more positions, else ``(None, why)``.
+    :param runs: The resolved member runs, in creation order.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param observations: Every observation the cell algebra pooled.
+    :ptype observations: list[Observation]
+    :param classes: Apparatus class id → the class, as the campaign's pooling read them.
+    :ptype classes: dict[str, ApparatusClass]
+    :param records: The score projection, for judged dimensions.
+    :ptype records: list[ScoreRecord]
+    :param design: The campaign's declaration, for the bar a judged dimension carries.
+    :ptype design: CampaignDesign | None
+    :param tiers: The judges' evidence tiers, which every judged reading carries — the campaign's own, since a
+        judge's reliability is measured over the whole campaign, not one position of it.
+    :ptype tiers: list[JudgeEvidenceTier]
+    :param short_runs: The bundle's short-run sentences, by run id.
+    :ptype short_runs: dict[str, str]
+    :param incomplete_runs: The bundle's incomplete-run statuses, by run id.
+    :ptype incomplete_runs: dict[str, str]
+    :param profile: The host, whose ``release_label`` names its builds.
+    :ptype profile: HostProfile
+    :param control: The control arm's variant key as the realized design matched it
+        (``RealizedDesign.control_arm``), or None — never the declaration's own key, which can name the arm
+        by a key its cells do not carry.
+    :ptype control: str | None
+    :param earlier_control: The control's cells under an earlier identity predicate
+        (``RealizedDesign.earlier_control``), or None. A position holding them says so
+        (``TimePosition.control_disclosure``), and where they are the only control cells there they lead as its
+        reference: a position from before the predicate changed would otherwise read as one with no control at all.
+    :ptype earlier_control: EarlierControl | None
+    :param names: The bundle's arm names, which order each position's cells as the whole surface's are.
+    :ptype names: Mapping[str, str]
+    :return: ``(axis, None)`` when the measuring runs span two or more positions, else ``(None, why)``.
+    :rtype: tuple[TimeAxis | None, str | None]
     """
     measuring = [run for run in runs if results_by_run[run.id]]
     if not measuring:
@@ -151,19 +162,18 @@ def _time_positions(
     earliest run was created, which is the one order every run records — a label is the host's string and
     nothing here can sort it.
 
-    Args:
-        runs: The runs that measured something, in creation order.
-        results_by_run: Each run's results, which a label reader may read.
-        profile: The host, whose ``release_label`` names its builds.
-
-    Returns:
-        ``(basis, positions, why_not_builds)``: each position's key and its runs in creation order, and — on a
+    :param runs: The runs that measured something, in creation order.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results, which a label reader may read.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param profile: The host, whose ``release_label`` names its builds.
+    :ptype profile: HostProfile
+    :return: ``(basis, positions, why_not_builds)``: each position's key and its runs in creation order, and — on a
         ``date`` basis — why the positions are not builds, in the words of the branch that found it, naming
         the runs that recorded no label where that is the reason. Empty on a ``release`` basis.
-
-    Raises:
-        RuntimeError: The release label names no registered input — registration refuses that, so the
-            profile was built around its own check.
+    :rtype: tuple[TimeAxisBasis, list[tuple[str, list[EvalRun]]], str]
+    :raises RuntimeError: The release label names no registered input — registration refuses that, so the
+        profile was built around its own check.
     """
     release_why = "the host labels no build"
     if profile.release_label is not None:

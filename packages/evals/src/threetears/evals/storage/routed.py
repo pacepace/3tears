@@ -105,20 +105,18 @@ class _StoreRefusal(RuntimeError):
     A :class:`RuntimeError` still, since what it refuses is the stores' state rather than a caller's input; a host
     naming its own relocation tool replaces :attr:`remedy` and keeps :attr:`fault`, and ``str()`` reads both.
 
-    Attributes:
-        fault: What the router found.
-        remedy: What its operator does about it.
+    :ivar fault: What the router found.
+    :ivar remedy: What its operator does about it.
     """
 
     def __init__(self, fault: str, *, remedy: str) -> None:
         """Hold the fault and the remedy apart.
 
-        Args:
-            fault: What the router found.
-            remedy: What its operator does about it.
-
-        Raises:
-            ValueError: ``remedy`` is blank.
+        :param fault: What the router found.
+        :ptype fault: str
+        :param remedy: What its operator does about it.
+        :ptype remedy: str
+        :raises ValueError: ``remedy`` is blank.
         """
         if not remedy.strip():
             raise ValueError(f"a refusal names its remedy; this one ({fault!r}) names a blank one")
@@ -139,12 +137,11 @@ class MisplacedDocument(_StoreRefusal):
 class DocTypeRoute:
     """Which store each document type is kept in, decided by one of its facts.
 
-    Attributes:
-        by: The fact the rule keys on: ``origin`` or ``lifecycle``.
-        to: Every value of that fact, to the name of the store its types are kept in. Exhaustive: a value left out
-            is refused, so no registered type is ever unplaced.
-        unregistered: The store a ``doc_type`` the registry does not hold is kept in — a host's own documents.
-            Required, so where they go is a decision rather than a default.
+    :ivar by: The fact the rule keys on: ``origin`` or ``lifecycle``.
+    :ivar to: Every value of that fact, to the name of the store its types are kept in. Exhaustive: a value left out
+        is refused, so no registered type is ever unplaced.
+    :ivar unregistered: The store a ``doc_type`` the registry does not hold is kept in — a host's own documents.
+        Required, so where they go is a decision rather than a default.
     """
 
     by: Literal["origin", "lifecycle"]
@@ -154,9 +151,8 @@ class DocTypeRoute:
     def __post_init__(self) -> None:
         """Refuse a fact that is not one, and a mapping that misses or invents a value of it.
 
-        Raises:
-            ValueError: ``by`` names no fact, ``to`` leaves a value of it unmapped or names one it does not
-                take, or a store name is blank.
+        :raises ValueError: ``by`` names no fact, ``to`` leaves a value of it unmapped or names one it does not
+            take, or a store name is blank.
         """
         values = _FACT_VALUES.get(self.by)
         if values is None:
@@ -175,14 +171,11 @@ class DocTypeRoute:
     def placements(self, facts: Mapping[str, DocTypeFacts]) -> Mapping[str, str]:
         """Resolve the rule over a registry: the store each registered type is kept in.
 
-        Args:
-            facts: The registry (:data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`).
-
-        Returns:
-            ``doc_type`` to store name, for every registered type.
-
-        Raises:
-            ValueError: A tombstone would be kept in another store than the type it suppresses.
+        :param facts: The registry (:data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`).
+        :ptype facts: Mapping[str, DocTypeFacts]
+        :return: ``doc_type`` to store name, for every registered type.
+        :rtype: Mapping[str, str]
+        :raises ValueError: A tombstone would be kept in another store than the type it suppresses.
         """
         table = {doc_type: self.to[getattr(fact, self.by)] for doc_type, fact in facts.items()}
         for doc_type, fact in facts.items():
@@ -222,8 +215,7 @@ def _record(child: str, placements: Mapping[str, str], unregistered: str, routin
 def _checked_routing_scope(routing_scope: str) -> str:
     """Refuse a blank routing scope, which would hold every record under a scope no host chose.
 
-    Raises:
-        ValueError: ``routing_scope`` is blank.
+    :raises ValueError: ``routing_scope`` is blank.
     """
     if not routing_scope.strip():
         raise ValueError(
@@ -236,11 +228,9 @@ def _checked_routing_scope(routing_scope: str) -> str:
 def _checked_children(children: Mapping[str, DocumentStore], route: DocTypeRoute) -> Mapping[str, str]:
     """Resolve ``route`` over the registry and refuse a route or a set of stores the router cannot run on.
 
-    Returns:
-        The placement table.
-
-    Raises:
-        ValueError: No stores, one store passed under two names, or a route naming a store that is not a child.
+    :return: The placement table.
+    :rtype: Mapping[str, str]
+    :raises ValueError: No stores, one store passed under two names, or a route naming a store that is not a child.
     """
     if not children:
         raise ValueError("a routed store needs at least one store")
@@ -259,18 +249,18 @@ class RoutedDocumentStore:
     See the module docstring for the routing, the fan-out, and why the router refuses to start after its rule
     changed.
 
-    Args:
-        children: The stores, by name. A store no type is placed in is still asked by every id-only call, so one
-            being drained stays reachable until :meth:`relocate` has emptied it.
-        route: Where each type is kept.
-        routing_scope: The scope this router's placement record is kept in, in every store: one the host owns and
-            never uses for documents. A host running one router per partition of shared stores names one per
-            partition (the module docstring). Required: it must be the scope :meth:`relocate` was given.
-
-    Raises:
-        ValueError: The route or the stores are refused (see :class:`DocTypeRoute` and :meth:`relocate`), or the
-            routing scope is blank.
-        RouteChanged: The stores were written under other placements, or under none.
+    :param children: The stores, by name. A store no type is placed in is still asked by every id-only call, so one
+        being drained stays reachable until :meth:`relocate` has emptied it.
+    :ptype children: Mapping[str, DocumentStore]
+    :param route: Where each type is kept.
+    :ptype route: DocTypeRoute
+    :param routing_scope: The scope this router's placement record is kept in, in every store: one the host owns and
+        never uses for documents. A host running one router per partition of shared stores names one per
+        partition (the module docstring). Required: it must be the scope :meth:`relocate` was given.
+    :ptype routing_scope: str
+    :raises ValueError: The route or the stores are refused (see :class:`DocTypeRoute` and :meth:`relocate`), or the
+        routing scope is blank.
+    :raises RouteChanged: The stores were written under other placements, or under none.
     """
 
     def __new__(
@@ -310,8 +300,7 @@ class RoutedDocumentStore:
         When nothing moved but the record is not this router's whole — a type new in this release, placed where
         unregistered types were, or a store added that holds no record yet — every store's record is rewritten.
 
-        Raises:
-            RouteChanged: See the module docstring.
+        :raises RouteChanged: See the module docstring.
         """
         records = {name: store.get(_RECORD_ID, self._routing_scope) for name, store in self._children.items()}
         held = {name: record for name, record in records.items() if record is not None}
@@ -376,8 +365,7 @@ class RoutedDocumentStore:
     def _one_holder(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
         """The one document ``doc_id`` names and its etag, refusing two holders or a misplaced one.
 
-        Raises:
-            MisplacedDocument: The id is held by two stores, or by one its type is not placed in.
+        :raises MisplacedDocument: The id is held by two stores, or by one its type is not placed in.
         """
         found = self._holders(doc_id, scope_id)
         if not found:
@@ -401,8 +389,7 @@ class RoutedDocumentStore:
     def _fan_out_write(self, doc_id: str, scope_id: str, outcomes: Iterable[tuple[str, bool]], what: str) -> bool:
         """Settle an id-only write asked of every store: True when one held it, a refusal when several did.
 
-        Raises:
-            MisplacedDocument: More than one store held the id, so the write reached each of them.
+        :raises MisplacedDocument: More than one store held the id, so the write reached each of them.
         """
         landed = [name for name, wrote in outcomes if wrote]
         if len(landed) > 1:
@@ -418,16 +405,14 @@ class RoutedDocumentStore:
     def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
         """Return the one document ``doc_id`` names in a scope, from whichever store holds it.
 
-        Raises:
-            MisplacedDocument: Two stores hold it, or one its type is not placed in.
+        :raises MisplacedDocument: Two stores hold it, or one its type is not placed in.
         """
         return self._one_holder(doc_id, scope_id)[0]
 
     def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
         """Return the one document and the etag of the store holding it, which a conditional write presents there.
 
-        Raises:
-            MisplacedDocument: Two stores hold it, or one its type is not placed in.
+        :raises MisplacedDocument: Two stores hold it, or one its type is not placed in.
         """
         return self._one_holder(doc_id, scope_id)
 
@@ -473,10 +458,9 @@ class RoutedDocumentStore:
         atomic: a document written to another store between the check and the create leaves the id in two stores,
         which the next id-only read reports as :class:`MisplacedDocument`, loudly, rather than picking one.
 
-        Raises:
-            ValueError: The document carries no ``doc_type``, which is what places it.
-            StoreConflict: A conditional write lost its race, or a create-only write found the id held — in the
-                store the type is kept in, or in any other.
+        :raises ValueError: The document carries no ``doc_type``, which is what places it.
+        :raises StoreConflict: A conditional write lost its race, or a create-only write found the id held — in the
+            store the type is kept in, or in any other.
         """
         doc_type = document.get("doc_type")
         if not isinstance(doc_type, str):
@@ -499,12 +483,10 @@ class RoutedDocumentStore:
     def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
         """Set top-level fields on the one document ``doc_id`` names, in whichever store holds it.
 
-        Returns:
-            ``True`` when a store held it; ``False`` when none did.
-
-        Raises:
-            MisplacedDocument: Several stores held it (the fields were set in each).
-            ValueError: Raised by the stores for empty or locating fields.
+        :return: ``True`` when a store held it; ``False`` when none did.
+        :rtype: bool
+        :raises MisplacedDocument: Several stores held it (the fields were set in each).
+        :raises ValueError: Raised by the stores for empty or locating fields.
         """
         outcomes = [(name, store.merge_fields(doc_id, scope_id, fields)) for name, store in self._children.items()]
         return self._fan_out_write(doc_id, scope_id, outcomes, "merge_fields")
@@ -512,11 +494,9 @@ class RoutedDocumentStore:
     def delete(self, doc_id: str, scope_id: str) -> bool:
         """Delete the one document ``doc_id`` names, from whichever store holds it.
 
-        Returns:
-            ``True`` when a store held it; ``False`` when none did.
-
-        Raises:
-            MisplacedDocument: Several stores held it (each copy was deleted).
+        :return: ``True`` when a store held it; ``False`` when none did.
+        :rtype: bool
+        :raises MisplacedDocument: Several stores held it (each copy was deleted).
         """
         outcomes = [(name, store.delete(doc_id, scope_id)) for name, store in self._children.items()]
         return self._fan_out_write(doc_id, scope_id, outcomes, "delete")
@@ -543,13 +523,14 @@ class RoutedDocumentStore:
         router's bookkeeping about the stores, not a document, so a store holding only a record answers ``False``
         here. Whether a record exists is the router's own check when it is built.
 
-        Args:
-            children: The stores, by name.
-            scope_ids: Every scope documents may be kept in.
-            host_doc_types: The host's own ``doc_type`` values in these stores.
-
-        Returns:
-            ``True`` at the first document found; ``False`` when no store holds one in any named scope.
+        :param children: The stores, by name.
+        :ptype children: Mapping[str, DocumentStore]
+        :param scope_ids: Every scope documents may be kept in.
+        :ptype scope_ids: Iterable[str]
+        :param host_doc_types: The host's own ``doc_type`` values in these stores.
+        :ptype host_doc_types: Iterable[str]
+        :return: ``True`` at the first document found; ``False`` when no store holds one in any named scope.
+        :rtype: bool
         """
         known = (set(DOC_TYPE_FACTS) | set(host_doc_types)) - {ROUTING_RECORD_DOC_TYPE}
         for scope_id in scope_ids:
@@ -578,22 +559,23 @@ class RoutedDocumentStore:
         operator wipe, it reaches the scopes and the host types it is told of: the port has no scope-free read,
         and a type it is not named holds documents it cannot find.
 
-        Args:
-            children: The stores, by name, as the router will be built over them.
-            route: Where each type is to be kept.
-            scope_ids: Every scope with documents in these stores.
-            routing_scope: The scope the placement record is written in, which the router is then built with.
-                Never one of ``scope_ids``.
-            host_doc_types: The host's own ``doc_type`` values in these stores, kept in ``route.unregistered``.
-
-        Returns:
-            How many documents were moved, by ``doc_type``.
-
-        Raises:
-            ValueError: The route or the stores are refused, the routing scope is blank, or it is among
-                ``scope_ids``.
-            MisplacedDocument: Two stores hold different documents under one id; which is right is an
-                operator's decision, and nothing of that id is moved.
+        :param children: The stores, by name, as the router will be built over them.
+        :ptype children: Mapping[str, DocumentStore]
+        :param route: Where each type is to be kept.
+        :ptype route: DocTypeRoute
+        :param scope_ids: Every scope with documents in these stores.
+        :ptype scope_ids: Iterable[str]
+        :param routing_scope: The scope the placement record is written in, which the router is then built with.
+            Never one of ``scope_ids``.
+        :ptype routing_scope: str
+        :param host_doc_types: The host's own ``doc_type`` values in these stores, kept in ``route.unregistered``.
+        :ptype host_doc_types: Sequence[str]
+        :return: How many documents were moved, by ``doc_type``.
+        :rtype: dict[str, int]
+        :raises ValueError: The route or the stores are refused, the routing scope is blank, or it is among
+            ``scope_ids``.
+        :raises MisplacedDocument: Two stores hold different documents under one id; which is right is an
+            operator's decision, and nothing of that id is moved.
         """
         routing_scope = _checked_routing_scope(routing_scope)
         scope_ids = list(scope_ids)
@@ -656,22 +638,23 @@ class RoutedDocumentStore:
         router starts on the stores the moment this returns, even if a hand-run TRUNCATE once wiped the records.
         Safe to run again after an interruption: the deletes find nothing, and :meth:`relocate` is.
 
-        Args:
-            children: The stores, by name, as the router will be built over them.
-            route: Where each type is to be kept.
-            scope_ids: Every scope with documents in these stores.
-            routing_scope: The scope the placement record is kept in, which the router is built with. Never one of
-                ``scope_ids``.
-            host_doc_types: The host's own ``doc_type`` values in these stores: kept, and placed by
-                :meth:`relocate`.
-
-        Returns:
-            What was deleted and what moved.
-
-        Raises:
-            ValueError: As :meth:`relocate`, checked before anything is deleted.
-            MisplacedDocument: As :meth:`relocate`; the deletes have run, and running again after the operator's
-                decision finishes the reset.
+        :param children: The stores, by name, as the router will be built over them.
+        :ptype children: Mapping[str, DocumentStore]
+        :param route: Where each type is to be kept.
+        :ptype route: DocTypeRoute
+        :param scope_ids: Every scope with documents in these stores.
+        :ptype scope_ids: Iterable[str]
+        :param routing_scope: The scope the placement record is kept in, which the router is built with. Never one of
+            ``scope_ids``.
+        :ptype routing_scope: str
+        :param host_doc_types: The host's own ``doc_type`` values in these stores: kept, and placed by
+            :meth:`relocate`.
+        :ptype host_doc_types: Sequence[str]
+        :return: What was deleted and what moved.
+        :rtype: CoreReset
+        :raises ValueError: As :meth:`relocate`, checked before anything is deleted.
+        :raises MisplacedDocument: As :meth:`relocate`; the deletes have run, and running again after the operator's
+            decision finishes the reset.
         """
         routing_scope = _checked_routing_scope(routing_scope)
         scope_ids = list(scope_ids)
@@ -704,11 +687,10 @@ class RoutedDocumentStore:
 class CoreReset:
     """What :meth:`RoutedDocumentStore.reset_core` did: the core and regenerable documents deleted, and what moved.
 
-    Attributes:
-        deleted: How many documents were deleted, by ``doc_type``, summed over the stores and scopes; every core and
-            regenerable type is a key.
-        relocated: How many documents the relocation that followed moved, by ``doc_type`` (the durable types, when
-            the route places them anew); empty when nothing moved.
+    :ivar deleted: How many documents were deleted, by ``doc_type``, summed over the stores and scopes; every core and
+        regenerable type is a key.
+    :ivar relocated: How many documents the relocation that followed moved, by ``doc_type`` (the durable types, when
+        the route places them anew); empty when nothing moved.
     """
 
     deleted: Mapping[str, int]
@@ -726,8 +708,8 @@ class _ClockedRoutedDocumentStore(RoutedDocumentStore):
     def now(self) -> datetime:
         """The clock of the store job records are kept in.
 
-        Returns:
-            That store's current time.
+        :return: That store's current time.
+        :rtype: datetime
         """
         store = self._routed(_JOB_RECORD_DOC_TYPE)
         if not isinstance(store, StoreClock):

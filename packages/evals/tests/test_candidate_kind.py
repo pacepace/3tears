@@ -84,10 +84,11 @@ class _FakeSingleShotKind:
     def __init__(self, output: CandidateOutput, *, judged_artifact: JudgedArtifact = JudgedArtifact.UNJUDGED) -> None:
         """Bind the canned output this kind reports.
 
-        Args:
-            output: What :meth:`invoke` hands back.
-            judged_artifact: What this kind declares a judge reads. Unjudged by default, which is
-                what a single-shot kind graded by code is.
+        :param output: What :meth:`invoke` hands back.
+        :ptype output: CandidateOutput
+        :param judged_artifact: What this kind declares a judge reads. Unjudged by default, which is
+            what a single-shot kind graded by code is.
+        :ptype judged_artifact: JudgedArtifact
         """
         self.output = output
         self.judged_artifact = judged_artifact
@@ -106,17 +107,21 @@ class _FakeSingleShotKind:
     ) -> dict[str, Any]:
         """Record ``prepare``'s arguments and hand back an opaque instance.
 
-        Args:
-            subject_snapshot: The engine's half of the subject pair.
-            variant_config: This cell's contestant stack.
-            world_seed: The world the scenario presumes.
-            span_window: This cell's tracing windows. Recorded and deliberately never
-                opened — this kind is the population the harvest's disclosure is about.
-            cassettes: This cell's cassettes; ``None`` for every run here, which has them off.
-            world: This cell's world session; ``None`` on a host that declares no world.
-
-        Returns:
-            The instance, which is just what was handed over.
+        :param subject_snapshot: The engine's half of the subject pair.
+        :ptype subject_snapshot: Any
+        :param variant_config: This cell's contestant stack.
+        :ptype variant_config: VariantConfig
+        :param world_seed: The world the scenario presumes.
+        :ptype world_seed: Any
+        :param span_window: This cell's tracing windows. Recorded and deliberately never
+            opened — this kind is the population the harvest's disclosure is about.
+        :ptype span_window: CellSpanWindow
+        :param cassettes: This cell's cassettes; ``None`` for every run here, which has them off.
+        :ptype cassettes: CellCassettes | None
+        :param world: This cell's world session; ``None`` on a host that declares no world.
+        :ptype world: Any
+        :return: The instance, which is just what was handed over.
+        :rtype: dict[str, Any]
         """
         self.prepared = {
             "subject_snapshot": subject_snapshot,
@@ -130,16 +135,15 @@ class _FakeSingleShotKind:
     async def invoke(self, instance: dict[str, Any], test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Report the canned output.
 
-        Args:
-            instance: What :meth:`prepare` returned.
-            test_case: The cell's case.
-            sink: The cell's sink; a single shot that awaits nothing has no progress to report.
-
-        Returns:
-            The canned output.
-
-        Raises:
-            AssertionError: The instance handed back is not the one prepared.
+        :param instance: What :meth:`prepare` returned.
+        :ptype instance: dict[str, Any]
+        :param test_case: The cell's case.
+        :ptype test_case: EvalTestCase
+        :param sink: The cell's sink; a single shot that awaits nothing has no progress to report.
+        :ptype sink: CellSink
+        :return: The canned output.
+        :rtype: CandidateOutput
+        :raises AssertionError: The instance handed back is not the one prepared.
         """
         assert instance is self.prepared, "the engine must hand back the instance the kind prepared, untouched"
         self.invoked_case = test_case
@@ -152,8 +156,8 @@ class _FailingPrepareKind:
     def __init__(self, failure: CandidatePreparationFailed) -> None:
         """Bind the refusal this kind raises.
 
-        Args:
-            failure: What :meth:`prepare` raises.
+        :param failure: What :meth:`prepare` raises.
+        :ptype failure: CandidatePreparationFailed
         """
         self._failure = failure
         self.judged_artifact = JudgedArtifact.UNJUDGED
@@ -161,24 +165,22 @@ class _FailingPrepareKind:
     async def prepare(self, **_kwargs: Any) -> Any:
         """Refuse to build a candidate.
 
-        Args:
-            **_kwargs: ``prepare``'s arguments, ignored.
-
-        Raises:
-            CandidatePreparationFailed: Always — that is the case under test.
+        :param **_kwargs: ``prepare``'s arguments, ignored.
+        :ptype _kwargs: Any
+        :raises CandidatePreparationFailed: Always — that is the case under test.
         """
         raise self._failure
 
     async def invoke(self, instance: Any, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Never reached.
 
-        Args:
-            instance: Ignored.
-            test_case: Ignored.
-            sink: Ignored.
-
-        Raises:
-            AssertionError: Always — a refused preparation must not be invoked.
+        :param instance: Ignored.
+        :ptype instance: Any
+        :param test_case: Ignored.
+        :ptype test_case: EvalTestCase
+        :param sink: Ignored.
+        :ptype sink: CellSink
+        :raises AssertionError: Always — a refused preparation must not be invoked.
         """
         raise AssertionError("invoke must not run after prepare refused")
 
@@ -186,11 +188,10 @@ class _FailingPrepareKind:
 def _template(**overrides: Any) -> EvalTemplate:
     """A template naming the fake kind, with nothing a conversational path would need.
 
-    Args:
-        **overrides: Field overrides.
-
-    Returns:
-        The template.
+    :param **overrides: Field overrides.
+    :ptype overrides: Any
+    :return: The template.
+    :rtype: EvalTemplate
     """
     fields: dict[str, Any] = {
         "scope_id": "uni-1",
@@ -205,11 +206,10 @@ def _template(**overrides: Any) -> EvalTemplate:
 def _case(template_id: str) -> EvalTestCase:
     """One case for the template.
 
-    Args:
-        template_id: The template this case belongs to.
-
-    Returns:
-        The case.
+    :param template_id: The template this case belongs to.
+    :ptype template_id: str
+    :return: The case.
+    :rtype: EvalTestCase
     """
     return EvalTestCase(template_id=template_id, scope_id="u", variation_params={"tone": "warm"})
 
@@ -220,14 +220,16 @@ async def _run(kind: Any, template: EvalTemplate, *, sink: TraceSink | None = No
     The runner takes no subject factory and no simulator of its own, so a cell that completes
     with only this kind wired is direct evidence the seam needs neither.
 
-    Args:
-        kind: The kind to register under :data:`_FAKE_KIND`.
-        template: The template whose ``candidate_kind`` the dispatch reads.
-        sink: The host's trace sink, or ``None`` for a host that wires none.
-        **overrides: Extra ``run_one_result`` arguments.
-
-    Returns:
-        The cell outcome.
+    :param kind: The kind to register under :data:`_FAKE_KIND`.
+    :ptype kind: Any
+    :param template: The template whose ``candidate_kind`` the dispatch reads.
+    :ptype template: EvalTemplate
+    :param sink: The host's trace sink, or ``None`` for a host that wires none.
+    :ptype sink: TraceSink | None
+    :param **overrides: Extra ``run_one_result`` arguments.
+    :ptype overrides: Any
+    :return: The cell outcome.
+    :rtype: Any
     """
     host = toyhost_host(trace_sink=sink)
     call: dict[str, Any] = {
@@ -355,13 +357,13 @@ class _ApparatusFaultOnInvokeKind(_FakeSingleShotKind):
     async def invoke(self, instance: Any, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Fail as the apparatus, after preparation succeeded.
 
-        Args:
-            instance: Ignored.
-            test_case: Ignored.
-            sink: Ignored.
-
-        Raises:
-            ApparatusError: Always — that is the case under test.
+        :param instance: Ignored.
+        :ptype instance: Any
+        :param test_case: Ignored.
+        :ptype test_case: EvalTestCase
+        :param sink: Ignored.
+        :ptype sink: CellSink
+        :raises ApparatusError: Always — that is the case under test.
         """
         raise ApparatusError("the delivery corpus for this case does not rebuild")
 
@@ -488,13 +490,14 @@ async def test_a_kinds_own_refusals_are_added_to_the_runs_and_neither_is_dropped
         async def invoke(self, instance: dict[str, Any], test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
             """Spend against the run's ledger, then report this kind's own refusals.
 
-            Args:
-                instance: What ``prepare`` returned.
-                test_case: The cell's case.
-                sink: The cell's sink.
-
-            Returns:
-                The canned output.
+            :param instance: What ``prepare`` returned.
+            :ptype instance: dict[str, Any]
+            :param test_case: The cell's case.
+            :ptype test_case: EvalTestCase
+            :param sink: The cell's sink.
+            :ptype sink: CellSink
+            :return: The canned output.
+            :rtype: CandidateOutput
             """
             assert not ledger.admit(tool="web_search", action="search", spend=None), "the ceiling was not in force"
             return await super().invoke(instance, test_case, sink)
@@ -563,11 +566,10 @@ async def test_a_kinds_async_deliveries_land_on_the_result_verbatim():
 def _live_scout(**overrides: Any) -> AsyncDelivery:
     """A scout delivered live on its own model — work that necessarily spent tokens.
 
-    Args:
-        **overrides: Field overrides.
-
-    Returns:
-        The entry.
+    :param **overrides: Field overrides.
+    :ptype overrides: Any
+    :return: The entry.
+    :rtype: AsyncDelivery
     """
     fields: dict[str, Any] = {
         "tool": "scout_ahead",
@@ -739,8 +741,8 @@ class _CollectingSink:
     def __init__(self, record: CellTrace) -> None:
         """Bind the record this sink's collection window yields.
 
-        Args:
-            record: What a closing window leaves behind.
+        :param record: What a closing window leaves behind.
+        :ptype record: CellTrace
         """
         self._record = record
         self.windows_opened = 0
@@ -770,13 +772,14 @@ class _WindowOpeningKind(_FakeSingleShotKind):
     async def invoke(self, instance: dict[str, Any], test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Report the canned output from inside both of this cell's windows.
 
-        Args:
-            instance: What :meth:`prepare` returned, carrying the window.
-            test_case: The cell's case.
-            sink: The cell's sink.
-
-        Returns:
-            The canned output.
+        :param instance: What :meth:`prepare` returned, carrying the window.
+        :ptype instance: dict[str, Any]
+        :param test_case: The cell's case.
+        :ptype test_case: EvalTestCase
+        :param sink: The cell's sink.
+        :ptype sink: CellSink
+        :return: The canned output.
+        :rtype: CandidateOutput
         """
         window = instance["span_window"]
         with window.identity(), window.collecting():
@@ -1028,8 +1031,8 @@ async def test_every_kind_can_open_its_windows_without_asking_whether_anyone_is_
 def _eval_modules() -> list[Path]:
     """Every module of the package, ``threetears/evals/``.
 
-    Returns:
-        The paths, sorted.
+    :return: The paths, sorted.
+    :rtype: list[Path]
     """
     return sorted(_EVAL_ROOT.rglob("*.py"))
 
@@ -1223,13 +1226,14 @@ class _RecordingJudgeLLM:
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
         """Record the call and answer the dim the system prompt names.
 
-        Args:
-            system: The system prompt, which names the dim's JSON key.
-            user: The evidence rendered for the judge.
-            response_format: Ignored.
-
-        Returns:
-            A completion scoring the named dim 4.
+        :param system: The system prompt, which names the dim's JSON key.
+        :ptype system: str
+        :param user: The evidence rendered for the judge.
+        :ptype user: str
+        :param response_format: Ignored.
+        :ptype response_format: Any
+        :return: A completion scoring the named dim 4.
+        :rtype: Any
         """
         import json
         import re
@@ -1342,8 +1346,8 @@ async def test_a_conversational_candidate_gets_both_axes_and_the_transcript_its_
 def _judge_evidence() -> Any:
     """A document's evidence, for the declaration tests.
 
-    Returns:
-        Judge evidence with recognisable strings.
+    :return: Judge evidence with recognisable strings.
+    :rtype: Any
     """
     from threetears.evals.schema.models import JudgeEvidence
 

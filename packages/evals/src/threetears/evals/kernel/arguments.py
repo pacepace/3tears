@@ -25,12 +25,12 @@ def normalize_blank(value: str | None, default: str) -> str:
     renders as), and every other optional parameter on these routes already
     reads it that way.
 
-    Args:
-        value: Raw argument from the caller.
-        default: What an unsupplied argument means.
-
-    Returns:
-        The stripped value, or ``default`` when it is empty or whitespace.
+    :param value: Raw argument from the caller.
+    :ptype value: str | None
+    :param default: What an unsupplied argument means.
+    :ptype default: str
+    :return: The stripped value, or ``default`` when it is empty or whitespace.
+    :rtype: str
     """
     return (value or "").strip() or default
 

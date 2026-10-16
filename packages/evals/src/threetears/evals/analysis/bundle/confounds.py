@@ -84,11 +84,10 @@ _WORLD_PLACEMENT_CONFOUND = (
 def _world_confound_reason(matters: str) -> str:
     """Compose one world dimension's confound reason: the engine's clause, then the host's why.
 
-    Args:
-        matters: The dimension's required ``matters`` prose.
-
-    Returns:
-        The reason a confound catalog renders for it.
+    :param matters: The dimension's required ``matters`` prose.
+    :ptype matters: str
+    :return: The reason a confound catalog renders for it.
+    :rtype: str
     """
     return f"{_WORLD_PLACEMENT_CONFOUND}. What this dimension is: {matters}"
 
@@ -110,12 +109,11 @@ def _apparatus_confound_reasons(profile: HostProfile) -> dict[str, str]:
     choice: two hosts can assemble bundles in one process, and a module-level dict would freeze
     whichever host's declarations it was first built from and scan every other host against them.
 
-    Args:
-        profile: The host whose apparatus and world declarations the reasons come from.
-
-    Returns:
-        ``{dimension: reason}`` for every apparatus sweepable the host declares, plus every
+    :param profile: The host whose apparatus and world declarations the reasons come from.
+    :ptype profile: HostProfile
+    :return: ``{dimension: reason}`` for every apparatus sweepable the host declares, plus every
         world dimension under :func:`world_dimension_key`.
+    :rtype: dict[str, str]
     """
     reasons = {
         declared.name: declared.confounds
@@ -160,22 +158,26 @@ def _uncontrolled_dimensions(
     nobody made — and the state is structural rather than worded into the reason, so a
     consumer never has to read prose to find out which of the three cases it is looking at.
 
-    Args:
-        lever: The lever being compared (excluded from its own confound list).
-        cohort_run_ids: Every run in the cohort under comparison.
-        lever_levels: The full lever → level → run-ids map.
-        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
-        folds: The campaign's :class:`_SurfaceFolds`. A resolved surface that varied only because
-            its swept members did is the lever under comparison (or its sibling members) seen a
-            second time, so it is not named — and likewise a surface a fixed knob is written into,
-            where it held one level within each of the knob's. One whose residual or surface could
-            not be read is named as ``undecided``, because whether anything besides the swept knob
-            moved is exactly what no run recorded.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The swept levers that varied within the cohort (sorted), then the apparatus
+    :param lever: The lever being compared (excluded from its own confound list).
+    :ptype lever: str
+    :param cohort_run_ids: Every run in the cohort under comparison.
+    :ptype cohort_run_ids: list[str]
+    :param lever_levels: The full lever → level → run-ids map.
+    :ptype lever_levels: dict[str, dict[str, list[str]]]
+    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :ptype apparatus_levels: dict[str, dict[str, str | None]]
+    :param folds: The campaign's :class:`_SurfaceFolds`. A resolved surface that varied only because
+        its swept members did is the lever under comparison (or its sibling members) seen a
+        second time, so it is not named — and likewise a surface a fixed knob is written into,
+        where it held one level within each of the knob's. One whose residual or surface could
+        not be read is named as ``undecided``, because whether anything besides the swept knob
+        moved is exactly what no run recorded.
+    :ptype folds: _SurfaceFolds
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The swept levers that varied within the cohort (sorted), then the apparatus
         dimensions that varied or could not be decided (in declaration order).
+    :rtype: list[Confound]
     """
     cohort = set(cohort_run_ids)
     confounds: list[Confound] = []
@@ -212,24 +214,24 @@ def _apparatus_confounds(
     and silent under another reads to a generator as a fact about the comparison rather than
     about which run set it was asked over.
 
-    Args:
-        cohort_run_ids: The runs under comparison.
-        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        One entry per dimension that varied or is undecided, **sorted by dimension**. A
+    :param cohort_run_ids: The runs under comparison.
+    :ptype cohort_run_ids: Collection[str]
+    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :ptype apparatus_levels: dict[str, dict[str, str | None]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: One entry per dimension that varied or is undecided, **sorted by dimension**. A
         dimension that held still is absent — that absence is the claim, so it is only ever
         made about runs that recorded a value.
+    :rtype: list[Confound]
 
-    Note:
-        **Sorted rather than emitted in declaration order, because this list is fingerprinted.**
-        ``apparatus_confounds`` and every ``coverage[].confounded_by`` are lists, ``to_dict()``
-        preserves list order, and ``canonical_digest`` sorts dict keys only — so with declaration
-        order the fingerprint moved whenever the registry was rearranged, over evidence that had
-        not changed. A host's declaration order is a layout choice and must not be an input to an
-        identity: the second host to register makes that unavoidable rather than merely untidy,
-        since two hosts have no shared order to agree on.
+    **Sorted rather than emitted in declaration order, because this list is fingerprinted.**
+    ``apparatus_confounds`` and every ``coverage[].confounded_by`` are lists, ``to_dict()``
+    preserves list order, and ``canonical_digest`` sorts dict keys only — so with declaration
+    order the fingerprint moved whenever the registry was rearranged, over evidence that had
+    not changed. A host's declaration order is a layout choice and must not be an input to an
+    identity: the second host to register makes that unavoidable rather than merely untidy,
+    since two hosts have no shared order to agree on.
     """
     cohort = set(cohort_run_ids)
     confounds: list[Confound] = []
@@ -258,15 +260,15 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
     — the case a campaign that swept nothing produces — would otherwise reach a report as a
     bare name with no reason attached, which is the one thing this catalog exists to prevent.
 
-    Args:
-        bundle: The assembled bundle, with coverage and divergences already populated.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        ``{dimension: why}`` for every dimension named anywhere in the bundle's confound
+    :param bundle: The assembled bundle, with coverage and divergences already populated.
+    :ptype bundle: AnalysisContextBundle
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: ``{dimension: why}`` for every dimension named anywhere in the bundle's confound
         lists. A swept lever's reason is generic by design — a campaign sweeping a lever
         already believes it moves the numbers, which is what makes it a lever. An observed
         mechanism's reason is the engine's own, registered beside its threshold.
+    :rtype: dict[str, str]
     """
     catalog: dict[str, str] = {}
     apparatus_reasons = _apparatus_confound_reasons(profile=profile)

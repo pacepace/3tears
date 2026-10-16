@@ -114,18 +114,19 @@ class RecordingRefused(ApparatusError):
     fault rather than the code under test's: raised out of a candidate, its cell is excluded, not scored. The message
     names what was asked and ends with :attr:`remedy`.
 
-    Attributes:
-        path: The recording.
-        remedy: What makes a recording that serves it: usually the command that re-records it.
+    :ivar path: The recording.
+    :ivar remedy: What makes a recording that serves it: usually the command that re-records it.
     """
 
     def __init__(self, path: Path, problem: str, remedy: str) -> None:
         """Name the recording, what it cannot do, and the remedy.
 
-        Args:
-            path: The recording.
-            problem: What it cannot serve, or why it cannot be read, as a clause.
-            remedy: What makes one that serves it.
+        :param path: The recording.
+        :ptype path: Path
+        :param problem: What it cannot serve, or why it cannot be read, as a clause.
+        :ptype problem: str
+        :param remedy: What makes one that serves it.
+        :ptype remedy: str
         """
         self.path = path
         self.remedy = remedy
@@ -138,10 +139,9 @@ class RecordedPrompt(NamedTuple):
     The three arguments of :meth:`~threetears.evals.schema.CompletionClient.generate`, so a test lists the prompts its
     code sends in the form it sends them.
 
-    Attributes:
-        system: The system prompt.
-        user: The user message.
-        response_format: The provider directive, or ``None``.
+    :ivar system: The system prompt.
+    :ivar user: The user message.
+    :ivar response_format: The provider directive, or ``None``.
     """
 
     system: str
@@ -154,25 +154,24 @@ class ReplayedCompletion:
     """A completion as it was recorded, replayed: the ten :class:`~threetears.evals.schema.CompletionResult` members.
 
     Satisfies :class:`~threetears.evals.schema.CompletionResult` structurally, and carries its optional
-    ``sent_settings`` member. Every member holds what the inner client's completion held when it was recorded. ``cost_usd`` and ``price_source`` are a historical fact, what the
-    call cost when it was made and who priced it then, not a quote: a replay calls no price source, and a rate that
-    moved since is not reflected.
+    ``sent_settings`` member. Every member holds what the inner client's completion held when it was recorded.
+    ``cost_usd`` and ``price_source`` are a historical fact, what the call cost when it was made and who priced it then,
+    not a quote: a replay calls no price source, and a rate that moved since is not reflected.
 
-    Attributes:
-        content: The completion's text.
-        input_tokens: Prompt tokens the provider counted, or ``None``.
-        output_tokens: Completion tokens the provider counted, reasoning included, or ``None``.
-        cost_usd: What the call cost when it was recorded, or ``None`` when nothing priced it.
-        price_source: Who priced it then, or ``None``.
-        model: The model the call was attributed to.
-        served_model: The model the provider's response named, or ``None``.
-        reasoning_tokens: The reasoning share of ``output_tokens``, or ``None``.
-        temperature: The temperature the request was sent with, or ``None``.
-        stop_reason: Why the completion stopped, in the engine's vocabulary.
-        sent_settings: What the recorded call's request actually carried, as its completion reported it, or ``None``
-            when it reported nothing: never the settings the replay was asked under.
-        extra: Every other attribute the recorded completion's type declared, by name (a ``served_provider``, say),
-            read-only.
+    :ivar content: The completion's text.
+    :ivar input_tokens: Prompt tokens the provider counted, or ``None``.
+    :ivar output_tokens: Completion tokens the provider counted, reasoning included, or ``None``.
+    :ivar cost_usd: What the call cost when it was recorded, or ``None`` when nothing priced it.
+    :ivar price_source: Who priced it then, or ``None``.
+    :ivar model: The model the call was attributed to.
+    :ivar served_model: The model the provider's response named, or ``None``.
+    :ivar reasoning_tokens: The reasoning share of ``output_tokens``, or ``None``.
+    :ivar temperature: The temperature the request was sent with, or ``None``.
+    :ivar stop_reason: Why the completion stopped, in the engine's vocabulary.
+    :ivar sent_settings: What the recorded call's request actually carried, as its completion reported it, or ``None``
+        when it reported nothing: never the settings the replay was asked under.
+    :ivar extra: Every other attribute the recorded completion's type declared, by name (a ``served_provider``, say),
+        read-only.
     """
 
     content: str
@@ -211,10 +210,9 @@ class RecordedCompletions:
     answer first, so ``k`` repeats split between them replay out of order. Two clients that differ only in their
     request settings are two recorded clients, and each replays its own calls.
 
-    Attributes:
-        FORMAT_VERSION: The recording format this build writes, and the newest it reads.
-        path: The recording.
-        mode: ``"record"`` or ``"replay"``, so an example can say which it did.
+    :ivar FORMAT_VERSION: The recording format this build writes, and the newest it reads.
+    :ivar path: The recording.
+    :ivar mode: ``"record"`` or ``"replay"``, so an example can say which it did.
     """
 
     FORMAT_VERSION: ClassVar[int] = _FORMAT_VERSION
@@ -232,15 +230,19 @@ class RecordedCompletions:
 
         :meth:`record` and :meth:`replay` build one: they read and check the file, which this does not.
 
-        Args:
-            path: The recording.
-            inner: The client every call goes to while recording; ``None`` replays.
-            settings: The request settings the client is built with (recording ``inner``, or replaying the client
-                that was recorded), or ``None`` for one built with none: recorded on every line, and matched on replay.
-            recorded: The calls the recording already holds, by key: the request settings the key was recorded under,
-                and its calls in index order.
-            rerecord: The command that re-records ``path``, quoted in every refusal; ``None`` says to re-record it
-                with the client it stands in for.
+        :param path: The recording.
+        :ptype path: Path
+        :param inner: The client every call goes to while recording; ``None`` replays.
+        :ptype inner: CompletionClient | None
+        :param settings: The request settings the client is built with (recording ``inner``, or replaying the client
+            that was recorded), or ``None`` for one built with none: recorded on every line, and matched on replay.
+        :ptype settings: ClientRequestSettings | None
+        :param recorded: The calls the recording already holds, by key: the request settings the key was recorded under,
+            and its calls in index order.
+        :ptype recorded: Mapping[str, tuple[ClientRequestSettings | None, Sequence[ReplayedCompletion]]]
+        :param rerecord: The command that re-records ``path``, quoted in every refusal; ``None`` says to re-record it
+            with the client it stands in for.
+        :ptype rerecord: str | None
         """
         self.path = path
         self.mode: Literal["record", "replay"] = "replay" if inner is None else "record"
@@ -274,20 +276,20 @@ class RecordedCompletions:
         recorder cannot read them, and a default would record every client as built with none, which is the one
         mistake a replay under changed settings could then not catch.
 
-        Args:
-            inner: The host's real client.
-            path: The recording. Its directory is created when missing.
-            settings: The request settings ``inner`` was built with, the same value its builder applied (for a judge,
-                :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`), or ``None`` when it was built with none.
-                Every line carries them and every key covers them.
-            replace: Remove ``path`` first and record afresh. Pass it when building the client, before any call;
-                without it, an existing recording is never overwritten.
-
-        Returns:
-            The recording client.
-
-        Raises:
-            RecordingRefused: ``path`` holds a line this build cannot read, or one from a newer format.
+        :param inner: The host's real client.
+        :ptype inner: CompletionClient
+        :param path: The recording. Its directory is created when missing.
+        :ptype path: Path
+        :param settings: The request settings ``inner`` was built with, the same value its builder applied (for a judge,
+            :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`), or ``None`` when it was built with none.
+            Every line carries them and every key covers them.
+        :ptype settings: ClientRequestSettings | None
+        :param replace: Remove ``path`` first and record afresh. Pass it when building the client, before any call;
+            without it, an existing recording is never overwritten.
+        :ptype replace: bool
+        :return: The recording client.
+        :rtype: Self
+        :raises RecordingRefused: ``path`` holds a line this build cannot read, or one from a newer format.
         """
         if replace:
             path.unlink(missing_ok=True)
@@ -304,20 +306,19 @@ class RecordedCompletions:
         are known to the caller alone, and a recording made under others is an answer the current configuration never
         asked for.
 
-        Args:
-            path: The recording.
-            settings: The request settings the client this one stands in for is built with, the same value
-                :meth:`record` was given for it, or ``None`` for one built with none (which matches only calls recorded
-                with none).
-            rerecord: The command that re-records ``path`` (``"RECORD=1 pytest tests/test_judge.py"``), quoted in
-                every refusal; ``None`` says to re-record it with the client it stands in for.
-
-        Returns:
-            The replaying client.
-
-        Raises:
-            RecordingRefused: ``path`` does not exist, holds no calls, holds a line this build cannot read, or holds
-                one from a newer format.
+        :param path: The recording.
+        :ptype path: Path
+        :param settings: The request settings the client this one stands in for is built with, the same value
+            :meth:`record` was given for it, or ``None`` for one built with none (which matches only calls recorded
+            with none).
+        :ptype settings: ClientRequestSettings | None
+        :param rerecord: The command that re-records ``path`` (``"RECORD=1 pytest tests/test_judge.py"``), quoted in
+            every refusal; ``None`` says to re-record it with the client it stands in for.
+        :ptype rerecord: str | None
+        :return: The replaying client.
+        :rtype: Self
+        :raises RecordingRefused: ``path`` does not exist, holds no calls, holds a line this build cannot read, or holds
+            one from a newer format.
         """
         recorded = _readable_replay(path, _rerecord_remedy(path, rerecord))
         return cls(path, inner=None, settings=settings, recorded=recorded, rerecord=rerecord)
@@ -338,15 +339,16 @@ class RecordedCompletions:
         ``settings`` selects the client's calls as :meth:`replay` does, and a prompt held only under other request
         settings is named with the settings that differ.
 
-        Args:
-            path: The recording.
-            prompts: Every call the code under test will make.
-            settings: As :meth:`replay`'s, and required for the same reason.
-            rerecord: As :meth:`replay`'s.
-
-        Raises:
-            RecordingRefused: The recording cannot be read (as :meth:`replay`), or holds fewer calls than asked for
-                one or more prompts, or holds them only under other request settings, each named.
+        :param path: The recording.
+        :ptype path: Path
+        :param prompts: Every call the code under test will make.
+        :ptype prompts: Iterable[RecordedPrompt]
+        :param settings: As :meth:`replay`'s, and required for the same reason.
+        :ptype settings: ClientRequestSettings | None
+        :param rerecord: As :meth:`replay`'s.
+        :ptype rerecord: str | None
+        :raises RecordingRefused: The recording cannot be read (as :meth:`replay`), or holds fewer calls than asked for
+            one or more prompts, or holds them only under other request settings, each named.
         """
         remedy = _rerecord_remedy(path, rerecord)
         recorded = _readable_replay(path, remedy)
@@ -373,9 +375,8 @@ class RecordedCompletions:
 
         Recording, the inner client's. Replaying, the one model the recording holds.
 
-        Raises:
-            AttributeError: Recording, the inner client names no model: it is a plain ``CompletionClient``, so this
-                recorder cannot stand in for a bound one.
+        :raises AttributeError: Recording, the inner client names no model: it is a plain ``CompletionClient``, so this
+            recorder cannot stand in for a bound one.
         """
         if self._inner is not None:
             named = getattr(self._inner, "model_name", None)
@@ -390,22 +391,22 @@ class RecordedCompletions:
         return model
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
-        """The most one :meth:`generate` can cost (:meth:`~threetears.evals.schema.BoundCompletionClient.price_ceiling`).
+        """The most one :meth:`generate` can cost
+        (:meth:`~threetears.evals.schema.BoundCompletionClient.price_ceiling`).
 
         Recording, the inner client's ceiling, since every call goes to it. Replaying, ``0.0``: a replay sends
         nothing to a provider and costs nothing (the recorded ``cost_usd`` it hands back is a historical fact, not a
         charge).
 
-        Args:
-            system: The system message the call would send.
-            user: The user message the call would send.
-            response_format: The directive the call would send, or ``None``.
-
-        Returns:
-            The ceiling in dollars, or ``None`` when the inner client cannot say.
-
-        Raises:
-            AttributeError: Recording, the inner client prices nothing: it is a plain ``CompletionClient``.
+        :param system: The system message the call would send.
+        :ptype system: str
+        :param user: The user message the call would send.
+        :ptype user: str
+        :param response_format: The directive the call would send, or ``None``.
+        :ptype response_format: dict[str, Any] | None
+        :return: The ceiling in dollars, or ``None`` when the inner client cannot say.
+        :rtype: float | None
+        :raises AttributeError: Recording, the inner client prices nothing: it is a plain ``CompletionClient``.
         """
         if self._inner is None:
             return 0.0
@@ -428,21 +429,20 @@ class RecordedCompletions:
     ) -> CompletionResult:
         """Record or replay one call.
 
-        Args:
-            system: The system prompt.
-            user: The user message.
-            response_format: The provider directive, or ``None``.
-
-        Returns:
-            Recording, the inner client's completion, unchanged; replaying, the recorded one as a
+        :param system: The system prompt.
+        :ptype system: str
+        :param user: The user message.
+        :ptype user: str
+        :param response_format: The provider directive, or ``None``.
+        :ptype response_format: dict[str, Any] | None
+        :return: Recording, the inner client's completion, unchanged; replaying, the recorded one as a
             :class:`ReplayedCompletion`.
-
-        Raises:
-            RecordingRefused: Replaying, the recording holds no call for this prompt, holds it only under other
-                request settings, or holds fewer calls for it than this one's index. Recording, the completion names
-                another model or temperature than the calls the recording holds.
-            CompletionConformanceFailure: Recording, the inner client's completion lacks a member, or holds a value
-                of the wrong type or one JSON cannot hold.
+        :rtype: CompletionResult
+        :raises RecordingRefused: Replaying, the recording holds no call for this prompt, holds it only under other
+            request settings, or holds fewer calls for it than this one's index. Recording, the completion names
+            another model or temperature than the calls the recording holds.
+        :raises CompletionConformanceFailure: Recording, the inner client's completion lacks a member, or holds a value
+            of the wrong type or one JSON cannot hold.
         """
         if self._inner is None:
             return self._serve(system, user, response_format)
@@ -547,11 +547,10 @@ def _tally(prompts: Iterable[RecordedPrompt]) -> list[tuple[RecordedPrompt, int]
     Counted by the prompt's canonical JSON, not by hashing it: a ``response_format`` is a dict, which does not hash,
     and two directives equal as JSON are the same call however their keys were ordered.
 
-    Args:
-        prompts: The prompts, each repeat listed once per repeat.
-
-    Returns:
-        ``(prompt, times listed)`` per distinct prompt.
+    :param prompts: The prompts, each repeat listed once per repeat.
+    :ptype prompts: Iterable[RecordedPrompt]
+    :return: ``(prompt, times listed)`` per distinct prompt.
+    :rtype: list[tuple[RecordedPrompt, int]]
     """
     tally: dict[str, tuple[RecordedPrompt, int]] = {}
     for prompt in prompts:

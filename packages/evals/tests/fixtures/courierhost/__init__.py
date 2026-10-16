@@ -373,13 +373,14 @@ def courier_cases() -> list[EvalTestCase]:
 def courier_run(model: str, *, cases: Sequence[EvalTestCase], world: WorldRegistry) -> EvalRun:
     """One arm of the bake-off: one planner model over every case, before it executes.
 
-    Args:
-        model: The planner model the arm binds.
-        cases: The cases the arm runs.
-        world: The world the placements are computed against — the one the kind seeds through.
-
-    Returns:
-        The run, pending.
+    :param model: The planner model the arm binds.
+    :ptype model: str
+    :param cases: The cases the arm runs.
+    :ptype cases: Sequence[EvalTestCase]
+    :param world: The world the placements are computed against — the one the kind seeds through.
+    :ptype world: WorldRegistry
+    :return: The run, pending.
+    :rtype: EvalRun
     """
     return EvalRun(
         scope_id=COURIER_SCOPE,
@@ -401,11 +402,10 @@ def courier_run(model: str, *, cases: Sequence[EvalTestCase], world: WorldRegist
 async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
     """Run one round set per planner model and file them as a campaign, all in the host's storage.
 
-    Args:
-        host: The courier host.
-
-    Returns:
-        The stored campaign naming both runs.
+    :param host: The courier host.
+    :ptype host: EvalHost
+    :return: The stored campaign naming both runs.
+    :rtype: EvalCampaign
     """
     world = host.profile.world
     assert world is not None
@@ -463,8 +463,8 @@ def courier_launch_host() -> LaunchHost:
     captures the one subject the courier deploys, freezes the scenario's three rounds, and records
     each arm's search depth and traffic feed on the run.
 
-    Returns:
-        The launching host.
+    :return: The launching host.
+    :rtype: LaunchHost
     """
     eval_host = courier_host()
     world = eval_host.profile.world

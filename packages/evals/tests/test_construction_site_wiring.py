@@ -70,16 +70,18 @@ def _unwired_construction_sites(
     value — a factory, a registry lookup, ``getattr`` — which no AST walk reaches and which the
     gates' messages do not claim to cover.
 
-    Args:
-        symbol: The constructor's name as declared, e.g. ``"EvalJobManager"``.
-        keyword: The keyword argument a wired site must pass.
-        exempt: Repo-relative file paths that legitimately pass none, keyed to the reason.
-        root: The tree to walk. Defaults to the repository; the fabrication test below passes
-            its own, which is the only way to watch these gates go red without writing an
-            unwired construction site into the repo they police.
-
-    Returns:
-        ``"<path>:<lineno>"`` for each unwired, unexempt site, sorted.
+    :param symbol: The constructor's name as declared, e.g. ``"EvalJobManager"``.
+    :ptype symbol: str
+    :param keyword: The keyword argument a wired site must pass.
+    :ptype keyword: str
+    :param exempt: Repo-relative file paths that legitimately pass none, keyed to the reason.
+    :ptype exempt: dict[str, str]
+    :param root: The tree to walk. Defaults to the repository; the fabrication test below passes
+        its own, which is the only way to watch these gates go red without writing an
+        unwired construction site into the repo they police.
+    :ptype root: Path | None
+    :return: ``"<path>:<lineno>"`` for each unwired, unexempt site, sorted.
+    :rtype: list[str]
     """
     repo_root = root or _source_root()
     sites: list[str] = []

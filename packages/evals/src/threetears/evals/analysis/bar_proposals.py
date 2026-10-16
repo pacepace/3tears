@@ -39,17 +39,16 @@ log = get_logger(__name__)
 class BaselineBarProposals:
     """What a baseline campaign proposes as its behavior's bars, and what it could not propose a bar on.
 
-    Attributes:
-        campaign_id: The baseline campaign measured.
-        behavior: The behavior every proposal governs — the campaign's.
-        variant_key: The incumbent's variant: the baseline's one cell.
-        proposals: One per measure with a better end that the host declares, in measure-name order.
-            Each carries ``vacuous`` and its ``reason``; nothing is registered.
-        not_proposed: ``{reading: why}`` for every reading the cell carries that no bar could be proposed on —
-            a measure undeclared by the host, directionless, or with no interval to seed from (fewer than two
-            observations), and every judged dimension, since a registered bar names a declared measure and a
-            judged dimension is not one — and for every declared measure with a better end the cell carries no
-            observation of, so each such measure gets either a proposal or a reason.
+    :ivar campaign_id: The baseline campaign measured.
+    :ivar behavior: The behavior every proposal governs — the campaign's.
+    :ivar variant_key: The incumbent's variant: the baseline's one cell.
+    :ivar proposals: One per measure with a better end that the host declares, in measure-name order.
+        Each carries ``vacuous`` and its ``reason``; nothing is registered.
+    :ivar not_proposed: ``{reading: why}`` for every reading the cell carries that no bar could be proposed on —
+        a measure undeclared by the host, directionless, or with no interval to seed from (fewer than two
+        observations), and every judged dimension, since a registered bar names a declared measure and a
+        judged dimension is not one — and for every declared measure with a better end the cell carries no
+        observation of, so each such measure gets either a proposal or a reason.
     """
 
     campaign_id: str
@@ -88,19 +87,18 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
     no such interval, and nothing is proposed on it. Nor is anything proposed on a measure observed fewer
     than two times: one value has no interval to account for its own error.
 
-    Args:
-        host: The host whose measures, bars and storage this reads.
-        baseline_campaign_id: The campaign that measured the incumbent configuration.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The proposals, each flagged vacuous where nothing could fail it, and the measures nothing
+    :param host: The host whose measures, bars and storage this reads.
+    :ptype host: EvalHost
+    :param baseline_campaign_id: The campaign that measured the incumbent configuration.
+    :ptype baseline_campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The proposals, each flagged vacuous where nothing could fail it, and the measures nothing
         could be proposed on, with why.
-
-    Raises:
-        NotFoundError: No such campaign in the scope.
-        ValidationFailedError: The campaign measured no cell, or more than one — a baseline is one
-            configuration under one rig.
+    :rtype: BaselineBarProposals
+    :raises NotFoundError: No such campaign in the scope.
+    :raises ValidationFailedError: The campaign measured no cell, or more than one — a baseline is one
+        configuration under one rig.
     """
     campaign = host.storage.load_campaign(baseline_campaign_id, scope_id)
     if campaign is None:

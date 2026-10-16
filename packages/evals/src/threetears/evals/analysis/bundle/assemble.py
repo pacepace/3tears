@@ -258,11 +258,10 @@ class CampaignReadStore(Protocol):
 def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
     """Say how the campaign's runs were started, when they were not all started as one launch.
 
-    Args:
-        runs: The resolved member runs.
-
-    Returns:
-        The sentence, or None when every run shares one launch group or there are fewer than two.
+    :param runs: The resolved member runs.
+    :ptype runs: Collection[EvalRun]
+    :return: The sentence, or None when every run shares one launch group or there are fewer than two.
+    :rtype: str | None
     """
     if len(runs) < 2:
         return None
@@ -306,23 +305,25 @@ def assemble_context_bundle(
     otherwise enter each aggregate with nothing marking it, which is the failure the
     archive surface exists to end.
 
-    Args:
-        campaign: The campaign whose runs to summarise.
-        storage: Eval storage — the read surface for runs, results, and insights.
-        insights_as_of: Read the subject's prior insights as the ledger stood at this
-            instant — only those observed strictly before it. ``None`` reads the whole
-            ledger, which is what a generation launched now reads. A re-assembly FOR a stored
-            analysis passes the instant that analysis's bundle was assembled: the generation
-            fingerprints its bundle before it saves the insights it mints, and another analysis can
-            mint during the provider call, so without the cutoff an analysis would re-assemble with
-            insights it never read and could not reproduce itself. Compared as the ISO-8601 strings both stamps are written as.
-            Retraction composes with it rather than being dated by it: of the insights read as of
-            this instant, those whose analysis is archived NOW are retracted, because an archive
-            says the insight was false when it was read too.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        A schema-valid, JSON-serializable :class:`AnalysisContextBundle`.
+    :param campaign: The campaign whose runs to summarise.
+    :ptype campaign: EvalCampaign
+    :param storage: Eval storage — the read surface for runs, results, and insights.
+    :ptype storage: CampaignReadStore
+    :param insights_as_of: Read the subject's prior insights as the ledger stood at this
+        instant — only those observed strictly before it. ``None`` reads the whole
+        ledger, which is what a generation launched now reads. A re-assembly FOR a stored
+        analysis passes the instant that analysis's bundle was assembled: the generation
+        fingerprints its bundle before it saves the insights it mints, and another analysis can
+        mint during the provider call, so without the cutoff an analysis would re-assemble with
+        insights it never read and could not reproduce itself. Compared as the ISO-8601 strings both stamps are written
+        as. Retraction composes with it rather than being dated by it: of the insights read as of
+        this instant, those whose analysis is archived NOW are retracted, because an archive
+        says the insight was false when it was read too.
+    :ptype insights_as_of: str | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: A schema-valid, JSON-serializable :class:`AnalysisContextBundle`.
+    :rtype: AnalysisContextBundle
     """
     scope_id = campaign.scope_id
     # Resolve member runs, keeping an honest record of what did not resolve and what
@@ -865,13 +866,13 @@ def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostPro
     the measure keeps the reader's, with no margin read on it (no comparison on it can read ``equivalent``), and
     that is named too. Runs that recorded none (runs their host assembled without a launch) are read on the reader's.
 
-    Args:
-        runs: The resolved member runs.
-        profile: The reading host's profile.
-
-    Returns:
-        ``(profile, sentences)``: the profile every lens reads, and one sentence per measure read otherwise than
+    :param runs: The resolved member runs.
+    :ptype runs: Sequence[EvalRun]
+    :param profile: The reading host's profile.
+    :ptype profile: HostProfile
+    :return: ``(profile, sentences)``: the profile every lens reads, and one sentence per measure read otherwise than
         the reader declares it.
+    :rtype: tuple[HostProfile, list[str]]
     """
     from threetears.evals.kernel.host.measures import MeasureRegistry
 
@@ -921,12 +922,11 @@ def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]
     it alike. A margin some runs declared and others did not, or that runs declared differently, is read on
     none, and one sentence says so, naming the measures.
 
-    Args:
-        runs: The resolved member runs.
-
-    Returns:
-        ``(margins, withheld)``: the agreed margins by measure, in name order, and the sentence naming the
+    :param runs: The resolved member runs.
+    :ptype runs: Sequence[EvalRun]
+    :return: ``(margins, withheld)``: the agreed margins by measure, in name order, and the sentence naming the
         measures whose declared margins disagree, or None.
+    :rtype: tuple[dict[str, float], str | None]
     """
     declared = sorted({name for run in runs for name in run.declared_margins})
     agreed: dict[str, float] = {}

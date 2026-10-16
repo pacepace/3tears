@@ -98,19 +98,19 @@ class TemperatureCaseAnswers(EvalBaseModel, CoreShapeModel):
 class JudgeTemperatureAnswers(EvalBaseModel, CoreShapeModel):
     """What a judge temperature comparison asked, was answered and spent — before anything is read off it.
 
-    Attributes:
-        run_id: The run.
-        judge_model: The run's judge pin.
-        selection: Which scored dims were re-judged.
-        repeats: Calls per dim per setting.
-        results: The results re-judged.
-        cases: The (result, dim) pairs re-judged.
-        answers: Per case and setting, every answer in call order.
-        skipped: The run's results not re-judged, each with why — decided before anything was spent.
-        stopped: Why it stopped before its last result, when it did.
-        calls_made: Judge calls made, ledgered under purpose ``judge``, and one whose ledger row could not be written counted all the same.
-        cost_usd: What they cost together; ``None`` when any went unpriced.
-        cap_usd: The out-of-run cap they were admitted under; ``None`` when the host enforces none.
+    :ivar run_id: The run.
+    :ivar judge_model: The run's judge pin.
+    :ivar selection: Which scored dims were re-judged.
+    :ivar repeats: Calls per dim per setting.
+    :ivar results: The results re-judged.
+    :ivar cases: The (result, dim) pairs re-judged.
+    :ivar answers: Per case and setting, every answer in call order.
+    :ivar skipped: The run's results not re-judged, each with why — decided before anything was spent.
+    :ivar stopped: Why it stopped before its last result, when it did.
+    :ivar calls_made: Judge calls made, ledgered under purpose ``judge``, and one whose ledger row could not be written
+        counted all the same.
+    :ivar cost_usd: What they cost together; ``None`` when any went unpriced.
+    :ivar cap_usd: The out-of-run cap they were admitted under; ``None`` when the host enforces none.
     """
 
     run_id: str

@@ -27,11 +27,10 @@ _BYTECODE_CACHE = "__pycache__"
 def _holds_more_than_bytecode(directory: Path) -> bool:
     """Whether any file under ``directory`` lies outside a bytecode cache.
 
-    Args:
-        directory: The directory to inspect.
-
-    Returns:
-        ``True`` when at least one file is not inside a ``__pycache__`` directory.
+    :param directory: The directory to inspect.
+    :ptype directory: Path
+    :return: ``True`` when at least one file is not inside a ``__pycache__`` directory.
+    :rtype: bool
     """
     return any(
         path.is_file() and _BYTECODE_CACHE not in path.relative_to(directory).parts for path in directory.rglob("*")
@@ -44,11 +43,10 @@ def tree_subdirectories(root: Path) -> list[Path]:
     Private (``_``-prefixed) and hidden (``.``-prefixed) directories are not trees, and neither is
     a directory whose only content is bytecode cache.
 
-    Args:
-        root: The package directory to list.
-
-    Returns:
-        The subdirectories that hold anything besides ``__pycache__``.
+    :param root: The package directory to list.
+    :ptype root: Path
+    :return: The subdirectories that hold anything besides ``__pycache__``.
+    :rtype: list[Path]
     """
     return sorted(
         path

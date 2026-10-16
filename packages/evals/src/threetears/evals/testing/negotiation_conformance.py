@@ -88,15 +88,14 @@ class NegotiationConformanceFailure(AssertionError):
     An :class:`AssertionError`, so a test runner reports it as a failed assertion. The message lists every mistake,
     one per line, each beginning with the scripted router it was made against, and :attr:`mistakes` holds them.
 
-    Attributes:
-        mistakes: Each mistake, as a sentence naming what the client did and what it should have done.
+    :ivar mistakes: Each mistake, as a sentence naming what the client did and what it should have done.
     """
 
     def __init__(self, mistakes: list[str]) -> None:
         """Name every mistake.
 
-        Args:
-            mistakes: The mistakes, in the order the check met them.
+        :param mistakes: The mistakes, in the order the check met them.
+        :ptype mistakes: list[str]
         """
         self.mistakes = tuple(mistakes)
         super().__init__("the client does not negotiate a router's refusals as it must:\n  " + "\n  ".join(mistakes))
@@ -325,16 +324,14 @@ async def check_refusal_negotiation(build_client: Callable[[RouterTransport], Co
     built over each, and two calls on it, each with a strict reply schema: the first is refused and must be resent
     in order and reported as served; the second must go out as what the first proved, at once.
 
-    Args:
-        build_client: Builds the host's client over a scripted router (see the module docstring for how).
-
-    Raises:
-        NegotiationConformanceFailure: Naming every mistake: the setup's (a first request without a temperature, an
-            output cap, an effort word or enforcement), the resending's (none, out of order, too many, a refused
-            setting sent again), the reporting's (a temperature, cap, effort word or enforcement reported that the
-            served request did not carry, or no ``sent_settings``), and the remembering's (what a served request
-            proved forgotten, or what it did not prove kept: a temperature, or enforcement dropped beyond its call).
-            Chained to the first exception a call raised, if any did.
+    :param build_client: Builds the host's client over a scripted router (see the module docstring for how).
+    :ptype build_client: Callable[[RouterTransport], CompletionClient]
+    :raises NegotiationConformanceFailure: Naming every mistake: the setup's (a first request without a temperature, an
+        output cap, an effort word or enforcement), the resending's (none, out of order, too many, a refused
+        setting sent again), the reporting's (a temperature, cap, effort word or enforcement reported that the
+        served request did not carry, or no ``sent_settings``), and the remembering's (what a served request
+        proved forgotten, or what it did not prove kept: a temperature, or enforcement dropped beyond its call).
+        Chained to the first exception a call raised, if any did.
     """
     mistakes: list[str] = []
     raised: Exception | None = None
@@ -352,9 +349,9 @@ async def _run(
 ) -> tuple[Exception | None, bool]:
     """Two calls on a client built over ``router``, each mistake added to ``mistakes``.
 
-    Returns:
-        What a call raised first, or ``None``; and whether the client's requests can be read at all (it sent one,
+    :return: What a call raised first, or ``None``; and whether the client's requests can be read at all (it sent one,
         and the first asked for everything the routers refuse).
+    :rtype: tuple[Exception | None, bool]
     """
     client = build_client(router)
     raised: Exception | None = None

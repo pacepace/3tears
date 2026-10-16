@@ -109,8 +109,8 @@ def _campaign_family(
     are. ``effects[c][r]`` is contrast ``c``'s true shift on reading ``r``, in units of its per-case
     difference SD (d_z).
 
-    Returns:
-        The family, contrast-major, as :func:`family_verdicts` takes it (higher is better on every reading).
+    :return: The family, contrast-major, as :func:`family_verdicts` takes it (higher is better on every reading).
+    :rtype: list[tuple[dict[str, float], dict[str, float], bool]]
     """
     cases = [f"case-{index}" for index in range(design.n_cases)]
     case_levels = [[rng.gauss(0.0, design.between_case_sd) for _ in range(readings)] for _ in cases]
@@ -345,8 +345,8 @@ def _seeded_campaign(
     which case indices an arm ran (default: the first ``n_cases``; up to ``n_cases + 4``), so a contrast can
     share some or only one of the control's cases and take the paired or the unpaired branch.
 
-    Returns:
-        The bundle, and ``{(arm, reading): {case id: per-case mean}}`` as the observations were written.
+    :return: The bundle, and ``{(arm, reading): {case id: per-case mean}}`` as the observations were written.
+    :rtype: tuple[AnalysisContextBundle, dict[tuple[str, str], dict[str, float]]]
     """
     runs, results = [], {}
     written: dict[tuple[str, str], dict[str, float]] = {}

@@ -99,15 +99,18 @@ def adaptive_job_timeout_s(
     ``[floor_s, cap_s]`` so a single-cell run still gets a floor and a
     pathological matrix can't request an unbounded budget.
 
-    Args:
-        n_results: Total cells in the run — ``len(test_cases) × len(models) × k_runs``.
-        per_result_s: Per-cell wall-clock ceiling (the runner's ``cell_timeout_s``).
-        margin: Multiplier for per-cell loop overhead and scheduling jitter.
-        floor_s: Minimum budget, regardless of matrix size.
-        cap_s: Absolute maximum budget, regardless of matrix size.
-
-    Returns:
-        The job timeout in seconds, within ``[floor_s, cap_s]``.
+    :param n_results: Total cells in the run — ``len(test_cases) × len(models) × k_runs``.
+    :ptype n_results: int
+    :param per_result_s: Per-cell wall-clock ceiling (the runner's ``cell_timeout_s``).
+    :ptype per_result_s: float
+    :param margin: Multiplier for per-cell loop overhead and scheduling jitter.
+    :ptype margin: float
+    :param floor_s: Minimum budget, regardless of matrix size.
+    :ptype floor_s: float
+    :param cap_s: Absolute maximum budget, regardless of matrix size.
+    :ptype cap_s: float
+    :return: The job timeout in seconds, within ``[floor_s, cap_s]``.
+    :rtype: float
     """
     raw = n_results * per_result_s * margin
     return max(floor_s, min(cap_s, raw))
@@ -133,10 +136,12 @@ class RunEndHook(Protocol):
     async def __call__(self, run_id: str, scope_id: str, status: str) -> None:
         """Hear that ``run_id`` reached ``status``.
 
-        Args:
-            run_id: The run.
-            scope_id: Its scope.
-            status: The terminal status recorded.
+        :param run_id: The run.
+        :ptype run_id: str
+        :param scope_id: Its scope.
+        :ptype scope_id: str
+        :param status: The terminal status recorded.
+        :ptype status: str
         """
         ...  # pragma: no cover — protocol
 
@@ -176,18 +181,15 @@ async def _finish_even_if_cancelled(write: Coroutine[Any, Any, _T]) -> _T:
     status over it anyway, and a dropped progress tick is superseded by the next
     cell's — both already stated where they are written.
 
-    Args:
-        write: The coroutine performing the write.
-
-    Returns:
-        Whatever ``write`` returns.
-
-    Raises:
-        asyncio.CancelledError: If ``write`` itself is cancelled. A cancel aimed at the
-            CALLER is absorbed, including when the write has already finished — the
-            distinction is whether the write task is cancelled, not whether it is done.
-        Exception: Whatever ``write`` raises. A genuine storage failure propagates to the
-            caller rather than being masked as a cancellation.
+    :param write: The coroutine performing the write.
+    :ptype write: Coroutine[Any, Any, _T]
+    :return: Whatever ``write`` returns.
+    :rtype: _T
+    :raises asyncio.CancelledError: If ``write`` itself is cancelled. A cancel aimed at the
+        CALLER is absorbed, including when the write has already finished — the
+        distinction is whether the write task is cancelled, not whether it is done.
+    :raises Exception: Whatever ``write`` raises. A genuine storage failure propagates to the
+        caller rather than being masked as a cancellation.
     """
     task = asyncio.ensure_future(write)
     while True:
@@ -232,14 +234,17 @@ class _GroupSlot:
     ) -> None:
         """Bind the group to the manager's semaphore.
 
-        Args:
-            semaphore: The manager's concurrency semaphore.
-            members: How many jobs the group holds; each must call :meth:`leave` exactly once.
-            weight: How many of the semaphore's slots the group takes: 1, or every slot for a group
-                measuring latency.
-            exclusive_turn: The manager's lock that a group taking every slot acquires them under, so two
-                such groups never each hold part of the semaphore waiting for the rest; given exactly
-                when the group takes every slot, whose members then run one at a time.
+        :param semaphore: The manager's concurrency semaphore.
+        :ptype semaphore: asyncio.Semaphore
+        :param members: How many jobs the group holds; each must call :meth:`leave` exactly once.
+        :ptype members: int
+        :param weight: How many of the semaphore's slots the group takes: 1, or every slot for a group
+            measuring latency.
+        :ptype weight: int
+        :param exclusive_turn: The manager's lock that a group taking every slot acquires them under, so two
+            such groups never each hold part of the semaphore waiting for the rest; given exactly
+            when the group takes every slot, whose members then run one at a time.
+        :ptype exclusive_turn: asyncio.Lock | None
         """
         self._semaphore = semaphore
         self._remaining = members
@@ -293,9 +298,10 @@ class AdmissionTicket:
     def __init__(self, manager: EvalJobManager, runs: int) -> None:
         """Bind the ticket to the manager whose reservation count it holds a share of.
 
-        Args:
-            manager: The manager that issued it.
-            runs: How many runs it reserves.
+        :param manager: The manager that issued it.
+        :ptype manager: EvalJobManager
+        :param runs: How many runs it reserves.
+        :ptype runs: int
         """
         self._manager = manager
         self._held = runs
@@ -312,15 +318,12 @@ class AdmissionTicket:
         asking the manager for room, so a launch that arrived after the caller cannot take the room
         the caller was already given, and the caller's later launches cannot be refused part-way.
 
-        Args:
-            runs: How many runs the new ticket reserves.
-
-        Returns:
-            A ticket holding ``runs`` of this one's reservation.
-
-        Raises:
-            ValueError: This ticket holds fewer than ``runs`` — the caller admitted less than it
-                is now starting, which no caller input can cause.
+        :param runs: How many runs the new ticket reserves.
+        :ptype runs: int
+        :return: A ticket holding ``runs`` of this one's reservation.
+        :rtype: AdmissionTicket
+        :raises ValueError: This ticket holds fewer than ``runs`` — the caller admitted less than it
+            is now starting, which no caller input can cause.
         """
         if runs > self._held:
             raise ValueError(f"cannot split {runs} run(s) off an admission holding {self._held}")
@@ -377,43 +380,50 @@ class EvalJobManager:
     ):
         """Wire the job manager to storage and configure concurrency.
 
-        Args:
-            storage: The run document store this manager persists ``EvalRun``
-                progress and status through — the two conditional-write
-                primitives and nothing else.
-            max_concurrent: Cap on simultaneously running jobs (semaphore-gated).
-            on_progress: Optional ``(job_id, progress_dict)`` callback fired
-                on every progress update — typically wired to a WebSocket
-                broadcast.
-            job_timeout_s: The wall-clock budget, in seconds, for a launch-group
-                member that carries none of its own; a job that exceeds its
-                budget is cancelled and recorded ``budget_stopped``, its reason
-                naming the clock.
-            job_timeout_factory: Builds the context manager each job runs
-                inside, called with that job's resolved budget. Defaults to
-                :func:`default_job_timeout`, which is asyncio and nothing else;
-                a host with its own timeout machinery injects a factory built
-                on it, and :class:`JobTimeoutFactory` states what that factory
-                owes the manager. Keyword-only so a construction site names it,
-                which is what
-                ``tests/test_construction_site_wiring.py`` checks
-                for on every non-test site.
-            blocking_executor: Where the manager's storage round-trips run — the
-                run saves a launch starts with, and every status and progress
-                write. ``None`` is the loop's default executor. A host whose
-                default executor serves something that must not queue behind
-                eval traffic (a liveness probe, say) passes a pool of its
-                own; the same construction-site gate requires every non-test
-                site to name one.
-            on_run_end: Told each run's recorded terminal status (:class:`RunEndHook`), or
-                ``None`` for nobody. What it raises is logged and never changes the run.
-            leases: The process's job leases (:class:`~threetears.evals.kernel.job_leases.JobLeases`), over the
-                store the runs are saved to: every run is saved carrying a lease and renewed while its job
-                lives, a cancel asked of it on its record from any process reaches it, and a shutdown writes
-                it lost. ``None`` saves runs with no lease, which every reader of the job contract
-                (:func:`~threetears.evals.ops.job_poll`) reads as lost — for a harness that reads its runs
-                through this manager alone (:meth:`wait_for`), never a host serving the job contract;
-                the construction-site gate requires every non-test site to name it.
+        :param storage: The run document store this manager persists ``EvalRun``
+            progress and status through — the two conditional-write
+            primitives and nothing else.
+        :ptype storage: JobStore
+        :param max_concurrent: Cap on simultaneously running jobs (semaphore-gated).
+        :ptype max_concurrent: int
+        :param on_progress: Optional ``(job_id, progress_dict)`` callback fired
+            on every progress update — typically wired to a WebSocket
+            broadcast.
+        :ptype on_progress: Callable[[str, dict[str, Any]], None] | None
+        :param job_timeout_s: The wall-clock budget, in seconds, for a launch-group
+            member that carries none of its own; a job that exceeds its
+            budget is cancelled and recorded ``budget_stopped``, its reason
+            naming the clock.
+        :ptype job_timeout_s: float
+        :param job_timeout_factory: Builds the context manager each job runs
+            inside, called with that job's resolved budget. Defaults to
+            :func:`default_job_timeout`, which is asyncio and nothing else;
+            a host with its own timeout machinery injects a factory built
+            on it, and :class:`JobTimeoutFactory` states what that factory
+            owes the manager. Keyword-only so a construction site names it,
+            which is what
+            ``tests/test_construction_site_wiring.py`` checks
+            for on every non-test site.
+        :ptype job_timeout_factory: JobTimeoutFactory | None
+        :param blocking_executor: Where the manager's storage round-trips run — the
+            run saves a launch starts with, and every status and progress
+            write. ``None`` is the loop's default executor. A host whose
+            default executor serves something that must not queue behind
+            eval traffic (a liveness probe, say) passes a pool of its
+            own; the same construction-site gate requires every non-test
+            site to name one.
+        :ptype blocking_executor: Executor | None
+        :param on_run_end: Told each run's recorded terminal status (:class:`RunEndHook`), or
+            ``None`` for nobody. What it raises is logged and never changes the run.
+        :ptype on_run_end: RunEndHook | None
+        :param leases: The process's job leases (:class:`~threetears.evals.kernel.job_leases.JobLeases`), over the
+            store the runs are saved to: every run is saved carrying a lease and renewed while its job
+            lives, a cancel asked of it on its record from any process reaches it, and a shutdown writes
+            it lost. ``None`` saves runs with no lease, which every reader of the job contract
+            (:func:`~threetears.evals.ops.job_poll`) reads as lost — for a harness that reads its runs
+            through this manager alone (:meth:`wait_for`), never a host serving the job contract;
+            the construction-site gate requires every non-test site to name it.
+        :ptype leases: JobLeases | None
         """
         self._storage = storage
         self._max_concurrent = max_concurrent
@@ -531,17 +541,16 @@ class EvalJobManager:
         Synchronous and without an await, so the check and the reservation cannot be separated by
         another launch.
 
-        Args:
-            runs: How many runs the launch will admit.
-            limit: The most runs that may be admitted and unfinished at once. Passed per call,
-                because the host's value is hot-reloadable.
-            limit_name: What an operator sets to change ``limit``, for the refusal to name.
-
-        Returns:
-            A ticket holding the reservation; release it when the runs are started or abandoned.
-
-        Raises:
-            AdmissionRefusedError: Admitting ``runs`` would pass ``limit``.
+        :param runs: How many runs the launch will admit.
+        :ptype runs: int
+        :param limit: The most runs that may be admitted and unfinished at once. Passed per call,
+            because the host's value is hot-reloadable.
+        :ptype limit: int
+        :param limit_name: What an operator sets to change ``limit``, for the refusal to name.
+        :ptype limit_name: str
+        :return: A ticket holding the reservation; release it when the runs are started or abandoned.
+        :rtype: AdmissionTicket
+        :raises AdmissionRefusedError: Admitting ``runs`` would pass ``limit``.
         """
         admitted = self.admitted_count
         if admitted + runs > limit:
@@ -556,8 +565,8 @@ class EvalJobManager:
         rests on has one owner; a ticket hands its share back through this rather than reaching
         into the count.
 
-        Args:
-            runs: How many reserved runs to hand back; zero for a ticket already released.
+        :param runs: How many reserved runs to hand back; zero for a ticket already released.
+        :ptype runs: int
         """
         self._reserved -= runs
 
@@ -587,8 +596,8 @@ class EvalJobManager:
         manager as it ends, and the two cases cannot be told apart here, so the run's stored status
         is the authority either way.
 
-        Args:
-            job_ids: The runs' ids, as :meth:`start_group` returned them, or tasks' ids, as :meth:`start_task` did.
+        :param job_ids: The runs' ids, as :meth:`start_group` returned them, or tasks' ids, as :meth:`start_task` did.
+        :ptype job_ids: Sequence[str]
         """
         tasks = [
             task for job_id in job_ids if (task := self._tasks.get(job_id) or self._detached.get(job_id)) is not None
@@ -604,16 +613,16 @@ class EvalJobManager:
         status (with ``reason``, when given) as it unwinds — typically
         at its next await point.
 
-        Args:
-            job_id: Run id to cancel.
-            reason: Optional operator-facing reason recorded on the terminal
-                status write, always to ``EvalRun.cancellation_reason`` and never
-                to ``error_details``. Every run :meth:`start_group` starts is saved
-                before its task exists, so there is always a document to write it to.
-
-        Returns:
-            True if cancellation was requested, False if the job
+        :param job_id: Run id to cancel.
+        :ptype job_id: str
+        :param reason: Optional operator-facing reason recorded on the terminal
+            status write, always to ``EvalRun.cancellation_reason`` and never
+            to ``error_details``. Every run :meth:`start_group` starts is saved
+            before its task exists, so there is always a document to write it to.
+        :ptype reason: str | None
+        :return: True if cancellation was requested, False if the job
             is not found or already done.
+        :rtype: bool
         """
         task = self._tasks.get(job_id)
         if task is None or task.done():
@@ -640,11 +649,10 @@ class EvalJobManager:
         run-end hook is not called, since no ending of the run's own was recorded. A run whose loss could not be
         written (logged) keeps its own ending as it unwinds, which is recorded and heard as any other.
 
-        Args:
-            timeout: Seconds to wait for every cancelled job to finish.
-
-        Returns:
-            The ids of the jobs still unfinished when the wait ended; empty when all settled.
+        :param timeout: Seconds to wait for every cancelled job to finish.
+        :ptype timeout: float
+        :return: The ids of the jobs still unfinished when the wait ended; empty when all settled.
+        :rtype: list[str]
         """
         if self._leases is not None:
             ended = await self._leases.shut_down()
@@ -705,34 +713,36 @@ class EvalJobManager:
         whole matrix takes, and short work queued behind two of them would wait hours for no reason
         of its own. Nor does it count toward run admission.
 
-        Args:
-            job_id: The task's id; the caller's record of the work should carry the same id, so
-                the two can be joined once the task is gone.
-            work: The coroutine function to run. Whatever it raises ends the task and is logged,
-                never re-raised — the work's own record is where its ending is stated; a ``record`` the work
-                left unended is written lost, its cause what the work raised.
-            budget_s: The wall-clock ceiling, entered through this manager's timeout factory. The
-                caller derives it from the work's own inner ceilings. ``None`` for work that enters its own
-                (:attr:`job_timeout_factory`), because how it ends when that fires is the work's to record: a
-                budget firing here cancels the work, which cannot tell it from an operator's cancel.
-            key: An exclusivity key: while a task with this key is live, starting another with
-                the same key is refused. ``None`` for no exclusivity.
-            record: The work's own record, ``(its kind, its scope)``, whose id is ``job_id``, already
-                written carrying a lease from :meth:`JobLeases.grant
-                <threetears.evals.kernel.job_leases.JobLeases.grant>`: held until the task ends, so a cancel asked
-                of it on the record from any process cancels the task, and a lease lost stops it. ``None``
-                for work with no record of its own here.
-            discard: Releases what ``work`` was handed and would have released itself (an admission's reserved
-                room, the clients a priced call was admitted on), awaited when the task ends without ``work``
-                having begun — cancelled before its first step, which runs none of its body. ``None`` when
-                ``work`` holds nothing it must release.
-
-        Returns:
-            ``job_id``.
-
-        Raises:
-            ConflictError: A live task already holds ``key``.
-            ValueError: ``record`` is given to a manager with no leases.
+        :param job_id: The task's id; the caller's record of the work should carry the same id, so
+            the two can be joined once the task is gone.
+        :ptype job_id: str
+        :param work: The coroutine function to run. Whatever it raises ends the task and is logged,
+            never re-raised — the work's own record is where its ending is stated; a ``record`` the work
+            left unended is written lost, its cause what the work raised.
+        :ptype work: Callable[[], Awaitable[None]]
+        :param budget_s: The wall-clock ceiling, entered through this manager's timeout factory. The
+            caller derives it from the work's own inner ceilings. ``None`` for work that enters its own
+            (:attr:`job_timeout_factory`), because how it ends when that fires is the work's to record: a
+            budget firing here cancels the work, which cannot tell it from an operator's cancel.
+        :ptype budget_s: float | None
+        :param key: An exclusivity key: while a task with this key is live, starting another with
+            the same key is refused. ``None`` for no exclusivity.
+        :ptype key: str | None
+        :param record: The work's own record, ``(its kind, its scope)``, whose id is ``job_id``, already
+            written carrying a lease from :meth:`JobLeases.grant
+            <threetears.evals.kernel.job_leases.JobLeases.grant>`: held until the task ends, so a cancel asked
+            of it on the record from any process cancels the task, and a lease lost stops it. ``None``
+            for work with no record of its own here.
+        :ptype record: tuple[LeasedJobKind[Any], str] | None
+        :param discard: Releases what ``work`` was handed and would have released itself (an admission's reserved
+            room, the clients a priced call was admitted on), awaited when the task ends without ``work``
+            having begun — cancelled before its first step, which runs none of its body. ``None`` when
+            ``work`` holds nothing it must release.
+        :ptype discard: Callable[[], Awaitable[None]] | None
+        :return: ``job_id``.
+        :rtype: str
+        :raises ConflictError: A live task already holds ``key``.
+        :raises ValueError: ``record`` is given to a manager with no leases.
         """
         if key is not None:
             self._refuse_held(key)
@@ -790,12 +800,11 @@ class EvalJobManager:
         The task's work records its own ending as it unwinds (a generation writes a ``cancelled``
         attempt), so nothing is written here; a caller confirms the ending by reading that record.
 
-        Args:
-            job_id: The task's id, as :meth:`start_task` returned it.
-
-        Returns:
-            True when cancellation was requested; False when no such task is tracked or it has
+        :param job_id: The task's id, as :meth:`start_task` returned it.
+        :ptype job_id: str
+        :return: True when cancellation was requested; False when no such task is tracked or it has
             already ended.
+        :rtype: bool
         """
         task = self._detached.get(job_id)
         if task is None or task.done():
@@ -817,15 +826,13 @@ class EvalJobManager:
         Taken and released on the loop with no await between the check and the take, so two
         callers cannot both hold it.
 
-        Args:
-            key: The exclusivity key.
-            holder_id: The id the holder is reported under, as a task's ``job_id`` is.
-
-        Yields:
-            Nothing; the key is held for the ``with`` block and released however it ends.
-
-        Raises:
-            ConflictError: A live task or another holder already holds ``key``.
+        :param key: The exclusivity key.
+        :ptype key: str
+        :param holder_id: The id the holder is reported under, as a task's ``job_id`` is.
+        :ptype holder_id: str
+        :yield: Nothing; the key is held for the ``with`` block and released however it ends.
+        :rtype: Iterator[None]
+        :raises ConflictError: A live task or another holder already holds ``key``.
         """
         self._refuse_held(key)
         self._held_keys[holder_id] = key
@@ -906,19 +913,17 @@ class EvalJobManager:
 
         Every run is saved before any task starts, so a storage refusal leaves nothing running.
 
-        Args:
-            members: ``(run, work, job_timeout_s)`` per run; a ``None`` timeout falls back to the manager's default.
-            measure_latency: The group's launch declared latency under test: it takes every concurrency
-                slot, so no other run executes beside it, and its members run one at a time
-                (:class:`_GroupSlot`). Latency-blind otherwise: one slot, members side by side.
-
-        Returns:
-            The run ids, in the order given.
-
-        Raises:
-            ValueError: ``members`` is empty.
-            asyncio.CancelledError: The caller was cancelled while the runs were being saved; they
-                were settled ``cancelled`` and none started.
+        :param members: ``(run, work, job_timeout_s)`` per run; a ``None`` timeout falls back to the manager's default.
+        :ptype members: Sequence[tuple[EvalRun, WorkFn, float | None]]
+        :param measure_latency: The group's launch declared latency under test: it takes every concurrency
+            slot, so no other run executes beside it, and its members run one at a time
+            (:class:`_GroupSlot`). Latency-blind otherwise: one slot, members side by side.
+        :ptype measure_latency: bool
+        :return: The run ids, in the order given.
+        :rtype: list[str]
+        :raises ValueError: ``members`` is empty.
+        :raises asyncio.CancelledError: The caller was cancelled while the runs were being saved; they
+            were settled ``cancelled`` and none started.
         """
         if not members:
             raise ValueError("a launch group needs at least one run")
@@ -980,8 +985,8 @@ class EvalJobManager:
         <threetears.evals.kernel.job_leases.JobLeases.let_go>`), the one rule every leased job kind's writes keep.
         A manager with no leases holds nothing to let go of: the record's own ``lost`` refuses the run's writes.
 
-        Args:
-            run_id: The run.
+        :param run_id: The run.
+        :ptype run_id: str
         """
         if self._leases is not None:
             self._leases.let_go(run_id)
@@ -998,8 +1003,8 @@ class EvalJobManager:
         carrying a lease (when the manager holds leases), so no reader ever finds one not ended and
         unleased — which reads lost.
 
-        Args:
-            runs: The group's runs, in the order they are started.
+        :param runs: The group's runs, in the order they are started.
+        :ptype runs: list[EvalRun]
         """
         saved: list[EvalRun] = []
         try:
@@ -1020,9 +1025,10 @@ class EvalJobManager:
         Each is settled on its own: one that cannot be saved is logged, and must neither stop the
         rest being settled nor replace the error that abandoned the group.
 
-        Args:
-            runs: The runs to settle.
-            reason: The cancellation reason each records.
+        :param runs: The runs to settle.
+        :ptype runs: list[EvalRun]
+        :param reason: The cancellation reason each records.
+        :ptype reason: str
         """
         for run in runs:
             run.status = "cancelled"
@@ -1400,18 +1406,19 @@ class EvalJobManager:
         The blocking half of :meth:`_update_progress`, kept whole so the load and
         the conditional save share a single worker-thread hop.
 
-        Args:
-            run_id: The run to stamp.
-            scope_id: Partition key the store reads the run under.
-            progress: The progress payload to record.
-
-        Returns:
-            ``"saved"``, or ``"refused"`` when the conditional write lost its race or
+        :param run_id: The run to stamp.
+        :ptype run_id: str
+        :param scope_id: Partition key the store reads the run under.
+        :ptype scope_id: str
+        :param progress: The progress payload to record.
+        :ptype progress: dict[str, Any]
+        :return: ``"saved"``, or ``"refused"`` when the conditional write lost its race or
             failed — a tick is not retried, since the next one supersedes it; ``None`` when there is no
             document to write to — one deleted from under the live job; ``"declined"`` when the run has
             already reached a terminal status, which no progress tick may reopen; or ``"fenced"`` when that
             status is a loss another writer recorded, so this job no longer holds the run. None of the last
             three is a refusal and none is logged as one.
+        :rtype: Literal['saved', 'refused', 'declined', 'fenced'] | None
         """
         run, etag = self._storage.load_eval_run_with_etag(run_id, scope_id)
         if run is None:

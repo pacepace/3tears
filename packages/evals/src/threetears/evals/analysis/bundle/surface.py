@@ -31,12 +31,12 @@ def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> 
     out of step with what the summaries actually reference: every name here came from a
     summary, and every summary's name is resolvable here.
 
-    Args:
-        bundle: The assembled bundle, before its catalog is attached.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        Descriptors keyed by measure name, in name order for a stable fingerprint.
+    :param bundle: The assembled bundle, before its catalog is attached.
+    :ptype bundle: AnalysisContextBundle
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: Descriptors keyed by measure name, in name order for a stable fingerprint.
+    :rtype: dict[str, MetricDescriptor]
     """
     collections = [
         bundle.telemetry.measures,
@@ -60,11 +60,10 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
     included — so the unit, axis and direction frozen beside a cell's value are the ones the generator
     was handed for the same name, never a second lookup that could disagree with it.
 
-    Args:
-        bundle: An assembled bundle.
-
-    Returns:
-        One entry per measure name appearing in any cell — the time axis's included — in name order.
+    :param bundle: An assembled bundle.
+    :ptype bundle: AnalysisContextBundle
+    :return: One entry per measure name appearing in any cell — the time axis's included — in name order.
+    :rtype: dict[str, MeasureFacts]
     """
     cells = [*bundle.cell_measures, *_time_axis_cells(bundle)]
     names = sorted(
@@ -94,11 +93,10 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
     entry there by construction: a cell's judged readings are ``judged_measures`` transposed
     (:func:`_cell_measures`).
 
-    Args:
-        bundle: An assembled bundle.
-
-    Returns:
-        One entry per dimension appearing in any cell, in name order.
+    :param bundle: An assembled bundle.
+    :ptype bundle: AnalysisContextBundle
+    :return: One entry per dimension appearing in any cell, in name order.
+    :rtype: dict[str, JudgedDimensionFacts]
     """
     described = {measure.name: measure for measure in bundle.judged_measures}
     names = sorted({reading.dimension for cell in bundle.cell_measures for reading in cell.judged})
@@ -122,11 +120,10 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
     need not carry once the identity predicate has moved. The arm table of a stored analysis reads it from
     here, so the two cannot name different arms.
 
-    Args:
-        bundle: The evidence set.
-
-    Returns:
-        The decision surface.
+    :param bundle: The evidence set.
+    :ptype bundle: AnalysisContextBundle
+    :return: The decision surface.
+    :rtype: DecisionSurface
     """
     return DecisionSurface(
         control_variant_key=bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None,
@@ -151,17 +148,17 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
 def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance]:
     """Each variant's standing on the frontier lens — the verdict a frontier chart draws, never recomputed.
 
-    The lens decides domination by test over per-case values (:func:`~threetears.evals.analysis.lenses.frontier.compute_frontier`),
-    which a frozen surface does not carry, so a chart deciding it again from the surface's means would be a
-    second rule for one question, and on means it called one of two identical arms dominated a third of the
-    time. Keyed by variant because a cell is one; a variant the lens placed as more than one point (under two
-    identity versions, or two subjects) has no one standing and is left out, so a chart reads it as untested.
+    The lens decides domination by test over per-case values
+    (:func:`~threetears.evals.analysis.lenses.frontier.compute_frontier`), which a frozen surface does not carry, so a
+    chart deciding it again from the surface's means would be a second rule for one question, and on means it called one
+    of two identical arms dominated a third of the time. Keyed by variant because a cell is one; a variant the lens
+    placed as more than one point (under two identity versions, or two subjects) has no one standing and is left out, so
+    a chart reads it as untested.
 
-    Args:
-        frontier: The bundle's frontier lens.
-
-    Returns:
-        ``{variant_key: dominance}``.
+    :param frontier: The bundle's frontier lens.
+    :ptype frontier: FrontierResult
+    :return: ``{variant_key: dominance}``.
+    :rtype: dict[str, FrontierDominance]
     """
     placed: dict[str, list[FrontierDominance | None]] = {}
     for subject in frontier.subjects:

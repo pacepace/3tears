@@ -139,12 +139,12 @@ def _module_of(path: Path) -> str:
 def named_modules(path: Path, *, root: Path) -> Iterator[tuple[int, str]]:
     """Every ``(line, absolute module)`` a file names, at any depth, relative imports resolved.
 
-    Args:
-        path: The file to read.
-        root: The directory its dotted names are rooted at.
-
-    Yields:
-        One pair per module named.
+    :param path: The file to read.
+    :ptype path: Path
+    :param root: The directory its dotted names are rooted at.
+    :ptype root: Path
+    :yield: One pair per module named.
+    :rtype: Iterator[tuple[int, str]]
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
@@ -171,11 +171,10 @@ def _support_files() -> list[Path]:
 def _probe(source: str) -> subprocess.CompletedProcess[str]:
     """Run one probe in a fresh interpreter rooted at the repository.
 
-    Args:
-        source: The probe program; a literal from this file, never anything assembled from input.
-
-    Returns:
-        The finished process, for the caller to assert on.
+    :param source: The probe program; a literal from this file, never anything assembled from input.
+    :ptype source: str
+    :return: The finished process, for the caller to assert on.
+    :rtype: subprocess.CompletedProcess[str]
     """
     return subprocess.run(
         [sys.executable, "-c", source],

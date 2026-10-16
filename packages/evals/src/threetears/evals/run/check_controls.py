@@ -106,12 +106,11 @@ _AUTHORING_FIELDS: frozenset[str] = frozenset({"goal_state_checks", "goal_check_
 class CheckDiscrimination:
     """One goal check's verdicts on its two controls, and whether they are the ones its intent requires.
 
-    Attributes:
-        check: The goal check.
-        intent: What the check declares it grades.
-        control: The name of its named control end state.
-        did_nothing: Its outcome when the candidate did nothing.
-        controlled: Its outcome on the named control.
+    :ivar check: The goal check.
+    :ivar intent: What the check declares it grades.
+    :ivar control: The name of its named control end state.
+    :ivar did_nothing: Its outcome when the candidate did nothing.
+    :ivar controlled: Its outcome on the named control.
     """
 
     check: str
@@ -124,9 +123,9 @@ class CheckDiscrimination:
     def discriminates(self) -> bool:
         """Whether both verdicts are the ones the intent requires.
 
-        Returns:
-            True when an ``act`` check fails doing nothing and passes its control, or a ``hold``
+        :return: True when an ``act`` check fails doing nothing and passes its control, or a ``hold``
             check passes doing nothing and fails its control.
+        :rtype: bool
         """
         holds_when_idle = self.intent == "hold"
         return self.did_nothing.passed is holds_when_idle and self.controlled.passed is not holds_when_idle
@@ -134,8 +133,8 @@ class CheckDiscrimination:
     def refusal(self) -> str | None:
         """The sentence a refusal names this check with, or None when it discriminates.
 
-        Returns:
-            None, or one sentence naming the check, its intent and both verdicts.
+        :return: None, or one sentence naming the check, its intent and both verdicts.
+        :rtype: str | None
         """
         if self.discriminates:
             return None
@@ -174,11 +173,10 @@ class CheckDiscrimination:
 def _verdict(outcome: GoalStateOutcome) -> str:
     """``passes`` or ``fails``, with what the check read.
 
-    Args:
-        outcome: One evaluation of a check.
-
-    Returns:
-        The verdict and its detail, as a refusal names it.
+    :param outcome: One evaluation of a check.
+    :ptype outcome: GoalStateOutcome
+    :return: The verdict and its detail, as a refusal names it.
+    :rtype: str
     """
     return f"{'passes' if outcome.passed else 'fails'} ({outcome.detail})"
 
@@ -199,16 +197,14 @@ class ControlEnd(NamedTuple):
 def _named(world: WorldRegistry | None, namespaces: Mapping[str, Any]) -> dict[str, Any]:
     """A seed-shaped world, keyed by dimension name through the host's registry.
 
-    Args:
-        world: The host's world registry, or None for a host that declares no world.
-        namespaces: Carrier → (key → value).
-
-    Returns:
-        Dimension name → value. Empty for a worldless host stating no world.
-
-    Raises:
-        ValueError: The world states something the host's registry does not declare — including
-            any world state at all on a host that declares no world.
+    :param world: The host's world registry, or None for a host that declares no world.
+    :ptype world: WorldRegistry | None
+    :param namespaces: Carrier → (key → value).
+    :ptype namespaces: Mapping[str, Any]
+    :return: Dimension name → value. Empty for a worldless host stating no world.
+    :rtype: dict[str, Any]
+    :raises ValueError: The world states something the host's registry does not declare — including
+        any world state at all on a host that declares no world.
     """
     if world is not None:
         return world.named(namespaces)
@@ -231,15 +227,13 @@ def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None)
     clock may fire one the seed never armed; one the seed arms fires as the seed's armed event, and its
     seeded value is in the end state.
 
-    Args:
-        template: The template whose seed it is.
-        world: The host's world registry, which names each seeded value's dimension.
-
-    Returns:
-        A fresh end state. Built anew on each call, so evaluating one control cannot leak into another.
-
-    Raises:
-        ValueError: The seed states something the registry does not declare.
+    :param template: The template whose seed it is.
+    :ptype template: EvalTemplate
+    :param world: The host's world registry, which names each seeded value's dimension.
+    :ptype world: WorldRegistry | None
+    :return: A fresh end state. Built anew on each call, so evaluating one control cannot leak into another.
+    :rtype: ControlEnd
+    :raises ValueError: The seed states something the registry does not declare.
     """
     return idle_end_state(template.world_seed, world=world)
 
@@ -250,15 +244,13 @@ def idle_end_state(seed: WorldSeed, *, world: WorldRegistry | None) -> ControlEn
     A quick world's cases each carry their own starting state (:mod:`threetears.evals.quick.world`), so the
     do-nothing control is laid over each case's seed rather than the template's.
 
-    Args:
-        seed: The starting state.
-        world: The host's world registry, which names each seeded value's dimension.
-
-    Returns:
-        A fresh end state.
-
-    Raises:
-        ValueError: The seed states something the registry does not declare.
+    :param seed: The starting state.
+    :ptype seed: WorldSeed
+    :param world: The host's world registry, which names each seeded value's dimension.
+    :ptype world: WorldRegistry | None
+    :return: A fresh end state.
+    :rtype: ControlEnd
+    :raises ValueError: The seed states something the registry does not declare.
     """
     seeded = _named(world, seed.namespaces)
     clock = _clock_driven(world)
@@ -280,12 +272,12 @@ def idle_end_state(seed: WorldSeed, *, world: WorldRegistry | None) -> ControlEn
 def _is_triggered(world: WorldRegistry | None, name: str) -> bool:
     """Whether ``name`` is a dimension that arrives on a condition rather than at t=0.
 
-    Args:
-        world: The host's world registry, or None for a host that declares no world.
-        name: A declared dimension name.
-
-    Returns:
-        Whether its declaration is triggered.
+    :param world: The host's world registry, or None for a host that declares no world.
+    :ptype world: WorldRegistry | None
+    :param name: A declared dimension name.
+    :ptype name: str
+    :return: Whether its declaration is triggered.
+    :rtype: bool
     """
     declared = world.get(name) if world is not None else None
     return declared is not None and isinstance(declared.when, Triggered)
@@ -294,11 +286,10 @@ def _is_triggered(world: WorldRegistry | None, name: str) -> bool:
 def _clock_driven(world: WorldRegistry | None) -> frozenset[str]:
     """Every dimension whose trigger is the passage of turns — what fires in a cell whatever its candidate does.
 
-    Args:
-        world: The host's world registry, or None for a host that declares no world.
-
-    Returns:
-        The names of every declared ``turn``-triggered dimension.
+    :param world: The host's world registry, or None for a host that declares no world.
+    :ptype world: WorldRegistry | None
+    :return: The names of every declared ``turn``-triggered dimension.
+    :rtype: frozenset[str]
     """
     if world is None:
         return frozenset()
@@ -315,16 +306,15 @@ def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, wor
     Laid over the do-nothing control throughout, since what the world does alone happens in that cell
     too: its end state, and its firings plus the ones the control states (``fired``, ``fired_armed``).
 
-    Args:
-        template: The template whose seed the control is laid over.
-        end_state: The control.
-        world: The host's world registry, which names each stated value's dimension.
-
-    Returns:
-        A fresh end state.
-
-    Raises:
-        ValueError: The seed or the control states something the registry does not declare.
+    :param template: The template whose seed the control is laid over.
+    :ptype template: EvalTemplate
+    :param end_state: The control.
+    :ptype end_state: ControlEndState
+    :param world: The host's world registry, which names each stated value's dimension.
+    :ptype world: WorldRegistry | None
+    :return: A fresh end state.
+    :rtype: ControlEnd
+    :raises ValueError: The seed or the control states something the registry does not declare.
     """
     idle = do_nothing_end_state(template, world=world)
     named = {**idle.end_state, **_named(world, end_state.world)}
@@ -340,16 +330,14 @@ def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, wor
 def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> list[CheckDiscrimination]:
     """Evaluate each controlled goal check against the do-nothing control and its named control.
 
-    Args:
-        template: A template carrying ``goal_check_controls``.
-        profile: The host, whose world a check's paths are read through.
-
-    Returns:
-        One entry per controlled check, in the controls' order; empty for a template without controls.
-
-    Raises:
-        GoalCheckUnevaluable: A check raised while being evaluated against a control.
-        ValueError: The seed or a control states world state the host's registry does not declare.
+    :param template: A template carrying ``goal_check_controls``.
+    :ptype template: EvalTemplate
+    :param profile: The host, whose world a check's paths are read through.
+    :ptype profile: HostProfile
+    :return: One entry per controlled check, in the controls' order; empty for a template without controls.
+    :rtype: list[CheckDiscrimination]
+    :raises GoalCheckUnevaluable: A check raised while being evaluated against a control.
+    :raises ValueError: The seed or a control states world state the host's registry does not declare.
     """
     controls = template.goal_check_controls
     if controls is None:
@@ -403,18 +391,18 @@ def refuse_non_discriminating_checks(
     keeps loading and running. Refusing it there would take the catalogue down with it; what it
     gets instead is a visible "unproven" wherever a template is rendered.
 
-    Args:
-        template: The template being written, merged over the stored one for an update.
-        profile: The host whose world and tools a control end state is held to.
-        authored: The field names this write authors, or None for a create.
-
-    Raises:
-        ValidationFailedError: A declared check has no control; a control names a check the template
-            does not declare; a control end state names world state or a call this host does not
-            define, a value its dimension's schema refuses, or a variation parameter that is not a string;
-            a check cannot be evaluated against a
-            control; or a check gives the same verdict on both controls, or the verdicts its intent
-            forbids. Every defect is named at once.
+    :param template: The template being written, merged over the stored one for an update.
+    :ptype template: EvalTemplate
+    :param profile: The host whose world and tools a control end state is held to.
+    :ptype profile: HostProfile
+    :param authored: The field names this write authors, or None for a create.
+    :ptype authored: Collection[str] | None
+    :raises ValidationFailedError: A declared check has no control; a control names a check the template
+        does not declare; a control end state names world state or a call this host does not
+        define, a value its dimension's schema refuses, or a variation parameter that is not a string;
+        a check cannot be evaluated against a
+        control; or a check gives the same verdict on both controls, or the verdicts its intent
+        forbids. Every defect is named at once.
     """
     if authored is not None and not (_PROOF_FIELDS & set(authored)):
         return
@@ -487,14 +475,14 @@ def goal_check_proofs(template: EvalTemplate, *, profile: HostProfile) -> dict[s
     :func:`refuse_non_discriminating_checks` applies), read as a state per check rather than a refusal, so a
     template written past authoring is launched and its checks marked rather than refused.
 
-    Args:
-        template: The template being launched.
-        profile: The host, whose world a check's paths are read through.
-
-    Returns:
-        Each goal check -> ``proven`` (its control discriminates), ``unproven`` (the template names no control for
+    :param template: The template being launched.
+    :ptype template: EvalTemplate
+    :param profile: The host, whose world a check's paths are read through.
+    :ptype profile: HostProfile
+    :return: Each goal check -> ``proven`` (its control discriminates), ``unproven`` (the template names no control for
         it) or ``refuted`` (its control does not discriminate, states what this host could not hold, or the check
         cannot be evaluated against it). Empty for a template with no goal checks.
+    :rtype: dict[str, GoalCheckProof]
     """
     proofs: dict[str, GoalCheckProof] = {check: "unproven" for check in template.goal_state_checks}
     controls = template.goal_check_controls
@@ -517,15 +505,13 @@ def goal_check_proofs(template: EvalTemplate, *, profile: HostProfile) -> dict[s
 def _armed_by_seed(template: EvalTemplate, world: WorldRegistry | None) -> frozenset[str]:
     """The triggered dimensions the template's seed arms.
 
-    Args:
-        template: The template.
-        world: The host's world registry, or None for a host that declares no world.
-
-    Returns:
-        The names.
-
-    Raises:
-        ValueError: The seed states something the registry does not declare.
+    :param template: The template.
+    :ptype template: EvalTemplate
+    :param world: The host's world registry, or None for a host that declares no world.
+    :ptype world: WorldRegistry | None
+    :return: The names.
+    :rtype: frozenset[str]
+    :raises ValueError: The seed states something the registry does not declare.
     """
     seeded = _named(world, template.world_seed.namespaces)
     return frozenset(name for name in seeded if _is_triggered(world, name))
@@ -544,17 +530,18 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
     (:meth:`~threetears.evals.kernel.host.world.WorldRegistry.address`), as a seed key does. A host
     that declares no world refuses any world state a control states, since a goal check can only
     read a declared dimension and there is none. A host that cannot list a tool's actions leaves
-    that part unchecked rather than refused; a tool the host does not have is refused, since its reader answers that with an empty
-    action set (:func:`~threetears.evals.kernel.dsl.undefined_action`, the rule a goal check's own
+    that part unchecked rather than refused; a tool the host does not have is refused, since its reader answers that
+    with an empty action set (:func:`~threetears.evals.kernel.dsl.undefined_action`, the rule a goal check's own
     call references are held to).
 
-    Args:
-        end_state: The control.
-        profile: The host whose world and tools the control is held to.
-        armed: The triggered dimensions the template's seed arms.
-
-    Returns:
-        One sentence per defect.
+    :param end_state: The control.
+    :ptype end_state: ControlEndState
+    :param profile: The host whose world and tools the control is held to.
+    :ptype profile: HostProfile
+    :param armed: The triggered dimensions the template's seed arms.
+    :ptype armed: frozenset[str]
+    :return: One sentence per defect.
+    :rtype: list[str]
     """
     world = profile.world
     defects: list[str] = []

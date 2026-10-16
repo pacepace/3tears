@@ -114,8 +114,7 @@ class StoreCalledOnEventLoop(RuntimeError):
 def refuse_on_event_loop() -> None:
     """Raise :class:`StoreCalledOnEventLoop` when the calling thread is running an event loop.
 
-    Raises:
-        StoreCalledOnEventLoop: It is.
+    :raises StoreCalledOnEventLoop: It is.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -141,8 +140,8 @@ def _call_site() -> str:
     the frame named is the code that called the engine. Where every frame is the engine's or the standard
     library's, the engine itself made the call, and its outermost frame is named instead, as the engine's.
 
-    Returns:
-        ``module.function (file:line)``, or that prefixed ``the engine's own`` when no frame is outside it.
+    :return: ``module.function (file:line)``, or that prefixed ``the engine's own`` when no frame is outside it.
+    :rtype: str
     """
     frame = inspect.currentframe()
     outermost_engine: str | None = None
@@ -168,12 +167,12 @@ def omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]
     Defined here, beside the port, so every implementation that cannot push the projection into
     its backend applies the one definition rather than its own.
 
-    Args:
-        document: The document. Not mutated.
-        paths: Dotted paths to drop.
-
-    Returns:
-        A copy, sharing every subtree the paths do not pass through.
+    :param document: The document. Not mutated.
+    :ptype document: dict[str, Any]
+    :param paths: Dotted paths to drop.
+    :ptype paths: Sequence[str]
+    :return: A copy, sharing every subtree the paths do not pass through.
+    :rtype: dict[str, Any]
     """
     result = dict(document)
     for path in paths:
@@ -197,12 +196,12 @@ def keep_fields(document: dict[str, Any], fields: Sequence[str]) -> dict[str, An
     reader's own default for a missing field still applies. Defined beside the port for the
     reason :func:`omit_paths` is.
 
-    Args:
-        document: The document. Not mutated.
-        fields: The top-level fields to keep.
-
-    Returns:
-        A new dict holding only those fields.
+    :param document: The document. Not mutated.
+    :ptype document: dict[str, Any]
+    :param fields: The top-level fields to keep.
+    :ptype fields: Sequence[str]
+    :return: A new dict holding only those fields.
+    :rtype: dict[str, Any]
     """
     return {key: document[key] for key in fields if key in document}
 
@@ -218,12 +217,12 @@ class DocumentStore(Protocol):
     def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
         """Return one document by id within a scope, or ``None`` if absent.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
-
-        Returns:
-            The stored document with storage-injected fields removed, or ``None``.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: The stored document with storage-injected fields removed, or ``None``.
+        :rtype: dict[str, Any] | None
         """
         ...
 
@@ -234,9 +233,11 @@ class DocumentStore(Protocol):
         :meth:`upsert`'s ``if_match`` and the write lands only if nothing else
         wrote in between.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+
 
         Every store implements conditional writes: a found document always comes
         back with a token, and every write of it — whole or merged — mints a new
@@ -245,9 +246,9 @@ class DocumentStore(Protocol):
         several writers share a run document as it finishes, so that is the
         ordinary case rather than an edge.
 
-        Returns:
-            ``(document, etag)``, or ``(None, None)`` when there is no such
+        :return: ``(document, etag)``, or ``(None, None)`` when there is no such
             document.
+        :rtype: tuple[dict[str, Any] | None, str | None]
         """
         ...
 
@@ -274,24 +275,25 @@ class DocumentStore(Protocol):
         run they hydrate, and a host implementing ``load_eval_runs`` itself carries
         the same obligation (see :class:`~threetears.evals.run.curation.CurationStore`).
 
-        Args:
-            doc_type: The discriminator every returned document carries.
-            doc_ids: The ids to fetch. An empty sequence returns ``[]`` and asks the
-                backend nothing.
-            scope_id: The scope to read.
-            exclude: Dotted paths the store leaves out of every returned document, with
-                the meaning :func:`omit_paths` gives them — the batch form of
-                :meth:`by_doc_type`'s ``exclude``.
-            keep: The narrow alternative to ``exclude``: when given, each returned
-                document carries only these top-level fields — those it has, with the
-                meaning :func:`keep_fields` gives them — for a reader of a few scalars
-                off many large documents. Never both.
-
-        Returns:
-            The matching documents, in no guaranteed order.
-
-        Raises:
-            ValueError: Both ``exclude`` and ``keep`` were given.
+        :param doc_type: The discriminator every returned document carries.
+        :ptype doc_type: str
+        :param doc_ids: The ids to fetch. An empty sequence returns ``[]`` and asks the
+            backend nothing.
+        :ptype doc_ids: Sequence[str]
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param exclude: Dotted paths the store leaves out of every returned document, with
+            the meaning :func:`omit_paths` gives them — the batch form of
+            :meth:`by_doc_type`'s ``exclude``.
+        :ptype exclude: Sequence[str]
+        :param keep: The narrow alternative to ``exclude``: when given, each returned
+            document carries only these top-level fields — those it has, with the
+            meaning :func:`keep_fields` gives them — for a reader of a few scalars
+            off many large documents. Never both.
+        :ptype keep: Sequence[str]
+        :return: The matching documents, in no guaranteed order.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: Both ``exclude`` and ``keep`` were given.
         """
         ...
 
@@ -308,30 +310,35 @@ class DocumentStore(Protocol):
     ) -> list[dict[str, Any]]:
         """Return documents of one type within a scope, matching ANDed equality predicates.
 
-        Args:
-            doc_type: The discriminator to select on.
-            scope_id: The scope to read.
-            order_by: Document field to sort by; ``None`` leaves the order to the
-                store. Sorting is by the field's stored type, so a number orders
-                numerically and an ISO-8601 timestamp lexicographically. A document
-                without the field, or with it null, sorts below every document that
-                has it — first ascending, last descending.
-            descending: Sort direction when ``order_by`` is given.
-            limit: Maximum documents to return; ``None`` is unbounded.
-            exclude: Dotted paths the store leaves out of every returned document, with the
-                meaning :func:`omit_paths` gives them. For a bulk read whose consumer needs
-                the documents but not a heavy value inside them; the store drops it before
-                the document is shipped, so the value is never materialised at all.
-            **field_eq: Field-equality predicates over the document's other fields, compared on
-                the stored JSON type: a number never equals its text, and ``True`` never equals
-                ``1`` (nor ``False`` ``0``), as no JSON column's boolean equals a number. A
-                ``None`` value matches documents where the field is absent or null. Values are
-                scalars (``str``, ``int``, ``float``, ``bool``, ``None``): a store whose backend
-                compares an object or list by its serialised text cannot match one, so it may
-                refuse such a value with ``TypeError``, and the engine never passes one.
-
-        Returns:
-            The matching documents.
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param order_by: Document field to sort by; ``None`` leaves the order to the
+            store. Sorting is by the field's stored type, so a number orders
+            numerically and an ISO-8601 timestamp lexicographically. A document
+            without the field, or with it null, sorts below every document that
+            has it — first ascending, last descending.
+        :ptype order_by: str | None
+        :param descending: Sort direction when ``order_by`` is given.
+        :ptype descending: bool
+        :param limit: Maximum documents to return; ``None`` is unbounded.
+        :ptype limit: int | None
+        :param exclude: Dotted paths the store leaves out of every returned document, with the
+            meaning :func:`omit_paths` gives them. For a bulk read whose consumer needs
+            the documents but not a heavy value inside them; the store drops it before
+            the document is shipped, so the value is never materialised at all.
+        :ptype exclude: Sequence[str]
+        :param **field_eq: Field-equality predicates over the document's other fields, compared on
+            the stored JSON type: a number never equals its text, and ``True`` never equals
+            ``1`` (nor ``False`` ``0``), as no JSON column's boolean equals a number. A
+            ``None`` value matches documents where the field is absent or null. Values are
+            scalars (``str``, ``int``, ``float``, ``bool``, ``None``): a store whose backend
+            compares an object or list by its serialised text cannot match one, so it may
+            refuse such a value with ``TypeError``, and the engine never passes one.
+        :ptype field_eq: Any
+        :return: The matching documents.
+        :rtype: list[dict[str, Any]]
         """
         ...
 
@@ -343,12 +350,12 @@ class DocumentStore(Protocol):
         with the answer is delete it, and hauling whole documents to decide that is what
         makes a wipe of a large collection expensive.
 
-        Args:
-            doc_type: The discriminator to sweep.
-            scope_id: The scope to sweep.
-
-        Yields:
-            Document ids suitable for :meth:`delete` in the same scope.
+        :param doc_type: The discriminator to sweep.
+        :ptype doc_type: str
+        :param scope_id: The scope to sweep.
+        :ptype scope_id: str
+        :yield: Document ids suitable for :meth:`delete` in the same scope.
+        :rtype: Iterator[str]
         """
         ...
 
@@ -359,21 +366,21 @@ class DocumentStore(Protocol):
         partition from the document rather than from a caller-supplied guess, so
         a write cannot land in a partition the document does not claim.
 
-        Args:
-            document: The document to store.
-            if_match: A token from :meth:`get_with_etag`. When given, the write
-                lands only if the stored document still carries that token; a
-                document that is not stored carries none, and refuses it.
-            create_only: When True, the write lands only if no document is stored
-                under the document's ``(scope_id, id)`` — of any ``doc_type``. The
-                check and the write are one step, so of several racing creates
-                exactly one lands. Never together with ``if_match``.
-
-        Raises:
-            StoreConflict: ``if_match`` was given and the stored document no longer
-                carries it, or ``create_only`` was set and a document is stored there.
-            ValueError: Both ``if_match`` and ``create_only`` were given.
-            Exception: Any other backend failure.
+        :param document: The document to store.
+        :ptype document: dict[str, Any]
+        :param if_match: A token from :meth:`get_with_etag`. When given, the write
+            lands only if the stored document still carries that token; a
+            document that is not stored carries none, and refuses it.
+        :ptype if_match: str | None
+        :param create_only: When True, the write lands only if no document is stored
+            under the document's ``(scope_id, id)`` — of any ``doc_type``. The
+            check and the write are one step, so of several racing creates
+            exactly one lands. Never together with ``if_match``.
+        :ptype create_only: bool
+        :raises StoreConflict: ``if_match`` was given and the stored document no longer
+            carries it, or ``create_only`` was set and a document is stored there.
+        :raises ValueError: Both ``if_match`` and ``create_only`` were given.
+        :raises Exception: Any other backend failure.
         """
         ...
 
@@ -387,34 +394,33 @@ class DocumentStore(Protocol):
         does, so a conditional writer holding the old token is refused and re-reads
         rather than silently putting the old value back.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
-            fields: Top-level fields and their new values. Never the fields that
-                locate the document — ``id``, ``scope_id`` and ``doc_type`` — nor any
-                storage-injected field: a store refuses those.
-
-        Returns:
-            ``True`` when the document was written; ``False`` when there is no such
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :param fields: Top-level fields and their new values. Never the fields that
+            locate the document — ``id``, ``scope_id`` and ``doc_type`` — nor any
+            storage-injected field: a store refuses those.
+        :ptype fields: dict[str, Any]
+        :return: ``True`` when the document was written; ``False`` when there is no such
             document — the one way this write reports not landing.
-
-        Raises:
-            ValueError: ``fields`` is empty or names a field that locates the document.
-            Exception: Any other backend failure.
+        :rtype: bool
+        :raises ValueError: ``fields`` is empty or names a field that locates the document.
+        :raises Exception: Any other backend failure.
         """
         ...
 
     def delete(self, doc_id: str, scope_id: str) -> bool:
         """Delete one document by id within a scope.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in. Required — a scope cannot be derived from
-                an id, and guessing it wrong deletes nothing while reporting
-                success.
-
-        Returns:
-            ``True`` when a document was deleted, ``False`` when there was none.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in. Required — a scope cannot be derived from
+            an id, and guessing it wrong deletes nothing while reporting
+            success.
+        :ptype scope_id: str
+        :return: ``True`` when a document was deleted, ``False`` when there was none.
+        :rtype: bool
         """
         ...
 
@@ -432,8 +438,8 @@ class StoreClock(Protocol):
     def now(self) -> datetime:
         """The store's current time.
 
-        Returns:
-            A timezone-aware datetime.
+        :return: A timezone-aware datetime.
+        :rtype: datetime
         """
         ...
 
@@ -513,8 +519,8 @@ class AsyncStoreClock(Protocol):
     async def now(self) -> datetime:
         """The store's current time.
 
-        Returns:
-            A timezone-aware datetime.
+        :return: A timezone-aware datetime.
+        :rtype: datetime
         """
         ...
 

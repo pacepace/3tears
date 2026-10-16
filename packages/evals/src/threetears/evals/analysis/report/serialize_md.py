@@ -47,11 +47,10 @@ RESOLUTION_WORDS = {"answered": "Answered", "partial": "Partly answered", "unans
 def report_markdown(report: Report) -> str:
     """Render a report as Markdown.
 
-    Args:
-        report: The report.
-
-    Returns:
-        The Markdown text, ending in a newline.
+    :param report: The report.
+    :ptype report: Report
+    :return: The Markdown text, ending in a newline.
+    :rtype: str
     """
     lines = [f"# {_one_line(report.title)}"]
     head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _repeats_scoreboard(block)]
@@ -281,12 +280,12 @@ def _table(block: TableBlock) -> list[str]:
 def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
     """A GitHub-flavoured Markdown table: one line per row, each cell on one line with its pipes escaped.
 
-    Args:
-        headers: The column headers.
-        rows: Each row's cells as text, in header order.
-
-    Returns:
-        The table's lines.
+    :param headers: The column headers.
+    :ptype headers: Sequence[str]
+    :param rows: Each row's cells as text, in header order.
+    :ptype rows: Iterable[Sequence[str]]
+    :return: The table's lines.
+    :rtype: list[str]
     """
     lines = ["| " + " | ".join(_cell(header) for header in headers) + " |", "|" + "---|" * len(headers)]
     lines += ["| " + " | ".join(_cell(text) for text in row) + " |" for row in rows]

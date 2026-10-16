@@ -79,15 +79,16 @@ def refuse_raised_ceiling(override: Ceiling | None, *, configured: Ceiling, name
     holds whether or not enforcement is switched on: the argument's contract is "lower only", and a
     launch accepted with enforcement off would be refused, unchanged, the moment it was switched on.
 
-    Args:
-        override: The per-run ceiling the launch named, or ``None`` (which inherits and is always
-            allowed).
-        configured: The host's configured ceiling, as a value.
-        name: What the launch argument is called, for the refusal.
-        configured_name: What the host calls its configured ceiling, for the refusal.
-
-    Raises:
-        CeilingRaisedError: ``override`` is above ``configured``.
+    :param override: The per-run ceiling the launch named, or ``None`` (which inherits and is always
+        allowed).
+    :ptype override: Ceiling | None
+    :param configured: The host's configured ceiling, as a value.
+    :ptype configured: Ceiling
+    :param name: What the launch argument is called, for the refusal.
+    :ptype name: str
+    :param configured_name: What the host calls its configured ceiling, for the refusal.
+    :ptype configured_name: str
+    :raises CeilingRaisedError: ``override`` is above ``configured``.
     """
     if override is not None and override > configured:
         raise CeilingRaisedError(
@@ -106,17 +107,15 @@ def resolve_ceiling(override: Ceiling | None, *, configured: Ceiling) -> Ceiling
     resolves a ceiling can resolve one above the host's; the launch surfaces call that rule
     earlier, before anything is paid for, so a refusal here means a surface skipped it.
 
-    Args:
-        override: The per-run ceiling the launch named, validated ``> 0`` at the service
-            boundary. ``None`` inherits the default below.
-        configured: The default ceiling, supplied as a value. This module reads no
-            configuration and holds none.
-
-    Returns:
-        The ceiling, regardless of whether enforcement is switched on.
-
-    Raises:
-        CeilingRaisedError: ``override`` is above ``configured``.
+    :param override: The per-run ceiling the launch named, validated ``> 0`` at the service
+        boundary. ``None`` inherits the default below.
+    :ptype override: Ceiling | None
+    :param configured: The default ceiling, supplied as a value. This module reads no
+        configuration and holds none.
+    :ptype configured: Ceiling
+    :return: The ceiling, regardless of whether enforcement is switched on.
+    :rtype: Ceiling
+    :raises CeilingRaisedError: ``override`` is above ``configured``.
     """
     refuse_raised_ceiling(override, configured=configured, name="the per-run ceiling", configured_name="configured")
     return override if override is not None else configured
@@ -131,16 +130,15 @@ def resolve_effective_ceiling(
     enforcement off bounds nothing, and recording the number anyway would claim a limit the run
     never had.
 
-    Args:
-        override: The per-run ceiling the launch named, or ``None``.
-        configured: The default ceiling, as a value.
-        enforcement_enabled: Whether the caller enforces eval ceilings at all.
-
-    Returns:
-        The effective ceiling, or ``None`` when enforcement is off and the run is unbounded.
-
-    Raises:
-        CeilingRaisedError: ``override`` is above ``configured`` — refused with enforcement off too.
+    :param override: The per-run ceiling the launch named, or ``None``.
+    :ptype override: Ceiling | None
+    :param configured: The default ceiling, as a value.
+    :ptype configured: Ceiling
+    :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
+    :ptype enforcement_enabled: bool
+    :return: The effective ceiling, or ``None`` when enforcement is off and the run is unbounded.
+    :rtype: Ceiling | None
+    :raises CeilingRaisedError: ``override`` is above ``configured`` — refused with enforcement off too.
     """
     ceiling = resolve_ceiling(override, configured=configured)
     return ceiling if enforcement_enabled else None
@@ -161,15 +159,15 @@ def resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool)
     mechanism from the constraint matching above and is why ruff refuses ``float | int`` here while
     the ``TypeVar`` needs both members.
 
-    Args:
-        override: The per-run ceiling the launch named, or ``None``. Only its presence is read.
-        enforcement_enabled: Whether the caller enforces eval ceilings at all.
-
-    Returns:
-        A :data:`~threetears.evals.schema.models.CostCapOrigin` value: ``"uncapped"`` when enforcement is
+    :param override: The per-run ceiling the launch named, or ``None``. Only its presence is read.
+    :ptype override: float | None
+    :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
+    :ptype enforcement_enabled: bool
+    :return: A :data:`~threetears.evals.schema.models.CostCapOrigin` value: ``"uncapped"`` when enforcement is
         off (no ceiling bound the run, whatever the cascade would have resolved), else
         ``"chosen"`` for a launch-supplied ceiling (at or below the configured one — the only
         kind a launch may supply, :func:`refuse_raised_ceiling`) and ``"inherited"`` for the configured default.
+    :rtype: KnownCostCapOrigin
     """
     if not enforcement_enabled:
         return "uncapped"

@@ -21,13 +21,14 @@ from packages.evals.tests.example_loader import EXAMPLES
 def rung_copy(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy ``examples/<name>`` into ``tmp_path`` and make it the working directory, with no key and no ``RECORD``.
 
-    Args:
-        name: The rung's directory, ``"1-triage"``.
-        tmp_path: The test's directory.
-        monkeypatch: The test's monkeypatch.
-
-    Returns:
-        The copy.
+    :param name: The rung's directory, ``"1-triage"``.
+    :ptype name: str
+    :param tmp_path: The test's directory.
+    :ptype tmp_path: Path
+    :param monkeypatch: The test's monkeypatch.
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: The copy.
+    :rtype: Path
     """
     copy = tmp_path / name
     shutil.copytree(EXAMPLES / name, copy)

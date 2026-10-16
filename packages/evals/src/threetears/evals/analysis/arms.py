@@ -80,12 +80,11 @@ def elide_level(display: str) -> str:
     can still leave two levels reading alike — :func:`arm_names` tells such arms apart, so nothing here
     has to.
 
-    Args:
-        display: The level's display.
-
-    Returns:
-        The display with its whitespace collapsed, cut to :data:`LABEL_LEVEL_CHARS` characters (the
+    :param display: The level's display.
+    :ptype display: str
+    :return: The display with its whitespace collapsed, cut to :data:`LABEL_LEVEL_CHARS` characters (the
         :data:`ELISION` mark included) when longer.
+    :rtype: str
     """
     text = " ".join(display.split())
     if len(text) <= LABEL_LEVEL_CHARS:
@@ -104,12 +103,11 @@ def arm_levers(entry: VariantIndexEntry | None) -> list[tuple[str, SweepableValu
     rendering (a sweep chart declares each lever's orderedness from its scale). Levers that do not
     apply to the arm's kind are included; :func:`applicable_levers` is this without them.
 
-    Args:
-        entry: The arm's index entry, or ``None`` for an arm the index does not hold.
-
-    Returns:
-        The pairs; empty for an arm the index does not hold, for one whose levels are unavailable, and
+    :param entry: The arm's index entry, or ``None`` for an arm the index does not hold.
+    :ptype entry: VariantIndexEntry | None
+    :return: The pairs; empty for an arm the index does not hold, for one whose levels are unavailable, and
         for one whose host resolved no levers.
+    :rtype: list[tuple[str, SweepableValue]]
     """
     return [] if entry is None else sorted(entry.named_levers.items())
 
@@ -122,11 +120,10 @@ def applicable_levers(entry: VariantIndexEntry | None) -> list[tuple[str, Sweepa
     what keeps the variant key honest. It is not something the arm RAN, so no name and no list of what
     an arm ran states it.
 
-    Args:
-        entry: The arm's index entry, or ``None`` for an arm the index does not hold.
-
-    Returns:
-        The pairs, sorted by axis.
+    :param entry: The arm's index entry, or ``None`` for an arm the index does not hold.
+    :ptype entry: VariantIndexEntry | None
+    :return: The pairs, sorted by axis.
+    :rtype: list[tuple[str, SweepableValue]]
     """
     return [(axis, level) for axis, level in arm_levers(entry) if level.not_of_kind is None]
 
@@ -150,11 +147,10 @@ def distinguishing_axes(entries: Iterable[VariantIndexEntry]) -> frozenset[str]:
     distinguishes: one arm measured under several rigs is told apart by its rigs, not by every lever
     it carried.
 
-    Args:
-        entries: The analysis's variant index.
-
-    Returns:
-        The axis names whose level is not the same on every described arm it applies to.
+    :param entries: The analysis's variant index.
+    :ptype entries: Iterable[VariantIndexEntry]
+    :return: The axis names whose level is not the same on every described arm it applies to.
+    :rtype: frozenset[str]
     """
     described = [entry for entry in entries if entry.levels_unavailable is None]
     if len(described) < 2:
@@ -182,13 +178,13 @@ def _arm_level(axis: str, level: SweepableValue) -> ArmLevel:
 def arm_levels(entry: VariantIndexEntry | None, distinguishing: frozenset[str]) -> list[ArmLevel]:
     """The levels that tell an arm apart, axis by axis — its applicable levers on a distinguishing axis.
 
-    Args:
-        entry: The arm's index entry, or ``None`` for an arm the index does not hold.
-        distinguishing: The analysis's :func:`distinguishing_axes`, read over its whole variant index so
-            one arm is named alike on every surface.
-
-    Returns:
-        One :class:`ArmLevel` per :func:`applicable_levers` pair on a distinguishing axis, in that order.
+    :param entry: The arm's index entry, or ``None`` for an arm the index does not hold.
+    :ptype entry: VariantIndexEntry | None
+    :param distinguishing: The analysis's :func:`distinguishing_axes`, read over its whole variant index so
+        one arm is named alike on every surface.
+    :ptype distinguishing: frozenset[str]
+    :return: One :class:`ArmLevel` per :func:`applicable_levers` pair on a distinguishing axis, in that order.
+    :rtype: list[ArmLevel]
     """
     return [_arm_level(axis, level) for axis, level in applicable_levers(entry) if axis in distinguishing]
 
@@ -200,13 +196,13 @@ def naming_levels(entry: VariantIndexEntry | None, distinguishing: frozenset[str
     one whose every difference is a lever that does not apply to it — falls back to its candidate kind
     and model, which say what ran without repeating every setting it shares.
 
-    Args:
-        entry: The arm's index entry, or ``None`` for an arm the index does not hold.
-        distinguishing: The analysis's :func:`distinguishing_axes`.
-
-    Returns:
-        The levels, sorted by axis; empty for an arm the index does not hold or cannot describe, and for a
+    :param entry: The arm's index entry, or ``None`` for an arm the index does not hold.
+    :ptype entry: VariantIndexEntry | None
+    :param distinguishing: The analysis's :func:`distinguishing_axes`.
+    :ptype distinguishing: frozenset[str]
+    :return: The levels, sorted by axis; empty for an arm the index does not hold or cannot describe, and for a
         described arm with neither a distinguishing lever nor a kind or model.
+    :rtype: list[ArmLevel]
     """
     levels = arm_levels(entry, distinguishing)
     if levels or entry is None or entry.levels_unavailable is not None:
@@ -230,12 +226,11 @@ def writer_arms(entries: Sequence[VariantIndexEntry]) -> dict[str, object]:
     Neither ever names a lever that does not apply to the arm's kind. Display strings only — a hash
     says nothing a writer can use.
 
-    Args:
-        entries: The bundle's variant index.
-
-    Returns:
-        ``{"arms": [...], "shared_levels": {...}}``. Each arm carries ``variant_key``, ``levels``
+    :param entries: The bundle's variant index.
+    :ptype entries: Sequence[VariantIndexEntry]
+    :return: ``{"arms": [...], "shared_levels": {...}}``. Each arm carries ``variant_key``, ``levels``
         (axis → display) and ``levels_unavailable`` (why its levels cannot be described, or None).
+    :rtype: dict[str, object]
     """
     described = [dict(applicable_levers(entry)) for entry in entries if entry.levels_unavailable is None]
     # Shared: carried by every described arm, at one level — so any one of them states it.
@@ -272,12 +267,11 @@ def arm_names(entries: Sequence[VariantIndexEntry]) -> dict[str, str]:
     arm shares then carries its variant key's digest as well, so no two arms of one index print the
     same name — and a reader who sees the digest knows the levels shown do not tell the arms apart.
 
-    Args:
-        entries: The analysis's variant index.
-
-    Returns:
-        Variant key -> name, for every entry. The name carries no rig and no control marker: a cell
+    :param entries: The analysis's variant index.
+    :ptype entries: Sequence[VariantIndexEntry]
+    :return: Variant key -> name, for every entry. The name carries no rig and no control marker: a cell
         adds its rig (:func:`arm_label`) and each table spells the control for itself.
+    :rtype: dict[str, str]
     """
     distinguishing = distinguishing_axes(entries)
     names: dict[str, str] = {}
@@ -306,11 +300,10 @@ def multi_rig_variants(cells: Iterable[CellFacts]) -> frozenset[str]:
     these arms and no others. The population is the caller's: a table asks it of every cell it
     lays out, a chart of the cells it draws.
 
-    Args:
-        cells: The cells to consider.
-
-    Returns:
-        Every variant key those cells carry under two or more distinct apparatus class ids.
+    :param cells: The cells to consider.
+    :ptype cells: Iterable[CellFacts]
+    :return: Every variant key those cells carry under two or more distinct apparatus class ids.
+    :rtype: frozenset[str]
     """
     rigs: dict[str, set[str]] = {}
     for cell in cells:
@@ -321,11 +314,10 @@ def multi_rig_variants(cells: Iterable[CellFacts]) -> frozenset[str]:
 def short_digest(digest: str) -> str:
     """Cut a variant key or an apparatus class id to the :data:`DIGEST_CHARS` that tell it apart.
 
-    Args:
-        digest: The full id.
-
-    Returns:
-        Its first :data:`DIGEST_CHARS` characters.
+    :param digest: The full id.
+    :ptype digest: str
+    :return: Its first :data:`DIGEST_CHARS` characters.
+    :rtype: str
     """
     return digest[:DIGEST_CHARS]
 
@@ -343,13 +335,14 @@ def arm_label(variant_key: str, names: Mapping[str, str], *, rig: str | None = N
     A browser does not spell these words at all: it reads the report the package renders, so there is one
     spelling.
 
-    Args:
-        variant_key: The arm's variant coordinate.
-        names: The analysis's :func:`arm_names`.
-        rig: The rig's short digest, only when the arm spans more than one rig.
-
-    Returns:
-        The label.
+    :param variant_key: The arm's variant coordinate.
+    :ptype variant_key: str
+    :param names: The analysis's :func:`arm_names`.
+    :ptype names: Mapping[str, str]
+    :param rig: The rig's short digest, only when the arm spans more than one rig.
+    :ptype rig: str | None
+    :return: The label.
+    :rtype: str
     """
     if variant_key in names:
         name = names[variant_key]
@@ -370,13 +363,14 @@ def surface_order(cells: Iterable[CellFacts], *, control: str | None, names: Map
     strata table and the writer's ``cell_measures`` — orders its cells here, and the table
     states the rule (:data:`~threetears.evals.analysis.report.figures.SURFACE_ORDER`).
 
-    Args:
-        cells: The cells to order.
-        control: The declared control's variant key, or None.
-        names: The analysis's :func:`arm_names`.
-
-    Returns:
-        The cells, in that order.
+    :param cells: The cells to order.
+    :ptype cells: Iterable[CellFacts]
+    :param control: The declared control's variant key, or None.
+    :ptype control: str | None
+    :param names: The analysis's :func:`arm_names`.
+    :ptype names: Mapping[str, str]
+    :return: The cells, in that order.
+    :rtype: list[CellFacts]
     """
 
     def key(cell: CellFacts) -> tuple[bool, str, str, str, str]:
@@ -399,14 +393,16 @@ def cell_label(
     fact that the index cannot place it), and the rig's short digest exactly when the arm was measured
     under more than one rig in the caller's population.
 
-    Args:
-        variant_key: The cell's variant coordinate.
-        apparatus_class_id: The rig it was measured under.
-        index: Variant key → index entry.
-        multi_rig: The variants measured under more than one rig, as :func:`multi_rig_variants` returns them.
-
-    Returns:
-        The label, as :func:`arm_label` spells it.
+    :param variant_key: The cell's variant coordinate.
+    :ptype variant_key: str
+    :param apparatus_class_id: The rig it was measured under.
+    :ptype apparatus_class_id: str
+    :param index: Variant key → index entry.
+    :ptype index: Mapping[str, VariantIndexEntry]
+    :param multi_rig: The variants measured under more than one rig, as :func:`multi_rig_variants` returns them.
+    :ptype multi_rig: frozenset[str]
+    :return: The label, as :func:`arm_label` spells it.
+    :rtype: str
     """
     return arm_label(
         variant_key,
@@ -422,12 +418,11 @@ def contradicted_arms(decisions: Sequence[Decision]) -> list[tuple[str, int, int
     (:func:`~threetears.evals.analysis.cells.variant_of_cell_ref`), never
     its prose. A cell that names no variant names no arm, and a deferred decision is no verdict.
 
-    Args:
-        decisions: The analysis's decisions, in document order.
-
-    Returns:
-        ``(variant_key, adopting position, rejecting position)`` per contradicted arm — the first
+    :param decisions: The analysis's decisions, in document order.
+    :ptype decisions: Sequence[Decision]
+    :return: ``(variant_key, adopting position, rejecting position)`` per contradicted arm — the first
         decision of each disposition naming it — in the order the arms are first adopted.
+    :rtype: list[tuple[str, int, int]]
     """
     adopted: dict[str, int] = {}
     rejected: dict[str, int] = {}

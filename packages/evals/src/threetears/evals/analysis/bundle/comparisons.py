@@ -123,13 +123,14 @@ def _per_case_values(
     the value tested and the value the cell reports are one computation; a judged dimension's, off the
     non-faulted results' scores, as :func:`_bar_reading` reads one.
 
-    Args:
-        members: One cell's results, faulted ones included.
-        judged_rows: Projected judged-score rows by result id.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        ``{(reading, name): {test_case_id: per-case mean}}`` for every reading with a numeric value.
+    :param members: One cell's results, faulted ones included.
+    :ptype members: list[EvalResult]
+    :param judged_rows: Projected judged-score rows by result id.
+    :ptype judged_rows: dict[str, list[ScoreRecord]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: ``{(reading, name): {test_case_id: per-case mean}}`` for every reading with a numeric value.
+    :rtype: dict[tuple[ReadingKind, str], dict[str, float]]
     """
     by_case: dict[str, list[EvalResult]] = defaultdict(list)
     for result in members:
@@ -175,13 +176,14 @@ def planning_readings(
     so a repeat's value here and a case's mean in a comparison are one computation. Guardrails are left out:
     they are held, not tested for a difference; so is latency read under concurrency, which no comparison reads.
 
-    Args:
-        runs: The earlier runs.
-        results_by_run: Each run's results.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        One entry per reading with a value, sorted by reading kind and name.
+    :param runs: The earlier runs.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: One entry per reading with a value, sorted by reading kind and name.
+    :rtype: list[PlanningReading]
     """
     results_by_run = _failures_as_misses({run.id: results_by_run.get(run.id, []) for run in runs})
     # Latency read under concurrency is in no comparison (#701), so it plans none either.
@@ -244,13 +246,14 @@ def _family_readings(
     judge's spend — what it cost to MEASURE an arm. The candidate's spend is ``production_replicating_cost``,
     on the cost axis.
 
-    Args:
-        axes: The question's merit axes; empty for an unscoped question.
-        catalog: The bundle's measure catalog.
-        judged_measures: The bundle's judged measures.
-
-    Returns:
-        ``{(reading, name): higher_is_better}``.
+    :param axes: The question's merit axes; empty for an unscoped question.
+    :ptype axes: list[MeritAxis]
+    :param catalog: The bundle's measure catalog.
+    :ptype catalog: dict[str, MetricDescriptor]
+    :param judged_measures: The bundle's judged measures.
+    :ptype judged_measures: list[JudgedMeasure]
+    :return: ``{(reading, name): higher_is_better}``.
+    :rtype: dict[tuple[ComparisonReading, str], bool]
     """
     readings: dict[tuple[ComparisonReading, str], bool] = {}
     for name, descriptor in catalog.items():
@@ -281,13 +284,14 @@ def _trial_pass_values(
     independent draw. A cell none of whose usable trials carried a pass criterion has no pass rate to compare: each
     of its trials passed only because nothing could fail it.
 
-    Args:
-        members: One cell's results.
-        rubric_threshold: The 1–5 level a judged dimension must reach to pass.
-        catalog: The bundle's measure catalog, which says which checks a trial is graded on.
-
-    Returns:
-        ``{test_case_id: share passed}`` over the cases with a usable trial.
+    :param members: One cell's results.
+    :ptype members: list[EvalResult]
+    :param rubric_threshold: The 1–5 level a judged dimension must reach to pass.
+    :ptype rubric_threshold: int
+    :param catalog: The bundle's measure catalog, which says which checks a trial is graded on.
+    :ptype catalog: Mapping[str, MetricDescriptor]
+    :return: ``{test_case_id: share passed}`` over the cases with a usable trial.
+    :rtype: dict[str, float]
     """
     by_case: dict[str, list[bool]] = defaultdict(list)
     graded = False
@@ -310,9 +314,9 @@ def _test_samples(
     a fixed case set exists for — else each side's per-case values, unpaired. One choice for every reading
     of a contrast, a comparison's and a guardrail's alike.
 
-    Returns:
-        ``(control sample, contrast sample, paired)``, the two aligned by case when paired
+    :return: ``(control sample, contrast sample, paired)``, the two aligned by case when paired
         (:func:`~threetears.evals.analysis.stats.contrast_samples`, the rule the frontier's boundary pillar reads too).
+    :rtype: tuple[list[float], list[float], bool]
     """
     return contrast_samples(control_values, contrast_values)
 
@@ -347,33 +351,40 @@ def _compare(
     (:func:`~threetears.evals.analysis.stats.composite_significance`), and where the values have no spread
     the bounded test on the declared range every other surface reads that gap by
     (:func:`~threetears.evals.analysis.stats.separation_test`), so one concept has one answer. With no range
-    such a gap is ``not_separated``, with ``not_separated_reason`` naming the remedy. The means, the counts and the delta
-    are all over the cases the test read, and each side says how many of its own it left out, so the
+    such a gap is ``not_separated``, with ``not_separated_reason`` naming the remedy. The means, the counts and the
+    delta are all over the cases the test read, and each side says how many of its own it left out, so the
     figures a reader sees are the figures the test saw. A paired comparison on a measure with a declared
     margin also runs the paired equivalence test (TOST) against it.
 
-    Args:
-        reading: The reading's kind and name.
-        higher_is_better: Which way is better on it.
-        control: The control cell and its per-case values.
-        contrast: The contrast cell and its per-case values.
-        threshold: The measure's declared materiality threshold, which labels the delta through the one
-            predicate every surface uses (:func:`~threetears.evals.kernel.metrics.materiality`) and is the
-            equivalence test's margin; None for a measure that declared none and for a judged dimension.
-        margin_source: Where ``threshold`` came from (:func:`_margin_of`), which the comparison records.
-        value_range: The reading's declared inclusive bounds, which the equivalence test reads so its error
-            rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`),
-            and which bound the interval on the delta; None where it declares none.
-        no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
-            every result there failed with no turn taken — so an untested comparison says that, the reason,
-            rather than that too few cases carried the reading.
-        contended: Which sides of a reading of elapsed time held latency read under concurrency, which the
-            bundle withheld (:mod:`~threetears.evals.analysis.contention`) — so an untested comparison says that,
-            rather than that too few cases carried the reading.
-
-    Returns:
-        The comparison with its adjusted p's, interval and verdict still unset, its raw p's (None where no
+    :param reading: The reading's kind and name.
+    :ptype reading: tuple[ComparisonReading, str]
+    :param higher_is_better: Which way is better on it.
+    :ptype higher_is_better: bool
+    :param control: The control cell and its per-case values.
+    :ptype control: tuple[_CellKey, dict[str, float]]
+    :param contrast: The contrast cell and its per-case values.
+    :ptype contrast: tuple[_CellKey, dict[str, float]]
+    :param threshold: The measure's declared materiality threshold, which labels the delta through the one
+        predicate every surface uses (:func:`~threetears.evals.kernel.metrics.materiality`) and is the
+        equivalence test's margin; None for a measure that declared none and for a judged dimension.
+    :ptype threshold: float | None
+    :param margin_source: Where ``threshold`` came from (:func:`_margin_of`), which the comparison records.
+    :ptype margin_source: Literal['measure', 'run'] | None
+    :param value_range: The reading's declared inclusive bounds, which the equivalence test reads so its error
+        rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`),
+        and which bound the interval on the delta; None where it declares none.
+    :ptype value_range: tuple[float, float] | None
+    :param no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
+        every result there failed with no turn taken — so an untested comparison says that, the reason,
+        rather than that too few cases carried the reading.
+    :ptype no_turn: tuple[str, ...]
+    :param contended: Which sides of a reading of elapsed time held latency read under concurrency, which the
+        bundle withheld (:mod:`~threetears.evals.analysis.contention`) — so an untested comparison says that,
+        rather than that too few cases carried the reading.
+    :ptype contended: tuple[str, ...]
+    :return: The comparison with its adjusted p's, interval and verdict still unset, its raw p's (None where no
         test produced one) for the family's correction, and the samples the test read, for the interval.
+    :rtype: _Tested
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
@@ -533,13 +544,14 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
     the time against the 2.5% it states (``docs/measuring-soundly.md``), the failure a guardrail's ``held`` was moved
     off it for. A reading with no declared range has none.
 
-    Args:
-        question_id: The question the family serves, or None for the campaign-wide family.
-        axes: The question's merit axes.
-        tested: The family's comparisons, tested and uncorrected.
-
-    Returns:
-        The corrected family.
+    :param question_id: The question the family serves, or None for the campaign-wide family.
+    :ptype question_id: str | None
+    :param axes: The question's merit axes.
+    :ptype axes: list[MeritAxis]
+    :param tested: The family's comparisons, tested and uncorrected.
+    :ptype tested: list[_Tested]
+    :return: The corrected family.
+    :rtype: ComparisonFamily
     """
     family_size = sum(1 for one in tested if one.p_raw is not None)
     n_equivalence = sum(1 for one in tested if one.equivalence_p_raw is not None)
@@ -644,36 +656,48 @@ def _multiple_comparisons(
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
     **The overall pass rate joins only the family of a question whose decision rule reads it** (a rate clause naming
-    no one reading, ``pass_rate_questions``): there it is a hypothesis the question asks, so its family grows by one and every adjusted
-    p in it moves with it. No other family tests it, and with no such question it is compared nowhere: it is the
-    scoreboard's count, exploratory. Each case's value is the share of its usable trials that passed
+    no one reading, ``pass_rate_questions``): there it is a hypothesis the question asks, so its family grows by one and
+    every adjusted p in it moves with it. No other family tests it, and with no such question it is compared nowhere: it
+    is the scoreboard's count, exploratory. Each case's value is the share of its usable trials that passed
     (:func:`_trial_pass_values`), tested and bounded as a check's pass rate is, on its 0-1 range.
 
-    Args:
-        declared: The campaign's declaration, for its live questions asked before its first run
-            (:func:`~threetears.evals.kernel.declaration.preregistered_questions`): a question asked after it builds
-            no family of its own, and the campaign is read as if it had asked nothing.
-        realized: The derived design, for the control arm.
-        results_by_cell: Each cell's results.
-        records: The assembly's score projection rows, where judged scores live.
-        catalog: The bundle's measure catalog — direction and axis per measure.
-        judged_measures: The bundle's judged measures.
-        observations: The campaign's mechanism observations, read for each contrast between two models.
-        served: Which model answered each result's candidate calls, read for every contrast.
-        profile: The host whose vocabulary this reads.
-        run_margins: The margins every member run declared alike on a core rate measure (:func:`_run_margins`),
-            read as that measure's margin, since its descriptor declares none.
-        contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
-            reason a comparison or a guardrail on elapsed time could not be read, where it could not.
-        first_run_at: The earliest member run's ``created_at``, which a question must predate to scope a family.
-        rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
-            rate's per-case shares read (:func:`_trial_pass_values`), as the scoreboard does.
-        pass_rate_questions: The ids of the live questions whose decision rule reads the overall pass rate.
-
-    Returns:
-        One family per live question, in declaration order; one campaign-wide family over every reading when
+    :param declared: The campaign's declaration, for its live questions asked before its first run
+        (:func:`~threetears.evals.kernel.declaration.preregistered_questions`): a question asked after it builds
+        no family of its own, and the campaign is read as if it had asked nothing.
+    :ptype declared: CampaignDesign | None
+    :param realized: The derived design, for the control arm.
+    :ptype realized: RealizedDesign
+    :param results_by_cell: Each cell's results.
+    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :param records: The assembly's score projection rows, where judged scores live.
+    :ptype records: list[ScoreRecord]
+    :param catalog: The bundle's measure catalog — direction and axis per measure.
+    :ptype catalog: dict[str, MetricDescriptor]
+    :param judged_measures: The bundle's judged measures.
+    :ptype judged_measures: list[JudgedMeasure]
+    :param observations: The campaign's mechanism observations, read for each contrast between two models.
+    :ptype observations: _MechanismObservations
+    :param served: Which model answered each result's candidate calls, read for every contrast.
+    :ptype served: _ServedModels
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :param run_margins: The margins every member run declared alike on a core rate measure (:func:`_run_margins`),
+        read as that measure's margin, since its descriptor declares none.
+    :ptype run_margins: Mapping[str, float] | None
+    :param contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
+        reason a comparison or a guardrail on elapsed time could not be read, where it could not.
+    :ptype contended: Collection[_CellKey]
+    :param first_run_at: The earliest member run's ``created_at``, which a question must predate to scope a family.
+    :ptype first_run_at: str | None
+    :param rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
+        rate's per-case shares read (:func:`_trial_pass_values`), as the scoreboard does.
+    :ptype rubric_threshold: int
+    :param pass_rate_questions: The ids of the live questions whose decision rule reads the overall pass rate.
+    :ptype pass_rate_questions: Collection[str]
+    :return: One family per live question, in declaration order; one campaign-wide family over every reading when
         the campaign declares no live question; or none, with the reason, when no control resolved. Beside
         them, every guardrail decided for each arm against the control.
+    :rtype: tuple[MultipleComparisons, GuardrailReadings]
     """
     guardrail_readings = _guardrail_readings(catalog, judged_measures, declared)
     if realized.control_arm is None:

@@ -39,12 +39,11 @@ CONCURRENT = "concurrent"
 def latency_contended(result: EvalResult) -> bool:
     """Whether ``result`` was recorded while other eval work executed beside it — its latency is not clean.
 
-    Args:
-        result: The result.
-
-    Returns:
-        True when its ``execution_mode`` reads ``concurrent``. A result that recorded no mode (nothing sampled
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: True when its ``execution_mode`` reads ``concurrent``. A result that recorded no mode (nothing sampled
         it) is not marked: nothing says it was contended, and its run's cells executed one at a time.
+    :rtype: bool
     """
     return result.covariates.get(EXECUTION_MODE) == CONCURRENT
 
@@ -72,13 +71,13 @@ def _latency_host_measure(name: str, measures: MeasureRegistry) -> bool:
 def withheld_latency(results: Iterable[EvalResult], measures: MeasureRegistry | None) -> list[EvalResult]:
     """The results whose latency :func:`withhold_contended_latency` removes: marked, and holding some.
 
-    Args:
-        results: The results.
-        measures: The host's measure registry, which says which of its own measures read elapsed time;
-            ``None`` reads the engine's elapsed-time fields alone.
-
-    Returns:
-        The marked results that carry a reading of elapsed time, in the order given.
+    :param results: The results.
+    :ptype results: Iterable[EvalResult]
+    :param measures: The host's measure registry, which says which of its own measures read elapsed time;
+        ``None`` reads the engine's elapsed-time fields alone.
+    :ptype measures: MeasureRegistry | None
+    :return: The marked results that carry a reading of elapsed time, in the order given.
+    :rtype: list[EvalResult]
     """
     return [result for result in results if latency_contended(result) and _carries_latency(result, measures)]
 
@@ -89,14 +88,14 @@ def withhold_contended_latency(results: Sequence[EvalResult], measures: MeasureR
     Idempotent, and a copy: the stored results are untouched, and a result with nothing to withhold is
     handed back as it is.
 
-    Args:
-        results: The results, as loaded.
-        measures: The host's measure registry, which says which of its own measures read elapsed time;
-            ``None`` reads the engine's elapsed-time fields alone, for a surface that reads no host measure.
-
-    Returns:
-        The results in the order given, each marked one without its latency, phase timings, background-work
+    :param results: The results, as loaded.
+    :ptype results: Sequence[EvalResult]
+    :param measures: The host's measure registry, which says which of its own measures read elapsed time;
+        ``None`` reads the engine's elapsed-time fields alone, for a surface that reads no host measure.
+    :ptype measures: MeasureRegistry | None
+    :return: The results in the order given, each marked one without its latency, phase timings, background-work
         elapsed time or host measures of elapsed time.
+    :rtype: list[EvalResult]
     """
     withheld = {result.id for result in withheld_latency(results, measures)}
     if not withheld:
@@ -129,15 +128,17 @@ def _without_latency(result: EvalResult, measures: MeasureRegistry | None) -> Ev
 def contended_latency_sentence(withheld: int, of: int, *, where: str = "", declared: bool = False) -> str | None:
     """The one line a surface prints when it left latency read under concurrency out, or ``None``.
 
-    Args:
-        withheld: How many results' latency was left out.
-        of: How many results the surface read.
-        where: Where, when only part of the surface was affected (``" in 2 of 5 cells"``); blank for all of it.
-        declared: The campaign declares latency under test, so the runs read under concurrency are ones it cannot
-            read its question from — the remedy says so.
-
-    Returns:
-        The sentence, or ``None`` when nothing was withheld.
+    :param withheld: How many results' latency was left out.
+    :ptype withheld: int
+    :param of: How many results the surface read.
+    :ptype of: int
+    :param where: Where, when only part of the surface was affected (``" in 2 of 5 cells"``); blank for all of it.
+    :ptype where: str
+    :param declared: The campaign declares latency under test, so the runs read under concurrency are ones it cannot
+        read its question from — the remedy says so.
+    :ptype declared: bool
+    :return: The sentence, or ``None`` when nothing was withheld.
+    :rtype: str | None
     """
     if withheld <= 0:
         return None
@@ -162,12 +163,12 @@ def marked_latency_sentence(marked: int, of: int) -> str | None:
     A run's own summary describes that run and compares nothing, so it shows the latency it recorded — marked,
     so the figure is never set against another run's as if it were clean.
 
-    Args:
-        marked: How many of the run's results recorded latency under concurrency.
-        of: How many results the run holds.
-
-    Returns:
-        The sentence, or ``None`` when none was.
+    :param marked: How many of the run's results recorded latency under concurrency.
+    :ptype marked: int
+    :param of: How many results the run holds.
+    :ptype of: int
+    :return: The sentence, or ``None`` when none was.
+    :rtype: str | None
     """
     if marked <= 0:
         return None

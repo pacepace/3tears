@@ -25,12 +25,12 @@ __all__ = ["one_batch_bundle"]
 def one_batch_bundle(results: Sequence[EvalResult], *, profile: HostProfile) -> AnalysisContextBundle:
     """Assemble a one-batch campaign over ``results``, in ``profile``'s vocabulary.
 
-    Args:
-        results: The observations, rebound to the one completed batch the campaign holds.
-        profile: The host whose measure registry the assembler reads.
-
-    Returns:
-        The assembled bundle.
+    :param results: The observations, rebound to the one completed batch the campaign holds.
+    :ptype results: Sequence[EvalResult]
+    :param profile: The host whose measure registry the assembler reads.
+    :ptype profile: HostProfile
+    :return: The assembled bundle.
+    :rtype: AnalysisContextBundle
     """
     run = make_eval_run(status="completed")
     campaign = EvalCampaign(

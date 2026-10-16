@@ -153,19 +153,19 @@ def compute_program_budget(runs: list[EvalRun], results: list[EvalResult]) -> Pr
     instead, so a subject-less or failed run's dollars are still counted, plus each
     result's re-judge spend (``judge_rescores``), which that total leaves out.
 
-    Args:
-        runs: Every run in the scope, all statuses. Order is irrelevant; the
-            rows are emitted in ``created_at`` order for the cumulative series.
-        results: Every result in the scope. A result's ``cost_usd`` and its
-            re-judge spend are attributed to its ``eval_run_id``.
-
-    Returns:
-        A :class:`ProgramBudget` — one :class:`BudgetRun` per listed run (zero
+    :param runs: Every run in the scope, all statuses. Order is irrelevant; the
+        rows are emitted in ``created_at`` order for the cumulative series.
+    :ptype runs: list[EvalRun]
+    :param results: Every result in the scope. A result's ``cost_usd`` and its
+        re-judge spend are attributed to its ``eval_run_id``.
+    :ptype results: list[EvalResult]
+    :return: A :class:`ProgramBudget` — one :class:`BudgetRun` per listed run (zero
         cost for a run with no results), the cumulative series, and the
         incomplete-spend / unattributed-spend accounting that keeps the total
         honest about what it includes. The incomplete spend is reported both
         whole and split into its in-flight and terminally-incomplete halves,
         each with the statuses it was actually made of.
+    :rtype: ProgramBudget
     """
     costs_by_run: dict[str, list[float]] = {}
     # Each run's results and re-judges whose spend went unpriced: in no dollar figure, so counted.

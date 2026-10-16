@@ -122,12 +122,12 @@ svg.viz-glyph .viz-point { fill: var(--viz-ink); }
 def chart_svg(block: ChartBlock, *, chart_id: str) -> str:
     """One chart block as inline SVG.
 
-    Args:
-        block: The chart.
-        chart_id: An id unique on the page, which the chart's title and description are named by.
-
-    Returns:
-        The ``<svg>`` element.
+    :param block: The chart.
+    :ptype block: ChartBlock
+    :param chart_id: An id unique on the page, which the chart's title and description are named by.
+    :ptype chart_id: str
+    :return: The ``<svg>`` element.
+    :rtype: str
     """
     if block.chart == "outcome_bar":
         return outcome_bar_svg(block.title, block.bars, chart_id=chart_id)
@@ -153,13 +153,14 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
     (``failed: check``, ``failed: judge``). A census too long for one line wraps, and its row is taller. The key
     names only the states that occur.
 
-    Args:
-        title: What the chart shows.
-        bars: One bar per arm, in the scoreboard's order.
-        chart_id: The chart's id on the page.
-
-    Returns:
-        The ``<svg>`` element.
+    :param title: What the chart shows.
+    :ptype title: str
+    :param bars: One bar per arm, in the scoreboard's order.
+    :ptype bars: Sequence[OutcomeBar]
+    :param chart_id: The chart's id on the page.
+    :ptype chart_id: str
+    :return: The ``<svg>`` element.
+    :rtype: str
     """
     longest = max((bar.total for bar in bars), default=0) or 1
     span = _BAR_END - _BAR_START
@@ -227,16 +228,20 @@ def interval_glyph_svg(
     the next; the scale's ends are written once under the table, not here. The glyph's ``<title>`` states its
     numbers, so a hover reads them where the row's cells already print them.
 
-    Args:
-        value: The figure, in ``unit``.
-        low: The interval's low end, in ``unit``.
-        high: The interval's high end, in ``unit``.
-        unit: The unit the figures are in; empty for none.
-        scale: The track's low and high ends, which hold the interval, the margin and zero where it is drawn.
-        margin: A declared margin either side of zero, or None.
-
-    Returns:
-        The ``<svg>`` element.
+    :param value: The figure, in ``unit``.
+    :ptype value: float
+    :param low: The interval's low end, in ``unit``.
+    :ptype low: float
+    :param high: The interval's high end, in ``unit``.
+    :ptype high: float
+    :param unit: The unit the figures are in; empty for none.
+    :ptype unit: str
+    :param scale: The track's low and high ends, which hold the interval, the margin and zero where it is drawn.
+    :ptype scale: tuple[float, float]
+    :param margin: A declared margin either side of zero, or None.
+    :ptype margin: float | None
+    :return: The ``<svg>`` element.
+    :rtype: str
     """
     first, last = scale
     span = (last - first) or 1.0
@@ -274,12 +279,11 @@ def interval_glyph_svg(
 def _label_column(labels: Sequence[str]) -> tuple[int, list[str]]:
     """Where the plot starts after a column wide enough for the labels, and each label cut to fit it.
 
-    Args:
-        labels: The rows' labels.
-
-    Returns:
-        ``(x where the plot starts, labels as drawn)``; a label too long for the widest column is cut with an
+    :param labels: The rows' labels.
+    :ptype labels: Sequence[str]
+    :return: ``(x where the plot starts, labels as drawn)``; a label too long for the widest column is cut with an
         ellipsis, its whole text kept in its mark's ``<title>``.
+    :rtype: tuple[int, list[str]]
     """
     widest = max((len(label) for label in labels), default=0)
     start = int(min(max(widest * _CHAR_WIDTH + 24, _LABEL_MIN), _LABEL_MAX))
@@ -374,16 +378,20 @@ def interval_rows_svg(
     The words go under the marks, not beside them, wrapped where they are long, so a verdict never runs past the
     chart's edge; the value alone sits at the right of its row, where a reader scanning the dots finds it.
 
-    Args:
-        title: What the chart shows.
-        rows: The rows, in drawn order.
-        unit: The unit the values are in; empty for none.
-        zero_line: Whether to draw a line at zero.
-        margin: A margin band either side of zero, or None.
-        chart_id: The chart's id on the page.
-
-    Returns:
-        The ``<svg>`` element.
+    :param title: What the chart shows.
+    :ptype title: str
+    :param rows: The rows, in drawn order.
+    :ptype rows: Sequence[IntervalRow]
+    :param unit: The unit the values are in; empty for none.
+    :ptype unit: str
+    :param zero_line: Whether to draw a line at zero.
+    :ptype zero_line: bool
+    :param margin: A margin band either side of zero, or None.
+    :ptype margin: float | None
+    :param chart_id: The chart's id on the page.
+    :ptype chart_id: str
+    :return: The ``<svg>`` element.
+    :rtype: str
     """
     ends = [value for row in rows for value in (row.low, row.high, row.value)]
     if zero_line:
@@ -462,12 +470,12 @@ def row_words(row: IntervalRow, unit: str) -> str:
 def _wrapped(words: str, start: int) -> list[str]:
     """``words`` as the lines they fit on from ``start`` to the chart's edge, broken at spaces.
 
-    Args:
-        words: A row's line of words.
-        start: Where the line begins; it may run to the chart's edge less a small margin.
-
-    Returns:
-        At least one line; a single word longer than the room is a line of its own.
+    :param words: A row's line of words.
+    :ptype words: str
+    :param start: Where the line begins; it may run to the chart's edge less a small margin.
+    :ptype start: int
+    :return: At least one line; a single word longer than the room is a line of its own.
+    :rtype: list[str]
     """
     room = int((_WIDTH - start - 8) / _CHAR_WIDTH)
     lines: list[str] = []

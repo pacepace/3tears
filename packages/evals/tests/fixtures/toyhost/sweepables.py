@@ -41,12 +41,12 @@ _TOYHOST_NAMESPACE = "toyhost"
 def _reader(key: str, *, default: Any = None) -> Any:
     """Build a reader for one toy-host key.
 
-    Args:
-        key: The toy-host vocabulary name.
-        default: What an observation that never recorded this key reads as.
-
-    Returns:
-        A reader the engine calls and never inspects.
+    :param key: The toy-host vocabulary name.
+    :ptype key: str
+    :param default: What an observation that never recorded this key reads as.
+    :ptype default: Any
+    :return: A reader the engine calls and never inspects.
+    :rtype: Any
     """
 
     def read(run: EvalRun, _results: Sequence[EvalResult]) -> Any:
@@ -205,12 +205,12 @@ def _payload(run: EvalRun) -> dict[str, Any]:
 def _retrieval_members(run: EvalRun, _results: Sequence[EvalResult]) -> dict[str, Any]:
     """One member per retrieval knob this batch's launch overlaid.
 
-    Args:
-        run: The batch.
-        _results: Unused — overlays are declared on the batch.
-
-    Returns:
-        ``{retrieval.<key>: value}``; empty for a batch that overlaid nothing.
+    :param run: The batch.
+    :ptype run: EvalRun
+    :param _results: Unused — overlays are declared on the batch.
+    :ptype _results: Sequence[EvalResult]
+    :return: ``{retrieval.<key>: value}``; empty for a batch that overlaid nothing.
+    :rtype: dict[str, Any]
     """
     return {
         f"{RETRIEVAL_MEMBER_PREFIX}{key}": value
@@ -226,12 +226,12 @@ def _is_retrieval_member(name: str) -> bool:
 def _resolved_retrieval(run: EvalRun, _results: Sequence[EvalResult]) -> str | None:
     """The resolved retrieval configuration's content hash — the level two batches agree on.
 
-    Args:
-        run: The batch.
-        _results: Unused.
-
-    Returns:
-        The hash, or ``None`` for a batch that recorded no resolved configuration.
+    :param run: The batch.
+    :ptype run: EvalRun
+    :param _results: Unused.
+    :ptype _results: Sequence[EvalResult]
+    :return: The hash, or ``None`` for a batch that recorded no resolved configuration.
+    :rtype: str | None
     """
     config = _payload(run).get("retrieval_config")
     return None if config is None else SweepableValue.of(config, display="retrieval config").content_hash
@@ -240,13 +240,14 @@ def _resolved_retrieval(run: EvalRun, _results: Sequence[EvalResult]) -> str | N
 def _retrieval_residual(run: EvalRun, _results: Sequence[EvalResult], removed: frozenset[str]) -> dict[str, Any] | None:
     """The resolved retrieval configuration with the named knobs taken back out.
 
-    Args:
-        run: The batch.
-        _results: Unused.
-        removed: ``retrieval.<key>`` member names.
-
-    Returns:
-        The configuration minus those keys, or ``None`` for a batch that recorded none.
+    :param run: The batch.
+    :ptype run: EvalRun
+    :param _results: Unused.
+    :ptype _results: Sequence[EvalResult]
+    :param removed: ``retrieval.<key>`` member names.
+    :ptype removed: frozenset[str]
+    :return: The configuration minus those keys, or ``None`` for a batch that recorded none.
+    :rtype: dict[str, Any] | None
     """
     config = _payload(run).get("retrieval_config")
     if config is None:

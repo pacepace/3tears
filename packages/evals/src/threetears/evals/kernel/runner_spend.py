@@ -28,8 +28,8 @@ _SPEND: ContextVar[RoleUsageLedger | None] = ContextVar("threetears_evals_runner
 def cell_spend() -> Iterator[RoleUsageLedger]:
     """A ledger for one runner call: every completion :func:`note_spend` is handed while it is open is added to it.
 
-    Yields:
-        The ledger, the ``candidate`` role's, whose rows are the call's spend.
+    :yield: The ledger, the ``candidate`` role's, whose rows are the call's spend.
+    :rtype: Iterator[RoleUsageLedger]
     """
     ledger = RoleUsageLedger(role="candidate")
     token = _SPEND.set(ledger)
@@ -42,8 +42,8 @@ def cell_spend() -> Iterator[RoleUsageLedger]:
 def note_spend(completion: CompletionResult) -> None:
     """Add one completion to the ledger of the runner call in progress; outside a runner call, nothing is kept.
 
-    Args:
-        completion: What the call returned: its model, tokens and cost, unpriced when ``cost_usd`` is ``None``.
+    :param completion: What the call returned: its model, tokens and cost, unpriced when ``cost_usd`` is ``None``.
+    :ptype completion: CompletionResult
     """
     ledger = _SPEND.get()
     if ledger is not None:
@@ -53,12 +53,12 @@ def note_spend(completion: CompletionResult) -> None:
 def spent(ledger: RoleUsageLedger, telemetry: CandidateTelemetry) -> CandidateTelemetry:
     """``telemetry`` with ``ledger``'s rows added: what the runner's model calls cost beside what it reported.
 
-    Args:
-        ledger: The runner call's ledger (:func:`cell_spend`).
-        telemetry: What the runner's return reported (an ``Answer``'s usage, or none).
-
-    Returns:
-        The telemetry carrying both; ``telemetry`` itself when no completion was noted.
+    :param ledger: The runner call's ledger (:func:`cell_spend`).
+    :ptype ledger: RoleUsageLedger
+    :param telemetry: What the runner's return reported (an ``Answer``'s usage, or none).
+    :ptype telemetry: CandidateTelemetry
+    :return: The telemetry carrying both; ``telemetry`` itself when no completion was noted.
+    :rtype: CandidateTelemetry
     """
     rows = ledger.rows()
     if not rows:

@@ -59,12 +59,11 @@ class CellExecutor(Protocol):
     async def execute(self, cells: Sequence[CellWork], *, width: int) -> None:
         """Run every cell exactly once, never more than ``width`` at once.
 
-        Args:
-            cells: The run's cells, in the order they must start.
-            width: The most that may run at once; at least 1. ``1`` is serial.
-
-        Raises:
-            BaseException: The first exception a cell raised, once every cell in flight has ended.
+        :param cells: The run's cells, in the order they must start.
+        :ptype cells: Sequence[CellWork]
+        :param width: The most that may run at once; at least 1. ``1`` is serial.
+        :ptype width: int
+        :raises BaseException: The first exception a cell raised, once every cell in flight has ended.
         """
         ...  # pragma: no cover — protocol
 
@@ -79,13 +78,12 @@ class InProcessCellExecutor:
     async def execute(self, cells: Sequence[CellWork], *, width: int) -> None:
         """Run every cell exactly once, never more than ``width`` at once, starting them in order.
 
-        Args:
-            cells: The run's cells, in the order they must start.
-            width: The most that may run at once; at least 1.
-
-        Raises:
-            ValueError: ``width`` is below 1.
-            BaseException: The first exception a cell raised, once every cell in flight has ended.
+        :param cells: The run's cells, in the order they must start.
+        :ptype cells: Sequence[CellWork]
+        :param width: The most that may run at once; at least 1.
+        :ptype width: int
+        :raises ValueError: ``width`` is below 1.
+        :raises BaseException: The first exception a cell raised, once every cell in flight has ended.
         """
         if width < 1:
             raise ValueError(f"a run executes at least one cell at a time; got width={width}")

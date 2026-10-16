@@ -20,13 +20,13 @@ ReportFormat = Literal["markdown", "json", "html"]
 def serialize_report(report: Report, format: ReportFormat) -> str:
     """A report in one of its three forms.
 
-    Args:
-        report: The report.
-        format: ``markdown``, ``html`` or ``json`` (the bundle the report was computed from, as ``bundle.json``
-            holds it).
-
-    Returns:
-        The serialized report.
+    :param report: The report.
+    :ptype report: Report
+    :param format: ``markdown``, ``html`` or ``json`` (the bundle the report was computed from, as ``bundle.json``
+        holds it).
+    :ptype format: ReportFormat
+    :return: The serialized report.
+    :rtype: str
     """
     match format:
         case "markdown":

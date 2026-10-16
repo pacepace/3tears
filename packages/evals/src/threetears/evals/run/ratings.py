@@ -97,31 +97,35 @@ def rate_result(
 ) -> CalibrationRating:
     """Record one rater's score for one judged dimension of one result — a person's, or an agent's.
 
-    Args:
-        storage: Where the result is read and the rating written.
-        result_id: The result rated.
-        scope_id: The scope it lives in.
-        rubric_dim: The judged dimension, spelled as the result's score spells it (a template
-            dimension's ``<context>.<dim>``, or a reserved dual-score axis id).
-        rater: Who rated, as the host names them: a person's account, or an agent's identity.
-        rater_kind: ``person`` or ``agent``. Required, and the caller's to state from what it knows of who is
-            calling — an agent writing through a tool is an ``agent`` whatever account it acts for — because only
-            a person's rating is read as judge-versus-human agreement.
-        score: The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail).
-        reason: The rater's own words for the score.
-
-    Returns:
-        The rating as written, carrying the judge score's label key (the fingerprints of the output read
+    :param storage: Where the result is read and the rating written.
+    :ptype storage: RatingStore
+    :param result_id: The result rated.
+    :ptype result_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param rubric_dim: The judged dimension, spelled as the result's score spells it (a template
+        dimension's ``<context>.<dim>``, or a reserved dual-score axis id).
+    :ptype rubric_dim: str
+    :param rater: Who rated, as the host names them: a person's account, or an agent's identity.
+    :ptype rater: str
+    :param rater_kind: ``person`` or ``agent``. Required, and the caller's to state from what it knows of who is
+        calling — an agent writing through a tool is an ``agent`` whatever account it acts for — because only
+        a person's rating is read as judge-versus-human agreement.
+    :ptype rater_kind: RaterKind
+    :param score: The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail).
+    :ptype score: int
+    :param reason: The rater's own words for the score.
+    :ptype reason: str
+    :return: The rating as written, carrying the judge score's label key (the fingerprints of the output read
         and of the criterion) when the score has one, and what was rated (``rated``) or why it could not be
         rebuilt (``rated_withheld``). A second rating by the same rater, of the same kind, of the same dimension
         of the same result replaces the first.
-
-    Raises:
-        NotFoundError: No such result in the scope.
-        ValidationFailedError: The judge scored no such dimension on the result; or the score is
-            not on its scale, the dimension name is not namespaced, the rater or reason is blank, or ``rater_kind``
-            is neither ``person`` nor ``agent``.
-        StorageError: The write failed.
+    :rtype: CalibrationRating
+    :raises NotFoundError: No such result in the scope.
+    :raises ValidationFailedError: The judge scored no such dimension on the result; or the score is
+        not on its scale, the dimension name is not namespaced, the rater or reason is blank, or ``rater_kind``
+        is neither ``person`` nor ``agent``.
+    :raises StorageError: The write failed.
     """
     result = storage.load_eval_result(result_id, scope_id)
     if result is None:
@@ -188,17 +192,16 @@ def rate_result(
 def _rated_content(storage: RatingStore, result: EvalResult, judged: RubricScore) -> RatedOutput | str:
     """What the rater read on ``judged``, rebuilt from what the result's run recorded, or why it cannot be.
 
-    Args:
-        storage: Where the run, template, test case and trace are read.
-        result: The rated result.
-        judged: Its judge score on the rated dimension.
-
-    Returns:
-        The content, its fingerprints the score's label key; or the reason it is withheld, in words a reader of the
+    :param storage: Where the run, template, test case and trace are read.
+    :ptype storage: RatingStore
+    :param result: The rated result.
+    :ptype result: EvalResult
+    :param judged: Its judge score on the rated dimension.
+    :ptype judged: RubricScore
+    :return: The content, its fingerprints the score's label key; or the reason it is withheld, in words a reader of the
         rating is shown.
-
-    Raises:
-        StorageError: A read failed: that is not a reason to withhold, and is raised as every read raises it.
+    :rtype: RatedOutput | str
+    :raises StorageError: A read failed: that is not a reason to withhold, and is raised as every read raises it.
     """
     if judged.output_fingerprint is None or judged.criterion_fingerprint is None:
         return (

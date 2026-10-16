@@ -143,9 +143,9 @@ class ResultCondition(EvalBaseModel):
 def candidate_failure_cause(result: EvalResult) -> CandidateFailureCause | None:
     """Name why ``result`` is a candidate failure, or ``None`` when it is not one.
 
-    The output cap counts because the end user's experience is the measure: a turn the provider cut off delivered silence or half a reply, whatever the
-    judge or a restraint check makes of the transcript afterwards — a hold template would
-    otherwise score the cap's silence as the candidate holding back. Read from the truncation
+    The output cap counts because the end user's experience is the measure: a turn the provider cut off delivered
+    silence or half a reply, whatever the judge or a restraint check makes of the transcript afterwards — a hold
+    template would otherwise score the cap's silence as the candidate holding back. Read from the truncation
     count the runner stores on every result. An absent count means nobody looked and asserts
     nothing; a model failure outranks it as the first-recorded cause.
 
@@ -155,11 +155,10 @@ def candidate_failure_cause(result: EvalResult) -> CandidateFailureCause | None:
     because an ended turn left no record of whether its rounds were cut, and a model failure outranks
     it, as it does the cap.
 
-    Args:
-        result: The result.
-
-    Returns:
-        The cause, or ``None``.
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: The cause, or ``None``.
+    :rtype: CandidateFailureCause | None
     """
     if result.candidate_error:
         return "model_failed"
@@ -227,11 +226,10 @@ def delivered_a_turn(result: EvalResult) -> bool:
     drops. That is why every in-tree kind counts: the quick callable kind (one call), the reporter kind (each
     generator call that returned), and a conversing kind through its stamped turn records.
 
-    Args:
-        result: The result.
-
-    Returns:
-        True when the result's time and spend describe a turn the candidate took.
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: True when the result's time and spend describe a turn the candidate took.
+    :rtype: bool
     """
     if harness_faulted(result):
         return False
@@ -271,12 +269,11 @@ def counted_goal_verdicts(result: EvalResult) -> list[tuple[GoalStateOutcome, bo
       count (``runner._unevaluated_goal_checks``).
     - Otherwise each check counts as it evaluated.
 
-    Args:
-        result: The result.
-
-    Returns:
-        ``(outcome, counted_passed)`` per check in stored order, or ``None`` when the result is
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: ``(outcome, counted_passed)`` per check in stored order, or ``None`` when the result is
         excluded from every rate.
+    :rtype: list[tuple[GoalStateOutcome, bool]] | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -301,12 +298,12 @@ def counted_score(result: EvalResult, score: RubricScore) -> int | None:
       configuration on a pass. The raw score stays on the result.
     - Otherwise the score counts as judged.
 
-    Args:
-        result: The result the score sits on.
-        score: One of its rubric scores, or its transcript or outcome axis.
-
-    Returns:
-        The counted score on the score's own scale, or ``None`` when it enters no measure.
+    :param result: The result the score sits on.
+    :ptype result: EvalResult
+    :param score: One of its rubric scores, or its transcript or outcome axis.
+    :ptype score: RubricScore
+    :return: The counted score on the score's own scale, or ``None`` when it enters no measure.
+    :rtype: int | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -319,12 +316,11 @@ def counted_score(result: EvalResult, score: RubricScore) -> int | None:
 def counted_rubric_scores(result: EvalResult) -> list[tuple[RubricScore, int]] | None:
     """Each judged rubric dim on ``result`` paired with what it counts as (:func:`counted_score`).
 
-    Args:
-        result: The result.
-
-    Returns:
-        ``(score, counted)`` per judged dim in stored order, or ``None`` when the result is in no
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: ``(score, counted)`` per judged dim in stored order, or ``None`` when the result is in no
         per-dimension measure (a harness fault).
+    :rtype: list[tuple[RubricScore, int]] | None
     """
     if classify_result(result) is ResultOutcome.INFRA_EXCLUDE:
         return None
@@ -493,11 +489,10 @@ def trial_exclusion(result: EvalResult) -> ExclusionCause | None:
     counts as failed there (``scoring._already_failed``) — which needs the bar and so cannot live
     here; the composite keeps the exclusion, since a mean over fewer dims is not the composite.
 
-    Args:
-        result: The result.
-
-    Returns:
-        The cause, or ``None`` when the result counts.
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: The cause, or ``None`` when the result counts.
+    :rtype: ExclusionCause | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -519,11 +514,10 @@ def judge_truncated_dims(result: EvalResult) -> list[str]:
     counts (:data:`~threetears.evals.schema.models.OUT_OF_ROOM_STOP_REASONS`): one the provider filtered or failed is
     recorded on the entry and stays a fault of the rig.
 
-    Args:
-        result: The result.
-
-    Returns:
-        The dims, sorted; empty when none, or when ``judge_error`` is unset.
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: The dims, sorted; empty when none, or when ``judge_error`` is unset.
+    :rtype: list[str]
     """
     if result.judge_error is None or not result.judge_cut_short:
         return []
@@ -540,16 +534,17 @@ def judged_on_every_dim(result: EvalResult) -> bool:
     mean needs no such rule — the dim carries no score, so the trial is absent from it — and the
     reserved transcript/outcome axes are in neither whole-trial measure.
 
-    Args:
-        result: The result.
+    :param result: The result.
+    :ptype result: EvalResult
+
 
     **A boundary dim is not one of them.** pass^k and the composite read capability dims alone
     (:func:`~threetears.evals.kernel.scoring.capability_scores`), so a can't-tell on a guardrail
     (``judge_cannot_tell_boundary``) leaves the trial in both: dropping it would let a guardrail reading
     move the capability pillar.
 
-    Returns:
-        ``False`` when the judge answered it could not tell on at least one capability rubric dim.
+    :return: ``False`` when the judge answered it could not tell on at least one capability rubric dim.
+    :rtype: bool
     """
     boundary = set(result.judge_cannot_tell_boundary)
     return not any(dim not in RESERVED_DIM_IDS and dim not in boundary for dim in result.judge_cannot_tell)
@@ -585,12 +580,11 @@ def resolve_result_condition(result: EvalResult) -> ResultCondition:
     underlying fields will disagree with the others eventually — that is the history this
     function replaced, not a hypothetical.
 
-    Args:
-        result: The result to resolve. Pure function of the stored record: no joins, no
-            run lookup, no I/O — so an aggregate can call it per row.
-
-    Returns:
-        The resolved condition, including the canonical ``disclosure`` line.
+    :param result: The result to resolve. Pure function of the stored record: no joins, no
+        run lookup, no I/O — so an aggregate can call it per row.
+    :ptype result: EvalResult
+    :return: The resolved condition, including the canonical ``disclosure`` line.
+    :rtype: ResultCondition
     """
     judging = _classify_judging(result)
     scoring = classify_result(result)

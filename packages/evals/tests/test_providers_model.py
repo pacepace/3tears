@@ -68,8 +68,7 @@ Answer = tuple[int, Mapping[str, Any]]
 class Scripted:
     """A provider that answers each request in turn and keeps what it was sent.
 
-    Attributes:
-        sent: Each request: its URL, its headers and its JSON body.
+    :ivar sent: Each request: its URL, its headers and its JSON body.
     """
 
     def __init__(self, *answers: Answer | Callable[[Mapping[str, Any]], Answer]) -> None:

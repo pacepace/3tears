@@ -59,11 +59,10 @@ def prompt_fragment(style: StyleProfile) -> str:
     One function, reading one enum, so "does host style reach the prompt" has a single call site
     to inspect rather than being a property of how carefully each caller behaved.
 
-    Args:
-        style: The host's style profile.
-
-    Returns:
-        The engine-owned fragment for the profile's register. Never host-supplied text.
+    :param style: The host's style profile.
+    :ptype style: StyleProfile
+    :return: The engine-owned fragment for the profile's register. Never host-supplied text.
+    :rtype: str
     """
     return _TONE_FRAGMENTS[style.tone_register]
 

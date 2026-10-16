@@ -26,9 +26,9 @@ _RUNNING_JOB: ContextVar[str | None] = ContextVar("threetears_evals_running_job"
 def running_job() -> str | None:
     """The id of the job whose work is running in this context, or ``None`` outside every job.
 
-    Returns:
-        The job's record id as the job manager runs it (a run's id, a task's id), or ``None`` — a transport
+    :return: The job's record id as the job manager runs it (a run's id, a task's id), or ``None`` — a transport
         call, a script, anything that is not a job's work.
+    :rtype: str | None
     """
     return _RUNNING_JOB.get()
 
@@ -40,11 +40,10 @@ def job_running(job_id: str) -> Iterator[None]:
     The job manager's alone to enter: it wraps each job's work in it, so a completion request made inside reads
     as made by a job. Reset on leaving, however the work ends.
 
-    Args:
-        job_id: The job's record id.
-
-    Yields:
-        Nothing.
+    :param job_id: The job's record id.
+    :ptype job_id: str
+    :yield: Nothing.
+    :rtype: Iterator[None]
     """
     token = _RUNNING_JOB.set(job_id)
     try:

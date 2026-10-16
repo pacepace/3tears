@@ -80,17 +80,16 @@ class WireSettings:
     returns the sent one, which is what a client builds its request from; :meth:`reported` is the sent value as a
     completion's ``sent_settings``, and :attr:`temperature` its ``temperature``.
 
-    Attributes:
-        max_tokens: The output cap, or ``None`` for the provider's default (none is sent).
-        temperature: The sampling temperature, or ``None`` for none.
-        reasoning_effort: An effort word on :data:`EFFORT_LADDER`, or ``None``.
-        reasoning_max_tokens: A reasoning budget in tokens, or ``None``; never beside ``reasoning_effort``.
-        strict_output: Whether the request is enforced: a strict reply schema a direct provider refuses rather than
-            ignores, or a router's ``require_parameters``.
-        unsent_reasoning_max_tokens: On sent settings, the reasoning budget asked that the request could not carry
-            as a budget (the wire takes effort words only, or the model refused a budget), so it went as
-            ``reasoning_effort`` or as no reasoning parameter; ``None`` when no budget was asked or it went as one.
-            Never beside ``reasoning_max_tokens``, and never set on asked settings.
+    :ivar max_tokens: The output cap, or ``None`` for the provider's default (none is sent).
+    :ivar temperature: The sampling temperature, or ``None`` for none.
+    :ivar reasoning_effort: An effort word on :data:`EFFORT_LADDER`, or ``None``.
+    :ivar reasoning_max_tokens: A reasoning budget in tokens, or ``None``; never beside ``reasoning_effort``.
+    :ivar strict_output: Whether the request is enforced: a strict reply schema a direct provider refuses rather than
+        ignores, or a router's ``require_parameters``.
+    :ivar unsent_reasoning_max_tokens: On sent settings, the reasoning budget asked that the request could not carry
+        as a budget (the wire takes effort words only, or the model refused a budget), so it went as
+        ``reasoning_effort`` or as no reasoning parameter; ``None`` when no budget was asked or it went as one.
+        Never beside ``reasoning_max_tokens``, and never set on asked settings.
     """
 
     max_tokens: int | None = None
@@ -103,8 +102,8 @@ class WireSettings:
     def reported(self) -> ClientRequestSettings | None:
         """These settings as a completion's ``sent_settings``, or ``None`` when they name no output cap.
 
-        Returns:
-            The settings value; the temperature is not part of it (a completion reports it as ``temperature``).
+        :return: The settings value; the temperature is not part of it (a completion reports it as ``temperature``).
+        :rtype: ClientRequestSettings | None
         """
         if self.max_tokens is None:
             return None
@@ -127,12 +126,12 @@ def wire_settings_for(settings: ClientRequestSettings, temperature: float | None
     engine's constants and never drifts from what the run records as asked. ``strict_output`` is the role's asked
     enforcement; a client whose calls differ (one without a reply format) replaces it per call.
 
-    Args:
-        settings: The request settings the client is asked for.
-        temperature: The temperature it is asked for, or ``None`` for none.
-
-    Returns:
-        The asked settings, every field as ``settings`` holds it.
+    :param settings: The request settings the client is asked for.
+    :ptype settings: ClientRequestSettings
+    :param temperature: The temperature it is asked for, or ``None`` for none.
+    :ptype temperature: float | None
+    :return: The asked settings, every field as ``settings`` holds it.
+    :rtype: WireSettings
     """
     return WireSettings(
         max_tokens=settings.max_tokens,
@@ -153,22 +152,21 @@ class SettingFacts:
     :class:`~threetears.evals.negotiation.LearnedSettings` lives: the process, or the client factory that keeps it.
     Unknown is sent as asked.
 
-    Attributes:
-        accepts_temperature: Whether a temperature is taken.
-        temperature_beside_reasoning: Whether a temperature is taken beside reasoning (an effort word other than
-            ``none``, or a budget). A temperature refused only while the request reasoned is learned here, not as
-            ``accepts_temperature``, so a call that does not reason still sends one.
-        reasoning_efforts: The provider-native effort words the model takes; ``()`` when it takes no effort
-            parameter at all. Anthropic's off switch is not a word here but ``reasoning_disable``.
-        refused_efforts: Words the provider refused for this model, whatever ``reasoning_efforts`` says.
-        reasoning_budget: Whether a reasoning token budget is taken (Anthropic's ``thinking.budget_tokens``, a
-            router's ``reasoning.max_tokens``).
-        adaptive_reasoning: Whether Anthropic's adaptive thinking is taken, which its effort words ride on.
-        reasoning_disable: Whether reasoning can be switched off (Anthropic's thinking disabled, or a provider's
-            ``none``).
-        structured_output: Whether a strict ``json_schema`` reply format is taken.
-        enforcement: Whether a router finds an endpoint for the model's requests under ``require_parameters``.
-        max_output_tokens: The model's own output cap, or ``None`` when unknown.
+    :ivar accepts_temperature: Whether a temperature is taken.
+    :ivar temperature_beside_reasoning: Whether a temperature is taken beside reasoning (an effort word other than
+        ``none``, or a budget). A temperature refused only while the request reasoned is learned here, not as
+        ``accepts_temperature``, so a call that does not reason still sends one.
+    :ivar reasoning_efforts: The provider-native effort words the model takes; ``()`` when it takes no effort
+        parameter at all. Anthropic's off switch is not a word here but ``reasoning_disable``.
+    :ivar refused_efforts: Words the provider refused for this model, whatever ``reasoning_efforts`` says.
+    :ivar reasoning_budget: Whether a reasoning token budget is taken (Anthropic's ``thinking.budget_tokens``, a
+        router's ``reasoning.max_tokens``).
+    :ivar adaptive_reasoning: Whether Anthropic's adaptive thinking is taken, which its effort words ride on.
+    :ivar reasoning_disable: Whether reasoning can be switched off (Anthropic's thinking disabled, or a provider's
+        ``none``).
+    :ivar structured_output: Whether a strict ``json_schema`` reply format is taken.
+    :ivar enforcement: Whether a router finds an endpoint for the model's requests under ``require_parameters``.
+    :ivar max_output_tokens: The model's own output cap, or ``None`` when unknown.
     """
 
     accepts_temperature: bool | None = None
@@ -185,11 +183,10 @@ class SettingFacts:
     def over(self, lower: SettingFacts) -> SettingFacts:
         """These facts, each unknown one taken from ``lower``; refused words from both.
 
-        Args:
-            lower: The facts of a source below this one.
-
-        Returns:
-            The combined facts.
+        :param lower: The facts of a source below this one.
+        :ptype lower: SettingFacts
+        :return: The combined facts.
+        :rtype: SettingFacts
         """
         return SettingFacts(
             accepts_temperature=_first(self.accepts_temperature, lower.accepts_temperature),
@@ -222,13 +219,14 @@ def _closest_word(word: str, on: Sequence[str], off: bool) -> str | None:
     reasoning word asked of a model that takes none never crosses to ``none``: no reasoning parameter is sent, which
     is what such a model does by default, rather than an off switch nobody asked for.
 
-    Args:
-        word: The word asked for, on :data:`EFFORT_LADDER`.
-        on: The accepted words that reason (every one but ``none``).
-        off: Whether reasoning can be switched off (``none`` is accepted).
-
-    Returns:
-        The word to send, the lower of two equally close; ``None`` for no reasoning parameter.
+    :param word: The word asked for, on :data:`EFFORT_LADDER`.
+    :ptype word: str
+    :param on: The accepted words that reason (every one but ``none``).
+    :ptype on: Sequence[str]
+    :param off: Whether reasoning can be switched off (``none`` is accepted).
+    :ptype off: bool
+    :return: The word to send, the lower of two equally close; ``None`` for no reasoning parameter.
+    :rtype: str | None
     """
     if word == "none":
         if off:
@@ -360,16 +358,15 @@ def closest_settings(
     * **Strict output**: kept unless the model takes no strict schema, or, on a router, no endpoint serves its
       requests under ``require_parameters``; the request then carries the format unenforced.
 
-    Args:
-        asked: What the client was asked for, ``strict_output`` being the call's own.
-        facts: What is known of the model.
-        provider_family: The request shape the client speaks.
-
-    Returns:
-        The settings the request carries, and one sentence per setting that moved, for a log.
-
-    Raises:
-        ValueError: ``asked`` carries a reasoning budget not below its ``max_tokens``, naming both.
+    :param asked: What the client was asked for, ``strict_output`` being the call's own.
+    :ptype asked: WireSettings
+    :param facts: What is known of the model.
+    :ptype facts: SettingFacts
+    :param provider_family: The request shape the client speaks.
+    :ptype provider_family: ProviderFamily
+    :return: The settings the request carries, and one sentence per setting that moved, for a log.
+    :rtype: tuple[WireSettings, tuple[str, ...]]
+    :raises ValueError: ``asked`` carries a reasoning budget not below its ``max_tokens``, naming both.
     """
     budget_asked = asked.reasoning_max_tokens
     if budget_asked is not None and asked.max_tokens is not None and budget_asked >= asked.max_tokens:
@@ -415,12 +412,12 @@ def closest_settings(
 def reasons(effort: str | None, budget: int | None) -> bool:
     """Whether a request with this reasoning word and budget reasons: a budget, or a word other than ``none``.
 
-    Args:
-        effort: The effort word the request carries, or ``None``.
-        budget: The reasoning budget it carries, or ``None``.
-
-    Returns:
-        Whether it reasons.
+    :param effort: The effort word the request carries, or ``None``.
+    :ptype effort: str | None
+    :param budget: The reasoning budget it carries, or ``None``.
+    :ptype budget: int | None
+    :return: Whether it reasons.
+    :rtype: bool
     """
     return budget is not None or effort not in (None, "none")
 
@@ -437,12 +434,12 @@ def anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str
     thinking, unless the model is known not to take it, when the word goes as ``output_config.effort`` alone. The
     word itself is always the request's ``output_config.effort`` (except ``none``), which a client sets beside this.
 
-    Args:
-        sent: What the request carries (:func:`closest_settings`' answer).
-        facts: What was known of the model when it was chosen.
-
-    Returns:
-        The request's ``thinking`` object, or ``None`` when the request carries none.
+    :param sent: What the request carries (:func:`closest_settings`' answer).
+    :ptype sent: WireSettings
+    :param facts: What was known of the model when it was chosen.
+    :ptype facts: SettingFacts
+    :return: The request's ``thinking`` object, or ``None`` when the request carries none.
+    :rtype: dict[str, str | int] | None
     """
     if sent.reasoning_max_tokens is not None:
         return {"type": "enabled", "budget_tokens": sent.reasoning_max_tokens}

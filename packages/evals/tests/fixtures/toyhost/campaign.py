@@ -87,10 +87,10 @@ TOYHOST_COST_BAR_USD = 0.025
 def toyhost_design() -> CampaignDesign:
     """What the toy-host campaign declared before any of it ran.
 
-    Returns:
-        The declaration: one interval-scaled axis at two levels, one live question, and ``held_fixed``
+    :return: The declaration: one interval-scaled axis at two levels, one live question, and ``held_fixed``
         recording that the stimulus was never held — documents arrive from live intake, the
         observational shape rather than a commissioned one.
+    :rtype: CampaignDesign
     """
     return CampaignDesign(
         axes=[
@@ -135,22 +135,23 @@ def toyhost_campaign(
 ) -> tuple[EvalCampaign, ToyhostStorage]:
     """The declared campaign and the store holding what it observed.
 
-    Args:
-        grader_versions: The grader version each arm recorded, narrow then wide. ``None`` leaves
-            both at the fixture default, which is the ordinary campaign — two arms that share
-            their rig. Supplying two different versions moves a host dimension pinned into the
-            engine's ``judge`` role, which is the condition the role disclosure and the
-            ``roles_differ`` badge exist to catch and the only way to assemble a BUNDLE carrying
-            it. Kept as a parameter rather than a second fixture so both shapes come from one
-            builder and cannot drift apart.
-        insights: The subject's prior ledger, held by the store. Empty by default — the toy host
-            has generated nothing before.
-        profile: The host the batches ran under, which keys their observations. ``None`` is
-            :func:`toyhost_profile`.
-
-    Returns:
-        The campaign — no template, no battery, an extractor configuration for a subject — and the
+    :param grader_versions: The grader version each arm recorded, narrow then wide. ``None`` leaves
+        both at the fixture default, which is the ordinary campaign — two arms that share
+        their rig. Supplying two different versions moves a host dimension pinned into the
+        engine's ``judge`` role, which is the condition the role disclosure and the
+        ``roles_differ`` badge exist to catch and the only way to assemble a BUNDLE carrying
+        it. Kept as a parameter rather than a second fixture so both shapes come from one
+        builder and cannot drift apart.
+    :ptype grader_versions: tuple[str, str] | None
+    :param insights: The subject's prior ledger, held by the store. Empty by default — the toy host
+        has generated nothing before.
+    :ptype insights: Sequence[EvalInsight]
+    :param profile: The host the batches ran under, which keys their observations. ``None`` is
+        :func:`toyhost_profile`.
+    :ptype profile: HostProfile | None
+    :return: The campaign — no template, no battery, an extractor configuration for a subject — and the
         storage double its two batches live in.
+    :rtype: tuple[EvalCampaign, ToyhostStorage]
     """
     graders = grader_versions or (TOYHOST_GRADER_VERSION, TOYHOST_GRADER_VERSION)
     batches = [
@@ -206,15 +207,15 @@ def toyhost_bundle(
     Assembled in the toy host's vocabulary: the assembler resolves apparatus and variant identity
     through the profile it is handed, and the corpus is written in this one's.
 
-    Args:
-        grader_versions: Passed through to :func:`toyhost_campaign`. The default is the committed
-            bundle the paid capture answers; supplying two versions is how a test reaches an
-            assembled bundle whose grader moved.
-        profile: The profile to assemble under. ``None`` is :func:`toyhost_profile`; a test passes
-            a variant of it to hold one declaration to another value.
-
-    Returns:
-        The bundle.
+    :param grader_versions: Passed through to :func:`toyhost_campaign`. The default is the committed
+        bundle the paid capture answers; supplying two versions is how a test reaches an
+        assembled bundle whose grader moved.
+    :ptype grader_versions: tuple[str, str] | None
+    :param profile: The profile to assemble under. ``None`` is :func:`toyhost_profile`; a test passes
+        a variant of it to hold one declaration to another value.
+    :ptype profile: HostProfile | None
+    :return: The bundle.
+    :rtype: AnalysisContextBundle
     """
     host = profile if profile is not None else toyhost_profile()
     campaign, storage = toyhost_campaign(grader_versions=grader_versions, profile=host)

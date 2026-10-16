@@ -67,11 +67,14 @@ def judge_config_digest(config: JudgeConfig) -> str:
 def case_set_digest(*, name: str, template: str, tracked: bool, cases: Sequence[str]) -> str:
     """The digest of a case set's content.
 
-    Args:
-        name: The set's name.
-        template: Its template's name: every revision of the template shares it.
-        tracked: Whether it is followed over time.
-        cases: The content digest of each case it lists, in order (a stored case's ``content_hash``).
+    :param name: The set's name.
+    :ptype name: str
+    :param template: Its template's name: every revision of the template shares it.
+    :ptype template: str
+    :param tracked: Whether it is followed over time.
+    :ptype tracked: bool
+    :param cases: The content digest of each case it lists, in order (a stored case's ``content_hash``).
+    :ptype cases: Sequence[str]
     """
     return canonical_digest(
         {"case_set": {"name": name, "template": template, "tracked": tracked, "cases": list(cases)}}
@@ -101,8 +104,8 @@ def template_case_digest(case: BaseModel) -> str:
     The host's stimulus is dumped whole with the other two and digested as written: the engine never reads a key
     inside it. A relabelled stratum moves it, so a case relabelled in the store reads ``customized``.
 
-    Args:
-        case: A corpus case or a stored test case, each of which carries the three fields.
+    :param case: A corpus case or a stored test case, each of which carries the three fields.
+    :ptype case: BaseModel
     """
     return _case_digest(case, TEMPLATE_CASE_FIELDS)
 
@@ -113,8 +116,8 @@ def template_case_content_digest(case: BaseModel) -> str:
     What a seeded case's ``content_hash`` and id are derived from; a case with no stratum digests as
     :func:`template_case_digest` does.
 
-    Args:
-        case: A corpus case or a stored test case.
+    :param case: A corpus case or a stored test case.
+    :ptype case: BaseModel
     """
     return _case_digest(case, TEMPLATE_CASE_CONTENT_FIELDS)
 

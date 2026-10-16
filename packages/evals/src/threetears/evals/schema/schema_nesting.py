@@ -38,11 +38,10 @@ class NestedSchema(NamedTuple):
     def at(self, parent: str) -> str:
         """The path this nested schema sits at, given the path of the schema holding it.
 
-        Args:
-            parent: Where the holding schema sits — a dimension name or a seed path.
-
-        Returns:
-            ``parent.items``, ``parent.<property>``, ``parent.additionalProperties`` or ``parent.anyOf[i]``.
+        :param parent: Where the holding schema sits — a dimension name or a seed path.
+        :ptype parent: str
+        :return: ``parent.items``, ``parent.<property>``, ``parent.additionalProperties`` or ``parent.anyOf[i]``.
+        :rtype: str
         """
         if self.keyword == "properties":
             return f"{parent}.{self.key}"
@@ -59,11 +58,10 @@ def nested_schemas(schema: Mapping[str, Any]) -> Iterator[NestedSchema]:
     ``anyOf`` that is not a list, holds nothing a walker could descend into, so it yields nothing — a reader
     that must refuse such a shape checks for it itself.
 
-    Args:
-        schema: The holding schema.
-
-    Yields:
-        Each nested position. Not recursive: a walker descends by calling this on what it yields.
+    :param schema: The holding schema.
+    :ptype schema: Mapping[str, Any]
+    :yield: Each nested position. Not recursive: a walker descends by calling this on what it yields.
+    :rtype: Iterator[NestedSchema]
     """
     if "items" in schema:
         yield NestedSchema("items", None, schema["items"])

@@ -29,10 +29,9 @@ from threetears.evals.kernel.metrics import confusion_of
 class ConfusionCount(BaseModel):
     """One cell of a confusion matrix: how often a case expecting one label was given another (or the same).
 
-    Attributes:
-        expected: The label the case expected.
-        predicted: The label the classifier gave.
-        count: Observations in this cell.
+    :ivar expected: The label the case expected.
+    :ivar predicted: The label the classifier gave.
+    :ivar count: Observations in this cell.
     """
 
     # Not EvalBaseModel: a label's surrounding whitespace is part of it (see the module docstring).
@@ -49,20 +48,19 @@ class LabelStatistics(BaseModel):
     A statistic with no denominator is ``None``, never 0: a label never predicted has no precision, one
     never expected has no recall, and either has no F1, rather than a figure stated over no evidence.
 
-    Attributes:
-        label: The label.
-        expected: Observations whose case expected this label: its support, recall's denominator.
-        expected_cases: Distinct cases behind ``expected`` — the independent draws recall rests on. Below
-            ``expected`` when cases were repeated.
-        predicted: Observations the classifier gave this label: precision's denominator.
-        predicted_cases: Distinct cases behind ``predicted`` — the independent draws precision rests on.
-        correct: Observations both expected and given this label.
-        precision: ``correct / predicted``.
-        precision_interval: The interval on ``precision``, over the cases behind it.
-        recall: ``correct / expected``.
-        recall_interval: The interval on ``recall``, over the cases behind it.
-        f1: The harmonic mean of precision and recall, ``2 * correct / (predicted + expected)``. It is
-            not a proportion of anything, so it has no interval: read the two it comes from.
+    :ivar label: The label.
+    :ivar expected: Observations whose case expected this label: its support, recall's denominator.
+    :ivar expected_cases: Distinct cases behind ``expected`` — the independent draws recall rests on. Below
+        ``expected`` when cases were repeated.
+    :ivar predicted: Observations the classifier gave this label: precision's denominator.
+    :ivar predicted_cases: Distinct cases behind ``predicted`` — the independent draws precision rests on.
+    :ivar correct: Observations both expected and given this label.
+    :ivar precision: ``correct / predicted``.
+    :ivar precision_interval: The interval on ``precision``, over the cases behind it.
+    :ivar recall: ``correct / expected``.
+    :ivar recall_interval: The interval on ``recall``, over the cases behind it.
+    :ivar f1: The harmonic mean of precision and recall, ``2 * correct / (predicted + expected)``. It is
+        not a proportion of anything, so it has no interval: read the two it comes from.
     """
 
     # Not EvalBaseModel: a label's surrounding whitespace is part of it (see the module docstring).
@@ -84,12 +82,11 @@ class LabelStatistics(BaseModel):
 def confusion_matrix(cells: Mapping[str, int]) -> list[ConfusionCount]:
     """The confusion matrix of a ``confusion_cell`` measure's counts, ordered by expected then predicted label.
 
-    Args:
-        cells: Each ``confusion_cell`` value and how many observations carried it.
-
-    Returns:
-        One count per ``(expected, predicted)`` pair. A value that is not a confusion cell
+    :param cells: Each ``confusion_cell`` value and how many observations carried it.
+    :ptype cells: Mapping[str, int]
+    :return: One count per ``(expected, predicted)`` pair. A value that is not a confusion cell
         (:func:`~threetears.evals.kernel.metrics.confusion_of` reads no two labels from it) is in no cell.
+    :rtype: list[ConfusionCount]
     """
     pairs: dict[tuple[str, str], int] = {}
     for cell, count in cells.items():
@@ -107,13 +104,12 @@ def label_statistics(observations: Iterable[tuple[str, str]]) -> list[LabelStati
     Every label the observations name is here, expected or predicted, so a label only ever given (an
     one outside the label set, say) appears with a precision and no recall.
 
-    Args:
-        observations: One ``(confusion_cell value, test case id)`` per observation. A value that is not a
-            confusion cell (:func:`~threetears.evals.kernel.metrics.confusion_of` reads no two labels
-            from it) is in no count, as in :func:`confusion_matrix`.
-
-    Returns:
-        One entry per label.
+    :param observations: One ``(confusion_cell value, test case id)`` per observation. A value that is not a
+        confusion cell (:func:`~threetears.evals.kernel.metrics.confusion_of` reads no two labels
+        from it) is in no count, as in :func:`confusion_matrix`.
+    :ptype observations: Iterable[tuple[str, str]]
+    :return: One entry per label.
+    :rtype: list[LabelStatistics]
     """
     classified: list[tuple[str, str, str]] = [
         (labels[0], labels[1], case) for cell, case in observations if (labels := confusion_of(cell)) is not None

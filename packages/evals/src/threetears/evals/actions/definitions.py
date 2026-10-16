@@ -53,13 +53,13 @@ def definition_drift_actions(
 ) -> tuple[Action, Action]:
     """``definitions_drift`` and ``definitions_reset``, for the host's catalogue.
 
-    Args:
-        corpus: The host's seed corpus for a scope (``load_seed_corpus(its directory, scope_id)``).
-        seeded_digests: What the host seeded in a scope before ``.30``, by key (``corpus_digests`` over that
-            corpus); ``None`` when it supplies none.
-
-    Returns:
-        The two actions.
+    :param corpus: The host's seed corpus for a scope (``load_seed_corpus(its directory, scope_id)``).
+    :ptype corpus: Callable[[str], SeedCorpus]
+    :param seeded_digests: What the host seeded in a scope before ``.30``, by key (``corpus_digests`` over that
+        corpus); ``None`` when it supplies none.
+    :ptype seeded_digests: Callable[[str], Mapping[str, str]] | None
+    :return: The two actions.
+    :rtype: tuple[Action, Action]
     """
 
     def supplied(scope_id: str) -> Mapping[str, str] | None:

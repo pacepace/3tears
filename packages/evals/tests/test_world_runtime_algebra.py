@@ -187,15 +187,12 @@ class TestTheCarrierIsRequired:
 def _profile_with(*, sweepables: SweepableRegistry | None = None) -> HostProfile:
     """A toy profile whose two registries can be made to overlap.
 
-    Args:
-        sweepables: A replacement sweepables registry, for introducing an overlap.
-
-    Returns:
-        The constructed profile.
-
-    Raises:
-        ProfileRegistrationError: The two registries contradict each other, which is what
-            several tests here are asserting.
+    :param sweepables: A replacement sweepables registry, for introducing an overlap.
+    :ptype sweepables: SweepableRegistry | None
+    :return: The constructed profile.
+    :rtype: HostProfile
+    :raises ProfileRegistrationError: The two registries contradict each other, which is what
+        several tests here are asserting.
     """
     base = toyhost_profile()
     world, _state = toyhost_world()
@@ -215,11 +212,10 @@ def _profile_with(*, sweepables: SweepableRegistry | None = None) -> HostProfile
 def _sweepables_naming(dimension: str) -> SweepableRegistry:
     """The toy host's sweepables plus one lever sharing a world dimension's name.
 
-    Args:
-        dimension: The world dimension name to collide with.
-
-    Returns:
-        The extended registry.
+    :param dimension: The world dimension name to collide with.
+    :ptype dimension: str
+    :return: The extended registry.
+    :rtype: SweepableRegistry
     """
     return TOYHOST_SWEEPABLE_REGISTRY.extend(
         [

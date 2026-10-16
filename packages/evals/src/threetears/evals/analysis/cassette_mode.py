@@ -36,8 +36,8 @@ def cassette_mode_disclosure(modes_by_run: Mapping[str, str]) -> str | None:
 
     Reports what the runs RECORDED and says so in those words, because nothing on a run
     corroborates the mode it recorded. Three candidate corroborators were checked and each
-    is the same claim one level down or weaker than it: :attr:`~threetears.evals.schema.models.EvalRun.cassette_corpus_id` is
-    set exactly when the run claims replay, and
+    is the same claim one level down or weaker than it:
+    :attr:`~threetears.evals.schema.models.EvalRun.cassette_corpus_id` is set exactly when the run claims replay, and
     :func:`~threetears.evals.kernel.usage_capture.count_substituted_deliveries` counts seeded case
     findings alongside replayed cassettes, so a non-zero count does not evidence replay
     and a zero one cannot separate "did not replay" from "replayed a template with no
@@ -64,14 +64,13 @@ def cassette_mode_disclosure(modes_by_run: Mapping[str, str]) -> str | None:
     follows: no comparison is refused, no number is adjusted and no severity is assigned.
     Capture-versus-replay is a legitimate thing to run.
 
-    Args:
-        modes_by_run: One recorded ``cassette_mode`` per run being compared, keyed by run id.
-
-    Returns:
-        The disclosure, rendered verbatim by every surface, or ``None`` when fewer than
+    :param modes_by_run: One recorded ``cassette_mode`` per run being compared, keyed by run id.
+    :ptype modes_by_run: Mapping[str, str]
+    :return: The disclosure, rendered verbatim by every surface, or ``None`` when fewer than
         two runs were supplied or every run recorded the same mode. Two arms that both
         replayed are uniform and disclose nothing: the substitution is on both sides, so
         the delta between them is honest.
+    :rtype: str | None
     """
     if len(modes_by_run) < 2:
         return None

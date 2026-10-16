@@ -32,9 +32,10 @@ class Measure:
     def __init__(self, compute: Callable[..., Any], descriptor: MetricDescriptor) -> None:
         """Pair the function with its declaration.
 
-        Args:
-            compute: The function computing the measure.
-            descriptor: Its declaration.
+        :param compute: The function computing the measure.
+        :ptype compute: Callable[..., Any]
+        :param descriptor: Its declaration.
+        :ptype descriptor: MetricDescriptor
         """
         update_wrapper(self, compute)
         # Keyed by the measure's name wherever a scorer is: the kind lands each score under its scorer's name.
@@ -67,25 +68,29 @@ def measure(
     The descriptor is built when the function is decorated, so a declaration the engine refuses (a guardrail on a
     merit axis, a range below zero on a nonnegative measure) is refused at import, beside the code it describes.
 
-    Args:
-        name: The measure's key on results; the function's ``__name__`` when ``None``.
-        reader_name: What a reader calls it; the name in words, marked a score, when ``None``.
-        description: One sentence an operator reads; the first line of the function's docstring when ``None``.
-        family: Its measure family: ``mechanical`` (the default), another engine family, or one the host declares
-            (:class:`~threetears.evals.kernel.MeasureFamily`).
-        transferability_class: How far a reading of it carries; ``mechanical`` by default.
-        attribution_scope: What it is a reading of; ``end_to_end`` by default.
-        data_type: ``numeric`` by default.
-        **declared: Every other :class:`~threetears.evals.kernel.MetricDescriptor` field by name:
-            ``higher_is_better``, ``merit_axis``, ``value_range``, ``materiality_threshold``, ``unit``,
-            ``population``, ``diagnostic``, ``guardrail``, ``reader_prose`` and the rest.
-
-    Returns:
-        The decorator, which returns the :class:`Measure`.
-
-    Raises:
-        ValueError: The function has no name to key the measure by, no docstring and no ``description``, or a
-            declaration the descriptor refuses.
+    :param name: The measure's key on results; the function's ``__name__`` when ``None``.
+    :ptype name: str | None
+    :param reader_name: What a reader calls it; the name in words, marked a score, when ``None``.
+    :ptype reader_name: str | None
+    :param description: One sentence an operator reads; the first line of the function's docstring when ``None``.
+    :ptype description: str | None
+    :param family: Its measure family: ``mechanical`` (the default), another engine family, or one the host declares
+        (:class:`~threetears.evals.kernel.MeasureFamily`).
+    :ptype family: str
+    :param transferability_class: How far a reading of it carries; ``mechanical`` by default.
+    :ptype transferability_class: str
+    :param attribution_scope: What it is a reading of; ``end_to_end`` by default.
+    :ptype attribution_scope: str
+    :param data_type: ``numeric`` by default.
+    :ptype data_type: str
+    :param **declared: Every other :class:`~threetears.evals.kernel.MetricDescriptor` field by name:
+        ``higher_is_better``, ``merit_axis``, ``value_range``, ``materiality_threshold``, ``unit``,
+        ``population``, ``diagnostic``, ``guardrail``, ``reader_prose`` and the rest.
+    :ptype declared: Any
+    :return: The decorator, which returns the :class:`Measure`.
+    :rtype: Callable[[Callable[..., Any]], Measure]
+    :raises ValueError: The function has no name to key the measure by, no docstring and no ``description``, or a
+        declaration the descriptor refuses.
     """
 
     def declare(compute: Callable[..., Any]) -> Measure:

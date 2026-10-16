@@ -136,12 +136,11 @@ def dollars_text(amount: float | None) -> str:
     the spend was measured and was nothing. Said here rather than by each caller, so every surface that prints a
     possibly-unpriced amount says it in one word.
 
-    Args:
-        amount: Dollars, as stored; ``None`` when the amount went unpriced.
-
-    Returns:
-        The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
+    :param amount: Dollars, as stored; ``None`` when the amount went unpriced.
+    :ptype amount: float | None
+    :return: The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
         ``$1.20``), three significant figures below (``$0.0123``, ``$0.000160``); :data:`UNPRICED` for ``None``.
+    :rtype: str
     """
     if amount is None:
         return UNPRICED
@@ -165,10 +164,9 @@ MeasureState = Literal[
 class MeasureLine(BaseModel):
     """One measure's state over a run, and the line :meth:`EvalSummary.render` prints for it.
 
-    Attributes:
-        name: The measure.
-        state: How it came out (:data:`MeasureState`).
-        text: The line, without indentation.
+    :ivar name: The measure.
+    :ivar state: How it came out (:data:`MeasureState`).
+    :ivar text: The line, without indentation.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -185,23 +183,22 @@ _GUARDRAIL_ALONE = "a guardrail: held, breached or undecided is decided only aga
 class RunMeasureSummary(BaseModel):
     """One measure over a run's results.
 
-    Attributes:
-        name: The measure, as the host declares it.
-        n: How many results carry it.
-        mean: Their mean — a boolean measure's is its rate; ``None`` when none does, or for a text
-            measure, whose words are listed by the analysis bundle and never averaged.
-        minimum: The lowest value; ``None`` when none does.
-        maximum: The highest value; ``None`` when none does.
-        n_no_turn: How many results carrying it were left out of ``n`` and the mean because the candidate's
-            model refused or errored and took no turn. Only a cost or latency measure leaves any out; 0 for
-            every other.
-        n_faulted: How many results carrying it were left out of ``n`` and the mean as a fault of the rig. Only
-            a cost or latency measure leaves any out; 0 for every other.
-        guardrail: Whether the host declares it a guardrail, something no arm may get worse on. A run alone has no
-            control to hold it against, so its level here is no verdict: held, breached or undecided is decided
-            only against a control, in a comparison.
-        unit: The unit the host declares its values in; empty when it declares none. Its line states the mean, the
-            minimum and the maximum on one ruler chosen over the three, as a report states a measure on one ruler.
+    :ivar name: The measure, as the host declares it.
+    :ivar n: How many results carry it.
+    :ivar mean: Their mean — a boolean measure's is its rate; ``None`` when none does, or for a text
+        measure, whose words are listed by the analysis bundle and never averaged.
+    :ivar minimum: The lowest value; ``None`` when none does.
+    :ivar maximum: The highest value; ``None`` when none does.
+    :ivar n_no_turn: How many results carrying it were left out of ``n`` and the mean because the candidate's
+        model refused or errored and took no turn. Only a cost or latency measure leaves any out; 0 for
+        every other.
+    :ivar n_faulted: How many results carrying it were left out of ``n`` and the mean as a fault of the rig. Only
+        a cost or latency measure leaves any out; 0 for every other.
+    :ivar guardrail: Whether the host declares it a guardrail, something no arm may get worse on. A run alone has no
+        control to hold it against, so its level here is no verdict: held, breached or undecided is decided
+        only against a control, in a comparison.
+    :ivar unit: The unit the host declares its values in; empty when it declares none. Its line states the mean, the
+        minimum and the maximum on one ruler chosen over the three, as a report states a measure on one ruler.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -220,25 +217,24 @@ class RunMeasureSummary(BaseModel):
 class GoalCheckSummary(BaseModel):
     """One goal-state check over a run's results.
 
-    Attributes:
-        check: The check, as the template states it.
-        passed: How many results it counts as passed.
-        n: How many results count for it: every result carrying it but those excluded as a fault of the rig.
-        proof: Whether the check was shown, when the run launched, to tell its outcomes apart
-            (``EvalRun.goal_check_proofs``); ``None`` for a run that recorded none, which reads as unproven.
-            Only ``proven`` reads as measuring the behaviour: an unproven or refuted check's pass rate may be
-            what a candidate that did nothing would score, and :meth:`render` says so beside it.
-        did_nothing_passed: Of ``did_nothing_cases``, how many cases a candidate that did nothing passes — the
-            check graded against each case's untouched starting state with no calls made. Set where each case's
-            seed is in hand (an eval's world with state); ``None`` elsewhere.
-        did_nothing_cases: The cases that baseline was graded over; ``None`` with it.
-        stale_proof: The run recorded the check ``proven`` under an older proof rule
-            (:func:`~threetears.evals.schema.models.goal_check_proofs_as_read`), so ``proof`` reads
-            ``unproven`` and the check needs re-proving by a new launch.
-        refused: Why the grammar refused the check when the run launched, for a check a template stored before
-            the rule still carried; ``None`` otherwise. Such a check is graded on none of the run's results,
-            which are not rig faults for it: ``excluded`` counts them.
-        excluded: The results a refused check was not graded on — every result of the run; 0 otherwise.
+    :ivar check: The check, as the template states it.
+    :ivar passed: How many results it counts as passed.
+    :ivar n: How many results count for it: every result carrying it but those excluded as a fault of the rig.
+    :ivar proof: Whether the check was shown, when the run launched, to tell its outcomes apart
+        (``EvalRun.goal_check_proofs``); ``None`` for a run that recorded none, which reads as unproven.
+        Only ``proven`` reads as measuring the behaviour: an unproven or refuted check's pass rate may be
+        what a candidate that did nothing would score, and :meth:`render` says so beside it.
+    :ivar did_nothing_passed: Of ``did_nothing_cases``, how many cases a candidate that did nothing passes — the
+        check graded against each case's untouched starting state with no calls made. Set where each case's
+        seed is in hand (an eval's world with state); ``None`` elsewhere.
+    :ivar did_nothing_cases: The cases that baseline was graded over; ``None`` with it.
+    :ivar stale_proof: The run recorded the check ``proven`` under an older proof rule
+        (:func:`~threetears.evals.schema.models.goal_check_proofs_as_read`), so ``proof`` reads
+        ``unproven`` and the check needs re-proving by a new launch.
+    :ivar refused: Why the grammar refused the check when the run launched, for a check a template stored before
+        the rule still carried; ``None`` otherwise. Such a check is graded on none of the run's results,
+        which are not rig faults for it: ``excluded`` counts them.
+    :ivar excluded: The results a refused check was not graded on — every result of the run; 0 otherwise.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -261,8 +257,8 @@ class GoalCheckSummary(BaseModel):
     def line(self) -> str:
         """The check as :meth:`EvalSummary.render` prints it: its pass count, and, unless proven, why it is not one.
 
-        Returns:
-            One line, without indentation.
+        :return: One line, without indentation.
+        :rtype: str
         """
         if self.refused is not None:
             return (
@@ -292,18 +288,17 @@ class GoalCheckSummary(BaseModel):
 class DimensionSummary(BaseModel):
     """One judged rubric dimension over a run's results.
 
-    Attributes:
-        name: The dimension, as the template's rubric names it.
-        scale: How it was answered: ``ordinal`` (1 to 5) or ``pass_fail`` (1 pass, 0 fail); ``None`` when
-            no result carries a score to say.
-        n: How many results carry a score on it.
-        mean: Their mean; ``None`` when none does.
-        minimum: The lowest score; ``None`` when none does.
-        maximum: The highest score; ``None`` when none does.
-        cannot_tell: How many results the judge answered it could not score on it — not failures, and in no mean.
-        second_judges: How far each second judge asked about this run agreed with its judge on this dimension
-            (:func:`~threetears.evals.analysis.inter_judge_agreement`): n, exact agreement and kappa, beside the score
-            it qualifies. Empty when no second judge was asked — agreement between judges is then unmeasured.
+    :ivar name: The dimension, as the template's rubric names it.
+    :ivar scale: How it was answered: ``ordinal`` (1 to 5) or ``pass_fail`` (1 pass, 0 fail); ``None`` when
+        no result carries a score to say.
+    :ivar n: How many results carry a score on it.
+    :ivar mean: Their mean; ``None`` when none does.
+    :ivar minimum: The lowest score; ``None`` when none does.
+    :ivar maximum: The highest score; ``None`` when none does.
+    :ivar cannot_tell: How many results the judge answered it could not score on it — not failures, and in no mean.
+    :ivar second_judges: How far each second judge asked about this run agreed with its judge on this dimension
+        (:func:`~threetears.evals.analysis.inter_judge_agreement`): n, exact agreement and kappa, beside the score
+        it qualifies. Empty when no second judge was asked — agreement between judges is then unmeasured.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -332,11 +327,10 @@ _CASE_OUTCOMES: dict[ResultOutcome, CaseOutcome] = {
 class JudgeGrade(BaseModel):
     """One rubric dimension's score on one answer, with the judge's reason.
 
-    Attributes:
-        dimension: The dimension, as the rubric names it.
-        scale: ``ordinal`` (1 to 5) or ``pass_fail`` (1 pass, 0 fail).
-        score: The score.
-        reasoning: What the judge said about the answer when it scored it.
+    :ivar dimension: The dimension, as the rubric names it.
+    :ivar scale: ``ordinal`` (1 to 5) or ``pass_fail`` (1 pass, 0 fail).
+    :ivar score: The score.
+    :ivar reasoning: What the judge said about the answer when it scored it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -361,36 +355,35 @@ class CaseResult(BaseModel):
     What :meth:`EvalSummary.results` and :meth:`EvalSummary.misses` return, one per result, so a run's answers
     can be read after it ends without the store it ran in.
 
-    Attributes:
-        case: The case's name: its own ``id`` when the case carries one, else its position in the list given
-            (``"0"`` is the first). The summary's :attr:`EvalSummary.errors` name cases the same way.
-        case_id: The stored test case's id, which the page's Trials table orders its trials by.
-        input: The case, as given.
-        expected: A classifier's expected label for the case; ``None`` when the run classified nothing.
-        stratum: The kind of case it is, as its stored test case declares it (``EvalTestCase.stratum``); ``None``
-            when it declares none.
-        repeat: Which repeat of the case this is, from 1 to ``k``.
-        outcome: ``scored``, ``failed`` (the candidate's failure, counted against it) or ``excluded`` (a fault
-            of the rig — a scorer that raised, a judge that failed — counted for nothing).
-        answer: The candidate's answer as returned (its ``repr`` when JSON could not hold it); ``None`` when it
-            gave none.
-        scores: Each grade the result carries, by measure: every scorer's value, and a classifier's ``match``
-            and ``confusion_cell``.
-        judged: Each rubric dimension the judge scored, with its reason; empty for an unjudged run.
-        judge_cannot_tell: Each dimension the judge said it could not score, with its reason. Not a failure.
-        goal_checks: Each goal-state check, by its expression, and whether the end state passed it.
-        errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
-        missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
-            result the candidate failed, a classifier answer that is not the expected label, a scorer on the
-            wrong side of 0 for its direction — 0 or less where higher is better (``False`` counts as 0), more
-            than 0 where lower is better, and never for a measure that declares no direction — a goal check the end
-            state failed, or a pass/fail dimension the judge failed. An excluded result is never a miss: it says
-            nothing about the candidate.
-        cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
-        state: How the trial ended as the report's page reads it
-            (:func:`~threetears.evals.analysis.bundle.trials.read_trial`): ``passed`` when every check the template
-            declares passed, ``failed``, or ``lost`` to the test setup. A case passes, on the console's first line as
-            on the page, when it has a repeat not lost and none failed.
+    :ivar case: The case's name: its own ``id`` when the case carries one, else its position in the list given
+        (``"0"`` is the first). The summary's :attr:`EvalSummary.errors` name cases the same way.
+    :ivar case_id: The stored test case's id, which the page's Trials table orders its trials by.
+    :ivar input: The case, as given.
+    :ivar expected: A classifier's expected label for the case; ``None`` when the run classified nothing.
+    :ivar stratum: The kind of case it is, as its stored test case declares it (``EvalTestCase.stratum``); ``None``
+        when it declares none.
+    :ivar repeat: Which repeat of the case this is, from 1 to ``k``.
+    :ivar outcome: ``scored``, ``failed`` (the candidate's failure, counted against it) or ``excluded`` (a fault
+        of the rig — a scorer that raised, a judge that failed — counted for nothing).
+    :ivar answer: The candidate's answer as returned (its ``repr`` when JSON could not hold it); ``None`` when it
+        gave none.
+    :ivar scores: Each grade the result carries, by measure: every scorer's value, and a classifier's ``match``
+        and ``confusion_cell``.
+    :ivar judged: Each rubric dimension the judge scored, with its reason; empty for an unjudged run.
+    :ivar judge_cannot_tell: Each dimension the judge said it could not score, with its reason. Not a failure.
+    :ivar goal_checks: Each goal-state check, by its expression, and whether the end state passed it.
+    :ivar errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
+    :ivar missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
+        result the candidate failed, a classifier answer that is not the expected label, a scorer on the
+        wrong side of 0 for its direction — 0 or less where higher is better (``False`` counts as 0), more
+        than 0 where lower is better, and never for a measure that declares no direction — a goal check the end
+        state failed, or a pass/fail dimension the judge failed. An excluded result is never a miss: it says
+        nothing about the candidate.
+    :ivar cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
+    :ivar state: How the trial ended as the report's page reads it
+        (:func:`~threetears.evals.analysis.bundle.trials.read_trial`): ``passed`` when every check the template
+        declares passed, ``failed``, or ``lost`` to the test setup. A case passes, on the console's first line as
+        on the page, when it has a repeat not lost and none failed.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -433,24 +426,31 @@ class CaseResult(BaseModel):
     ) -> CaseResult:
         """One stored result, read as a case result.
 
-        Args:
-            result: The stored result.
-            case: The case's name.
-            given: The case, as given.
-            expected: A classifier's expected label, or ``None``.
-            answer: The candidate's answer, as its kind stored it.
-            higher_is_better: Each measure's declared direction, by name. Lower-is-better (``leaked``, a count
-                of errors) misses above 0 and not at 0, guardrail or not; a measure that declares no direction
-                misses never, since "worse" needs one; a measure not named reads as higher-is-better, a scorer's
-                default.
-            stratum: The stratum the case declares, or ``None``.
-            catalog: Each measure the result carries, described as the host declares it, which says which are checks;
-                the state is read through it exactly as the page reads its trials.
-            rubric_threshold: The 1–5 level a judged dimension must reach, as the page's trials read it.
-
-        Returns:
-            The case result, its miss reasons decided by the rule :attr:`missed_because` states and its state by the
-            page's own reading of a trial.
+        :param result: The stored result.
+        :ptype result: EvalResult
+        :param case: The case's name.
+        :ptype case: str
+        :param given: The case, as given.
+        :ptype given: JsonValue
+        :param expected: A classifier's expected label, or ``None``.
+        :ptype expected: str | None
+        :param answer: The candidate's answer, as its kind stored it.
+        :ptype answer: JsonValue
+        :param higher_is_better: Each measure's declared direction, by name. Lower-is-better (``leaked``, a count
+            of errors) misses above 0 and not at 0, guardrail or not; a measure that declares no direction
+            misses never, since "worse" needs one; a measure not named reads as higher-is-better, a scorer's
+            default.
+        :ptype higher_is_better: Mapping[str, bool | None] | None
+        :param stratum: The stratum the case declares, or ``None``.
+        :ptype stratum: str | None
+        :param catalog: Each measure the result carries, described as the host declares it, which says which are checks;
+            the state is read through it exactly as the page reads its trials.
+        :ptype catalog: Mapping[str, MetricDescriptor] | None
+        :param rubric_threshold: The 1–5 level a judged dimension must reach, as the page's trials read it.
+        :ptype rubric_threshold: int
+        :return: The case result, its miss reasons decided by the rule :attr:`missed_because` states and its state by
+            the page's own reading of a trial.
+        :rtype: CaseResult
         """
         outcome = _CASE_OUTCOMES[classify_result(result)]
         errors = (
@@ -511,8 +511,8 @@ class CaseResult(BaseModel):
     def render(self) -> str:
         """The result as a few lines of text: the case, the answer, the grades, and why it missed or failed.
 
-        Returns:
-            The text, without a trailing newline.
+        :return: The text, without a trailing newline.
+        :rtype: str
         """
         kind = "" if self.stratum is None else f"{self.stratum}, "
         head = f"case {self.case} ({kind}repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
@@ -544,11 +544,10 @@ class CaseResult(BaseModel):
 class ProviderUnits(BaseModel):
     """What an external API metered over a run, in its own unit, for one provider.
 
-    Attributes:
-        provider: Who was called, as the host names it; ``None`` where the caller could not say.
-        unit: The provider's unit (``credits``, ``quota_units``).
-        units: How many the results' rows report, summed within this provider and unit only — two providers'
-            units are never added together.
+    :ivar provider: Who was called, as the host names it; ``None`` where the caller could not say.
+    :ivar unit: The provider's unit (``credits``, ``quota_units``).
+    :ivar units: How many the results' rows report, summed within this provider and unit only — two providers'
+        units are never added together.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -591,17 +590,16 @@ class RoleSpend(BaseModel):
     serialised: the wire shape carries ``role`` alone, and a client in another language compares it against the
     roles *it* knows.
 
-    Attributes:
-        role: The role (:data:`~threetears.evals.schema.UsageRole`): one of
-            :data:`~threetears.evals.schema.USAGE_ROLES`, or one a newer build recorded.
-        calls: How many calls its rows count.
-        uncounted_rows: How many of its usage rows reported no call count. Their calls are not in ``calls``, and
-            how many there were is unknown, never 0.
-        cost_usd: What its priced calls cost, summed as priced when they were made; ``None`` when none was priced.
-        unpriced_calls: How many of its calls carry no dollars.
-        counted: Whether the run's total (each result's blended cost) sums this role. Every model-metered role is;
-            the ``external`` role is only in a run that declared external rates.
-        units: The ``external`` role's own metering, per provider and unit; empty for every other role.
+    :ivar role: The role (:data:`~threetears.evals.schema.UsageRole`): one of
+        :data:`~threetears.evals.schema.USAGE_ROLES`, or one a newer build recorded.
+    :ivar calls: How many calls its rows count.
+    :ivar uncounted_rows: How many of its usage rows reported no call count. Their calls are not in ``calls``, and
+        how many there were is unknown, never 0.
+    :ivar cost_usd: What its priced calls cost, summed as priced when they were made; ``None`` when none was priced.
+    :ivar unpriced_calls: How many of its calls carry no dollars.
+    :ivar counted: Whether the run's total (each result's blended cost) sums this role. Every model-metered role is;
+        the ``external`` role is only in a run that declared external rates.
+    :ivar units: The ``external`` role's own metering, per provider and unit; empty for every other role.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -671,12 +669,11 @@ class StratumSummary(BaseModel):
     A run's pooled mean is dominated by its commonest kind of case, so a run whose cases declare strata
     (``EvalTestCase.stratum``) is read again per stratum, by the same rules as the pooled figures.
 
-    Attributes:
-        stratum: The stratum, as its cases declare it; ``None`` for the cases of the run that declare none.
-        n_cases: Cases of the run's frozen case set in it.
-        n_results: Results stored over them.
-        measures: Each measure over those results alone, as :attr:`EvalSummary.measures` reads it over all of
-            them — every one but ``confusion_cell``, whose counts are the run's confusion matrix.
+    :ivar stratum: The stratum, as its cases declare it; ``None`` for the cases of the run that declare none.
+    :ivar n_cases: Cases of the run's frozen case set in it.
+    :ivar n_results: Results stored over them.
+    :ivar measures: Each measure over those results alone, as :attr:`EvalSummary.measures` reads it over all of
+        them — every one but ``confusion_cell``, whose counts are the run's confusion matrix.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -695,77 +692,76 @@ class StratumSummary(BaseModel):
 class EvalSummary(BaseModel):
     """One run, summarised.
 
-    Attributes:
-        run_id: The run.
-        scope_id: The scope it is stored in.
-        template_id: The template it ran; ``None`` for an ad-hoc run of explicit cases.
-        candidate_model: The arm's candidate model.
-        arm: The arm's name, where a comparison named its arms apart from their model
-            (an eval comparing plainly named arms, every arm at one shared model); ``None`` elsewhere, and for a
-            summary read back from the store.
-        status: How the run ended, as stored (``completed``, ``failed``, ``cancelled``, ...).
-        k_runs: Repeats per case.
-        n_cases: Cases in the run's frozen case set.
-        n_results: Results stored.
-        n_scored: Results scored normally.
-        n_candidate_failed: Results the candidate failed: they count against it.
-        n_excluded: Results excluded as a fault of the rig: they count for nothing.
-        measures: Each measure the host declares, over the results that carry it, then ``match`` and
-            ``confusion_cell`` when a result carries them and the host does not declare them.
-        confusion: The confusion matrix of the results' ``confusion_cell`` values, by expected then
-            predicted label; empty for a run that classified nothing.
-        labels: Each label's precision, recall and F1 from the same observations, by label, each interval
-            over the cases behind it (a case classified k times is one draw); empty with the matrix.
-        judged: Each rubric dimension a judge scored or could not tell on, in the order first met; empty
-            for an unjudged run.
-        strata: The run read again per stratum of its cases (:class:`StratumSummary`), named strata in name order
-            then the cases declaring none; empty when none of its cases declares a stratum, so an unstratified
-            run reads pooled, with nothing per stratum.
-        goal_checks: Each goal-state check the results carry, in the order first met; empty for a run
-            with none.
-        intent: The template's intent, which a judged run's judge read beside every answer; ``None`` for an
-            unjudged run, and for a template edited since the run launched, whose intent is no longer the one
-            the judge read.
-        intent_source: Where the intent came from, as the caller that wrote the template says it
-            (an eval: ``"from <runner>'s docstring"`` or a generic
-            default); ``None`` for an intent stated outright, and for a summary read back from the store,
-            which keeps the intent but not its source.
-        second_judge_calls: How many calls second judges asked about this run made, as the out-of-run ledger records
-            them under purpose ``second_judge``. Measurement cost: never in :attr:`spend` or :attr:`total_cost_usd`.
-        second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
-        spend: What each role spent (:class:`RoleSpend`), in :data:`~threetears.evals.schema.UsageRole`'s order, for
-            every role the results' usage rows name; empty for a run whose results reported none.
-        total_cost_usd: The results' cost summed (each result's blended ``cost_usd``) — what the counted roles'
-            dollars add up to, external units aside; ``None`` when any result's cost is unknown (its line then states
-            the counted roles' priced dollars and their unpriced calls), and for a run whose results reported no
-            spend.
-        errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
-            as the caller that summarised the run named it (an eval: its own
-            ``id``, else its position), else by its stored test case id.
-        max_cost_usd: The spend ceiling the run was held to, in US dollars; ``None`` when none bound it.
-        max_cost_usd_origin: Where that ceiling came from, as the run records it: ``chosen`` (the launch named
-            it), ``inherited`` (the host's default), ``uncapped`` (ceiling enforcement was off, so nothing bounded
-            the run), or ``None`` for a run whose writer recorded none.
-        judge_shares_candidate_model: Each model that both judged the run's answers and produced them — the
-            judge's model (as requested, or as a score says it was served) matching the run's candidate model or
-            a model the candidate's usage rows name — sorted; empty when they share none, or for an unjudged run.
-            A model tends to rate its own output higher, so a judged score from one of these may favour the
-            candidate. Compared on the ids as recorded, so an alias one side spells differently is not caught.
-        unconfirmed_models: Each role — the candidate, then the judge — some of whose calls' responses named no
-            model (:class:`~threetears.evals.analysis.reporting.UnconfirmedModelIdentity`): the record holds only
-            the id asked for there, so which model ran is unconfirmed. Empty when every response named its model,
-            and for a run that called nothing.
-        request_settings: The judge's then the simulated user's request settings, as the run asked them and as
-            each call reported being sent (:class:`~threetears.evals.analysis.reporting.RequestSettingsReading`,
-            whose ``state`` and ``sent_display()`` are the run's derived "sent" value); each only where the role
-            made a call. Never the candidate's.
-        case_results: Every result, read for a person (:class:`CaseResult`), in case order then repeat; ``None``
-            when the run was summarised without its cases, as the CLI and ``run_get`` summarise one.
-            :meth:`results` and :meth:`misses` read it.
-        stopped_because: Why a designed stop ended the run short, as the run records it: the reason an
-            operator gave for a cancel, or which budget stopped it (its cost cap, or its wall-clock budget).
-            ``None`` for a run nothing stopped, and for a cancel given no reason. A stop is never one of
-            :attr:`errors`, which are faults.
+    :ivar run_id: The run.
+    :ivar scope_id: The scope it is stored in.
+    :ivar template_id: The template it ran; ``None`` for an ad-hoc run of explicit cases.
+    :ivar candidate_model: The arm's candidate model.
+    :ivar arm: The arm's name, where a comparison named its arms apart from their model
+        (an eval comparing plainly named arms, every arm at one shared model); ``None`` elsewhere, and for a
+        summary read back from the store.
+    :ivar status: How the run ended, as stored (``completed``, ``failed``, ``cancelled``, ...).
+    :ivar k_runs: Repeats per case.
+    :ivar n_cases: Cases in the run's frozen case set.
+    :ivar n_results: Results stored.
+    :ivar n_scored: Results scored normally.
+    :ivar n_candidate_failed: Results the candidate failed: they count against it.
+    :ivar n_excluded: Results excluded as a fault of the rig: they count for nothing.
+    :ivar measures: Each measure the host declares, over the results that carry it, then ``match`` and
+        ``confusion_cell`` when a result carries them and the host does not declare them.
+    :ivar confusion: The confusion matrix of the results' ``confusion_cell`` values, by expected then
+        predicted label; empty for a run that classified nothing.
+    :ivar labels: Each label's precision, recall and F1 from the same observations, by label, each interval
+        over the cases behind it (a case classified k times is one draw); empty with the matrix.
+    :ivar judged: Each rubric dimension a judge scored or could not tell on, in the order first met; empty
+        for an unjudged run.
+    :ivar strata: The run read again per stratum of its cases (:class:`StratumSummary`), named strata in name order
+        then the cases declaring none; empty when none of its cases declares a stratum, so an unstratified
+        run reads pooled, with nothing per stratum.
+    :ivar goal_checks: Each goal-state check the results carry, in the order first met; empty for a run
+        with none.
+    :ivar intent: The template's intent, which a judged run's judge read beside every answer; ``None`` for an
+        unjudged run, and for a template edited since the run launched, whose intent is no longer the one
+        the judge read.
+    :ivar intent_source: Where the intent came from, as the caller that wrote the template says it
+        (an eval: ``"from <runner>'s docstring"`` or a generic
+        default); ``None`` for an intent stated outright, and for a summary read back from the store,
+        which keeps the intent but not its source.
+    :ivar second_judge_calls: How many calls second judges asked about this run made, as the out-of-run ledger records
+        them under purpose ``second_judge``. Measurement cost: never in :attr:`spend` or :attr:`total_cost_usd`.
+    :ivar second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
+    :ivar spend: What each role spent (:class:`RoleSpend`), in :data:`~threetears.evals.schema.UsageRole`'s order, for
+        every role the results' usage rows name; empty for a run whose results reported none.
+    :ivar total_cost_usd: The results' cost summed (each result's blended ``cost_usd``) — what the counted roles'
+        dollars add up to, external units aside; ``None`` when any result's cost is unknown (its line then states
+        the counted roles' priced dollars and their unpriced calls), and for a run whose results reported no
+        spend.
+    :ivar errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
+        as the caller that summarised the run named it (an eval: its own
+        ``id``, else its position), else by its stored test case id.
+    :ivar max_cost_usd: The spend ceiling the run was held to, in US dollars; ``None`` when none bound it.
+    :ivar max_cost_usd_origin: Where that ceiling came from, as the run records it: ``chosen`` (the launch named
+        it), ``inherited`` (the host's default), ``uncapped`` (ceiling enforcement was off, so nothing bounded
+        the run), or ``None`` for a run whose writer recorded none.
+    :ivar judge_shares_candidate_model: Each model that both judged the run's answers and produced them — the
+        judge's model (as requested, or as a score says it was served) matching the run's candidate model or
+        a model the candidate's usage rows name — sorted; empty when they share none, or for an unjudged run.
+        A model tends to rate its own output higher, so a judged score from one of these may favour the
+        candidate. Compared on the ids as recorded, so an alias one side spells differently is not caught.
+    :ivar unconfirmed_models: Each role — the candidate, then the judge — some of whose calls' responses named no
+        model (:class:`~threetears.evals.analysis.reporting.UnconfirmedModelIdentity`): the record holds only
+        the id asked for there, so which model ran is unconfirmed. Empty when every response named its model,
+        and for a run that called nothing.
+    :ivar request_settings: The judge's then the simulated user's request settings, as the run asked them and as
+        each call reported being sent (:class:`~threetears.evals.analysis.reporting.RequestSettingsReading`,
+        whose ``state`` and ``sent_display()`` are the run's derived "sent" value); each only where the role
+        made a call. Never the candidate's.
+    :ivar case_results: Every result, read for a person (:class:`CaseResult`), in case order then repeat; ``None``
+        when the run was summarised without its cases, as the CLI and ``run_get`` summarise one.
+        :meth:`results` and :meth:`misses` read it.
+    :ivar stopped_because: Why a designed stop ended the run short, as the run records it: the reason an
+        operator gave for a cancel, or which budget stopped it (its cost cap, or its wall-clock budget).
+        ``None`` for a run nothing stopped, and for a cancel given no reason. A stop is never one of
+        :attr:`errors`, which are faults.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -806,13 +802,11 @@ class EvalSummary(BaseModel):
     def results(self) -> list[CaseResult]:
         """Every result: each case's answer on each repeat, its grades, and why it failed or was excluded.
 
-        Returns:
-            One :class:`CaseResult` per result, in case order then repeat.
-
-        Raises:
-            ValueError: The summary carries no results — it was summarised without its cases (the CLI's and
-                ``run_get``'s summaries are); read the stored results with
-                :func:`~threetears.evals.run.list_results` instead.
+        :return: One :class:`CaseResult` per result, in case order then repeat.
+        :rtype: list[CaseResult]
+        :raises ValueError: The summary carries no results — it was summarised without its cases (the CLI's and
+            ``run_get``'s summaries are); read the stored results with
+            :func:`~threetears.evals.run.list_results` instead.
         """
         if self.case_results is None:
             raise ValueError(
@@ -826,25 +820,22 @@ class EvalSummary(BaseModel):
 
         A miss is a result the candidate failed, a classifier answer that is not the expected label, a scorer
         on the wrong side of 0 for its direction (:attr:`CaseResult.missed_because`), a goal check
-        the end state failed, or a pass/fail dimension the judge failed. An excluded result is not a miss — it says nothing about the candidate —
-        so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
+        the end state failed, or a pass/fail dimension the judge failed. An excluded result is not a miss — it says
+        nothing about the candidate — so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
 
-        Returns:
-            The missed results, in case order then repeat.
-
-        Raises:
-            ValueError: The summary carries no results (:meth:`results`).
+        :return: The missed results, in case order then repeat.
+        :rtype: list[CaseResult]
+        :raises ValueError: The summary carries no results (:meth:`results`).
         """
         return [result for result in self.results() if result.missed]
 
     def role_spend(self, role: UsageRole) -> RoleSpend | None:
         """What one role spent over the run, or ``None`` when its results name no row of it.
 
-        Args:
-            role: The role.
-
-        Returns:
-            Its :class:`RoleSpend`, or ``None``.
+        :param role: The role.
+        :ptype role: UsageRole
+        :return: Its :class:`RoleSpend`, or ``None``.
+        :rtype: RoleSpend | None
         """
         return next((spend for spend in self.spend if spend.role == role), None)
 
@@ -922,12 +913,11 @@ class EvalSummary(BaseModel):
         """Each measure's line as a comparison prints this run: a guardrail's says what the comparison decided on it,
         never that it is decided only in one.
 
-        Args:
-            guardrail_said: What the comparison came to on each guardrail for this run's arm, by measure name; a
-                guardrail it names nothing for is printed with its level alone.
-
-        Returns:
-            Each measure's state and line, in ``measures`` order.
+        :param guardrail_said: What the comparison came to on each guardrail for this run's arm, by measure name; a
+            guardrail it names nothing for is printed with its level alone.
+        :ptype guardrail_said: Mapping[str, str]
+        :return: Each measure's state and line, in ``measures`` order.
+        :rtype: list[MeasureLine]
         """
         return [self._measure_line(measure, guardrail_said.get(measure.name)) for measure in self.measures]
 
@@ -1105,8 +1095,8 @@ class EvalSummary(BaseModel):
         play; the spend-cap line prints only when a cap bounded the run, a judge ran, or any role reported
         spend — a first run of a free function is not handed the vocabulary of a rig it does not have.
 
-        Returns:
-            The text, without a trailing newline.
+        :return: The text, without a trailing newline.
+        :rtype: str
         """
         lines = [self.headline, f"  {self.results_text}"]
         lines += [f"  {line}" for line in (self.stopped_text, self.spend_cap_text) if line is not None]
@@ -1241,18 +1231,18 @@ def summarize_run(
 ) -> EvalSummary:
     """Summarise one stored run and its results.
 
-    Args:
-        host: The host whose store holds the run, and whose measures are summarised.
-        run_id: The run.
-        scope_id: The scope it lives in.
-        case_names: What each case is called in the summary's errors, by stored test case id; a case it does
-            not name, and every case when it is ``None``, is called by its id.
-
-    Returns:
-        The summary.
-
-    Raises:
-        NotFoundError: No run with that id in the scope.
+    :param host: The host whose store holds the run, and whose measures are summarised.
+    :ptype host: EvalHost
+    :param run_id: The run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param case_names: What each case is called in the summary's errors, by stored test case id; a case it does
+        not name, and every case when it is ``None``, is called by its id.
+    :ptype case_names: Mapping[str, str] | None
+    :return: The summary.
+    :rtype: EvalSummary
+    :raises NotFoundError: No run with that id in the scope.
     """
     run = host.storage.load_eval_run(run_id, scope_id)
     if run is None:

@@ -48,8 +48,8 @@ _MATERIAL_HEADING = "# Case material (the evidence the output must be judged aga
 def toyhost_rubric() -> list[RubricDim]:
     """The judged variant's rubric: one ordinal dimension over the extraction's faithfulness.
 
-    Returns:
-        The rubric.
+    :return: The rubric.
+    :rtype: list[RubricDim]
     """
     return [
         RubricDim(
@@ -69,8 +69,8 @@ def toyhost_rubric() -> list[RubricDim]:
 def toyhost_judged_template() -> EvalTemplate:
     """The standard toy template with a rubric, under its own id.
 
-    Returns:
-        The judged template.
+    :return: The judged template.
+    :rtype: EvalTemplate
     """
     template = toyhost_template()
     return template.model_copy(update={"id": f"{template.id}:judged", "rubric": toyhost_rubric()})
@@ -106,11 +106,12 @@ class ScriptedJudgeClient:
     ) -> None:
         """Start with no calls recorded.
 
-        Args:
-            reports_token_counts: ``False`` is a provider that reports its price but omits the token
-                counts, which the engine must carry as unknown rather than as zero.
-            temperature: What every request is sent at, as each completion reports it; ``None`` is a model
-                that refuses a temperature and is sent none.
+        :param reports_token_counts: ``False`` is a provider that reports its price but omits the token
+            counts, which the engine must carry as unknown rather than as zero.
+        :ptype reports_token_counts: bool
+        :param temperature: What every request is sent at, as each completion reports it; ``None`` is a model
+            that refuses a temperature and is sent none.
+        :ptype temperature: float | None
         """
         #: Every ``(system, user)`` prompt pair the client was sent, in call order.
         self.calls: list[tuple[str, str]] = []
@@ -122,14 +123,15 @@ class ScriptedJudgeClient:
     ) -> ToyJudgeCompletion:
         """Score the output under review against the case material it was judged beside.
 
-        Args:
-            system: The judge's system prompt.
-            user: The judge's user prompt, carrying the case material and the output.
-            response_format: The requested wire format; the reply is always one JSON object.
-
-        Returns:
-            A reply scoring the rubric dimension 1–5 by the share of invoice fields reproduced, or
+        :param system: The judge's system prompt.
+        :ptype system: str
+        :param user: The judge's user prompt, carrying the case material and the output.
+        :ptype user: str
+        :param response_format: The requested wire format; the reply is always one JSON object.
+        :ptype response_format: dict[str, str] | None
+        :return: A reply scoring the rubric dimension 1–5 by the share of invoice fields reproduced, or
             answering ``cannot tell`` when the prompt carries no output to score.
+        :rtype: ToyJudgeCompletion
         """
         self.calls.append((system, user))
         if _OUTPUT_HEADING not in user or _MATERIAL_HEADING not in user:
@@ -171,11 +173,10 @@ class ScriptedJudgeClient:
 def toyhost_judge_service(client: ScriptedJudgeClient) -> JudgeService:
     """The engine's judge service, bound to the scripted client for every model it is asked for.
 
-    Args:
-        client: The scripted judge.
-
-    Returns:
-        The service.
+    :param client: The scripted judge.
+    :ptype client: ScriptedJudgeClient
+    :return: The service.
+    :rtype: JudgeService
     """
 
     def judge_client(_model: str | None, _temperature: float | None) -> CompletionClient:

@@ -21,8 +21,8 @@ from packages.evals.tests.factories import make_eval_run, make_test_case
 def _run_fields() -> dict[str, object]:
     """A valid run's fields, as a stored document carries them.
 
-    Returns:
-        The fields of a run that validates.
+    :return: The fields of a run that validates.
+    :rtype: dict[str, object]
     """
     return make_eval_run(candidate_model="m1").model_dump(mode="json")
 

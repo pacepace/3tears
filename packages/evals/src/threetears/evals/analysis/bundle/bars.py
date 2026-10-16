@@ -86,14 +86,15 @@ def _frontier_bar(
     read — lower-is-better, or a threshold outside pass^k's range [0, 1] (a host's registered bar is not
     range-checked where it is registered) — and the reason says so.
 
-    Args:
-        behavior: The campaign's behavior, the scope a registered bar is keyed under.
-        design: The campaign's declaration.
-        profile: The host whose registered bars apply.
-
-    Returns:
-        ``(bar, None)`` when the frontier takes a bar, else ``(None, reason)``: the withheld sentence followed
+    :param behavior: The campaign's behavior, the scope a registered bar is keyed under.
+    :ptype behavior: str
+    :param design: The campaign's declaration.
+    :ptype design: CampaignDesign | None
+    :param profile: The host whose registered bars apply.
+    :ptype profile: HostProfile
+    :return: ``(bar, None)`` when the frontier takes a bar, else ``(None, reason)``: the withheld sentence followed
         by which bars exist, and on what measure, or why the one on pass^k was not passed.
+    :rtype: tuple[float | None, str | None]
     """
     bars = _applicable_bars(behavior, design, profile=profile)
     on_ranking = [bar for bar in bars if bar[0] == FRONTIER_RANKING_MEASURE]
@@ -143,14 +144,15 @@ def _applicable_bars(
     standard actually in force. A declared bar replaces the incumbent on its measure, and the ratchet
     has already refused one looser than it.
 
-    Args:
-        behavior: The campaign's behavior, the scope a registered bar is keyed under.
-        design: The campaign's declaration.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        ``(measure_id, threshold, higher_is_better, source)`` per bar, declared first, then registered,
+    :param behavior: The campaign's behavior, the scope a registered bar is keyed under.
+    :ptype behavior: str
+    :param design: The campaign's declaration.
+    :ptype design: CampaignDesign | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: ``(measure_id, threshold, higher_is_better, source)`` per bar, declared first, then registered,
         each in measure order.
+    :rtype: list[tuple[str, float, bool, Literal['declared', 'registered']]]
     """
     declared = sorted(design.bars if design else [], key=lambda bar: bar.measure_id)
     overridden = {bar.measure_id for bar in declared}
@@ -168,19 +170,21 @@ def _bar_reading(
 ) -> _BarReading | None:
     """Read one bar's value over one cell's results, from where its kind is carried.
 
-    Args:
-        bar: The resolved bar name — its kind says where the value lives.
-        members: The cell's results, faulted ones included. A measure is read over its own population
-            (:func:`_collect_measures` leaves a fault out of a ``scored`` one); a judged dimension over
-            the non-faulted results, as every score is.
-        judged_rows: Projected judged-score rows by result id, for a judged dimension.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        ``(mean, sem, n, n_independent, interval)``, or None when no counted result carries the name.
+    :param bar: The resolved bar name — its kind says where the value lives.
+    :ptype bar: BarName
+    :param members: The cell's results, faulted ones included. A measure is read over its own population
+        (:func:`_collect_measures` leaves a fault out of a ``scored`` one); a judged dimension over
+        the non-faulted results, as every score is.
+    :ptype members: list[EvalResult]
+    :param judged_rows: Projected judged-score rows by result id, for a judged dimension.
+    :ptype judged_rows: dict[str, list[ScoreRecord]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: ``(mean, sem, n, n_independent, interval)``, or None when no counted result carries the name.
         The interval is the one the cell's own reading states — a measure's summary, or a judged
         dimension's through the same rule (:func:`~threetears.evals.analysis.stats.observed_mean_interval`)
         — never one computed for the bar, so a bar and the cell it reads cannot state two widths.
+    :rtype: _BarReading | None
     """
     if bar.kind in ("measure", "goal_state"):
         # A check's rate is the measure the walk publishes for it, read here rather than recomputed,
@@ -260,18 +264,23 @@ def _bar_adjudications(
     :class:`BarVerdict`. A verdict on a judged dimension carries the evidence tier of the judges behind it
     (:func:`_judged_bar_tier`); every other verdict carries None.
 
-    Args:
-        behavior: The campaign's behavior.
-        design: The campaign's declaration.
-        results_by_cell: Each cell's results.
-        records: The assembly's score projection rows, where a judged dimension's name survives.
-        tiers: The judges' evidence tiers (``judge_evidence_tiers``).
-        frontier_bar: The bar the frontier was given (:func:`_frontier_bar`), or None. A bar on pass^k carries
-            no cell verdict, and its reason says whether the frontier read it.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        One adjudication per applicable bar, in :func:`_applicable_bars` order.
+    :param behavior: The campaign's behavior.
+    :ptype behavior: str
+    :param design: The campaign's declaration.
+    :ptype design: CampaignDesign | None
+    :param results_by_cell: Each cell's results.
+    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :param records: The assembly's score projection rows, where a judged dimension's name survives.
+    :ptype records: list[ScoreRecord]
+    :param tiers: The judges' evidence tiers (``judge_evidence_tiers``).
+    :ptype tiers: list[JudgeEvidenceTier]
+    :param frontier_bar: The bar the frontier was given (:func:`_frontier_bar`), or None. A bar on pass^k carries
+        no cell verdict, and its reason says whether the frontier read it.
+    :ptype frontier_bar: float | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: One adjudication per applicable bar, in :func:`_applicable_bars` order.
+    :rtype: list[BarAdjudication]
     """
     judged_rows: dict[str, list[ScoreRecord]] = {}
     for record in records:
@@ -382,15 +391,16 @@ def _verdict_order(
     keeps its ``bar_adjudications`` position within its axis, so the priority reorders axes and never
     the bars on one.
 
-    Args:
-        adjudications: The bundle's bar adjudications, in their own order.
-        design: The campaign's declaration, or None.
-        first_run_at: The earliest member run's ``created_at``: only a question asked by then is scoped
-            (:func:`~threetears.evals.kernel.declaration.preregistered_questions`).
-
-    Returns:
-        The order. With no declaration or an empty priority, every adjudicated bar is unranked and no
+    :param adjudications: The bundle's bar adjudications, in their own order.
+    :ptype adjudications: list[BarAdjudication]
+    :param design: The campaign's declaration, or None.
+    :ptype design: CampaignDesign | None
+    :param first_run_at: The earliest member run's ``created_at``: only a question asked by then is scoped
+        (:func:`~threetears.evals.kernel.declaration.preregistered_questions`).
+    :ptype first_run_at: str | None
+    :return: The order. With no declaration or an empty priority, every adjudicated bar is unranked and no
         tier exists — the analysis must not invent a preference the campaign never stated.
+    :rtype: VerdictOrder
     """
     priority = list(design.merit_priority) if design is not None else []
     by_axis: dict[MeritAxis | None, list[str]] = defaultdict(list)

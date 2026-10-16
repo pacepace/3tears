@@ -222,8 +222,8 @@ def test_the_engine_models_are_on_the_engine_base():
 def _stored_result() -> tuple[EvalResult, EvalStorage, InMemoryDocumentStore]:
     """One result saved to an in-memory store, with the storage and the raw store.
 
-    Returns:
-        The result, the ``EvalStorage`` over the store, and the store itself.
+    :return: The result, the ``EvalStorage`` over the store, and the store itself.
+    :rtype: tuple[EvalResult, EvalStorage, InMemoryDocumentStore]
     """
     storage, store = memory_storage()
     result = EvalResult(
@@ -249,10 +249,12 @@ def _stored_result() -> tuple[EvalResult, EvalStorage, InMemoryDocumentStore]:
 def _tamper(store: InMemoryDocumentStore, result: EvalResult, **fields: object) -> None:
     """Rewrite the stored document with ``fields`` merged in, as an older or foreign writer would.
 
-    Args:
-        store: The in-memory store.
-        result: The result whose document to rewrite.
-        **fields: Keys to set on the stored document.
+    :param store: The in-memory store.
+    :ptype store: InMemoryDocumentStore
+    :param result: The result whose document to rewrite.
+    :ptype result: EvalResult
+    :param **fields: Keys to set on the stored document.
+    :ptype fields: object
     """
     document = store.get(result.id, result.scope_id)
     assert document is not None, "the result was not stored"

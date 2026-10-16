@@ -68,11 +68,10 @@ def reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract:
     level (one without ``indeterminate_when_blank``), since it could never be omitted; a host declaring such
     a dimension that every run records — reporter runs included — names it here.
 
-    Args:
-        host_seats: The host's own apparatus dimensions, or pinned roles, a reporter run fills.
-
-    Returns:
-        The contract: :class:`ReporterOverlays`, no spec, and the engine's seats with ``host_seats``.
+    :param host_seats: The host's own apparatus dimensions, or pinned roles, a reporter run fills.
+    :ptype host_seats: Iterable[str]
+    :return: The contract: :class:`ReporterOverlays`, no spec, and the engine's seats with ``host_seats``.
+    :rtype: KindContract
     """
     return KindContract(REPORTER_KIND, overlays=ReporterOverlays, seats=_REPORTER_SEATS | frozenset(host_seats))
 
@@ -93,17 +92,16 @@ _UNDELIVERABLE: Mapping[str, str] = {
 
 
 def refuse_undeliverable_reporter_template(template: EvalTemplate) -> None:
-    """Refuse a reporter template that asks for apparatus a memo writer cannot honour, or gives its judge nothing to score.
+    """Refuse a reporter template that asks for apparatus a memo writer cannot honour, or gives its judge nothing to
+    score.
 
     A reporter cell is one memo over a frozen bundle, judged on the template's rubric. So a conversation, goal
     checks, preconditions, tools, variation axes or a world seed would each be declared and silently never
     run; and a template with no rubric would have every memo written and paid for with nothing to judge it on.
 
-    Args:
-        template: A template declaring the reporter kind.
-
-    Raises:
-        ValidationFailedError: The template declares any of those, or no rubric; every defect is named at once.
+    :param template: A template declaring the reporter kind.
+    :ptype template: EvalTemplate
+    :raises ValidationFailedError: The template declares any of those, or no rubric; every defect is named at once.
     """
     asked = [why for name, why in _UNDELIVERABLE.items() if getattr(template, name)]
     if template.world_seed.namespaces:
@@ -127,18 +125,17 @@ def live_reporter_cases(
     — and a case this build cannot read is refused there, since it may supersede one that would otherwise
     read as live.
 
-    Args:
-        storage: Where the template's cases are stored.
-        template: The reporter template.
-        scope_id: The scope its cases live in.
-
-    Returns:
-        ``(stored case, reporter case)`` per live case, ordered by creation then id, so two launches over one
+    :param storage: Where the template's cases are stored.
+    :ptype storage: AnalysisStore
+    :param template: The reporter template.
+    :ptype template: EvalTemplate
+    :param scope_id: The scope its cases live in.
+    :ptype scope_id: str
+    :return: ``(stored case, reporter case)`` per live case, ordered by creation then id, so two launches over one
         bank freeze one list.
-
-    Raises:
-        ValidationFailedError: A stored reporter case of the template does not read; a (campaign, recorded
-            memo) pair holds more than one live case; or none is live.
+    :rtype: list[tuple[EvalTestCase, ReporterCase]]
+    :raises ValidationFailedError: A stored reporter case of the template does not read; a (campaign, recorded
+        memo) pair holds more than one live case; or none is live.
     """
     bank = reporter_case_bank(storage, template.id, scope_id)
     if ambiguous := bank.ambiguous:
