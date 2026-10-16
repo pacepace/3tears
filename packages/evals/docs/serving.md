@@ -595,7 +595,7 @@ its temperature. It starts from frozen cases, never generated ones.
 - `judge_cases_list` (read) lists the template's stored cases (`template_id`), in stored order: each case's id, its
   criterion, its author and expected verdict when it was written by hand, how many labels it carries, and whether it is
   live (not retired). It is how an operator finds the ids `case_set_mint` takes to list all of them. A case this build
-  cannot read is listed apart. A seed corpus's case name is not stored, so it is not shown.
+  cannot read is listed apart. A case's name is stored with it but not listed here; `cases_rename` changes it.
 - Then `run_launch` the judge template, one arm per judge: the arm's model, and its `config_ids` and `temperature`
   as overlays. The trials call only the judge, and their spend is recorded under the `judge` role.
   See [judges and calibration](judges-and-calibration.md#evaluating-a-judge-as-a-subject).

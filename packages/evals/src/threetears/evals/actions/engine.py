@@ -2084,8 +2084,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "Every case stored under the judge template, in stored order, retired ones included and marked: the "
                 "ids a case_set_mint over all of them lists. An authored case shows its author and expected verdict; "
                 "a case frozen from a result or a label shows how many labels it carries. A case this build cannot "
-                "read is listed apart, since this is where it is found. A seed corpus's case name is not stored, so "
-                "it is not shown. Calls no model and writes nothing."
+                "read is listed apart, since this is where it is found. A case's name is stored with it but not listed "
+                "here; cases_rename changes it. Calls no model and writes nothing."
             ),
         ),
         Action(

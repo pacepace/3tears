@@ -1142,6 +1142,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `order` | `str` | required | The order the rows are in, in words. |
 | `total_rows` | `int` | required | How many rows the table has; more than are shown when it is truncated. |
 | `details` | `bool` | `False` | Whether the table is drill-down: HTML folds it in a `<details>`, closed. |
+| `title_ref` | `str \| None` | `None` | An anchor on the page the title links to, where the table reads a sentence said there (`rule`: the subhead stating the decision rule); None for none. |
 
 #### `ChartBlock`
 
