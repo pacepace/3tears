@@ -123,9 +123,12 @@ never as today's default.
 kind declares it is safe at (`CandidateKind.max_concurrent_cells`, handed to the launch as
 `KindWiring.max_concurrent_cells`; a kind that declares nothing runs one at a time), never more than the host's
 ceiling `LaunchSettings.max_concurrent_cells` (4 by default). A cell's judge calls run up to `judge_concurrency`
-at once. The arms of one launch run side by side in one concurrency slot. Estimate a
-run's wall time as cases × k × the time one cell takes, divided by the width: 30 cases at k=3 and 6 s a cell
-is a little over 2 minutes at a width of 4. A launch that declares latency under test (`measure_latency=True`)
+at once. Estimate a run's wall time as cases × k × the time one cell takes, divided by the width: 30 cases at k=3
+and 6 s a cell is a little over 2 minutes at a width of 4. The arms of one launch share one width by default
+(`arm_schedule` `interleaved`: their cells are taken in turn, case by case), so a launch loads its providers no
+more than one run would, and two arms take about twice one run's time. `concurrent` runs each arm at its own width
+beside the others, in about one run's time, with every arm loading its providers at once; `sequential` runs one
+arm after another. A launch that declares latency under test (`measure_latency=True`)
 runs its cells one at a time and its arms one after another, with no other run beside them: the same run
 then takes about 9 minutes, times the number of arms. The cost cap and the metered-call ceiling are read between
 cells at any width, so a run lands past one by at most the cells running when it is reached (above). A host with its own

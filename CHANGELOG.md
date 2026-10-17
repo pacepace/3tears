@@ -8,6 +8,26 @@ packages (bumped in lock-step).
 
 ## v0.71.0 -- 2026-10-17
 
+### 3tears-evals: a launch's arms take their cells in turn, case by case, so a provider's bad minute lands on every arm alike
+
+- **`run_launch` no longer co-loads its arms** (#841). A declared two-arm comparison launched with one call started
+  both arms side by side, each at its own width; the pinned upstream rationed one model's calls, and that arm lost
+  6 to 20 cells per campaign to HTTP 429s while the other lost none. The default schedule is now `interleaved`:
+  every arm runs at once, their cells are taken in turn (case 1 on every arm, then case 2) under one width shared by
+  the launch, and every arm plays its cases in one order, so pairing by case also pairs in time. A launch of N arms
+  loads its providers as one run would, and takes about N times as long.
+- **One definition of the schedule** (`arm_schedule`: `interleaved`, `sequential` or `concurrent`), declared on
+  `LaunchArguments` and read by `sweep_launch` from there, so the two cannot drift. `concurrent` keeps the old
+  side-by-side launch; latency under test (`measure_latency`) runs the arms `sequential` and refuses the others.
+  Breaking for a sweep: `max_concurrent_arms` is gone, and a sweep's default is now one interleaved launch of every
+  arm (pass `arm_schedule='sequential'` for arms one after another).
+- **The run says which.** `EvalRun.arm_schedule` (core v15.5, additive), on the launch and sweep records, the run's
+  summary and `run_get`; a campaign whose arms ran one after another or side by side discloses it in its
+  `launch_disclosure`. A disclosure only: never part of a run's identity or cell.
+- **Built over any number of runs.** `run.arm_schedule.CellInterleaver` takes the turns of every run of a launch
+  group, of one template or several, through each run's own `CellExecutor` lane; a run that ends without handing
+  over its cells is withdrawn, and one run's failure stops only that run.
+
 ### 3tears-evals: a judge campaign's report states each arm's cost per reply
 
 - **`threetears.evals.kernel.production_replicating_cost` takes `candidate_kind`** (keyword, required, no default):
