@@ -22,7 +22,7 @@ pytest.importorskip("claude_agent_sdk")
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock  # noqa: E402
 
-from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
+from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_FAST_MODEL  # noqa: E402
 
 from .claude_cli_recorder import recording_cli, subscription_model  # noqa: E402
 
@@ -133,7 +133,7 @@ class TestHowTheReplyEnded:
         assert reply.response_metadata["stop_reason"] == "tool_use"
 
 
-_FALLBACK = "claude-haiku-4-5"
+_FALLBACK = DEFAULT_FAST_MODEL
 
 
 def _usage_of(*models: str) -> dict[str, Any]:
