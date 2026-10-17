@@ -338,7 +338,7 @@ asked for, and its summary says which model answered is unconfirmed
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which
 refuses `cost_usd`); the report heads it `Production cost`. `cost_usd` and `program_cost` also sum what a judge
-spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown. Where a
+spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown. A judge campaign is the one place the judge is the subject: every call its cells make is the judge under test, metered under the judge role, so there that role is what the arm costs (`production_replicating_cost` reads the result's `candidate_kind`). Where a
 reply costs under a cent on every arm, the report states both per 1,000 replies, and the heading says so
 (`Cost per 1,000 replies`, `Production cost ($/1,000 replies)`).
 

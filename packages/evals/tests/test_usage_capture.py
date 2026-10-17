@@ -356,25 +356,36 @@ def test_production_replicating_excludes_judge_and_simulator():
         _row("inner_agent", 0.5),
         _row("external", 0.25),
     ]
-    assert production_replicating_cost(usage, substituted_deliveries=0) == 1.75
+    assert production_replicating_cost(usage, substituted_deliveries=0, candidate_kind=None) == 1.75
     assert program_cost(usage) == 111.75
 
 
+def test_a_judge_kind_results_production_cost_is_its_judge_roles_spend():
+    """#828: in a judge campaign the judge under test is the subject, metered under the judge role and nothing else,
+    so the judge role is what production pays for there; in any other kind it stays measuring apparatus."""
+    from threetears.evals.kernel.judge_cases import JUDGE_KIND, JUDGE_KIND_ROLE
+
+    usage = [_row(JUDGE_KIND_ROLE, 0.25), _row(JUDGE_KIND_ROLE, 0.5)]
+    assert production_replicating_cost(usage, substituted_deliveries=0, candidate_kind=JUDGE_KIND) == 0.75
+    assert production_replicating_cost(usage, substituted_deliveries=0, candidate_kind="quick") is None
+    assert production_replicating_cost(usage, substituted_deliveries=0, candidate_kind=None) is None
+
+
 def test_cost_views_of_an_empty_capture_are_none_not_zero():
-    assert production_replicating_cost([], substituted_deliveries=0) is None
+    assert production_replicating_cost([], substituted_deliveries=0, candidate_kind=None) is None
     assert program_cost([]) is None
 
 
 def test_cost_views_skip_rows_that_observed_no_cost():
     usage = [_row("candidate", None), _row("judge", 2.0)]
-    assert production_replicating_cost(usage, substituted_deliveries=0) is None
+    assert production_replicating_cost(usage, substituted_deliveries=0, candidate_kind=None) is None
     assert program_cost(usage) == 2.0
 
 
 def test_cost_views_sum_multiple_rows_of_the_same_role():
     usage = [_row("judge", 1.0), _row("judge", 2.0)]
     assert program_cost(usage) == 3.0
-    assert production_replicating_cost(usage, substituted_deliveries=0) is None
+    assert production_replicating_cost(usage, substituted_deliveries=0, candidate_kind=None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +445,7 @@ def test_external_row_never_enters_a_cost_view():
         RoleUsage(role="candidate", cost_usd=1.0, price_source=_SOURCE),
         RoleUsage(role="external", call_count=9),
     ]
-    assert production_replicating_cost(usage, substituted_deliveries=0) == 1.0
+    assert production_replicating_cost(usage, substituted_deliveries=0, candidate_kind=None) == 1.0
     assert program_cost(usage) == 1.0
 
 
@@ -537,6 +548,7 @@ def test_a_trace_stripped_result_still_discloses_its_substitution():
         production_replicating_cost(
             [RoleUsage(role="candidate", cost_usd=0.0032)],
             substituted_deliveries=count_substituted_deliveries(result),
+            candidate_kind=None,
         )
         is None
     )
@@ -571,8 +583,8 @@ def test_a_substituted_result_withholds_its_production_cost():
         RoleUsage(role="inner_agent", model="inner/model", cost_usd=0.5),
     ]
 
-    assert production_replicating_cost(usage, substituted_deliveries=0) == 1.5
-    assert production_replicating_cost(usage, substituted_deliveries=1) is None
+    assert production_replicating_cost(usage, substituted_deliveries=0, candidate_kind=None) == 1.5
+    assert production_replicating_cost(usage, substituted_deliveries=1, candidate_kind=None) is None
 
 
 def test_the_program_cost_still_reports_what_the_eval_really_spent():

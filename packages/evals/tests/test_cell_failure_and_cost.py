@@ -1064,3 +1064,56 @@ def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_co
     (board,) = bundle.scoreboard
     assert board.reply_cost_usd == pytest.approx(0.02), "what the model costs a reply, the judge's spend apart"
     assert board.test_cost_usd == pytest.approx(0.21), "what running the test cost, every role"
+
+
+def test_a_judge_kind_campaign_states_each_arms_cost_per_reply_from_the_judge_under_tests_spend():
+    """#828: a judge campaign's subject is the judge, metered under the judge role with no candidate row, so its
+    spend is what the arm costs a reply. The scoreboard read it as apparatus and printed a dash on every arm while
+    the bundle handed the writer the same spend as ``cost_usd``; it now prints each arm's cost per 1,000 replies."""
+    from threetears.evals.analysis.report import TableBlock, build_code_only_report
+    from threetears.evals.kernel.judge_cases import JUDGE_KIND, JUDGE_KIND_ROLE
+    from threetears.evals.schema.models import RoleUsage as Row
+
+    spend = {"judge-small": 0.00017, "judge-large": 0.00067}
+    runs = {
+        model: make_eval_run(status="completed", candidate_kind=JUDGE_KIND, candidate_model=model) for model in spend
+    }
+    results = {
+        run.id: [
+            make_eval_result(
+                eval_run_id=run.id,
+                test_case_id=f"tc-{i}",
+                model=model,
+                candidate_kind=JUDGE_KIND,
+                rubric_scores=[],
+                cost_usd=spend[model],
+                usage=[Row(role=JUDGE_KIND_ROLE, model=model, cost_usd=spend[model], price_source="p")],
+            )
+            for i in range(5)
+        ]
+        for model, run in runs.items()
+    }
+    (one, *_) = runs.values()
+    campaign = EvalCampaign(
+        scope_id=one.scope_id,
+        name="c",
+        subject_id=one.subject_snapshot.subject_id,
+        subject_kind="s",
+        behavior="b",
+        run_ids=[run.id for run in runs.values()],
+        created_by="test:fixture",
+    )
+
+    bundle = assemble_context_bundle(
+        campaign, storage=ToyhostStorage(list(runs.values()), results), profile=toyhost_profile()
+    )
+
+    by_model = {board.variant_key: board.reply_cost_usd for board in bundle.scoreboard}
+    assert by_model == {results[run.id][0].variant_key: pytest.approx(spend[model]) for model, run in runs.items()}, (
+        "each arm's cost per reply is the judge under test's spend, as the bundle's cost_usd states it"
+    )
+    report = build_code_only_report(bundle, assembled_at="2026-10-17T00:00:00+00:00")
+    (scoreboard,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "scoreboard"]
+    (cost,) = [column for column in scoreboard.columns if column.key == "cost"]
+    assert cost.header == "Cost per 1,000 replies"
+    assert sorted(row["cost"] for row in scoreboard.values()) == [pytest.approx(0.17), pytest.approx(0.67)]

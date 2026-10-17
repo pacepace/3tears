@@ -29,6 +29,7 @@ from threetears.evals.kernel import (
     ValidationFailedError,
     judge_case_of,
     judge_trial_of,
+    production_replicating_cost,
     withhold_failure_detail,
 )
 from threetears.evals.kernel.host import EvalHost
@@ -349,6 +350,11 @@ async def test_a_judge_campaign_meters_only_judge_spend_and_never_rebuys_the_can
         assert result.usage, "a judge trial's spend is metered"
         assert {row.role for row in result.usage} == {"judge"}, "no candidate role in a judge campaign's spend"
         assert result.cost_usd == pytest.approx(sum(row.cost_usd or 0.0 for row in result.usage))
+        # The judge under test is the subject, so its spend is what the arm costs a reply (#828).
+        assert result.candidate_kind == JUDGE_KIND
+        assert production_replicating_cost(
+            result.usage, substituted_deliveries=0, candidate_kind=result.candidate_kind
+        ) == pytest.approx(result.cost_usd)
         assert result.judge_model is None and not result.rubric_scores, "no judge phase ran over a judge trial"
         assert JUDGE_PARSE_VALID_MEASURE in result.host_measures
     labelled = [result for result in campaign.results if JUDGE_LABEL_AGREEMENT_MEASURE in result.host_measures]

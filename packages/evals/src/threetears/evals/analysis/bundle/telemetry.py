@@ -125,7 +125,11 @@ def _measured_prod_costs(run_results: list[EvalResult]) -> list[float]:
     for result in run_results:
         if not delivered_a_turn(result):
             continue
-        cost = production_replicating_cost(result.usage, substituted_deliveries=count_substituted_deliveries(result))
+        cost = production_replicating_cost(
+            result.usage,
+            substituted_deliveries=count_substituted_deliveries(result),
+            candidate_kind=result.candidate_kind,
+        )
         if cost is not None:
             measured.append(cost)
     return measured

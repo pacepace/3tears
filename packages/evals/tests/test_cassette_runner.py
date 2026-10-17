@@ -308,7 +308,7 @@ async def test_a_replayed_delivery_is_reported_substituted_and_withholds_product
 
     for result in replayed:
         assert count_substituted_deliveries(result) == 2
-        assert production_replicating_cost(result.usage, substituted_deliveries=2) is None
+        assert production_replicating_cost(result.usage, substituted_deliveries=2, candidate_kind=None) is None
 
 
 @pytest.mark.parametrize(
@@ -336,7 +336,9 @@ async def test_background_work_spend_reaches_the_result_and_its_production_cost(
     assert [(row.model, row.cost_usd) for row in inner] == [(_SCOUT_MODEL, 0.02)]
     # The kind's own 0.002 plus the two scouts' 0.01 each.
     assert result.cost_usd == pytest.approx(0.022)
-    assert production_replicating_cost(result.usage, substituted_deliveries=0) == pytest.approx(0.022)
+    assert production_replicating_cost(result.usage, substituted_deliveries=0, candidate_kind=None) == pytest.approx(
+        0.022
+    )
 
 
 # parity-with: threetears.evals.kernel.candidate_kind.CandidateKind
