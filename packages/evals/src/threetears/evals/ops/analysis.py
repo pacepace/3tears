@@ -15,6 +15,7 @@ pay for.
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
@@ -72,7 +73,7 @@ from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.models import utc_now_iso
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, WRITER_REMEDY
 
 if TYPE_CHECKING:
@@ -748,16 +749,18 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
                 why,
             )
         # prawduct:ok-broad-except — the reason the generation stopped is what its caller is told; this is logged beside it
-        except Exception:
+        except Exception as unwritten:
             # NOSILENT: every caller of end_unrun raises the reason the generation stopped right after it, and the
             # attempt, which made no call, reads lost once its lease lapses rather than running.
-            log.exception(
-                "eval.generate_analysis campaign=%s scope=%s attempt %s stopped before any call (%s), and its ending "
-                "could not be written; it reads lost once its lease lapses",
-                campaign_id,
-                scope_id,
-                attempt_id,
-                why,
+            contain(
+                unwritten,
+                log=log,
+                what=(
+                    f"eval.generate_analysis campaign={campaign_id} scope={scope_id} attempt {attempt_id} stopped "
+                    f"before any call ({why}), and its ending could not be written; it reads lost once its lease "
+                    "lapses"
+                ),
+                level=logging.ERROR,
             )
 
     # The one step that decides between processes: a conditional write of the campaign's generation slot. The

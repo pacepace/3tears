@@ -18,6 +18,7 @@ and the engine passes it back untouched.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
@@ -27,7 +28,7 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Storage
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.schema.models import RUN_LABELS_MAX, EvalRun, run_label_problem
 from threetears.evals.kernel.storage import JobStore, UnreadableRunError
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -115,9 +116,12 @@ def update_eval_run(
             current, etag = store.load_eval_run_with_etag(run_id, scope_id)
         except (
             Exception
-        ):  # prawduct:ok-broad-except — a read fault must not raise into a caller whose run already finished
-            log.exception(
-                "eval.update_run read failed run=%s scope=%s (attempt %d/%d)", run_id, scope_id, attempt, attempts
+        ) as unread:  # prawduct:ok-broad-except — a read fault must not raise into a caller whose run already finished
+            contain(
+                unread,
+                log=log,
+                what=f"eval.update_run read failed run={run_id} scope={scope_id} (attempt {attempt}/{attempts})",
+                level=logging.ERROR,
             )
             continue
         if current is None:
@@ -139,9 +143,12 @@ def update_eval_run(
                 "re-reading and re-applying" if attempt < attempts else "giving up",
             )
             continue
-        except Exception:  # prawduct:ok-broad-except — same boundary as the read above
-            log.exception(
-                "eval.update_run write failed run=%s scope=%s (attempt %d/%d)", run_id, scope_id, attempt, attempts
+        except Exception as unsaved:  # prawduct:ok-broad-except — same boundary as the read above
+            contain(
+                unsaved,
+                log=log,
+                what=f"eval.update_run write failed run={run_id} scope={scope_id} (attempt {attempt}/{attempts})",
+                level=logging.ERROR,
             )
             continue
         return "saved"

@@ -26,6 +26,7 @@ single-dim rubric/dual-score judge lives in
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -52,7 +53,7 @@ from threetears.evals.kernel.provider import (
 )
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.usage_capture import CallUsage
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -551,7 +552,7 @@ async def run_judge_llm(
             # Earlier attempts in this loop may already have spent tokens before this one
             # raised; report that spend rather than losing it to the error path.
             if failure_describer is None:
-                log.exception("%s LLM call failed for case %s: %s", label, case_id, e)
+                contain(e, log=log, what=f"{label} LLM call failed for case {case_id}: {e}", level=logging.ERROR)
                 return {"error": f"{label} LLM call failed: {e}", "judge_usage": _cumulative_usage()}
             failure = describe_and_log_failure(
                 failure_describer,

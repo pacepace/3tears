@@ -49,7 +49,7 @@ from threetears.evals.providers.wire import (
 )
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS
 from threetears.evals.schema import BoundCompletionClient, ClientRequestSettings, CompletionResult, StopReason
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.testing import RecordedCompletions
@@ -1027,11 +1027,15 @@ class Clients:
             try:
                 await model.aclose()
             except Exception as failure:  # collected, and raised below once every other model is closed
+                contain(
+                    failure, log=log, what="a model failed to close; collected and raised once every other is closed"
+                )
                 failures.append(failure)
         if owned is not None:
             try:
                 await owned.aclose()
             except Exception as failure:  # collected with the models' and raised below
+                contain(failure, log=log, what="the owned http client failed to close; collected and raised below")
                 failures.append(failure)
         if failures:
             closed = f"{len(models)} models" + (" and the http client" if owned is not None else "")

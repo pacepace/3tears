@@ -23,7 +23,7 @@ import re
 from typing import Any
 
 from threetears.evals.schema.completion import CompletionResult, ProviderFailure, ProviderFailureDescriber, StopReason
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -96,11 +96,14 @@ def describe_failure(
         # Log only: this answers a description and holds no record. The caller writes what it returns on its own
         # record, and that answer is the withheld one the describer's failure calls for; the describer's own text
         # stays out of it and out of this line, since it may carry the provider envelope.
-        logger.error(
-            "%s failure describer raised %s describing %s — keeping the class only",
-            where,
-            type(describer_exc).__name__,
-            type(exc).__name__,
+        contain(
+            describer_exc,
+            log=logger,
+            what=(
+                f"{where} failure describer raised {type(describer_exc).__name__} describing "
+                f"{type(exc).__name__} — keeping the class only"
+            ),
+            level=logging.ERROR,
         )
         return withhold_failure_detail(exc)
 

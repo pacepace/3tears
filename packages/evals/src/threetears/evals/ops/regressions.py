@@ -31,6 +31,7 @@ began (:class:`~threetears.evals.run.jobs.RunEndHook`).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -60,7 +61,7 @@ from threetears.evals.kernel.metrics import GradedBy, is_code_graded
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.lenses import scope_history
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -181,13 +182,19 @@ class RegressionWatch:
         for alert in alerts:
             try:
                 await self.sink(alert)
-            except Exception:  # prawduct:ok-broad-except — a sink's failure must not reach the run or the next alert
+            except (
+                Exception
+            ) as undelivered:  # prawduct:ok-broad-except — a sink's failure must not reach the run or the next alert
                 # NOSILENT: the run is completed and its record final; a sink failing to deliver is the host's
                 # delivery breaking, not the run, and an error_details entry would count it as one of the run's faults.
-                log.exception(
-                    "eval.regression sink failed delivering run=%s measure=%s; the next alert is still delivered",
-                    run_id,
-                    alert.measure,
+                contain(
+                    undelivered,
+                    log=log,
+                    what=(
+                        f"eval.regression sink failed delivering run={run_id} measure={alert.measure}; "
+                        "the next alert is still delivered"
+                    ),
+                    level=logging.ERROR,
                 )
 
     def check(self, run_id: str, scope_id: str) -> list[RegressionAlert]:

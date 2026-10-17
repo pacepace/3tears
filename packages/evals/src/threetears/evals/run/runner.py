@@ -49,6 +49,7 @@ charge, and, when the cut struck the judge phase, the evidence and every score t
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import math
 import random
@@ -142,7 +143,7 @@ from threetears.evals.run.judge_service import (
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
 from threetears.evals.run.run_document import fault_entry, record_run_faults
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.world import WorldRegistry
@@ -1748,7 +1749,7 @@ async def _run_judge_phase(
         raise
     except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
         # NOSILENT: the judge record names every dim the phase did not finish as failed with this cause.
-        log.exception("Judge service failed during eval run %s", eval_run_id)
+        contain(e, log=log, what=f"Judge service failed during eval run {eval_run_id}", level=logging.ERROR)
         # The calls that returned before it raised were paid for and keep their scores; the
         # rest are named as failed with the cause.
         judged = _judge_record(phase, settled, unfinished=f"the judge phase raised {type(e).__name__}: {e}")
@@ -2736,8 +2737,15 @@ def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = N
         return _busiest(previous, own)
     try:
         observed = options.concurrent_eval_jobs_probe()
-    except Exception:  # prawduct:ok-broad-except — caller-supplied probe; a telemetry read must not fail a cell
-        log.exception("Concurrent-eval-job probe raised; recording execution_mode as unmeasured")
+    except (
+        Exception
+    ) as unprobed:  # prawduct:ok-broad-except — caller-supplied probe; a telemetry read must not fail a cell
+        contain(
+            unprobed,
+            log=log,
+            what="Concurrent-eval-job probe raised; recording execution_mode as unmeasured",
+            level=logging.ERROR,
+        )
         return _busiest(previous, own)
     return _busiest(_busiest(previous, observed), own)
 
@@ -2778,12 +2786,15 @@ async def _record_contained_faults(host: EvalHost, run: EvalRun, faults: list[st
             host.blocking_executor, record_run_faults, host.storage, run.id, run.scope_id, faults
         )
     # prawduct:ok-broad-except — the loop's own ending is what the caller must see; this is logged with every entry
-    except Exception:
-        log.exception(
-            "eval.run run=%s scope=%s: the errors its loop contained could not be written on the run: %s",
-            run.id,
-            run.scope_id,
-            faults,
+    except Exception as unwritten:
+        contain(
+            unwritten,
+            log=log,
+            what=(
+                f"eval.run run={run.id} scope={run.scope_id}: the errors its loop contained could not be "
+                f"written on the run: {faults}"
+            ),
+            level=logging.ERROR,
         )
         return
     if outcome in ("missing", "refused"):
@@ -2863,6 +2874,7 @@ def assert_preconditions(
             )
         # prawduct:ok-broad-except — DSL evaluation boundary; an unevaluable presumption excludes
         except Exception as e:
+            contain(e, log=log, what=f"a precondition could not be evaluated: {e}")
             held, detail = False, f"<error: {e}>"
         outcomes.append(
             PreconditionOutcome(
@@ -3254,7 +3266,12 @@ async def judge_dims(
                 outcome = JudgeOutcome(score=None, error=f"not judged: {refused.detail}")
             except Exception as e:  # prawduct:ok-broad-except — judge boundary; pricing builds the dim's client, whose refusal is this dim's alone
                 # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
-                log.exception("Judge dim=%s could not be priced for case=%s", dim_id, context.case_id)
+                contain(
+                    e,
+                    log=log,
+                    what=f"Judge dim={dim_id} could not be priced for case={context.case_id}",
+                    level=logging.ERROR,
+                )
                 outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
             else:
                 try:
@@ -3283,7 +3300,12 @@ async def judge_dims(
                     Exception
                 ) as e:  # prawduct:ok-broad-except — judge boundary; one dim's crash must not discard its siblings
                     # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
-                    log.exception("Judge dim=%s raised for case=%s", dim_id, context.case_id)
+                    contain(
+                        e,
+                        log=log,
+                        what=f"Judge dim={dim_id} raised for case={context.case_id}",
+                        level=logging.ERROR,
+                    )
                     outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
                 except BaseException:
                     # A cancel — the cell's deadline, or its run's — holds nothing against the cap once it unwinds.

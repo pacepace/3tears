@@ -92,6 +92,7 @@ import importlib
 import json
 import math
 import sys
+import logging
 import traceback
 from functools import partial
 from collections.abc import Callable, Coroutine, Sequence
@@ -100,6 +101,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.analysis import (
     read_judge_temperatures,
     DEFAULT_FAIL_ON,
@@ -131,6 +133,9 @@ from threetears.evals.run import (
     list_templates,
     start_run,
 )
+
+log = get_logger(__name__)
+
 
 #: What names the host the commands work in: called once, with no arguments, per invocation.
 HostFactory = Callable[[], EvalHost | LaunchHost]
@@ -527,9 +532,15 @@ def run_cli(
     except (_Refused, EvalServiceError, RefusedInput) as refused:
         sys.stderr.write(f"{prog} {args.command}: {refused}\n")
         return EXIT_REFUSED
-    except Exception:
+    except Exception as unanticipated:
         # NOSILENT: printed whole to stderr; the distinct exit code is the point — uncaught, Python exits 1,
         # which is the code for runs that finished and did not complete.
+        contain(
+            unanticipated,
+            log=log,
+            what=f"{prog} {args.command}: failed on an unanticipated error",
+            level=logging.ERROR,
+        )
         sys.stderr.write(f"{prog} {args.command}: failed on an unanticipated error\n{traceback.format_exc()}")
         return EXIT_FAILED
 

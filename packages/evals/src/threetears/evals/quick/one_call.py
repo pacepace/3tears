@@ -50,6 +50,7 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.metrics import describe_reported_measure
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
@@ -137,6 +138,9 @@ from threetears.evals.quick.graders import UNUSABLE_ANSWER, predicted_label
 from threetears.evals.quick.tools import CellTools, Tool, ToolRecording, ToolUsingCandidate
 from threetears.evals.quick.world import World, WorldAgent, WorldCellKind, WorldOutcome, world_case_payload
 from threetears.evals.storage import InMemoryDocumentStore
+
+log = get_logger(__name__)
+
 
 #: The runner under test: a callable taking one case and returning its answer — usually ``async def``; a plain
 #: ``def`` is called in a worker thread, and a callable returning an awaitable has it awaited.
@@ -900,6 +904,7 @@ class CallableKind:
             raise  # the rig's fault under the candidate — a replay miss — is the engine's to exclude the cell on
         # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell
         except Exception as raised:
+            contain(raised, log=log, what=f"the candidate raised {type(raised).__name__}: {raised}")
             missed = _missed(test_case.host_payload[_EXPECTED_KEY]) if self._classifies else {}
             return CandidateOutput(
                 candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"],
@@ -939,6 +944,7 @@ class CallableKind:
                 score = scorer(case, answer)
             # prawduct:ok-broad-except — a scorer is the caller's grader, the rig: a raise excludes the cell and says which scorer
             except Exception as raised:
+                contain(raised, log=log, what=f"the scorer {name} raised {type(raised).__name__}: {raised}")
                 return CandidateOutput(
                     output=trace,
                     infra_errors=[f"the scorer {name} raised {type(raised).__name__}: {raised}"],

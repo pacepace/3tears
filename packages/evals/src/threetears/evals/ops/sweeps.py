@@ -34,6 +34,7 @@ measured N more times overnight. Runs already launched finish and stay members.
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import json
 from functools import partial
@@ -58,7 +59,7 @@ from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import quote_launch, start_run
 from threetears.evals.kernel.job_leases import SWEEP_JOB, require_held, write_held_record
 from threetears.evals.run.lifecycle import get_run
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -370,6 +371,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
                     )
                 # prawduct:ok-broad-except — any refusal of one arm ends the sweep, recorded on its record
                 except Exception as refused:
+                    contain(refused, log=log, what=f"eval.sweep arm {record.label!r} was refused at its launch")
                     slots.release()
                     failure.append(
                         f"arm {record.label!r} was refused at its launch, so no further arm was launched: {refused}"
@@ -419,7 +421,12 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
     # prawduct:ok-broad-except — the sweep's record is where its ending is stated; the task boundary logs it
     except Exception as broke:
         # NOSILENT: written below on the sweep's own record: outcome ``failed``, its detail this error, its refusal kept.
-        log.exception("eval.sweep sweep=%s scope=%s ended on an error", sweep.id, scope_id)
+        contain(
+            broke,
+            log=log,
+            what=f"eval.sweep sweep={sweep.id} scope={scope_id} ended on an error",
+            level=logging.ERROR,
+        )
         failure.append(f"the sweep ended on an error: {broke}")
         if isinstance(broke, EvalServiceError) and len(failure) == 1:
             refusal = job_refusal(broke)

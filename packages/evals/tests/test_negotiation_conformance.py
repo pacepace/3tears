@@ -223,6 +223,9 @@ TEMPERATURE, NO_ENDPOINT, EFFORT_AND_CAP = (
         (None, replace(ASKED, reasoning_effort=None), [f"{TEMPERATURE} the first request carried no reasoning effort"]),
     ],
 )
+@pytest.mark.expect_contained(
+    AssertionError, why="the scripted router raises AssertionError on purpose when the client under test sends nothing"
+)
 async def test_each_mistake_is_named(mistake: str | None, asked: WireSettings, named: list[str]) -> None:
     with pytest.raises(NegotiationConformanceFailure) as failed:
         await check_refusal_negotiation(lambda transport: Client(transport, mistake=mistake, asked=asked))
