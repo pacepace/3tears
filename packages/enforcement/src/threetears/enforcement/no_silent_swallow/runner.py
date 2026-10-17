@@ -21,6 +21,7 @@ import pytest
 
 from threetears.enforcement.common import (
     Exemption,
+    Violation,
     MODE_REPORT,
     MODE_STRICT,
     apply_exemptions,
@@ -33,6 +34,7 @@ from threetears.enforcement.common import (
 from threetears.enforcement.no_silent_swallow.config import (
     NoSilentSwallowConfig,
 )
+from threetears.enforcement.no_silent_swallow.uncontained import find_uncontained
 from threetears.enforcement.no_silent_swallow.walkers import (
     find_silent_swallows,
 )
@@ -88,6 +90,7 @@ def run_no_silent_swallow_enforcement(
         config.logger_methods,
         config.nosilent_marker,
     )
+    violations.extend(_uncontained_outside_pending(config, src_roots))
 
     exemptions = _load_exemptions(config.exemptions_path)
     filtered = apply_exemptions(violations, exemptions, config.repo_root)
@@ -108,6 +111,51 @@ def run_no_silent_swallow_enforcement(
         return
     if filtered:
         pytest.fail(f"no-silent-swallow enforcement found {len(filtered)} violation(s):\n{report}")
+
+
+_PENDING_CATEGORY = "no_silent_swallow.pending"
+
+
+def _uncontained_outside_pending(config: NoSilentSwallowConfig, src_roots: tuple[Path, ...]) -> list[Violation]:
+    """broad and cancellation violations outside the pending packages, plus every stale entry.
+
+    an entry that names no directory, or a directory with no such handler left, is reported
+    against the entry itself: the list exists to be emptied, and an entry nothing needs any
+    more would quietly exempt whatever is written there next.
+
+    :param config: per-repo enforcement config
+    :ptype config: NoSilentSwallowConfig
+    :param src_roots: the src roots being scanned
+    :ptype src_roots: tuple[Path, ...]
+    :return: violations to report
+    :rtype: list[Violation]
+    """
+    pending = {entry: (config.repo_root / entry).resolve() for entry in config.uncontained_pending}
+    still_needed: set[str] = set()
+    reported: list[Violation] = []
+    for violation in find_uncontained(src_roots, config.contain_names):
+        owner = next(
+            (entry for entry, directory in pending.items() if violation.file.resolve().is_relative_to(directory)),
+            None,
+        )
+        if owner is None:
+            reported.append(violation)
+        else:
+            still_needed.add(owner)
+    for entry, directory in pending.items():
+        if entry in still_needed:
+            continue
+        why = "has no uncontained handler left" if directory.is_dir() else "is not a directory"
+        reported.append(
+            Violation(
+                category=_PENDING_CATEGORY,
+                file=directory,
+                line=0,
+                symbol=entry,
+                reason=f"{entry} {why}; remove it from uncontained_pending",
+            )
+        )
+    return reported
 
 
 def _resolve_src_roots(config: NoSilentSwallowConfig) -> tuple[Path, ...]:
