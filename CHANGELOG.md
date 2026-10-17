@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.71.0 -- 2026-10-17
+
 ### core: synchronous callers get a supported bridge and a synchronous lease; TracedHttpClient gets a quiet probe
 
 **Added (core): `threetears.core.sync.run(work, *, timeout=None)`.** Runs one async call to the end from

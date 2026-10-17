@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-evals"
-version = "0.70.0"
+version = "0.71.0"
 description = "Evaluate LLM-backed products: campaigns over levers, judged and code-graded trials, cost and latency accounting, and analysis reports"
 readme = "README.md"
 requires-python = ">=3.14"
