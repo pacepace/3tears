@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### models: the orphan sweep leaves a Claude CLI in another pid namespace alone
+
+**Fixed (models):** `sweep_orphaned_claude_clis` skips a marked CLI that lives in a pid namespace
+other than its own (the `/proc/<pid>/ns/pid` link, else more than one id on the `NSpid` line). Run on
+a host, the sweep saw every container's CLIs, read each marker's owner pid, a number from the
+container's namespace, as dead or someone else, and killed CLIs whose owner was alive. Every host
+process that starts a pool or runs the sweep's tests did it: on a dev host running several 3tears apps,
+a wrapper in front of the CLI recorded 55 SIGTERMs from outside the container in bursts of 10 to 14,
+each killing calls in flight (exit 143). The protection holds once every host-side process runs this
+version.
+
 ## v0.70.0 -- 2026-10-16
 
 ### models: a subscription reply says why it stopped and who served it; an OpenRouter reasoning budget reaches the wire
