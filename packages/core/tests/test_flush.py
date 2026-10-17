@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
+from datetime import datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
@@ -10,6 +13,7 @@ import pytest
 
 import uuid
 
+from threetears.core.backends.protocol import DurableStore
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.flush import (
     WriteBuffer,
@@ -864,8 +868,10 @@ class TestFlushAtomicBatch:
         await buf.add("users", "u1", {"id": "u1"})
 
         registry = CollectionRegistry()
-        # a DurableStore with NO transaction() attribute
-        no_tx_backend = MagicMock(spec=["fetch_one", "upsert", "delete", "scan"])
+        # a DurableStore with NO transaction() attribute. A real class, not a spec'd MagicMock: a
+        # runtime-checkable Protocol reads attributes statically, so the mock was never a DurableStore,
+        # was wrapped as SQL, and reached the per-entity loop only by failing the batch path first
+        no_tx_backend = _NoTransactionStore()
         registry.configure(l3_pool=no_tx_backend)
 
         coll = MagicMock()
@@ -878,6 +884,31 @@ class TestFlushAtomicBatch:
         assert flushed == 1
         # per-entity loop persists WITHOUT a conn (no transaction to thread)
         coll.persist_to_store.assert_awaited_once_with({"id": "u1"})
+
+
+class _NoTransactionStore(DurableStore):
+    """a durable store with the structured ops and no ``transaction()``, as a git-backed one is."""
+
+    async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
+        return None
+
+    async def upsert(
+        self,
+        table: str,
+        row: Mapping[str, Any],
+        *,
+        pk: Sequence[str] | None = None,
+        on_conflict: str = "update",
+        cas: datetime | None = None,
+        conn: Any = None,
+    ) -> int:
+        return 1
+
+    async def delete(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> None:
+        return None
+
+    async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+        return []
 
 
 def _zero_rowcount_collection(
