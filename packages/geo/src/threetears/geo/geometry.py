@@ -21,7 +21,7 @@ from shapely import wkb as shapely_wkb
 from shapely.geometry.base import BaseGeometry
 
 from threetears.geo.tiles import BoundingBox
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "decode_geometry",
@@ -48,10 +48,10 @@ def decode_geometry(raw: bytes | bytearray | memoryview | None) -> BaseGeometry 
         return None
     try:
         geometry = shapely_wkb.loads(bytes(raw))
-    except Exception:
+    except Exception as exc:
         # one bad row must not abort a build; skipping loses a feature,
         # raising loses the tile.
-        log.warning("skipping undecodable geometry (%d bytes)", len(bytes(raw)))
+        contain(exc, log=log, what=f"skipping undecodable geometry ({len(bytes(raw))} bytes)")
         return None
     if geometry.is_empty:
         return None
