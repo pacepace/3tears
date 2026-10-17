@@ -45,7 +45,7 @@ from threetears.agent.wake.tools.schedule_tools import (
     _tool_error,
     _validate_name,
 )
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "PAYLOAD_TEMPLATE_MAX_BYTES",
@@ -381,9 +381,11 @@ async def _check_skill_acl(
             skill_id=skill_id,
         )
     except Exception as exc:  # noqa: BLE001 - surface as tool error
-        log.warning(
-            "webhook subscription skill ACL probe raised",
-            extra={"extra_data": {"skill_id": str(skill_id), "error": str(exc)}},
+        contain(
+            exc,
+            log=log,
+            what="webhook subscription skill ACL probe raised",
+            extra={"skill_id": str(skill_id), "error": str(exc)},
         )
         return f"default_skill_id {skill_id} ACL probe failed: {exc}"
     if not permitted:
@@ -519,10 +521,11 @@ def load_webhook_subscription_create_tool(
                 rate_limit_per_minute=rate_limit_per_minute,
             )
         except Exception as exc:  # noqa: BLE001 - the check must not cost the create
-            log.warning(
-                "webhook_subscription_create could not read the agent's subscriptions; "
-                "creating without the same-subscription check",
-                extra={"extra_data": {"error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="webhook_subscription_create could not read the agent's subscriptions; creating without the same-subscription check",
+                extra={"error": str(exc)},
             )
             standing = None
         if standing is not None:
@@ -546,10 +549,7 @@ def load_webhook_subscription_create_tool(
                 "encryption_service does not support encrypt(); cannot create subscription",
             )
         except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "webhook_subscription_create encrypt failed",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="webhook_subscription_create encrypt failed", extra={"error": str(exc)})
             return _tool_error(
                 "webhook_subscription_create",
                 f"secret encryption failed: {exc}",
@@ -584,9 +584,11 @@ def load_webhook_subscription_create_tool(
                 name=name,
             )
         except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "webhook_subscription_create persist failed",
-                extra={"extra_data": {"subscription_id": str(new_id), "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="webhook_subscription_create persist failed",
+                extra={"subscription_id": str(new_id), "error": str(exc)},
             )
             return _tool_error("webhook_subscription_create", f"persist failed: {exc}")
 
@@ -598,7 +600,8 @@ def load_webhook_subscription_create_tool(
                     agent_id=agent_id,
                     skill_id=attached_skill,
                 )
-            except Exception:  # noqa: BLE001 - best-effort
+            except Exception as exc:  # noqa: BLE001 - best-effort
+                contain(exc, log=log, what="webhook subscription skill name lookup failed")
                 skill_name = None
 
         log.info(
@@ -840,6 +843,7 @@ def load_webhook_subscription_update_tool(
                 "webhook_subscription_list and reapply the change if it still makes sense.",
             )
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="webhook_subscription_update persist failed")
             return _tool_error("webhook_subscription_update", f"persist failed: {exc}")
 
         skill_name: str | None = None
@@ -850,7 +854,8 @@ def load_webhook_subscription_update_tool(
                     agent_id=agent_id,
                     skill_id=entity.default_skill_id,
                 )
-            except Exception:  # noqa: BLE001 - best-effort
+            except Exception as exc:  # noqa: BLE001 - best-effort
+                contain(exc, log=log, what="webhook subscription skill name lookup failed")
                 skill_name = None
         return f"{_format_subscription_line(entity, skill_name=skill_name, zone=zone)}\nChanged: " + "; ".join(changes)
 
@@ -893,6 +898,7 @@ def load_webhook_subscription_list_tool(
         try:
             visible = await subscriptions_collection.list_for_agent(agent_id)
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="webhook_subscription_list list failed")
             return _tool_error("webhook_subscription_list", f"list failed: {exc}")
 
         if not visible:
@@ -908,7 +914,8 @@ def load_webhook_subscription_list_tool(
                         agent_id=agent_id,
                         skill_id=entity.default_skill_id,
                     )
-                except Exception:  # noqa: BLE001 - best-effort
+                except Exception as exc:  # noqa: BLE001 - best-effort
+                    contain(exc, log=log, what="webhook subscription skill name lookup failed")
                     skill_name = None
             lines.append("- " + _format_subscription_line(entity, skill_name=skill_name, zone=zone))
         if endpoint_base_url:
@@ -982,7 +989,8 @@ def load_webhook_subscription_get_tool(
                 skill_name = await registry.skill_name_for_id(
                     user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
                 )
-            except Exception:  # noqa: BLE001 - best-effort
+            except Exception as exc:  # noqa: BLE001 - best-effort
+                contain(exc, log=log, what="webhook subscription skill name lookup failed")
                 skill_name = None
             skill = f"{skill_name or 'unnamed'} [skill:{entity.default_skill_id}]"
         limit = (
@@ -992,7 +1000,8 @@ def load_webhook_subscription_get_tool(
         )
         try:
             refusals = await subscriptions_collection.list_refusals(parsed, limit=50)
-        except Exception:  # noqa: BLE001 - the settings are the answer; the count is extra
+        except Exception as exc:  # noqa: BLE001 - the settings are the answer; the count is extra
+            contain(exc, log=log, what="webhook subscription refusal count read failed")
             refusals = []
         refused = sum(int(row["refusals"]) for row in refusals)
         lines = [
@@ -1057,6 +1066,7 @@ def load_webhook_subscription_pause_tool(
         try:
             await subscriptions_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="webhook_subscription_pause persist failed")
             return _tool_error("webhook_subscription_pause", f"persist failed: {exc}")
         return (
             f"Paused [webhook:{parsed}] ({entity.name or 'untitled'}). It was active. Deliveries to it are "
@@ -1095,6 +1105,7 @@ def load_webhook_subscription_resume_tool(
         try:
             await subscriptions_collection.resume(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="webhook_subscription_resume persist failed")
             return _tool_error("webhook_subscription_resume", f"persist failed: {exc}")
         return (
             f"Resumed [webhook:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. "
@@ -1127,6 +1138,7 @@ def load_webhook_subscription_delete_tool(
         try:
             await subscriptions_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="webhook_subscription_delete persist failed")
             return _tool_error("webhook_subscription_delete", f"persist failed: {exc}")
         return (
             f"Deleted [webhook:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. Its address and "
@@ -1192,9 +1204,11 @@ def load_webhook_subscription_rotate_secret_tool(
                 "encryption_service does not support encrypt(); cannot rotate",
             )
         except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "webhook_subscription_rotate_secret encrypt failed",
-                extra={"extra_data": {"subscription_id": str(parsed), "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="webhook_subscription_rotate_secret encrypt failed",
+                extra={"subscription_id": str(parsed), "error": str(exc)},
             )
             return _tool_error(
                 "webhook_subscription_rotate_secret",
@@ -1208,6 +1222,7 @@ def load_webhook_subscription_rotate_secret_tool(
                 new_ciphertext=bytes(ciphertext),
             )
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="webhook_subscription_rotate_secret persist failed")
             return _tool_error(
                 "webhook_subscription_rotate_secret",
                 f"persist failed: {exc}",

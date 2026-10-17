@@ -19,6 +19,7 @@ Requirements TOOL-15 / TOOL-16 + PLACEMENT §1.13.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,7 +51,7 @@ from threetears.agent.wake.types import (
     HandlerCallback,
     WakeTrigger,
 )
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DEFAULT_RATE_WINDOW_SECONDS",
@@ -251,9 +252,11 @@ async def webhook_receive(
         try:
             secret = sub.decrypt_secret(encryption_service)
         except Exception as exc:  # noqa: BLE001 - encryption boundary
-            log.warning(
-                "webhook_receive secret decrypt failed",
-                extra={"extra_data": {"subscription_id": str(subscription_id), "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="webhook_receive secret decrypt failed",
+                extra={"subscription_id": str(subscription_id), "error": str(exc)},
             )
             return WebhookReceiveResult(
                 status_code=500,
@@ -336,9 +339,11 @@ async def webhook_receive(
             since=receive_at.timestamp() - rate_window_seconds,
         )
     except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "webhook_receive rate-limit query failed",
-            extra={"extra_data": {"subscription_id": str(subscription_id), "error": str(exc)}},
+        contain(
+            exc,
+            log=log,
+            what="webhook_receive rate-limit query failed",
+            extra={"subscription_id": str(subscription_id), "error": str(exc)},
         )
         return WebhookReceiveResult(
             status_code=500,
@@ -437,9 +442,11 @@ async def webhook_receive(
             execution_mode=trigger.execution_mode,
         )
     except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "webhook_receive create_dispatching failed",
-            extra={"extra_data": {"subscription_id": str(subscription_id), "error": str(exc)}},
+        contain(
+            exc,
+            log=log,
+            what="webhook_receive create_dispatching failed",
+            extra={"subscription_id": str(subscription_id), "error": str(exc)},
         )
         return WebhookReceiveResult(
             status_code=500,
@@ -459,9 +466,12 @@ async def webhook_receive(
             start_conversation=start_conversation,
         )
     except Exception as exc:  # noqa: BLE001 - dispatch boundary
-        log.exception(
-            "webhook_receive dispatch failed",
-            extra={"extra_data": {"subscription_id": str(subscription_id), "fire_id": str(fire_id)}},
+        contain(
+            exc,
+            log=log,
+            what="webhook_receive dispatch failed",
+            extra={"subscription_id": str(subscription_id), "fire_id": str(fire_id)},
+            level=logging.ERROR,
         )
         emitter.inc_webhook_received(outcome="failed")
         emitter.inc_fire(
@@ -478,9 +488,11 @@ async def webhook_receive(
                 latency_ms=None,
             )
         except Exception as finalize_exc:  # noqa: BLE001 - best-effort
-            log.warning(
-                "webhook_receive finalize_failed raised",
-                extra={"extra_data": {"fire_id": str(fire_id), "error": str(finalize_exc)}},
+            contain(
+                finalize_exc,
+                log=log,
+                what="webhook_receive finalize_failed raised",
+                extra={"fire_id": str(fire_id), "error": str(finalize_exc)},
             )
         return WebhookReceiveResult(
             status_code=500,
@@ -506,9 +518,11 @@ async def webhook_receive(
             fired_at=receive_at,
         )
     except Exception as exc:  # noqa: BLE001 - finalize boundary
-        log.warning(
-            "webhook_receive finalize_success raised",
-            extra={"extra_data": {"fire_id": str(fire_id), "error": str(exc)}},
+        contain(
+            exc,
+            log=log,
+            what="webhook_receive finalize_success raised",
+            extra={"fire_id": str(fire_id), "error": str(exc)},
         )
         # We already dispatched; surface a 500 so the receiver knows
         # post-dispatch persistence failed even though the wake ran.
@@ -589,15 +603,11 @@ async def record_webhook_refusal(
             detail=detail,
         )
     except Exception as exc:  # noqa: BLE001 - boundary: the refusal is the answer; a log that cannot be written must not replace it
-        log.warning(
-            "webhook refusal not recorded",
-            extra={
-                "extra_data": {
-                    "subscription_id": str(subscription.subscription_id),
-                    "reason": reason,
-                    "error": str(exc),
-                }
-            },
+        contain(
+            exc,
+            log=log,
+            what="webhook refusal not recorded",
+            extra={"subscription_id": str(subscription.subscription_id), "reason": reason, "error": str(exc)},
         )
 
 

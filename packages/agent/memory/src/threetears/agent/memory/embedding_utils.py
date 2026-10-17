@@ -23,7 +23,7 @@ from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 # ``__all__`` lists only the public embedding-attribution scope helper. The two
 # ``_``-prefixed shims (:func:`_safe_aembed_query`, :func:`_estimate_tokens`) stay
@@ -62,10 +62,7 @@ async def _safe_aembed_query(
     try:
         result = await embedder.aembed_query(text)
     except Exception as exc:
-        _log.warning(
-            "embedding aembed_query failed (soft-fail): %s",
-            exc,
-        )
+        contain(exc, log=_log, what=f"embedding aembed_query failed (soft-fail): {exc}")
         return None
     if not result:
         # SDS-04: an empty vector is a successful call that returns nothing usable.

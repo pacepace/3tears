@@ -20,6 +20,7 @@ and never exposes it in the Pydantic schema: user isolation is the
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
@@ -34,7 +35,7 @@ from pydantic import BaseModel, Field
 from threetears.observe.text_block import under
 from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.langgraph.events import FrameworkEvent, dispatch_event
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.intention.authorize import (
     ACTION_INTENTION_READ,
@@ -126,10 +127,7 @@ async def _safe_aembed_query(embedder: Embeddings, text: str) -> list[float] | N
     try:
         return await embedder.aembed_query(text)
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- soft-fail embedding boundary; upstream API errors surface as None
-        log.warning(
-            "intention embedding failed; degrading to soft-fail",
-            extra={"extra_data": {"error": str(exc)}},
-        )
+        contain(exc, log=log, what="intention embedding failed; degrading to soft-fail", extra={"error": str(exc)})
         return None
 
 
@@ -293,9 +291,8 @@ async def load_intention_log_tool(
                 threshold=0.0,
             )
         except Exception as exc:
-            log.warning(
-                "intention_log: dedup lookup failed, creating new want",
-                extra={"extra_data": {"error": str(exc)}},
+            contain(
+                exc, log=log, what="intention_log: dedup lookup failed, creating new want", extra={"error": str(exc)}
             )
             similar = []
 
@@ -327,9 +324,11 @@ async def load_intention_log_tool(
                     # between this get and save) or a transient L3 error must
                     # not raise out of the tool. The create + mark_surfaced
                     # paths catch the same way.
-                    log.warning(
-                        "intention_log: refresh save failed",
-                        extra={"extra_data": {"intention_id": str(existing_id), "error": str(exc)}},
+                    contain(
+                        exc,
+                        log=log,
+                        what="intention_log: refresh save failed",
+                        extra={"intention_id": str(existing_id), "error": str(exc)},
                     )
                     return _tool_error("intention_log", "refresh", str(exc))
                 log.info(
@@ -355,9 +354,10 @@ async def load_intention_log_tool(
                 if raw_conv is not None:
                     source_conversation_id = raw_conv if isinstance(raw_conv, UUID) else UUID(str(raw_conv))
             except Exception as exc:
-                log.debug(
-                    "intention_log: context_resolver unavailable; source_conversation_id left null (%s)",
+                contain(
                     exc,
+                    log=log,
+                    what=f"intention_log: context_resolver unavailable; source_conversation_id left null ({exc})",
                 )
 
         try:
@@ -380,10 +380,7 @@ async def load_intention_log_tool(
             entity: IntentionEntity = intentions_collection.create(new_data)
             await intentions_collection.save_entity(entity)
         except Exception as exc:
-            log.warning(
-                "intention_log: create failed",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="intention_log: create failed", extra={"error": str(exc)})
             return _tool_error("intention_log", "store", str(exc))
 
         log.info(
@@ -394,9 +391,12 @@ async def load_intention_log_tool(
             try:
                 await on_logged(entity)
             except Exception as exc:  # the want is stored; a record of it failing must not unlog it
-                log.error(
-                    "intention_log: the want is stored but on_logged failed",
-                    extra={"extra_data": {"intention_id": str(intention_id), "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="intention_log: the want is stored but on_logged failed",
+                    extra={"intention_id": str(intention_id), "error": str(exc)},
+                    level=logging.ERROR,
                 )
         return f"Logged as [intention:{intention_id}]: {text}"
 
@@ -491,6 +491,7 @@ async def load_intention_list_tool(
                 every = await intentions_collection.find_by_user(user_id, agent_id=agent_id)
                 wants = every if wanted == "all" else [w for w in every if w.status == wanted]
         except Exception as exc:
+            contain(exc, log=log, what="intention_list query failed")
             return _tool_error("intention_list", "query", str(exc))
 
         held = (
@@ -533,10 +534,7 @@ async def _notes_for(notes: WantNotes | None, wants: Sequence[IntentionEntity]) 
     try:
         return await notes(wants)
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- a note is extra; the listing stands without it
-        log.warning(
-            "intention notes failed; listing without them",
-            extra={"extra_data": {"error": str(exc)}},
-        )
+        contain(exc, log=log, what="intention notes failed; listing without them", extra={"error": str(exc)})
         return {}
 
 
@@ -692,6 +690,7 @@ async def load_intention_mark_surfaced_tool(
         try:
             await intentions_collection.save_entity(entity)
         except Exception as exc:
+            contain(exc, log=log, what="intention_mark_surfaced store failed")
             return _tool_error("intention_mark_surfaced", "store", str(exc))
 
         preview = entity.content[:_CONTENT_PREVIEW_LEN]

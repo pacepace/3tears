@@ -78,7 +78,7 @@ from langgraph.types import Command
 from threetears.agent.memory.embedding_utils import embedding_attribution_scope
 from threetears.knowledge import ConceptEffective, EntryEffective, Scope
 from threetears.langgraph import merge_metadata
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.knowledge.integration import (
     KnowledgeIntegration,
@@ -390,10 +390,7 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
                 log.error("governed knowledge injection failed closed: the governed layer could not be read")
                 raise
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- SITUATIONAL knowledge injection is best-effort context enrichment; a fault proceeds on the un-merged request rather than failing the turn
-                log.warning(
-                    "knowledge injection middleware failed (soft-fail): %s",
-                    type(exc).__name__,
-                )
+                contain(exc, log=log, what=f"knowledge injection middleware failed (soft-fail): {type(exc).__name__}")
                 block, metadata = "", {}
         if not block:
             passthrough: ModelResponse[Any] = await handler(request)
@@ -1480,10 +1477,10 @@ async def _embed_turn_query(
                 vector = await model.aembed_query(query_text)
             result = vector if vector else []
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- query embedding is best-effort ranking input; a fault soft-fails to stable order rather than failing the turn
-            log.warning(
-                "knowledge situational query embedding failed (soft-fail to stable order): %s: %s",
-                type(exc).__name__,
+            contain(
                 exc,
+                log=log,
+                what=f"knowledge situational query embedding failed (soft-fail to stable order): {type(exc).__name__}: {exc}",
             )
             result = []
     return result
@@ -1531,10 +1528,10 @@ async def _fetch_situational_embeddings(
         try:
             result.update(await entry_collection.fetch_embeddings(entry_ids, customer_scope=customer_scope))
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- vector fetch is best-effort ranking input; a fault falls the items back to stable order rather than failing the turn
-            log.warning(
-                "knowledge situational entry-vector fetch failed (soft-fail to stable order): %s: %s",
-                type(exc).__name__,
+            contain(
                 exc,
+                log=log,
+                what=f"knowledge situational entry-vector fetch failed (soft-fail to stable order): {type(exc).__name__}: {exc}",
             )
     concept_collection = integration.concept_collection
     if concept_collection is not None and situational_concepts:
@@ -1542,10 +1539,10 @@ async def _fetch_situational_embeddings(
         try:
             result.update(await concept_collection.fetch_embeddings(concept_ids, customer_scope=customer_scope))
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- vector fetch is best-effort ranking input; a fault falls the items back to stable order rather than failing the turn
-            log.warning(
-                "knowledge situational concept-vector fetch failed (soft-fail to stable order): %s: %s",
-                type(exc).__name__,
+            contain(
                 exc,
+                log=log,
+                what=f"knowledge situational concept-vector fetch failed (soft-fail to stable order): {type(exc).__name__}: {exc}",
             )
     return result
 

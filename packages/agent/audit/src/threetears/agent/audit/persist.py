@@ -36,7 +36,6 @@ The persister writes Postgres only (no cache tiers), so erasure has no cache to 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -49,7 +48,7 @@ from pydantic import ValidationError
 from threetears.agent.audit.migrations.v001_create_audit_events import AUDIT_EVENTS_V001_DDL
 from threetears.core.serialization import json_datetime, to_stored_json
 from threetears.nats import Subjects
-from threetears.observe import get_logger, spawn_background
+from threetears.observe import cancel_and_wait, get_logger, spawn_background
 from threetears.observe.erasure import ANONYMIZED_MARKER
 
 from threetears.agent.audit.anonymize import anonymize_details, anonymize_ip
@@ -252,10 +251,7 @@ class AuditPersisterHandle:
             await self.consumer.stop()
         finally:
             # the task ends even when stopping the consumer fails (a connection already closed at shutdown)
-            self.task.cancel()
-            # NOSILENT: this IS the cancellation requested on the line above
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.task
+            await cancel_and_wait(self.task)
 
 
 async def start_audit_persister(

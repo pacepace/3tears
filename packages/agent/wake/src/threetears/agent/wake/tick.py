@@ -60,12 +60,13 @@ design notes
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.scheduled_jobs import (
     DEFAULT_DISPATCH_REAP_AFTER_SECONDS,
     DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND,
@@ -478,10 +479,13 @@ class _WakeFireStore:
         if reaped and self._on_reaped is not None:
             try:
                 await self._on_reaped(reaped)
-            except Exception:  # noqa: BLE001 - boundary: the rows are failed already; the hook must not undo the count
-                log.exception(
-                    "wake tick: on_reaped hook raised",
-                    extra={"extra_data": {"fire_ids": [str(fire.fire_id) for fire in reaped]}},
+            except Exception as exc:  # noqa: BLE001 - boundary: the rows are failed already; the hook must not undo the count
+                contain(
+                    exc,
+                    log=log,
+                    what="wake tick: on_reaped hook raised",
+                    extra={"fire_ids": [str(fire.fire_id) for fire in reaped]},
+                    level=logging.ERROR,
                 )
         return len(reaped)
 
