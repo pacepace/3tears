@@ -32,8 +32,6 @@ from datetime import timedelta
 from pathlib import Path
 from uuid import UUID
 
-import nats
-import nats.errors
 import pytest
 from nats.js.api import AckPolicy, StorageType
 
@@ -50,6 +48,8 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import Subjects, get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .refusals import Violations, refused, watching_client_log
+
 pytestmark = pytest.mark.integration
 
 _NS = "ownread"
@@ -61,9 +61,6 @@ _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _AGENT_PW = "agent-pw"  # noqa: S105 - ephemeral testcontainer credential
 _TOOL_PW = "tool-pw"  # noqa: S105 - ephemeral testcontainer credential
 _WAIT = 10.0
-
-#: what a refused JetStream call surfaces as in nats-py: an unanswered request.
-_REFUSED = (nats.errors.TimeoutError, nats.errors.NoRespondersError)
 
 
 def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
@@ -320,9 +317,10 @@ async def test_a_pod_collects_its_own_deliveries_and_no_other_agents(tmp_path: P
                     b'{"batch": 10, "expires": 1000000000}',
                 ),
             ]
-            for client, subject, body in probes:
-                with pytest.raises(_REFUSED):
-                    await client.raw.request(subject, body, timeout=2)
+            violations = Violations()
+            with watching_client_log(violations):
+                for client, subject, body in probes:
+                    await refused(violations, client.raw.request(subject, body, timeout=5), naming=subject)
 
             # === REFUSED by the server: a body filter that disagrees with the granted subject =======
             # the grant admits the subject; the server then holds the body to it. these are the
@@ -412,29 +410,36 @@ async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none(tmp
 
             # === REFUSED: another agent's key, and every write -- its own key included =============
             short = await agent.raw.jetstream(timeout=2).key_value(bucket_name)
-            with pytest.raises(_REFUSED):
-                await short.get(other_key)
-            for key in (own_key, other_key):
-                with pytest.raises(_REFUSED):
-                    await short.put(key, b'{"system_prompt": "rewritten"}')
             stream = f"KV_{bucket_name}"
-            for subject, body in (
-                (
-                    f"$JS.API.CONSUMER.CREATE.{stream}.w1.$KV.{bucket_name}.{other_key}",
-                    _create_body(stream, "w1", f"$KV.{bucket_name}.{other_key}"),
-                ),
-                (
-                    f"$JS.API.CONSUMER.CREATE.{stream}.w2.$KV.{bucket_name}.>",
-                    _create_body(stream, "w2", f"$KV.{bucket_name}.>"),
-                ),
-                (f"$JS.API.CONSUMER.CREATE.{stream}", _create_body(stream, None, f"$KV.{bucket_name}.>")),
-                (
-                    f"$JS.API.STREAM.MSG.GET.{stream}",
-                    json.dumps({"last_by_subj": f"$KV.{bucket_name}.{other_key}"}).encode(),
-                ),
-            ):
-                with pytest.raises(_REFUSED):
-                    await agent.raw.request(subject, body, timeout=2)
+            violations = Violations()
+            with watching_client_log(violations):
+                await refused(
+                    violations,
+                    short.get(other_key),
+                    naming=f"$js.api.direct.get.{stream}.$kv.{bucket_name}.{other_key}",
+                )
+                for key in (own_key, other_key):
+                    await refused(
+                        violations,
+                        short.put(key, b'{"system_prompt": "rewritten"}'),
+                        naming=f"$kv.{bucket_name}.{key}",
+                    )
+                for subject, body in (
+                    (
+                        f"$JS.API.CONSUMER.CREATE.{stream}.w1.$KV.{bucket_name}.{other_key}",
+                        _create_body(stream, "w1", f"$KV.{bucket_name}.{other_key}"),
+                    ),
+                    (
+                        f"$JS.API.CONSUMER.CREATE.{stream}.w2.$KV.{bucket_name}.>",
+                        _create_body(stream, "w2", f"$KV.{bucket_name}.>"),
+                    ),
+                    (f"$JS.API.CONSUMER.CREATE.{stream}", _create_body(stream, None, f"$KV.{bucket_name}.>")),
+                    (
+                        f"$JS.API.STREAM.MSG.GET.{stream}",
+                        json.dumps({"last_by_subj": f"$KV.{bucket_name}.{other_key}"}).encode(),
+                    ),
+                ):
+                    await refused(violations, agent.raw.request(subject, body, timeout=5), naming=subject)
 
             # === nothing was rewritten ===============================================================
             assert (await legacy.get(own_key)).value == b'{"system_prompt": "own"}'

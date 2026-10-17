@@ -6,7 +6,7 @@ does not cover is never answered, so each claim runs against a real nats-server:
 
 - through the wrapper, the pod binds its own Object Store and pointer bucket, puts an object larger
   than a chunk, reads it back, describes and lists it, and watches its pointers by prefix;
-- nats-py's own ``ObjectStore.get`` -- an unnamed ordered consumer -- is refused;
+- nats-py's own ``ObjectStore.get`` is refused, at the metadata read it starts with;
 - deleting an object, purging, deleting or reshaping the bucket, and every route into another pod's
   bucket are refused, and the bucket is unchanged.
 
@@ -25,7 +25,6 @@ from contextlib import aclosing
 from datetime import timedelta
 from pathlib import Path
 
-import nats.errors
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -40,6 +39,8 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .refusals import Violations, connect, refused, refused_request, watching_client_log
+
 pytestmark = pytest.mark.integration
 
 _NS = "objgrant"
@@ -48,9 +49,6 @@ _VICTIM = "01947100-0000-7000-8000-0000000000f2"
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
 _WAIT = 10.0
-
-#: what a refused JetStream call surfaces as in nats-py: an unanswered request.
-_REFUSED = (nats.errors.TimeoutError, nats.errors.NoRespondersError)
 
 
 def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
@@ -190,33 +188,40 @@ async def test_a_tool_pod_works_inside_its_object_store_and_manages_nothing(tmp_
                 assert first is not None and (first.key, first.value) == ("snap.TX", b"7")
                 assert await asyncio.wait_for(anext(watch), timeout=_WAIT) is None
 
-            # === REFUSED: nats-py's own read, an unnamed ordered consumer =========================
+            # === REFUSED: nats-py's own read, at its metadata lookup (STREAM.MSG.GET) ==============
             stock = await pod.jetstream_context().object_store(own)
-            # an unanswered create never raises on its own; the read simply never arrives
-            with pytest.raises((*_REFUSED, TimeoutError)):
-                await asyncio.wait_for(stock.get("candidates/TX/7"), timeout=5)
+            violations = Violations()
+            with watching_client_log(violations):
+                await refused(violations, stock.get("candidates/TX/7"), naming=f"$js.api.stream.msg.get.obj_{own}")
 
             # === REFUSED: deleting an object is a purge, the hub's ===================================
             with pytest.raises(ObjectStoreError):
                 await store.delete("candidates/TX/7")
 
             # === REFUSED: every management verb, and every route into another pod's bucket ==========
-            raw = pod.raw
+            # a side connection under the pod's own credential: the wrapper reports a violation once per
+            # subject per ten seconds, and the checks above already used PURGE and MSG.GET on this one.
+            raw_violations = Violations()
             meta = base64.urlsafe_b64encode(b"secret").decode()
-            for subject, body in (
-                (f"$JS.API.STREAM.PURGE.OBJ_{own}", {}),
-                (f"$JS.API.STREAM.DELETE.OBJ_{own}", {}),
-                (f"$JS.API.STREAM.UPDATE.OBJ_{own}", {"name": f"OBJ_{own}", "sources": [{"name": f"OBJ_{victim}"}]}),
-                (f"$JS.API.STREAM.CREATE.OBJ_{_NS}-exfil", {"name": f"OBJ_{_NS}-exfil", "subjects": []}),
-                (f"$JS.API.STREAM.MSG.GET.OBJ_{own}", {"last_by_subj": f"$O.{own}.M.x"}),
-                (f"$JS.API.STREAM.MSG.DELETE.OBJ_{own}", {"seq": 1}),
-                (f"$JS.API.STREAM.INFO.OBJ_{victim}", {}),
-                (f"$JS.API.DIRECT.GET.OBJ_{victim}.$O.{victim}.M.{meta}", None),
-                (f"$JS.API.CONSUMER.CREATE.OBJ_{victim}.c1.$O.{victim}.>", {"stream_name": f"OBJ_{victim}"}),
-            ):
-                payload = b"" if body is None else json.dumps(body).encode()
-                with pytest.raises(_REFUSED):
-                    await raw.request(subject, payload, timeout=2)
+            async with connect(
+                uri, user="pod", password=_POD_PW, violations=raw_violations, inbox_prefix=permissions.inbox_prefix
+            ) as raw_nc:
+                for subject, body in (
+                    (f"$JS.API.STREAM.PURGE.OBJ_{own}", {}),
+                    (f"$JS.API.STREAM.DELETE.OBJ_{own}", {}),
+                    (
+                        f"$JS.API.STREAM.UPDATE.OBJ_{own}",
+                        {"name": f"OBJ_{own}", "sources": [{"name": f"OBJ_{victim}"}]},
+                    ),
+                    (f"$JS.API.STREAM.CREATE.OBJ_{_NS}-exfil", {"name": f"OBJ_{_NS}-exfil", "subjects": []}),
+                    (f"$JS.API.STREAM.MSG.GET.OBJ_{own}", {"last_by_subj": f"$O.{own}.M.x"}),
+                    (f"$JS.API.STREAM.MSG.DELETE.OBJ_{own}", {"seq": 1}),
+                    (f"$JS.API.STREAM.INFO.OBJ_{victim}", {}),
+                    (f"$JS.API.DIRECT.GET.OBJ_{victim}.$O.{victim}.M.{meta}", None),
+                    (f"$JS.API.CONSUMER.CREATE.OBJ_{victim}.c1.$O.{victim}.>", {"stream_name": f"OBJ_{victim}"}),
+                ):
+                    payload = b"" if body is None else json.dumps(body).encode()
+                    await refused_request(raw_violations, raw_nc, subject, payload)
             with pytest.raises(ObjectStoreError):
                 await pod.object_store(name=victim, prefix_namespace=False)
 

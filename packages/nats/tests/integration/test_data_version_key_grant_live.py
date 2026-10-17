@@ -28,12 +28,11 @@ import asyncio
 import base64
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID
 
-import nats
-import nats.errors
+import nats.aio.msg
 import nats.js.api
 import nats.js.errors
 import pytest
@@ -48,6 +47,8 @@ from threetears.nats.subject_permissions import (
 )
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+from .refusals import Violations, connect, refused, refused_request
 
 pytestmark = pytest.mark.integration
 
@@ -134,57 +135,6 @@ def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
         container.stop()
 
 
-@contextlib.asynccontextmanager
-async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str, errors: list[str]) -> AsyncIterator:
-    """connect a raw nats client, routing async permission-violation errors into ``errors``.
-
-    :param uri: the server URI
-    :ptype uri: str
-    :param user: the user to connect as
-    :ptype user: str
-    :param password: that user's password
-    :ptype password: str
-    :param inbox_prefix: the inbox prefix the user's subscribe grant covers
-    :ptype inbox_prefix: str
-    :param errors: collects every asynchronous error the client reports
-    :ptype errors: list[str]
-    :return: the connected client, yielded
-    :rtype: AsyncIterator
-    """
-
-    async def _err_cb(exc: Exception) -> None:
-        errors.append(str(exc))
-
-    nc = await nats.connect(
-        uri,
-        user=user,
-        password=password,
-        inbox_prefix=inbox_prefix.encode(),
-        error_cb=_err_cb,
-        max_reconnect_attempts=0,
-    )
-    try:
-        yield nc
-    finally:
-        await nc.close()
-
-
-async def _refused(nc, subject: str, *, body: bytes = b"") -> None:
-    """assert the server REFUSES a raw request on ``subject``: it is never answered.
-
-    :param nc: the connected client to probe from
-    :ptype nc: Any
-    :param subject: the subject to request on
-    :ptype subject: str
-    :param body: the request payload
-    :ptype body: bytes
-    :return: nothing
-    :rtype: None
-    """
-    with pytest.raises((nats.errors.TimeoutError, nats.errors.NoRespondersError)):
-        await nc.request(subject, body, timeout=2)
-
-
 async def test_a_pod_reads_and_watches_only_its_own_data_version_key(tmp_path: Path) -> None:
     """both halves against a real broker: the own key works, every other route is refused."""
     if not check_docker_available():
@@ -204,10 +154,7 @@ async def test_a_pod_reads_and_watches_only_its_own_data_version_key(tmp_path: P
     other = data_version_kv_key(_OTHER_AGENT)
 
     with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
-        admin_errors: list[str] = []
-        async with _connect(
-            uri, user="admin", password=_ADMIN_PW, inbox_prefix="_INBOX", errors=admin_errors
-        ) as admin_nc:
+        async with connect(uri, user="admin", password=_ADMIN_PW, violations=Violations()) as admin_nc:
             admin_js = admin_nc.jetstream()
             # the hub creates the bucket with allow_direct; without it a read is the body-carried
             # STREAM.MSG.GET, which no subject grant can narrow to one key.
@@ -215,9 +162,9 @@ async def test_a_pod_reads_and_watches_only_its_own_data_version_key(tmp_path: P
             await admin_kv.put(own, b"3")
             await admin_kv.put(other, b"9")
 
-            errors: list[str] = []
-            async with _connect(
-                uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix, errors=errors
+            violations = Violations()
+            async with connect(
+                uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix, violations=violations
             ) as nc:
                 js = nc.jetstream(timeout=3)
                 await js.account_info()
@@ -243,15 +190,15 @@ async def test_a_pod_reads_and_watches_only_its_own_data_version_key(tmp_path: P
                 await admin_kv.put(own, b"4")
                 assert await asyncio.wait_for(received.get(), timeout=5) == b"4"
                 await watch.unsubscribe()
-                assert not [e for e in errors if "permissions violation" in e.lower()], errors
+                assert not violations.errors, violations.errors
 
                 # === REFUSED: the stock watch, whose consumer is unnamed ====================
-                with pytest.raises((nats.errors.TimeoutError, nats.errors.NoRespondersError)):
-                    await kv.watch(own)
+                await refused(violations, kv.watch(own), naming=f"$js.api.consumer.create.{stream}")
 
                 # === REFUSED: every route to another principal's key, and every write ======
-                await _refused(nc, f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{other}")
-                await _refused(
+                await refused_request(violations, nc, f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{other}")
+                await refused_request(
+                    violations,
                     nc,
                     f"$JS.API.CONSUMER.CREATE.{stream}.spy.$KV.{bucket}.{other}",
                     body=json.dumps(
@@ -265,7 +212,8 @@ async def test_a_pod_reads_and_watches_only_its_own_data_version_key(tmp_path: P
                         }
                     ).encode(),
                 )
-                await _refused(
+                await refused_request(
+                    violations,
                     nc,
                     f"$JS.API.CONSUMER.CREATE.{stream}",
                     body=json.dumps(
@@ -278,12 +226,13 @@ async def test_a_pod_reads_and_watches_only_its_own_data_version_key(tmp_path: P
                         }
                     ).encode(),
                 )
-                await _refused(
+                await refused_request(
+                    violations,
                     nc,
                     f"$JS.API.STREAM.MSG.GET.{stream}",
                     body=json.dumps({"last_by_subj": f"$KV.{bucket}.{other}"}).encode(),
                 )
-                await _refused(nc, f"$KV.{bucket}.{own}", body=b"99")
+                await refused_request(violations, nc, f"$KV.{bucket}.{own}", body=b"99")
 
                 # === REFUSED BY THE SERVER: own key in the subject, whole bucket in the body ==
                 reply = await nc.request(
@@ -301,16 +250,6 @@ async def test_a_pod_reads_and_watches_only_its_own_data_version_key(tmp_path: P
                     timeout=3,
                 )
                 assert "error" in json.loads(reply.data), reply.data
-
-                await asyncio.sleep(0.4)  # let the async -ERR frames land in the error callback
-                violations = [e for e in errors if "permissions violation" in e.lower()]
-                for needle in (
-                    f"$js.api.direct.get.{stream}.$kv.{bucket}.{other}".lower(),
-                    f"$js.api.consumer.create.{stream}.spy.".lower(),
-                    f"$js.api.stream.msg.get.{stream}".lower(),
-                    f"$kv.{bucket}.{own}".lower(),
-                ):
-                    assert any(needle in e.lower() for e in violations), (needle, violations)
 
                 # the pod's own read still works after being refused
                 assert (await kv.get(own)).value == b"4"
