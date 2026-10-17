@@ -34,11 +34,12 @@ than let this function be discovered to be the wrong tool halfway through a fiel
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.channels.mail.message import EmailMessage, EmailTransport
 
@@ -206,12 +207,17 @@ async def _send_one(
                 await on_failure(failure)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 # The callback usually writes to a database, and that database being
                 # briefly unavailable must not cost the remaining recipients their send.
                 # Logged rather than swallowed, because a run whose outcomes silently
                 # stopped being recorded is a run nobody can resume.
-                log.exception("could not record an outbound-email recipient failure")
+                contain(
+                    exc,
+                    log=log,
+                    what="could not record an outbound-email recipient failure",
+                    level=logging.ERROR,
+                )
         return failure
     return None
 
