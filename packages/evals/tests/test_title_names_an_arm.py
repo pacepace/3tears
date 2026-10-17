@@ -168,6 +168,31 @@ def test_an_arm_whose_levels_are_unavailable_offers_no_name() -> None:
     assert _named("GPT-6 Luna costs more", [lost, _LING]) == []
 
 
+def test_a_display_s_trailing_parenthetical_is_dropped_as_well_as_kept() -> None:
+    production, other = arms = [
+        _entry(model=model) for model in ("acme/ling-3.1-flash (production)", "acme/gpt-6-luna")
+    ]
+    assert _named("Ling 3.1 Flash is slower", arms) == [("Ling 3.1 Flash", _arm(production))]
+    assert _named("acme/ling-3.1-flash is slower", arms) == [("acme/ling-3.1-flash", _arm(production))]
+
+
+def test_one_model_under_two_labels_is_named_by_neither_with_its_qualifier_dropped() -> None:
+    production, tuned, other = arms = [
+        _entry(model=model)
+        for model in ("acme/ling-3.1-flash (production)", "acme/ling-3.1-flash (tuned)", "acme/gpt-6")
+    ]
+    assert _named("Ling 3.1 Flash is slower", arms) == []
+    assert _named("Ling 3.1 Flash (tuned) is slower", arms) == []
+    assert _named("GPT-6 is slower", arms) == [("GPT-6", _arm(other))]
+
+
+def test_a_dropped_qualifier_never_borrows_the_name_of_an_arm_displayed_without_one() -> None:
+    plain, labelled = arms = [
+        _entry(model=model) for model in ("acme/ling-3.1-flash", "acme/ling-3.1-flash (production)")
+    ]
+    assert _named("Ling 3.1 Flash is slower", arms) == [("Ling 3.1 Flash", _arm(plain))]
+
+
 # --- through the generator ----------------------------------------------------------------------------------------
 
 
@@ -189,8 +214,8 @@ class _MemoSequence(FixturedClient):
 _NARROW_NAME, _WIDE_NAME = "acme/gpt-6-luna", "acme/gpt-6-luna-pro"
 
 
-def _bundle() -> AnalysisContextBundle:
-    """The toy bundle, its narrow arm's level displayed as :data:`_NARROW_NAME` and its wide one's as :data:`_WIDE_NAME`.
+def _bundle(wide_name: str = _WIDE_NAME) -> AnalysisContextBundle:
+    """The toy bundle, its narrow arm's level displayed as :data:`_NARROW_NAME` and its wide one's as ``wide_name``.
 
     A level's display is not part of its identity, so every key, cell and alias stays as assembled.
     """
@@ -199,7 +224,7 @@ def _bundle() -> AnalysisContextBundle:
     bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
     displays = {
         variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW)): _NARROW_NAME,
-        variant_of_cell_ref(cell_at(bundle, TOYHOST_WIDE)): _WIDE_NAME,
+        variant_of_cell_ref(cell_at(bundle, TOYHOST_WIDE)): wide_name,
     }
     index = [
         entry.model_copy(
@@ -279,6 +304,21 @@ class TestATitleNamingAnArmItsFindingCitesNothingOfIsRefused:
         assert f"at cell(s) {alias_at(bundle, TOYHOST_WIDE)})" in refusal, "named in the writer's own alias"
         assert len(client.calls) == 2 and refusal in client.calls[1]["user"]
         assert analysis.document.findings[1].title == title
+
+
+class TestATitleNamingAModelWhoseDisplayCarriesAParentheticalIsCheckedLikeAnyOther:
+    _LABELLED = f"{_WIDE_NAME} (production)"
+
+    async def test_it_is_refused_where_the_finding_cites_nothing_of_that_arm(self) -> None:
+        bundle = _bundle(self._LABELLED)
+        memo = _memo(bundle, "GPT-6 Luna Pro costs four times as much per document", at=(TOYHOST_NARROW,))
+        with pytest.raises(SoundnessRefusal) as refused:
+            await _generate(bundle, FixturedClient(memo))
+        assert 'findings[1].title names "GPT-6 Luna Pro"' in str(refused.value)
+
+    async def test_it_is_admitted_where_the_finding_cites_that_arm(self) -> None:
+        bundle = _bundle(self._LABELLED)
+        await _accepted(bundle, _memo(bundle, "GPT-6 Luna Pro costs four times as much", at=(TOYHOST_WIDE,)))
 
 
 class TestATitleBreakingBothTitleChecksIsToldOfBothInItsOneRepair:
