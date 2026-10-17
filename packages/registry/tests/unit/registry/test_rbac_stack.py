@@ -49,6 +49,7 @@ from threetears.agent.acl import (
     RoleCollection,
 )
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.testing.kv import FakeNatsClient
 from threetears.registry.auth import (
     AllowAllAuthorizer,
     DenyAllAuthorizer,
@@ -123,6 +124,8 @@ def _make_nats_client() -> MagicMock:
     # a distinct handle per call so the teardown assertions can tell them apart.
     nc.subscribe_typed = AsyncMock(side_effect=lambda **_kw: MagicMock())
     nc.unsubscribe = AsyncMock()
+    # a real in-memory KV: the stack's generation follower awaits the bucket, which a MagicMock is not
+    nc.kv_bucket = FakeNatsClient().kv_bucket
     return nc
 
 
