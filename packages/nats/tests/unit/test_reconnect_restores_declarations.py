@@ -27,7 +27,6 @@ import pytest
 from nats.js.api import StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
-from threetears.nats import client as client_module
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 from threetears.nats.kv import build_kv_stream_config
 
@@ -155,12 +154,6 @@ def _bind_namespace() -> None:
     set_default_namespace(_NS)
 
 
-@pytest.fixture(autouse=True)
-def _the_server_answers_a_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """a pull consumer's stop proves its UNSUB with a round trip; this scripted server has no wire to prove it on."""
-    monkeypatch.setattr(client_module, "_round_trip", AsyncMock())
-
-
 async def _connected(server: _ScriptedServer) -> tuple[NatsClient, Callable[[], Awaitable[None]]]:
     """connect a client over ``server``, returning it and the reconnect slot nats-py would call.
 
@@ -176,8 +169,6 @@ async def _connected(server: _ScriptedServer) -> tuple[NatsClient, Callable[[], 
     raw.is_connected = True
     raw.drain = AsyncMock()
     raw.close = AsyncMock()
-    # a pull consumer's stop sends an UNSUB, as it does on a live connection
-    raw._send_unsubscribe = AsyncMock()  # noqa: SLF001 -- the nats-py call a pull consumer stop makes
 
     async def _establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
         captured["options"] = options
@@ -301,6 +292,10 @@ async def test_a_declared_file_kv_bucket_lost_with_the_brokers_storage_is_declar
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_on_a_lost_file_stream_is_bound_again() -> None:
     """the agent-router's turn consumer: its stream back, the durable on it bound again."""
     server = _ScriptedServer()
@@ -620,6 +615,10 @@ async def _ack(msg: Any) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_on_a_wiped_stream_is_created_again() -> None:
     """a durable lives on its stream: the restart that took the stream took the durable too."""
     server = _ScriptedServer()
@@ -641,6 +640,10 @@ async def test_a_pull_durable_on_a_wiped_stream_is_created_again() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_that_survived_is_not_rebound() -> None:
     """a reconnect over a network blip leaves the durable in place; rebinding it is churn."""
     server = _ScriptedServer()

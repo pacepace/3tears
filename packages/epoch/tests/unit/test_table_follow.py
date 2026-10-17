@@ -106,8 +106,10 @@ async def test_a_watch_that_keeps_failing_backs_off_to_a_cap_and_reports_unhealt
     finally:
         await follower.stop()
     gaps = [later - earlier for earlier, later in zip(watches.started, watches.started[1:], strict=False)]
-    # 10ms, 20ms, 40ms, then held at the 40ms cap
-    assert gaps[1] > gaps[0] * 1.5
+    # 10ms, 20ms, 40ms, then held at the 40ms cap. Each gap is held to its own floor rather than to a ratio of two
+    # measured gaps: the first failure's logging (a cold traceback) can outlast a 10ms backoff, and a sleep never ends
+    # early, so a floor is exact where a ratio is noise.
+    assert gaps[0] >= 0.010 and gaps[1] >= 0.020 and all(gap >= 0.040 for gap in gaps[2:]), gaps
     assert all(gap < 0.04 * 3 for gap in gaps)
     health = follower.health["groups"]
     assert health.consecutive_failures >= 5
