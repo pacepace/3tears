@@ -68,6 +68,7 @@ import asyncio
 import dataclasses
 import functools
 import json
+import logging
 import math
 import random
 import re
@@ -103,7 +104,7 @@ from nats.errors import (
 )
 from nats.js.errors import NotFoundError as _NatsJsNotFoundError
 from pydantic import BaseModel, ValidationError
-from threetears.observe import get_logger, representative_exception
+from threetears.observe import cancel_and_wait, contain, get_logger, representative_exception
 from threetears.observe.resilience import retry_until_done
 
 from threetears.nats.diagnostics import permissions_violation_remedy
@@ -607,7 +608,8 @@ def _make_reconnect_to_server_handler(
         try:
             attempt = selected.reconnects if selected is not None else 0
             delay = _full_jitter_backoff(attempt, base=base, cap=cap)
-        except Exception:
+        except Exception as exc:
+            contain(exc, log=log, what="reconnect backoff computation failed; using the fallback delay")
             # nats-py calls this handler SYNC on every reconnect attempt and sleeps whatever delay it
             # returns; if the computation ever raises, nats-py gets no delay to sleep and busy-spins the
             # client at 100% CPU (the exact failure this handler guards). fail safe to a whole-second pace
@@ -711,9 +713,11 @@ class _SubscriptionFeed:
         # NOSILENT: logged; the successor is already receiving, so the only loss is whatever the
         # closed connection had not yet handed over, and a closed connection cannot hand it over.
         except Exception as exc:  # noqa: BLE001 -- handover is best-effort once the successor receives
-            log.warning(
-                "superseded subscription could not be drained",
-                extra={"extra_data": {"subject": self._subject.path, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="superseded subscription could not be drained",
+                extra={"subject": self._subject.path, "error": str(exc)},
             )
 
     async def cancel(self) -> None:
@@ -726,11 +730,7 @@ class _SubscriptionFeed:
         for task in receivers:
             task.cancel()
         for task in receivers:
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested above
-                pass
+            await cancel_and_wait(task)
 
     async def _receive(self, raw_subscription: Any, connection: Any) -> None:
         """take each message off one connection as it arrives and date it there.
@@ -761,15 +761,16 @@ class _SubscriptionFeed:
             raise
         except Exception as exc:  # noqa: BLE001 — diag only
             underlying = representative_exception(exc)
-            log.error(
-                "subscription dispatch loop crashed",
+            contain(
+                exc,
+                log=log,
+                what="subscription dispatch loop crashed",
                 extra={
-                    "extra_data": {
-                        "subject": self._subject.path,
-                        "error_type": type(underlying).__name__,
-                        "error": str(underlying),
-                    }
+                    "subject": self._subject.path,
+                    "error_type": type(underlying).__name__,
+                    "error": str(underlying),
                 },
+                level=logging.ERROR,
             )
         finally:
             if raw_subscription is self._current:
@@ -939,20 +940,20 @@ class Subscription:
         try:
             await self.raw_subscription.unsubscribe()
         except Exception as exc:  # noqa: BLE001 -- diag only; teardown continues regardless
-            log.warning(
-                "unsubscribe failed",
-                extra={"extra_data": {"subject": self.subject.path, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="unsubscribe failed",
+                extra={"subject": self.subject.path, "error": str(exc)},
             )
-        self.dispatch_task.cancel()
         try:
-            await self.dispatch_task
-        except asyncio.CancelledError:
-            # NOSILENT: this IS the cancellation requested on the line above
-            pass
+            await cancel_and_wait(self.dispatch_task)
         except Exception as exc:  # noqa: BLE001 -- diag only; the subscription is dropped either way
-            log.warning(
-                "dispatch task raised while unwinding",
-                extra={"extra_data": {"subject": self.subject.path, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="dispatch task raised while unwinding",
+                extra={"subject": self.subject.path, "error": str(exc)},
             )
 
 
@@ -1081,21 +1082,22 @@ class JetStreamPushConsumer:
         # NOSILENT: logged; the durable redelivers anything unacknowledged, so the rebind below
         # loses nothing even when the release could not finish.
         except Exception as exc:  # noqa: BLE001 -- the rebind proceeds either way
-            log.warning(
-                "durable push consumer could not be released from the replaced connection: durable=%s: %s",
-                self._durable,
+            contain(
                 exc,
+                log=log,
+                what=f"durable push consumer could not be released from the replaced connection: durable={self._durable}: {exc}",
             )
         while not self._closed:
             try:
                 bound = await self._resubscribe(js)
             except Exception as exc:  # noqa: BLE001 -- retried: an unbound durable delivers nothing
-                log.warning(
-                    "durable push consumer could not be bound on the successor connection; retrying in %.1fs: "
-                    "durable=%s: %s",
-                    _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
-                    self._durable,
+                contain(
                     exc,
+                    log=log,
+                    what=(
+                        "durable push consumer could not be bound on the successor connection; retrying in "
+                        f"{_PULL_CONSUMER_ERROR_BACKOFF_SECONDS:.1f}s: durable={self._durable}: {exc}"
+                    ),
                 )
                 await asyncio.sleep(_PULL_CONSUMER_ERROR_BACKOFF_SECONDS)
                 continue
@@ -1145,9 +1147,11 @@ class JetStreamPushConsumer:
         try:
             await self.raw_subscription.unsubscribe()
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup, diagnostics only
-            log.warning(
-                "jetstream push consumer unsubscribe failed",
-                extra={"extra_data": {"subject": self._subject.path, "durable": self._durable, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="jetstream push consumer unsubscribe failed",
+                extra={"subject": self._subject.path, "durable": self._durable, "error": str(exc)},
             )
         self._closed = True
 
@@ -1386,6 +1390,7 @@ class JetStreamPullConsumer:
             try:
                 await self._cb(msg)
             except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
+                contain(exc, log=log, what="durable pull consumer handler raised; bounded redelivery owns the outcome")
                 await self._redeliver(msg, exc)
         finally:
             holding.cancel()
@@ -1412,15 +1417,18 @@ class JetStreamPullConsumer:
             try:
                 await msg.in_progress()
             except Exception as exc:  # noqa: BLE001 — logged below; the handler's own outcome is unaffected
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        "durable pull consumer: an in-progress ack failed while a handler ran "
+                        f"(durable={self._durable}, subject={getattr(msg, 'subject', None)}): "
+                        f"{type(exc).__name__}: {exc} "
+                        "-- the message is no longer held, and a handler outliving ack_wait is redelivered to "
+                        "another fetcher"
+                    ),
+                )
                 refused = exc
-        log.warning(
-            "durable pull consumer: an in-progress ack failed while a handler ran (durable=%s, subject=%s): %s: %s "
-            "-- the message is no longer held, and a handler outliving ack_wait is redelivered to another fetcher",
-            self._durable,
-            getattr(msg, "subject", None),
-            type(refused).__name__,
-            refused,
-        )
 
     async def run(self) -> None:
         """loop fetch+dispatch until :meth:`stop` (or task cancellation).
@@ -1445,15 +1453,17 @@ class JetStreamPullConsumer:
                 raise
             except Exception as exc:  # noqa: BLE001 — a transport blip must never kill the consumer
                 failure = exc
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        f"durable pull consumer cycle failed (durable={self._durable}); "
+                        f"retrying after {self._error_backoff_seconds:.1f}s: {exc}"
+                    ),
+                )
             finally:
                 self._idle.set()
             if failure is not None:
-                log.warning(
-                    "durable pull consumer cycle failed (durable=%s); retrying after %.1fs: %s",
-                    self._durable,
-                    self._error_backoff_seconds,
-                    failure,
-                )
                 await asyncio.sleep(self._error_backoff_seconds)
 
     async def stop(self) -> None:
@@ -1511,12 +1521,14 @@ class JetStreamPullConsumer:
         try:
             leftovers = await self._release_inbox()
         except Exception as exc:  # noqa: BLE001 — the plain unsubscribe below still runs; what it costs is logged
-            log.warning(
-                "durable pull consumer stop: the inbox could not be released at the server first (durable=%s): "
-                "%s: %s -- a message delivered to a request still live there waits out the durable's ack_wait",
-                self._durable,
-                type(exc).__name__,
+            contain(
                 exc,
+                log=log,
+                what=(
+                    f"durable pull consumer stop: the inbox could not be released at the server first "
+                    f"(durable={self._durable}): {type(exc).__name__}: {exc} -- a message delivered to a request "
+                    "still live there waits out the durable's ack_wait"
+                ),
             )
             leftovers = []
         try:
@@ -1524,25 +1536,26 @@ class JetStreamPullConsumer:
                 try:
                     await self._handle(msg)
                 except Exception as exc:  # noqa: BLE001 — one failed redelivery must not strand the rest
-                    log.warning(
-                        "durable pull consumer stop: a message collected at stop was neither handled nor "
-                        "redelivered (durable=%s, subject=%s): %s: %s -- the server redelivers it after the "
-                        "durable's ack_wait",
-                        self._durable,
-                        getattr(msg, "subject", None),
-                        type(exc).__name__,
+                    contain(
                         exc,
+                        log=log,
+                        what=(
+                            "durable pull consumer stop: a message collected at stop was neither handled nor "
+                            f"redelivered (durable={self._durable}, subject={getattr(msg, 'subject', None)}): "
+                            f"{type(exc).__name__}: {exc} -- the server redelivers it after the durable's ack_wait"
+                        ),
                     )
         finally:
             try:
                 await self._psub.unsubscribe()
             except Exception as exc:  # noqa: BLE001 — a stop never raises; nothing stays registered, see the docstring
-                log.warning(
-                    "durable pull consumer stop: the final unsubscribe failed (durable=%s, subject=%s): %s: %s",
-                    self._durable,
-                    self._subject.path,
-                    type(exc).__name__,
+                contain(
                     exc,
+                    log=log,
+                    what=(
+                        "durable pull consumer stop: the final unsubscribe failed "
+                        f"(durable={self._durable}, subject={self._subject.path}): {type(exc).__name__}: {exc}"
+                    ),
                 )
 
     async def _release_inbox(self) -> list[Any]:
@@ -1789,11 +1802,13 @@ class JetStreamResultWaiter:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — a transport blip must not discard a live answer
-                log.warning(
-                    "result waiter delivery failed; replacing its consumer (subject=%s stream=%s): %s",
-                    self._subject.path,
-                    self._stream,
+                contain(
                     exc,
+                    log=log,
+                    what=(
+                        f"result waiter delivery failed; replacing its consumer "
+                        f"(subject={self._subject.path} stream={self._stream}): {exc}"
+                    ),
                 )
                 await self._rebuild()
                 last_heard = time.monotonic()
@@ -1846,10 +1861,10 @@ class JetStreamResultWaiter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — the next turn retries; failing here would end the wait
-            log.warning(
-                "result waiter could not replace its consumer (subject=%s); retrying: %s",
-                self._subject.path,
+            contain(
                 exc,
+                log=log,
+                what=f"result waiter could not replace its consumer (subject={self._subject.path}); retrying: {exc}",
             )
             await asyncio.sleep(self._rebuild_backoff_seconds)
 
@@ -2050,10 +2065,10 @@ async def _unsubscribe_quietly(sub: Any, *, subject: Subject) -> None:
     try:
         await sub.unsubscribe()
     except Exception as exc:  # noqa: BLE001 — nothing durable leaks; see the docstring
-        log.debug(
-            "unsubscribe of an abandoned subscription failed (subject=%s): %s",
-            subject.path,
+        contain(
             exc,
+            log=log,
+            what=f"unsubscribe of an abandoned subscription failed (subject={subject.path}): {exc}",
         )
 
 
@@ -2563,7 +2578,7 @@ class _ConnectionOpener:
                 except Exception as exc:  # noqa: BLE001 — one bad hook must not abort the others
                     # NOSILENT: a failing reconnect hook is logged so a recurring failure surfaces;
                     # it must never break the reconnect callback chain or the nats-py reconnect path.
-                    log.warning("reconnect callback failed: %s", exc)
+                    contain(exc, log=log, what=f"reconnect callback failed: {exc}")
 
         return _dispatch_reconnected
 
@@ -2839,15 +2854,15 @@ class _CredentialRenewal:
                     )
                 except Exception as exc:  # noqa: BLE001 -- the loop must outlive any one failed renewal
                     retry_in = REAUTH_RETRY_SECONDS
-                    log.warning(
-                        "NATS credential renewal failed (retrying in %ss): %s",
-                        REAUTH_RETRY_SECONDS,
+                    contain(
                         exc,
-                        extra={"extra_data": {"client_name": self._client_name}},
+                        log=log,
+                        what=f"NATS credential renewal failed (retrying in {REAUTH_RETRY_SECONDS}s): {exc}",
+                        extra={"client_name": self._client_name},
                     )
         # NOSILENT: cancellation is how shutdown, or a replacing renew_credential, ends the loop
         except asyncio.CancelledError:
-            return
+            raise
 
 
 class _SuccessorMove:
@@ -2910,12 +2925,14 @@ class _SuccessorMove:
                 try:
                     await self._renew(self._retire_after)
                 except Exception as exc:  # noqa: BLE001 -- retried while the connection is still being left; the reason is logged
-                    log.warning(
-                        "could not move to a successor NATS connection (%s; retrying in %ss): %s",
-                        self._why,
-                        REAUTH_RETRY_SECONDS,
+                    contain(
                         exc,
-                        extra={"extra_data": {"client_name": self._client_name}},
+                        log=log,
+                        what=(
+                            f"could not move to a successor NATS connection ({self._why}; "
+                            f"retrying in {REAUTH_RETRY_SECONDS}s): {exc}"
+                        ),
+                        extra={"client_name": self._client_name},
                     )
                     await asyncio.sleep(REAUTH_RETRY_SECONDS)
                 else:
@@ -2931,7 +2948,7 @@ class _SuccessorMove:
                     )
         # NOSILENT: cancellation is how shutdown and abandon stop the move
         except asyncio.CancelledError:
-            return
+            raise
 
 
 class NatsClient:
@@ -3398,13 +3415,15 @@ class NatsClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- logged at ERROR and retried by the next round
-                log.error(
-                    "re-declaring stream %s after a NATS reconnect failed: %s: %s -- every "
-                    "publish to and consumer of it fails until it is back; retrying",
-                    name,
-                    type(exc).__name__,
+                contain(
                     exc,
-                    extra={"extra_data": {"stream": name, "client_name": self._client_name, "error": str(exc)}},
+                    log=log,
+                    what=(
+                        f"re-declaring stream {name} after a NATS reconnect failed: {type(exc).__name__}: {exc} "
+                        "-- every publish to and consumer of it fails until it is back; retrying"
+                    ),
+                    extra={"stream": name, "client_name": self._client_name, "error": str(exc)},
+                    level=logging.ERROR,
                 )
                 failures.append(f"stream {name}")
         if any(refill.owed for refill in self._kv_refills.values()):
@@ -3421,21 +3440,21 @@ class NatsClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- logged at ERROR and retried by the next round
-                log.error(
-                    "binding durable consumer %s again after a NATS reconnect failed: %s: %s -- it receives "
-                    "nothing until it is back; retrying",
-                    consumer.durable,
-                    type(exc).__name__,
+                contain(
                     exc,
+                    log=log,
+                    what=(
+                        f"binding durable consumer {consumer.durable} again after a NATS reconnect failed: "
+                        f"{type(exc).__name__}: {exc} -- it receives nothing until it is back; retrying"
+                    ),
                     extra={
-                        "extra_data": {
-                            "durable": consumer.durable,
-                            "stream": consumer.stream,
-                            "subject": consumer.subject.path,
-                            "client_name": self._client_name,
-                            "error": str(exc),
-                        }
+                        "durable": consumer.durable,
+                        "stream": consumer.stream,
+                        "subject": consumer.subject.path,
+                        "client_name": self._client_name,
+                        "error": str(exc),
                     },
+                    level=logging.ERROR,
                 )
                 failures.append(f"durable {consumer.durable}")
         return failures
@@ -3459,11 +3478,12 @@ class NatsClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- logged; the declaration is kept and restored
-                log.error(
-                    "asking whether stream %s is still wanted failed; it is restored: %s",
-                    stream,
+                contain(
                     exc,
-                    extra={"extra_data": {"stream": stream, "client_name": self._client_name}},
+                    log=log,
+                    what=f"asking whether stream {stream} is still wanted failed; it is restored: {exc}",
+                    extra={"stream": stream, "client_name": self._client_name},
+                    level=logging.ERROR,
                 )
         if not wanted:
             self._forget_declaration(stream)
@@ -3663,15 +3683,16 @@ class NatsClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a declarer's hook; logged at ERROR, left owed and retried by the next round
-                log.error(
-                    "refilling KV bucket %s after it was created again, empty, failed: %s: %s -- it "
-                    "answers as though its entries were never written until a refill lands; retrying",
-                    refill.full_name,
-                    type(exc).__name__,
+                contain(
                     exc,
-                    extra={
-                        "extra_data": {"bucket": refill.full_name, "client_name": self._client_name, "error": str(exc)}
-                    },
+                    log=log,
+                    what=(
+                        f"refilling KV bucket {refill.full_name} after it was created again, empty, failed: "
+                        f"{type(exc).__name__}: {exc} -- it answers as though its entries were never written "
+                        "until a refill lands; retrying"
+                    ),
+                    extra={"bucket": refill.full_name, "client_name": self._client_name, "error": str(exc)},
+                    level=logging.ERROR,
                 )
                 continue
             refill.settled = seen
@@ -3691,12 +3712,7 @@ class NatsClient:
         task = self._refilling
         self._refilling = None
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
+            await cancel_and_wait(task)
 
     async def _restore_durable(self, consumer: JetStreamPushConsumer | JetStreamPullConsumer) -> None:
         """bind a durable consumer again when the server no longer has it.
@@ -3869,7 +3885,8 @@ class NatsClient:
             return False
         try:
             await _round_trip(self._raw, timeout=timeout)
-        except Exception:
+        except Exception as exc:
+            contain(exc, log=log, what="NATS liveness round trip failed; reporting the connection as not live")
             return False
         return True
 
@@ -4140,10 +4157,11 @@ class NatsClient:
         try:
             await asyncio.wait_for(connection.drain(), timeout=REAUTH_RETIRE_DRAIN_SECONDS)
         except Exception as exc:  # noqa: BLE001 -- the connection is closed either way; the reason is logged
-            log.warning(
-                "a replaced NATS connection could not be drained within %.0fs; closing it",
-                REAUTH_RETIRE_DRAIN_SECONDS,
-                extra={"extra_data": {"client_name": self._client_name, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what=f"a replaced NATS connection could not be drained within {REAUTH_RETIRE_DRAIN_SECONDS:.0f}s; closing it",
+                extra={"client_name": self._client_name, "error": str(exc)},
             )
             await _close_quietly(connection)
 
@@ -4263,10 +4281,14 @@ class NatsClient:
             await _round_trip(previous)
         # NOSILENT: logged; the handover must not wedge publishing on a connection that stopped answering
         except Exception as exc:  # noqa: BLE001 -- ordering is best-effort once the old connection is unresponsive
-            log.warning(
-                "could not confirm the replaced NATS connection delivered its last publishes; a message "
-                "published across this renewal may arrive out of order",
-                extra={"extra_data": {"client_name": self._client_name, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what=(
+                    "could not confirm the replaced NATS connection delivered its last publishes; a message "
+                    "published across this renewal may arrive out of order"
+                ),
+                extra={"client_name": self._client_name, "error": str(exc)},
             )
 
     def _connection_age_seconds(self) -> float:
@@ -4474,12 +4496,7 @@ class NatsClient:
         task = self._successor_move
         self._successor_move = None
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
+            await cancel_and_wait(task)
 
     async def _stop_restoration(self) -> None:
         """cancel a restoration after a reconnect, if one runs, and wait for it to end.
@@ -4490,12 +4507,7 @@ class NatsClient:
         task = self._restoration
         self._restoration = None
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
+            await cancel_and_wait(task)
 
     async def _stop_renewal(self) -> None:
         """cancel the credential-renewal loop, if one runs, and wait for it to end.
@@ -4506,12 +4518,7 @@ class NatsClient:
         task = self._renewal_task
         self._renewal_task = None
         if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
+            await cancel_and_wait(task)
 
     async def abandon(self, *, reason: str) -> None:
         """close every connection this client holds at once, without draining, and stop renewing.
@@ -4613,11 +4620,7 @@ class NatsClient:
         :rtype: None
         """
         for task in self._lifecycle.take_retirements():
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested above
-                pass
+            await cancel_and_wait(task)
         for connection in self._lifecycle.replaced():
             await self._drain_retired(connection)
             self._forget_connection(connection)
@@ -4673,9 +4676,11 @@ class NatsClient:
             try:
                 await self.unsubscribe(sub)
             except Exception as exc:  # noqa: BLE001 — diag only
-                log.warning(
-                    "subscription drain failed",
-                    extra={"extra_data": {"subject": sub.subject.path, "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="subscription drain failed",
+                    extra={"subject": sub.subject.path, "error": str(exc)},
                 )
         try:
             await asyncio.wait_for(
@@ -4696,9 +4701,11 @@ class NatsClient:
             if not self._raw.is_closed:
                 await self._raw.close()
         except Exception as exc:  # noqa: BLE001 — diag only
-            log.warning(
-                "NATS drain failed; forcing close",
-                extra={"extra_data": {"client_name": self._client_name, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="NATS drain failed; forcing close",
+                extra={"client_name": self._client_name, "error": str(exc)},
             )
             if not self._raw.is_closed:
                 await self._raw.close()
@@ -5238,38 +5245,19 @@ class NatsClient:
                 if deadletter_on_failure:
                     await self._deadletter(subject=subject, payload=msg.data, error=exc)
             except Exception as exc:  # noqa: BLE001 — boundary: we MUST catch everything to keep the dispatch loop alive
-                log.error(
-                    "subscribe callback raised",
+                contain(
+                    exc,
+                    log=log,
+                    what="subscribe callback raised",
                     extra={
-                        "extra_data": {
-                            "subject": subject.path,
-                            "error_type": type(exc).__name__,
-                            "error": str(exc),
-                        }
+                        "subject": subject.path,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
                     },
+                    level=logging.ERROR,
                 )
                 if deadletter_on_failure:
                     await self._deadletter(subject=subject, payload=msg.data, error=exc)
-
-        def _log_loop_crash(exc: BaseException) -> None:
-            """record a dispatch-loop failure with the originating error's own type.
-
-            unwraps a ``BaseExceptionGroup`` first: an exception that escapes
-            into ``TaskGroup.__aexit__`` would arrive here wrapped, and logging
-            the wrapper's type would name ``ExceptionGroup`` instead of the real
-            transport fault.
-            """
-            underlying = representative_exception(exc)
-            log.error(
-                "subscription dispatch loop crashed",
-                extra={
-                    "extra_data": {
-                        "subject": subject.path,
-                        "error_type": type(underlying).__name__,
-                        "error": str(underlying),
-                    }
-                },
-            )
 
         async def _run_bounded(msg: "_NatsMsg", received: float, slot: asyncio.Semaphore) -> None:
             """process one message under the concurrency cap, freeing the slot when done."""
@@ -5323,7 +5311,18 @@ class NatsClient:
                 # graceful unsubscribe path
                 raise
             except Exception as exc:  # noqa: BLE001 — diag only
-                _log_loop_crash(exc)
+                underlying = representative_exception(exc)
+                contain(
+                    exc,
+                    log=log,
+                    what="subscription dispatch loop crashed",
+                    extra={
+                        "subject": subject.path,
+                        "error_type": type(underlying).__name__,
+                        "error": str(underlying),
+                    },
+                    level=logging.ERROR,
+                )
             finally:
                 await feed.cancel()
 
@@ -5361,15 +5360,17 @@ class NatsClient:
         try:
             await _round_trip(connection, timeout=_NATS_FLUSH_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001 — the subscription stands; only its confirmation failed, and that is logged
-            log.warning(
-                "NATS subscribed, but the server did not confirm the subscription in time; it is "
-                "registered client-side and sent again on reconnect",
+            contain(
+                exc,
+                log=log,
+                what=(
+                    "NATS subscribed, but the server did not confirm the subscription in time; it is "
+                    "registered client-side and sent again on reconnect"
+                ),
                 extra={
-                    "extra_data": {
-                        "subject": subject.path,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    }
+                    "subject": subject.path,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
                 },
             )
 
@@ -5409,20 +5410,20 @@ class NatsClient:
         try:
             await sub.raw_subscription.unsubscribe()
         except Exception as exc:  # noqa: BLE001 — diag only
-            log.warning(
-                "unsubscribe failed",
-                extra={"extra_data": {"subject": sub.subject.path, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="unsubscribe failed",
+                extra={"subject": sub.subject.path, "error": str(exc)},
             )
-        sub.dispatch_task.cancel()
         try:
-            await sub.dispatch_task
-        except asyncio.CancelledError:
-            # NOSILENT: this IS the cancellation requested on the line above
-            pass
+            await cancel_and_wait(sub.dispatch_task)
         except Exception as exc:  # noqa: BLE001 -- diag only; the subscription is dropped either way
-            log.warning(
-                "dispatch task raised while unwinding",
-                extra={"extra_data": {"subject": sub.subject.path, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="dispatch task raised while unwinding",
+                extra={"subject": sub.subject.path, "error": str(exc)},
             )
         if sub in self._subscriptions:
             self._subscriptions.remove(sub)
@@ -6260,6 +6261,7 @@ class NatsClient:
             try:
                 await cb(msg)
             except Exception as exc:  # noqa: BLE001 - bounded redelivery is the whole point; we re-route, never swallow
+                contain(exc, log=log, what="durable consumer callback raised; routing to bounded redelivery")
                 await self._redeliver_or_deadletter(
                     msg,
                     exc,
@@ -6702,14 +6704,14 @@ class NatsClient:
                 json.dumps(envelope).encode("utf-8"),
             )
         except Exception as exc:  # noqa: BLE001 — diag only
-            log.warning(
-                "deadletter publish failed",
+            contain(
+                exc,
+                log=log,
+                what="deadletter publish failed",
                 extra={
-                    "extra_data": {
-                        "deadletter_subject": dl_subject.path,
-                        "original_subject": subject.path,
-                        "error": str(exc),
-                    }
+                    "deadletter_subject": dl_subject.path,
+                    "original_subject": subject.path,
+                    "error": str(exc),
                 },
             )
 
@@ -6769,7 +6771,7 @@ async def _close_quietly(nc: _NatsPyClient) -> None:
             await nc.close()
     # NOSILENT: logged; the connection is abandoned either way
     except Exception as exc:  # noqa: BLE001 -- closing an abandoned connection must not mask its cause
-        log.debug("closing an abandoned NATS connection failed: %s", exc)
+        contain(exc, log=log, what=f"closing an abandoned NATS connection failed: {exc}")
 
 
 async def _verify_jetstream(nc: _NatsPyClient, primary_url: str) -> None:

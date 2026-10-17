@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -41,7 +42,7 @@ from threetears.nats.credential_renewal import PLATFORM_DEFAULT_NATS_USER_JWT_TT
 from threetears.nats.subject_permissions import PrincipalPermissions
 from threetears.nats.subjects import Subject, Subjects
 from threetears.nats.user_jwt import account_public_key, mint_user_jwt
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "AUTH_CALLOUT_SUBJECT",
@@ -372,11 +373,13 @@ class AuthCalloutResponder:
             await self._nc.publish(subject=Subjects.credential_refusal(refused.inbox_prefix), message=refused.refusal)
         # NOSILENT: logged; see the docstring for what the principal does without it
         except Exception as exc:  # noqa: BLE001 -- the denial stands whether or not the notice is sent
-            log.warning(
-                "auth-callout: could not tell a refused principal why (reason=%s pod_id=%s): %s",
-                refused.refusal.reason.value,
-                refused.refusal.pod_id,
+            contain(
                 exc,
+                log=log,
+                what=(
+                    "auth-callout: could not tell a refused principal why "
+                    f"(reason={refused.refusal.reason.value} pod_id={refused.refusal.pod_id}): {exc}"
+                ),
             )
 
     async def build_response(self, request: AuthCalloutRequest) -> str:
@@ -472,7 +475,7 @@ class AuthCalloutResponder:
                 issuer_account=self._issuer_account,
             )
         except Exception as exc:  # noqa: BLE001 - auth boundary: any resolver/policy/mint fault denies (fail closed)
-            log.warning("auth-callout: denied -- resolve/grant/mint raised (%s)", type(exc).__name__)
+            contain(exc, log=log, what=f"auth-callout: denied -- resolve/grant/mint raised ({type(exc).__name__})")
             return None
         if not await self._record(request, resolved):
             return None
@@ -500,13 +503,15 @@ class AuthCalloutResponder:
             try:
                 await self._admission_recorder.record_admission(request, principal)
             except Exception as exc:  # noqa: BLE001 - auth boundary: an admission that cannot be recorded is denied (fail closed)
-                log.error(
-                    "auth-callout: DENIED name=%s conn_id=%s -- the admission could not be recorded, so the "
-                    "connection could not be closed later: %s: %s",
-                    principal.name,
-                    principal.conn_id,
-                    type(exc).__name__,
+                contain(
                     exc,
+                    log=log,
+                    what=(
+                        f"auth-callout: DENIED name={principal.name} conn_id={principal.conn_id} -- the admission "
+                        f"could not be recorded, so the connection could not be closed later: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    level=logging.ERROR,
                 )
                 recorded = False
         return recorded

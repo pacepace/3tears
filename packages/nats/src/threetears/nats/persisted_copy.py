@@ -27,6 +27,7 @@ reports itself not ready (never not live) until a write lands again.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -34,7 +35,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, TypeVar
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.observe.resilience import retry_until_done
 
 if TYPE_CHECKING:
@@ -399,12 +400,15 @@ class PersistedCopyBucket:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- logged at ERROR and retried until the bucket is declared
-            log.error(
-                "persisted-copy KV bucket %s could not be declared, loaded and written back: %s: %s -- the "
-                "service serves from memory and changes are not persisted until it is; retrying",
-                self._name,
-                type(exc).__name__,
+            contain(
                 exc,
-                extra={"extra_data": {"bucket": self._name, "loaded": self._loaded, "error": str(exc)}},
+                log=log,
+                what=(
+                    f"persisted-copy KV bucket {self._name} could not be declared, loaded and written back: "
+                    f"{type(exc).__name__}: {exc} -- the service serves from memory and changes are not "
+                    "persisted until it is; retrying"
+                ),
+                extra={"bucket": self._name, "loaded": self._loaded, "error": str(exc)},
+                level=logging.ERROR,
             )
         return landed

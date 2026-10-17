@@ -59,7 +59,7 @@ from nats.js.api import (
     StreamInfo,
 )
 from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError, ServiceUnavailableError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.observe.resilience import retry_bounded
 
 from threetears.nats.diagnostics import kv_grant_remedy, kv_timeout_remedy
@@ -640,6 +640,10 @@ async def open_kv_stream(
         await js.add_stream(config)
     except Exception as exc:  # noqa: BLE001 -- classified below, never swallowed
         _raise_if_subjects_overlap(exc, full_name=full_name, config=config)
+        if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
+            # name-in-use is the expected answer for an existing bucket and is reconciled below; anything
+            # else is a create that failed, absorbed by falling through to the bind
+            contain(exc, log=log, what=f"JetStream KV stream {full_name} was not created; binding instead")
         add_exc = exc
     if add_exc is None:
         created = absent_before
@@ -1789,7 +1793,10 @@ class NatsKvBucket:
             # PublishTimeoutError, not this line.
             self._log_timeout_remedy()
             raise
-        except Exception:  # noqa: BLE001 - transport failure: self-heal once, then let it surface
+        except Exception as exc:  # noqa: BLE001 - transport failure: self-heal once, then let it surface
+            contain(
+                exc, log=log, what="KV operation failed on a transport error; reopening the bucket and retrying once"
+            )
             await self._reopen()
             return await self._bounded(op)
 
@@ -2610,17 +2617,15 @@ class _KeyWatchConsumer:
             )
         # NOSILENT: logged naming the grant to check; the caller pauses and creates another
         except Exception as exc:  # noqa: BLE001 -- a failed create is retried, never raised
-            log.warning(
-                "key watch consumer %s on %s could not be created; retrying in %.0fs. an ungranted "
-                "create blocks to its deadline -- check this principal's grant on "
-                "$JS.API.CONSUMER.CREATE.%s.*.%s: %s",
-                name,
-                subject,
-                retry.total_seconds(),
-                stream,
-                subject,
+            contain(
                 exc,
-                extra={"extra_data": {"subject": subject, "stream": stream, "consumer": name, "error": str(exc)}},
+                log=log,
+                what=(
+                    f"key watch consumer {name} on {subject} could not be created; retrying in "
+                    f"{retry.total_seconds():.0f}s. an ungranted create blocks to its deadline -- check this "
+                    f"principal's grant on $JS.API.CONSUMER.CREATE.{stream}.*.{subject}: {exc}"
+                ),
+                extra={"subject": subject, "stream": stream, "consumer": name, "error": str(exc)},
             )
             await _drop_subscription(subscription, subject=subject)
         if consumer is not None:
@@ -2774,7 +2779,7 @@ async def _drop_subscription(subscription: _NatsSubscription, *, subject: str) -
         await subscription.unsubscribe()
     # NOSILENT: logged; the consumer behind it is reaped by the server once nothing listens
     except Exception as exc:  # noqa: BLE001 -- teardown continues regardless
-        log.debug("key watch unsubscribe on %s failed: %s", subject, exc)
+        contain(exc, log=log, what=f"key watch unsubscribe on {subject} failed: {exc}")
 
 
 @runtime_checkable
