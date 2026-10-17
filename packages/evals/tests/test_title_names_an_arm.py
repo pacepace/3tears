@@ -120,6 +120,48 @@ def test_a_model_named_by_one_bare_word_is_still_a_name() -> None:
     assert _named("Luna costs more than Ling", arms) == [("Luna", _arm(luna)), ("Ling", _arm(ling))]
 
 
+#: ASCII hyphen, U+2010 hyphen, U+2011 non-breaking hyphen, U+2013 en dash, U+2014 em dash.
+_DASHES = ["-", "\u2010", "\u2011", "\u2013", "\u2014"]
+
+
+@pytest.mark.parametrize("dash", _DASHES, ids=["hyphen-minus", "u2010", "u2011", "en-dash", "em-dash"])
+def test_a_name_glued_to_more_name_by_any_dash_is_not_a_match(dash: str) -> None:
+    gpt5, o3 = arms = [_entry(model=model) for model in ("acme/gpt-5", "acme/o3")]
+    assert _named(f"GPT{dash}5{dash}mini is cheaper", arms) == []
+    assert _named(f"O3{dash}mini is slower", arms) == []
+    assert _named(f"GPT{dash}5 is cheaper than O3", arms) == [(f"GPT{dash}5", _arm(gpt5)), ("O3", _arm(o3))]
+
+
+def test_a_name_keeps_its_own_spelling_where_case_folding_would_change_it() -> None:
+    strasse, plain = arms = [_entry(model="acme/gpt-6", preset=preset) for preset in ("straße-2", "plain-v1")]
+    assert _named("Straße-2 answers faster", arms) == [("Straße-2", _arm(strasse))]
+    assert _named("STRASSE-2 answers faster", arms) == []
+
+
+def test_a_quantity_with_a_short_unit_off_the_model_axis_names_no_arm() -> None:
+    arms = [
+        _entry(model="acme/gpt-6", boost=boost, window=window, cache=cache, wait=wait)
+        for boost, window, cache, wait in (("4x", "8k", "2.5 GB", "100ms"), ("2x", "16k", "10 GB", "250ms"))
+    ]
+    assert _named("A 4x rise in cost under 8k tokens, with 2.5 GB of cache and 100ms waits", arms) == []
+    assert _named("2x cuts cost at 16k, 10 GB and 250ms", arms) == []
+
+
+def test_a_quantity_with_a_longer_unit_names_its_arm_only_written_as_one_token() -> None:
+    wide, _narrow = arms = [
+        _entry(model="acme/gpt-6", chunk=chunk, top_k=top_k) for chunk, top_k in (("1024tok", "8chunks"), ("256tok", "4chunks"))
+    ]
+    assert _named("The 1024tok chunk is the slower one", arms) == [("1024tok", _arm(wide))]
+    assert _named("A 1024 tok chunk is slower", arms) == []
+    assert _named("Retrieving 8 chunks costs more", arms) == []
+
+
+@pytest.mark.parametrize("level", ["o3", "gpt-5", "claude-sonnet-4", "fanout-2", "v2", "x4", "8k-ctx"])
+def test_a_name_with_a_letter_and_a_digit_off_the_model_axis_is_still_a_name(level: str) -> None:
+    named, plain = arms = [_entry(model="acme/gpt-6", preset=preset) for preset in (level, "plain-v1")]
+    assert _named(f"{level} answers faster", arms) == [(level, _arm(named))]
+
+
 def test_an_arm_whose_levels_are_unavailable_offers_no_name() -> None:
     lost = VariantIndexEntry(variant_key="f" * 64, levers={}, levels_unavailable="keyed by an older predicate")
     assert _named("GPT-6 Luna costs more", [lost, _LING]) == []
