@@ -23,10 +23,9 @@ import asyncio
 import contextlib
 import json
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 
@@ -49,6 +48,8 @@ from threetears.nats import (
     generate_account_seed,
 )
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -122,36 +123,10 @@ class _Stack:
     pod: NatsClient
 
 
-@contextlib.contextmanager
-def _nats_with_config(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a nats-server with ``config_text``; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
 @contextlib.asynccontextmanager
-async def _stack(tmp_path: Path) -> AsyncIterator[_Stack]:
+async def _stack() -> AsyncIterator[_Stack]:
     """a server with config-mode auth_callout, the real responder on it, and a pod admitted by it.
 
-    :param tmp_path: a directory for the server configuration
-    :ptype tmp_path: Path
     :return: the running stack, yielded
     :rtype: AsyncIterator[_Stack]
     """
@@ -169,7 +144,7 @@ async def _stack(tmp_path: Path) -> AsyncIterator[_Stack]:
         "}\n"
     )
     previous_ns = get_default_namespace()
-    with _nats_with_config(config, tmp_path) as uri:
+    with running_nats(config) as uri:
         admin = await NatsClient.connect(
             nats_url=uri,
             nats_subject_namespace=_NS,
@@ -234,12 +209,12 @@ async def _query(pod: NatsClient) -> bytes:
     return await pod.request_raw(subject=Subject.raw(_QUERY_SUBJECT), payload=b"q", timeout=timedelta(seconds=5))
 
 
-async def test_a_superseded_pod_stops_serving_at_once(tmp_path: Path) -> None:
+async def test_a_superseded_pod_stops_serving_at_once() -> None:
     """the refusal names this runner: every connection is closed within moments, not at expiry."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    async with _stack(tmp_path) as stack:
+    async with _stack() as stack:
         pod = stack.pod
         await pod.abandon_on_refusal(inbox_prefix=_INBOX, is_mine=_is_this_runner)
         assert await _query(pod) == b"answer"
@@ -274,12 +249,12 @@ async def test_a_superseded_pod_stops_serving_at_once(tmp_path: Path) -> None:
             await asyncio.wait_for(renewal, timeout=2.0)
 
 
-async def test_an_unreachable_callout_keeps_the_pod_serving(tmp_path: Path) -> None:
+async def test_an_unreachable_callout_keeps_the_pod_serving() -> None:
     """no refusal arrives: the pod keeps its valid connection, healthy, and keeps retrying."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    async with _stack(tmp_path) as stack:
+    async with _stack() as stack:
         pod = stack.pod
         await pod.abandon_on_refusal(inbox_prefix=_INBOX, is_mine=_is_this_runner)
         await stack.responder.stop()  # the callout is now unreachable: the server times it out

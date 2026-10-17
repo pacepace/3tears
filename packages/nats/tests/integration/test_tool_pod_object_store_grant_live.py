@@ -17,13 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import os
-from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 
@@ -39,6 +36,7 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .nats_support import running_nats
 from .refusals import Violations, connect, refused, refused_request, watching_client_log
 
 pytestmark = pytest.mark.integration
@@ -102,31 +100,7 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
-async def test_a_tool_pod_works_inside_its_object_store_and_manages_nothing(tmp_path: Path) -> None:
+async def test_a_tool_pod_works_inside_its_object_store_and_manages_nothing() -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
 
@@ -141,7 +115,7 @@ async def test_a_tool_pod_works_inside_its_object_store_and_manages_nothing(tmp_
     finally:
         set_default_namespace(previous_ns)
 
-    with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
+    with running_nats(_server_config(pub_allow, sub_allow)) as uri:
         hub = await NatsClient.connect(
             nats_url=uri,
             nats_subject_namespace=_NS,

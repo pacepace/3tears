@@ -38,15 +38,16 @@ import json
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 from threetears.nats import NatsClient
 from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .nats_support import running_nats
+
 #: the local stack's nats-server, so a forgery is proved on the version that runs
-NATS_IMAGE = "nats:2.12.6"
+NATS_IMAGE = "nats:2.12.6-alpine"
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
 
@@ -138,29 +139,16 @@ def server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
 
 
 @contextlib.contextmanager
-def nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
+def nats_with_auth(config_text: str) -> Iterator[str]:
+    """start the pinned nats-server with a custom ``authorization`` config; yield its URI.
 
     :param config_text: the server configuration
     :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
     :return: the server's URI, yielded
     :rtype: Iterator[str]
     """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server(NATS_IMAGE)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
+    with running_nats(config_text, image=NATS_IMAGE) as uri:
+        yield uri
 
 
 async def pod_client(uri: str, namespace: str, pod_id: str) -> tuple[NatsClient, PrincipalPermissions]:

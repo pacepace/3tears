@@ -37,8 +37,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
+from collections.abc import AsyncIterator
 
 import nats.aio.client
 import nats.js.errors
@@ -57,6 +56,7 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, js_api_grants_for_stream, mint_user_jwt
 
+from .nats_support import running_nats
 from .refusals import Violations, connect, refused, refused_request
 
 pytestmark = pytest.mark.integration
@@ -168,22 +168,6 @@ def _server_config(
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI."""
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
 @contextlib.asynccontextmanager
 async def _connect(
     uri: str,
@@ -221,7 +205,7 @@ async def _connect(
         yield nc
 
 
-async def test_scoped_grant_allows_own_bucket_and_denies_cross_bucket(tmp_path: Path) -> None:
+async def test_scoped_grant_allows_own_bucket_and_denies_cross_bucket() -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
 
@@ -230,7 +214,7 @@ async def test_scoped_grant_allows_own_bucket_and_denies_cross_bucket(tmp_path: 
     assert "$JS.API.>" not in pub_allow
     assert f"$KV.{_GRANTED}.>" in pub_allow
 
-    with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
+    with running_nats(_server_config(pub_allow, sub_allow)) as uri:
         # --- admin pre-creates BOTH buckets and seeds the peer bucket with a secret value ---
         async with _connect(uri, user="admin", password=_ADMIN_PW) as admin_nc:
             admin_js = admin_nc.jetstream()
@@ -278,7 +262,7 @@ async def test_scoped_grant_allows_own_bucket_and_denies_cross_bucket(tmp_path: 
             assert (await kv.get("k2")).value == b"v2"
 
 
-async def test_key_scoped_grant_refuses_every_bypass_and_admits_its_own_scope(tmp_path: Path) -> None:
+async def test_key_scoped_grant_refuses_every_bypass_and_admits_its_own_scope() -> None:
     """The shard's whole claim, run against a real broker rather than read off the grant strings.
 
     One SHARED bucket, two key scopes. Principal A holds the minted key-scoped grant. Each of the
@@ -299,7 +283,7 @@ async def test_key_scoped_grant_refuses_every_bypass_and_admits_its_own_scope(tm
     a_key = f"{_A_SCOPE}.widgets.e1"
     b_key = f"{_B_SCOPE}.widgets.e1"
 
-    with _nats_with_auth(config, tmp_path) as uri:
+    with running_nats(config) as uri:
         # --- admin creates the shared bucket with allow_direct (coll-task-04a) and seeds BOTH ---
         async with _connect(uri, user="admin", password=_ADMIN_PW) as admin_nc:
             admin_js = admin_nc.jetstream()
@@ -479,7 +463,7 @@ def _tool_pod_probe_config() -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-async def test_a_tool_pods_keys_are_refused_to_every_other_principal(tmp_path: Path) -> None:
+async def test_a_tool_pods_keys_are_refused_to_every_other_principal() -> None:
     """TP-07, live: the tool pod caches, and it caches SAFELY.
 
     Both halves, and the second is not optional: a grant that refused everything would pass the
@@ -513,7 +497,7 @@ async def test_a_tool_pods_keys_are_refused_to_every_other_principal(tmp_path: P
     a_inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=_TP_POD_A)
     b_inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=_TP_POD_B)
 
-    with _nats_with_auth(config, tmp_path) as uri:
+    with running_nats(config) as uri:
         # --- admin declares the shared bucket with allow_direct and seeds BOTH pods' keys --------
         async with _connect(uri, user="admin", password=_ADMIN_PW) as admin_nc:
             admin_js = admin_nc.jetstream()

@@ -25,7 +25,6 @@ import json
 from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 
@@ -100,27 +99,18 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
 
 
 @contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
+def _nats_with_auth(config_text: str) -> Iterator[str]:
     """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
 
     :param config_text: the server configuration
     :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
     :return: the server's URI, yielded
     :rtype: Iterator[str]
     """
     from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
 
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
+    with nats_server(config=config_text) as container:
         yield nats_server_uri(container)
-    finally:
-        container.stop()
 
 
 def _permissions(principal: Principal) -> PrincipalPermissions:
@@ -170,7 +160,7 @@ async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str | No
 
 
 @pytest.mark.parametrize("principal", [Principal.AGENT_POD, Principal.TOOL_POD, Principal.REGISTRY])
-async def test_a_pod_follows_a_generation_and_cannot_advance_it(principal: Principal, tmp_path: Path) -> None:
+async def test_a_pod_follows_a_generation_and_cannot_advance_it(principal: Principal) -> None:
     """the reader binds, reads and watches under the pod's grant; the pod's own advance is refused."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -178,7 +168,7 @@ async def test_a_pod_follows_a_generation_and_cannot_advance_it(principal: Princ
     permissions = _permissions(principal)
     pub_allow, sub_allow = _minted_allow_lists(permissions)
 
-    with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
+    with _nats_with_auth(_server_config(pub_allow, sub_allow)) as uri:
         hub = await _connect(uri, user="admin", password=_ADMIN_PW, inbox_prefix=None)
         pod: NatsClient | None = None
         try:
