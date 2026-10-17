@@ -39,6 +39,7 @@ from uuid import UUID
 
 from langgraph.types import Command
 from pydantic import BaseModel, Field, TypeAdapter
+from threetears.observe.text_block import under
 from threetears.langgraph.tool_structure import (
     DEFAULT_STRUCTURED_INLINE_MAX_CHARS,
     StructuredToolResultFields,
@@ -1339,7 +1340,7 @@ def _render_action_args(args: Any) -> str:
             rendered_value = (
                 json.dumps(value, default=str, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
             )
-            lines.append(f"  • {key}: {rendered_value}")
+            lines.extend(under(rendered_value, "    ", first=f"  • {key}: ") or [f"  • {key}:"])
     return "\n".join(lines)
 
 

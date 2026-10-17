@@ -11,6 +11,19 @@ enters the workspace venv, so `test.sh` carries `--ignore` for the sidecar and c
 Separate but not optional: `check-all.sh` runs it. Until it existed, a ruff autofix wrote a syntax
 error into `hitl.py` that passed lint, mypy, and the entire workspace suite.
 
+## The unit suite runs on four workers
+
+`./scripts/test.sh` with no package, and CI, run the unit suite under pytest-xdist as
+`-n 4 --dist loadgroup`. The root `conftest.py` puts every test in its package's xdist group, so
+each package runs in one worker in its usual order, and packages run side by side. A
+single-package run (`./scripts/test.sh core`) stays serial. Pass `-n 0` to run the whole suite
+serially, for a debugger or to rule out the parallel run.
+
+Two things break under a parallel run that a serial one hides. A fixed `asyncio.sleep` that
+waits for background work loses the race on a loaded machine: wait for the event itself. And a
+`conftest.py` fixture named like the root one replaces it rather than adding to it, which drops
+the root's per-test reset of process-wide state.
+
 ## The integration suite
 
 `./scripts/test-integration.sh` runs the integration tests. `test.sh` excludes them with
@@ -76,6 +89,26 @@ test of the subscription route fakes the CLI's messages and can only replay shap
 already saw; this is the one that shows what a real model does. The release runs it before
 tagging anything that touches `packages/models`, and pastes the line the script records into
 the release PR (`docs/releasing.md`, "Cutting a release").
+
+## The evals paid lane: one analysis by a real model
+
+`packages/evals/tests/test_paid_analysis_generation.py` (marker `paid`) assembles the toy host's
+bundle and has a real model write its analysis with the seed writer prompt and the authored
+response schema. It asserts the analysis round-trips the stored contract, every finding's evidence
+resolved to a reading code filled in, and no repair loop exhausted; a second test sends the contract
+with a required field removed and asserts the lane fails. Every other generator test answers with a
+fixtured completion, so a prompt, schema or fixture defect shows up only here.
+
+It spends money, so it is opt-in: `THREETEARS_EVALS_PAID=1 ./scripts/test.sh evals -m paid -rs`,
+with `ANTHROPIC_API_KEY` set. Without the flag, or without a key, both tests skip; they never fail
+for want of one. `THREETEARS_EVALS_PAID_MODEL` picks the writer (default `claude-opus-5-5`). Each call
+is priced at its worst case before it is sent and refused unsent past the lane's ceiling
+(`SPEND_CEILING_USD`, $5; a typical run is two calls at well under a dollar each on the default
+writer). CI runs it (`.github/workflows/evals-paid.yml`) on a PR touching `analysis/generator.py`,
+`analysis/gen_prompt.py`, `kernel/authored.py` or the toy-host fixture, behind the `evals-paid`
+environment's approval gate; there a missing key fails the job rather than skipping. The job is
+skipped unless the repository variable `EVALS_PAID_ENABLED` is `true`, which it is not until the
+environment has its reviewers and key.
 
 ## Test fakes
 

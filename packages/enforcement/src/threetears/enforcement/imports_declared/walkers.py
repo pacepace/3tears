@@ -17,6 +17,7 @@ from typing import Final
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from threetears.enforcement.common import parse_python_path
 from threetears.enforcement.imports_declared.config import ImportsDeclaredConfig
 
 __all__ = [
@@ -205,7 +206,7 @@ def imported_modules(config: ImportsDeclaredConfig) -> dict[str, set[Path]]:
     found: dict[str, set[Path]] = {}
     for source_root in config.source_roots:
         for path in sorted((config.repo_root / source_root).rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            tree = parse_python_path(path)
             for node in ast.walk(tree):
                 names: list[str] = []
                 if isinstance(node, ast.Import):

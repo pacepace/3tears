@@ -25,10 +25,9 @@ import asyncio
 import contextlib
 import json
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 
@@ -54,6 +53,8 @@ from threetears.nats import (
     require_system_account,
 )
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -158,34 +159,6 @@ class _Stack:
     pod: NatsClient
 
 
-@contextlib.contextmanager
-def _nats_with_config(image: str, config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a nats-server of ``image`` with ``config_text``; yield its URI.
-
-    :param image: the nats-server image
-    :ptype image: str
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server(image)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
 def _config(account_seed: bytes) -> str:
     """config-mode auth_callout beside a SYSTEM account, as the platform renders it.
 
@@ -214,19 +187,17 @@ def _config(account_seed: bytes) -> str:
 
 
 @contextlib.asynccontextmanager
-async def _stack(image: str, tmp_path: Path) -> AsyncIterator[_Stack]:
+async def _stack(image: str) -> AsyncIterator[_Stack]:
     """the server, the callout serving it, a system-account client, and a pod the callout admitted.
 
     :param image: the nats-server image
     :ptype image: str
-    :param tmp_path: a directory for the server configuration
-    :ptype tmp_path: Path
     :return: the running stack, yielded
     :rtype: AsyncIterator[_Stack]
     """
     account_seed = generate_account_seed()
     previous_ns = get_default_namespace()
-    with _nats_with_config(image, _config(account_seed), tmp_path) as uri:
+    with running_nats(_config(account_seed), image=image) as uri:
         admin = await NatsClient.connect(
             nats_url=uri,
             nats_subject_namespace=_NS,
@@ -281,14 +252,12 @@ async def _stack(image: str, tmp_path: Path) -> AsyncIterator[_Stack]:
 
 
 @pytest.mark.parametrize("image", _IMAGES)
-async def test_a_system_user_loads_beside_the_callout_and_only_it_reaches_the_system(
-    image: str, tmp_path: Path
-) -> None:
+async def test_a_system_user_loads_beside_the_callout_and_only_it_reaches_the_system(image: str) -> None:
     """the SYS login is served; the ordinary account's is not, which is what a kick must not use."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    async with _stack(image, tmp_path) as stack:
+    async with _stack(image) as stack:
         server = await require_system_account(stack.system)
         assert server.id.startswith("N")
         # the one admission the callout made was the pod's: the system user bypassed it
@@ -299,12 +268,12 @@ async def test_a_system_user_loads_beside_the_callout_and_only_it_reaches_the_sy
 
 
 @pytest.mark.parametrize("image", _IMAGES)
-async def test_a_kick_closes_the_connection_at_once_and_the_fence_keeps_it_out(image: str, tmp_path: Path) -> None:
+async def test_a_kick_closes_the_connection_at_once_and_the_fence_keeps_it_out(image: str) -> None:
     """milliseconds, not the credential's day; and a refused reconnect means it stays out."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    async with _stack(image, tmp_path) as stack:
+    async with _stack(image) as stack:
         pod = stack.pod
         assert await pod.request_raw(subject=Subject.raw(_QUERY_SUBJECT), payload=b"q") == b"answer"
         [connection] = stack.recorder.admitted
@@ -335,12 +304,12 @@ async def test_a_kick_closes_the_connection_at_once_and_the_fence_keeps_it_out(i
 
 
 @pytest.mark.parametrize("image", _IMAGES)
-async def test_a_kick_of_a_connection_that_is_gone_says_so(image: str, tmp_path: Path) -> None:
+async def test_a_kick_of_a_connection_that_is_gone_says_so(image: str) -> None:
     """a closed connection, and a server that no longer exists, are both answers -- not errors."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    async with _stack(image, tmp_path) as stack:
+    async with _stack(image) as stack:
         [connection] = stack.recorder.admitted
         stack.resolver.fenced = True
         assert await kick_connection(stack.system, connection) is KickOutcome.KICKED
@@ -355,12 +324,12 @@ async def test_a_kick_of_a_connection_that_is_gone_says_so(image: str, tmp_path:
 
 
 @pytest.mark.parametrize("image", _IMAGES)
-async def test_the_kick_reply_shapes_are_the_ones_the_helper_reads(image: str, tmp_path: Path) -> None:
+async def test_the_kick_reply_shapes_are_the_ones_the_helper_reads(image: str) -> None:
     """pins the raw replies, so a server release that changes them fails here, naming the change."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    async with _stack(image, tmp_path) as stack:
+    async with _stack(image) as stack:
         [connection] = stack.recorder.admitted
         subject = Subject.raw(f"$SYS.REQ.SERVER.{connection.server_id}.KICK")
 
@@ -373,12 +342,12 @@ async def test_the_kick_reply_shapes_are_the_ones_the_helper_reads(image: str, t
 
 
 @pytest.mark.parametrize("image", _IMAGES)
-async def test_a_probe_closes_nothing_and_says_whether_the_connection_is_held(image: str, tmp_path: Path) -> None:
+async def test_a_probe_closes_nothing_and_says_whether_the_connection_is_held(image: str) -> None:
     """held while open, not held once closed, server gone for an id no server holds."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    async with _stack(image, tmp_path) as stack:
+    async with _stack(image) as stack:
         [connection] = stack.recorder.admitted
 
         held = await probe_connection(stack.system, connection)
@@ -403,12 +372,12 @@ async def test_a_probe_closes_nothing_and_says_whether_the_connection_is_held(im
 
 
 @pytest.mark.parametrize("image", _IMAGES)
-async def test_the_connz_reply_shape_is_the_one_the_probe_reads(image: str, tmp_path: Path) -> None:
+async def test_the_connz_reply_shape_is_the_one_the_probe_reads(image: str) -> None:
     """pins the raw CONNZ reply filtered by client id, so a server release that changes it fails here."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    async with _stack(image, tmp_path) as stack:
+    async with _stack(image) as stack:
         [connection] = stack.recorder.admitted
         subject = Subject.raw(f"$SYS.REQ.SERVER.{connection.server_id}.CONNZ")
 

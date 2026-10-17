@@ -1,0 +1,547 @@
+"""Calls the engine makes outside any run: priced before they are made, and ledgered once they are.
+
+Five engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
+writer, :func:`~threetears.evals.gen.generate_variations`), the rubric proposer
+(:func:`~threetears.evals.gen.propose_draft`), an analysis generation
+(:func:`~threetears.evals.analysis.run_analysis_generation`), a judge repeat
+(:func:`~threetears.evals.run.judge_repeat_work`) and a second judge
+(:func:`~threetears.evals.run.second_judge_work`). A run's own calls are bounded by its cost
+cap as their spend arrives (``EvalRunCostCap``); these happen before any run exists, with none coming, or
+after the runs have ended, so nothing would bound or record them. This module is what does:
+
+* **Priced before the call.** :meth:`OutOfRunBudget.admit` asks the client what each planned call
+  can cost at most (:meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling` — the
+  host's answer, since the engine knows neither a model's rates nor the output cap the client was
+  built with) and refuses the whole set when the ceilings together would pass the cap, before any
+  of them is made. Under an enforced cap a call the client cannot price is refused too: unknown is
+  not $0.
+* **Ledgered after it.** :meth:`OutOfRunBudget.generate` makes an admitted call and writes one
+  :class:`~threetears.evals.schema.out_of_run_spend.OutOfRunSpend` document for it — what the provider reported, the ceiling it was admitted
+  at and the cap it was admitted under — whether the call returned or raised, because a raised
+  call can have been billed too, and whether or not what the provider reported can be stored as
+  reported: an attribute the ledger cannot hold (a raw provider stop reason, a negative count) is
+  recorded as unreadable, never a reason to drop the row of a call that was paid for. What the ledger
+  reads off a completion is :class:`~threetears.evals.schema.completion.CompletionResult`'s attributes,
+  by those names — the one completion protocol the engine reads, whatever the client's shape.
+
+The ledger is a stored document type of its own (``eval_out_of_run_spend``,
+:mod:`threetears.evals.schema.out_of_run_spend`) in the scope the work was for, keyed by nothing but
+its id: one document per call, never rewritten.
+
+What a case generation's calls ARE is here too (:func:`plan_variation_calls`): the generation that
+makes them (:mod:`threetears.evals.gen`) and the battery that prices every template's generation before
+it launches any (:mod:`threetears.evals.run`) both read one plan, and the package matrix lets both reach
+the kernel and neither reach the other — so a battery cannot price a call its launch would not make.
+"""
+
+from __future__ import annotations
+
+import math
+import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
+
+from pydantic import TypeAdapter, ValidationError
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema.models import ClientRequestSettings, EvalTemplate, EvalTestCase, VariationAxis
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.completion import CompletionProtocolDefect, sent_settings_of
+from threetears.evals.schema.logs import get_logger
+
+if TYPE_CHECKING:
+    from concurrent.futures import Executor
+
+    from threetears.evals.schema.completion import PricedCompletion, VariationLLM
+
+from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
+
+log = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class PlannedCall:
+    """One call an out-of-run unit of work means to make: the prompt pair and the directive it sends."""
+
+    system: str
+    user: str
+    response_format: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class AdmittedCall:
+    """A planned call its budget admitted, at the ceiling it was priced at.
+
+    :meth:`OutOfRunBudget.admit` mints one, and the budget that minted it keeps it, with the client it
+    was priced on. :meth:`OutOfRunBudget.generate` makes only an object it minted — the very object, not
+    an equal one — on that very client, once. So a copy whose call was altered after pricing
+    (``dataclasses.replace``), an admission made by another budget, a second making, and a call made on
+    another client of the same model (whose output cap, and so whose price, can differ) are all refused:
+    a call cannot be made without having been priced as it is made.
+    """
+
+    call: PlannedCall
+    purpose: KnownOutOfRunPurpose
+    model: str
+    ceiling_usd: float | None
+    token: str
+
+
+@dataclass(frozen=True)
+class AdmittedGeneration:
+    """A case generation's calls, admitted in the call that asked for it, for the job that makes them.
+
+    What :func:`~threetears.evals.gen.generate_variations` takes in place of admitting anything itself: the writer
+    the calls were priced on, the budget that admitted them and ledgers them as they are made, and each ``llm``
+    axis's admitted call, keyed by axis name as :func:`plan_variation_calls` keyed its plan. A launch builds one in
+    its call (:attr:`~threetears.evals.run.LaunchRequest.generation`), so a generation the cap cannot pay for is
+    refused before the launch returns, and its launcher only makes the calls. A host generating outside a launch
+    plans with :func:`plan_variation_calls`, admits with :meth:`OutOfRunBudget.admit`, and builds one the same way.
+
+    :ivar writer: The client every call was priced on and is made on — the very object.
+    :ivar budget: The budget that admitted the calls.
+    :ivar calls: Each ``llm`` axis's admitted call, by axis name.
+    """
+
+    writer: VariationLLM
+    budget: OutOfRunBudget
+    calls: Mapping[str, AdmittedCall]
+
+
+def existing_axis_values(axis: VariationAxis, existing: Sequence[EvalTestCase]) -> set[str]:
+    """The values a template's stored cases already give ``axis`` — what its generation call asks the model to avoid.
+
+    :param axis: The variation axis.
+    :ptype axis: VariationAxis
+    :param existing: The template's stored cases in the scope being generated into.
+    :ptype existing: Sequence[EvalTestCase]
+    :return: The non-empty values those cases carry for the axis.
+    :rtype: set[str]
+    """
+    return {tc.variation_params.get(axis.name, "") for tc in existing if tc.variation_params.get(axis.name)}
+
+
+def plan_variation_calls(
+    template: EvalTemplate, n_variations: int, existing: Sequence[EvalTestCase]
+) -> dict[str, PlannedCall]:
+    """The one call each of ``template``'s ``llm`` axes makes to generate ``n_variations`` values, built before any is
+    made.
+
+    Each call asks for ``{"values": [...]}`` as a strict schema — an object envelope, since no structured mode
+    takes a bare top-level array — naming the values the template's stored cases already give the axis, so the
+    model avoids them.
+
+    :param template: The template whose ``llm`` axes are written.
+    :ptype template: EvalTemplate
+    :param n_variations: How many values each axis is asked for.
+    :ptype n_variations: int
+    :param existing: The template's stored cases in the scope being generated into.
+    :ptype existing: Sequence[EvalTestCase]
+    :return: One planned call per ``llm`` axis, keyed by axis name in declaration order; empty when no axis is ``llm``.
+    :rtype: dict[str, PlannedCall]
+    """
+    return {
+        axis.name: _llm_axis_call(axis, n_variations, existing_axis_values(axis, existing))
+        for axis in template.variation_axes
+        if axis.generator == "llm"
+    }
+
+
+class _VariationValues(EvalBaseModel):
+    """What a variation axis's writer answers: the new values, under one key."""
+
+    values: list[str]
+
+
+#: What every variation call asks for: its envelope as a strict schema, so a provider enforcing it answers an object
+#: holding a list of strings and nothing else.
+_VARIATION_RESPONSE_FORMAT: dict[str, Any] = strict_response_format(
+    "variation_values", _VariationValues.model_json_schema()
+)
+
+
+def _llm_axis_call(axis: VariationAxis, n_variations: int, existing_values: set[str]) -> PlannedCall:
+    """The call that asks a model for ``n_variations`` novel values for ``axis``, excluding ``existing_values``."""
+    existing_block = (
+        "(none — produce any novel values)"
+        if not existing_values
+        else "\n".join(f"- {v}" for v in sorted(existing_values))
+    )
+    system_prompt = (
+        "You generate values for an eval variation axis. Return ONLY a JSON "
+        'object of the form {"values": ["...", "..."]} — a JSON array of strings '
+        'under the key "values", with no other keys and no commentary. Each value '
+        "must be distinct from every value already shown to you."
+    )
+    user_prompt = (
+        f"Axis name: {axis.name}\n"
+        f"Axis description: {axis.description or '(no description)'}\n"
+        f"Existing values to exclude:\n{existing_block}\n\n"
+        f'Produce {n_variations} new distinct values as a JSON object: {{"values": [...]}}.'
+    )
+    return PlannedCall(system=system_prompt, user=user_prompt, response_format=_VARIATION_RESPONSE_FORMAT)
+
+
+class RecordedCompletion(NamedTuple):
+    """What an admitted call returned, and the ledger row written for it."""
+
+    result: Any
+    spend: OutOfRunSpend
+
+
+@dataclass(eq=False)
+class OutOfRunBudget:
+    """The cap one out-of-run unit of work is held to, and the ledger its calls are written to.
+
+    Built by whoever starts the work: the launch builds one per generating launch
+    (``LaunchRequest.generation_budget``, capped at the host's ``max_out_of_run_cost_usd``), an analysis
+    generation one per generation (:func:`~threetears.evals.ops.analysis_generate`, at the same cap), and a
+    host proposing a rubric builds one for the proposal. Whoever builds it admits the calls in its own call — a
+    planner's :class:`PlannedCall` in, an :class:`AdmittedCall` out — and the work that runs later makes only
+    what was admitted. Admissions accumulate — a second admission is
+    refused when it and every earlier one together would pass the cap.
+
+    :ivar store: Where every call's ledger row is written.
+    :ivar scope_id: The scope the work is for, which the rows live in.
+    :ivar cap_usd: The most the work's calls may be priced at, together; ``None`` when the host enforces
+        no out-of-run cap (its enforcement switched off), and then nothing is refused — every call is
+        still priced where the client can say, and ledgered.
+    :ivar template_id: The template the work is for, stamped on every row; ``None`` when it is for none.
+    :ivar subject_id: The subject the work is for, stamped on every row; ``None`` when it is for none.
+    :ivar launch_group_id: The launch a case generation is made for, stamped on every row.
+    :ivar campaign_id: The campaign an analysis generation is written for, stamped on every row.
+    :ivar run_id: The finished run a judge repeat re-scores, stamped on every row.
+    :ivar blocking_executor: Where each ledger write to ``store`` runs, off the event loop — the host's
+        ``EvalHost.blocking_executor``, or ``None`` for the loop's default executor. Keyword-only and
+        without a default, as the host's own is: a store write made on the loop stalls every
+        coroutine in the process, and the default executor is the one a host's liveness probes may
+        share, so each construction names where its writes go.
+    """
+
+    store: OutOfRunSpendStore
+    scope_id: str
+    cap_usd: float | None
+    template_id: str | None = None
+    subject_id: str | None = None
+    launch_group_id: str | None = None
+    campaign_id: str | None = None
+    run_id: str | None = None
+    blocking_executor: Executor | None = field(kw_only=True)
+    _committed_usd: float = field(default=0.0, init=False)
+    #: Every admission not yet made, by token: the object minted and the client it was priced on.
+    _admitted: dict[str, tuple[AdmittedCall, PricedCompletion]] = field(default_factory=dict, init=False)
+    _recorded: list[OutOfRunSpend] = field(default_factory=list, init=False)
+    _unrecorded: list[OutOfRunSpend] = field(default_factory=list, init=False)
+
+    def __post_init__(self) -> None:
+        """Refuse a cap that is not a positive, finite amount.
+
+        :raises ValueError: ``cap_usd`` is not ``None`` and not positive and finite.
+        """
+        if self.cap_usd is not None and not (math.isfinite(self.cap_usd) and self.cap_usd > 0):
+            raise ValueError(f"cap_usd must be a positive amount, or None for no enforced cap; got {self.cap_usd!r}")
+
+    @property
+    def committed_usd(self) -> float:
+        """The ceilings of every call admitted so far, summed — what the cap has been spent against."""
+        return self._committed_usd
+
+    @property
+    def recorded(self) -> tuple[OutOfRunSpend, ...]:
+        """Every ledger row this budget has written, in the order the calls ended."""
+        return tuple(self._recorded)
+
+    @property
+    def unrecorded(self) -> tuple[OutOfRunSpend, ...]:
+        """The row of every call this budget made whose ledger write failed, in the order the calls ended.
+
+        Each call was made, and may have been billed, but the store's ledger does not hold its row: the failed write
+        was logged at ERROR and raised (a completed call's) or logged beside the call's own failure (a raised call's).
+        Whoever sums what the budget's calls spent counts these beside :attr:`recorded`, so a call the ledger lost is
+        neither left out of a call count nor dropped from a total that then reads as complete.
+        """
+        return tuple(self._unrecorded)
+
+    def quote(
+        self, client: PricedCompletion, purpose: KnownOutOfRunPurpose, calls: Sequence[PlannedCall]
+    ) -> list[float | None]:
+        """Price ``calls`` on ``client`` against what is left of the cap, refusing as :meth:`admit` would, committing
+        nothing.
+
+        What a pre-flight asks — a battery checking every template's generation before it launches any.
+
+        :param client: The client the calls would be made on.
+        :ptype client: PricedCompletion
+        :param purpose: What the calls are for.
+        :ptype purpose: KnownOutOfRunPurpose
+        :param calls: The calls, at least one.
+        :ptype calls: Sequence[PlannedCall]
+        :return: Each call's ceiling, in order; ``None`` where the client could not say and no cap is enforced.
+        :rtype: list[float | None]
+        :raises ValueError: ``calls`` is empty.
+        :raises ValidationFailedError: Under an enforced cap, a call the client cannot price, or ceilings that
+            together with what is already committed pass the cap.
+        """
+        if not calls:
+            raise ValueError("an admission prices at least one call")
+        ceilings = [
+            client.price_ceiling(system=call.system, user=call.user, response_format=call.response_format)
+            for call in calls
+        ]
+        for ceiling in ceilings:
+            if ceiling is not None and not (math.isfinite(ceiling) and ceiling >= 0):
+                raise ValueError(
+                    f"{client.model_name!r} priced a call at {ceiling!r}; a ceiling is a finite amount, 0 or more"
+                )
+        if self.cap_usd is None:
+            return ceilings
+        what = f"{len(calls)} {purpose} call(s) on {client.model_name!r}"
+        if None in ceilings:
+            raise ValidationFailedError(
+                f"{what} cannot be priced before they are made: the client cannot bound what a call on "
+                f"{client.model_name!r} costs (price_ceiling returned None), and the out-of-run cap ${self.cap_usd:.2f} "
+                "is enforced, so an unpriced call is refused rather than made — unknown is not $0. Nothing was called",
+                remedy="give the host's client a rate for that model, or name a model it can price",
+            )
+        priced = math.fsum(c for c in ceilings if c is not None)
+        if self._committed_usd + priced > self.cap_usd:
+            already = f" on top of ${self._committed_usd:.4f} already admitted" if self._committed_usd else ""
+            raise ValidationFailedError(
+                f"{what} are priced at up to ${priced:.4f}{already}, above the out-of-run cap ${self.cap_usd:.2f}. "
+                "Nothing was called",
+                remedy=(
+                    "fewer generated cases, a cheaper model or a smaller output cap brings them under; a larger cap "
+                    "raises it"
+                ),
+            )
+        return ceilings
+
+    def admit(
+        self, client: PricedCompletion, purpose: KnownOutOfRunPurpose, calls: Sequence[PlannedCall]
+    ) -> list[AdmittedCall]:
+        """Price ``calls`` on ``client`` and admit them together, or refuse them together before any is made.
+
+        :param client: The client the calls will be made on.
+        :ptype client: PricedCompletion
+        :param purpose: What the calls are for.
+        :ptype purpose: KnownOutOfRunPurpose
+        :param calls: The calls, at least one.
+        :ptype calls: Sequence[PlannedCall]
+        :return: One :class:`AdmittedCall` per call, in order, each to be made through :meth:`generate`.
+        :rtype: list[AdmittedCall]
+        :raises ValueError: ``calls`` is empty.
+        :raises ValidationFailedError: See :meth:`quote`.
+        """
+        ceilings = self.quote(client, purpose, calls)
+        self._committed_usd += math.fsum(c for c in ceilings if c is not None)
+        admitted = []
+        for call, ceiling in zip(calls, ceilings, strict=True):
+            minted = AdmittedCall(
+                call=call, purpose=purpose, model=client.model_name, ceiling_usd=ceiling, token=str(uuid.uuid7())
+            )
+            self._admitted[minted.token] = (minted, client)
+            admitted.append(minted)
+        return admitted
+
+    async def generate(self, client: PricedCompletion, admitted: AdmittedCall) -> RecordedCompletion:
+        """Make one admitted call and write its ledger row, whether it returns or raises.
+
+        :param client: The client the call was admitted on — that object.
+        :ptype client: PricedCompletion
+        :param admitted: The object :meth:`admit` returned for the call. Each is made once.
+        :ptype admitted: AdmittedCall
+        :return: The completion and its ledger row.
+        :rtype: RecordedCompletion
+        :raises ValueError: ``admitted`` is not an object this budget admitted and has not made — another budget's,
+            one already made, or a copy (its call altered after pricing or not) — or ``client`` is not the
+            client it was priced on.
+        :raises StorageError: The ledger row could not be written for a completed call; the row is kept on
+            :attr:`unrecorded`.
+        :raises Exception: Whatever the call raised — after its row is written, or, when that write fails too, kept on
+            :attr:`unrecorded`.
+        """
+        minted = self._admitted.get(admitted.token)
+        if minted is None or minted[0] is not admitted:
+            raise ValueError(
+                "this call is not one this budget admitted and has not yet made — another budget's, one already made, "
+                "or a copy of an admission (whose call may have been altered after it was priced); every out-of-run "
+                "call is priced by its own budget's admit() and made once, as admitted"
+            )
+        if minted[1] is not client:
+            raise ValueError(
+                f"the call was priced on one client for {admitted.model!r} and is being made on another (for "
+                f"{client.model_name!r}); a call's price is its client's — the output cap it was built with — so it is "
+                "made on the client it was admitted on"
+            )
+        del self._admitted[admitted.token]
+        call = admitted.call
+        try:
+            result = await client.generate(system=call.system, user=call.user, response_format=call.response_format)
+        except BaseException as raised:
+            try:
+                await self._record(admitted, outcome="raised", failure=type(raised).__name__)
+            # prawduct:ok-broad-except — a failed ledger write must not replace the call's own failure, which propagates
+            except Exception as unrecorded:
+                # NOSILENT: the call's own failure is raised below, and its row is kept on ``unrecorded``, which every
+                # report summing this budget's calls counts; only the store's ledger lacks it, and that is logged here.
+                log.error(
+                    "eval.out_of_run %s call on %s raised %s and its ledger row could NOT be written: %s",
+                    admitted.purpose,
+                    admitted.model,
+                    type(raised).__name__,
+                    unrecorded,
+                )
+            raise
+        # Read by CompletionResult's own attribute names — the protocol every completion the engine reads
+        # satisfies — and an attribute a result lacks reads as unreported, never zero.
+        reported = {
+            field_name: getattr(result, attribute, None) for field_name, attribute in _COMPLETION_ATTRIBUTES.items()
+        }
+        storable = _storable(admitted, reported)
+        storable["sent_settings"] = _sent_settings(admitted, result, storable["unreadable"])
+        spend = await self._record(admitted, outcome="completed", **storable)
+        return RecordedCompletion(result, spend)
+
+    def _row(self, admitted: AdmittedCall) -> dict[str, Any]:
+        """What every row of ``admitted`` records whatever the call reported: what it was, and what it was held to."""
+        return {
+            "scope_id": self.scope_id,
+            "purpose": admitted.purpose,
+            "model": admitted.model,
+            "priced_ceiling_usd": admitted.ceiling_usd,
+            "cap_usd": self.cap_usd,
+            "template_id": self.template_id,
+            "subject_id": self.subject_id,
+            "launch_group_id": self.launch_group_id,
+            "campaign_id": self.campaign_id,
+            "run_id": self.run_id,
+        }
+
+    async def _record(self, admitted: AdmittedCall, **reported: Any) -> OutOfRunSpend:
+        spend = OutOfRunSpend(**self._row(admitted), **reported)
+        # The append rides the write onto the worker, so ``recorded`` lists every row the store holds even
+        # when the coroutine awaiting the write is cancelled before it reads the outcome.
+        try:
+            await run_blocking(self.blocking_executor, self._write, spend)
+        except Exception:
+            # Kept, not dropped: the call was made, so a caller summing the budget's calls still counts it.
+            self._unrecorded.append(spend)
+            raise
+        log.info(
+            "eval.out_of_run purpose=%s model=%s outcome=%s cost=%s ceiling=%s cap=%s scope=%s",
+            spend.purpose,
+            spend.model,
+            spend.outcome,
+            spend.cost_usd,
+            spend.priced_ceiling_usd,
+            spend.cap_usd,
+            spend.scope_id,
+        )
+        return spend
+
+    def _write(self, spend: OutOfRunSpend) -> None:
+        """Write one ledger row and remember it — blocking, so it runs on :attr:`blocking_executor`."""
+        self.store.save_out_of_run_spend(spend)
+        self._recorded.append(spend)
+
+
+#: The ledger field each reported attribute of a completion is stored in, keyed by ledger field, valued by the
+#: :class:`~threetears.evals.schema.completion.CompletionResult` attribute it is read from.
+_COMPLETION_ATTRIBUTES: dict[str, str] = {
+    "served_model": "served_model",
+    "stop_reason": "stop_reason",
+    "prompt_tokens": "input_tokens",
+    "completion_tokens": "output_tokens",
+    "reasoning_tokens": "reasoning_tokens",
+    "cost_usd": "cost_usd",
+    "price_source": "price_source",
+}
+
+
+#: Each reported field's own validation, as the row's model declares it — so an attribute is held to exactly
+#: what the stored row would hold it to.
+def _field_adapter(name: str) -> TypeAdapter[Any]:
+    """The validation ``OutOfRunSpend`` applies to its field ``name``: its type and its constraints."""
+    declared = OutOfRunSpend.model_fields[name]
+    return TypeAdapter(Annotated[declared.annotation, *declared.metadata] if declared.metadata else declared.annotation)
+
+
+_COMPLETED_FIELD_ADAPTERS: dict[str, TypeAdapter[Any]] = {name: _field_adapter(name) for name in _COMPLETION_ATTRIBUTES}
+
+
+def _storable(admitted: AdmittedCall, reported: dict[str, Any]) -> dict[str, Any]:
+    """``reported`` as a completed row can hold it: each attribute the ledger refuses is recorded None and named.
+
+    Validated one attribute at a time against the row's own field, so one unreadable attribute costs only
+    itself and the row of a paid call is always written.
+
+    :param admitted: The call, for the log line.
+    :ptype admitted: AdmittedCall
+    :param reported: The completion's attributes, by ledger field.
+    :ptype reported: dict[str, Any]
+    :return: The attributes to store, plus ``unreadable`` naming any recorded None for that reason.
+    :rtype: dict[str, Any]
+    """
+    storable: dict[str, Any] = {}
+    unreadable: list[str] = []
+    for name, value in reported.items():
+        try:
+            storable[name] = _COMPLETED_FIELD_ADAPTERS[name].validate_python(value)
+        except ValidationError as refused:
+            # NOSILENT: recorded None AND named in the row's ``unreadable``, which every reader reads as unreadable,
+            # never as unreported.
+            storable[name] = None
+            unreadable.append(name)
+            log.warning(
+                "eval.out_of_run %s call on %s reported %s=%r, which the ledger cannot hold (%s); recorded as unreadable",
+                admitted.purpose,
+                admitted.model,
+                name,
+                value,
+                refused.errors()[0]["msg"],
+            )
+    return {**storable, "unreadable": unreadable}
+
+
+def _sent_settings(admitted: AdmittedCall, result: Any, unreadable: list[str]) -> ClientRequestSettings | None:
+    """What the completed call's request was sent with, as its client reported it, for the ledger row.
+
+    Read through :func:`~threetears.evals.schema.completion.sent_settings_of`, the one reader of the optional member,
+    so absent reads as unverified (``None``). A value of the wrong type, which that reader refuses as the host's
+    defect, is not a reason to drop the row of a paid call: it is recorded None and named in ``unreadable``, as every
+    other attribute the ledger cannot hold is.
+
+    :param admitted: The call, for the log line.
+    :ptype admitted: AdmittedCall
+    :param result: The call's completion.
+    :ptype result: Any
+    :param unreadable: The row's unreadable attributes so far; ``sent_settings`` is appended when it is one.
+    :ptype unreadable: list[str]
+    :return: The settings to store, or ``None``.
+    :rtype: ClientRequestSettings | None
+    """
+    try:
+        return sent_settings_of(result)
+    except CompletionProtocolDefect as defect:
+        # NOSILENT: recorded None AND named in the row's ``unreadable``, which every reader reads as unreadable, never
+        # as unverified; the defect's own text is logged.
+        unreadable.append("sent_settings")
+        log.warning(
+            "eval.out_of_run %s call on %s reported sent_settings the ledger cannot hold (%s); recorded as unreadable",
+            admitted.purpose,
+            admitted.model,
+            defect,
+        )
+        return None
+
+
+__all__ = [
+    "AdmittedCall",
+    "OutOfRunBudget",
+    "PlannedCall",
+    "RecordedCompletion",
+    "existing_axis_values",
+    "plan_variation_calls",
+]

@@ -68,7 +68,7 @@ import inspect
 from dataclasses import dataclass
 from pathlib import Path
 
-from threetears.enforcement.common.ast_helpers import dotted, note_unscanned
+from threetears.enforcement.common.ast_helpers import dotted, note_unscanned, parse_python_path
 from threetears.enforcement.common.exemptions import rationale_defect
 from threetears.enforcement.common.violations import Violation
 
@@ -135,7 +135,7 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
             continue
         try:
             source = py_file.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(py_file))
+            tree = parse_python_path(py_file)
         except (OSError, SyntaxError) as exc:
             # Any fake declared in this file is now exempt from parity by accident.
             note_unscanned(py_file, f"could not read or parse: {type(exc).__name__}")

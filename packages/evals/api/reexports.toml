@@ -1,0 +1,43 @@
+# Names exported from more than one public root of 3tears-evals, on purpose.
+#
+# A name has one home: the public root that holds its defining module. tests/test_api_surface.py fails when a name
+# is exported from a second root unless it is declared here, with why that root needs it. Two different objects
+# under one name are never a re-export; rename one. Each [[reexport]] declares:
+#   home   the root holding the names' defining modules, in full
+#   also   every other root exporting them, in full
+#   names  the names
+#   why    what dropping them from `also` would break
+
+[[reexport]]
+home = "threetears.evals.analysis"
+also = ["threetears.evals.ops"]
+names = [
+    "AnalysisGenerationEstimate", "EvalSummary", "FrontierResult", "FrozenReporterCase", "HistoryResult",
+    "JudgeTemperatureComparison", "OutOfRunSpendReport", "PivotTable", "ScoreExport", "dollars_text",
+    "format_number", "frontier_text", "out_of_run_spend_text", "scope_out_of_run_spend",
+]
+why = """
+`actions` may reach `analysis` only through `ops` (tests/test_package_matrix.py), and the action catalogue names
+each of these: the result an operation hands back and the text it is shown as. Dropped from `ops`, the catalogue
+could not import them at all.
+"""
+
+[[reexport]]
+home = "threetears.evals.schema"
+also = ["threetears.evals.actions"]
+names = ["REFUSAL_KINDS", "RefusalKind"]
+why = """
+A refused call's `actions.Refusal` carries its kind, and a host's transport code branching on it imports from
+`actions` alone. The set lives in `schema` because a job's record keeps the same kinds (`schema.JobRefusal`), below
+the catalogue; dropped from `actions`, the call's refusal and the set it is drawn from would sit in two roots.
+"""
+
+[[reexport]]
+home = "threetears.evals.providers"
+also = ["threetears.evals"]
+names = ["Model"]
+why = """
+The package root is the first rung's one import (`from threetears.evals import Model`), loaded by name on first read
+so `import threetears.evals` stays as cheap as before. Dropped from the root, a newcomer's first program would import
+from a second root for the one model it calls.
+"""

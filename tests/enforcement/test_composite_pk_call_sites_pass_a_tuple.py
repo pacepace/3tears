@@ -21,6 +21,7 @@ function had never executed in any process. What kept that invisible was
 coverage: every test of those two functions supplied a duck-typed stand-in
 whose ``get`` took one argument of any shape, which cannot tell a correct call
 from a broken one. A gate that reads the declaration is the only thing that
+
 can, because the declaration is the only place the arity is stated.
 
 **Resolution is by ANNOTATION, so an ``Any``-typed collection is invisible to
@@ -39,6 +40,8 @@ import ast
 from pathlib import Path
 
 import pytest
+
+from threetears.enforcement.common import parse_python_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
@@ -132,7 +135,7 @@ def _pk_arities() -> dict[str, int]:
     declared: dict[str, int] = {}
     bases: dict[str, list[str]] = {}
     for path in _source_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_python_path(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
@@ -266,7 +269,7 @@ def test_composite_pk_collections_are_addressed_with_a_full_key(path: Path) -> N
     :return: nothing
     :rtype: None
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = parse_python_path(path)
     bindings = _annotated_collections(tree, _ARITIES)
     tuples = _tuple_bindings(tree)
     violations: list[str] = []

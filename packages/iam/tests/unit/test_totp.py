@@ -133,7 +133,12 @@ def test_unsealing_under_the_wrong_key_fails() -> None:
 
 def test_unsealing_a_tampered_token_fails() -> None:
     sealed = seal_seed(generate_seed(), _KEY)
-    tampered = sealed[:-4] + ("AAAA" if not sealed.endswith("AAAA") else "BBBB")
+    # Flip a bit in the GCM tag, the token's last byte, rather than overwrite base64url characters, which can encode
+    # padding bits only and leave the token as it was.
+    raw = bytearray(base64.urlsafe_b64decode(sealed))
+    raw[-1] ^= 0x01
+    tampered = base64.urlsafe_b64encode(bytes(raw)).decode()
+    assert tampered != sealed
     with pytest.raises(DecryptionError):
         unseal_seed(tampered, _KEY)
 

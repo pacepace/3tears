@@ -15,6 +15,7 @@ The contract the platform-auth layer depends on, and that these tests pin:
 
 from __future__ import annotations
 
+import base64
 import time
 from typing import Any
 
@@ -80,9 +81,14 @@ def test_round_trips_under_a_key_in_the_jwks(signed: tuple[str, dict[str, Any]])
 
 def test_tampered_token_is_rejected(signed: tuple[str, dict[str, Any]]) -> None:
     token, jwks = signed
-    # flip a char in the signature segment
+    # Flip a bit in R, the signature's first byte, rather than overwrite base64url characters, which can encode
+    # padding bits only and leave the signature as it was.
     head, payload, sig = token.split(".")
-    tampered = f"{head}.{payload}.{sig[:-2]}{'AA' if sig[-2:] != 'AA' else 'BB'}"
+    raw = bytearray(base64.urlsafe_b64decode(sig + "=" * (-len(sig) % 4)))
+    raw[0] ^= 0x01
+    bad = base64.urlsafe_b64encode(bytes(raw)).rstrip(b"=").decode()
+    assert bad != sig
+    tampered = f"{head}.{payload}.{bad}"
     with pytest.raises(IdentityTokenError):
         verify_identity_token(tampered, jwks=jwks, issuer=_ISS)
 

@@ -176,6 +176,14 @@ Getting content in from the open web, and describing it once it is here.
 | [`3tears-scrape`](packages/scrape/) | `threetears.scrape` | AI-driven, self-healing web scraping. Pluggable render backends plus LLM-proposed extraction candidates, each structurally validated and judged against real page content, then persisted as a reusable recipe rather than a hand-written per-site parser |
 | [`3tears-media-contracts`](packages/media-contracts/) | `threetears.media.contracts` | Dependency-free media capability contracts shared by providers and tools |
 
+### Evaluation
+
+Finding out whether a change to an LLM-backed feature made it better.
+
+| Package | Import | Description |
+|---|---|---|
+| [`3tears-evals`](packages/evals/) | `threetears.evals` | Evals for LLM features, from a classifier to a tool-using agent. Each version runs over the same cases, and the report says what moved, with the uncertainty that says whether the move is real. The first eval is one TOML file and no Python |
+
 ### Development
 
 | Package | Import | Description |
@@ -300,6 +308,7 @@ uv sync                      # install all packages in dev mode
 ./scripts/test.sh core       # a single package
 ./scripts/lint.sh            # ruff check + format
 ./scripts/typecheck.sh       # mypy (strict)
+./scripts/typecheck.sh evals # mypy on a single package
 ./scripts/test-integration.sh  # real NATS/Postgres containers; NOT run by check-all.sh
 ```
 

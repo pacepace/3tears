@@ -28,17 +28,15 @@ _NAMESPACE = "admissionlive"
 _TOKEN = "a-connect-token-this-bus-does-not-verify"  # noqa: S105 - not a credential, nothing verifies it
 
 
-def _bus(system_account: bool, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+def _bus(system_account: bool) -> Iterator[str]:
     """start one NATS container through the fixture's own body.
 
     :param system_account: whether the server declares the SYSTEM account
     :ptype system_account: bool
-    :param tmp_path_factory: where the server's configuration is written
-    :ptype tmp_path_factory: pytest.TempPathFactory
     :return: generator yielding the container's url, stopping it when closed
     :rtype: Iterator[str]
     """
-    return fixtures.nats_container.__wrapped__(True, system_account, tmp_path_factory)
+    return fixtures.nats_container.__wrapped__(True, system_account)
 
 
 async def _admits(url: str, token: str | None) -> bool:
@@ -70,21 +68,19 @@ async def _admits(url: str, token: str | None) -> bool:
 
 @pytest.mark.parametrize("system_account", [True, False])
 async def test_a_client_presenting_no_credential_is_admitted(
-    system_account: bool, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+    system_account: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """either shape admits an anonymous client to the global account, JetStream included.
 
     :param system_account: whether the server declares the SYSTEM account
     :ptype system_account: bool
-    :param tmp_path_factory: where the server's configuration is written
-    :ptype tmp_path_factory: pytest.TempPathFactory
     :param monkeypatch: clears any external bus, so the fixture starts its own
     :ptype monkeypatch: pytest.MonkeyPatch
     :return: nothing
     :rtype: None
     """
     monkeypatch.delenv("THREETEARS_TEST_NATS_URL", raising=False)
-    bus = _bus(system_account, tmp_path_factory)
+    bus = _bus(system_account)
     try:
         assert await _admits(next(bus), None) is True
     finally:
@@ -92,39 +88,33 @@ async def test_a_client_presenting_no_credential_is_admitted(
 
 
 async def test_without_the_system_account_a_client_presenting_a_token_is_admitted(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """the shape a suite chooses when its code under test presents connect tokens.
 
-    :param tmp_path_factory: where the server's configuration is written
-    :ptype tmp_path_factory: pytest.TempPathFactory
     :param monkeypatch: clears any external bus, so the fixture starts its own
     :ptype monkeypatch: pytest.MonkeyPatch
     :return: nothing
     :rtype: None
     """
     monkeypatch.delenv("THREETEARS_TEST_NATS_URL", raising=False)
-    bus = _bus(False, tmp_path_factory)
+    bus = _bus(False)
     try:
         assert await _admits(next(bus), _TOKEN) is True
     finally:
         bus.close()
 
 
-async def test_with_the_system_account_a_client_presenting_a_token_is_refused(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_with_the_system_account_a_client_presenting_a_token_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     """NEGATIVE CONTROL: the server-side rule the opt-out exists for, so the test above discriminates.
 
-    :param tmp_path_factory: where the server's configuration is written
-    :ptype tmp_path_factory: pytest.TempPathFactory
     :param monkeypatch: clears any external bus, so the fixture starts its own
     :ptype monkeypatch: pytest.MonkeyPatch
     :return: nothing
     :rtype: None
     """
     monkeypatch.delenv("THREETEARS_TEST_NATS_URL", raising=False)
-    bus = _bus(True, tmp_path_factory)
+    bus = _bus(True)
     try:
         assert await _admits(next(bus), _TOKEN) is False
     finally:

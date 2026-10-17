@@ -23,17 +23,10 @@ Gated on docker: a checkout without docker skips cleanly.
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
-from typing import Any
 from uuid import UUID
 
-import nats
-import nats.errors
 import nats.js.errors
 import pytest
 
@@ -48,6 +41,9 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .nats_support import running_nats
+from .refusals import Violations, connect, refused
+
 pytestmark = pytest.mark.integration
 
 _NS = "atlive"
@@ -58,9 +54,6 @@ _WRITE_TABLE = "responses"
 _READ_TABLE = "sessions"
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
-
-#: what a refused JetStream call surfaces as in nats-py: an unanswered request.
-_REFUSED = (nats.errors.TimeoutError, nats.errors.NoRespondersError)
 
 
 def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
@@ -114,66 +107,7 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
-@contextlib.asynccontextmanager
-async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str, errors: list[str]) -> AsyncIterator[Any]:
-    """connect a raw nats client, routing async permission-violation errors into ``errors``.
-
-    :param uri: the server URI
-    :ptype uri: str
-    :param user: the user to connect as
-    :ptype user: str
-    :param password: that user's password
-    :ptype password: str
-    :param inbox_prefix: the inbox prefix the user's subscribe grant covers
-    :ptype inbox_prefix: str
-    :param errors: collects every asynchronous error the client reports
-    :ptype errors: list[str]
-    :return: the connected client, yielded
-    :rtype: AsyncIterator[Any]
-    """
-
-    async def _err_cb(exc: Exception) -> None:
-        errors.append(str(exc))
-
-    nc = await nats.connect(
-        uri,
-        user=user,
-        password=password,
-        inbox_prefix=inbox_prefix.encode(),
-        error_cb=_err_cb,
-        max_reconnect_attempts=0,
-    )
-    try:
-        yield nc
-    finally:
-        await nc.close()
-
-
-async def test_a_tool_pod_reaches_exactly_the_agent_tables_it_was_granted(tmp_path: Path) -> None:
+async def test_a_tool_pod_reaches_exactly_the_agent_tables_it_was_granted() -> None:
     """both halves against a real broker: the granted table works, every other route is refused."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -203,11 +137,8 @@ async def test_a_tool_pod_reaches_exactly_the_agent_tables_it_was_granted(tmp_pa
     other_table = f"{owner}.conversations.row-1"
     other_owners = f"{other_owner}.{_WRITE_TABLE}.row-1"
 
-    with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
-        admin_errors: list[str] = []
-        async with _connect(
-            uri, user="admin", password=_ADMIN_PW, inbox_prefix="_INBOX", errors=admin_errors
-        ) as admin_nc:
+    with running_nats(_server_config(pub_allow, sub_allow)) as uri:
+        async with connect(uri, user="admin", password=_ADMIN_PW, violations=Violations()) as admin_nc:
             admin_js = admin_nc.jetstream()
             # the hub declares the shared bucket with allow_direct; a pod binds it and never creates
             # it, and without allow_direct a read is the body-carried STREAM.MSG.GET no grant narrows.
@@ -217,9 +148,9 @@ async def test_a_tool_pod_reaches_exactly_the_agent_tables_it_was_granted(tmp_pa
             await admin_kv.put(other_table, b"c0")
             await admin_kv.put(other_owners, b"o0")
 
-            errors: list[str] = []
-            async with _connect(
-                uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix, errors=errors
+            violations = Violations()
+            async with connect(
+                uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix, violations=violations
             ) as nc:
                 js = nc.jetstream(timeout=2)
                 await js.account_info()
@@ -244,24 +175,21 @@ async def test_a_tool_pod_reaches_exactly_the_agent_tables_it_was_granted(tmp_pa
                 # === SUCCEEDS: the pod's own scope, beside the grants ==========================
                 await kv.put(f"{own}.widgets.w1", b"mine")
                 assert (await kv.get(f"{own}.widgets.w1")).value == b"mine"
-                assert not [e for e in errors if "permissions violation" in e.lower()], errors
+                assert not violations.errors, violations.errors
 
                 # === REFUSED: every write to the read-granted table ============================
-                with pytest.raises(_REFUSED):
-                    await kv.put(read_only, b"r1")
-                with pytest.raises(_REFUSED):
-                    await kv.delete(read_only)
+                await refused(violations, kv.put(read_only, b"r1"), naming=f"$kv.{bucket}.{read_only}")
+                await refused(violations, kv.delete(read_only), naming=f"$kv.{bucket}.{read_only}")
 
                 # === REFUSED: another table of the owner, and the owner's table elsewhere ======
                 for key in (other_table, other_owners):
-                    with pytest.raises(_REFUSED):
-                        await kv.get(key)
-                    with pytest.raises(_REFUSED):
-                        await kv.put(key, b"x")
+                    await refused(violations, kv.get(key), naming=f"$js.api.direct.get.kv_{bucket}.$kv.{bucket}.{key}")
+                    await refused(violations, kv.put(key, b"x"), naming=f"$kv.{bucket}.{key}")
 
                 # === REFUSED: a whole-bucket consumer, which could read every key ==============
-                with pytest.raises(_REFUSED):
-                    await nc.request(
+                await refused(
+                    violations,
+                    nc.request(
                         f"$JS.API.CONSUMER.CREATE.KV_{bucket}",
                         json.dumps(
                             {
@@ -273,18 +201,9 @@ async def test_a_tool_pod_reaches_exactly_the_agent_tables_it_was_granted(tmp_pa
                             }
                         ).encode(),
                         timeout=2,
-                    )
-
-                await asyncio.sleep(0.4)  # let the async -ERR frames land in the error callback
-                violations = [e for e in errors if "permissions violation" in e.lower()]
-                for needle in (
-                    f"$kv.{bucket}.{read_only}".lower(),
-                    f"$kv.{bucket}.{other_table}".lower(),
-                    f"$kv.{bucket}.{other_owners}".lower(),
-                    f"$js.api.direct.get.kv_{bucket}.$kv.{bucket}.{other_table}".lower(),
-                    f"$js.api.direct.get.kv_{bucket}.$kv.{bucket}.{other_owners}".lower(),
-                ):
-                    assert any(needle in e.lower() for e in violations), (needle, violations)
+                    ),
+                    naming=f"$js.api.consumer.create.kv_{bucket}",
+                )
 
                 # the granted table still works after the refusals
                 assert (await kv.get(written)).value == b"w2"

@@ -175,7 +175,13 @@ def _build_callbacks(
     effective_breaker = (
         breaker if breaker is not None else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key)
     )
-    callbacks.append(effective_breaker.make_callback())
+    # a rate limit is one model's: it counts against this model's own breaker, not its provider's
+    rate_limit = (
+        None
+        if breaker is not None
+        else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key, model=model_id)
+    )
+    callbacks.append(effective_breaker.make_callback(rate_limit=rate_limit))
 
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
@@ -220,7 +226,17 @@ def create_chat_model(
     :ptype breaker: CircuitBreaker | None
     :param extra_callbacks: optional extra callbacks to attach
     :ptype extra_callbacks: list[BaseCallbackHandler] | None
-    :param provider_kwargs: additional keyword arguments forwarded to the provider factory
+    :param provider_kwargs: additional keyword arguments forwarded to the provider factory. On the
+        anthropic provider with a Claude subscription token (``sk-ant-oat…``, the Claude CLI route)
+        only these are kept, and the rest are dropped (see
+        :func:`~threetears.models.providers.claude_cli.create_subscription_chat`):
+        ``system_prompt``, ``permission_mode``, ``allowed_tools``, ``disallowed_tools``, ``tools``,
+        ``cwd``, ``fallback_model``, ``max_budget_usd``, ``thinking``, ``effort``, and
+        ``max_retries`` (the CLI's own retries of a failed API call, ``CLAUDE_CODE_MAX_RETRIES``;
+        ``0`` turns them off, unset leaves the CLI's default of ten) and ``max_output_tokens`` (the
+        most output tokens one reply may have, ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``; unset leaves the
+        model's own default). ``max_tokens``, ``timeout`` and ``base_url`` are HTTP-route settings
+        the CLI route does not take
     :ptype provider_kwargs: Any
     :return: configured ``BaseChatModel`` instance with callbacks attached
     :rtype: BaseChatModel

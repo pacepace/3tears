@@ -257,6 +257,9 @@ class _FileContext:
         sanctions in this file: a confinement module's own test importing it, ledger-recorded
     :ivar patch_names: local names bound to ``unittest.mock.patch`` / ``mock.patch``
     :ivar own_objects: names the file defines by ``def``/``class`` and binds no other way
+    :ivar module_files: the scan's answers from :func:`_module_file`, shared by every file it
+        scans: the same few hundred module names are resolved against the same roots by every
+        import of every file, and each answer costs up to two ``stat`` calls
     :ivar violations: accumulated findings
     :ivar imports_examined: import statements read
     :ivar binding_calls_examined: binder calls recognised
@@ -273,6 +276,7 @@ class _FileContext:
     own_test_imports: frozenset[tuple[int, str]] = frozenset()
     patch_names: frozenset[str] = frozenset()
     own_objects: frozenset[str] = frozenset()
+    module_files: dict[tuple[Path, tuple[str, ...]], Path | None] = field(default_factory=dict)
     violations: list[Violation] = field(default_factory=list)
     imports_examined: int = 0
     binding_calls_examined: int = 0
@@ -295,6 +299,8 @@ def scan_private_bindings(repo_root: Path, exemptions_path: Path | None) -> Priv
     own_test_entries: dict[str, list[tuple[str, str, int]]] = {}
     for test_path, scope, symbol, occurrence in confinement_own_test_entries(repo_root, exemptions_path):
         own_test_entries.setdefault(test_path, []).append((scope, symbol, occurrence))
+    confined_paths = frozenset((repo_root / module).resolve() for module in confined)
+    module_files: dict[tuple[Path, tuple[str, ...]], Path | None] = {}
     files = 0
     imports = 0
     calls = 0
@@ -304,7 +310,9 @@ def scan_private_bindings(repo_root: Path, exemptions_path: Path | None) -> Priv
         if tree is None:
             continue
         files += 1
-        context = _context_for(path.resolve(), repo_root, src_roots, confined, tree, own_test_entries)
+        context = _context_for(
+            path.resolve(), repo_root, src_roots, confined, confined_paths, tree, own_test_entries, module_files
+        )
         _scan_tree(tree, context)
         imports += context.imports_examined
         calls += context.binding_calls_examined
@@ -375,8 +383,10 @@ def _context_for(
     repo_root: Path,
     src_roots: tuple[Path, ...],
     confined: frozenset[str],
+    confined_paths: frozenset[Path],
     tree: ast.Module,
     own_test_entries: dict[str, list[tuple[str, str, int]]],
+    module_files: dict[tuple[Path, tuple[str, ...]], Path | None],
 ) -> _FileContext:
     """build the per-file context: where the file sits, what it may reach, what it defines.
 
@@ -388,11 +398,15 @@ def _context_for(
     :ptype src_roots: tuple[Path, ...]
     :param confined: repo-relative paths of the recorded confinement modules
     :ptype confined: frozenset[str]
+    :param confined_paths: the same modules, resolved
+    :ptype confined_paths: frozenset[Path]
     :param tree: the file's parsed module
     :ptype tree: ast.Module
     :param own_test_entries: owner ruling 1's ledger entries, ``(scope, symbol, occurrence)`` by
         repo-relative test path (:func:`.pragma_policy.confinement_own_test_entries`)
     :ptype own_test_entries: dict[str, list[tuple[str, str, int]]]
+    :param module_files: the scan's :func:`_module_file` answers, shared across its files
+    :ptype module_files: dict[tuple[Path, tuple[str, ...]], Path | None]
     :return: the context
     :rtype: _FileContext
     """
@@ -423,10 +437,11 @@ def _context_for(
         home=home,
         search_roots=search_roots,
         confinement=relative in confined,
-        confined=frozenset((repo_root / module).resolve() for module in confined),
+        confined=confined_paths,
         own_test_imports=own_test_imports,
         patch_names=_patch_names(tree),
         own_objects=_own_objects(tree),
+        module_files=module_files,
     )
 
 
@@ -615,8 +630,28 @@ def _first_private(segments: list[str]) -> str:
     return next((segment for segment in segments if is_private_name(segment)), "")
 
 
-def _module_file(base: Path, segments: list[str]) -> Path | None:
+def _module_file(base: Path, segments: list[str], context: _FileContext) -> Path | None:
     """the file defining the module *segments* under *base*: ``a/b.py`` or ``a/b/__init__.py``.
+
+    answered once per scan for each *base* and *segments*, from ``context.module_files``.
+
+    :param base: a directory modules resolve against
+    :ptype base: Path
+    :param segments: the module's dotted segments; empty names *base*'s own ``__init__.py``
+    :ptype segments: list[str]
+    :param context: the file's context, carrying the scan's answers
+    :ptype context: _FileContext
+    :return: the file, or ``None`` when *base* holds no such module
+    :rtype: Path | None
+    """
+    key = (base, tuple(segments))
+    if key not in context.module_files:
+        context.module_files[key] = _module_file_on_disk(base, segments)
+    return context.module_files[key]
+
+
+def _module_file_on_disk(base: Path, segments: list[str]) -> Path | None:
+    """:func:`_module_file`'s answer, read from the filesystem.
 
     :param base: a directory modules resolve against
     :ptype base: Path
@@ -651,11 +686,11 @@ def _resolve_absolute(dotted: str, context: _FileContext) -> Path | None:
     segments = dotted.split(".")
     result: Path | None = None
     for root in context.search_roots:
-        found = _module_file(root, segments)
+        found = _module_file(root, segments, context)
         if found is not None:
             result = found
             break
-        if len(segments) > 1 and _module_file(root, segments[:1]) is not None:
+        if len(segments) > 1 and _module_file(root, segments[:1], context) is not None:
             result = root.joinpath(*segments).with_suffix(".py")
             break
     return result
@@ -679,25 +714,27 @@ def _resolve_relative(level: int, module: str | None, context: _FileContext) -> 
     segments = module.split(".") if module else []
     result: Path | None = None
     if context.repo_root == base or context.repo_root in base.parents:
-        result = _module_file(base, segments) or (
+        result = _module_file(base, segments, context) or (
             base.joinpath(*segments).with_suffix(".py") if segments else base / "__init__.py"
         )
     return result
 
 
-def _submodule(package_file: Path | None, name: str) -> Path | None:
+def _submodule(package_file: Path | None, name: str, context: _FileContext) -> Path | None:
     """the submodule *name* of the package whose ``__init__.py`` is *package_file*, when it exists.
 
     :param package_file: the resolved module of a ``from M import name``
     :ptype package_file: Path | None
     :param name: the imported name
     :ptype name: str
+    :param context: the file's context
+    :ptype context: _FileContext
     :return: the submodule's file, or ``None`` when *name* is not a submodule on disk
     :rtype: Path | None
     """
     result: Path | None = None
     if package_file is not None and package_file.name == "__init__.py":
-        result = _module_file(package_file.parent, [name])
+        result = _module_file(package_file.parent, [name], context)
     return result
 
 
@@ -828,7 +865,7 @@ def _check_import_from(node: ast.ImportFrom, context: _FileContext) -> None:
     for alias in node.names:
         if not is_private_name(alias.name):
             continue
-        submodule = _submodule(target, alias.name)
+        submodule = _submodule(target, alias.name, context)
         if submodule is not None:
             if not _module_allowed(submodule, context, node.lineno, alias.name):
                 reason = f"imports private module '{alias.name}' from '{label}'; {_FIX_G_MODULE}"

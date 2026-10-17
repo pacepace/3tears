@@ -1,0 +1,1546 @@
+"""The read lenses as operations: a scope's pivot, its history, its export, two runs compared and bisected, and a
+launch's estimated cost.
+
+Each binds one lens of :mod:`threetears.evals.analysis` to the host — its store, its run listing and its
+vocabulary — and returns the lens's own typed result, so a CLI, an MCP action and a REST route read one
+shape. The computation is the lens's; nothing here re-derives an answer.
+
+A launch estimate prices what :func:`~threetears.evals.ops.run_launch` would run from the same
+arguments, by the launch's own rule: each arm planned by its kind and priced through the host's
+``launch_pricer`` (:func:`~threetears.evals.run.quote_launch`).
+
+Each result's text is here too (:func:`pivot_text`, :func:`history_text`, :func:`estimate_text`,
+:func:`export_text`, :func:`runs_compared_text`, :func:`runs_bisected_text`), for the reason :meth:`~threetears.evals.analysis.EvalSummary.render` sits with the
+summary: every surface — an action, a command line — shows one rendering, and each carries the
+caveats its model carries (what was left out, which runs came up short) rather than the numbers alone.
+"""
+
+from __future__ import annotations
+
+import math
+
+from collections.abc import Mapping, Sequence
+
+from datetime import UTC, datetime
+from functools import partial
+
+from typing import Any, Literal
+
+from pydantic import Field, TypeAdapter, ValidationError
+
+
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.analysis.reads import (
+    RunLister,
+    bisect_runs,
+    compare_two_runs,
+    export_results,
+    frontier,
+    history,
+    pivot,
+)
+
+from threetears.evals.analysis.numbers import format_number, format_signed
+
+from threetears.evals.analysis.bundle.comparisons import PlanningReading, planning_readings
+
+from threetears.evals.analysis.stats import (
+    DETECTABLE_POWER,
+    SIGNIFICANCE_ALPHA,
+    equivalence_untested_reason,
+    paired_case_variance,
+    paired_detectable_difference,
+    variance_components,
+)
+
+from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
+from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
+from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, compute_estimate_cost
+from threetears.evals.analysis.significance import format_significance
+from threetears.evals.analysis.completeness import completeness_disclosure
+
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, CostEstimateCell, PlannedCost, PredictedValue
+from threetears.evals.analysis.lenses.pivot import PivotTable
+from threetears.evals.analysis.lenses.frontier import FrontierResult
+from threetears.evals.analysis.lenses.history import HistoryResult
+from threetears.evals.analysis.lenses.export import ScoreExport
+
+from threetears.evals.schema.base import EvalBaseModel
+
+from threetears.evals.kernel.campaign import ReadingKind
+
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+
+from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
+
+from threetears.evals.kernel.metrics import measure_title
+
+from threetears.evals.schema.models import EvalRun, EvalTemplate
+
+
+from threetears.evals.kernel.scoring import CompositeBasis
+
+from threetears.evals.ops.host import OpsHost
+
+from threetears.evals.ops.runs import LaunchArguments
+
+from threetears.evals.run.launch import ArmOutcome, ArmPrice, ArmQuote, ArmVerdict, LaunchPricer, quote_launch
+
+from threetears.evals.run.reads import list_runs
+
+from threetears.evals.analysis.lens_text import exclusion_lines
+from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
+
+
+def _lister(host: EvalHost) -> RunLister:
+    """The host's run listing, in the shape a lens takes it."""
+
+    def listed(scope_id: str, **kwargs: Any) -> list[EvalRun]:
+        return list_runs(host, scope_id, **kwargs)
+
+    return listed
+
+
+def scope_pivot(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    row_factor: str,
+    column_factor: str,
+    metric: str | None = None,
+    weighting: str | None = None,
+    subject_id: str | None = None,
+    status: str | None = "completed",
+    predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None = None,
+    launched_run_ids: Sequence[str] = (),
+) -> PivotTable:
+    """One measure over the scope's observations, aggregated over two coordinates.
+
+    :param host: The host whose store and vocabulary are read.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param row_factor: The coordinate the rows are.
+    :ptype row_factor: str
+    :param column_factor: The coordinate the columns are.
+    :ptype column_factor: str
+    :param metric: The measure; ``None`` or blank takes the composite.
+    :ptype metric: str | None
+    :param weighting: The aggregation weighting; ``None`` or blank takes the disclosed default.
+    :ptype weighting: str | None
+    :param subject_id: Only this subject's observations; required to pivot a judged measure over many.
+    :ptype subject_id: str | None
+    :param status: Only runs with this status; ``"all"`` reads every run.
+    :ptype status: str | None
+    :param predicted_cost: The estimate made before these runs, whose predictions a cost pivot sets beside
+        each planned cell's observed cost: a :class:`LaunchEstimate` (:func:`launch_estimate`'s, each priced
+        arm's prediction) or an analysis :class:`~threetears.evals.analysis.lenses.cost_estimate.CostEstimate` — the
+        model, or its JSON form as a caller across a wire holds it.
+    :ptype predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None
+    :param launched_run_ids: The runs the estimated launch made, once it has. Each cell beside a prediction then
+        says how many of its observations came from other runs (``PivotCell.n_unplanned``) — the history
+        the prediction was drawn from among them. Refused without ``predicted_cost``.
+    :ptype launched_run_ids: Sequence[str]
+    :return: The table.
+    :rtype: PivotTable
+    :raises ValidationFailedError: The pivot cannot be answered honestly — see
+        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
+    """
+    plan: list[PlannedCost] | None = None
+    if predicted_cost is not None:
+        try:
+            # Validated as exactly one of the two shapes — each forbids the other's fields — never sniffed.
+            estimate = _PREDICTED_COST.validate_python(
+                predicted_cost if isinstance(predicted_cost, Mapping) else predicted_cost.model_dump(mode="json")
+            )
+        except ValidationError as e:
+            raise ValidationFailedError(
+                f"predicted_cost is neither a launch estimate nor a cost estimate: {e}",
+                remedy="pass a launch_estimate answer, or a cost estimate of planned arms",
+            ) from e
+        plan = estimate.planned_costs(launched_run_ids)
+    elif launched_run_ids:
+        raise ValidationFailedError(
+            "launched_run_ids names the runs an estimate's launch made, and no predicted_cost was given to set "
+            "them against",
+            remedy="pass the launch's estimate as predicted_cost beside them, or drop launched_run_ids",
+        )
+    return pivot(
+        host.storage,
+        scope_id,
+        list_runs=_lister(host),
+        row_factor=row_factor,
+        column_factor=column_factor,
+        metric=metric,
+        weighting=weighting,
+        subject_id=subject_id,
+        status=status,
+        predicted_cost=plan,
+        profile=host.profile,
+    )
+
+
+def scope_history(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    metric: str | None = None,
+    min_absolute_change: float = 0.0,
+    min_relative_change: float = 0.0,
+    subject_id: str | None = None,
+    status: str | None = "completed",
+) -> HistoryResult:
+    """One measure over time for each contestant in the scope, with its regressions flagged.
+
+    :param host: The host whose store and vocabulary are read.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param metric: The measure: the composite, spend, latency, a judged axis, or a numeric measure the host
+        declares (a quick-path scorer's name); ``None`` or blank takes the composite.
+    :ptype metric: str | None
+    :param min_absolute_change: The smallest move a regression flag counts, in the measure's unit.
+    :ptype min_absolute_change: float
+    :param min_relative_change: The smallest move relative to the baseline a flag counts, as a fraction.
+    :ptype min_relative_change: float
+    :param subject_id: Only this subject's observations.
+    :ptype subject_id: str | None
+    :param status: Only runs with this status; ``"all"`` reads every run.
+    :ptype status: str | None
+    :return: The series.
+    :rtype: HistoryResult
+    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's.
+    """
+    return history(
+        host.storage,
+        scope_id,
+        list_runs=_lister(host),
+        metric=metric,
+        min_absolute_change=min_absolute_change,
+        min_relative_change=min_relative_change,
+        subject_id=subject_id,
+        status=status,
+        profile=host.profile,
+    )
+
+
+def scope_frontier(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    bar: float | str | None = None,
+    subject_id: str | None = None,
+    status: str | None = "completed",
+) -> FrontierResult:
+    """Each subject's variants ranked on quality, cost and latency, and the cheapest that clears ``bar``.
+
+    The frontier lens (:func:`~threetears.evals.analysis.frontier`) over the host's runs, read against the host's
+    sweepables so each point names what its runs set away from production. An eval comparing arms
+    files every arm under one subject, so its arms (models among them) are one frontier.
+
+    :param host: The host whose store and vocabulary are read.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
+    :ptype bar: float | str | None
+    :param subject_id: Only this subject's variants; others are counted as filtered out.
+    :ptype subject_id: str | None
+    :param status: Only runs with this status; ``"all"`` ranks every run.
+    :ptype status: str | None
+    :return: The frontier.
+    :rtype: FrontierResult
+    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's.
+    """
+    return FrontierResult.model_validate(
+        frontier(
+            host.storage,
+            scope_id,
+            list_runs=_lister(host),
+            bar=bar,
+            subject_id=subject_id,
+            status=status,
+            profile=host.profile,
+        )
+    )
+
+
+def scope_export(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    format: str | None = None,
+    status: str | None = "completed",
+    run_ids: list[str] | None = None,
+) -> ScoreExport:
+    """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere.
+
+    :param host: The host whose store and vocabulary are read.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param format: ``"csv"`` (the default) or ``"json"``.
+    :ptype format: str | None
+    :param status: Only runs with this status; ``"all"`` exports every run.
+    :ptype status: str | None
+    :param run_ids: Only these runs — archived ones included, since they were named.
+    :ptype run_ids: list[str] | None
+    :return: The export.
+    :rtype: ScoreExport
+    :raises ValidationFailedError: The format is not one there is, or the status is no run's.
+    """
+    return export_results(
+        host.storage,
+        scope_id,
+        list_runs=_lister(host),
+        fmt=format,
+        status=status,
+        run_ids=run_ids,
+        profile=host.profile,
+    )
+
+
+class RunsCompared(EvalBaseModel):
+    """One run's arm against another's, with what either run could not deliver said beside the numbers.
+
+    ``comparison`` is the lens's own answer (:func:`~threetears.evals.analysis.reads.compare_two_runs`), carried
+    whole: this operation adds what a head-to-head needs beside it and re-derives none of it. A delta between a
+    run that delivered one of its five cells and a complete one is a comparison of two different populations,
+    so each short run's sentence is carried with it, as it is on every other comparison surface.
+    """
+
+    baseline_run_id: str = Field(description="The run read as the baseline (A).")
+    candidate_run_id: str = Field(description="The run read against it (B).")
+    comparison: dict[str, Any] = Field(
+        description=(
+            "The two-run lens's answer: `comparison_basis` (whether the runs share a template, not the test's basis), "
+            "`composite_comparability` (why composites are withheld, across subjects), `comparison.arm` (each "
+            "arm's model and the models its responses named as having answered it, pass^k at one shared depth and mean composite, their deltas, whether the samples were "
+            "paired and over how many cases, Hedges' g, p and the verdict), `comparison.per_template` and each "
+            "run's `subject_detail_{a,b}`."
+        )
+    )
+    completeness_disclosures: dict[str, str] = Field(
+        description=(
+            "Run id -> the sentence for each of the two runs that delivered less than its matrix; empty when both "
+            "are whole. A run absent from it is not asserted complete: one carrying no completeness record has "
+            "nothing to disclose either way."
+        )
+    )
+    measurement_window_disclosure: str | None = Field(
+        description="When the two runs were measured over spans that do not overlap, the sentence saying so; None "
+        "when they overlap or either produced no result to date a span from."
+    )
+    cassette_mode_disclosure: str | None = Field(
+        description="When the two runs recorded different cassette modes (one replayed what the other measured "
+        "live), the sentence saying so; None when they recorded the same."
+    )
+
+
+def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsCompared:
+    """Compare two runs' arms, with each run's completeness, clock and cassette disclosures beside the numbers.
+
+    The comparison is :func:`~threetears.evals.analysis.reads.compare_two_runs`'s, read under the engine's
+    default pass threshold; the disclosures are the ones every other comparison surface carries, computed by the
+    same helpers.
+
+    :param host: The host whose store is read.
+    :ptype host: EvalHost
+    :param baseline_run_id: The run read as the baseline.
+    :ptype baseline_run_id: str
+    :param candidate_run_id: The run read against it.
+    :ptype candidate_run_id: str
+    :param scope_id: The scope both runs live in.
+    :ptype scope_id: str
+    :return: The comparison and its disclosures.
+    :rtype: RunsCompared
+    :raises NotFoundError: Either run is not in the scope.
+    """
+    storage = host.storage
+
+    def template(template_id: str) -> EvalTemplate:
+        found = storage.load_template(template_id, scope_id)
+        if found is None:
+            raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
+        return found
+
+    def subject_detail(run: EvalRun) -> dict[str, dict[str, Any]]:
+        snapshot = run.subject_snapshot
+        return {snapshot.subject_id: snapshot.model_dump(mode="json", include={"subject_label", "components"})}
+
+    comparison = compare_two_runs(
+        storage, baseline_run_id, candidate_run_id, scope_id, load_template=template, subject_detail=subject_detail
+    )
+    runs, completeness, window = _pair_disclosures(host, baseline_run_id, candidate_run_id, scope_id)
+    return RunsCompared(
+        baseline_run_id=baseline_run_id,
+        candidate_run_id=candidate_run_id,
+        comparison=comparison,
+        completeness_disclosures=completeness,
+        measurement_window_disclosure=window,
+        cassette_mode_disclosure=cassette_mode_disclosure({run.id: run.cassette_mode for run in runs}),
+    )
+
+
+def _pair_disclosures(
+    host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str
+) -> tuple[list[EvalRun], dict[str, str], str | None]:
+    """Two runs read side by side: both runs, each short run's completeness sentence, and the clock sentence.
+
+    Called after the lens, which has already refused a missing run; the refusal here keeps the type honest.
+    """
+    storage = host.storage
+    runs: list[EvalRun] = []
+    for run_id in (baseline_run_id, candidate_run_id):
+        run = storage.load_eval_run(run_id, scope_id)
+        if run is None:
+            raise NotFoundError("run", run_id, remedy=FIND_RUN)
+        runs.append(run)
+    windows = [
+        window
+        for run in runs
+        if (window := measurement_window(run.id, storage.query_eval_results_by_run(run.id, scope_id))) is not None
+    ]
+    completeness = {
+        run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None
+    }
+    return runs, completeness, measurement_window_disclosure(windows)
+
+
+class RunsBisected(EvalBaseModel):
+    """Which versioned inputs differ between two runs, with what either run could not deliver said beside them.
+
+    The split is :func:`~threetears.evals.analysis.reads.bisect_runs`'s, carried whole (#621). It answers what
+    neither a pivot nor the analysis bundle does: a pivot aggregates scores over coordinates a reader names, and
+    the bundle's confound scan reads only a campaign's runs and only its apparatus. Two runs a history step
+    flagged, in no campaign together, are read here input by input. A run that delivered less than its matrix
+    observed its per-result inputs over fewer results, so its sentence is carried, as on every comparison surface.
+    """
+
+    baseline_run_id: str = Field(description="The run read as the baseline (A).")
+    candidate_run_id: str = Field(description="The run read against it (B).")
+    differs: list[str] = Field(description="The inputs the two runs recorded at different values.")
+    same: list[str] = Field(description="The inputs both runs recorded at one value.")
+    unknown: list[str] = Field(
+        description="The inputs whose comparison cannot be decided because one run or both recorded nothing for it: "
+        "neither a difference nor an agreement."
+    )
+    details: dict[str, dict[str, Any]] = Field(
+        description="Input name -> `{a, b}`, each run's value for it as compared. An input only one run carried "
+        "reads `(not carried by this run)` on the other side; a rig seat one run did not have reads as a level."
+    )
+    completeness_disclosures: dict[str, str] = Field(
+        description=(
+            "Run id -> the sentence for each of the two runs that delivered less than its matrix; empty when both "
+            "are whole. A run absent from it is not asserted complete: one carrying no completeness record has "
+            "nothing to disclose either way."
+        )
+    )
+    measurement_window_disclosure: str | None = Field(
+        description="When the two runs were measured over spans that do not overlap, the sentence saying so: time is "
+        "no input, so a provider's drift between the spans is a difference this split cannot name. None when they "
+        "overlap or either produced no result to date a span from."
+    )
+
+
+def runs_bisect(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsBisected:
+    """Split two runs' versioned inputs into those that differ, agree and cannot be decided, with each disclosure.
+
+    :param host: The host whose store and sweepable declarations are read.
+    :ptype host: EvalHost
+    :param baseline_run_id: The run read as the baseline.
+    :ptype baseline_run_id: str
+    :param candidate_run_id: The run read against it.
+    :ptype candidate_run_id: str
+    :param scope_id: The scope both runs live in.
+    :ptype scope_id: str
+    :return: The split and its disclosures.
+    :rtype: RunsBisected
+    :raises NotFoundError: Either run is not in the scope.
+    """
+    split = bisect_runs(host.storage, baseline_run_id, candidate_run_id, scope_id, profile=host.profile)
+    _, completeness, window = _pair_disclosures(host, baseline_run_id, candidate_run_id, scope_id)
+    return RunsBisected(
+        baseline_run_id=baseline_run_id,
+        candidate_run_id=candidate_run_id,
+        differs=split["differs"],
+        same=split["same"],
+        unknown=split["unknown"],
+        details=split["details"],
+        completeness_disclosures=completeness,
+        measurement_window_disclosure=window,
+    )
+
+
+class ArmEstimate(EvalBaseModel):
+    """One arm of a launch estimate: what its kind planned, what the host's pricer predicted, and what the launch would
+    do.
+
+    :ivar described: The arm, as the launch's refusal names it.
+    :ivar candidate_model: The model it runs on — its plan's, or the one named when its kind plans nothing
+        (``None`` there for an arm on the kind's unnamed default).
+    :ivar case_count: The cases its plan bounds it to (or the hypothetical count the estimate was asked for);
+        ``None`` when its kind plans nothing.
+    :ivar case_source: ``stored`` for an arm over the template's stored cases, ``generated`` for one whose cases
+        its launch generates.
+    :ivar n_observations: ``case_count × k_runs``, the observations it would make; ``None`` with no plan.
+    :ivar predicted_usd: The figure the launch holds to the arm's cap — a range pricer's upper end — or ``None``
+        when nothing predicts it (unknown, never $0).
+    :ivar central_usd: A range pricer's central estimate, never held to the cap; ``None`` for a single figure.
+    :ivar low_usd: A range pricer's lower end; ``None`` otherwise.
+    :ivar method_id: The estimator, or ``None`` for a pricer that names none.
+    :ivar basis: How the prediction was made, or why there is none.
+    :ivar outcome: What the launch's one pricing rule makes of it (:data:`~threetears.evals.run.ArmOutcome`).
+    :ivar refusal: The refusal the launch would make of it, word for word; ``None`` unless refused.
+    :ivar remedy: What brings it under its cap, or names one; set exactly when ``refusal`` is.
+    :ivar call_ceiling_usd: The largest reservation one of its calls will hold against its run's cap, as its kind
+        priced it (:class:`~threetears.evals.run.CallCeiling`) — an arm whose largest call is above its cap is
+        refused, since its run could never make that call; ``None`` when its kind does not price its calls
+        before launch.
+    :ivar call_ceiling_lower_bound: Whether ``call_ceiling_usd`` is a floor under the arm's largest call rather than
+        its exact ceiling — a subject kind's, priced with its transcripts left out
+        (:attr:`~threetears.evals.run.CallCeiling.lower_bound`). Its largest call is reserved at that or more.
+    """
+
+    described: str
+    candidate_model: str | None
+    case_count: int | None
+    case_source: Literal["stored", "generated"]
+    n_observations: int | None
+    predicted_usd: float | None
+    central_usd: float | None
+    low_usd: float | None
+    method_id: str | None
+    basis: str
+    outcome: ArmOutcome
+    refusal: str | None
+    remedy: str | None = None
+    call_ceiling_usd: float | None = None
+    call_ceiling_lower_bound: bool = False
+
+
+class DetectableEffect(EvalBaseModel):
+    """The smallest difference one reading's comparison would find, or why none can be stated.
+
+    :ivar reading: Whether ``name`` is a measure or a judged dimension.
+    :ivar name: The reading.
+    :ivar delta: The smallest true difference between two arms, in the reading's unit, that the paired
+        comparison finds with :attr:`DetectableEffects.power` at the family's first Holm step; ``None``
+        where ``cannot_estimate`` says why.
+    :ivar cannot_estimate: Why no difference is stated; ``None`` when one is.
+    :ivar basis: ``paired_runs`` when two earlier runs launched differently shared cases, so how far two arms
+        disagree about one case was measured; ``unrelated_case_effects`` when no such pair exists and the
+        two arms' case levels are taken as unrelated — two independent draws of one arm's between-case
+        spread, the most a pairing can leave when arms do not find opposite cases hard. ``None`` with no
+        estimate.
+    :ivar within_case_sd: The repeat noise around a case's level, pooled over the earlier runs.
+    :ivar between_case_sd: The case-to-case spread the paired difference keeps: measured between paired runs
+        (``paired_runs``), or one arm's between-case spread (``unrelated_case_effects``, counted twice).
+    :ivar difference_sd: The planned standard deviation of one case's difference of means at the planned ``k``.
+    :ivar n_history_cases: The earlier cases the between-case figure rests on.
+    :ivar run_ids: The earlier runs whose values were read.
+    """
+
+    reading: ReadingKind
+    name: str
+    delta: float | None
+    cannot_estimate: str | None
+    basis: Literal["paired_runs", "unrelated_case_effects"] | None = None
+    within_case_sd: float | None = None
+    between_case_sd: float | None = None
+    difference_sd: float | None = None
+    n_history_cases: int | None = None
+    run_ids: list[str] = Field(default_factory=list)
+
+
+#: What every detectable difference assumes, stated once on the block and rendered with it.
+DETECTABLE_EFFECT_ASSUMPTIONS = (
+    "the planned arms run the same cases and are compared paired, as a family compares them; one case's difference "
+    "of means is near normal (the paired t-test's own assumption — on a coarse pass/fail or 1-5 reading over few "
+    "cases it is only approximate); the earlier runs' variance holds for the planned arms; only the one comparison "
+    "differs, so Holm's correction asks it to clear α/m (more real differences make each easier to find); and the "
+    "variance is an estimate from the earlier runs, whose own error is not in the figure"
+)
+
+
+class DetectableEffects(EvalBaseModel):
+    """What a launch could detect: per reading, the smallest difference its paired comparison would find.
+
+    A power pre-flight beside the price. Each reading's difference is the smallest true difference between two
+    arms that the paired two-sided t-test on per-case means (the test a comparison family runs on cases both
+    arms ran) rejects with probability :attr:`power`, at the per-comparison level the first step of Holm's
+    correction asks of a family of :attr:`family_size` comparisons. The variance it plans from is measured,
+    never supplied: the within-case (repeat) and between-case components of earlier runs of the same template
+    (:func:`~threetears.evals.analysis.stats.variance_components`). With none to measure, it says so.
+
+    :ivar n_cases: The cases per arm the launch plans (the fewest over its arms); ``None`` with no plan.
+    :ivar k_runs: The repeats per case the launch plans.
+    :ivar family_size: The comparisons the family would correct together: the readings below, times one contrast
+        per arm beyond the first (at least one).
+    :ivar alpha: The family's level, :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`.
+    :ivar per_comparison_alpha: ``alpha / family_size``, the level a lone difference must clear.
+    :ivar power: The power each difference is stated at.
+    :ivar run_ids: The earlier runs of the template that were read.
+    :ivar cannot_estimate: Why nothing could be estimated for any reading; ``None`` when the readings say.
+    :ivar effects: One per reading the earlier runs carried.
+    :ivar assumptions: What every difference here assumes.
+    """
+
+    n_cases: int | None
+    k_runs: int
+    family_size: int
+    alpha: float = SIGNIFICANCE_ALPHA
+    per_comparison_alpha: float
+    power: float = DETECTABLE_POWER
+    run_ids: list[str] = Field(default_factory=list)
+    cannot_estimate: str | None = None
+    effects: list[DetectableEffect] = Field(default_factory=list)
+    assumptions: str = DETECTABLE_EFFECT_ASSUMPTIONS
+
+
+class LaunchEstimate(EvalBaseModel):
+    """What a launch would cost and whether it would launch, priced by the launch's own rule.
+
+    Built by :func:`~threetears.evals.run.quote_launch` — the launch's argument refusals, its dispatch, each
+    arm's plan (``LaunchableKind.plan_arm``) and each arm's price through the host's ``launch_pricer`` — so the
+    figure an operator reads here is the figure the launch holds each arm's cap to, and an arm this estimate
+    shows refused is an arm the launch refuses, in the same words. It spends nothing.
+
+    :ivar template_id: The template.
+    :ivar subject_id: The subject the launch would measure.
+    :ivar cassette_mode: The cassette mode, normalised.
+    :ivar k_runs: Repeats per case.
+    :ivar n_variations: Cases the launch would generate first; ``0`` for stored cases.
+    :ivar hypothetical_case_count: The case count each planned arm was priced at in place of its plan's, for a
+        hypothetical grid; ``None`` when every arm is priced at its plan, as the launch prices it.
+    :ivar cap_usd: The cap each arm's run would be held to; ``None`` when the host enforces none.
+    :ivar cap_origin: ``chosen`` when the launch named the cap, ``inherited`` from the host's; ``None`` uncapped.
+    :ivar arms: Every arm, in arm order.
+    :ivar total_predicted_usd: Every arm's held-to figure, summed — ``None`` when any arm has none, since a total
+        missing an arm is not the launch's total.
+    :ivar would_launch: Whether no arm would be refused on its price.
+    :ivar computed_at: When the estimate was made, the stamp a pivot's prediction carries.
+    :ivar detectable_effect: What the launch could detect, per reading (:class:`DetectableEffects`); ``None`` on
+        an estimate handed in without one.
+    """
+
+    template_id: str
+    subject_id: str
+    cassette_mode: str
+    k_runs: int
+    n_variations: int
+    hypothetical_case_count: int | None
+    cap_usd: float | None
+    cap_origin: Literal["chosen", "inherited"] | None
+    arms: list[ArmEstimate]
+    total_predicted_usd: float | None
+    would_launch: bool
+    computed_at: str
+    detectable_effect: DetectableEffects | None = None
+
+    def planned_costs(self, run_ids: Sequence[str] = ()) -> list[PlannedCost]:
+        """Each priced arm as a cost pivot's plan: its model, its template, its observations and its prediction.
+
+        :param run_ids: The runs the launch made, once it has (the run ids its launch job names, as run_ids); empty
+            before, when the cost a pivot sets beside each prediction is history the launch did not make.
+        :ptype run_ids: Sequence[str]
+        :return: One :class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost` per arm with a model, a plan
+            and a prediction; the prediction's point is the pricer's central estimate where it gave a range (the
+            band then running from its lower to its upper end) and its single figure otherwise.
+        :rtype: list[PlannedCost]
+        """
+        planned: list[PlannedCost] = []
+        for arm in self.arms:
+            if arm.candidate_model is None or arm.n_observations is None or arm.predicted_usd is None:
+                continue
+            ranged = arm.central_usd is not None
+            planned.append(
+                PlannedCost(
+                    model=arm.candidate_model,
+                    template_id=self.template_id,
+                    run_ids=list(run_ids),
+                    n_observations=arm.n_observations,
+                    predicted=PredictedValue(
+                        value=arm.central_usd if arm.central_usd is not None else arm.predicted_usd,
+                        interval_low=arm.low_usd if ranged else None,
+                        interval_high=arm.predicted_usd if ranged else None,
+                        method_id=arm.method_id or LAUNCH_PRICER_METHOD,
+                        computed_at=self.computed_at,
+                    ),
+                )
+            )
+        return planned
+
+
+#: The two shapes a cost pivot's plan arrives in, validated as exactly one.
+_PREDICTED_COST: TypeAdapter[CostEstimate | LaunchEstimate] = TypeAdapter(CostEstimate | LaunchEstimate)
+
+
+#: The method a pivot's prediction names when the host's pricer named none.
+LAUNCH_PRICER_METHOD = "launch-pricer"
+
+
+async def launch_estimate(
+    host: OpsHost, arguments: LaunchArguments, scope_id: str, *, n_test_cases: int | None = None
+) -> LaunchEstimate:
+    """What :func:`~threetears.evals.ops.run_launch` with ``arguments`` would cost, priced by the launch's own rule.
+
+    The launch's own steps, read-only (:func:`~threetears.evals.run.quote_launch`): every refusal it makes before
+    pricing is raised as it raises it — a kind's request-level refusals among them — and every arm is planned by
+    its kind and priced through the host's ``launch_pricer``, held to the cap the launch would hold it to. So
+    the estimate and the launch never price one arm two ways. Nothing is admitted, generated or spent. The
+    generation calls a generating launch makes first are priced separately, against the host's out-of-run cap,
+    by the launch itself (``EvalStorage.query_out_of_run_spend`` reads what they spent).
+
+    :param host: The launching host.
+    :ptype host: OpsHost
+    :param arguments: What the launch would name.
+    :ptype arguments: LaunchArguments
+    :param scope_id: The scope the launch would run in.
+    :ptype scope_id: str
+    :param n_test_cases: A case count to price each planned arm at in place of its plan's, for a hypothetical grid;
+        ``None`` prices each at its plan, as the launch would.
+    :ptype n_test_cases: int | None
+    :return: The estimate.
+    :rtype: LaunchEstimate
+    :raises NotFoundError: The template is not in the scope.
+    :raises ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
+        below one.
+    """
+    quote = await quote_launch(
+        host.launch,
+        template_id=arguments.template_id,
+        subject_id=arguments.subject_id,
+        models=list(arguments.models),
+        k_runs=arguments.k_runs,
+        n_variations=arguments.n_variations,
+        variation_model=arguments.variation_model,
+        overlays=arguments.overlays,
+        apparatus_settings=arguments.apparatus_settings,
+        max_cost_usd=arguments.max_cost_usd,
+        judge_model=arguments.judge_model,
+        simulator_model=arguments.simulator_model,
+        scope_id=scope_id,
+        case_count=n_test_cases,
+        cell_timeout_s=arguments.cell_timeout_s,
+        case_set=arguments.case_set,
+    )
+    arms = [_arm_estimate(arm, quote.k_runs, quote.n_variations) for arm in quote.arms]
+    predicted = [arm.predicted_usd for arm in arms]
+    planned_cases = [arm.case_count for arm in arms if arm.case_count is not None]
+    # It reads the template's past runs from the store, so it runs off the loop.
+    detectable = await run_blocking(
+        host.eval_host.blocking_executor,
+        partial(
+            detectable_effects,
+            host.eval_host,
+            scope_id,
+            quote.template_id,
+            n_cases=min(planned_cases) if planned_cases else None,
+            k_runs=quote.k_runs,
+            n_arms=len(arms),
+        ),
+    )
+    return LaunchEstimate(
+        template_id=quote.template_id,
+        subject_id=quote.subject_id,
+        cassette_mode=quote.cassette_mode,
+        k_runs=quote.k_runs,
+        n_variations=quote.n_variations,
+        hypothetical_case_count=quote.case_count,
+        cap_usd=quote.arms[0].cap_usd,
+        cap_origin=quote.arms[0].cap_origin,
+        arms=arms,
+        total_predicted_usd=None if None in predicted else math.fsum(p for p in predicted if p is not None),
+        would_launch=all(arm.outcome != "refused" for arm in arms),
+        computed_at=datetime.now(UTC).isoformat(),
+        detectable_effect=detectable,
+    )
+
+
+def detectable_effects(
+    host: EvalHost, scope_id: str, template_id: str, *, n_cases: int | None, k_runs: int, n_arms: int
+) -> DetectableEffects:
+    """What a launch of ``template_id`` with ``n_cases`` cases and ``k_runs`` repeats could detect, per reading.
+
+    Reads every earlier run of the template in the scope (archived runs left out, as every quality view
+    leaves them) and each reading a comparison family would test on it
+    (:func:`~threetears.evals.analysis.bundle.comparisons.planning_readings`). Per reading, the within-case and
+    between-case variance of those runs (:func:`~threetears.evals.analysis.stats.variance_components`) give one case's
+    planned difference of means its spread: ``between + 2·within/k``, where ``between`` is how far two arms disagree
+    about one case — measured over two earlier runs launched differently on shared cases where there are any
+    (:func:`~threetears.evals.analysis.stats.paired_case_variance`), and otherwise twice one arm's
+    between-case variance, the two arms' case levels taken as unrelated. The smallest difference the paired
+    t-test finds at :data:`~threetears.evals.analysis.stats.DETECTABLE_POWER` at ``α/m`` follows
+    (:func:`~threetears.evals.analysis.stats.paired_detectable_difference`). No variance is ever supplied: with
+    no earlier run, or too few repeated cases, the reading says it cannot estimate and why.
+
+    :param host: The host whose store holds the earlier runs and whose vocabulary reads them.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param template_id: The template the launch runs.
+    :ptype template_id: str
+    :param n_cases: The cases per arm the launch plans; ``None`` when its kind plans none.
+    :ptype n_cases: int | None
+    :param k_runs: The repeats per case.
+    :ptype k_runs: int
+    :param n_arms: The arms the launch runs.
+    :ptype n_arms: int
+    :return: The block.
+    :rtype: DetectableEffects
+    """
+    runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
+    results_by_run = {run.id: host.storage.query_eval_results_by_run(run.id, scope_id) for run in runs}
+    runs = [run for run in runs if results_by_run[run.id]]
+    readings = planning_readings(runs, results_by_run, profile=host.profile) if runs else []
+    family_size = max(1, len(readings)) * max(1, n_arms - 1)
+    block = DetectableEffects(
+        n_cases=n_cases,
+        k_runs=k_runs,
+        family_size=family_size,
+        per_comparison_alpha=SIGNIFICANCE_ALPHA / family_size,
+        run_ids=[run.id for run in runs],
+    )
+    if not runs:
+        return block.model_copy(
+            update={
+                "cannot_estimate": (
+                    f"no earlier run of template {template_id!r} with results is in scope {scope_id!r}, so no "
+                    "variance is measured to plan from"
+                )
+            }
+        )
+    if n_cases is None:
+        return block.model_copy(update={"cannot_estimate": "the launch plans no case count to plan a test over"})
+    if n_cases < 2:
+        return block.model_copy(
+            update={"cannot_estimate": f"a paired test needs two cases per arm; the launch plans {n_cases}"}
+        )
+    if not readings:
+        return block.model_copy(
+            update={"cannot_estimate": "the earlier runs carry no reading a comparison family would test"}
+        )
+    launched = {run.id: (run.candidate_model, run.overlays, run.apparatus_settings) for run in runs}
+    effects = [
+        _detectable_effect(reading, launched, n_cases=n_cases, k_runs=k_runs, alpha=block.per_comparison_alpha)
+        for reading in readings
+    ]
+    return block.model_copy(update={"effects": effects})
+
+
+def _detectable_effect(
+    reading: PlanningReading, launched: Mapping[str, object], *, n_cases: int, k_runs: int, alpha: float
+) -> DetectableEffect:
+    """One reading's detectable difference (see :func:`detectable_effects`)."""
+    run_ids = sorted(reading.repeats)
+    unestimated = DetectableEffect(reading=reading.reading, name=reading.name, delta=None, cannot_estimate=None)
+    components = variance_components([list(by_case.values()) for by_case in reading.repeats.values()])
+    if components is None:
+        return unestimated.model_copy(
+            update={
+                "run_ids": run_ids,
+                "cannot_estimate": (
+                    "fewer than two earlier cases were repeated (k of 2 or more) on one run, so repeat noise cannot "
+                    "be told from case-to-case spread"
+                ),
+            }
+        )
+    pairs = []
+    for index, left in enumerate(run_ids):
+        for right in run_ids[index + 1 :]:
+            if launched[left] == launched[right]:
+                continue
+            shared = sorted(set(reading.repeats[left]) & set(reading.repeats[right]))
+            pairs.append(
+                ([reading.repeats[left][case] for case in shared], [reading.repeats[right][case] for case in shared])
+            )
+    paired = paired_case_variance(pairs, components.within_case)
+    between, n_history, basis = (
+        (paired[0], paired[1], "paired_runs")
+        if paired is not None
+        else (2.0 * components.between_case, components.n_cases, "unrelated_case_effects")
+    )
+    difference_sd = math.sqrt(between + 2.0 * components.within_case / k_runs)
+    measured = unestimated.model_copy(
+        update={
+            "basis": basis,
+            "within_case_sd": math.sqrt(components.within_case),
+            "between_case_sd": math.sqrt(between),
+            "difference_sd": difference_sd,
+            "n_history_cases": n_history,
+            "run_ids": run_ids,
+        }
+    )
+    if difference_sd == 0.0:
+        return measured.model_copy(
+            update={
+                "cannot_estimate": (
+                    "the earlier runs show no spread on this reading, case to case or repeat to repeat, so no test's "
+                    "power can be planned from them"
+                )
+            }
+        )
+    delta = paired_detectable_difference(n_cases, difference_sd, alpha=alpha)
+    if reading.value_range is not None and delta > reading.value_range[1] - reading.value_range[0]:
+        return measured.model_copy(
+            update={
+                "cannot_estimate": (
+                    f"the difference it would take ({format_number(delta)}) is wider than the reading's range allows, "
+                    "so no difference is found with this power at this size"
+                )
+            }
+        )
+    return measured.model_copy(update={"delta": delta})
+
+
+def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimate:
+    """One arm's verdict, as the estimate reports it.
+
+    :param arm: The verdict.
+    :ptype arm: ArmVerdict
+    :param k_runs: Repeats per case.
+    :ptype k_runs: int
+    :param n_variations: Cases the launch generates; ``0`` for stored cases.
+    :ptype n_variations: int
+    :return: The arm.
+    :rtype: ArmEstimate
+    """
+    plan = arm.plan
+    price = arm.price
+    return ArmEstimate(
+        described=arm.described,
+        candidate_model=arm.candidate_model,
+        case_count=plan.case_count if plan is not None else None,
+        case_source="generated" if n_variations > 0 else "stored",
+        n_observations=plan.case_count * k_runs if plan is not None else None,
+        predicted_usd=price.predicted_usd,
+        central_usd=price.central_usd,
+        low_usd=price.low_usd,
+        method_id=price.method_id,
+        basis=price.basis,
+        outcome=arm.outcome,
+        refusal=arm.refusal,
+        remedy=arm.remedy,
+        call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
+        call_ceiling_lower_bound=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.lower_bound,
+    )
+
+
+def history_launch_pricer(host: EvalHost) -> LaunchPricer:
+    """The engine's launch pricer: an arm bounded from the scope's usage history of runs launched as it will be.
+
+    What a :class:`~threetears.evals.run.LaunchHost` takes as ``launch_pricer`` to price every arm of a launch
+    before any launcher runs — an arm over the template's stored cases and one whose cases its launch generates
+    alike, priced by this one rule and counted by its source (``derived`` from the template's stored cases, or
+    ``generated``). **The history is the runs launched the way the arm will be**: the same template on the
+    same candidate model at the same cassette mode, scored by the same judges (the model each scored dim was
+    requested from, ``EvalRun.effective_judges``, against the arm's planned judges — so a dim whose config names
+    its own model, and a role default that has moved since, are both matched by the model that actually scored),
+    driven by the same simulator (the resolved ``EvalRun.simulator_model``) and with the same resolved apparatus
+    settings, archived runs included. A run judged by another model, or with its rig set up otherwise, spent
+    differently, and pricing an arm from it would bias the prediction by whatever the difference costs — low,
+    when the arm's judge is the dearer one, and the generation paid before the run's own cap could say so. What
+    it does not match: a judge config's prompt — two configs on one model are one judge here, a prompt moving a
+    judgement's cost far less than a model does. Only the matching runs' results are read, one run at a time,
+    rather than every result in the scope for every arm.
+
+    Each arm is priced from those results' per-observation costs scaled to the arm's planned cases and repeats,
+    and **its prediction is the band's upper end**, since the launch holds that figure to the arm's cap
+    (:class:`~threetears.evals.run.ArmPrice`): a central estimate admits an arm that then runs past its cap
+    about as often as the run lands above the centre. The central estimate and the lower end ride along beside
+    it. A history too thin to band (fewer than :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` priced
+    past results) bounds nothing, and predicts nothing, as does a scope with no priced history of the
+    condition — the launch reads both as unknown.
+
+    **A template's new revision prices from the revision before it** while it has no priced result of its own. A
+    revision a reset writes (:func:`~threetears.evals.run.reset_definitions`) is a new record, so its own history
+    starts empty; the pricer then walks back through the name's earlier revisions (each one revision below the
+    last), drawing on the first whose runs launched as the arm will be hold priced results, and the basis says so:
+    ``priced from revision 1 of '<name>': this revision has no priced result yet; model, judge, simulator and
+    apparatus unchanged (...)``. It crosses a step only where the template leaves what a run spends alone (its
+    candidate kind, judged dimensions with their judge pins, conversation shape, world seed and allowed tools); a
+    step changing any of them stops the walk, and the arm reads unpriced naming what changed. An earlier revision priced
+    only under other launch conditions is named with the conditions that differ. A revision with priced results of its
+    own is priced from them alone. This is pricing only: analysis never pools two revisions' results.
+
+    :param host: The host whose store holds the history and whose vocabulary reads it.
+    :ptype host: EvalHost
+    :return: The pricer.
+    :rtype: LaunchPricer
+    """
+
+    def priced_history(quote: ArmQuote, template_id: str) -> CostEstimateCell:
+        """What the priced results of the runs of ``template_id`` launched as the arm will be predict for it."""
+        runs = [
+            run
+            for run in list_runs(host, quote.scope_id, include_archived=True)
+            if run.template_id == template_id and not _launch_differences(run, quote)
+        ]
+        results = [result for run in runs for result in host.storage.query_eval_results_by_run(run.id, quote.scope_id)]
+        estimate = compute_estimate_cost(
+            runs,
+            results,
+            models=[quote.candidate_model],
+            k_runs=quote.k_runs,
+            n_test_cases=quote.case_count,
+            n_test_cases_source="generated" if quote.case_source == "generated" else "derived",
+            cassette_mode=quote.cassette_mode,
+            template_id=template_id,
+            profile=host.profile,
+        )
+        [cell] = estimate.cells
+        return cell
+
+    def priced(cell: CostEstimateCell, predicted: PredictedValue, condition: str, drawn_on: str = "") -> ArmPrice:
+        """The arm's price from a cell holding priced results (``predicted``, its prediction), or why they bound
+        nothing."""
+        if predicted.interval_high is None:
+            return ArmPrice(
+                predicted_usd=None,
+                basis=(
+                    f"{drawn_on}{cell.n_historical} priced past result(s) of {condition} are too few to bound the arm "
+                    f"(a band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at ${predicted.value:.2f})"
+                ),
+            )
+        return ArmPrice(
+            predicted_usd=predicted.interval_high,
+            central_usd=predicted.value,
+            low_usd=predicted.interval_low,
+            method_id=predicted.method_id,
+            basis=(
+                f"{drawn_on}the upper end of the band ${predicted.interval_low or 0.0:.2f}-"
+                f"${predicted.interval_high:.2f} around ${predicted.value:.2f}, method {predicted.method_id}, from "
+                f"{cell.n_historical} priced past result(s) of {condition}"
+                + (f" ({cell.band_basis})" if cell.band_basis else "")
+            ),
+        )
+
+    def price(quote: ArmQuote) -> ArmPrice:
+        judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
+        launched = (
+            f"on {quote.candidate_model!r} at cassette mode {quote.cassette_mode!r}, judged by {judges!r}, simulator "
+            f"{quote.simulator_model!r} and apparatus settings {dict(quote.apparatus_settings)!r}"
+        )
+        condition = f"template {quote.template_id!r} {launched}"
+        cell = priced_history(quote, quote.template_id)
+        if cell.predicted is not None:
+            return priced(cell, cell.predicted, condition)
+        unpriced = (
+            f"; {cell.n_unpriced_historical} past result(s) ran unpriced and cannot be drawn on"
+            if cell.n_unpriced_historical
+            else ""
+        )
+        basis = f"no priced past result of {condition} is in scope {quote.scope_id!r}{unpriced}"
+        template = host.storage.load_template(quote.template_id, quote.scope_id)
+        if template is None or template.revision == 1:
+            return ArmPrice(predicted_usd=None, basis=basis)
+        # A revision a reset wrote prices from the one before it while the step leaves what an arm spends alone
+        # (_PRICING_UNCHANGED). Its results only predict the cost; analysis never pools two revisions.
+        later = template
+        mismatched: list[str] = []
+        while (earlier := _predecessor(host, later)) is not None:
+            if changed := _pricing_changes(earlier, later):
+                return ArmPrice(
+                    predicted_usd=None,
+                    basis=f"{basis}; revision {earlier.revision} of {template.name!r} cannot price it: the step to "
+                    f"revision {later.revision} changed {', '.join(changed)}",
+                )
+            earlier_cell = priced_history(quote, earlier.id)
+            if earlier_cell.predicted is not None:
+                return priced(
+                    earlier_cell,
+                    earlier_cell.predicted,
+                    f"revision {earlier.revision} ({earlier.id!r}) {launched}",
+                    drawn_on=f"priced from revision {earlier.revision} of {template.name!r}: this revision has no "
+                    f"priced result yet; {_PRICING_UNCHANGED}; ",
+                )
+            if differences := _closest_priced_differences(host, quote, earlier):
+                mismatched.append(f"revision {earlier.revision}'s priced runs differ in {differences}")
+            later = earlier
+        if later is template:
+            return ArmPrice(
+                predicted_usd=None,
+                basis=f"{basis}; the store holds no one revision {template.revision - 1} of {template.name!r} to "
+                "draw on",
+            )
+        earlier_revisions = (
+            f"revision {later.revision}"
+            if later.revision == template.revision - 1
+            else f"revisions {later.revision}-{template.revision - 1}"
+        )
+        return ArmPrice(
+            predicted_usd=None,
+            basis=f"{basis}, nor of {earlier_revisions} of {template.name!r}, which would price it with "
+            f"{_PRICING_UNCHANGED}" + (f"; {'; '.join(mismatched)}" if mismatched else ""),
+        )
+
+    return price
+
+
+#: What a revision step must leave equal for an earlier revision's priced results to price a later revision's arm,
+#: as an estimate's basis states it. The launch conditions are matched run by run as for the revision's own history
+#: (the candidate model, cassette mode, each scored dim's judge model, the simulator model and the apparatus
+#: settings); the template's are compared across the step (:func:`_pricing_shape`). The case count is not: a price
+#: is per-observation cost scaled to the arm's own planned cases. Wording is not either (intent, descriptions, a
+#: dim's guide, the kind's spec, the cases' content), as a judge config's prompt is not matched against history.
+_PRICING_UNCHANGED = (
+    "model, judge, simulator and apparatus unchanged (the candidate model, cassette mode, each scored dimension's "
+    "judge model, simulator model and apparatus settings, and the template's candidate kind, judged dimensions with "
+    "their judge pins, conversation shape, world seed and allowed tools)"
+)
+
+
+def _pricing_shape(template: EvalTemplate) -> dict[str, object]:
+    """What of a template moves what a run of it spends beyond its launch conditions, by the name a basis gives it."""
+    conversation = template.conversation
+    return {
+        "the candidate kind": template.candidate_kind,
+        "the judged dimensions or their judge pins": sorted((dim.name, dim.judge or "") for dim in template.rubric),
+        "the conversation shape": None
+        if conversation is None
+        else (
+            [actor.id for actor in conversation.actors],
+            [(r.turn, r.dimension) for r in conversation.world_rounds],
+            conversation.turn_scheduler,
+            conversation.max_speakers_per_round,
+            conversation.max_turns,
+            conversation.sessions,
+        ),
+        "the world seed": template.world_seed.model_dump(mode="json"),
+        "the allowed tools": template.tools_allowed,
+    }
+
+
+def _pricing_changes(earlier: EvalTemplate, later: EvalTemplate) -> list[str]:
+    """What of :func:`_pricing_shape` a revision step changed; empty when the earlier revision's results price."""
+    before, after = _pricing_shape(earlier), _pricing_shape(later)
+    return [name for name in before if before[name] != after[name]]
+
+
+def _predecessor(host: EvalHost, template: EvalTemplate) -> EvalTemplate | None:
+    """The revision a reset superseded with ``template``: its name's record one revision earlier, when there is one."""
+    if template.revision <= 1:
+        return None
+    earlier = [
+        stored
+        for stored in host.storage.query_templates(template.scope_id)
+        if stored.name == template.name and stored.revision == template.revision - 1
+    ]
+    return earlier[0] if len(earlier) == 1 else None
+
+
+def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalTemplate) -> str:
+    """The launch conditions the closest priced run of ``template`` differs from the arm in; empty for none priced."""
+    closest: list[str] | None = None
+    for run in list_runs(host, quote.scope_id, include_archived=True):
+        if run.template_id != template.id:
+            continue
+        if not any(r.cost_usd is not None for r in host.storage.query_eval_results_by_run(run.id, quote.scope_id)):
+            continue
+        differences = _launch_differences(run, quote)
+        if closest is None or len(differences) < len(closest):
+            closest = differences
+    return ", ".join(closest or [])
+
+
+def _launch_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
+    """The launch conditions ``run`` was launched under otherwise than ``quote``'s arm will be, beside its template.
+
+    :param run: A run from the scope's history.
+    :ptype run: EvalRun
+    :param quote: The arm being priced.
+    :ptype quote: ArmQuote
+    :return: Each condition that moves what a run spends and differs, as ``<condition> (<run's> there, <arm's> here)``
+        — the judges and the simulator by the models that ran, not by what the launch named. Empty when the run was
+        launched as the arm will be.
+    :rtype: list[str]
+    """
+    judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
+    pairs: list[tuple[str, object, object]] = [
+        ("candidate model", run.candidate_model, quote.candidate_model),
+        ("cassette mode", run.cassette_mode, quote.cassette_mode),
+        ("judge", run.effective_judges, judges),
+        ("simulator", run.simulator_model, quote.simulator_model),
+        ("apparatus settings", run.apparatus_settings, dict(quote.apparatus_settings)),
+    ]
+    return [f"{name} ({there!r} there, {here!r} here)" for name, there, here in pairs if there != here]
+
+
+def _completeness(disclosures: Mapping[str, str], n_degraded: int | None = None) -> list[str]:
+    """The runs that measured less than they promised, one line each."""
+    if not disclosures:
+        return []
+    weight = f" ({n_degraded} observation(s) from them)" if n_degraded is not None else ""
+    return [f"incomplete runs{weight}:", *(f"- {run_id}: {sentence}" for run_id, sentence in disclosures.items())]
+
+
+def _predicted(predicted: PredictedValue | None, n_unplanned: int | None = None) -> str:
+    """A prediction, set apart from the observation it sits beside, and how much of that observation the plan made."""
+    if predicted is None:
+        return ""
+    population = (
+        " — the observed cost here is history the plan did not make (it names no launched run)"
+        if n_unplanned is None
+        else f" — {n_unplanned} observation(s) here are from runs the plan did not make"
+        if n_unplanned
+        else ""
+    )
+    band = (
+        f" [{format_number(predicted.interval_low)}, {format_number(predicted.interval_high)}]"
+        if predicted.interval_low is not None and predicted.interval_high is not None
+        else ""
+    )
+    return f"; predicted {format_number(predicted.value)}{band} ({predicted.method_id}){population}"
+
+
+def pivot_text(table: PivotTable) -> str:
+    """A pivot as text: what was computed, each cell with its denominators, and every caveat the table carries."""
+    lines = [
+        f"pivot of {measure_title(table.metric)} by {table.row_factor} (rows) x {table.column_factor} (columns), "
+        f"{table.weighting}: {table.n_observations} observation(s), {table.n_filtered_out} filtered out",
+        f"formula: {table.formula}",
+    ]
+    for cell in table.cells:
+        spread = f", sem {format_number(cell.sem)}" if cell.sem is not None else ""
+        unmeasured = f", {cell.n_unmeasured} unmeasured" if cell.n_unmeasured else ""
+        # A cell's compositions are worth a reader's eye only where the table's differ; otherwise they repeat.
+        roles = (
+            "; cost over " + " | ".join("+".join(roles) for roles in cell.cost_compositions)
+            if table.cost_compositions_differ and cell.cost_compositions
+            else ""
+        )
+        versions = "".join(
+            f"; pools {key} versions {', '.join(f'v{version}' for version in found)}"
+            for key, found in cell.identity_versions.items()
+        )
+        basis = (
+            f"; meaned over {_basis_sets(cell.composite_basis.model_dump())}"
+            if table.composite_bases_differ and cell.composite_basis is not None
+            else ""
+        )
+        served = (
+            f"; answered by {_served(cell.served_models.model_dump())}"
+            if cell.served_models is not None and cell.served_models.state != "one"
+            else ""
+        )
+        withheld = f"; withheld: it {cell.withheld}" if cell.withheld else ""
+        substituted = f"; {cell.substitution_disclosure}" if cell.substitution_disclosure else ""
+        lines.append(
+            f"- {cell.row} / {cell.column}: {format_number(cell.value)} ({cell.status}; n={cell.n}, "
+            f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{basis}{versions}{served}{withheld}{substituted}"
+            f"{_predicted(cell.predicted, cell.n_unplanned)}"
+        )
+    if not table.cells:
+        lines.append("- no cells")
+    for flag in table.simpsons_flags:
+        lines.append(
+            f"Simpson's reversal: pooled, {flag.pooled_leader} reads higher of {flag.column_a} vs {flag.column_b}, "
+            f"but {flag.rows_disagreeing} row(s) order them the other way ({', '.join(flag.disagreeing_rows)}) "
+            f"against {flag.rows_agreeing} that agree — orders of point values, none tested; do not read the pooled "
+            "order as a ranking"
+        )
+    if table.cost_compositions_differ:
+        lines.append(
+            "cost compositions differ: these dollars were not all summed over the same roles, so a cheaper cell "
+            "may only have priced fewer things — each cell names what it covered"
+        )
+    if table.composite_bases_differ:
+        lines.append(
+            "ragged composite: these composites were not all meaned over the same dimensions, so a difference "
+            "between cells may be a difference in what was averaged — each cell names the sets it pooled"
+        )
+    if table.cassette_mode_disclosure:
+        lines.append(table.cassette_mode_disclosure)
+    if table.identity_pooling_disclosure:
+        lines.append(table.identity_pooling_disclosure)
+    if table.served_model_disclosure:
+        lines.append(table.served_model_disclosure)
+    if table.unplaced_predicted_models:
+        lines.append(f"planned and in no cell here: {', '.join(table.unplaced_predicted_models)}")
+    lines += exclusion_lines(table.exclusions)
+    lines += _completeness(table.completeness_disclosures, table.n_degraded_observations)
+    return "\n".join(lines)
+
+
+def history_text(result: HistoryResult) -> str:
+    """A history as text: each contestant's series, oldest first, with each step's verdict and its test."""
+    direction = {True: "higher is better", False: "lower is better", None: "no better direction"}
+    lines = [
+        f"history of {result.metric} ({direction[result.higher_is_better]}), {result.weighting}: "
+        f"{len(result.series)} series over {result.n_results} result(s), {result.n_filtered_out} filtered out",
+        f"formula: {result.formula}",
+        f"regression thresholds: min absolute change {format_number(result.min_absolute_change)}, "
+        f"min relative change {format_number(result.min_relative_change)}",
+        (
+            "equivalence margin: none declared for this measure, so no step can read equivalent; "
+            "not_separated says the data cannot tell a move from noise, never that nothing changed"
+            if result.equivalence_margin is None
+            else f"equivalence margin: ±{format_number(result.equivalence_margin)} (the measure's declared "
+            f"materiality threshold), but no step can read equivalent: {untested}"
+            if (untested := equivalence_untested_reason(result.equivalence_margin, result.measure.value_range))
+            else f"equivalence margin: ±{format_number(result.equivalence_margin)} (the measure's declared "
+            "materiality threshold); a step reads equivalent only when shown inside it"
+        ),
+    ]
+    if result.attribution_disclosure:
+        lines.append(result.attribution_disclosure)
+    if result.identity_span_disclosure:
+        lines.append(result.identity_span_disclosure)
+    if result.contended_latency_disclosure:
+        lines.append(result.contended_latency_disclosure)
+    for series in result.series:
+        lines.append(f"## {series.model} — subject {series.subject_label or series.subject_id}")
+        if series.identity_version_disclosure:
+            lines.append(series.identity_version_disclosure)
+        mixed = series.served_models is not None and series.served_models.state != "one"
+        if series.served_models is not None and (sentence := series.served_models.disclosure()):
+            lines.append(f"this series {sentence}")
+        previous_basis: CompositeBasis | None = None
+        previous_label: str | None = None
+        for point in series.points:
+            flag = point.regression
+            verdict = f"; {flag.label} vs previous ({flag.test})" if flag is not None else ""
+            baseline = (
+                " (baseline)" if point.is_baseline else f", {format_signed(point.delta_from_baseline)} from baseline"
+            )
+            epoch = ", suite changed here" if point.epoch_boundary else ""
+            if point.epoch_boundary and (point.epoch_label or previous_label):
+                epoch += f" ({previous_label or 'no named case set'} to {point.epoch_label or 'no named case set'})"
+            previous_label = point.epoch_label
+            short = f"; {point.completeness_disclosure}" if point.completeness_disclosure else ""
+            ragged = (
+                f"; {point.composite_basis.disclosure()}"
+                if point.composite_basis is not None and point.composite_basis.ragged
+                else ""
+            )
+            if (
+                point.composite_basis is not None
+                and previous_basis is not None
+                and point.composite_basis.bases != previous_basis.bases
+            ):
+                ragged += f"; composite basis changed here, to {_basis_sets(point.composite_basis.model_dump())}"
+            previous_basis = point.composite_basis or previous_basis
+            # Which model answered each point, wherever the series does not rest on one throughout.
+            served = (
+                f"; answered by {_served(point.served_models.model_dump())}"
+                if mixed and point.served_models is not None
+                else ""
+            )
+            lines.append(
+                f"- {point.created_at} {point.run_id}: {format_number(point.value)} (n={point.n}, "
+                f"{point.n_cases} case(s)){baseline}{epoch}{verdict}{short}{ragged}{served}"
+            )
+    if not result.series:
+        lines.append("- no series")
+    lines += exclusion_lines(result.exclusions)
+    return "\n".join(lines)
+
+
+def estimate_text(estimate: LaunchEstimate) -> str:
+    """An estimate as text: the launch priced, each arm's price and outcome, and the total."""
+    grid = (
+        f"{estimate.hypothetical_case_count} case(s) (hypothetical)"
+        if estimate.hypothetical_case_count is not None
+        else (f"{estimate.n_variations} generated case(s)" if estimate.n_variations else "its stored cases")
+    )
+    cap = (
+        f"each arm capped at {format_number(estimate.cap_usd, prefix='$')} ({estimate.cap_origin})"
+        if estimate.cap_usd is not None
+        else "no cap in force"
+    )
+    lines = [
+        f"estimate: template {estimate.template_id}, subject {estimate.subject_id}, {grid} x k_runs {estimate.k_runs}, "
+        f"cassette mode {estimate.cassette_mode}; {cap}"
+    ]
+    for arm in estimate.arms:
+        figure = (
+            f"{format_number(arm.predicted_usd, prefix='$')}"
+            + (f" (central {format_number(arm.central_usd, prefix='$')})" if arm.central_usd is not None else "")
+            if arm.predicted_usd is not None
+            else "unpriced"
+        )
+        # one line: an arm's description is its repr'd model and template id and its counts (run.launch)
+        lines.append(f"- {arm.described}: {figure} — {arm.outcome}; {arm.basis}")
+        if arm.refusal is not None:
+            lines.append(f"  refused: {arm.refusal}")
+            lines.append(f"  remedy: {arm.remedy}")
+    if estimate.total_predicted_usd is None:
+        lines.append("total: none — an arm has no prediction, so no total is the launch's")
+    else:
+        lines.append(f"total: {format_number(estimate.total_predicted_usd, prefix='$')}")
+    lines.append("would launch" if estimate.would_launch else "would be refused")
+    if estimate.detectable_effect is not None:
+        lines += detectable_effect_lines(estimate.detectable_effect)
+    return "\n".join(lines)
+
+
+def detectable_effect_lines(block: DetectableEffects) -> list[str]:
+    """A launch's power pre-flight as text: one line per reading, then what every line assumes."""
+    head = (
+        f"detectable difference ({format_number(100 * block.power)}% power, paired, Holm over {block.family_size} "
+        f"comparison(s) so α/m = {format_number(block.per_comparison_alpha)}):"
+    )
+    if block.cannot_estimate is not None:
+        return [head, f"- cannot estimate: {block.cannot_estimate}"]
+    lines = [head]
+    for effect in block.effects:
+        runs = ", ".join(effect.run_ids)
+        if effect.delta is None:
+            lines.append(f"- {effect.name}: cannot estimate: {effect.cannot_estimate} (from runs {runs})")
+            continue
+        lines.append(
+            f"- {effect.name}: with {block.n_cases} cases and {block.k_runs} repeats this campaign can detect "
+            f"Δ ≥ {format_number(effect.delta)} (from runs {runs}; "
+            + (
+                "between-arm case spread measured on earlier paired runs)"
+                if effect.basis == "paired_runs"
+                else "no earlier paired runs, so two arms' case levels are taken as unrelated)"
+            )
+        )
+    lines.append(f"assumes: {block.assumptions}")
+    return lines
+
+
+def export_text(export: ScoreExport) -> str:
+    """An export as text: a line of its row count and what it left out, then the body itself."""
+    lines = [f"export ({export.format}, {export.n_records} row(s))"]
+    lines += exclusion_lines(export.exclusions)
+    lines += _completeness(export.completeness_disclosures)
+    return "\n".join(lines) + "\n\n" + export.body
+
+
+def _basis_sets(basis: Mapping[str, Any] | None) -> str:
+    """A pooled composite's dimension sets, as text: ``{a, b} | {c}``, marked ragged when there are several."""
+    if not basis:
+        return "nothing"
+    sets = " | ".join("{" + ", ".join(dims) + "}" for dims in basis.get("bases", [])) or "{}"
+    return f"{sets} (ragged)" if basis.get("ragged") else sets
+
+
+def _served(reading: Mapping[str, Any] | None) -> str:
+    """A served-model reading as text: the models the responses named, and its state where that is not one."""
+    if not reading:
+        return "no candidate call"
+    models = ", ".join(reading.get("served_models", [])) or "no named model"
+    if reading.get("state") == "unrecorded":
+        return f"{models} ({reading.get('n_unrecorded')} of {reading.get('n_results')} result(s) unrecorded)"
+    return models if reading.get("state") == "one" else f"{models} (pooled)"
+
+
+def runs_compared_text(compared: RunsCompared) -> str:
+    """Two runs compared as text: the arms, each reading with its delta and test, then every disclosure."""
+    view = compared.comparison
+    arm: Mapping[str, Any] = view.get("comparison", {}).get("arm", {})
+    paired = bool(arm.get("paired"))
+    criteria = {*arm.get("pass_criteria_a", []), *arm.get("pass_criteria_b", [])}
+    label = pass_threshold_label(
+        arm.get("k"), view.get("rubric_threshold", DEFAULT_PASS_THRESHOLD), criteria=sorted(criteria)
+    )
+    untested = arm.get("composite_untested_reason")
+    if untested is not None:
+        # No test ran, so there is no pairing to state and no composite to set beside it — said, never a test
+        # "paired over 0 cases" or a delta between two absent numbers.
+        composite = f"mean composite: none — no paired cases: {untested}"
+    else:
+        composite = (
+            f"mean composite: {format_number(arm.get('composite_a'))} vs {format_number(arm.get('composite_b'))} "
+            f"(delta {format_signed(arm.get('composite_delta'))}; "
+            + (f"paired over {arm.get('n_pairs')} shared case(s)" if paired else "unpaired: no case scored in both")
+            + "), "
+            + format_significance(
+                significant=arm.get("significant"),
+                paired=paired,
+                p=arm.get("p"),
+                effect=arm.get("hedges_g"),
+                n=arm.get("n_pairs"),
+                hedges=True,
+            )
+        )
+    lines = [
+        f"run {compared.baseline_run_id} ({arm.get('model_a')}) against run {compared.candidate_run_id} "
+        f"({arm.get('model_b')})",
+        f"{label}: {format_number(arm.get('pass_hat_k_a'))} vs "
+        f"{format_number(arm.get('pass_hat_k_b'))} (delta {format_signed(arm.get('pass_hat_k_delta'))}; "
+        f"{arm.get('pass_hat_k_n_cases_a')} vs {arm.get('pass_hat_k_n_cases_b')} case(s))",
+        composite,
+    ]
+    for run_id, key in (
+        (compared.baseline_run_id, "pass_hat_k_unmeasured_reason_a"),
+        (compared.candidate_run_id, "pass_hat_k_unmeasured_reason_b"),
+    ):
+        if arm.get(key):
+            lines.append(f"pass^k of run {run_id} is unmeasured: {arm[key]}")
+    if arm.get("served_models_a") is not None or arm.get("served_models_b") is not None:
+        lines.append(
+            f"served models: run {compared.baseline_run_id} {_served(arm.get('served_models_a'))}; "
+            f"run {compared.candidate_run_id} {_served(arm.get('served_models_b'))}"
+        )
+    if view.get("composite_comparability"):
+        lines.append(str(view["composite_comparability"]))
+    if arm.get("composite_bases_differ"):
+        lines.append(
+            "composite bases differ: "
+            + "; ".join(
+                f"run {run_id} meaned over {_basis_sets(arm.get(key))}"
+                for run_id, key in (
+                    (compared.baseline_run_id, "composite_basis_a"),
+                    (compared.candidate_run_id, "composite_basis_b"),
+                )
+            )
+            + " — the delta is partly a difference in what was averaged, not only in what was measured"
+        )
+    lines += _completeness(compared.completeness_disclosures)
+    lines += [
+        sentence for sentence in (compared.measurement_window_disclosure, compared.cassette_mode_disclosure) if sentence
+    ]
+    return "\n".join(lines)
+
+
+def runs_bisected_text(bisected: RunsBisected) -> str:
+    """Two runs' inputs split as text: each difference with both values, each undecided input, then every disclosure."""
+    details = bisected.details
+    lines = [
+        f"run {bisected.baseline_run_id} against run {bisected.candidate_run_id}: {len(bisected.differs)} input(s) "
+        f"differ, {len(bisected.same)} the same, {len(bisected.unknown)} undecided"
+    ]
+    for heading, names in (
+        ("differs", bisected.differs),
+        ("undecided (one run or both recorded nothing)", bisected.unknown),
+    ):
+        if names:
+            lines.append(f"{heading}:")
+            lines += [f"- {name}: {details[name]['a']!r} vs {details[name]['b']!r}" for name in names]
+    if bisected.same:
+        lines.append("same: " + ", ".join(bisected.same))
+    lines += _completeness(bisected.completeness_disclosures)
+    if bisected.measurement_window_disclosure:
+        lines.append(bisected.measurement_window_disclosure)
+    return "\n".join(lines)
+
+
+__all__ = [
+    "ArmEstimate",
+    "DETECTABLE_EFFECT_ASSUMPTIONS",
+    "DetectableEffect",
+    "DetectableEffects",
+    "LAUNCH_PRICER_METHOD",
+    "LaunchEstimate",
+    "RunsBisected",
+    "RunsCompared",
+    "detectable_effect_lines",
+    "detectable_effects",
+    "estimate_text",
+    "export_text",
+    "history_text",
+    "launch_estimate",
+    "pivot_text",
+    "runs_bisect",
+    "runs_bisected_text",
+    "runs_compare",
+    "runs_compared_text",
+    "scope_export",
+    "scope_frontier",
+    "scope_history",
+    "scope_pivot",
+]

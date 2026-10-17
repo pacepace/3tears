@@ -44,6 +44,7 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
 from threetears.enforcement.collection_census import find_census_problems, run_census
 
 __all__: list[str] = []
@@ -103,7 +104,7 @@ def _modules(repo_root: Path) -> list[tuple[str, ast.Module]]:
     parsed: list[tuple[str, ast.Module]] = []
     for root in _source_roots(repo_root):
         for path in sorted(root.rglob("*.py")):
-            parsed.append((path.relative_to(repo_root).as_posix(), ast.parse(path.read_text(encoding="utf-8"))))
+            parsed.append((path.relative_to(repo_root).as_posix(), parse_python_path(path)))
     return parsed
 
 

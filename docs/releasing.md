@@ -44,6 +44,18 @@ An intra-family API addition ships in a MINOR bump
      PyPI first. Nothing checks for it -- `verify-dist-complete.sh` only confirms every member
      built -- and a tag pushed without it publishes the members ahead of the new one, then
      fails, leaving a family that cannot install until the version is republished.
+   - **`packages/evals/MIGRATIONS.toml`:** in the same PR, rename its `version = "unreleased"`
+     section to the version being tagged (keep its `since`). The tag must ship with its section named
+     for it: `release_notes.py v<version>` reads it by that name, and the next release starts a new
+     `unreleased` section `since` this tag. `packages/evals/tests/test_api_surface.py` fails once the tree
+     follows a tag with no section of its own (the next release's records would pile into the last
+     one's section), or while the `unreleased` section starts at an older tag. The tree follows the
+     newest final release tag (`v<x>.<y>.<z>`) at or below its `pyproject.toml` version wherever that tag
+     is, so `develop`, which never merges `main` back, follows a release tagged on `main`. A pre-release
+     tag (any suffix) is never followed and gets no section. Only names that a final release shipped are
+     recorded: a name added and dropped between two releases needs no entry. 0.70.0 is the package's
+     first release, so its section is `since = "v0.69.0"` (a release with no `packages/evals`, which needs
+     no section of its own) and records no names.
 2. PR into `develop`.
 3. PR `develop` into `main`, with no version bump on that second PR.
 4. **A release that touches `packages/models`:** run the live Claude CLI batch (structured output

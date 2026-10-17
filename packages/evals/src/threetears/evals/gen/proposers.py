@@ -1,0 +1,343 @@
+"""The rubric proposer: one completion call that drafts a template for operator review.
+
+One proposer, run on one of two axes. On the ``capability`` axis it drafts a capability rubric
+and its scenario axes; on the ``boundary`` axis it drafts a universal boundary battery and its
+refusal dims. Either way it sends a system prompt and a two-feed user message — the subject
+feed (what the subject under test is) and the catalog feed (the reusable rubric dims the
+operator already trusts) — and validates the reply into a
+:class:`~threetears.evals.schema.models.RubricProposal`. No draft is persisted: the operator
+edits it and commits the parts they accept through the authoring operations. What IS written is
+the call's spend: the call runs outside any run, so it is priced before it is made and ledgered
+once it is, through the :class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget` the host hands in.
+
+**Planned, then admitted by the host, then made.** :func:`plan_draft` is the call as it will be sent, made
+of nothing but the three strings; the host quotes it and admits it under its budget in its own call
+(:meth:`~threetears.evals.kernel.out_of_run.OutOfRunBudget.admit`), refusing there what the cap cannot pay
+for, and :func:`propose_draft` — in the job — makes exactly that admitted call and reads the draft.
+
+**What arrives here is text.** The host renders the subject feed from its own subject, the
+catalog feed from its rubric-dim store, and the system prompt from its prompt registry — each
+for the axis it is proposing on — then hands this module the three strings and a
+:class:`~threetears.evals.schema.completion.BoundCompletionClient`. So the proposer knows neither what
+a subject is nor where a prompt is kept, and every host drafts with the same code whatever its
+subject is.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, NamedTuple
+
+from pydantic import ValidationError
+
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.prompts.catalogue import BOUNDARY_GEN_PROMPT, PROPOSER_PROMPT
+from threetears.evals.kernel.prompts.contract import OutputContract, require_output_contract, template_text
+from threetears.evals.schema.models import SCALE_LEVELS, RubricAxis, RubricProposal
+from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
+from threetears.evals.kernel.out_of_run import AdmittedCall, PlannedCall
+from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.kernel.provider import extract_json
+from threetears.evals.kernel.inner_ceilings import PROPOSER_MAX_TOKENS
+from threetears.evals.schema.logs import get_logger
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel.out_of_run import OutOfRunBudget
+    from threetears.evals.schema.completion import BoundCompletionClient
+
+log = get_logger(__name__)
+
+#: How a refusal names the proposer that produced the output it refuses, per axis.
+_REFUSAL_SUBJECT: dict[str, str] = {
+    "capability": "proposer",
+    "boundary": "boundary proposer",
+}
+
+#: Every level any scale answers: what a drafted dimension's scoring guide may describe.
+_GUIDE_LEVELS: tuple[str, ...] = tuple(dict.fromkeys(level for levels in SCALE_LEVELS.values() for level in levels))
+
+
+def _proposal_schema() -> dict[str, Any]:
+    """:class:`~threetears.evals.schema.models.RubricProposal`'s JSON schema, its one map field closed.
+
+    A strict schema admits no object with arbitrary keys, and ``RubricDim.scoring_guide`` maps a scale's levels to
+    descriptors. Which levels depends on the dimension's own ``scale``, which a strict schema cannot condition on,
+    so the guide is sent as an object holding every level any scale has, each a descriptor or ``null``: the
+    unwritten levels are dropped before the draft is validated (:func:`_drop_unwritten_levels`), and the model
+    still refuses a guide describing a level its dimension's scale does not have.
+
+    A dimension's ``judge`` declaration is left out: which judge scores a dimension is the operator's to declare when
+    the draft becomes a template (``create_template`` refuses a dimension that declares none), never a proposer's to
+    guess, and leaving it out keeps the contract every stored proposer prompt was written against.
+    """
+    schema = RubricProposal.model_json_schema()
+    del schema["$defs"]["RubricDim"]["properties"]["judge"]
+    schema["$defs"]["RubricDim"]["properties"]["scoring_guide"] = {
+        "type": "object",
+        "description": "Each level of the dimension's scale mapped to what earns it; null for a level not described "
+        "and for every level its scale does not have.",
+        "properties": {level: {"anyOf": [{"type": "string"}, {"type": "null"}]} for level in _GUIDE_LEVELS},
+    }
+    return schema
+
+
+#: What a proposal asks for: the draft model as a strict schema, so a provider that enforces it cannot write a
+#: draft the model refuses — a dimension with no ``scale``, say — whatever the stored prompt says.
+_PROPOSAL_RESPONSE_FORMAT: dict[str, Any] = strict_response_format("rubric_proposal", _proposal_schema())
+
+#: The output contract both proposer prompts are written for: the draft's schema as the call sends it, and a
+#: revision for the rule it is refused by that the schema cannot state (a dimension name's ``<context>.<dim>``
+#: namespacing, :data:`~threetears.evals.schema.models.DimName`). Bump the revision when such a rule changes. Each
+#: shipped default ends with its line, and :func:`plan_draft` refuses a stored prompt that does not
+#: (:mod:`threetears.evals.kernel.prompts.contract`); ``tests/test_prompt_contract.py`` pins its fingerprint, so a
+#: change that moves it — and so refuses every stored proposer prompt until it is reset — is made on purpose.
+RUBRIC_PROPOSAL_CONTRACT = OutputContract.of(
+    "rubric_proposal", _PROPOSAL_RESPONSE_FORMAT["json_schema"]["schema"], revision=1
+)
+
+#: The prompt each axis's proposal is steered by, as the refusal of a stale one names it.
+_AXIS_PROMPT: dict[str, str] = {
+    "capability": PROPOSER_PROMPT,
+    "boundary": BOUNDARY_GEN_PROMPT,
+}
+
+
+class ProposedDraft(NamedTuple):
+    """A rubric draft, and the ledger row of the call that wrote it."""
+
+    proposal: RubricProposal
+    #: What the drafting call cost as the provider reported it, the ceiling it was admitted at and the
+    #: cap it was admitted under — written to the budget's store before the reply was read.
+    spend: OutOfRunSpend
+
+
+def default_system_prompt(axis: RubricAxis) -> str:
+    """The shipped default system prompt for ``axis``'s proposal, as :func:`plan_draft` sends it when handed none.
+
+    :param axis: Which axis the draft is for.
+    :ptype axis: RubricAxis
+    :return: The default template's text (``EVAL_PROPOSER_TEMPLATE_DEFAULT`` or ``EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT``),
+        which carries :data:`RUBRIC_PROPOSAL_CONTRACT`'s line.
+    :rtype: str
+    """
+    # The defaults state this module's contract line, so they import it; read here, after both modules load.
+    from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
+    from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
+
+    default = EVAL_PROPOSER_TEMPLATE_DEFAULT if axis == "capability" else EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
+    return template_text(default.sections)
+
+
+def plan_draft(
+    *,
+    axis: RubricAxis,
+    subject_feed: str,
+    catalog_feed: str,
+    system_prompt: str | None = None,
+    reset: str | None = None,
+) -> PlannedCall:
+    """The one call a rubric proposal sends, on either axis, built before anything is priced or made.
+
+    What a host quotes and admits under its out-of-run budget in its call
+    (:meth:`~threetears.evals.kernel.out_of_run.OutOfRunBudget.quote` / ``admit`` with purpose ``proposer``),
+    then hands, admitted, to :func:`propose_draft`. The user message is the subject feed, then the catalog
+    feed, because the catalog is read against the subject: which dims to reuse depends on what the subject is.
+
+    With no ``system_prompt`` the call runs the axis's shipped default (:func:`default_system_prompt`), and a
+    host that keeps no prompt registry passes nothing. **An override written for another draft shape is refused
+    here**, before anything is priced: a host's stored copy of ``eval_proposer`` or ``eval_boundary_gen`` seeded
+    before the draft's shape changed would otherwise be paid for and then fail draft validation on every call.
+    An override must carry :data:`RUBRIC_PROPOSAL_CONTRACT`'s line, as the shipped defaults do.
+
+    :param axis: Which axis the draft is for; names the prompt a refusal is about.
+    :ptype axis: RubricAxis
+    :param system_prompt: The host's override of the axis's system prompt, rendered; ``None`` (the default) runs the
+        shipped default.
+    :ptype system_prompt: str | None
+    :param subject_feed: The rendered description of the subject under test.
+    :ptype subject_feed: str
+    :param catalog_feed: The rendered reusable catalog for the axis, each dim with its ``key`` so the model can
+        name reuses in ``reused_dim_keys``.
+    :ptype catalog_feed: str
+    :param reset: With an override, how an operator of this host resets the axis's prompt slot to the shipped default —
+        an action or a command, such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry
+        is the host's, so the engine cannot name it; a refusal's remedy does. Required with ``system_prompt``.
+    :ptype reset: str | None
+    :return: The planned call.
+    :rtype: PlannedCall
+    :raises PromptContractError: ``system_prompt`` declares another output contract than
+        :data:`RUBRIC_PROPOSAL_CONTRACT`, or none — a stored copy that predates the draft's shape. Its remedy
+        names the prompt to reset, and ``reset`` as the way to reset it.
+    :raises ValueError: ``system_prompt`` is given and ``reset`` is missing or blank.
+    """
+    if system_prompt is None:
+        system_prompt = default_system_prompt(axis)
+    else:
+        if reset is None:
+            raise ValueError(
+                "an override system_prompt needs reset=: name how an operator of this host resets the prompt slot "
+                "to the shipped default, so a refusal of a stale copy can say it"
+            )
+        require_output_contract(_AXIS_PROMPT[axis], system_prompt, RUBRIC_PROPOSAL_CONTRACT, reset=reset)
+    return PlannedCall(
+        system=system_prompt,
+        user=f"{subject_feed}\n{catalog_feed}".rstrip() + "\n",
+        response_format=_PROPOSAL_RESPONSE_FORMAT,
+    )
+
+
+async def propose_draft(
+    client: BoundCompletionClient,
+    admitted: AdmittedCall,
+    *,
+    budget: OutOfRunBudget,
+    axis: RubricAxis,
+    subject_id: str,
+) -> ProposedDraft:
+    """Make an admitted rubric proposal on ``axis`` and read its draft.
+
+    On the ``capability`` axis the draft is a capability rubric and its scenario axes. On the
+    ``boundary`` axis it is a *universal* boundary template carrying an adversarial
+    ``conversation`` (an out-of-domain ask + injection / jailbreak / unsafe-request /
+    character-break pressure), ``variation_axes`` to instantiate the out-of-domain subject, and
+    the three refusal rubric dims (``boundary.correct`` / ``boundary.in_character`` /
+    ``boundary.scope_discipline`` — namespaced because a judge config binds to a dim by name
+    across every template). Domain width is judged by the model, not by code: the subject feed
+    carries the subject's tool breadth and reasoning focus, and the boundary system prompt
+    encodes the rule that for a broad-domain generalist 'out of domain' collapses toward unsafe
+    or abusive rather than merely off-topic.
+
+    The call is the one :func:`plan_draft` planned, which the host admitted under ``budget`` in its own
+    call — so a proposal the cap cannot pay for was refused there, with nothing called, and this admits
+    nothing. It makes the call on ``client``, whose spend ``budget`` ledgers as soon as it returns — before
+    the reply is read, so a draft refused for its content still has its cost on record — and validates the
+    reply into a :class:`~threetears.evals.schema.models.RubricProposal`, **returned for operator review —
+    no draft is persisted**. The client is released when the call returns, on the refusal paths too: a
+    proposal is the client's whole lifetime.
+
+    :param client: The completion client the call was admitted on — the host's client for the ``proposer`` role
+        (:data:`~threetears.evals.kernel.host.CompletionRole`). This function owns it from here and
+        releases it.
+    :ptype client: BoundCompletionClient
+    :param admitted: The proposal's call, as ``budget`` admitted it on ``client`` (purpose ``proposer``).
+    :ptype admitted: AdmittedCall
+    :param budget: The out-of-run budget that admitted the call, which ledgers it. Its ``subject_id``, when it
+        names one, is the subject the draft is for.
+    :ptype budget: OutOfRunBudget
+    :param axis: Which catalog axis the draft is for; stamped onto every new-dim suggestion.
+    :ptype axis: RubricAxis
+    :param subject_id: The subject the draft is for, named in the log line only.
+    :ptype subject_id: str
+    :return: The validated :class:`~threetears.evals.schema.models.RubricProposal` draft, and its call's
+        ledger row.
+    :rtype: ProposedDraft
+    :raises ValueError: ``budget`` names another subject than ``subject_id``; ``admitted`` was admitted for
+        another purpose than ``proposer``; or ``budget`` did not admit it on ``client`` (another
+        budget's, already made, or a copy) — the client released, nothing called.
+    :raises ValidationFailedError: The completion was not JSON, or failed draft validation (the call's spend is
+        already ledgered).
+    """
+    async with client:
+        if budget.subject_id is not None and budget.subject_id != subject_id:
+            raise ValueError(
+                f"the budget ledgers its calls under subject {budget.subject_id!r} and the draft is for "
+                f"{subject_id!r}; one budget per proposal, built for the subject it drafts"
+            )
+        if admitted.purpose != "proposer":
+            raise ValueError(
+                f"a proposal makes a call admitted for purpose 'proposer', and this one was admitted for "
+                f"{admitted.purpose!r}; admit plan_draft's call with budget.admit(client, 'proposer', [call])"
+            )
+        recorded = await budget.generate(client, admitted)
+    content: str = recorded.result.content
+    spend = recorded.spend
+    refused = _REFUSAL_SUBJECT[axis]
+    cost = _spent(spend)
+    try:
+        payload = extract_json(content)
+    except ValueError as e:
+        raise ValidationFailedError(
+            f"{refused} LLM output was not valid JSON ({cost}): {e}", remedy="propose again, or with another model"
+        ) from e
+
+    _drop_unwritten_levels(payload)
+    _coerce_new_dim_axis(payload, axis)
+    try:
+        proposal = RubricProposal(**payload)
+    except ValidationError as e:
+        raise ValidationFailedError(
+            f"{refused} LLM output failed draft validation ({cost}): {e}", remedy="propose again, or with another model"
+        ) from e
+
+    if axis == "boundary":
+        log.info(
+            "eval.propose_boundary subject=%s actors=%d dims=%d reused=%d new=%d",
+            subject_id,
+            len(proposal.template.conversation.actors) if proposal.template.conversation is not None else 0,
+            len(proposal.template.rubric),
+            len(proposal.reused_dim_keys),
+            len(proposal.new_dim_suggestions),
+        )
+    else:
+        log.info(
+            "eval.propose_rubric subject=%s reused=%d new=%d axes=%d",
+            subject_id,
+            len(proposal.reused_dim_keys),
+            len(proposal.new_dim_suggestions),
+            len(proposal.template.variation_axes),
+        )
+    return ProposedDraft(proposal, spend)
+
+
+def _spent(spend: OutOfRunSpend) -> str:
+    """What the refused draft's call cost, for the refusal to say — it was paid either way."""
+    return "the call cost an unreported amount" if spend.cost_usd is None else f"the call cost ${spend.cost_usd:.4f}"
+
+
+def _drop_unwritten_levels(payload: Any) -> None:
+    """Drop every ``null`` level from every scoring guide in ``payload``: the levels the schema made it name."""
+    if isinstance(payload, list):
+        for item in payload:
+            _drop_unwritten_levels(item)
+    elif isinstance(payload, dict):
+        guide = payload.get("scoring_guide")
+        if isinstance(guide, dict):
+            payload["scoring_guide"] = {level: text for level, text in guide.items() if text is not None}
+        for value in payload.values():
+            _drop_unwritten_levels(value)
+
+
+def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:
+    """Stamp the proposer's axis onto every new-dim suggestion and every drafted rubric dim in ``payload``.
+
+    The axis ('capability' vs 'boundary') is determined by *which* axis the proposer ran on,
+    not a judgment the drafting LLM should make. Models nonetheless sometimes
+    echo a dim's own key/name into the ``axis`` field, which would fail the
+    :data:`~threetears.evals.schema.models.RubricAxis` validation and reject an otherwise-valid
+    draft. Overwriting it before validation removes that failure mode at the
+    cause (the field is server-determined, so the LLM's value is never trusted).
+
+    The drafted template's own rubric dims take it too: a boundary battery's dims are guardrails, and
+    the judge stamps a dim's axis onto every score it gives, so a boundary dim drafted as capability
+    would be averaged into the composite it must stay out of.
+    """
+    if not isinstance(payload, dict):
+        return
+    for sug in payload.get("new_dim_suggestions") or []:
+        if isinstance(sug, dict):
+            sug["axis"] = axis
+            if isinstance(sug.get("dim"), dict):
+                sug["dim"]["axis"] = axis
+    template = payload.get("template")
+    if isinstance(template, dict):
+        for dim in template.get("rubric") or []:
+            if isinstance(dim, dict):
+                dim["axis"] = axis
+
+
+__all__ = [
+    "PROPOSER_MAX_TOKENS",
+    "RUBRIC_PROPOSAL_CONTRACT",
+    "ProposedDraft",
+    "plan_draft",
+    "propose_draft",
+]

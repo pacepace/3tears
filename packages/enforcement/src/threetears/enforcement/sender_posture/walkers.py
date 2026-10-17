@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-from threetears.enforcement.common import iter_python_files, relative_posix_path
+from threetears.enforcement.common import iter_python_files, parse_python_path, relative_posix_path
 from threetears.enforcement.sender_posture.config import POSTURES, SenderPostureConfig
 
 __all__ = [
@@ -275,7 +275,7 @@ def _scan_module(path: Path, config: SenderPostureConfig, scan: _Scan) -> None:
     relative = relative_posix_path(path, config.repo_root)
     try:
         source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(path))
+        tree = parse_python_path(path)
         comments = _comment_lines(source)
     except (UnicodeDecodeError, SyntaxError, tokenize.TokenError) as exc:
         scan.findings.append(f"{relative}: could not be parsed ({exc}); the gate cannot see its sites")
