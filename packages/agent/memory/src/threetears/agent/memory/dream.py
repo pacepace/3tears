@@ -57,7 +57,7 @@ from threetears.agent.memory.events import MemoryConsolidatedEvent
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 from threetears.langgraph.events import dispatch_event
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "ConsolidationResult",
@@ -375,10 +375,11 @@ class DreamService:
                 # that is non-destructive (sources are untouched and still
                 # recallable) and self-correcting (a later pass re-clusters
                 # + re-consolidates the sources), so no rollback is needed.
-                log.warning(
-                    "Dream consolidation skipped a cluster after an error: %s",
+                contain(
                     exc,
-                    extra={"extra_data": {"agent_id": str(agent_id), "source_count": len(members)}},
+                    log=log,
+                    what=f"Dream consolidation skipped a cluster after an error: {exc}",
+                    extra={"agent_id": str(agent_id), "source_count": len(members)},
                 )
                 continue
             if gist_id is not None:
@@ -547,7 +548,7 @@ class DreamService:
             log.warning("Failed to parse Dream reflector response; skipping cluster")
             return None
         except Exception as exc:
-            log.warning("Dream reflector LLM call failed; skipping cluster: %s", exc)
+            contain(exc, log=log, what=f"Dream reflector LLM call failed; skipping cluster: {exc}")
             return None
 
     async def _emit_consolidated_event(

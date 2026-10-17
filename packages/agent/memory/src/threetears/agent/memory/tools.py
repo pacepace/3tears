@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, tzinfo
@@ -78,7 +79,7 @@ from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.types import MemoryType
 from threetears.core.utils.local_time import parse_date_bound, render_local_time, resolve_zone
 from threetears.observe.text_block import one_line, under
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "ChunkRecallInput",
@@ -532,10 +533,13 @@ async def _may_touch_permanent(person_asked: PersonAsked | None, memory_id: UUID
         return bool(await person_asked(memory_id))
     except (
         Exception
-    ):  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
-        log.exception(
-            "person_asked resolver failed; the permanent memory is left alone",
-            extra={"extra_data": {"memory_id": str(memory_id)}},
+    ) as exc:  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
+        contain(
+            exc,
+            log=log,
+            what="person_asked resolver failed; the permanent memory is left alone",
+            extra={"memory_id": str(memory_id)},
+            level=logging.ERROR,
         )
         return False
 
@@ -658,6 +662,7 @@ async def _search_by_ids(
             ),
         )
     except Exception as exc:
+        contain(exc, log=log, what="memory_search id lookup failed")
         return _tool_error("memory_search", "id_lookup", str(exc))
 
     if mem_rows:
@@ -830,6 +835,7 @@ async def load_memory_search_tool(
                     alias=alias,
                 )
             except Exception as exc:
+                contain(exc, log=log, what="memory_search alias lookup failed")
                 return _tool_error("memory_search", "alias", str(exc))
             if row is None:
                 return f"[TOOL ERROR] No memory found with alias '{alias}'."
@@ -911,6 +917,7 @@ async def load_memory_search_tool(
                     date_before=date_before_dt,
                 )
             except Exception as exc:
+                contain(exc, log=log, what="memory_search query failed")
                 return _tool_error("memory_search", "query", str(exc))
 
         seen_ids = {m["memory_id"] for m in memories}
@@ -931,11 +938,14 @@ async def load_memory_search_tool(
                     if mid not in seen_ids:
                         seen_ids.add(mid)
                         memories.append({**row, "similarity": None})
-            except Exception:
+            except Exception as exc:
                 degraded.append("memory full-text search")
-                log.exception(
-                    "memory_search full-text branch failed",
-                    extra={"extra_data": {"user_id": user_id, "agent_id": agent_id}},
+                contain(
+                    exc,
+                    log=log,
+                    what="memory_search full-text branch failed",
+                    extra={"user_id": user_id, "agent_id": agent_id},
+                    level=logging.ERROR,
                 )
 
         more_memories = len(memories) > skip + shown
@@ -994,11 +1004,14 @@ async def load_memory_search_tool(
                                 "similarity": None,
                             }
                         )
-        except Exception:
+        except Exception as exc:
             degraded.append("media search")
-            log.exception(
-                "memory_search media branch failed",
-                extra={"extra_data": {"user_id": user_id, "agent_id": agent_id}},
+            contain(
+                exc,
+                log=log,
+                what="memory_search media branch failed",
+                extra={"user_id": user_id, "agent_id": agent_id},
+                level=logging.ERROR,
             )
         # One line per file: a file's description and its text are two content rows,
         # and both would print the same [media:<id>].
@@ -1039,11 +1052,14 @@ async def load_memory_search_tool(
                             "similarity": row["similarity"],
                         }
                     )
-        except Exception:
+        except Exception as exc:
             degraded.append("document chunk search")
-            log.exception(
-                "memory_search document-chunk branch failed",
-                extra={"extra_data": {"user_id": user_id, "agent_id": agent_id}},
+            contain(
+                exc,
+                log=log,
+                what="memory_search document-chunk branch failed",
+                extra={"user_id": user_id, "agent_id": agent_id},
+                level=logging.ERROR,
             )
         more_passages = len(doc_chunks) > _SIDE_RESULTS
         doc_chunks = doc_chunks[:_SIDE_RESULTS]
@@ -1259,6 +1275,7 @@ async def load_memory_recall_tool(
                     alias=alias,
                 )
             except Exception as exc:
+                contain(exc, log=log, what="memory_recall alias lookup failed")
                 return _tool_error("memory_recall", "alias", str(exc))
             if row is None:
                 return f"[TOOL ERROR] No memory found with alias '{alias}'."
@@ -1281,7 +1298,7 @@ async def load_memory_recall_tool(
             try:
                 await memories_collection.bump_salience([mem_uuid], agent_id=agent_id, access_bump=salience_bump)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- reinforcement is bookkeeping; the read it follows must still answer
-                log.warning("memory_recall: salience bump failed", extra={"extra_data": {"error": str(exc)}})
+                contain(exc, log=log, what="memory_recall: salience bump failed", extra={"error": str(exc)})
 
         # ── chunks (mode dispatch) ──────────────────────────────
         chunks: list[dict[str, Any]] = []
@@ -1385,6 +1402,7 @@ async def load_memory_recall_tool(
                 mem_uuid, user_id=user_id, agent_id=agent_id, customer_id=customer_id
             )
         except Exception as exc:
+            contain(exc, log=log, what="memory_recall chunk fetch failed")
             return _tool_error("memory_recall", f"fetch chunks ({mode_name})", str(exc))
 
         # ── render: the header, what stands in its place, the text, the parts ──
@@ -1405,10 +1423,8 @@ async def load_memory_recall_tool(
         if consolidations_collection is not None:
             try:
                 sources = await consolidations_collection.find_sources(agent_id, mem_uuid)
-            except (
-                Exception
-            ):  # prawduct:allow prawduct/broad-except -- the header's last fact is optional; the memory is still read
-                log.exception("memory_recall: reading what a memory replaced failed")
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- the header's last fact is optional; the memory is still read
+                contain(exc, log=log, what="memory_recall: reading what a memory replaced failed", level=logging.ERROR)
                 sources = []
             if sources:
                 lines.append("It replaced or corrects: " + ", ".join(f"[memory:{s}]" for s in sources) + ".")
@@ -1566,6 +1582,7 @@ def load_memory_list_tool(
                 offset=skip,
             )
         except Exception as exc:
+            contain(exc, log=log, what="memory_list query failed")
             return _tool_error("memory_list", "query", str(exc))
         what = {
             "current": "memories",
@@ -1611,8 +1628,13 @@ async def _may_be_permanent(permanent_allowed: PermanentAllowed | None, content:
         return bool(await permanent_allowed(content))
     except (
         Exception
-    ):  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
-        log.exception("permanent_allowed resolver failed; the memory is not made permanent")
+    ) as exc:  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
+        contain(
+            exc,
+            log=log,
+            what="permanent_allowed resolver failed; the memory is not made permanent",
+            level=logging.ERROR,
+        )
         return False
 
 
@@ -1634,8 +1656,8 @@ async def _is_present(person_present: PersonPresent | None) -> bool:
         return await person_present() is True
     except (
         Exception
-    ):  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
-        log.exception("person_present resolver failed; memory_add replaces nothing")
+    ) as exc:  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
+        contain(exc, log=log, what="person_present resolver failed; memory_add replaces nothing", level=logging.ERROR)
         return False
 
 
@@ -1724,6 +1746,7 @@ def _live_context(tool_name: str, context_resolver: Callable[[], Any]) -> tuple[
     try:
         live_ctx = context_resolver()
     except Exception as exc:
+        contain(exc, log=log, what="context_resolver raised")
         return _tool_error(tool_name, "context", f"context_resolver raised {type(exc).__name__}: {exc}")
     conversation_id = getattr(live_ctx, "conversation_id", None)
     message_id = getattr(live_ctx, "correlation_id", None)
@@ -1950,6 +1973,7 @@ async def load_memory_add_tool(
                 customer_id=customer_id,
             )
         except Exception as exc:
+            contain(exc, log=log, what="memory_add namespace lookup failed")
             return _tool_error(
                 "memory_add",
                 "authorize",
@@ -1969,10 +1993,7 @@ async def load_memory_add_tool(
                 user_id=user_id,
             )
         except Exception as exc:
-            log.warning(
-                "memory_add: first-write assignment ensure failed",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="memory_add: first-write assignment ensure failed", extra={"error": str(exc)})
         denied = await _refused(
             ACTION_MEMORY_WRITE,
             "memory_add",
@@ -2098,7 +2119,7 @@ async def load_memory_add_tool(
                 taken = _alias_taken(exc)
                 if taken:
                     return taken
-                log.warning("memory_add: correction failed", extra={"extra_data": {"error": str(exc)}})
+                contain(exc, log=log, what="memory_add: correction failed", extra={"error": str(exc)})
                 return _tool_error("memory_add", "store", str(exc))
             said = [f"Stored as [memory:{new_id}]{alias_clause}: {content}.{kept}"]
             for row in replaced:
@@ -2171,10 +2192,7 @@ async def load_memory_add_tool(
             taken = _alias_taken(exc)
             if taken:
                 return taken
-            log.warning(
-                "memory_add: dedup check failed, inserting new",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="memory_add: dedup check failed, inserting new", extra={"error": str(exc)})
 
         try:
             near: Sequence[UUID] = ()
@@ -2182,9 +2200,11 @@ async def load_memory_add_tool(
                 try:
                     near = await near_message_ids()
                 except Exception as exc:  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way; the memory is still stored
-                    log.warning(
-                        "memory_add: near_message_ids resolver failed, storing without the same-event check",
-                        extra={"extra_data": {"error": str(exc)}},
+                    contain(
+                        exc,
+                        log=log,
+                        what="memory_add: near_message_ids resolver failed, storing without the same-event check",
+                        extra={"error": str(exc)},
                     )
             wrote = await write_once(
                 memories_collection,
@@ -2246,10 +2266,7 @@ async def load_memory_add_tool(
             taken = _alias_taken(exc)
             if taken:
                 return taken
-            log.warning(
-                "memory_add: insert failed",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="memory_add: insert failed", extra={"error": str(exc)})
             return _tool_error("memory_add", "store", str(exc))
 
     memory_add.description = (
@@ -2469,7 +2486,7 @@ async def load_memory_update_tool(
                     "alias",
                     f"Alias '{name}' already used by another memory. Nothing was changed. Pick a different name.",
                 )
-            log.warning("memory_update: replace failed", extra={"extra_data": {"error": exc_msg}})
+            contain(exc, log=log, what="memory_update: replace failed", extra={"error": exc_msg})
             return _tool_error("memory_update", "store", f"{exc_msg}. Nothing was changed.")
 
         changes: list[str] = []
@@ -2604,7 +2621,7 @@ def load_memory_forget_tool(
                 memories_collection, agent_id=agent_id, memory_id=target, reason=why, allow_permanent=allowed
             )
         except Exception as exc:
-            log.warning("memory_forget: retract failed", extra={"extra_data": {"error": str(exc)}})
+            contain(exc, log=log, what="memory_forget: retract failed", extra={"error": str(exc)})
             return _tool_error("memory_forget", "store", f"{exc}. Nothing was retired.")
         if not done:
             return _no_change(
@@ -2681,7 +2698,7 @@ def load_memory_restore_tool(
         try:
             done = await restore(memories_collection, agent_id=agent_id, memory_id=target, salience=salience_seed)
         except Exception as exc:
-            log.warning("memory_restore: restore failed", extra={"extra_data": {"error": str(exc)}})
+            contain(exc, log=log, what="memory_restore: restore failed", extra={"error": str(exc)})
             return _tool_error("memory_restore", "store", f"{exc}. Nothing was restored.")
         if not done:
             return _no_change(
@@ -3011,6 +3028,7 @@ async def load_chunk_search_tool(
                 chunk_signal_weights=weights,
             )
         except Exception as exc:
+            contain(exc, log=log, what="chunk_search failed")
             return _tool_error("chunk_search", "search", str(exc))
 
         if not results:
@@ -3023,10 +3041,8 @@ async def load_chunk_search_tool(
             placed = await memory_chunk_collection.search_by_ids(
                 [UUID(str(r["chunk_id"])) for r in results], user_id, agent_id=agent_id
             )
-        except (
-            Exception
-        ):  # prawduct:allow prawduct/broad-except -- the date and place are extra facts; the hits are still shown
-            log.exception("chunk_search: reading the hits' dates failed")
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the date and place are extra facts; the hits are still shown
+            contain(exc, log=log, what="chunk_search: reading the hits' dates failed", level=logging.ERROR)
             placed = []
         row_of = {str(r["chunk_id"]): r for r in placed}
 
@@ -3051,11 +3067,7 @@ async def load_chunk_search_tool(
                 try:
                     await ledger_callback(chunk_id, "chunk", content[:80])
                 except Exception as cb_exc:
-                    log.debug(
-                        "chunk_search ledger_callback failed for chunk %s: %s",
-                        chunk_id,
-                        cb_exc,
-                    )
+                    contain(cb_exc, log=log, what=f"chunk_search ledger_callback failed for chunk {chunk_id}: {cb_exc}")
 
         body = "\n\n".join(lines)
         if more:
