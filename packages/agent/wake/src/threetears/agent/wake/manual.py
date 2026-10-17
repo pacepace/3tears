@@ -28,6 +28,7 @@ Two steps, so a caller can answer at once and run the fire in the background:
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from uuid_utils import uuid7
 
 from threetears.agent.wake.collections import WakeFireCollection
@@ -266,14 +267,12 @@ async def run_manual_fire(
         result = await dispatch_callback(trigger, claim.fire_id, pool)
     except Exception as exc:  # noqa: BLE001 - boundary: the fire row must reach a terminal status whatever stopped it
         latency_ms = int((time.monotonic() - started) * 1000)
-        log.exception(
-            "manual wake fire failed",
-            extra={
-                "extra_data": {
-                    "fire_id": str(claim.fire_id),  # convert at border: manual-fire-failed log extra_data field
-                    "schedule_id": str(trigger.schedule_id),
-                }
-            },
+        contain(
+            exc,
+            log=log,
+            what="manual wake fire failed",
+            extra={"fire_id": str(claim.fire_id), "schedule_id": str(trigger.schedule_id)},
+            level=logging.ERROR,
         )
         await fires.finalize_failed(conversation_id, claim.fire_id, error=str(exc), latency_ms=latency_ms)
         return WakeDispatchResult(status="failed", error=str(exc), latency_ms=latency_ms)
