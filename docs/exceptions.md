@@ -55,8 +55,10 @@ cancellation handler:
   carries `# NOSILENT: <reason>`. Use the marker only where the failure is the expected outcome and there is nothing
   to tell anyone.
 
-Packages not yet converted are listed in `_UNCONTAINED_PENDING` in that file. The list only shrinks: an entry with
-nothing left to convert fails the gate, and a package not on it, including every new one, is checked.
+A handler that must absorb what the gate refuses and cannot be written any other way -- a cancellation held until
+work that cannot be stopped has finished, then re-raised by the caller -- is recorded in
+`tests/enforcement/_no_silent_swallow_exemptions.txt` as `path:qualname#N:symbol`, with a `# rationale:` line saying
+why the failure is not lost. The key is the enclosing scope, not a line, so an edit above it doesn't stop it matching.
 
 **Under pytest, a contained programming error fails the test.** If `contain()` absorbs a `TypeError`,
 `AttributeError`, `NameError` or `AssertionError`, the test fails at teardown (`tests/contain_tripwire.py`). In
@@ -78,6 +80,5 @@ changes.
 4. A test that matches a converted record's `extra_data` exactly now also sees `contained_site` and `exc_type`. Add
    them to the expected value; don't loosen the comparison.
 5. If the tripwire fails a test, the conversion has found a bug. Report it; don't mark it expected to make CI pass.
-6. Delete the package's line from `_UNCONTAINED_PENDING`.
-
-`packages/observe` is the worked example.
+`packages/observe` is the worked example. A downstream repository adopting the gate lists its unconverted packages in
+`NoSilentSwallowConfig.uncontained_pending`, which fails on an entry with nothing left to convert, so it only shrinks.

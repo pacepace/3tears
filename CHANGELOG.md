@@ -25,8 +25,20 @@ packages (bumped in lock-step).
   `suppress(Exception)` and `suppress(CancelledError)` are refused. A log call or a `# NOSILENT` marker excuses none
   of these. `try`/`except*` is scanned. `NoSilentSwallowConfig` gains `contain_names` (default `{"contain"}`) and
   `uncontained_pending`, a list of package directories not yet checked: an entry with nothing left to convert is
-  itself a violation (`no_silent_swallow.pending`), so the list only shrinks. Every package except
-  `packages/observe` starts on 3tears' list.
+  itself a violation (`no_silent_swallow.pending`), so the list only shrinks. Exemptions are read in the
+  scope-keyed form (`path:qualname#N:symbol`). 3tears checks every package, with three held cancellations
+  recorded in `tests/enforcement/_no_silent_swallow_exemptions.txt`.
+- **Every package contains its broad handlers** (`packages/evals` through its own `contain` in
+  `threetears.evals.schema.logs`, since it imports no other 3tears package). No handler's return value or control
+  flow changed. What a consumer can notice:
+  - each such record now carries the traceback and `contained_site` / `exc_type` in `extra_data`, keeps its message
+    and fields, and counts on `contained_errors_total`; records that were DEBUG or INFO are now WARNING;
+  - stopping a task no longer swallows the caller's own cancellation: `NatsClient` close and unsubscribe,
+    `ToolServer.shutdown`, `DynamicToolPod.stop`, the tool-pod bootstrap teardown, `AuditPersisterHandle.stop`, the
+    conversations write buffer's `stop()`, the backup restore's stdin pump, the Claude CLI pool's `close()` and the
+    workspace `bind()` teardown;
+  - a few background loops now end cancelled rather than returning when stopped: the NATS credential-renewal and
+    successor-move loops, the conversations buffer timer, the workspace watcher and the backup read-ahead filler.
 - **Under pytest, `contain()` absorbing a `TypeError`, `AttributeError`, `NameError` or `AssertionError` fails the
   test** (`tests/contain_tripwire.py`, repo-internal). A test that drives one there on purpose marks it
   `@pytest.mark.expect_contained(<type>, why=...)`.

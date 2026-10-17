@@ -1176,6 +1176,9 @@ async def test_a_turn_taken_for_a_fetch_that_never_happened_is_given_back() -> N
     assert pacer.refunded == ["https://example.gov"], "the turn was taken and never returned"
 
 
+@pytest.mark.expect_contained(
+    AttributeError, why="the stand-in pacer has no refund on purpose, and the refund absorbs that as it would a KV outage"
+)
 async def test_a_pacer_without_a_refund_operation_is_not_an_error() -> None:
     """An injected stand-in need not grow one, and a failing refund must not raise.
 
