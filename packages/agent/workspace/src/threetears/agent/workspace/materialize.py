@@ -64,6 +64,7 @@ anti-patterns deliberately avoided:
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import hashlib
 import tempfile
@@ -79,7 +80,7 @@ from watchfiles import Change, awatch
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.core.utils.atomic_write import atomic_write
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.tools.helpers import _next_journal_version
@@ -1017,17 +1018,12 @@ async def _watch_loop(
             # regressions; yield to the loop so a persistent failure
             # cannot starve other tasks.
             except Exception as iter_exc:
-                log.exception(
-                    "bind watcher iteration failed: %s",
-                    iter_exc,
-                )
+                contain(iter_exc, log=log, what=f"bind watcher iteration failed: {iter_exc}", level=logging.ERROR)
                 await asyncio.sleep(0)
     except asyncio.CancelledError:
-        # NOSILENT: bind's teardown cancels us on clean or exception-path exit, so this IS the
-        # requested cancellation. Returning instead of re-raising lets the awaiting wait_for
-        # observe a completed task rather than a CancelledError that would propagate into
-        # bind's outer frame.
-        return
+        # bind's teardown cancels us on clean or exception-path exit; re-raise so the task ends
+        # cancelled, and bind's teardown absorbs the cancellation it asked for.
+        raise
 
 
 async def _capture_back(
@@ -1293,9 +1289,11 @@ async def _capture_back(
         # NameError) — only NATS-publish failure is already
         # swallowed inside publish_audit at WARN.
         except Exception as audit_exc:
-            log.exception(
-                "workspace.materialize audit publish swallow caught: %s",
+            contain(
                 audit_exc,
+                log=log,
+                what=f"workspace.materialize audit publish swallow caught: {audit_exc}",
+                level=logging.ERROR,
             )
     return changed
 
@@ -1480,9 +1478,8 @@ async def bind(
                 # other exception is programmer error and falls to the handler below.
                 pass
             except Exception as cancel_exc:
-                log.exception(
-                    "workspace.bind.watcher_cancel_error: %s",
-                    cancel_exc,
+                contain(
+                    cancel_exc, log=log, what=f"workspace.bind.watcher_cancel_error: {cancel_exc}", level=logging.ERROR
                 )
         if body_raised is not None:
             log.warning(

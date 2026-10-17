@@ -19,6 +19,7 @@ rather than raising.
 
 from __future__ import annotations
 
+import logging
 import json
 from typing import Any
 from uuid import UUID, uuid7
@@ -29,7 +30,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.call_scope import current_scope
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
@@ -137,7 +138,7 @@ class WorkspaceListTool(TearsTool):
                 error=f"list failed: {exc}",
             )
         except Exception as exc:
-            log.exception("workspace_list failed: %s", exc)
+            contain(exc, log=log, what=f"workspace_list failed: {exc}", level=logging.ERROR)
             result = ToolResult(
                 success=False,
                 content="",
