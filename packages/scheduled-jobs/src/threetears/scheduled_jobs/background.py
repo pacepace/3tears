@@ -58,7 +58,6 @@ import asyncio
 import dataclasses
 import functools
 import hashlib
-import logging
 import re
 import time
 from collections.abc import Mapping
@@ -361,7 +360,7 @@ class BackgroundDispatch:
                     log=log,
                     what="scheduled_jobs background: the in-flight lock failed",
                     extra={"kind": trigger.kind, "body_ran": outcome is not None},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 if outcome is None:
                     outcome = _Outcome(
@@ -509,7 +508,7 @@ class BackgroundDispatch:
                     "kind": trigger.kind,
                     "error_type": type(exc).__name__,
                 },
-                level=logging.ERROR,
+                level="error",
             )
             outcome = _Outcome(JobFireResult(status="failed", error=str(exc) or type(exc).__name__))
         if outcome.result.latency_ms is None and not outcome.result.handed_off:
@@ -591,7 +590,7 @@ class BackgroundDispatch:
                     "kind": trigger.kind,
                     "status": result.status,
                 },
-                level=logging.ERROR,
+                level="error",
             )
             return
         emitter = self._emitter if self._emitter is not None else get_scheduled_jobs_emitter()

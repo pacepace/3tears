@@ -38,7 +38,6 @@ the engine runs.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import random
 import time
@@ -763,7 +762,7 @@ class JobLeases:
                         f"eval.job_lease renewal failed {held.kind.name}={record_id} scope={held.scope_id} "
                         f"— retried in {self.renew_every_s:.0f}s"
                     ),
-                    level=logging.ERROR,
+                    level="error",
                 )
             if self._held.get(record_id) is not held:
                 return  # released while the renewal ran: its job wrote its own ending
@@ -834,7 +833,7 @@ class JobLeases:
                     f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: why it was stopped "
                     f"could not be written on its record either; the renewal failure: {why}"
                 ),
-                level=logging.ERROR,
+                level="error",
             )
         try:
             await run_blocking(self._pool(), settle_job_record, self._store, held.kind, held.record_id, held.scope_id)
@@ -849,7 +848,7 @@ class JobLeases:
                     f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: the loss could not be "
                     f"written here; the next reader writes it. The renewal failure: {why}"
                 ),
-                level=logging.ERROR,
+                level="error",
             )
         held.stop()
 
@@ -979,7 +978,7 @@ class JobLeases:
                         f"eval.job_lease shutdown could not write {one.kind.name}={one.record_id} "
                         f"scope={one.scope_id} lost — it reads lost once its lease lapses"
                     ),
-                    level=logging.ERROR,
+                    level="error",
                 )
         self._close_pool()
         return ended

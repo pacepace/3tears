@@ -29,7 +29,6 @@ so a process that did not start a job reads it as the one that did.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import functools
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
@@ -490,7 +489,7 @@ class EvalJobManager:
                 unbroadcast,
                 log=log,
                 what=f"on_progress broadcast failed for job {job_id} payload={payload}",
-                level=logging.ERROR,
+                level="error",
             )
 
     @property
@@ -793,7 +792,7 @@ class EvalJobManager:
                     unreleased,
                     log=log,
                     what=f"eval.task {job_id} ended before its work began, and releasing what it held failed",
-                    level=logging.ERROR,
+                    level="error",
                 )
 
         releasing = asyncio.ensure_future(release())
@@ -888,7 +887,7 @@ class EvalJobManager:
         # prawduct:ok-broad-except — top-level task boundary: the work records its own ending; one it did not is written lost
         except Exception as broke:
             # NOSILENT: its record is written lost below, its cause this error, unless its work ended it first.
-            contain(broke, log=log, what=f"Task {job_id} failed", level=logging.ERROR)
+            contain(broke, log=log, what=f"Task {job_id} failed", level="error")
             await self._end_task_record(job_id, f"its task raised past its own ending: {type(broke).__name__}: {broke}")
         finally:
             # Only after the work has returned or raised: a caller reading "not active" must find
@@ -914,7 +913,7 @@ class EvalJobManager:
                     f"Task {job_id}: its record could not be written lost either — it reads lost once its lease "
                     f"lapses. What ended the task: {cause}"
                 ),
-                level=logging.ERROR,
+                level="error",
             )
             return
         if written:
@@ -1170,7 +1169,7 @@ class EvalJobManager:
             Exception
         ) as exc:  # prawduct:ok-broad-except — top-level job boundary; must catch all to set failed status
             # NOSILENT: written below as the run's ``failed`` status, this error in its error_details.
-            contain(exc, log=log, what=f"Job {run_id} failed", level=logging.ERROR)
+            contain(exc, log=log, what=f"Job {run_id} failed", level="error")
             await self._set_status(run_id, scope_id, "failed", error=str(exc))
         finally:
             if self._leases is not None:
@@ -1204,7 +1203,7 @@ class EvalJobManager:
                 hook_failed,
                 log=log,
                 what=f"eval.run_end hook failed for run={run_id} status={status}; the run's status stands",
-                level=logging.ERROR,
+                level="error",
             )
 
     async def _set_status(

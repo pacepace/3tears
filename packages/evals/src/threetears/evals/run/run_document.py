@@ -18,7 +18,6 @@ and the engine passes it back untouched.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
@@ -121,7 +120,7 @@ def update_eval_run(
                 unread,
                 log=log,
                 what=f"eval.update_run read failed run={run_id} scope={scope_id} (attempt {attempt}/{attempts})",
-                level=logging.ERROR,
+                level="error",
             )
             continue
         if current is None:
@@ -148,7 +147,7 @@ def update_eval_run(
                 unsaved,
                 log=log,
                 what=f"eval.update_run write failed run={run_id} scope={scope_id} (attempt {attempt}/{attempts})",
-                level=logging.ERROR,
+                level="error",
             )
             continue
         return "saved"

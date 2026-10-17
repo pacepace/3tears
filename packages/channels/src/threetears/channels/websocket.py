@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -1075,7 +1074,7 @@ class WebSocketHandler:
                         log=log,
                         what="frame handler raised; surfacing an error and keeping the socket alive",
                         extra={"user_id": user_id, "frame_type": frame.type},
-                        level=logging.ERROR,
+                        level="error",
                     )
                     await _safe_send(
                         websocket, Frame.error("internal error handling frame"), context="route-frame-except"
@@ -1147,7 +1146,7 @@ class WebSocketHandler:
                     log=log,
                     what="chat message routing raised; surfacing an error and keeping the socket alive",
                     extra={"user_id": user_id},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 await _safe_send(
                     websocket,

@@ -64,7 +64,6 @@ event-driven wake-up, not the core behaviour.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -820,7 +819,7 @@ class TargetCircuit:
                 log=log,
                 what=f"scrape circuit: probe pacer unavailable for target {target_id}; admitting the probe unpaced",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
             return FetchDecision(
                 permitted=True,
@@ -871,7 +870,7 @@ class TargetCircuit:
                 log=log,
                 what=f"scrape circuit: fleet blocked-attempt count unavailable for target {target_id}; using the row's own count",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
             return 0
 
@@ -906,7 +905,7 @@ class TargetCircuit:
                 log=log,
                 what=f"scrape circuit: could not book the re-probe for target {target_id}; its backoff window still stands",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
 
     async def _cancel_reprobe(self, target_id: str) -> None:
@@ -921,7 +920,7 @@ class TargetCircuit:
                 log=log,
                 what=f"scrape circuit: could not cancel the outstanding re-probe of target {target_id}; it may fire once more",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
 
     async def forget_target(self, target_id: str) -> None:
@@ -956,7 +955,7 @@ class TargetCircuit:
                 log=log,
                 what=f"scrape circuit: could not delete the health row for target {target_id}",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
 
     async def _read_health(self, target_id: str) -> _HealthRead:
@@ -974,7 +973,7 @@ class TargetCircuit:
                 log=log,
                 what=f"scrape circuit: could not read health for target {target_id}; treating its circuit as closed",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
             return _HealthRead(row=None, readable=False)
 
@@ -1008,7 +1007,7 @@ class TargetCircuit:
                 log=log,
                 what=f"scrape circuit: could not persist the circuit state for target {target_id}",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
 
 
@@ -1035,7 +1034,7 @@ async def _clear_robots_block_quietly(health: ScrapeTargetHealthCollection, targ
             log=log,
             what=f"scrape circuit: could not clear the robots block for target {target_id}; it may stay queued",
             extra={"target_id": target_id},
-            level=logging.ERROR,
+            level="error",
         )
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID
@@ -128,7 +127,7 @@ class WorkspaceUseTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_use failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_use failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

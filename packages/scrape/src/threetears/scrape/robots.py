@@ -37,7 +37,6 @@ once per origin is a poor trade.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import time
 from collections import OrderedDict
@@ -379,7 +378,7 @@ class RobotsGate:
                 exc,
                 log=log,
                 what=f"scrape robots: could not return {origin}'s fleet turn; it will refill instead",
-                level=logging.ERROR,
+                level="error",
             )
 
     def _capped_delay(self, origin: str, parser: RobotFileParser, *, announce: bool = True) -> float | None:
@@ -490,7 +489,7 @@ class RobotsGate:
                 exc,
                 log=log,
                 what=f"scrape robots: crawl-delay pacer unavailable for {origin}; using this pod's own clock",
-                level=logging.ERROR,
+                level="error",
             )
             return 0.0, False
         if claim.claimed:

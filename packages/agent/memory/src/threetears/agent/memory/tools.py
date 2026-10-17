@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, tzinfo
@@ -539,7 +538,7 @@ async def _may_touch_permanent(person_asked: PersonAsked | None, memory_id: UUID
             log=log,
             what="person_asked resolver failed; the permanent memory is left alone",
             extra={"memory_id": str(memory_id)},
-            level=logging.ERROR,
+            level="error",
         )
         return False
 
@@ -945,7 +944,7 @@ async def load_memory_search_tool(
                     log=log,
                     what="memory_search full-text branch failed",
                     extra={"user_id": user_id, "agent_id": agent_id},
-                    level=logging.ERROR,
+                    level="error",
                 )
 
         more_memories = len(memories) > skip + shown
@@ -1011,7 +1010,7 @@ async def load_memory_search_tool(
                 log=log,
                 what="memory_search media branch failed",
                 extra={"user_id": user_id, "agent_id": agent_id},
-                level=logging.ERROR,
+                level="error",
             )
         # One line per file: a file's description and its text are two content rows,
         # and both would print the same [media:<id>].
@@ -1059,7 +1058,7 @@ async def load_memory_search_tool(
                 log=log,
                 what="memory_search document-chunk branch failed",
                 extra={"user_id": user_id, "agent_id": agent_id},
-                level=logging.ERROR,
+                level="error",
             )
         more_passages = len(doc_chunks) > _SIDE_RESULTS
         doc_chunks = doc_chunks[:_SIDE_RESULTS]
@@ -1424,7 +1423,7 @@ async def load_memory_recall_tool(
             try:
                 sources = await consolidations_collection.find_sources(agent_id, mem_uuid)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the header's last fact is optional; the memory is still read
-                contain(exc, log=log, what="memory_recall: reading what a memory replaced failed", level=logging.ERROR)
+                contain(exc, log=log, what="memory_recall: reading what a memory replaced failed", level="error")
                 sources = []
             if sources:
                 lines.append("It replaced or corrects: " + ", ".join(f"[memory:{s}]" for s in sources) + ".")
@@ -1633,7 +1632,7 @@ async def _may_be_permanent(permanent_allowed: PermanentAllowed | None, content:
             exc,
             log=log,
             what="permanent_allowed resolver failed; the memory is not made permanent",
-            level=logging.ERROR,
+            level="error",
         )
         return False
 
@@ -1657,7 +1656,7 @@ async def _is_present(person_present: PersonPresent | None) -> bool:
     except (
         Exception
     ) as exc:  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
-        contain(exc, log=log, what="person_present resolver failed; memory_add replaces nothing", level=logging.ERROR)
+        contain(exc, log=log, what="person_present resolver failed; memory_add replaces nothing", level="error")
         return False
 
 
@@ -3042,7 +3041,7 @@ async def load_chunk_search_tool(
                 [UUID(str(r["chunk_id"])) for r in results], user_id, agent_id=agent_id
             )
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the date and place are extra facts; the hits are still shown
-            contain(exc, log=log, what="chunk_search: reading the hits' dates failed", level=logging.ERROR)
+            contain(exc, log=log, what="chunk_search: reading the hits' dates failed", level="error")
             placed = []
         row_of = {str(r["chunk_id"]): r for r in placed}
 

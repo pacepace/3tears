@@ -33,7 +33,6 @@ design commitments:
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -294,7 +293,7 @@ class WorkspaceRollbackTool(TearsTool):
                     audit_exc,
                     log=log,
                     what=f"workspace_rollback audit publish swallow caught: {audit_exc}",
-                    level=logging.ERROR,
+                    level="error",
                 )
             result = ToolResult(
                 success=True,
@@ -314,7 +313,7 @@ class WorkspaceRollbackTool(TearsTool):
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_rollback failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_rollback failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

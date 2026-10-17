@@ -26,7 +26,6 @@ real config/collections/drivers belongs.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import hashlib
 import inspect
@@ -629,7 +628,7 @@ class ScrapeTool(TearsTool):
                 log=log,
                 what=f"scrape tool: could not clear the robots block for target {target_id}; it may stay queued",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
 
     async def _read_solved_state(self, target_id: str) -> dict[str, Any] | None:
@@ -650,7 +649,7 @@ class ScrapeTool(TearsTool):
                 log=log,
                 what=f"scrape tool: could not read the health row for target {target_id}; fetching without a stored solve",
                 extra={"target_id": target_id},
-                level=logging.ERROR,
+                level="error",
             )
             return None
         return usable_session_state(row, self._session_state_key)
@@ -787,7 +786,7 @@ class ScrapeTool(TearsTool):
                             log=log,
                             what=f"scrape tool: could not record the robots block for {target_id}; it is escalated to the caller but will not appear in list_walled",
                             extra={"target_id": target_id, "url": url},
-                            level=logging.ERROR,
+                            level="error",
                         )
                 # Recorded and carried to the tail rather than returned from here. The
                 # escalation needs a result shape the `error` sentinel cannot express, which

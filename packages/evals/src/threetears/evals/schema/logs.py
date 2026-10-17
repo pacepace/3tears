@@ -34,8 +34,14 @@ import logging
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from types import FrameType, TracebackType
+from typing import Literal
 
-__all__ = ["PACKAGE_LOGGER", "contain", "contained", "get_logger"]
+__all__ = ["PACKAGE_LOGGER", "ContainedLevel", "contain", "contained", "get_logger"]
+
+#: The levels a contained failure is logged at, as :data:`threetears.observe.ContainedLevel` names them.
+type ContainedLevel = Literal["warning", "error", "critical"]
+
+_LEVELS: dict[str, int] = {"warning": logging.WARNING, "error": logging.ERROR, "critical": logging.CRITICAL}
 
 #: The logger every module's logger sits under.
 PACKAGE_LOGGER = "threetears.evals"
@@ -73,7 +79,7 @@ def _record(
     log: logging.Logger,
     what: str,
     extra: Mapping[str, object] | None,
-    level: int,
+    level: ContainedLevel,
 ) -> None:
     """Log ``exc`` with its traceback, naming the function that caught it.
 
@@ -87,14 +93,14 @@ def _record(
     :ptype what: str
     :param extra: Structured fields for the record's ``extra_data``.
     :ptype extra: Mapping[str, object] | None
-    :param level: The record's level, WARNING or above.
-    :ptype level: int
-    :raises ValueError: ``level`` is below WARNING.
+    :param level: The record's level.
+    :ptype level: ContainedLevel
+    :raises ValueError: ``level`` is not one of ``"warning"``, ``"error"``, ``"critical"``.
     """
-    if level < logging.WARNING:
-        raise ValueError(f"a contained failure is logged at WARNING or above, not {logging.getLevelName(level)}")
+    if level not in _LEVELS:
+        raise ValueError(f"a contained failure is logged at warning, error or critical, not {level!r}")
     data = {**(extra or {}), "contained_site": _site_of(frame), "exc_type": type(exc).__name__}
-    log.log(level, what, exc_info=exc, extra={"extra_data": data})
+    log.log(_LEVELS[level], what, exc_info=exc, extra={"extra_data": data})
 
 
 def contain(
@@ -103,7 +109,7 @@ def contain(
     log: logging.Logger,
     what: str,
     extra: Mapping[str, object] | None = None,
-    level: int = logging.WARNING,
+    level: ContainedLevel = "warning",
 ) -> None:
     """Record ``exc`` as a failure this boundary absorbs on purpose.
 
@@ -119,9 +125,9 @@ def contain(
     :param extra: Structured fields for the record's ``extra_data``; ``contained_site`` and ``exc_type``
         are added to them.
     :ptype extra: Mapping[str, object] | None
-    :param level: WARNING by default; nothing below it.
-    :ptype level: int
-    :raises ValueError: ``level`` is below WARNING.
+    :param level: ``"warning"`` by default; nothing below it.
+    :ptype level: ContainedLevel
+    :raises ValueError: ``level`` is not one of ``"warning"``, ``"error"``, ``"critical"``.
     """
     if exc.__traceback__ is not None:
         frame: FrameType | None = exc.__traceback__.tb_frame
@@ -158,7 +164,7 @@ class _Contained:
             self._log,
             self._what,
             self._extra,
-            logging.WARNING,
+            "warning",
         )
         return True
 

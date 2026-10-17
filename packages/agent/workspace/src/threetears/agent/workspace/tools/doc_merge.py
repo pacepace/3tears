@@ -12,7 +12,6 @@ matching the enforce-then-act ordering enforced by shard 18's AST test.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -284,7 +283,7 @@ class DocMergeTool(TearsTool):
                                     audit_exc,
                                     log=log,
                                     what=f"doc_merge audit publish swallow caught: {audit_exc}",
-                                    level=logging.ERROR,
+                                    level="error",
                                 )
                             result = ToolResult(
                                 success=True,
@@ -316,7 +315,7 @@ class DocMergeTool(TearsTool):
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"doc_merge failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"doc_merge failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

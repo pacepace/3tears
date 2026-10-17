@@ -31,7 +31,6 @@ judge -- and the ceiling scales with your schema
 
 from __future__ import annotations
 
-import logging
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -374,7 +373,7 @@ async def _stamp_fingerprint_if_validated(
             log=log,
             what=f"scrape health: fingerprint stamp failed for target {target_id}; extraction is unaffected",
             extra={"target_id": target_id},
-            level=logging.ERROR,
+            level="error",
         )
 
 
@@ -683,7 +682,7 @@ async def _resolve_failure_verdict(
             log=log,
             what=f"scrape health: could not read health for target {target_id}; classifying nothing",
             extra={"target_id": target_id},
-            level=logging.ERROR,
+            level="error",
         )
         return None
 
@@ -761,7 +760,7 @@ async def _resolve_failure_verdict(
             log=log,
             what=f"scrape health: could not cache the page verdict for target {target_id}; routing on it anyway",
             extra={"target_id": target_id},
-            level=logging.ERROR,
+            level="error",
         )
     return _FailureVerdict(kind=verdict.kind, evidence=verdict.evidence, from_cache=False)
 
@@ -1001,7 +1000,7 @@ async def _withdraw_verdict(
             log=log,
             what=f"scrape health: could not withdraw the page verdict for target {target_id}; the next poll may count a failure",
             extra={"target_id": target_id},
-            level=logging.ERROR,
+            level="error",
         )
 
 

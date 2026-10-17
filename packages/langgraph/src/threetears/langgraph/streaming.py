@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import time
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Protocol, Union, runtime_checkable
@@ -1080,7 +1079,7 @@ class StreamingResponse:
                     log=log,
                     what="stream expected-failure predicate failed; logging the failure as unexpected",
                     extra={"correlation_id": str(self._correlation_id)},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 expected = False
         return expected
@@ -1116,7 +1115,7 @@ class StreamingResponse:
                         "correlation_id": str(self._correlation_id),
                         "default_code": DEFAULT_ERROR_CODE,
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
                 code = DEFAULT_ERROR_CODE
         return code
@@ -1147,7 +1146,7 @@ class StreamingResponse:
                     log=log,
                     what="stream gateway-code reader failed; publishing no gateway code",
                     extra={"correlation_id": str(self._correlation_id)},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 gateway_code = None
         return gateway_code

@@ -55,7 +55,6 @@ one implementation with no parallel path.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, cast
@@ -1906,7 +1905,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     "idx": reported.idx,
                     "error_type": reported.error_type,
                 },
-                level=logging.ERROR,
+                level="error",
             )
             return None
 

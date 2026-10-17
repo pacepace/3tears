@@ -25,7 +25,6 @@ there, and the launch's runs live there, because a run lives in its template's s
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import contextlib
 import math
@@ -858,7 +857,7 @@ class LaunchGroup:
                     unreleased,
                     log=log,
                     what=f"eval.launch_group group={self.id} a member's teardown failed while abandoning",
-                    level=logging.ERROR,
+                    level="error",
                 )
         self.members.clear()
         self._teardowns.clear()

@@ -68,7 +68,6 @@ import asyncio
 import dataclasses
 import functools
 import json
-import logging
 import math
 import random
 import re
@@ -770,7 +769,7 @@ class _SubscriptionFeed:
                     "error_type": type(underlying).__name__,
                     "error": str(underlying),
                 },
-                level=logging.ERROR,
+                level="error",
             )
         finally:
             if raw_subscription is self._current:
@@ -3423,7 +3422,7 @@ class NatsClient:
                         "-- every publish to and consumer of it fails until it is back; retrying"
                     ),
                     extra={"stream": name, "client_name": self._client_name, "error": str(exc)},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 failures.append(f"stream {name}")
         if any(refill.owed for refill in self._kv_refills.values()):
@@ -3454,7 +3453,7 @@ class NatsClient:
                         "client_name": self._client_name,
                         "error": str(exc),
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
                 failures.append(f"durable {consumer.durable}")
         return failures
@@ -3483,7 +3482,7 @@ class NatsClient:
                     log=log,
                     what=f"asking whether stream {stream} is still wanted failed; it is restored: {exc}",
                     extra={"stream": stream, "client_name": self._client_name},
-                    level=logging.ERROR,
+                    level="error",
                 )
         if not wanted:
             self._forget_declaration(stream)
@@ -3692,7 +3691,7 @@ class NatsClient:
                         "until a refill lands; retrying"
                     ),
                     extra={"bucket": refill.full_name, "client_name": self._client_name, "error": str(exc)},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 continue
             refill.settled = seen
@@ -5254,7 +5253,7 @@ class NatsClient:
                         "error_type": type(exc).__name__,
                         "error": str(exc),
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
                 if deadletter_on_failure:
                     await self._deadletter(subject=subject, payload=msg.data, error=exc)
@@ -5321,7 +5320,7 @@ class NatsClient:
                         "error_type": type(underlying).__name__,
                         "error": str(underlying),
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
             finally:
                 await feed.cancel()

@@ -11,7 +11,6 @@ naturally without surfacing a denial for the caller.
 
 from __future__ import annotations
 
-import logging
 import json
 from collections.abc import Callable
 from pathlib import PurePosixPath
@@ -160,7 +159,7 @@ class FsListTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"fs_list failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"fs_list failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

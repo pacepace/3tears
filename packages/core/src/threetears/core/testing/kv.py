@@ -75,7 +75,6 @@ starts again at 1, as a recreated stream's sequence does.
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import UTC, datetime, timedelta
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable
@@ -907,7 +906,7 @@ class FakeNatsClient:
                     exc,
                     log=log,
                     what=f"asking whether KV bucket {name} is still wanted failed; it is restored: {exc}",
-                    level=logging.ERROR,
+                    level="error",
                 )
                 wanted = True
             if not wanted:
@@ -956,7 +955,7 @@ class FakeNatsClient:
                     exc,
                     log=log,
                     what=f"refilling KV bucket {name} failed: {type(exc).__name__}: {exc} -- it stays owed",
-                    level=logging.ERROR,
+                    level="error",
                 )
                 continue
             refill.owed = False

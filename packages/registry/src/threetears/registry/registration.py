@@ -17,7 +17,6 @@ catalog but its NATS subscription has not yet propagated.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -390,7 +389,7 @@ class RegistrationHandler:
                 log=log,
                 what="registration rejected: malformed manifest",
                 extra={"error": str(exc), "error_code": RefusalCode.INVALID_MANIFEST.value},
-                level=logging.ERROR,
+                level="error",
             )
             await self._reply(
                 msg,
@@ -441,7 +440,7 @@ class RegistrationHandler:
                     "error": str(exc),
                     "error_code": RefusalCode.CATALOG_UNAVAILABLE.value,
                 },
-                level=logging.ERROR,
+                level="error",
             )
             await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
             return
@@ -492,7 +491,7 @@ class RegistrationHandler:
                     "error": str(exc),
                     "error_code": RefusalCode.CATALOG_UNAVAILABLE.value,
                 },
-                level=logging.ERROR,
+                level="error",
             )
             await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
             return
@@ -727,7 +726,7 @@ class RegistrationHandler:
                     "error": str(exc),
                     "error_code": RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE.value,
                 },
-                level=logging.ERROR,
+                level="error",
             )
             result = self._verification_unavailable(pod_id, "agent", exc)
         else:
@@ -789,7 +788,7 @@ class RegistrationHandler:
                     "error": str(exc),
                     "error_code": RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE.value,
                 },
-                level=logging.ERROR,
+                level="error",
             )
             failure = exc
         if failure is not None:
@@ -945,7 +944,7 @@ class RegistrationHandler:
                     what="tool pod registration refused: the ownership graph could not be read, and a "
                     "manifest must not be admitted unfiltered. the pod retries on its next heartbeat",
                     extra={"pod_id": pod_id, "error": str(exc)},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 result = None
         return result

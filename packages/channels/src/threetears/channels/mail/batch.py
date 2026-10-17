@@ -34,7 +34,6 @@ than let this function be discovered to be the wrong tool halfway through a fiel
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
@@ -216,7 +215,7 @@ async def _send_one(
                     exc,
                     log=log,
                     what="could not record an outbound-email recipient failure",
-                    level=logging.ERROR,
+                    level="error",
                 )
         return failure
     return None

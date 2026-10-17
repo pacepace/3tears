@@ -15,7 +15,6 @@ interprets. The host chooses what a scope is and passes it through.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -502,7 +501,7 @@ def _record_unrecorded_completeness(storage: JobStore, run_id: str, scope_id: st
                 f"eval.completeness run={run_id} scope={scope_id}: why its completeness was not recorded could not "
                 f"be written on the run either; the first error: {entry}"
             ),
-            level=logging.ERROR,
+            level="error",
         )
         return
     if outcome in ("missing", "refused"):
@@ -611,7 +610,7 @@ def record_completeness(
                 f"eval.completeness run={run_id} scope={scope_id} NOT recorded — the run keeps its real status "
                 "and its completeness reads as unknown"
             ),
-            level=logging.ERROR,
+            level="error",
         )
         _record_unrecorded_completeness(storage, run_id, scope_id, fault_entry(_COMPLETENESS_NOT_RECORDED, broke))
         return

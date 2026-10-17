@@ -20,7 +20,6 @@ and never exposes it in the Pydantic schema: user isolation is the
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
@@ -396,7 +395,7 @@ async def load_intention_log_tool(
                     log=log,
                     what="intention_log: the want is stored but on_logged failed",
                     extra={"intention_id": str(intention_id), "error": str(exc)},
-                    level=logging.ERROR,
+                    level="error",
                 )
         return f"Logged as [intention:{intention_id}]: {text}"
 

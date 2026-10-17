@@ -10,7 +10,6 @@ supported and returns a clean error text the LLM can act on.
 
 from __future__ import annotations
 
-import logging
 import difflib
 from collections.abc import Callable
 from typing import Any
@@ -232,7 +231,7 @@ class WorkspaceDiffTool(TearsTool):
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_diff failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_diff failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

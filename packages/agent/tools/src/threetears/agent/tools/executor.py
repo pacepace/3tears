@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -131,7 +130,7 @@ class ToolExecutor:
                         log=log,
                         what="Tool execution failed",
                         extra={"tool_name": tc_name, "error": str(exc)},
-                        level=logging.ERROR,
+                        level="error",
                     )
                     messages.append(ToolMessage(content=f"Error executing {tc_name}: {exc}", tool_call_id=tc_id))
                     continue

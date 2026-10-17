@@ -42,7 +42,6 @@ own catch-up. ``TRUNCATE`` fires no statement-level row trigger and leaves no ma
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -290,7 +289,7 @@ async def install_write_mark_triggers(
                                 "table": table,
                                 "error": f"{type(exc).__name__}: {exc}",
                             },
-                            level=logging.ERROR,
+                            level="error",
                         )
                         continue
                     created.append(f"{schema}.{table}")
@@ -544,7 +543,7 @@ class WriteMarkReconciler:
                         "drains the other tables"
                     ),
                     extra={"table": table, "error": f"{type(exc).__name__}: {exc}"},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 continue
             done.add(table)

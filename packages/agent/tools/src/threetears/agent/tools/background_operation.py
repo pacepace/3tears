@@ -82,7 +82,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1149,7 +1148,7 @@ class BackgroundOperation(Generic[ResultT]):
                 log=log,
                 what="background operation failed",
                 extra={"operation": self._name, "error": error},
-                level=logging.ERROR,
+                level="error",
             )
         else:
             outcome = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), result=result)
@@ -1457,7 +1456,7 @@ class OperationStatusTool(_OperationTool):
                     exc,
                     log=log,
                     what=f"operation {operation.name}: its progress could not be read",
-                    level=logging.ERROR,
+                    level="error",
                 )
                 progress = self._unavailable(operation, exc)
         return progress
@@ -1482,7 +1481,7 @@ class OperationStatusTool(_OperationTool):
                 exc,
                 log=log,
                 what=f"operation {operation.name}: its progress could not be read",
-                level=logging.ERROR,
+                level="error",
             )
             answered = self._unavailable(operation, exc)
         return answered

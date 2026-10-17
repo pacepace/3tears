@@ -902,7 +902,7 @@ class ReporterKind:
                     exc,
                     log=log,
                     what="Reporter cell failed outside the candidate's own call",
-                    level=logging.ERROR,
+                    level="error",
                 )
                 return CandidateOutput(infra_errors=[f"apparatus: {type(exc).__name__}: {exc}"], telemetry=telemetry)
 

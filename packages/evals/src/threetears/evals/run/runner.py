@@ -49,7 +49,6 @@ charge, and, when the cut struck the judge phase, the evidence and every score t
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import math
 import random
@@ -1749,7 +1748,7 @@ async def _run_judge_phase(
         raise
     except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
         # NOSILENT: the judge record names every dim the phase did not finish as failed with this cause.
-        contain(e, log=log, what=f"Judge service failed during eval run {eval_run_id}", level=logging.ERROR)
+        contain(e, log=log, what=f"Judge service failed during eval run {eval_run_id}", level="error")
         # The calls that returned before it raised were paid for and keep their scores; the
         # rest are named as failed with the cause.
         judged = _judge_record(phase, settled, unfinished=f"the judge phase raised {type(e).__name__}: {e}")
@@ -2744,7 +2743,7 @@ def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = N
             unprobed,
             log=log,
             what="Concurrent-eval-job probe raised; recording execution_mode as unmeasured",
-            level=logging.ERROR,
+            level="error",
         )
         return _busiest(previous, own)
     return _busiest(_busiest(previous, observed), own)
@@ -2794,7 +2793,7 @@ async def _record_contained_faults(host: EvalHost, run: EvalRun, faults: list[st
                 f"eval.run run={run.id} scope={run.scope_id}: the errors its loop contained could not be "
                 f"written on the run: {faults}"
             ),
-            level=logging.ERROR,
+            level="error",
         )
         return
     if outcome in ("missing", "refused"):
@@ -3270,7 +3269,7 @@ async def judge_dims(
                     e,
                     log=log,
                     what=f"Judge dim={dim_id} could not be priced for case={context.case_id}",
-                    level=logging.ERROR,
+                    level="error",
                 )
                 outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
             else:
@@ -3304,7 +3303,7 @@ async def judge_dims(
                         e,
                         log=log,
                         what=f"Judge dim={dim_id} raised for case={context.case_id}",
-                        level=logging.ERROR,
+                        level="error",
                     )
                     outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
                 except BaseException:

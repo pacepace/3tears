@@ -13,7 +13,6 @@ returns a clean error rather than raising.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import hashlib
 from collections.abc import Callable
@@ -306,9 +305,7 @@ class WorkspaceCreateTool(TearsTool):
                     pinned_by_actor_id=self._agent_id,
                 )
             except Exception as pin_exc:
-                contain(
-                    pin_exc, log=log, what=f"workspace_create pin failed after insert: {pin_exc}", level=logging.ERROR
-                )
+                contain(pin_exc, log=log, what=f"workspace_create pin failed after insert: {pin_exc}", level="error")
                 result = ToolResult(
                     success=False,
                     content="",
@@ -385,7 +382,7 @@ class WorkspaceCreateTool(TearsTool):
                         audit_exc,
                         log=log,
                         what=f"workspace_create audit publish swallow caught: {audit_exc}",
-                        level=logging.ERROR,
+                        level="error",
                     )
                 result = ToolResult(
                     success=True,
@@ -406,7 +403,7 @@ class WorkspaceCreateTool(TearsTool):
                 error=f"workspace {name!r} already exists for this agent",
             )
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_create failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_create failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

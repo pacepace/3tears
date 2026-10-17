@@ -29,7 +29,6 @@ without coupling it to any specific storage / DB / observability stack.
 from __future__ import annotations
 
 import inspect
-import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -425,7 +424,7 @@ def create_image_generation_tool(
                     "model": selected_model,
                     "error": str(exc),
                 },
-                level=logging.ERROR,
+                level="error",
             )
             return tool_error(_TOOL, "generate", str(exc))
 
@@ -467,7 +466,7 @@ def create_image_generation_tool(
                     "model": selected_model,
                     "error": str(exc),
                 },
-                level=logging.ERROR,
+                level="error",
             )
             return tool_error(_TOOL, "save", str(exc))
 

@@ -62,7 +62,6 @@ call + parse + cost-log still flow through
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -673,9 +672,7 @@ class JudgeService:
         ) as unreleased:  # prawduct:allow prawduct/broad-except -- teardown must never displace the body's exception
             # NOSILENT: the service holds no run id, and a client pool that will not close is this process's leak,
             # not something the run measured — an error_details entry would count it as one of the run's faults.
-            contain(
-                unreleased, log=log, what="releasing the judge clients failed; a pool may leak", level=logging.ERROR
-            )
+            contain(unreleased, log=log, what="releasing the judge clients failed; a pool may leak", level="error")
 
     async def score_transcript(self, context: JudgeContext) -> JudgeOutcome:
         """Score the transcript (decision-quality) axis — excludes goal outcomes."""

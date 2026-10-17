@@ -37,9 +37,9 @@ def test_contain_logs_the_message_with_its_traceback_and_names_the_catcher(caplo
     }
 
 
-def test_contain_refuses_a_level_below_warning() -> None:
-    with pytest.raises(ValueError, match="WARNING or above"):
-        contain(RuntimeError("quiet"), log=_log, what="whispered", level=logging.INFO)
+def test_contain_refuses_a_level_it_does_not_name() -> None:
+    with pytest.raises(ValueError, match="warning, error or critical"):
+        contain(RuntimeError("quiet"), log=_log, what="whispered", level="info")  # type: ignore[arg-type]
 
 
 def test_contained_absorbs_an_exception_and_names_the_with_block(caplog: pytest.LogCaptureFixture) -> None:

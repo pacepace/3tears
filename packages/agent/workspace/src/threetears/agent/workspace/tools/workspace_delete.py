@@ -10,7 +10,6 @@ self-correct on the next call.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -212,7 +211,7 @@ class WorkspaceDeleteTool(TearsTool):
                         audit_exc,
                         log=log,
                         what=f"workspace_delete audit publish swallow caught: {audit_exc}",
-                        level=logging.ERROR,
+                        level="error",
                     )
 
                 result = ToolResult(
@@ -222,7 +221,7 @@ class WorkspaceDeleteTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_delete failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_delete failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

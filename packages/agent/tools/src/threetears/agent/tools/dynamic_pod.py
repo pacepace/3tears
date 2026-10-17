@@ -23,7 +23,6 @@ the background-task spawn is
 from __future__ import annotations
 
 import asyncio
-import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
@@ -581,7 +580,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
                     "dynamic tool pod could not close a forgotten spec's resource; it may still hold "
                     f"connections until the process ends: key={key} pod_id={self._pod_id}"
                 ),
-                level=logging.ERROR,
+                level="error",
             )
 
     def _register_built(self, built: BuiltSpec) -> None:

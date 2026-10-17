@@ -611,7 +611,11 @@ class HeldLease:
                     log=log,
                     what=f"KVLease: renewing {self._name} failed; trying again while it is inside its TTL",
                     extra={**self._log_extra, "error": type(exc).__name__},
-                    level=max(self._renew_failure_level, logging.WARNING),
+                    level="critical"
+                    if self._renew_failure_level >= logging.CRITICAL
+                    else "error"
+                    if self._renew_failure_level >= logging.ERROR
+                    else "warning",
                 )
             else:
                 self._expires_at = started + self._ttl

@@ -26,7 +26,6 @@ single-dim rubric/dual-score judge lives in
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -552,7 +551,7 @@ async def run_judge_llm(
             # Earlier attempts in this loop may already have spent tokens before this one
             # raised; report that spend rather than losing it to the error path.
             if failure_describer is None:
-                contain(e, log=log, what=f"{label} LLM call failed for case {case_id}: {e}", level=logging.ERROR)
+                contain(e, log=log, what=f"{label} LLM call failed for case {case_id}: {e}", level="error")
                 return {"error": f"{label} LLM call failed: {e}", "judge_usage": _cumulative_usage()}
             failure = describe_and_log_failure(
                 failure_describer,

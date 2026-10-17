@@ -19,7 +19,6 @@ rather than raising.
 
 from __future__ import annotations
 
-import logging
 import json
 from typing import Any
 from uuid import UUID, uuid7
@@ -138,7 +137,7 @@ class WorkspaceListTool(TearsTool):
                 error=f"list failed: {exc}",
             )
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_list failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_list failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

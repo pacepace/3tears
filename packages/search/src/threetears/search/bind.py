@@ -30,7 +30,6 @@ constructs its own.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from typing import Any, Final
@@ -419,7 +418,7 @@ async def bind_search(
             exc,
             log=_logger,
             what=f"search raised past the typed taxonomy against {provider.provider_instance}",
-            level=logging.ERROR,
+            level="error",
         )
         unmapped = TransportFailed(
             f"search failed with an unmapped {type(exc).__name__}: {exc}",

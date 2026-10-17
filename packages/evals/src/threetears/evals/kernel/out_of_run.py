@@ -36,7 +36,6 @@ the kernel and neither reach the other — so a battery cannot price a call its 
 
 from __future__ import annotations
 
-import logging
 import math
 import uuid
 from collections.abc import Mapping, Sequence
@@ -394,7 +393,7 @@ class OutOfRunBudget:
                         f"eval.out_of_run {admitted.purpose} call on {admitted.model} raised "
                         f"{type(raised).__name__} and its ledger row could NOT be written: {unrecorded}"
                     ),
-                    level=logging.ERROR,
+                    level="error",
                 )
             raise
         # Read by CompletionResult's own attribute names — the protocol every completion the engine reads

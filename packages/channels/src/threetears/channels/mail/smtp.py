@@ -32,7 +32,6 @@ publisher into it. The property survives; the coupling does not.
 from __future__ import annotations
 
 import asyncio
-import logging
 import smtplib
 import ssl
 from collections.abc import Awaitable, Callable, Mapping
@@ -246,7 +245,7 @@ class SmtpEmailTransport:
         try:
             await self._on_failure(details)
         except Exception as exc:
-            contain(exc, log=log, what="could not record the outbound-email failure", level=logging.ERROR)
+            contain(exc, log=log, what="could not record the outbound-email failure", level="error")
 
     async def send(self, message: EmailMessage) -> None:
         """Deliver `message`, or raise :class:`EmailSendError`.

@@ -30,7 +30,6 @@ action's typed result as JSON, which polling the job returns.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -305,7 +304,7 @@ async def _run_to_end[R: EvalDocumentModel](
     # prawduct:ok-broad-except — the job's record is where its ending is stated; the boundary writes it failed
     except Exception as broke:
         # NOSILENT: the record's ending is ``failed`` with this error as its detail (and its refusal), written below.
-        contain(broke, log=log, what=f"eval.job {name}={record_id} scope={scope_id} failed", level=logging.ERROR)
+        contain(broke, log=log, what=f"eval.job {name}={record_id} scope={scope_id} failed", level="error")
         # An engine refusal is kept as data beside its words, so a poll serves its kind as a refused call's.
         refusal = job_refusal(broke) if isinstance(broke, EvalServiceError) else None
         ended = end_record(recorder.record, "failed", _failure_detail(broke), refusal=refusal)

@@ -19,7 +19,6 @@ last flush, which is the trade counters accept and revocations do not.
 
 from __future__ import annotations
 
-import logging
 
 from typing import Final
 
@@ -158,7 +157,7 @@ class PeriodicFlusher:
                 log=log,
                 what="coordination write-behind flush failed; retrying on the next interval",
                 extra={"error": f"{type(exc).__name__}: {exc}", "interval_seconds": self._interval},
-                level=logging.ERROR,
+                level="error",
             )
             return
         if flushed:

@@ -28,7 +28,6 @@ Two steps, so a caller can answer at once and run the fire in the background:
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -272,7 +271,7 @@ async def run_manual_fire(
             log=log,
             what="manual wake fire failed",
             extra={"fire_id": str(claim.fire_id), "schedule_id": str(trigger.schedule_id)},
-            level=logging.ERROR,
+            level="error",
         )
         await fires.finalize_failed(conversation_id, claim.fire_id, error=str(exc), latency_ms=latency_ms)
         return WakeDispatchResult(status="failed", error=str(exc), latency_ms=latency_ms)

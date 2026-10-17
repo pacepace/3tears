@@ -20,7 +20,6 @@ deserialization, programming errors propagate.
 
 from __future__ import annotations
 
-import logging
 from typing import Awaitable, Callable
 
 from threetears.nats import NatsClient
@@ -503,7 +502,7 @@ class EpochListener:
                         log=log,
                         what="epoch reset callback raised; continuing to the remaining consumers",
                         extra={"subject": subject.path},
-                        level=logging.ERROR,
+                        level="error",
                     )
                     if scoped_error is None:
                         scoped_error = exc
@@ -549,7 +548,7 @@ class EpochListener:
                     log=log,
                     what="epoch reset callback raised; continuing to the remaining consumers",
                     extra={"subject": subject.path},
-                    level=logging.ERROR,
+                    level="error",
                 )
                 if first_error is None:
                     first_error = exc

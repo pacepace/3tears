@@ -103,7 +103,7 @@ def describe_failure(
                 f"{where} failure describer raised {type(describer_exc).__name__} describing "
                 f"{type(exc).__name__} — keeping the class only"
             ),
-            level=logging.ERROR,
+            level="error",
         )
         return withhold_failure_detail(exc)
 

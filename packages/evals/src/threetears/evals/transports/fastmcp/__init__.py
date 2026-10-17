@@ -68,7 +68,6 @@ outcome; an ``around`` hook's code after its yield, and the ``annotate`` hook, r
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -531,7 +530,7 @@ async def _note(annotate: CallAnnotator, call: ToolCall, outcome: ActionOutcome)
             unannotated,
             log=log,
             what=f"annotate hook failed on {call.tool}/{call.action}; the outcome stands with no note",
-            level=logging.ERROR,
+            level="error",
         )
         return None
     if note is None:
@@ -558,7 +557,7 @@ async def _entered(around: CallHook, call: ToolCall) -> AsyncGenerator[None, Act
             unentered,
             log=log,
             what=f"around hook failed before its yield on {call.tool}/{call.action}; the call runs unobserved",
-            level=logging.ERROR,
+            level="error",
         )
         return None
     return hook
@@ -583,7 +582,7 @@ async def _finished_within(hook: AsyncGenerator[None, ActionOutcome], call: Tool
                     unfinished,
                     log=log,
                     what=f"around hook failed after its yield on {call.tool}/{call.action}; the outcome stands",
-                    level=logging.ERROR,
+                    level="error",
                 )
                 return
             log.error(
@@ -636,7 +635,7 @@ async def _close(hook: AsyncGenerator[None, ActionOutcome], call: ToolCall, defe
     except Exception as raised:
         # Log only: a tool call is a transport exchange with no record of its own, and its outcome is already the caller's.
         if raised is not defect:
-            contain(raised, log=log, what=f"around hook failed closing {call.tool}/{call.action}", level=logging.ERROR)
+            contain(raised, log=log, what=f"around hook failed closing {call.tool}/{call.action}", level="error")
         return
     # It caught the defect and yielded again: close it, so it does not linger half-run.
     await _close(hook, call, None)

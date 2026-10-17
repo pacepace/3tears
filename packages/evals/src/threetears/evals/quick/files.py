@@ -25,7 +25,6 @@ import asyncio
 import importlib.util
 import re
 import sys
-import logging
 import traceback
 from collections.abc import Sequence
 from pathlib import Path
@@ -145,7 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 unanticipated,
                 log=log,
                 what=f"{DEFAULT_PROG} {args[0]}: failed on an unanticipated error",
-                level=logging.ERROR,
+                level="error",
             )
             sys.stderr.write(f"{DEFAULT_PROG} {args[0]}: failed on an unanticipated error\n{traceback.format_exc()}")
             return EXIT_FAILED

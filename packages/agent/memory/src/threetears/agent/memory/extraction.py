@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -442,7 +441,7 @@ class MemoryExtractor:
                 log=log,
                 what=f"memory extraction failed: {exc}",
                 extra={"conversation_id": str(conversation_id), "agent_id": str(agent_id)},
-                level=logging.ERROR,
+                level="error",
             )
             result = ExtractionResult(outcome=ExtractionOutcome.FAILED, reason=f"{type(exc).__name__}: {exc}")
         if result.outcome is ExtractionOutcome.FAILED:

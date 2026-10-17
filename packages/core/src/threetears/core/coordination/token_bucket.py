@@ -32,7 +32,6 @@ all KV envelope payloads flow through
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -385,7 +384,7 @@ class TokenBucket:
                 exc,
                 log=log,
                 what=f"token bucket: could not refund {tokens} tokens to {key!r}; it will refill instead",
-                level=logging.ERROR,
+                level="error",
             )
         return -1.0
 

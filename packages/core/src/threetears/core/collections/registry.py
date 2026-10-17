@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -988,7 +987,7 @@ class CollectionRegistry:
                     log=log,
                     what="closing a collection failed; continuing with the rest of the teardown",
                     extra={"table": table, "error": f"{type(exc).__name__}: {exc}"},
-                    level=logging.ERROR,
+                    level="error",
                 )
 
     @property

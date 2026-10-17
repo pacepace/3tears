@@ -60,7 +60,6 @@ design notes
 from __future__ import annotations
 
 import dataclasses
-import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, Final
@@ -485,7 +484,7 @@ class _WakeFireStore:
                     log=log,
                     what="wake tick: on_reaped hook raised",
                     extra={"fire_ids": [str(fire.fire_id) for fire in reaped]},
-                    level=logging.ERROR,
+                    level="error",
                 )
         return len(reaped)
 

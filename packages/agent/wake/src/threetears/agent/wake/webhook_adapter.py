@@ -19,7 +19,6 @@ Requirements TOOL-15 / TOOL-16 + PLACEMENT §1.13.
 from __future__ import annotations
 
 import json
-import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -471,7 +470,7 @@ async def webhook_receive(
             log=log,
             what="webhook_receive dispatch failed",
             extra={"subscription_id": str(subscription_id), "fire_id": str(fire_id)},
-            level=logging.ERROR,
+            level="error",
         )
         emitter.inc_webhook_received(outcome="failed")
         emitter.inc_fire(

@@ -12,7 +12,6 @@ the entire reset back as one history entry.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import hashlib
 from collections.abc import Callable
@@ -258,7 +257,7 @@ class WorkspaceResetTool(TearsTool):
                         audit_exc,
                         log=log,
                         what=f"workspace_reset audit publish swallow caught: {audit_exc}",
-                        level=logging.ERROR,
+                        level="error",
                     )
                 result = ToolResult(
                     success=True,
@@ -277,7 +276,7 @@ class WorkspaceResetTool(TearsTool):
                 error=f"validation failed: {exc.pattern} -> {exc.reason}",
             )
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_reset failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_reset failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

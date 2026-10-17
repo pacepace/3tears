@@ -79,7 +79,6 @@ callable gets a :class:`TypeError` naming the parameter; wrap it as
 
 from __future__ import annotations
 
-import logging
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -301,7 +300,7 @@ async def _run_tick_body(
                 log=log,
                 what="scheduled_tick: schedule dispatch raised outside per-fire isolation",
                 extra={"job_id": str(schedule.job_id)},
-                level=logging.ERROR,
+                level="error",
             )
             emitter.inc_failure(reason="handler_exception")
     duration = time.monotonic() - tick_started
@@ -378,7 +377,7 @@ async def _reap_stale_dispatching(
                 log=log,
                 what="scheduled_tick: reaper sweep raised; continuing with dispatch",
                 extra={"reap_after_seconds": reap_after_seconds, "kinds": list(kinds)},
-                level=logging.ERROR,
+                level="error",
             )
             continue
         if reaped > 0:
@@ -578,7 +577,7 @@ async def _dispatch_one(
                 "schedule_type": schedule.schedule_type,
                 "error_type": type(exc).__name__,
             },
-            level=logging.ERROR,
+            level="error",
         )
         await fire_store.finalize_failed(
             schedule.partition_key,

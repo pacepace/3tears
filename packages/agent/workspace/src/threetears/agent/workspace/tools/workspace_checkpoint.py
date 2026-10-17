@@ -15,7 +15,6 @@ the shard-18 AST test flags.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -213,7 +212,7 @@ class WorkspaceCheckpointTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_checkpoint failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_checkpoint failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

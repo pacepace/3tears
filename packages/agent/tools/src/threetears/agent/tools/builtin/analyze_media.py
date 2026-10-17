@@ -23,7 +23,6 @@ Config keys (passed via the tool registry ``config`` dict):
 
 from __future__ import annotations
 
-import logging
 
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -666,7 +665,7 @@ class AnalyzeMediaTool(TearsTool):
                     log=_log,
                     what="analysis callback failed; the result was produced but not delivered",
                     extra={"media_id": mid_str, "content_type": content_type},
-                    level=logging.ERROR,
+                    level="error",
                 )
 
     async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None]:
@@ -840,7 +839,7 @@ class AnalyzeMediaTool(TearsTool):
                     "analyzer": acfg.name,
                     "error": str(exc),
                 },
-                level=logging.ERROR,
+                level="error",
             )
             return _tool_error("document analysis", str(exc))
 
@@ -961,7 +960,7 @@ class AnalyzeMediaTool(TearsTool):
                         "media_id": mid_str,
                         "error": str(exc),
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
                 return _tool_error("transcription", str(exc))
 
@@ -1118,7 +1117,7 @@ class AnalyzeMediaTool(TearsTool):
                     "analyzer": analyzer_name,
                     "error": str(exc),
                 },
-                level=logging.ERROR,
+                level="error",
             )
             return _tool_error("vision model invocation", str(exc))
 
@@ -1162,7 +1161,7 @@ class AnalyzeMediaTool(TearsTool):
                 log=_log,
                 what="Reference vision invocation failed",
                 extra={"analyzer": analyzer_name, "error": str(exc)},
-                level=logging.ERROR,
+                level="error",
             )
             return _tool_error("vision model invocation", str(exc))
         return await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)

@@ -64,7 +64,6 @@ anti-patterns deliberately avoided:
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import hashlib
 import tempfile
@@ -1018,7 +1017,7 @@ async def _watch_loop(
             # regressions; yield to the loop so a persistent failure
             # cannot starve other tasks.
             except Exception as iter_exc:
-                contain(iter_exc, log=log, what=f"bind watcher iteration failed: {iter_exc}", level=logging.ERROR)
+                contain(iter_exc, log=log, what=f"bind watcher iteration failed: {iter_exc}", level="error")
                 await asyncio.sleep(0)
     except asyncio.CancelledError:
         # bind's teardown cancels us on clean or exception-path exit; re-raise so the task ends
@@ -1293,7 +1292,7 @@ async def _capture_back(
                 audit_exc,
                 log=log,
                 what=f"workspace.materialize audit publish swallow caught: {audit_exc}",
-                level=logging.ERROR,
+                level="error",
             )
     return changed
 
@@ -1488,9 +1487,7 @@ async def bind(
                 if current is not None and current.cancelling():
                     raise
             except Exception as cancel_exc:
-                contain(
-                    cancel_exc, log=log, what=f"workspace.bind.watcher_cancel_error: {cancel_exc}", level=logging.ERROR
-                )
+                contain(cancel_exc, log=log, what=f"workspace.bind.watcher_cancel_error: {cancel_exc}", level="error")
         changed = await _capture_back(
             workspace=workspace,
             disk_root=disk_root,

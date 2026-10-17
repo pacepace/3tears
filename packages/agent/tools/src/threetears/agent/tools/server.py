@@ -7,7 +7,6 @@ handles graceful shutdown. each tool pod runs one ToolServer.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 from dataclasses import dataclass
@@ -3601,7 +3600,7 @@ class ToolServer:
                         "correlation_id": correlation_id_log,
                         "error": str(exc),
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
                 response = CallResponse(
                     success=False,
@@ -3759,7 +3758,7 @@ class ToolServer:
                             f"the answer is lost (subject={subject.path} pod_id={self._pod_id} "
                             f"bytes={len(payload)}): {exc}"
                         ),
-                        level=logging.ERROR,
+                        level="error",
                     )
                     return
                 log.warning(

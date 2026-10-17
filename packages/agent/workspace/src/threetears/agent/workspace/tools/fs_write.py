@@ -11,7 +11,6 @@ write-enforcement gates the call before any mutation.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -253,9 +252,7 @@ class FsWriteTool(TearsTool):
                     )
             # NOSILENT: audit failure must never taint a successful write
             except Exception as audit_exc:
-                contain(
-                    audit_exc, log=log, what=f"fs_write audit publish swallow caught: {audit_exc}", level=logging.ERROR
-                )
+                contain(audit_exc, log=log, what=f"fs_write audit publish swallow caught: {audit_exc}", level="error")
             result = ToolResult(
                 success=True,
                 content=(f"wrote {len(content_bytes)} bytes; sha256={new_sha256}, version={new_version}"),
@@ -284,7 +281,7 @@ class FsWriteTool(TearsTool):
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"fs_write failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"fs_write failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

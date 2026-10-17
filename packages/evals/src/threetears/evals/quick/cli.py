@@ -92,7 +92,6 @@ import importlib
 import json
 import math
 import sys
-import logging
 import traceback
 from functools import partial
 from collections.abc import Callable, Coroutine, Sequence
@@ -539,7 +538,7 @@ def run_cli(
             unanticipated,
             log=log,
             what=f"{prog} {args.command}: failed on an unanticipated error",
-            level=logging.ERROR,
+            level="error",
         )
         sys.stderr.write(f"{prog} {args.command}: failed on an unanticipated error\n{traceback.format_exc()}")
         return EXIT_FAILED

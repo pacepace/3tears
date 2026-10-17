@@ -16,7 +16,6 @@ passes ``namespace_type="workspace"`` explicitly.
 
 from __future__ import annotations
 
-import logging
 import json
 from collections.abc import Callable
 from typing import Any
@@ -123,7 +122,7 @@ class WorkspaceCurrentTool(TearsTool):
                 error=f"current failed: {exc}",
             )
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_current failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_current failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

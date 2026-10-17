@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from datetime import tzinfo
 from typing import Any
 
@@ -138,7 +137,7 @@ async def _set_variable(tool_context: ToolContextManager, key: str, value: str, 
         # refuses a failed tool for the rest of a turn does not refuse this one.
         return tool_no_change("variable_set", f"{exc} {await _saved_names(tool_context)}")
     except Exception as exc:
-        contain(exc, log=log, what="variable_set failed", extra={"key": key, "error": str(exc)}, level=logging.ERROR)
+        contain(exc, log=log, what="variable_set failed", extra={"key": key, "error": str(exc)}, level="error")
         return f"{TOOL_ERROR_PREFIX} variable_set: {exc}"
     kept = str((after or {}).get("value", value))
     said = [f"Saved '{key}' ({value_type}, {len(kept):,} chars)."]
@@ -165,7 +164,7 @@ async def _get_variable(tool_context: ToolContextManager, key: str) -> str:
         if var is None:
             return tool_no_change("variable_get", f"no variable named '{key}'. {await _saved_names(tool_context)}")
     except Exception as exc:
-        contain(exc, log=log, what="variable_get failed", extra={"key": key, "error": str(exc)}, level=logging.ERROR)
+        contain(exc, log=log, what="variable_get failed", extra={"key": key, "error": str(exc)}, level="error")
         return f"{TOOL_ERROR_PREFIX} variable_get: {exc}"
     return f"{key} ({var['value_type']}): {var['value']}"
 
@@ -174,7 +173,7 @@ async def _list_variables(tool_context: ToolContextManager) -> str:
     try:
         saved = sorted(await tool_context.get_all_variables(), key=lambda item: str(item["key"]))
     except Exception as exc:
-        contain(exc, log=log, what="variable_list failed", extra={"error": str(exc)}, level=logging.ERROR)
+        contain(exc, log=log, what="variable_list failed", extra={"error": str(exc)}, level="error")
         return f"{TOOL_ERROR_PREFIX} variable_list: {exc}"
     if not saved:
         return f"No variables are saved in this conversation. It may hold {tool_context.var_limit}."
@@ -195,7 +194,7 @@ async def _delete_variable(tool_context: ToolContextManager, key: str) -> str:
         await tool_context.delete_variable(key)
         left = len(await tool_context.get_all_variables())
     except Exception as exc:
-        contain(exc, log=log, what="variable_delete failed", extra={"key": key, "error": str(exc)}, level=logging.ERROR)
+        contain(exc, log=log, what="variable_delete failed", extra={"key": key, "error": str(exc)}, level="error")
         return f"{TOOL_ERROR_PREFIX} variable_delete: {exc}"
     value = str(held["value"])
     return (

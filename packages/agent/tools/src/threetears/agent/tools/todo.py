@@ -13,7 +13,6 @@ their ids, so the next call names the one meant.
 
 from __future__ import annotations
 
-import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, tzinfo
@@ -383,9 +382,7 @@ def load_todo_tools(
             # tool for the rest of a turn does not refuse every later add_todo.
             return tool_no_change("add_todo", str(ve))
         except Exception as exc:
-            contain(
-                exc, log=log, what="add_todo failed", extra={"title": title, "error": str(exc)}, level=logging.ERROR
-            )
+            contain(exc, log=log, what="add_todo failed", extra={"title": title, "error": str(exc)}, level="error")
             return f"[TOOL ERROR] add_todo: {exc}"
 
     add_todo.description = (
@@ -413,7 +410,7 @@ def load_todo_tools(
                 log=log,
                 what="complete_todo failed",
                 extra={"title": title, "todo_id": todo_id, "error": str(exc)},
-                level=logging.ERROR,
+                level="error",
             )
             return f"[TOOL ERROR] complete_todo: {exc}"
 
@@ -490,7 +487,7 @@ def load_todo_tools(
                 log=log,
                 what="update_todo failed",
                 extra={"title": title, "todo_id": todo_id, "error": str(exc)},
-                level=logging.ERROR,
+                level="error",
             )
             return f"[TOOL ERROR] update_todo: {exc}"
 
@@ -520,7 +517,7 @@ def load_todo_tools(
                 log=log,
                 what="remove_todo failed",
                 extra={"title": title, "todo_id": todo_id, "error": str(exc)},
-                level=logging.ERROR,
+                level="error",
             )
             return f"[TOOL ERROR] remove_todo: {exc}"
 
@@ -571,7 +568,7 @@ def load_todo_tools(
             return "\n".join(lines).rstrip("\n")
 
         except Exception as exc:
-            contain(exc, log=log, what="list_todos failed", extra={"error": str(exc)}, level=logging.ERROR)
+            contain(exc, log=log, what="list_todos failed", extra={"error": str(exc)}, level="error")
             return f"[TOOL ERROR] list_todos: {exc}"
 
     list_todos.description = (

@@ -22,7 +22,6 @@ none changes nothing.
 from __future__ import annotations
 
 import json
-import logging
 import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable, Sequence
@@ -864,7 +863,7 @@ class NatsProxyL3Backend:
                 log=_logger,
                 what="on_superseded callback raised; the supersession error is still raised to the caller",
                 extra={"namespace": self.default_namespace},
-                level=logging.ERROR,
+                level="error",
             )
 
     async def execute_batch(

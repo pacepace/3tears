@@ -1398,9 +1398,7 @@ class ScopedSnapshot:
             try:
                 listener()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- a listener's failure must not undo or stop an L1 change already committed; logged
-                contain(
-                    exc, log=log, what=f"scoped snapshot {self._name}: a change listener failed", level=logging.ERROR
-                )
+                contain(exc, log=log, what=f"scoped snapshot {self._name}: a change listener failed", level="error")
 
     @asynccontextmanager
     async def holding_rebuilds(self, *, attempts: int = 10) -> AsyncIterator[bool]:
@@ -1476,7 +1474,7 @@ class ScopedSnapshot:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the watch is the replica's only news of changes; whatever ends it is logged and stated in the status rather than lost with the task
-            contain(exc, log=log, what=f"scoped snapshot {self._name}: the pointer watch ended", level=logging.ERROR)
+            contain(exc, log=log, what=f"scoped snapshot {self._name}: the pointer watch ended", level="error")
             ended = f"the pointer watch ended ({type(exc).__name__}: {exc})"
         self._watch_ended = f"{ended}; changes are no longer applied"
         self._settle()
@@ -1552,7 +1550,7 @@ class ScopedSnapshot:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the worker outlives any one failed attempt; logged and stated in the status, tried again at the next recheck
-                contain(exc, log=log, what=f"scoped snapshot {self._name}: sync failed", level=logging.ERROR)
+                contain(exc, log=log, what=f"scoped snapshot {self._name}: sync failed", level="error")
                 self._failure = f"failed ({type(exc).__name__}: {exc}); trying again"
                 self._waiting.pop("sync", None)
                 self._settle()

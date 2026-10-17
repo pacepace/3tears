@@ -20,7 +20,6 @@ surface instead. document + fs tools still gate their writes.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import hashlib
 from collections.abc import Callable
@@ -215,7 +214,7 @@ class WorkspaceRefreshTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"workspace_refresh failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"workspace_refresh failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

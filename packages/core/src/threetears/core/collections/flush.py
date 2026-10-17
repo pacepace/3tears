@@ -729,7 +729,7 @@ async def _flush_per_entity(
                         "fk_violation": fk_violation,
                         "error": str(exc),
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
                 # permanent drop: release the in-flight claim and evict the
                 # durable row (version-guarded — a newer coalesced write is kept).

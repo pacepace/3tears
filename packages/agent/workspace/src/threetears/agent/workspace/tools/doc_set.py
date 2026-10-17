@@ -12,7 +12,6 @@ matching the enforce-then-act ordering enforced by shard 18's AST test.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -276,7 +275,7 @@ class DocSetTool(TearsTool):
                                 audit_exc,
                                 log=log,
                                 what=f"doc_set audit publish swallow caught: {audit_exc}",
-                                level=logging.ERROR,
+                                level="error",
                             )
                         result = ToolResult(
                             success=True,
@@ -306,7 +305,7 @@ class DocSetTool(TearsTool):
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            contain(exc, log=log, what=f"doc_set failed: {exc}", level=logging.ERROR)
+            contain(exc, log=log, what=f"doc_set failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

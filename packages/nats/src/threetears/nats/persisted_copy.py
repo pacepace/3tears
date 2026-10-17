@@ -27,7 +27,6 @@ reports itself not ready (never not live) until a write lands again.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -409,6 +408,6 @@ class PersistedCopyBucket:
                     "persisted until it is; retrying"
                 ),
                 extra={"bucket": self._name, "loaded": self._loaded, "error": str(exc)},
-                level=logging.ERROR,
+                level="error",
             )
         return landed

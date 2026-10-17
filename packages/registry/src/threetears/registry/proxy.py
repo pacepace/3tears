@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -874,7 +873,7 @@ class CallProxy:
                         "error_type": type(exc).__name__,
                         "error": str(exc),
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
                 return self._pop_ledger_unavailable(request)
             if not fresh:
@@ -1121,7 +1120,7 @@ class CallProxy:
                         "error_type": type(exc).__name__,
                         "error": str(exc),
                     },
-                    level=logging.ERROR,
+                    level="error",
                 )
                 response = ProxyCallResponse(
                     success=False,
@@ -1445,7 +1444,7 @@ class CallProxy:
                         log=log,
                         what=f"tool result could not be delivered to the caller after {_RESULT_DELIVERY_ATTEMPTS} "
                         f"attempts; the answer is lost (subject={delivery_subject.path} bytes={len(payload)}): {exc}",
-                        level=logging.ERROR,
+                        level="error",
                     )
                     return
                 log.warning(

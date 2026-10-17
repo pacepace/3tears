@@ -58,7 +58,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -327,7 +326,7 @@ async def _undo_interrupted_attempt(session: MigrationSession, database: str, ke
                 f"error={type(exc).__name__}: {exc}; the session may hold the lock until it ends, "
                 "so close or terminate the connection"
             ),
-            level=logging.ERROR,
+            level="error",
         )
 
 

@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -361,7 +360,7 @@ class ClusterBackup:
                         log=log,
                         what="cluster backup: database FAILED to dump; the set will be incomplete",
                         extra={"backup_id": str(backup_id), "database": database, "attempts": attempt},
-                        level=logging.ERROR,
+                        level="error",
                     )
                     failures.append(DatabaseFailure(database=database, error=f"{type(exc).__name__}: {exc}"))
                     break

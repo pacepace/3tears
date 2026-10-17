@@ -34,7 +34,6 @@ measured N more times overnight. Runs already launched finish and stay members.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import json
 from functools import partial
@@ -425,7 +424,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
             broke,
             log=log,
             what=f"eval.sweep sweep={sweep.id} scope={scope_id} ended on an error",
-            level=logging.ERROR,
+            level="error",
         )
         failure.append(f"the sweep ended on an error: {broke}")
         if isinstance(broke, EvalServiceError) and len(failure) == 1:

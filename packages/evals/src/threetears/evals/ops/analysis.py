@@ -15,7 +15,6 @@ pay for.
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
@@ -760,7 +759,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
                     f"before any call ({why}), and its ending could not be written; it reads lost once its lease "
                     "lapses"
                 ),
-                level=logging.ERROR,
+                level="error",
             )
 
     # The one step that decides between processes: a conditional write of the campaign's generation slot. The

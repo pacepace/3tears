@@ -31,7 +31,6 @@ began (:class:`~threetears.evals.run.jobs.RunEndHook`).
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -194,7 +193,7 @@ class RegressionWatch:
                         f"eval.regression sink failed delivering run={run_id} measure={alert.measure}; "
                         "the next alert is still delivered"
                     ),
-                    level=logging.ERROR,
+                    level="error",
                 )
 
     def check(self, run_id: str, scope_id: str) -> list[RegressionAlert]:
