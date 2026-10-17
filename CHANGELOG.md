@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.70.0 -- 2026-10-16
+
 ### 3tears-evals: an analysis of a large campaign starts inside the host's call budget
 
 - **Fixed: assembling a campaign's bundle read every kept trial's trace one at a time, whole.** A 16-run judge campaign
@@ -75,8 +77,6 @@ packages (bumped in lock-step).
   lost three conditional writes to the run's own progress writes waited a whole interval. `JobLeases` now does its
   store round-trips on a small pool of its own, renews every held lease at once, and tries a contended renewal
   again within the interval after a short jittered wait. `JobLeases(blocking_executor=)` is still accepted and ignored.
-
-## v0.70.0 -- 2026-10-16
 
 ### Text a model reads stays under the item it belongs to
 
