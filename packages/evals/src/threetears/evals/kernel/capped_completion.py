@@ -57,8 +57,9 @@ def prompt_token_bound(system: str, user: str, response_format: Mapping[str, Any
     No token of a byte-level tokenizer is shorter than a byte, so one per byte of each text (and of the directive,
     written out as JSON either way), plus :data:`PROMPT_FRAMING_TOKENS` for the framing around them, is at or above
     any such tokenizer's count, however densely the text tokenizes. The shipped client prices a call's ceiling on it
-    (:meth:`~threetears.evals.providers.Model.price_ceiling`), and the analysis generation logs it before its first
-    call, so the size disclosed and the size priced are one figure.
+    (:meth:`~threetears.evals.providers.Model.price_ceiling`). It is a bound, well above the bill (about 1.7 times it
+    for a JSON-heavy request, 4 for prose), so the analysis generation does not log it as the request's size: its
+    ``approx_input_tokens`` line is a separate characters-over-two ballpark of the same request.
 
     :param system: The system prompt the call sends.
     :ptype system: str

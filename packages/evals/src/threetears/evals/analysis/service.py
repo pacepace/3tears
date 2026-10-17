@@ -230,9 +230,10 @@ class PreparedGeneration(NamedTuple):
     started_at: str | None = None
 
 
-#: Characters per token the logged input size assumes. A ballpark, not a measurement: a JSON-heavy bundle (ids,
-#: numbers, punctuation) ran about 1.7 in production (#827) and prose runs about 4, so 2 keeps the figure near or
-#: above the bill for the bundles that matter. The cap is priced on a separate one-per-byte bound, never on this.
+#: Characters per token the logged input size assumes. A ballpark, not a measurement, and not a bound: a JSON-heavy
+#: bundle (ids, numbers, punctuation) ran about 1.7 in production (#827), where 2 reads about 15% under the bill, and
+#: prose runs about 4, where it reads about twice over. The cap is priced on a separate one-per-byte bound, never on
+#: this.
 CHARS_PER_TOKEN = 2
 
 #: What the generation's ``approx_input_tokens`` log figure is, said on the line that logs it.

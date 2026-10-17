@@ -12,7 +12,7 @@ measure.
 free text never converges: every generation finds a phrasing it does not parse (``docs/measuring-soundly.md``). This
 does not parse a claim. The headline and each summary bullet name the findings they rest on
 (``headline_rests_on``, ``summary_rests_on``), and what the generator checks
-(:func:`~threetears.evals.analysis.generator._reject_unestablished_nulls`) is structural: does any finding that
+(:func:`~threetears.evals.analysis.generator._unestablished_null_titles`) is structural: does any finding that
 sentence rests on cite a reading the bundle established alike? Only the question "does this sentence say arms are
 alike" is read off the words, and only by a short, curated list of the commonest null phrasings
 (:data:`NULL_CLAIM_PATTERNS`). A reworded null passes it, and the reporter eval's judge measures the rest; what it
