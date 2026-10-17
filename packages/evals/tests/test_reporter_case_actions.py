@@ -15,10 +15,13 @@ through the operations and through :meth:`MountedTool.call`, the one path every 
 - **A reporter run counts the turns it delivered**: each generator call that returned. A memo that failed
   validation after its billed calls returned keeps their cost; one whose first call was refused delivered
   none, and its cell reads as one where no result took a turn.
+- **A memo titling an arm its readings omit fails its case** (#829): the generator refuses it, naming the arm, and
+  the cell records that refusal as the candidate's own failure.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -41,7 +44,8 @@ from threetears.evals.run.runner import RunnerOptions, execute_run
 from packages.evals.tests.factories import make_campaign, make_eval_run
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW
+from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, alias_at, memo_payload
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.reporter_case_support import (
     GROUNDED,
@@ -461,3 +465,33 @@ async def test_a_generator_repair_past_the_runs_cap_is_sent_and_both_calls_keep_
     assert result.candidate_error is not None, "the memo failed validation, the candidate's own failure"
     assert result.infra_error is None, "the cap refused nothing, so there is no apparatus fault to record"
     assert cap.accumulated_usd == pytest.approx(0.30), "the cap counts both calls once the cell has landed"
+
+
+# =============================================================================
+# A memo titling an arm its readings omit fails its case
+# =============================================================================
+
+
+async def test_a_memo_titling_an_arm_its_readings_omit_fails_its_case_naming_the_arm() -> None:
+    """The corpus case's memo titles the wide arm by its level and cites the narrow arm's reading only (#829).
+
+    The production instance: a finding titled for two arms' cost over readings at two others. The reporter's
+    generator refuses it on both calls, so the case's cell is the candidate's failure, and the failure names the arm
+    as the title wrote it.
+    """
+    fixture = off_loop(reporter_fixture)
+    host = fixture.host.eval_host
+    bundle = off_loop(assemble_context_bundle, fixture.campaign, storage=host.storage, profile=host.profile)
+    payload = memo_payload(bundle)
+    payload["findings"][0] |= {
+        "title": "The 1024tok chunk is the slower one",
+        "evidence": [{"cell": alias_at(bundle, TOYHOST_NARROW), "measure_id": "total_ms", "reading": "measure"}],
+    }
+
+    result, _bundle = await _reporter_result(FixturedClient(json.dumps(payload)))
+
+    assert result.turns_delivered == 2, "refused once, repaired once, refused again"
+    error = result.candidate_error
+    assert error is not None and result.infra_error is None
+    assert 'findings[0].title names "1024tok" (the arm chunk_tokens=1024tok at cell(s) ' in error
+    assert "none of that finding's evidence rows or trials is taken at that arm" in error

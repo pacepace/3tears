@@ -26,6 +26,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/__init__.py": {},
     "analysis/agreement.py": {},
     "analysis/bar_proposals.py": {},
+    "analysis/arm_mentions.py": {},
     "analysis/arms.py": {},
     "analysis/bundle/__init__.py": {},
     "analysis/bundle/assemble.py": {},

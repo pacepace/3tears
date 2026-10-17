@@ -477,6 +477,14 @@ a title in a common null phrasing ("does not change", "no difference", "no effec
 established alike. The join is structural; only the phrase is read off the words, so a reworded null passes, and
 the reporter eval measures the rest.
 
+**A finding's title names only arms its evidence reads.** A title naming an arm none of the finding's readings or
+trials is taken at states a result the reader is shown nothing of: a production memo titled a finding "GPT-6 Luna
+Pro and Ling 3.1 Flash quadrupled evaluation cost" over readings at two other arms. The generator refuses such a
+title, naming the arm. Which arms a title names is read off the names the bundle gives each arm (each model's id,
+and any other distinguishing level spelled with a letter and a digit), matched case-insensitively with spaces,
+hyphens and dots alike, the longer name winning where two overlap (`analysis/arm_mentions.py`). A shortened name
+("Luna Pro" for `gpt-6-luna-pro`) passes, and the reporter eval measures the rest.
+
 **The analysis keeps its evidence.** A stored analysis carries the bundle it was written over (`EvalAnalysis.bundle`),
 so its report is laid out over that frozen evidence, whatever is archived or re-run afterwards.
 
