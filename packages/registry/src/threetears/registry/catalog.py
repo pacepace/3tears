@@ -23,7 +23,7 @@ from uuid import UUID
 
 from threetears.core.serialization import json_datetime
 from threetears.nats import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, Subjects
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.registry.config import get_definition_ttl
 from threetears.registry.routing import endpoints_callable_by
 
@@ -935,9 +935,11 @@ class ToolCatalog:
                     await self._persist(entry)
                 except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one entry's write must not strand the rest; each failure is logged and returned, and the caller retries
                     failed.append(full_name)
-                    _logger.warning(
-                        "writing a catalog entry back into its bucket failed",
-                        extra={"extra_data": {"full_name": full_name, "error": f"{type(exc).__name__}: {exc}"}},
+                    contain(
+                        exc,
+                        log=_logger,
+                        what="writing a catalog entry back into its bucket failed",
+                        extra={"full_name": full_name, "error": f"{type(exc).__name__}: {exc}"},
                     )
         _logger.info(
             "catalog written back into its bucket",
@@ -1096,9 +1098,11 @@ class ToolCatalog:
                 # discovers this tool. Deregistration is not complete, and saying so at info would
                 # have read as a clean removal.
                 kv_deleted = False
-                _logger.warning(
-                    "deregistered tool locally but failed to remove its shared KV entry",
-                    extra={"extra_data": {"full_name": full_name, "error": str(exc)}},
+                contain(
+                    exc,
+                    log=_logger,
+                    what="deregistered tool locally but failed to remove its shared KV entry",
+                    extra={"full_name": full_name, "error": str(exc)},
                 )
         _logger.info(
             "deregistered tool from catalog",
@@ -1143,9 +1147,11 @@ class ToolCatalog:
                         # same method. The shared copy keeps advertising this endpoint until a later
                         # write succeeds; that is worth a warning, not a lost sweep.
                         stale_shared.append(full_name)
-                        _logger.warning(
-                            "removed a pod's endpoint locally but failed to update its shared KV entry",
-                            extra={"extra_data": {"full_name": full_name, "pod_id": pod_id, "error": str(exc)}},
+                        contain(
+                            exc,
+                            log=_logger,
+                            what="removed a pod's endpoint locally but failed to update its shared KV entry",
+                            extra={"full_name": full_name, "pod_id": pod_id, "error": str(exc)},
                         )
             for full_name in to_remove:
                 if not await self.deregister(full_name):

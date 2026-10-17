@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from threetears.agent.tools.server import HeartbeatMessage
 from threetears.nats import Subjects
-from threetears.observe import PeriodicTask, get_logger
+from threetears.observe import PeriodicTask, contain, get_logger
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.entities import HeartbeatEntity
 from threetears.registry.heartbeat_collection import HeartbeatCollection
@@ -264,9 +264,11 @@ class HeartbeatSubscriber:
         try:
             heartbeat = HeartbeatMessage.model_validate_json(msg.data)
         except Exception as exc:
-            log.warning(
-                "malformed heartbeat message",
-                extra={"extra_data": {"error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="malformed heartbeat message",
+                extra={"error": str(exc)},
             )
             return
 

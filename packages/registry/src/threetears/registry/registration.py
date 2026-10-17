@@ -17,6 +17,7 @@ catalog but its NATS subscription has not yet propagated.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -35,7 +36,7 @@ from threetears.core.namespaces import (
     build_tool_provider_node_name,
 )
 from threetears.nats import IncomingMessage, Subjects
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolDefinition, ToolEndpoint
 from threetears.registry.ownership import (
@@ -384,9 +385,12 @@ class RegistrationHandler:
         try:
             manifest = RegistrationManifest.model_validate_json(msg.data)
         except Exception as exc:
-            log.error(
-                "registration rejected: malformed manifest",
-                extra={"extra_data": {"error": str(exc), "error_code": RefusalCode.INVALID_MANIFEST.value}},
+            contain(
+                exc,
+                log=log,
+                what="registration rejected: malformed manifest",
+                extra={"error": str(exc), "error_code": RefusalCode.INVALID_MANIFEST.value},
+                level=logging.ERROR,
             )
             await self._reply(
                 msg,
@@ -426,6 +430,19 @@ class RegistrationHandler:
         try:
             await self._withdraw_refused_copies(manifest.pod_id, verdict)
         except Exception as exc:  # noqa: BLE001 -- a catalog failure is answered, never left as a dropped reply
+            contain(
+                exc,
+                log=log,
+                what="tool registration could not be recorded: the catalog write failed. the pod is told the refusal "
+                "is temporary and retries on its heartbeat",
+                extra={
+                    "pod_id": manifest.pod_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "error_code": RefusalCode.CATALOG_UNAVAILABLE.value,
+                },
+                level=logging.ERROR,
+            )
             await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
             return
         if verdict.error is not None:
@@ -464,6 +481,19 @@ class RegistrationHandler:
                 proves_delegation=manifest.proves_delegation,
             )
         except Exception as exc:  # noqa: BLE001 -- a catalog failure is answered, never left as a dropped reply
+            contain(
+                exc,
+                log=log,
+                what="tool registration could not be recorded: the catalog write failed. the pod is told the refusal "
+                "is temporary and retries on its heartbeat",
+                extra={
+                    "pod_id": manifest.pod_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "error_code": RefusalCode.CATALOG_UNAVAILABLE.value,
+                },
+                level=logging.ERROR,
+            )
             await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
             return
 
@@ -685,6 +715,20 @@ class RegistrationHandler:
         try:
             verified_agent = await self._authenticator.verify_agent(token)
         except Exception as exc:  # noqa: BLE001 -- the host's store failing is a refusal, never a dropped reply
+            contain(
+                exc,
+                log=log,
+                what="tool registration refused: the host could not verify the publisher, because reading the store "
+                "it verifies against failed. the pod is told the refusal is temporary and retries on its heartbeat",
+                extra={
+                    "pod_id": pod_id,
+                    "publisher_kind": "agent",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "error_code": RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE.value,
+                },
+                level=logging.ERROR,
+            )
             result = self._verification_unavailable(pod_id, "agent", exc)
         else:
             if verified_agent is None:
@@ -733,6 +777,20 @@ class RegistrationHandler:
         try:
             pod_auth = await self._authenticator.verify_pod(token)
         except Exception as exc:  # noqa: BLE001 -- the host's store failing is a refusal, never a dropped reply
+            contain(
+                exc,
+                log=log,
+                what="tool registration refused: the host could not verify the publisher, because reading the store "
+                "it verifies against failed. the pod is told the refusal is temporary and retries on its heartbeat",
+                extra={
+                    "pod_id": pod_id,
+                    "publisher_kind": "tool pod",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "error_code": RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE.value,
+                },
+                level=logging.ERROR,
+            )
             failure = exc
         if failure is not None:
             result = self._verification_unavailable(pod_id, "tool pod", failure)
@@ -791,19 +849,6 @@ class RegistrationHandler:
         :return: an unverified publisher refused with ``PUBLISHER_VERIFICATION_UNAVAILABLE``
         :rtype: _Publisher
         """
-        log.error(
-            "tool registration refused: the host could not verify the publisher, because reading the store "
-            "it verifies against failed. the pod is told the refusal is temporary and retries on its heartbeat",
-            extra={
-                "extra_data": {
-                    "pod_id": pod_id,
-                    "publisher_kind": kind,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                    "error_code": RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE.value,
-                }
-            },
-        )
         return _Publisher(
             standing=PublisherStanding(verified=False, platform_shared=False, owned_nodes=()),
             self_identity=(),
@@ -838,18 +883,6 @@ class RegistrationHandler:
         :rtype: None
         """
         code = RefusalCode.CATALOG_UNAVAILABLE
-        log.error(
-            "tool registration could not be recorded: the catalog write failed. the pod is told the refusal "
-            "is temporary and retries on its heartbeat",
-            extra={
-                "extra_data": {
-                    "pod_id": manifest.pod_id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                    "error_code": code.value,
-                }
-            },
-        )
         await self._reply(
             msg,
             RegistrationResponse(
@@ -906,10 +939,13 @@ class RegistrationHandler:
             try:
                 result = tuple(await self._authenticator.provider_nodes())
             except Exception as exc:  # noqa: BLE001 -- any host failure refuses, never admits
-                log.error(
-                    "tool pod registration refused: the ownership graph could not be read, and a "
+                contain(
+                    exc,
+                    log=log,
+                    what="tool pod registration refused: the ownership graph could not be read, and a "
                     "manifest must not be admitted unfiltered. the pod retries on its next heartbeat",
-                    extra={"extra_data": {"pod_id": pod_id, "error": str(exc)}},
+                    extra={"pod_id": pod_id, "error": str(exc)},
+                    level=logging.ERROR,
                 )
                 result = None
         return result
@@ -1052,15 +1088,15 @@ class RegistrationHandler:
                 timeout=timedelta(seconds=self._probe_timeout),
             )
         except Exception as exc:
-            log.warning(
-                "tool pod reachability probe failed or reply was malformed; endpoints remain pending",
+            contain(
+                exc,
+                log=log,
+                what="tool pod reachability probe failed or reply was malformed; endpoints remain pending",
                 extra={
-                    "extra_data": {
-                        "pod_id": pod_id,
-                        "probe_subject": subject.path,
-                        "probe_timeout": self._probe_timeout,
-                        "error": str(exc),
-                    }
+                    "pod_id": pod_id,
+                    "probe_subject": subject.path,
+                    "probe_timeout": self._probe_timeout,
+                    "error": str(exc),
                 },
             )
             return
