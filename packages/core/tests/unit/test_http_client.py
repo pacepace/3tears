@@ -792,3 +792,59 @@ def test_empty_string_base_url_still_rejected() -> None:
     'no fixed upstream' signal. They must not collapse into the same path."""
     with pytest.raises(ValueError, match="non-empty"):
         TracedHttpClient(upstream_base_url="")
+
+
+class TestARequestThatMustNotRunTwice:
+    """``idempotent=False``: sent again only when it never left (a POST that queues work)."""
+
+    async def test_a_5xx_ends_it_after_one_attempt(self) -> None:
+        transport, calls = _sequenced_transport([500, 200])
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.post("/jobs", json={"x": 1}, idempotent=False)
+        assert exc_info.value.status_code == 500
+        assert "after 1 attempt" in str(exc_info.value)
+        assert calls[0] == 1
+
+    @pytest.mark.parametrize(
+        "failure",
+        [httpx.ReadTimeout("slow"), httpx.RemoteProtocolError("dropped"), httpx.WriteTimeout("stuck")],
+    )
+    async def test_a_failure_after_it_left_ends_it_and_names_the_cause(self, failure: Exception) -> None:
+        transport, calls = _raising_transport(failure)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("POST", "/jobs", idempotent=False)
+        assert calls[0] == 1
+        assert exc_info.value.__cause__ is failure
+
+    @pytest.mark.parametrize(
+        "failure", [httpx.ConnectError("refused"), httpx.ConnectTimeout("no route"), httpx.PoolTimeout("busy")]
+    )
+    async def test_a_request_that_never_left_is_sent_again(self, failure: Exception) -> None:
+        calls = [0]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls[0] += 1
+            if calls[0] == 1:
+                raise failure
+            return httpx.Response(201, text="queued")
+
+        async with _client(httpx.MockTransport(handler), max_attempts=3) as client:
+            response = await client.post("/jobs", idempotent=False)
+        assert response.status_code == 201
+        assert response.extensions[ATTEMPTS_EXTENSION] == 2
+
+    async def test_the_breaker_still_hears_the_failure(self) -> None:
+        spy = _BreakerSpy()
+        transport, _calls = _sequenced_transport([503])
+        async with _client(transport, circuit_breaker=spy) as client:
+            with pytest.raises(UpstreamHttpError):
+                await client.post("/jobs", idempotent=False)
+        assert spy.failures == 1
+
+    async def test_a_4xx_is_still_returned(self) -> None:
+        transport, calls = _sequenced_transport([409])
+        async with _client(transport) as client:
+            response = await client.post("/jobs", idempotent=False)
+        assert response.status_code == 409 and calls[0] == 1
