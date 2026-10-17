@@ -216,6 +216,33 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
   `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
   `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
 
+## v0.70.0 -- 2026-10-16
+
+### models: a subscription reply says why it stopped and who served it; an OpenRouter reasoning budget reaches the wire
+
+**Changed (models), behaviour to note:** on the Claude CLI route, `finish_reason` is derived from the
+CLI's `stop_reason` and `terminal_reason` (`length` for a truncation or context overflow,
+`content_filter` for a refusal, `tool_calls`, `stop`), where before every reply read `stop`. A
+`max_retries` or `max_output_tokens` set on the model or per call now reaches the CLI as
+`CLAUDE_CODE_MAX_RETRIES` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS`; before, it was dropped and the CLI used
+its own default. `create_anthropic_chat`'s `max_retries` default is `None`; API-key calls still get 2.
+
+**Added (models):** CLI replies carry `stop_reason`, `terminal_reason` and the model that served the
+call as `model_name` (a `fallback_model` switch shows); the CLI's thinking tokens become
+`output_token_details.reasoning` when it sends a whole number. OpenRouter's reasoning `max_tokens`,
+`enabled` and `exclude` are declared on the SDK's request type, so a budget set on the model or per
+call is sent. (#774)
+
+### Testing: containers get their config without a bind mount; the unit suite runs on four workers
+
+Test containers (NATS, SearXNG) receive their configuration through an environment variable their
+shell writes out, never a bind mount, so the integration suite runs where the Docker daemon is
+elsewhere (Docker Desktop behind a dev container, a remote `DOCKER_HOST`);
+`tests/enforcement/test_no_test_container_bind_mount.py` holds it. `core.testing.fixtures.nats_server`
+takes `config=`; NATS images used with a config are `-alpine` tags (#712). CI's unit job runs on four
+workers, one package per worker (`pytest-xdist`, #803). NATS grant tests end a refusal check on the
+server's word, not a timeout (#802), and the iam tamper tests always change the token (#832).
+
 ### 3tears-evals: an analysis of a large campaign starts inside the host's call budget
 
 - **Fixed: assembling a campaign's bundle read every kept trial's trace one at a time, whole.** A 16-run judge campaign
@@ -296,8 +323,6 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
 - **Fixed: the lease tests that failed only under a loaded suite.** The renewal-under-load tests ran a 0.9s lease and
   the two lease-expiry tests a 0.3s one, margins a stalled scheduler spent; the first now run 1.8s (every wait doubled
   with it) and the second 0.9s, each asserting what it did.
-
-## v0.70.0 -- 2026-10-16
 
 ### Text a model reads stays under the item it belongs to
 

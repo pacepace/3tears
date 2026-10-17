@@ -24,16 +24,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
-from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
-from pathlib import Path
 from uuid import UUID
 
-import nats
-import nats.errors
 import pytest
 from nats.js.api import AckPolicy, StorageType
 
@@ -50,6 +45,9 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import Subjects, get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .nats_support import running_nats
+from .refusals import Violations, refused, watching_client_log
+
 pytestmark = pytest.mark.integration
 
 _NS = "ownread"
@@ -61,9 +59,6 @@ _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _AGENT_PW = "agent-pw"  # noqa: S105 - ephemeral testcontainer credential
 _TOOL_PW = "tool-pw"  # noqa: S105 - ephemeral testcontainer credential
 _WAIT = 10.0
-
-#: what a refused JetStream call surfaces as in nats-py: an unanswered request.
-_REFUSED = (nats.errors.TimeoutError, nats.errors.NoRespondersError)
 
 
 def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
@@ -131,30 +126,6 @@ def _server_config(users: list[dict[str, object]]) -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
 async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str | None = None) -> NatsClient:
     """connect the wrapper client as one configured user.
 
@@ -201,7 +172,7 @@ def _create_body(stream: str, name: str | None, filter_subject: str, **extra: ob
     return json.dumps({"stream_name": stream, "config": config}).encode()
 
 
-async def test_a_pod_collects_its_own_deliveries_and_no_other_agents(tmp_path: Path) -> None:
+async def test_a_pod_collects_its_own_deliveries_and_no_other_agents() -> None:
     """the agent pod collects its reply; every route to another principal's messages is refused."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -230,7 +201,7 @@ async def test_a_pod_collects_its_own_deliveries_and_no_other_agents(tmp_path: P
     channels = f"{_NS}-channels-deliver"
     audit = f"{_NS}-audit"
 
-    with _nats_with_auth(config, tmp_path) as uri:
+    with running_nats(config) as uri:
         hub = await _connect(uri, user="admin", password=_ADMIN_PW)
         agent: NatsClient | None = None
         tool: NatsClient | None = None
@@ -320,9 +291,10 @@ async def test_a_pod_collects_its_own_deliveries_and_no_other_agents(tmp_path: P
                     b'{"batch": 10, "expires": 1000000000}',
                 ),
             ]
-            for client, subject, body in probes:
-                with pytest.raises(_REFUSED):
-                    await client.raw.request(subject, body, timeout=2)
+            violations = Violations()
+            with watching_client_log(violations):
+                for client, subject, body in probes:
+                    await refused(violations, client.raw.request(subject, body, timeout=5), naming=subject)
 
             # === REFUSED by the server: a body filter that disagrees with the granted subject =======
             # the grant admits the subject; the server then holds the body to it. these are the
@@ -352,7 +324,7 @@ async def test_a_pod_collects_its_own_deliveries_and_no_other_agents(tmp_path: P
                     await client.shutdown(drain_timeout=timedelta(seconds=2))
 
 
-async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none(tmp_path: Path) -> None:
+async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none() -> None:
     """the hub reconciles the cache to direct reads; the pod reads its own key and nothing more."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -370,7 +342,7 @@ async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none(tmp
     own_key = str(_AGENT)
     other_key = str(_OTHER_AGENT)
 
-    with _nats_with_auth(config, tmp_path) as uri:
+    with running_nats(config) as uri:
         hub = await _connect(uri, user="admin", password=_ADMIN_PW)
         agent: NatsClient | None = None
         try:
@@ -412,29 +384,36 @@ async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none(tmp
 
             # === REFUSED: another agent's key, and every write -- its own key included =============
             short = await agent.raw.jetstream(timeout=2).key_value(bucket_name)
-            with pytest.raises(_REFUSED):
-                await short.get(other_key)
-            for key in (own_key, other_key):
-                with pytest.raises(_REFUSED):
-                    await short.put(key, b'{"system_prompt": "rewritten"}')
             stream = f"KV_{bucket_name}"
-            for subject, body in (
-                (
-                    f"$JS.API.CONSUMER.CREATE.{stream}.w1.$KV.{bucket_name}.{other_key}",
-                    _create_body(stream, "w1", f"$KV.{bucket_name}.{other_key}"),
-                ),
-                (
-                    f"$JS.API.CONSUMER.CREATE.{stream}.w2.$KV.{bucket_name}.>",
-                    _create_body(stream, "w2", f"$KV.{bucket_name}.>"),
-                ),
-                (f"$JS.API.CONSUMER.CREATE.{stream}", _create_body(stream, None, f"$KV.{bucket_name}.>")),
-                (
-                    f"$JS.API.STREAM.MSG.GET.{stream}",
-                    json.dumps({"last_by_subj": f"$KV.{bucket_name}.{other_key}"}).encode(),
-                ),
-            ):
-                with pytest.raises(_REFUSED):
-                    await agent.raw.request(subject, body, timeout=2)
+            violations = Violations()
+            with watching_client_log(violations):
+                await refused(
+                    violations,
+                    short.get(other_key),
+                    naming=f"$js.api.direct.get.{stream}.$kv.{bucket_name}.{other_key}",
+                )
+                for key in (own_key, other_key):
+                    await refused(
+                        violations,
+                        short.put(key, b'{"system_prompt": "rewritten"}'),
+                        naming=f"$kv.{bucket_name}.{key}",
+                    )
+                for subject, body in (
+                    (
+                        f"$JS.API.CONSUMER.CREATE.{stream}.w1.$KV.{bucket_name}.{other_key}",
+                        _create_body(stream, "w1", f"$KV.{bucket_name}.{other_key}"),
+                    ),
+                    (
+                        f"$JS.API.CONSUMER.CREATE.{stream}.w2.$KV.{bucket_name}.>",
+                        _create_body(stream, "w2", f"$KV.{bucket_name}.>"),
+                    ),
+                    (f"$JS.API.CONSUMER.CREATE.{stream}", _create_body(stream, None, f"$KV.{bucket_name}.>")),
+                    (
+                        f"$JS.API.STREAM.MSG.GET.{stream}",
+                        json.dumps({"last_by_subj": f"$KV.{bucket_name}.{other_key}"}).encode(),
+                    ),
+                ):
+                    await refused(violations, agent.raw.request(subject, body, timeout=5), naming=subject)
 
             # === nothing was rewritten ===============================================================
             assert (await legacy.get(own_key)).value == b'{"system_prompt": "own"}'

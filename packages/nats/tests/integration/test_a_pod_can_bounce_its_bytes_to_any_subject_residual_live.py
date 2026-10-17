@@ -32,11 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
-from collections.abc import Iterator
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -52,6 +49,8 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .nats_support import running_nats
+
 pytestmark = pytest.mark.integration
 
 _NS = "bounce"
@@ -60,7 +59,7 @@ _OTHER_POD = "01947100-0000-7000-8000-0000000000e8"
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
 #: the local stack's nats-server, so the residual is pinned on the version that runs
-_NATS_IMAGE = "nats:2.12.6"
+_NATS_IMAGE = "nats:2.12.6-alpine"
 _PAYLOAD = b'{"forged": "a pod chose these bytes"}'
 
 
@@ -115,33 +114,7 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server(_NATS_IMAGE)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
-async def test_a_pod_can_bounce_its_own_bytes_to_a_subject_it_may_not_publish(tmp_path: Path) -> None:
+async def test_a_pod_can_bounce_its_own_bytes_to_a_subject_it_may_not_publish() -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
     previous_ns = get_default_namespace()
@@ -158,7 +131,7 @@ async def test_a_pod_can_bounce_its_own_bytes_to_a_subject_it_may_not_publish(tm
     for target in (other_pods_calls, other_inbox, reply_target):
         assert target not in pub_allow, f"the pod may publish {target}; the probe would prove nothing"
 
-    with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
+    with running_nats(_server_config(pub_allow, sub_allow), image=_NATS_IMAGE) as uri:
         hub = await NatsClient.connect(
             nats_url=uri, nats_subject_namespace=_NS, client_name="hub", user="admin", password=_ADMIN_PW
         )
