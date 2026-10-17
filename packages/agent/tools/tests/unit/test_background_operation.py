@@ -774,6 +774,9 @@ async def test_a_record_this_code_cannot_read_is_ignored_and_replaced_by_the_nex
     assert (await status.run()).metadata["state"] == "succeeded"  # type: ignore[index]
 
 
+@pytest.mark.expect_contained(
+    TypeError, why="the test returns an object() result, which does not JSON-encode, to drive the share failure"
+)
 async def test_a_result_that_cannot_be_stored_ends_the_run_as_it_ended_and_stays_on_its_replica(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

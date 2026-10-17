@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from typing import Any, AsyncIterator
 
 from threetears.media.contracts import ObjectHandle
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope
@@ -290,10 +290,11 @@ async def _presign_delivery_url(s3_key: str, ttl: int) -> str | None:
         return None
     try:
         return await scope.object_store.presigned_get_url(s3_key, expires_in=ttl)
-    except Exception:  # prawduct:allow prawduct/broad-except -- delivery is best-effort on an already-produced+cataloged object; the producer stays impl-free (media-contracts only) so it cannot import the store impl's concrete exception types. Logged with context below; the report still returns successfully.
-        _log.warning(
-            "could not presign a delivery URL for a produced report; returning the handle without a URL",
-            exc_info=True,
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- delivery is best-effort on an already-produced+cataloged object; the producer stays impl-free (media-contracts only) so it cannot import the store impl's concrete exception types. Logged with context below; the report still returns successfully.
+        contain(
+            exc,
+            log=_log,
+            what="could not presign a delivery URL for a produced report; returning the handle without a URL",
         )
         return None
 

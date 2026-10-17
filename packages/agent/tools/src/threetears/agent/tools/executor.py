@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.messages import ToolMessage
 
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "ToolExecutionResult",
@@ -124,9 +126,12 @@ class ToolExecutor:
                 try:
                     invoked = await tool.ainvoke({"name": tc_name, "args": tc_args, "id": tc_id, "type": "tool_call"})
                 except Exception as exc:
-                    log.error(
-                        "Tool execution failed",
-                        extra={"extra_data": {"tool_name": tc_name, "error": str(exc)}},
+                    contain(
+                        exc,
+                        log=log,
+                        what="Tool execution failed",
+                        extra={"tool_name": tc_name, "error": str(exc)},
+                        level=logging.ERROR,
                     )
                     messages.append(ToolMessage(content=f"Error executing {tc_name}: {exc}", tool_call_id=tc_id))
                     continue

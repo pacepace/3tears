@@ -82,14 +82,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Generic, Literal, TypeVar
 
 from threetears.core.serialization import json_datetime, serialize_to_json
-from threetears.observe import get_logger
+from threetears.observe import cancel_and_wait, contain, get_logger
 
 from threetears.agent.tools.base_tool import CONFLICT, TOOL_NOT_READY, MCPToolDefinition, TearsTool, ToolResult
 
@@ -798,10 +798,7 @@ class BackgroundOperation(Generic[ResultT]):
         """
         for task in (self._watcher, self._task):
             if task is not None and not task.done():
-                task.cancel()
-                # NOSILENT: the cancellation requested on the line above, awaited so the task ends first
-                with suppress(asyncio.CancelledError):
-                    await task
+                await cancel_and_wait(task)
 
     def status(self, render_result: Callable[[ResultT], Any] | None = None) -> dict[str, Any]:
         """where the operation stands on this replica, as plain JSON values.
@@ -889,9 +886,11 @@ class BackgroundOperation(Generic[ResultT]):
         try:
             reported = shared_progress.reported()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status must answer whatever the pod's own rendering of its progress raises; logged
-            log.warning(
-                "the progress of the run in progress here could not be asked; the status answers without it",
-                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+            contain(
+                exc,
+                log=log,
+                what="the progress of the run in progress here could not be asked; the status answers without it",
+                extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
             )
         return reported
 
@@ -910,9 +909,11 @@ class BackgroundOperation(Generic[ResultT]):
             try:
                 elsewhere = await self._shared_progress.running_elsewhere()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status must answer with what this replica knows whatever the bucket's client raises; logged
-                log.warning(
-                    "cannot tell whether another replica runs the operation; this replica reports its own",
-                    extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+                contain(
+                    exc,
+                    log=log,
+                    what="cannot tell whether another replica runs the operation; this replica reports its own",
+                    extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
                 )
         return elsewhere
 
@@ -991,9 +992,11 @@ class BackgroundOperation(Generic[ResultT]):
         try:
             recorded = await shared.read()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status must answer from this replica's own outcome whatever the bucket's client raises; logged
-            log.warning(
-                "the shared outcome could not be read; this replica reports its own last run",
-                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+            contain(
+                exc,
+                log=log,
+                what="the shared outcome could not be read; this replica reports its own last run",
+                extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
             )
         return recorded
 
@@ -1016,9 +1019,11 @@ class BackgroundOperation(Generic[ResultT]):
             try:
                 recordable = self._shared.records(outcome)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the run has ended and its outcome is kept here; the caller's ran= raising must not make it a failed run; logged
-                log.warning(
-                    "cannot tell whether the run is one to record; it is taken for one",
-                    extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+                contain(
+                    exc,
+                    log=log,
+                    what="cannot tell whether the run is one to record; it is taken for one",
+                    extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
                 )
         if recordable:
             self._last = outcome
@@ -1047,9 +1052,11 @@ class BackgroundOperation(Generic[ResultT]):
         try:
             await shared.publish(outcome)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the run has ended and its outcome is kept here; a record that cannot be written (the bucket's client, the caller's render_result or ran, a result that does not encode) must not make it a failed run nor fail the status; logged
-            log.warning(
-                "the outcome could not be shared; only this replica reports this run",
-                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+            contain(
+                exc,
+                log=log,
+                what="the outcome could not be shared; only this replica reports this run",
+                extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
             )
 
     async def _start_when_needed(
@@ -1137,10 +1144,12 @@ class BackgroundOperation(Generic[ResultT]):
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a background run has no caller to raise to; the failure is logged and kept for the status tool
             error = f"{type(exc).__name__}: {exc}"
             outcome = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), error=error)
-            log.error(
-                "background operation failed",
-                extra={"extra_data": {"operation": self._name, "error": error}},
-                exc_info=(type(exc), exc, exc.__traceback__),
+            contain(
+                exc,
+                log=log,
+                what="background operation failed",
+                extra={"operation": self._name, "error": error},
+                level=logging.ERROR,
             )
         else:
             outcome = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), result=result)
@@ -1444,6 +1453,12 @@ class OperationStatusTool(_OperationTool):
             try:
                 progress = self._progress()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status (the last run's error above all) must answer even when what reports progress fails; logged and said
+                contain(
+                    exc,
+                    log=log,
+                    what=f"operation {operation.name}: its progress could not be read",
+                    level=logging.ERROR,
+                )
                 progress = self._unavailable(operation, exc)
         return progress
 
@@ -1463,11 +1478,17 @@ class OperationStatusTool(_OperationTool):
         try:
             answered = await progress
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status (the last run's error above all) must answer even when what reports progress fails; logged and said
+            contain(
+                exc,
+                log=log,
+                what=f"operation {operation.name}: its progress could not be read",
+                level=logging.ERROR,
+            )
             answered = self._unavailable(operation, exc)
         return answered
 
     def _unavailable(self, operation: BackgroundOperation[Any], exc: Exception) -> dict[str, Any]:
-        """what stands for a progress that could not be read, which is logged.
+        """what stands for a progress that could not be read; the caller has contained it.
 
         :param operation: the operation
         :ptype operation: BackgroundOperation[Any]
@@ -1476,11 +1497,6 @@ class OperationStatusTool(_OperationTool):
         :return: a ``summary`` saying so, and the ``error``
         :rtype: dict[str, Any]
         """
-        log.error(
-            "operation %s: its progress could not be read",
-            operation.name,
-            exc_info=(type(exc), exc, exc.__traceback__),
-        )
         return {"summary": f"progress unavailable ({type(exc).__name__})", "error": str(exc)}
 
     def _answer_with(self, status: dict[str, Any], progress: dict[str, Any] | None) -> ToolResult:

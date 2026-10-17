@@ -29,7 +29,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from threetears.agent.tools.router import is_recall_intent
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "InvokeToolLlmInput",
@@ -160,7 +160,7 @@ async def _specialists(resolver: ToolLlmResolver) -> str:
     try:
         names = sorted({str(name) for name in await lister()})
     except Exception as exc:
-        _log.warning("invoke_tool_llm: could not list specialists", extra={"extra_data": {"error": str(exc)}})
+        contain(exc, log=_log, what="invoke_tool_llm: could not list specialists", extra={"error": str(exc)})
         return "It is not on your list."
     if not names:
         return "You have no specialists to ask."
@@ -208,13 +208,13 @@ def load_tool_llm_dispatch(
         try:
             result = await resolver.resolve_and_invoke(tool_name, input_text)
         except Exception as exc:
-            _log.warning(
-                "invoke_tool_llm: resolver raised",
+            contain(
+                exc,
+                log=_log,
+                what="invoke_tool_llm: resolver raised",
                 extra={
-                    "extra_data": {
-                        "tool_name": tool_name,
-                        "error": str(exc),
-                    }
+                    "tool_name": tool_name,
+                    "error": str(exc),
                 },
             )
             return f"[TOOL ERROR] invoke_tool_llm: {exc}"

@@ -13,6 +13,7 @@ their ids, so the next call names the one meant.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, tzinfo
@@ -24,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from threetears.observe.text_block import one_line
 from threetears.core.utils.local_time import render_local_time, resolve_zone
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.tools.utils import TOOL_ERROR_PREFIX, tool_no_change
 
@@ -382,9 +383,8 @@ def load_todo_tools(
             # tool for the rest of a turn does not refuse every later add_todo.
             return tool_no_change("add_todo", str(ve))
         except Exception as exc:
-            log.error(
-                "add_todo failed",
-                extra={"extra_data": {"title": title, "error": str(exc)}},
+            contain(
+                exc, log=log, what="add_todo failed", extra={"title": title, "error": str(exc)}, level=logging.ERROR
             )
             return f"[TOOL ERROR] add_todo: {exc}"
 
@@ -408,9 +408,12 @@ def load_todo_tools(
             await _snapshot(conversation_id)
             return f'Completed {todo_handle(row["todo_id"])} "{row["title"]}" in "{row["list_name"]}"; it was open.'
         except Exception as exc:
-            log.error(
-                "complete_todo failed",
-                extra={"extra_data": {"title": title, "todo_id": todo_id, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="complete_todo failed",
+                extra={"title": title, "todo_id": todo_id, "error": str(exc)},
+                level=logging.ERROR,
             )
             return f"[TOOL ERROR] complete_todo: {exc}"
 
@@ -482,9 +485,12 @@ def load_todo_tools(
             await _snapshot(conversation_id)
             return f'Updated {todo_handle(row["todo_id"])} in "{target_list}": {"; ".join(changes)}.'
         except Exception as exc:
-            log.error(
-                "update_todo failed",
-                extra={"extra_data": {"title": title, "todo_id": todo_id, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="update_todo failed",
+                extra={"title": title, "todo_id": todo_id, "error": str(exc)},
+                level=logging.ERROR,
             )
             return f"[TOOL ERROR] update_todo: {exc}"
 
@@ -509,9 +515,12 @@ def load_todo_tools(
                 f"it was {_state(row)}. It cannot be brought back. That list now has {_count(left)}."
             )
         except Exception as exc:
-            log.error(
-                "remove_todo failed",
-                extra={"extra_data": {"title": title, "todo_id": todo_id, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="remove_todo failed",
+                extra={"title": title, "todo_id": todo_id, "error": str(exc)},
+                level=logging.ERROR,
             )
             return f"[TOOL ERROR] remove_todo: {exc}"
 
@@ -562,10 +571,7 @@ def load_todo_tools(
             return "\n".join(lines).rstrip("\n")
 
         except Exception as exc:
-            log.error(
-                "list_todos failed",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="list_todos failed", extra={"error": str(exc)}, level=logging.ERROR)
             return f"[TOOL ERROR] list_todos: {exc}"
 
     list_todos.description = (

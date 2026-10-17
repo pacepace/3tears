@@ -858,6 +858,9 @@ async def test_only_the_latest_progress_is_written_and_none_outside_a_unit_runni
     assert await _progress(nats) is None
 
 
+@pytest.mark.expect_contained(
+    TypeError, why="the test reports an object() as progress summary, which does not JSON-encode"
+)
 async def test_a_unit_whose_progress_cannot_be_shared_says_so_and_finishes(caplog: pytest.LogCaptureFixture) -> None:
     nats, unit = FakeNatsClient(), _Unit(held=True)
     load = _operation(nats, "replica-a", unit)
