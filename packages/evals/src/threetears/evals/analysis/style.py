@@ -186,8 +186,11 @@ GLOSSARY: dict[str, str] = {
     "bar": "A threshold a reading must clear on its own, without a control.",
     "exploratory": "No question was declared before the run, so the page offers leads, not decisions.",
     "settled": (
-        "Keep where the arm breaks the clause or cannot show it holds; switch only where its interval shows it "
-        "holds, on at least 5 cases per arm."
+        "Keep where an interval shows the arm breaks the clause, or it costs no less; switch only where an interval "
+        "shows it holds, from 5 cases per arm."
+    ),
+    "point estimate": (
+        "A difference as this run measured it, before its interval says how far more cases could move it."
     ),
     "judge": "The model that scores each trial's transcript against a rubric.",
     "calibrated": "A judge whose scores have been shown to agree with people's.",

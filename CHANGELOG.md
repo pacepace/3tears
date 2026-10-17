@@ -24,6 +24,9 @@ packages (bumped in lock-step).
   quoting a goal check's 12 of 18 to 14. A rate both arms pass on every trial or on none says it `cannot separate
   the arms (both 0 of 18)`. The clause's own reason, which the verdict line says, leads with a rate past the margin
   on its point estimate where one is.
+- Under the case floor no rate clause settles, so a keep there is the cost's, and the caveat says so: `4 cases per
+  arm: keep follows from the cost per reply above.` The glossary defines `point estimate` and says what `settled`
+  needs either way.
 - Breaking for a host matching on the page's words, or on a `keep` the rule settled on a point estimate: the
   migration notes list the strings.
 

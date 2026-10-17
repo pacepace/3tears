@@ -297,9 +297,9 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     :ptype arm: Callable[[str], str]
     :return: The lines: today, that an arm is under the case floor. A "too few" line says what is withheld and why, in
         the reader's terms, never a bare count: under the floor no interval is estimated, so a rate is shown as a
-        count and no gap between the arms is sized. Where a declared rule settled keep on every candidate (below the
-        floor only a cost clause can), the line says keep follows from the counts and only how much worse the
-        candidate has no estimate.
+        count and no gap between the arms is sized. Where a declared rule settled keep on every candidate, which below
+        the floor only a cost clause can, the line says keep follows from the cost per reply, and that the pass
+        rates' gap has no estimate.
     :rtype: list[str]
     """
     small = [board for board in bundle.scoreboard if board.usable_cases < MIN_CASES]
@@ -312,10 +312,11 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             cases = f"{small[0].usable_cases} cases per arm"
         else:
             cases = "Usable cases " + ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
-        # The gap itself is measured and stated; what the floor withholds is the interval: whether it would hold.
+        # Below the floor no rate clause settles, so the keep is the cost's. The pass rates' gap is measured and
+        # stated; what the floor withholds is its interval: whether it would hold.
         return [
-            f"{cases}: keep follows from the counts above. Whether the gap holds on more cases is not estimated: an "
-            f"interval takes {MIN_CASES} independent cases."
+            f"{cases}: keep follows from the cost per reply above. Whether the pass rates' gap holds on more cases is "
+            f"not estimated: an interval takes {MIN_CASES} independent cases."
         ]
     named = ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
     return [
@@ -507,7 +508,7 @@ def _exceeds(rate: RateReading, control: str, candidate: str) -> str:
     )
     if rate.name == "the pass rate":
         return f"{candidate}'s drop exceeds the margin, passing {theirs} trials to {control}'s {ours}"
-    return f"{candidate}'s drop on {rate.name} exceeds the margin, passing it on {theirs} to {control}'s {ours}"
+    return f"{candidate}'s drop exceeds the margin, passing {rate.name} on {theirs} to {control}'s {ours}"
 
 
 def _cost_per_case(bundle: AnalysisContextBundle) -> str | None:
