@@ -58,6 +58,7 @@ import asyncio
 import dataclasses
 import functools
 import hashlib
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -66,7 +67,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.scheduled_jobs.config import JobConfig, reap_after_seconds_for_kind
 from threetears.scheduled_jobs.events import (
@@ -355,9 +356,12 @@ class BackgroundDispatch:
                 if outcome is None:
                     outcome = await self._run_body(callback, trigger, fire_id)
             except Exception as exc:  # noqa: BLE001 - boundary: a lock that fails for any other reason (a misconfigured bucket, a TTL mismatch) must fail the fire loudly, not vanish with the task
-                log.exception(
-                    "scheduled_jobs background: the in-flight lock failed",
-                    extra={"extra_data": {"kind": trigger.kind, "body_ran": outcome is not None}},
+                contain(
+                    exc,
+                    log=log,
+                    what="scheduled_jobs background: the in-flight lock failed",
+                    extra={"kind": trigger.kind, "body_ran": outcome is not None},
+                    level=logging.ERROR,
                 )
                 if outcome is None:
                     outcome = _Outcome(
@@ -496,15 +500,16 @@ class BackgroundDispatch:
             else:
                 outcome = _Outcome(JobFireResult(status="failed", error=str(exc) or type(exc).__name__))
         except Exception as exc:  # noqa: BLE001 - boundary: a background fire's failure is its failed row
-            log.exception(
-                "scheduled_jobs background: a fire's body raised",
+            contain(
+                exc,
+                log=log,
+                what="scheduled_jobs background: a fire's body raised",
                 extra={
-                    "extra_data": {
-                        "fire_id": str(fire_id),  # convert at border: log extra_data field
-                        "kind": trigger.kind,
-                        "error_type": type(exc).__name__,
-                    }
+                    "fire_id": str(fire_id),  # convert at border: log extra_data field
+                    "kind": trigger.kind,
+                    "error_type": type(exc).__name__,
                 },
+                level=logging.ERROR,
             )
             outcome = _Outcome(JobFireResult(status="failed", error=str(exc) or type(exc).__name__))
         if outcome.result.latency_ms is None and not outcome.result.handed_off:
@@ -576,16 +581,17 @@ class BackgroundDispatch:
                     output=result.output,
                     latency_ms=result.latency_ms,
                 )
-        except Exception:  # noqa: BLE001 - boundary: a lost write leaves the row to the reaper and must not wedge the kind
-            log.exception(
-                "scheduled_jobs background: could not finalize the fire row; the reaper will record it as failed",
+        except Exception as exc:  # noqa: BLE001 - boundary: a lost write leaves the row to the reaper and must not wedge the kind
+            contain(
+                exc,
+                log=log,
+                what="scheduled_jobs background: could not finalize the fire row; the reaper will record it as failed",
                 extra={
-                    "extra_data": {
-                        "fire_id": str(fire_id),  # convert at border: log extra_data field
-                        "kind": trigger.kind,
-                        "status": result.status,
-                    }
+                    "fire_id": str(fire_id),  # convert at border: log extra_data field
+                    "kind": trigger.kind,
+                    "status": result.status,
                 },
+                level=logging.ERROR,
             )
             return
         emitter = self._emitter if self._emitter is not None else get_scheduled_jobs_emitter()

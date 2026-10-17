@@ -35,6 +35,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from threetears.observe import contain, get_logger
+
+_log = get_logger(__name__)
+
 __all__ = ["census", "main"]
 
 #: the namespace every framework package lives under.
@@ -143,6 +147,7 @@ def _import_all(names: list[str], failures: list[str]) -> set[str]:
             importlib.import_module(name)
         # prawduct:allow prawduct/broad-except -- every import failure is reported to the caller, which decides
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=_log, what=f"census could not import {name}")
             failures.append(f"{name}: {type(exc).__name__}: {exc}")
             continue
         imported.add(name)

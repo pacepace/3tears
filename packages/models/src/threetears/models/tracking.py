@@ -37,7 +37,7 @@ from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 
-from threetears.observe import BuildOnce, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
 from threetears.models.enums import ModelTier
 
@@ -819,12 +819,8 @@ class UsageTracker:
         # was left in an inconsistent state.
         try:
             asyncio.run(self._invoke_sink(kind, sink, usage))
-        except Exception:  # noqa: BLE001 -- intentional swallow per task-07.5
-            logger.warning(
-                "%s usage sink failed (sync fallback)",
-                kind,
-                exc_info=True,
-            )
+        except Exception as exc:  # noqa: BLE001 -- intentional swallow per task-07.5
+            contain(exc, log=logger, what=f"{kind} usage sink failed (sync fallback)")
 
     @staticmethod
     async def _invoke_sink(
@@ -843,12 +839,8 @@ class UsageTracker:
         """
         try:
             await sink.record(usage)
-        except Exception:  # noqa: BLE001 -- intentional swallow per task-07.5
-            logger.warning(
-                "%s usage sink failed",
-                kind,
-                exc_info=True,
-            )
+        except Exception as exc:  # noqa: BLE001 -- intentional swallow per task-07.5
+            contain(exc, log=logger, what=f"{kind} usage sink failed")
 
     def _emit_otel_span(self, usage: UsageRecord) -> None:
         """creates the locked ``llm.usage`` OTel span.

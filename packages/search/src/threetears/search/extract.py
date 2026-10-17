@@ -84,11 +84,14 @@ from threetears.media.contracts import (
     EXTRACTION_STATUS_REFUSED,
     EXTRACTION_STATUS_UNCHANGED,
 )
+from threetears.observe import contain, get_logger
 from threetears.search.contracts.candidate import Candidate, ContentSlot
 from threetears.search.contracts.errors import LocalCapExceeded, SearchFailure, TimedOut
 from threetears.search.contracts.fidelity import FIDELITY_CONTENT
 from threetears.search.contracts.spend import Spend
 from threetears.search.contracts.transport import FetchTransport, HeavyFetcher, TransportResponse
+
+_logger = get_logger(__name__)
 
 __all__ = [
     "DEFAULT_FETCH_TIME_BUDGET_SECONDS",
@@ -562,7 +565,8 @@ def _page_facts(markup: str) -> tuple[str | None, datetime | None]:
         from trafilatura.metadata import extract_metadata
 
         found = extract_metadata(markup)
-    except Exception:  # noqa: BLE001 -- metadata is extra: a page whose header cannot be read is still read
+    except Exception as exc:  # noqa: BLE001 -- metadata is extra: a page whose header cannot be read is still read
+        contain(exc, log=_logger, what="a page's metadata could not be read; the page is read without it")
         return None, None
     if found is None:
         return None, None
@@ -1079,7 +1083,8 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     try:
         parser.feed(markup)
         parser.close()
-    except Exception:  # noqa: BLE001 -- a page the parser chokes on points nowhere
+    except Exception as exc:  # noqa: BLE001 -- a page the parser chokes on points nowhere
+        contain(exc, log=_logger, what="a page's frames and pointers could not be parsed; it points nowhere")
         return None, 0, False
     if parser.citation_pdf:
         return urljoin(base, parser.citation_pdf), len(parser.frames), True

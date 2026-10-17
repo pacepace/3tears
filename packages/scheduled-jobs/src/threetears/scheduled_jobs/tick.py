@@ -79,6 +79,7 @@ callable gets a :class:`TypeError` naming the parameter; wrap it as
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -86,7 +87,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.scheduled_jobs.config import (
     DEFAULT_JOB_CONFIG,
@@ -291,13 +292,16 @@ async def _run_tick_body(
     for schedule in due:
         try:
             await _dispatch_one(schedule, schedule_store, fire_store, dispatch_routes, now, emitter)
-        except Exception:  # noqa: BLE001 - boundary: isolate per-schedule failures
+        except Exception as exc:  # noqa: BLE001 - boundary: isolate per-schedule failures
             # _dispatch_one already records a failed job_fires row; this
             # outer except is defense in depth in case the row write itself
             # raises.
-            log.exception(
-                "scheduled_tick: schedule dispatch raised outside per-fire isolation",
-                extra={"extra_data": {"job_id": str(schedule.job_id)}},
+            contain(
+                exc,
+                log=log,
+                what="scheduled_tick: schedule dispatch raised outside per-fire isolation",
+                extra={"job_id": str(schedule.job_id)},
+                level=logging.ERROR,
             )
             emitter.inc_failure(reason="handler_exception")
     duration = time.monotonic() - tick_started
@@ -368,10 +372,13 @@ async def _reap_stale_dispatching(
         older_than = timedelta(seconds=reap_after_seconds)
         try:
             reaped = await fire_store.reap_stale_dispatching(now, older_than=older_than, kinds=kinds)
-        except Exception:  # noqa: BLE001 - boundary: a reaper failure must not block the tick
-            log.exception(
-                "scheduled_tick: reaper sweep raised; continuing with dispatch",
-                extra={"extra_data": {"reap_after_seconds": reap_after_seconds, "kinds": list(kinds)}},
+        except Exception as exc:  # noqa: BLE001 - boundary: a reaper failure must not block the tick
+            contain(
+                exc,
+                log=log,
+                what="scheduled_tick: reaper sweep raised; continuing with dispatch",
+                extra={"reap_after_seconds": reap_after_seconds, "kinds": list(kinds)},
+                level=logging.ERROR,
             )
             continue
         if reaped > 0:
@@ -560,17 +567,18 @@ async def _dispatch_one(
     try:
         result = await dispatch_callback(trigger, fire_id)
     except Exception as exc:  # noqa: BLE001 - boundary: per-fire isolation
-        log.exception(
-            EVENT_FIRE_FAILED,
+        contain(
+            exc,
+            log=log,
+            what=EVENT_FIRE_FAILED,
             extra={
-                "extra_data": {
-                    "job_id": str(schedule.job_id),
-                    "fire_id": str(fire_id),  # convert at border: fire-failed log extra_data field
-                    "partition_key": str(schedule.partition_key),
-                    "schedule_type": schedule.schedule_type,
-                    "error_type": type(exc).__name__,
-                }
+                "job_id": str(schedule.job_id),
+                "fire_id": str(fire_id),  # convert at border: fire-failed log extra_data field
+                "partition_key": str(schedule.partition_key),
+                "schedule_type": schedule.schedule_type,
+                "error_type": type(exc).__name__,
             },
+            level=logging.ERROR,
         )
         await fire_store.finalize_failed(
             schedule.partition_key,
