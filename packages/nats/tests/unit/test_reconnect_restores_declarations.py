@@ -27,6 +27,7 @@ import pytest
 from nats.js.api import StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
+from threetears.nats import client as client_module
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 from threetears.nats.kv import build_kv_stream_config
 
@@ -154,6 +155,12 @@ def _bind_namespace() -> None:
     set_default_namespace(_NS)
 
 
+@pytest.fixture(autouse=True)
+def _the_server_answers_a_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """a pull consumer's stop proves its UNSUB with a round trip; this scripted server has no wire to prove it on."""
+    monkeypatch.setattr(client_module, "_round_trip", AsyncMock())
+
+
 async def _connected(server: _ScriptedServer) -> tuple[NatsClient, Callable[[], Awaitable[None]]]:
     """connect a client over ``server``, returning it and the reconnect slot nats-py would call.
 
@@ -169,6 +176,8 @@ async def _connected(server: _ScriptedServer) -> tuple[NatsClient, Callable[[], 
     raw.is_connected = True
     raw.drain = AsyncMock()
     raw.close = AsyncMock()
+    # a pull consumer's stop sends an UNSUB, as it does on a live connection
+    raw._send_unsubscribe = AsyncMock()  # noqa: SLF001 -- the nats-py call a pull consumer stop makes
 
     async def _establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
         captured["options"] = options
