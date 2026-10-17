@@ -58,9 +58,10 @@ from threetears.evals.kernel.result_condition import CandidateFailureCause, Excl
 #: so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
 #:
 #: The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too
-#: few, and no rate (a pass rate, pass^k) is estimated for an arm; a measure's mean is still shown with its interval,
-#: and a declared rule can still settle keep on what was observed, never switch. So a host's seed gate covers every
-#: template whose results are compared across arms, whatever its declared reading.
+#: few, and no rate (a pass rate, pass^k) is estimated for an arm; a measure's mean is still shown with its interval.
+#: A declared rule's rate clause settles neither way below it, since both need an interval; its cost clause can still
+#: settle keep on a cost observed no lower. So a host's seed gate covers every template whose results are compared
+#: across arms, whatever its declared reading.
 MIN_CASES: Final = SMALL_N_BAND_FLOOR
 
 #: The share of an arm's trials whose loss to the test setup, alone or as the gap between two arms, means the run
@@ -296,8 +297,9 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     :ptype arm: Callable[[str], str]
     :return: The lines: today, that an arm is under the case floor. A "too few" line says what is withheld and why, in
         the reader's terms, never a bare count: under the floor no interval is estimated, so a rate is shown as a
-        count and no gap between the arms is sized. Where a declared rule settled keep on every candidate, the line
-        says keep follows from the counts and only how much worse the candidate has no estimate.
+        count and no gap between the arms is sized. Where a declared rule settled keep on every candidate (below the
+        floor only a cost clause can), the line says keep follows from the counts and only how much worse the
+        candidate has no estimate.
     :rtype: list[str]
     """
     small = [board for board in bundle.scoreboard if board.usable_cases < MIN_CASES]
@@ -427,8 +429,11 @@ def rule_sentence(
 ) -> str:
     """A rule's outcome as the verdict line says it: the decision, then what settled it or the fix with its cost.
 
-    A keep states the counts that settled it (``v4-flash passed 2 of 12 trials to v4.1-flash's 10, and cost more per
-    reply``). Each sentence keeps its clauses only while it stays within the page's numeral and length limits
+    A keep states what settled it: a rate shown to break its clause as a drop that exceeds the margin, with its counts
+    (``v4-flash's drop exceeds the margin, passing 14 of 60 trials to v4.1-flash's 29``), a cost as observed (``v4-flash
+    cost more per reply``). Only a rate whose whole interval is past the margin is said as a drop that exceeds it: one
+    past the margin on its point estimate alone leaves its clause unsettled, and the sentence reads ``Unsettled``,
+    giving the interval. Each sentence keeps its clauses only while it stays within the page's numeral and length limits
     (:func:`~threetears.evals.analysis.style.lint_prose`): the decision table below carries every clause.
 
     :param verdict: The rule read on one candidate.
@@ -473,25 +478,26 @@ def _within_limits(lead: str, parts: list[str]) -> str:
 
 
 def _kept(verdict: RuleVerdict, control: str, candidate: str) -> list[str]:
-    """What settled a keep, clause by clause, as counts with the candidate as their one subject."""
+    """What settled a keep, clause by clause: a rate shown to break its clause as a drop that exceeds the margin, a
+    cost as observed, each naming the candidate."""
     said: list[str] = []
     readings = verdict.readings
     for clause in verdict.clauses:
         if clause.outcome != "keep":
             continue
-        subject = "" if said else f"{candidate} "
         if clause.rate is not None:
-            said.append(subject + _counts(clause.rate, control))
+            said.append(_exceeds(clause.rate, control, candidate))
         else:
-            # A clause settles keep on a rate it names, or on a cost observed no lower: this is the cost.
+            # A clause settles keep on a rate shown to break it, or on a cost observed no lower: this is the cost.
             ours, theirs = (readings.control_cost, readings.candidate_cost) if readings is not None else (None, None)
             more = "more" if ours is not None and theirs is not None and theirs > ours else "no less"
-            said.append(f"{subject}cost {more} per reply")
+            said.append(f"{candidate} cost {more} per reply")
     return said
 
 
-def _counts(rate: RateReading, control: str) -> str:
-    """A rate that settled keep, as plain counts: ``passed 2 of 12 trials to production's 10``.
+def _exceeds(rate: RateReading, control: str, candidate: str) -> str:
+    """A rate shown to break its clause, as the drop that exceeds the margin and its plain counts: ``v4-flash's drop
+    exceeds the margin, passing 2 of 12 trials to production's 10``.
 
     The control's total is said only where it differs from the candidate's, so the counts stay three figures.
     """
@@ -500,8 +506,8 @@ def _counts(rate: RateReading, control: str) -> str:
         str(rate.control_passed) if rate.control_n == rate.candidate_n else f"{rate.control_passed} of {rate.control_n}"
     )
     if rate.name == "the pass rate":
-        return f"passed {theirs} trials to {control}'s {ours}"
-    return f"passed {rate.name} on {theirs} to {control}'s {ours}"
+        return f"{candidate}'s drop exceeds the margin, passing {theirs} trials to {control}'s {ours}"
+    return f"{candidate}'s drop on {rate.name} exceeds the margin, passing it on {theirs} to {control}'s {ours}"
 
 
 def _cost_per_case(bundle: AnalysisContextBundle) -> str | None:

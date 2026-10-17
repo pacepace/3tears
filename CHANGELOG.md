@@ -8,6 +8,25 @@ packages (bumped in lock-step).
 
 ## v0.71.0 -- 2026-10-17
 
+### 3tears-evals: a decision rule's rate clause reads keep only on a drop shown past its margin
+
+- **A `RateDrop` rate has three states, and only one reads as a regression** (#845). Shown to break: every arm at
+  the case floor and the drop's whole bounded interval past `max_points`, which settles `keep` and headlines `Keep
+  v1: v2's drop exceeds the margin, passing 14 of 60 trials to v1's 29.` Shown to hold: the interval within the
+  margin, as before. Unsettled: everything else, including a drop past the margin on its point estimate alone, which
+  reads `Unsettled between v1 and v2: v2's drop is past 10 points on the point estimate alone, not on its interval
+  (from a gain of 35.5 to a drop of 92.7).` Until now an observed drop past the margin settled `keep` on any number
+  of cases: a Discodon memo headlined Keep on 6 of 21 trials to 12 while its own contrasts read the pass rate as not
+  separated, its interval reaching a 35.5-point gain. Keep stays the default when unsettled; only the words change.
+- **Each rate a clause reads has its own row outcome in the Decision table**, about that reading alone. A clause with
+  no `reading` reads every pass/fail rate the arms share, and its one outcome used to sit on the pass rate's row
+  whichever rate decided it: a readiness memo's row read "the pass rate, 0 of 18 to 0 of 18" beside an outcome
+  quoting a goal check's 12 of 18 to 14. A rate both arms pass on every trial or on none says it `cannot separate
+  the arms (both 0 of 18)`. The clause's own reason, which the verdict line says, leads with a rate past the margin
+  on its point estimate where one is.
+- Breaking for a host matching on the page's words, or on a `keep` the rule settled on a point estimate: the
+  migration notes list the strings.
+
 ### 3tears-evals: a judge campaign's report states each arm's cost per reply
 
 - **`threetears.evals.kernel.production_replicating_cost` takes `candidate_kind`** (keyword, required, no default):

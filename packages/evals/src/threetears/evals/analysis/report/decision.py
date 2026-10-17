@@ -5,39 +5,51 @@ A question declares its rule as typed clauses (:class:`~threetears.evals.kernel.
 :func:`evaluate_rule` settles each clause or says why it cannot, and :func:`rule_statement` says the rule in one
 sentence with the arms' names, the one the page opens its Decision section with.
 
-**Keep may settle on what the run observed; switch needs sampling evidence.** The rule's default is the control, so
-showing the arm breaks a clause is enough not to switch. Showing it holds a clause is a claim about cases not
-yet run, so it needs an interval:
+**A rate clause settles either way only on sampling evidence.** Showing the arm breaks a clause and showing it holds
+one are both claims about cases not yet run, so each needs an interval. Each rate the clause reads (the overall pass
+rate and each check's, or the one reading it names) is read on its own, in one of three states; cost is read as
+observed:
 
-- **A pass rate, keep.** The arm's drop from the control is bounded by giving every lost trial its best and its
-  worst outcome. A drop past the margin even at best settles ``keep``.
-- **A pass rate, switch.** Every arm has at least the case floor of usable cases
-  (:data:`~threetears.evals.analysis.report.verdict.MIN_CASES`), and for every rate the clause reads (the overall pass
-  rate and each check's, or the one reading it names) the contrast's bounded interval (the arm minus the control,
-  ``bounded_interval``: the bounded test's on the rate's 0-1 range at its family's level) bounds the drop at or below
-  the margin, as does the bound over lost trials. Anything else is ``unsettled``, with the reason in plain words.
+- **Shown to break: ``keep``.** Every arm has at least the case floor of usable cases
+  (:data:`~threetears.evals.analysis.report.verdict.MIN_CASES`), and the contrast's bounded interval (the arm minus
+  the control, ``bounded_interval``: the bounded test's on the rate's 0-1 range at its family's level) lies wholly
+  past the margin: the drop nearest zero it allows is still more than the margin, as is the drop with every lost
+  trial given its best outcome. Only this reads as a regression.
+- **Shown to hold: ``switch``.** Every arm is at the case floor, and the bounded interval bounds the drop at or below
+  the margin, as does the bound over lost trials.
 
   **Switch never reads the t interval the page's contrasts print.** "No worse by more than the margin" is a
   non-inferiority claim, and on a rate's coarse per-case shares the t interval makes it too often: simulated at the
   margin, it let switch through up to 12% of the time against the 2.5% it states, where the bounded interval holds its
   rate at every n (``docs/measuring-soundly.md``). A guardrail's ``held`` reads the same interval for the same reason.
   Its reason names it "the interval a switch reads", since the page's contrasts print the narrower t interval.
-  A bundle before shape 55 carries no bounded interval, so its rate clause cannot settle switch; it never falls back
-  to the t interval.
-- **Cost, keep.** An arm observed to cost no less per reply settles ``keep``.
+  A bundle before shape 55 carries no bounded interval, so its rate clause cannot settle either way; it never falls
+  back to the t interval.
+- **Neither: ``unsettled``**, with the reason in plain words. That includes a drop past the margin on the point
+  estimate alone, whose interval reaches back within it: its reason says the point estimate is past and gives the
+  interval, so it never reads as a measured regression. A rate both arms pass on every trial, or on none, cannot
+  separate them, and its reason says so with the counts.
+- **A rate clause.** ``keep`` when one rate it reads is shown to break it, ``switch`` when every one is shown to hold
+  it, otherwise ``unsettled``. Through ``0.70`` an observed drop past the margin settled ``keep`` on any number of
+  cases.
+- **Cost, keep.** An arm observed to cost no less per reply settles ``keep``: cost is the arm's own price, not a
+  sample of cases.
 - **Cost, switch.** Every arm is at the case floor and the cost contrast's interval lies wholly below zero.
   Otherwise ``unsettled``: the cost difference did not separate.
 - **The rule's own logic decides.** "Switch only if A and B" keeps the control the moment one clause settles keep,
   switches only when every clause settles switch, and is otherwise unsettled.
 
-**Each reason says the counts and the margin in words, naming the arms.** A rate kept on the counts reads
-``v2 passed 14 of 60 to v1's 29, a drop of 25 points against a margin of 10``; one whose interval reaches past the
-margin reads ``v2's drop is not shown to stay within 10 points (it could be as much as 53.6)``. The page's Decision
-section says once that keep is the default, so an unsettled rule keeps the control for now, and that a clause reads
-the interval a switch reads (:func:`keep_is_the_default`), so a clause unsettled or kept beside a contrast that is not
-separated reads as the two rulers it is.
+**Each reason says the counts and the margin in words, naming the arms, and only the rate it is about.** A rate
+shown to break reads ``v2 passed 14 of 60 to v1's 29, a drop that exceeds the margin of 10 points on its whole
+interval (at least 12.3)``; one past the margin on its point estimate alone reads ``v2's drop is past 10 points on the
+point estimate alone, not on its interval (from a gain of 35.5 to a drop of 92.7)``; one whose interval reaches past
+the margin reads ``v2's drop is not shown to stay within 10 points (it could be as much as 53.6)``; one both arms pass on
+no trial reads ``the pass rate cannot separate the arms (both 0 of 18)``. A rate past the clause's first is named in
+its reason. The page's Decision section gives each rate its own row and its own outcome, so a row's outcome is
+always about the reading on that row, and says once that keep is the default, so an unsettled rule keeps the control
+for now, and that a clause reads the interval a switch reads (:func:`keep_is_the_default`), so a clause unsettled
+beside a contrast that is not separated reads as the two rulers it is.
 
-Nothing here estimates the size of a difference: under the case floor a settled ``keep`` is read on the counts alone.
 Every sentence here names the arms by the names the page gives them, never by their role in the comparison.
 """
 
@@ -125,6 +137,25 @@ class RateReading:
         """The largest drop in points the interval allows; None without an interval."""
         return None if self.interval is None else -100 * self.interval[0]
 
+    def least_drop(self) -> float | None:
+        """The smallest drop in points the interval allows, negative where it allows a gain; None without an
+        interval."""
+        return None if self.interval is None else -100 * self.interval[1]
+
+    def point_drop(self) -> float:
+        """The arm's drop from the control in points on what each measured: the point estimate, 0 where an arm
+        measured nothing."""
+        if not self.control_n or not self.candidate_n:
+            return 0.0
+        return 100 * (self.control_passed / self.control_n - self.candidate_passed / self.candidate_n)
+
+    def degenerate(self) -> bool:
+        """Whether both arms passed none of what they measured, or both passed all of it: a rate that cannot separate
+        them."""
+        if not self.control_n or not self.candidate_n:
+            return False
+        return (self.control_passed, self.candidate_passed) in ((0, 0), (self.control_n, self.candidate_n))
+
     def answers(self, reading: str) -> bool:
         """Whether this is the rate a clause naming ``reading`` reads: a check's by its verbatim text, any other
         measure's by its key."""
@@ -161,15 +192,26 @@ class RuleReadings:
 
 
 @dataclass(frozen=True)
+class RateVerdict:
+    """One rate a rate clause reads, settled on its own: ``keep`` where it is shown to break the clause, ``switch``
+    where it is shown to hold it, ``unsettled`` otherwise, with the reason in plain words about this rate alone."""
+
+    rate: RateReading
+    outcome: RuleOutcome
+    reason: str
+
+
+@dataclass(frozen=True)
 class ClauseVerdict:
-    """One clause settled, or not, with the reason in plain words, the clause as a sentence naming the arm, and the
-    rate that settled it ``keep``."""
+    """One clause settled, or not, with the reason in plain words, the clause as a sentence naming the arm, the rate
+    that settled it ``keep``, and, for a rate clause, each rate it reads with its own outcome."""
 
     clause: DecisionClause
     outcome: RuleOutcome
     reason: str
     statement: str
     rate: RateReading | None = None
+    rates: tuple[RateVerdict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -181,18 +223,15 @@ class RuleVerdict:
     readings: RuleReadings | None = None
 
     def settles(self, rate: RateReading) -> bool:
-        """Whether a settled rate clause decided ``rate``: under ``keep`` any rate it reads observed past its margin
-        (the run shows it breaks the clause), under ``switch`` one of the rates it read."""
-        for verdict in self.clauses:
-            clause = verdict.clause
-            if not isinstance(clause, RateDrop) or (clause.reading is not None and not rate.answers(clause.reading)):
-                continue
-            if verdict.outcome == "keep" and rate.drop_bounds()[0] > clause.max_points:
-                return True
-            read = {r.measure for r in self.readings.read_by(clause)} if self.readings is not None else set()
-            if verdict.outcome == "switch" and rate.measure is not None and rate.measure in read:
-                return True
-        return False
+        """Whether a rate clause settled ``rate`` either way: a rate it read, by its measure, shown to break the clause
+        or shown to hold it. A rate it read and left unsettled, or one it did not read, is not settled, however far
+        its counts fell."""
+        return any(
+            read.outcome != "unsettled" and read.rate.measure == rate.measure
+            for verdict in self.clauses
+            if isinstance(verdict.clause, RateDrop)
+            for read in verdict.rates
+        )
 
     def settles_cost(self) -> bool:
         """Whether a cost clause settled, either way."""
@@ -296,8 +335,8 @@ def _clause(clause: DecisionClause, readings: RuleReadings, control: str, candid
     if isinstance(clause, CostLower):
         outcome, reason = _cost_clause(readings, control, candidate)
         return ClauseVerdict(clause, outcome, reason, statement)
-    outcome, reason, rate = _rate_clause(clause, readings, control, candidate)
-    return ClauseVerdict(clause, outcome, reason, statement, rate=rate)
+    outcome, reason, rate, rates = _rate_clause(clause, readings, control, candidate)
+    return ClauseVerdict(clause, outcome, reason, statement, rate=rate, rates=rates)
 
 
 def _points(value: float) -> str:
@@ -305,62 +344,123 @@ def _points(value: float) -> str:
     return format_number(round(value, 1))
 
 
-def _kept_on_counts(rate: RateReading, least: float, margin: float, control: str, candidate: str) -> str:
-    """A rate kept on what the run observed, as counts and the margin in words: ``v2 passed 14 of 60 to v1's 29, a
-    drop of 25 points against a margin of 10``. The control's total is said only where it differs."""
+def _counts(rate: RateReading, control: str, candidate: str) -> str:
+    """A rate's counts in words: ``v2 passed 14 of 60 to v1's 29``. The control's total is said only where it
+    differs."""
     theirs = f"{rate.candidate_passed} of {rate.candidate_n}"
     ours = (
         str(rate.control_passed) if rate.control_n == rate.candidate_n else f"{rate.control_passed} of {rate.control_n}"
     )
     passed = f"passed {theirs}" if rate.name == "the pass rate" else f"passed {rate.name} on {theirs}"
-    bound = "at least " if rate.control_remaining or rate.candidate_remaining else ""
+    return f"{candidate} {passed} to {control}'s {ours}"
+
+
+def _both(rate: RateReading, control: str, candidate: str) -> str:
+    """What two arms that cannot be told apart each passed: ``both 0 of 18``, or each arm's where their totals
+    differ."""
+    if rate.control_n == rate.candidate_n:
+        return f"both {rate.control_passed} of {rate.control_n}"
     return (
-        f"{candidate} {passed} to {control}'s {ours}, a drop of {bound}{_points(least)} points against a margin of "
-        f"{format_number(margin)}"
+        f"{candidate} {rate.candidate_passed} of {rate.candidate_n}, {control} {rate.control_passed} of "
+        f"{rate.control_n}"
     )
+
+
+def _change(drop: float) -> str:
+    """A drop in points as a change: ``a drop of 92.7``, ``a gain of 35.5``, ``no change``."""
+    if round(drop, 1) == 0:
+        return "no change"
+    return f"a drop of {_points(drop)}" if drop > 0 else f"a gain of {_points(-drop)}"
+
+
+def _rate_verdict(
+    rate: RateReading, readings: RuleReadings, fewest: int, margin: float, control: str, candidate: str, *, named: bool
+) -> RateVerdict:
+    """One rate a rate clause reads, in one of three states: shown to break the clause (its whole interval past the
+    margin, over enough cases), shown to hold it (its interval within the margin, over enough cases), or neither.
+
+    ``fewest`` is the fewer usable cases of the two arms; ``named`` names the rate in the reason, as every rate past
+    the clause's first is.
+    """
+    points = format_number(margin)
+    drop = f"{candidate}'s drop on {rate.name}" if named else f"{candidate}'s drop"
+    least, most = rate.drop_bounds()
+    near, worst = rate.least_drop(), rate.worst_drop()
+    floored = fewest >= _FLOOR
+    if floored and near is not None and near > margin and least > margin:
+        return RateVerdict(
+            rate,
+            "keep",
+            f"{_counts(rate, control, candidate)}, a drop that exceeds the margin of {points} points on its whole "
+            f"interval (at least {_points(min(near, least))})",
+        )
+    if floored and worst is not None and worst <= margin and most <= margin:
+        at_most = f" (it is at most {_points(worst)})" if worst > 0 else ""
+        return RateVerdict(rate, "switch", f"{drop} is shown to stay within {points} points{at_most}")
+    floor = (
+        f"{fewest} cases are too few for the interval that would show it, which is estimated only from {_FLOOR} "
+        "independent cases"
+    )
+    past = f"{drop} is past {points} points on the point estimate alone"
+    unshown = f"{drop} is not shown to stay within {points} points"
+    if not floored:
+        return RateVerdict(rate, "unsettled", f"{past if rate.point_drop() > margin else unshown} ({floor})")
+    if rate.degenerate():
+        return RateVerdict(
+            rate, "unsettled", f"{rate.name} cannot separate the arms ({_both(rate, control, candidate)})"
+        )
+    missing = (
+        "this bundle predates the interval a switch needs"
+        if readings.predates_bounded
+        else f"no interval was computed on {rate.name}"
+    )
+    if rate.point_drop() > margin:
+        if near is None or worst is None:
+            return RateVerdict(rate, "unsettled", f"{past} ({missing})")
+        if near > margin:
+            return RateVerdict(rate, "unsettled", f"{past} (the lost trials could still bring it within)")
+        return RateVerdict(rate, "unsettled", f"{past}, not on its interval (from {_change(near)} to {_change(worst)})")
+    if worst is None:
+        return RateVerdict(rate, "unsettled", f"{unshown} ({missing})")
+    if worst > margin:
+        return RateVerdict(rate, "unsettled", f"{unshown} (it could be as much as {_points(worst)})")
+    return RateVerdict(rate, "unsettled", f"{unshown} (the lost trials could still take it past)")
 
 
 def _rate_clause(
     clause: RateDrop, readings: RuleReadings, control: str, candidate: str
-) -> tuple[RuleOutcome, str, RateReading | None]:
-    """A rate clause: keep on an observed drop past the margin, switch on intervals within it over enough cases."""
+) -> tuple[RuleOutcome, str, RateReading | None, tuple[RateVerdict, ...]]:
+    """A rate clause: keep where a rate it reads is shown to break it, switch where every one is shown to hold it,
+    otherwise unsettled.
+
+    The clause's reason is the deciding rate's: the first shown to break; else the first left unsettled whose point
+    estimate is past the margin, the one nearest a regression; else the first left unsettled.
+    """
     margin = clause.max_points
     rates = readings.read_by(clause)
     if not rates:
         if clause.reading is None:
-            return "unsettled", "no pass rate was measured on both arms", None
-        return "unsettled", f"{_reading_words(clause.reading, readings)} was not measured on both arms", None
-    points = format_number(margin)
-    for rate in rates:
-        least, _ = rate.drop_bounds()
-        if least > margin:
-            return "keep", _kept_on_counts(rate, least, margin, control, candidate), rate
-    fewest = readings.fewest_cases()
-    if fewest is None:
-        return "unsettled", "the usable cases were not counted on both arms", None
-    if fewest < _FLOOR:
-        return (
-            "unsettled",
-            f"{candidate}'s drop is not shown to stay within {points} points ({fewest} cases are too few for the "
-            f"interval that would show it, which is estimated only from {_FLOOR} independent cases)",
-            None,
-        )
-    for rate in rates:
-        # The first rate is the row the reason sits on; any other is named.
-        drop = f"{candidate}'s drop" if rate is rates[0] else f"{candidate}'s drop on {rate.name}"
-        unshown = f"{drop} is not shown to stay within {points} points"
-        worst = rate.worst_drop()
-        if worst is None and readings.predates_bounded:
-            return "unsettled", f"{unshown} (this bundle predates the interval a switch needs)", None
-        if worst is None:
-            return "unsettled", f"{unshown} (no interval was computed on {rate.name})", None
-        if worst > margin:
-            return "unsettled", f"{unshown} (it could be as much as {_points(worst)})", None
-        if rate.drop_bounds()[1] > margin:
-            return "unsettled", f"{unshown} (the lost trials could still take it past)", None
+            return "unsettled", "no pass rate was measured on both arms", None, ()
+        return "unsettled", f"{_reading_words(clause.reading, readings)} was not measured on both arms", None, ()
+    if (fewest := readings.fewest_cases()) is None:
+        reason = "the usable cases were not counted on both arms"
+        return "unsettled", reason, None, tuple(RateVerdict(rate, "unsettled", reason) for rate in rates)
+    verdicts = tuple(
+        _rate_verdict(rate, readings, fewest, margin, control, candidate, named=rate is not rates[0]) for rate in rates
+    )
+    if broken := [verdict for verdict in verdicts if verdict.outcome == "keep"]:
+        return "keep", broken[0].reason, broken[0].rate, verdicts
+    if unsettled := [verdict for verdict in verdicts if verdict.outcome == "unsettled"]:
+        lead = next((verdict for verdict in unsettled if verdict.rate.point_drop() > margin), unsettled[0])
+        return "unsettled", lead.reason, None, verdicts
     widest = max(rate.worst_drop() or 0.0 for rate in rates)
     at_most = f" (it is at most {_points(widest)})" if widest > 0 else ""
-    return "switch", f"{candidate}'s drop is shown to stay within {points} points{at_most}", None
+    return (
+        "switch",
+        f"{candidate}'s drop is shown to stay within {format_number(margin)} points{at_most}",
+        None,
+        verdicts,
+    )
 
 
 def _cost_clause(readings: RuleReadings, control: str, candidate: str) -> tuple[RuleOutcome, str]:
@@ -589,6 +689,7 @@ __all__ = [
     "PROSE_RULE_LINE",
     "ClauseVerdict",
     "RateReading",
+    "RateVerdict",
     "RuleOutcome",
     "RuleReadings",
     "RuleVerdict",

@@ -6,23 +6,29 @@ line and the decision table had said; a finding headlined "four cases cannot sta
 a ``keep`` the rule had settled on that drop, and read as disputing it; and an arm labelled "cheaper candidate" cost
 more per reply, so the verdict and the tables read as a contradiction. The G2 numbers are replayed through the quick
 path, with the G2 decision rule declared before the run, as the presentation tests replay them.
+
+Since #845 a rate clause settles only on an interval over enough cases, so G2's four cases leave its rate clause
+unsettled. Where a test needs the rate settled, the same arms run twenty cases, the candidate failing half of them
+outright: a drop whose whole interval is past the margin.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
 
-from threetears.evals import Eval, Result
+from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     Report,
+    assemble_context_bundle,
     build_code_only_report,
     build_report,
     generate_analysis,
+    get_campaign,
     report_markdown,
 )
 from threetears.evals.analysis.references import cell_aliases
@@ -32,6 +38,7 @@ from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disc
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.style import LABEL_CLAIMS, lint_page, lint_prose
 from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_QUESTION, G2_RULE, PRODUCTION, answering, declaring
+from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 #: The G2 campaign's title.
@@ -41,12 +48,46 @@ TITLE = "G2: can the cheaper model replace production?"
 DISPUTING = "Candidate model frequently underfilled the queue, but four cases cannot statistically confirm the drop"
 
 
-async def _compare(candidate_cost: float, *, candidate: str = CANDIDATE) -> tuple[Result, AnalysisContextBundle]:
+async def _compare(
+    candidate_cost: float, *, candidate: str = CANDIDATE, shown: bool = False
+) -> tuple[Result, AnalysisContextBundle]:
     """G2's pass counts (production 10 of 12, the candidate 2 of 12), the candidate at ``candidate_cost`` per reply,
-    with the G2 decision rule declared before the run."""
-    arms = {PRODUCTION: answering(10, 0.003092), candidate: answering(2, candidate_cost)}
-    comparison = await Eval(CASES, arms, ["label"], k=3, name="Kairo queue discipline").run(store=":memory:")
-    return comparison, declaring(comparison.report.bundle, G2_QUESTION)
+    with the G2 decision rule declared before the run.
+
+    ``shown`` runs twenty cases instead, production passing every trial and the candidate the trials of the first ten
+    cases only (30 of 60): a drop shown past the margin on its whole interval, which settles the rate clause keep.
+    """
+    if shown:
+        cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(20)]
+        arms = {PRODUCTION: answering(60, 0.003092), candidate: _first_cases(10, candidate_cost)}
+    else:
+        cases = CASES
+        arms = {PRODUCTION: answering(10, 0.003092), candidate: answering(2, candidate_cost)}
+    comparison = await Eval(cases, arms, ["label"], k=3, name="Kairo queue discipline").run(store=":memory:")
+    if not shown:
+        return comparison, declaring(comparison.report.bundle, G2_QUESTION)
+    # The question is on the campaign before its bundle is assembled, so its family carries the intervals a rate
+    # clause reads.
+    storage = comparison.host.storage
+    campaign = off_loop(get_campaign, storage, comparison.campaign_id, comparison.scope_id)
+    assert campaign.declared_design is not None
+    asked = declaring(comparison.report.bundle, G2_QUESTION)
+    assert asked.declared_design is not None
+    campaign = campaign.model_copy(update={"declared_design": asked.declared_design})
+    bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=comparison.host.profile)
+    return comparison, declaring(bundle, G2_QUESTION)
+
+
+def _first_cases(right: int, cost: float) -> Any:
+    """A runner answering right on every trial of the first ``right`` cases and wrong on the rest, at ``cost``."""
+
+    async def run(case: Mapping[str, Any]) -> Answer:
+        passes = int(case["text"].rsplit(" ", 1)[1]) < right
+        return Answer(
+            case["label"] if passes else "skipped", model="deepseek", input_tokens=100, output_tokens=10, cost_usd=cost
+        )
+
+    return run
 
 
 def _finding(title: str, measure: str, aliases: dict[str, str], body: str = "") -> dict[str, Any]:
@@ -102,7 +143,7 @@ def _answers(report: Report) -> list[TextBlock]:
 
 
 async def test_a_rule_settled_on_every_clause_leaves_its_question_no_answer_line() -> None:
-    comparison, bundle = await _compare(0.003301)
+    comparison, bundle = await _compare(0.003301, shown=True)
     aliases = _aliases(comparison, bundle)
     report = await _memo_page(
         comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Keep production."
@@ -115,8 +156,8 @@ async def test_a_rule_settled_on_every_clause_leaves_its_question_no_answer_line
 
 
 async def test_a_clause_left_open_is_the_one_answer_line() -> None:
-    # The candidate costs less per reply, which four cases cannot show; its pass rate settles keep.
-    comparison, bundle = await _compare(0.0029)
+    # The candidate costs less per reply, which a cost with no spread cannot show; its pass rate settles keep.
+    comparison, bundle = await _compare(0.0029, shown=True)
     aliases = _aliases(comparison, bundle)
     report = await _memo_page(
         comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Keep production."
@@ -135,7 +176,7 @@ async def test_a_clause_left_open_is_the_one_answer_line() -> None:
 
 
 async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_hedge_goes() -> None:
-    comparison, bundle = await _compare(0.003301)
+    comparison, bundle = await _compare(0.003301, shown=True)
     aliases = _aliases(comparison, bundle)
     body = "The candidate skipped the queue. The drop is not statistically significant."
     cost = "Cheaper candidate cost more per reply, but four cases cannot establish the difference"
@@ -150,10 +191,8 @@ async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_he
     # The two values plainly (the gap is measured and stated), then one sentence of what is withheld and why: the
     # gap's interval, never the gap, and never a bare "needs 5".
     assert titles == [
-        "Cheaper candidate passed 2 of 12 on Label matched to production's 10. Whether that gap holds on more cases "
-        "is not estimated below 5 independent cases.",
-        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092. Whether that gap holds on more "
-        "cases is not estimated below 5 independent cases.",
+        "Cheaper candidate passed 30 of 60 on Label matched to production's 60.",
+        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092.",
     ]
     assert "cannot statistically confirm" not in markdown.split("## Methods", 1)[0]
     # The body keeps what it adds and drops its hedge: the title already states code's counts.
@@ -162,6 +201,26 @@ async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_he
     disclosed = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and "disputes a difference" in b.text]
     assert len(disclosed) == 3 and DISPUTING in disclosed[0]
     assert lint_page(markdown, question=G2_QUESTION) == []
+
+
+async def test_a_hedge_on_a_drop_past_the_margin_on_its_point_estimate_alone_stands() -> None:
+    """G2's own four cases: the drop is past the margin on its point estimate only, so the rate clause is unsettled
+    (#845), and a finding saying four cases cannot confirm it says what the rule says. Only the cost is replaced."""
+    comparison, bundle = await _compare(0.003301)
+    aliases = _aliases(comparison, bundle)
+    cost = "Cheaper candidate cost more per reply, but four cases cannot establish the difference"
+    report = await _memo_page(
+        comparison,
+        bundle,
+        [_finding(DISPUTING, "match", aliases), _finding(cost, "production_replicating_cost", aliases)],
+        "Keep production.",
+    )
+    titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
+    assert titles == [
+        DISPUTING,
+        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092. Whether that gap holds on more "
+        "cases is not estimated below 5 independent cases.",
+    ]
 
 
 async def test_a_finding_naming_no_reading_is_noted_with_what_was_not_tested_and_leaves_the_memo() -> None:
@@ -229,23 +288,34 @@ def test_a_settled_difference_is_disputed_only_in_a_narrow_set_of_words(said: st
         assert said in line and "code's sentence on that reading replaced it" in line
 
 
-def test_a_keep_settles_every_rate_observed_past_the_margin_and_no_other() -> None:
+def test_a_rule_settles_a_rate_it_read_and_showed_either_way_and_no_other() -> None:
+    """#845 changed this contract: under a keep, any rate observed past the margin was settled, even one the rule
+    never read. Now a rate is settled only where a rate clause read it and showed it break or hold the clause."""
     rule = G2_RULE
+    check = 'goal_state:call_count("music.queue_track") >= 2'
+    broken = RateReading("check", 60, 60, 30, 60, interval=(-0.81, -0.124), measure=check)
+    held = RateReading("held", 60, 60, 60, 60, interval=(-0.05, 0.05), measure="held")
+    past = RateReading("past", 60, 60, 48, 60, interval=(-0.4, 0.05), measure="past")
     verdict = evaluate_rule(
         rule,
         RuleReadings(
-            rates=(RateReading("the pass rate", 10, 12, 2, 12),), control_cost=0.003092, candidate_cost=0.003301
+            rates=(RateReading("the pass rate", 60, 60, 60, 60, interval=(-0.05, 0.05)), broken, held, past),
+            control_cost=0.003092,
+            candidate_cost=0.003301,
+            control_cases=20,
+            candidate_cases=20,
         ),
         control="production",
         candidate="cheaper candidate",
     )
-    check = 'goal_state:call_count("music.queue_track") >= 2'
-    # A check the rule did not read, observed 42 points down: the clause it breaks has settled it.
-    assert verdict.settles(RateReading("check", 11, 12, 6, 12, measure=check))
-    # Within the margin, or past it only if every lost trial went the candidate's way, it is not settled.
-    assert not verdict.settles(RateReading("check", 11, 12, 10, 12, measure=check))
-    assert verdict.settles(RateReading("check", 11, 12, 9, 12, measure=check))
-    assert not verdict.settles(RateReading("check", 11, 12, 9, 12, candidate_remaining=6, measure=check))
+    assert verdict.outcome == "keep"
+    assert [read.outcome for read in verdict.clauses[0].rates] == ["switch", "keep", "switch", "unsettled"]
+    # Shown to break, and shown to hold: both settled.
+    assert verdict.settles(broken) and verdict.settles(held)
+    # Past the margin on its point estimate alone: 20 points down, and not settled.
+    assert not verdict.settles(past)
+    # A check the rule did not read, observed 42 points down: no clause settled it.
+    assert not verdict.settles(RateReading("other", 11, 12, 6, 12, measure="goal_state:other"))
     assert verdict.settles_cost()
     unsettled = evaluate_rule(
         rule,

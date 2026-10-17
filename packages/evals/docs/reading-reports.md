@@ -105,9 +105,9 @@ The first screen carries the minimum a reader needs to grasp the result; every c
 The floor counts independent cases, never trials or repeats. Below it no interval is estimated: no contrast is tested,
 the verdict says too few, a pass rate (and pass^k) reads as a count with no estimate of how far off it could be, and no
 gap between the arms is sized. From the floor up an interval is estimated, and its width says how precisely the gap is
-known. A measure's mean is shown with its interval. A declared rule can still settle keep on what was observed, never
-switch. So a host's seed gate covers every template whose results are compared across arms, whatever its declared
-reading.
+known. A measure's mean is shown with its interval. Below the floor a declared rule's rate clause settles neither way,
+since both need an interval; its cost clause can still settle keep on a cost observed no lower. So a host's seed gate
+covers every template whose results are compared across arms, whatever its declared reading.
 
 ### The rest of the page
 
@@ -117,15 +117,20 @@ Glossary start folded, and a nav link opens the one it lands on.
 - **Decision**: the declared rule clause by clause, in the `Clauses` table, whose title links up to the rule's
   sentence in the subhead rather than say it again: one row per clause and reading, the clause's own sentence first (a
   clause naming one reading says `no tone rate drops by more than 2 points`), each arm's column headed by its name,
-  then the clause's own outcome, `keep`, `switch` or `unsettled`, with the reason in words, the counts and the margin
-  naming the arms (`keep: v2 passed 14 of 60 to v1's 29, a drop of 25 points against a margin of 10`; `unsettled: v2's
-  drop is not shown to stay within 10 points (it could be as much as 53.6)`). One line under the table says what
-  unsettled means: `Keep is the default: a switch needs every clause shown, so an unsettled rule keeps v1 for now. A
-  clause reads the interval a switch reads, which can be wider than the contrasts table's.` So a clause can read keep
-  or unsettled beside a contrast that is not separated. Keep settles on what the run observed: a drop past the margin,
-  or a higher cost. Switch needs sampling evidence: every arm at the case floor, and for every rate the clause reads
-  (the pass rate and each check's) the contrast's bounded interval keeping the drop within the margin; for cost, the
-  interval wholly below zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds
+  then that reading's own outcome, `keep`, `switch` or `unsettled`, with the reason in words about that reading alone,
+  the counts and the margin naming the arms (`keep: v2 passed 14 of 60 to v1's 29, a drop that exceeds the margin of 10
+  points on its whole interval (at least 12.3)`; `unsettled: v2's drop is past 10 points on the point estimate alone,
+  not on its interval (from a gain of 35.5 to a drop of 92.7)`; `unsettled: v2's drop is not shown to stay within 10
+  points (it could be as much as 53.6)`; `unsettled: the pass rate cannot separate the arms (both 0 of 18)`). One line
+  under the table says what unsettled means: `Keep is the default: a switch needs every clause shown, so an unsettled
+  rule keeps v1 for now. A clause reads the interval a switch reads, which can be wider than the contrasts table's.`
+  So a clause can read unsettled beside a contrast that is not separated. A rate clause settles either way only on
+  sampling evidence, every arm at the case floor and, for each rate it reads (the pass rate and each check's), the
+  contrast's bounded interval: keep where the drop's whole interval is past the margin, the one state the verdict
+  line words as a regression (`Keep v1: v2's drop exceeds the margin, passing 14 of 60 trials to v1's 29.`), switch
+  where it keeps the drop within the margin for every rate. A drop past the margin on its point estimate alone is
+  unsettled, and the verdict line says so with its interval. Cost settles keep on a higher cost observed; switch needs
+  the cost interval wholly below zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds
   its error rate on a few coarse cases, where the t interval does not
   ([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases only a sweep settles a
   10-point clause. A run that shows neither is unsettled ("the cost difference did not separate"); a bundle shaped
