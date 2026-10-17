@@ -493,6 +493,59 @@ class _ReplyObservingClient:
         return getattr(self._inner, name)
 
 
+#: The ``reasoning`` keys OpenRouter takes that the ``openrouter`` SDK's ``ChatRequestReasoning`` (0.10.8)
+#: does not declare, and the type of each: a token budget, an on/off switch, and whether the reasoning
+#: text is left out of the reply.
+_UNDECLARED_REASONING_KEYS: dict[str, type] = {"max_tokens": int, "enabled": bool, "exclude": bool}
+
+
+def _declare_reasoning_budget() -> None:
+    """Teach the OpenRouter SDK's typed request the ``reasoning`` keys it drops.
+
+    OpenRouter's ``reasoning`` object takes ``max_tokens``, ``enabled`` and ``exclude`` beside
+    ``effort`` and ``summary``. The ``openrouter`` SDK's ``ChatRequestReasoning`` declares only the
+    last two, and validating a request through it drops the rest without a word: a judge's token
+    budget went out as ``"reasoning": {}``. Each missing key is declared the way the SDK declares its
+    own optional ones -- unset by default, and an unset key is not sent -- so a request carries
+    exactly the keys its caller set.
+
+    The same pattern as :func:`declare_served_provider`, on the request side. Idempotent: a key the
+    SDK already declares is left alone. ``ChatRequest`` and the operation request that wraps it hold
+    a copy of the reasoning schema taken at import, so both are rebuilt after it. A class that moved
+    or stopped being a pydantic model raises -- silently skipping it would drop the budget again,
+    invisibly.
+
+    :raises ImportError: when the ``openrouter`` SDK no longer has these modules or classes
+    :raises TypeError: when one of them is no longer a pydantic model
+    """
+    from openrouter.components.chatrequest import ChatRequest as SdkChatRequest
+    from openrouter.components.chatrequest import ChatRequestReasoning as SdkChatRequestReasoning
+    from openrouter.operations.sendchatcompletionrequest import (
+        SendChatCompletionRequestRequest as SdkSendChatCompletionRequest,
+    )
+    from openrouter.types import UNSET
+    from pydantic import BaseModel
+    from pydantic.fields import FieldInfo
+
+    holders = (SdkChatRequest, SdkSendChatCompletionRequest)
+    for model in (SdkChatRequestReasoning, *holders):
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            raise TypeError(f"openrouter's {model!r} is no longer a pydantic model; a reasoning budget cannot be sent")
+    missing = {
+        key: kind for key, kind in _UNDECLARED_REASONING_KEYS.items() if key not in SdkChatRequestReasoning.model_fields
+    }
+    if not missing:
+        return
+    for key, kind in missing.items():
+        # The SDK's ``OptionalNullable[...]``, spelled out: the value, null, or unset.
+        annotation: Any = kind | None | type(UNSET)
+        SdkChatRequestReasoning.model_fields[key] = FieldInfo(annotation=annotation, default=UNSET)
+        SdkChatRequestReasoning.__annotations__[key] = annotation
+    SdkChatRequestReasoning.model_rebuild(force=True)
+    for holder in holders:
+        holder.model_rebuild(force=True)
+
+
 def _build_translating_chat_class() -> type[ChatOpenRouter]:
     """build the :class:`ChatOpenRouter` subclass with name-translation hooks.
 
@@ -509,6 +562,7 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
     from langchain_openrouter import ChatOpenRouter
 
     declare_served_provider()
+    _declare_reasoning_budget()
 
     class _RoutingChatOpenRouter(ChatOpenRouter):
         """``ChatOpenRouter`` that keeps the model's provider routing under a bound ``provider``,

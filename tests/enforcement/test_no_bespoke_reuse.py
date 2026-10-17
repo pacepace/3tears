@@ -77,6 +77,11 @@ _SANCTIONED_FLUSH_SITES: frozenset[str] = frozenset(
         # the platform's periodic write-behind buffer primitive. bespoke buffer+flush
         # loops must reuse THIS rather than re-rolling a timer loop over an accumulator.
         "packages/conversations/src/threetears/conversations/buffer.py",
+        # 3tears-evals' job-lease renewal. Not a write-behind buffer: each tick re-reads every held job record and
+        # extends its lease with a conditional write, and what the read finds (a cancel asked, a record ended
+        # elsewhere, a lapsed lease) decides whether the job keeps running. Batching or deferring those writes, which
+        # is what the write buffer does, would let a lease lapse while its job still runs.
+        "packages/evals/src/threetears/evals/kernel/job_leases.py",
     }
 )
 _SANCTIONED_HTTPX_SITES: frozenset[str] = frozenset(

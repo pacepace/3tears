@@ -1,0 +1,274 @@
+"""The toy host's launch path — a :class:`~threetears.evals.run.LaunchHost` and the launcher for its one kind.
+
+``run.py`` drives :func:`~threetears.evals.run.execute_run` directly, the way a host with no job
+manager would. This is the other way in, and the one a product serving launches takes:
+:func:`~threetears.evals.run.start_run` loads the template, refuses what it cannot run, admits the
+runs against the host's settings, and hands each arm to the launcher registered for the template's
+kind. The launcher builds what only that kind has — here, the subject it captures, the extractor and
+its case set — and hands the shared tail (:func:`~threetears.evals.run.launch_run`) a typed
+:class:`~threetears.evals.run.KindWiring`; everything the request already says, the tail stamps.
+
+The host the launcher closes over is the same value the launch was handed, so the run it assembles
+is stamped through the host's own profile: its world placements, its context identity and its
+variant levers. What a launch may turn on the extractor is not here at all: it is the kind's overlay
+model on the profile (``contract.py``), which ``start_run`` validates before this launcher is called
+and :func:`~threetears.evals.run.launch_run` stamps onto the run from the request. The job manager is
+the launch host's own, built over the host's storage, so a run's status and its results share a store.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import replace
+
+from threetears.evals.kernel import default_job_timeout
+from threetears.evals.kernel import DEFAULT_JOB_LEASE_S
+from threetears.evals.schema import EvalRun, WorldSeed
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.host import CompletionClients, HostProfile
+from threetears.evals.schema import TraceSink
+from threetears.evals.schema import WorldPlacement
+from threetears.evals.run import (
+    ArmPlan,
+    ArmPrice,
+    ArmQuote,
+    CellExecutor,
+    KindWiring,
+    LaunchHost,
+    LaunchRequest,
+    LaunchSettings,
+    LaunchableKind,
+    UnknownSubject,
+    launch_run,
+    require_candidate_model,
+    run_blocking,
+)
+from packages.evals.tests.fixtures.toyhost.corpus import (
+    TOYHOST_COST_CEILING_USD,
+    TOYHOST_GRADER_VERSION,
+    TOYHOST_SUBJECT,
+)
+from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.kind import (
+    TOY_DOCUMENTS,
+    TOY_EXTRACTOR_KIND,
+    TOY_SCRIPTS,
+    ScriptedExtractionClient,
+    ToyExtractorKind,
+)
+from packages.evals.tests.fixtures.toyhost.run import RUN_CHUNK_TOKENS, RUN_RETRIEVER_TOP_K, toyhost_test_cases
+
+#: The toy host's launch settings. Generous, so a launch is refused only where a test says so.
+TOYHOST_LAUNCH_SETTINGS = LaunchSettings(
+    max_launch_arms=4,
+    max_admitted_runs=8,
+    judge_concurrency=1,
+    enforcement_enabled=True,
+    max_cost_usd=TOYHOST_COST_CEILING_USD,
+    max_metered_calls=100,
+    max_out_of_run_cost_usd=TOYHOST_COST_CEILING_USD,
+    # What an operator of this product turns, so a refusal names the knob rather than the field.
+    setting_names={"max_launch_arms": "toyhost.launch.arms", "max_admitted_runs": "toyhost.launch.admitted"},
+)
+
+#: The reviewer pool a run is reviewed by when its launch sets none — the host's standing rig.
+TOYHOST_REVIEWER_POOL = "pool-a"
+
+
+def plan_toyhost_arm(request: LaunchRequest) -> ArmPlan:
+    """What one arm of a toy launch runs: every case the launcher freezes, on the model the arm names.
+
+    The engine asks this of every arm before the launcher runs, and prices what it says. It is where the
+    kind's request-level refusals live: the extractor has no role default, so an arm naming no model is
+    refused here — through the engine's own refusal, the one the tail makes — rather than heard as "cannot
+    be priced", or at the tail after the launcher built its rig. The extractor is graded mechanically and
+    simulates nobody, so the plan names no judge and no simulator.
+
+    :param request: The arm.
+    :ptype request: LaunchRequest
+    :return: The plan.
+    :rtype: ArmPlan
+    :raises ValidationFailedError: The arm names no model.
+    """
+    return ArmPlan(
+        case_count=len(request.cases_or(toyhost_test_cases(request.template))),
+        candidate_model=require_candidate_model(request, None),
+        judge=None,
+        simulator_model=None,
+    )
+
+
+def price_toyhost_arm(quote: ArmQuote) -> ArmPrice:
+    """The toy host's launch pricer: a rate card, read off the extractor's own scripts.
+
+    Its upper bound is every cell at the dearest document's price — the figure the launch holds to the
+    arm's cap. A model no script covers is unpriceable, which the engine reads as unknown, never $0.
+
+    :param quote: The arm.
+    :ptype quote: ArmQuote
+    :return: The prediction, or none for a model the rate card does not cover.
+    :rtype: ArmPrice
+    """
+    script = next((script for script in TOY_SCRIPTS if script.model == quote.candidate_model), None)
+    if script is None:
+        return ArmPrice(predicted_usd=None, basis=f"the toy rate card covers no model {quote.candidate_model!r}")
+    per_cell = max(script.cost_of(document) for document in TOY_DOCUMENTS)
+    return ArmPrice(
+        predicted_usd=per_cell * quote.case_count * quote.k_runs,
+        basis=f"the toy rate card: {quote.case_count} case(s) x {quote.k_runs} repeat(s) at most ${per_cell:.4f} each",
+    )
+
+
+#: The subjects this host can capture, by the id a launch names. One: the toy host deploys one
+#: extractor configuration.
+TOYHOST_SUBJECTS = {TOYHOST_SUBJECT.subject_id: TOYHOST_SUBJECT}
+
+
+def toyhost_launch_host(
+    *,
+    profile: HostProfile | None = None,
+    storage: EvalStorage | None = None,
+    trace_sink: TraceSink | None = None,
+    settings: Callable[[], LaunchSettings] = lambda: TOYHOST_LAUNCH_SETTINGS,
+    clients: CompletionClients | None = None,
+    client: ScriptedExtractionClient | None = None,
+    cell_executor: CellExecutor | None = None,
+    kind_cell_timeout_s: float | None = None,
+    job_lease_s: float = DEFAULT_JOB_LEASE_S,
+    kind_max_concurrent_cells: int | None = None,
+) -> tuple[LaunchHost, ScriptedExtractionClient]:
+    """The toy host as a launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, plus its launch registry.
+
+    :param profile: The vocabulary; ``None`` is the toy host's own.
+    :ptype profile: HostProfile | None
+    :param storage: Where documents live; ``None`` is a fresh in-memory store.
+    :ptype storage: EvalStorage | None
+    :param trace_sink: The host's tracing, or ``None``.
+    :ptype trace_sink: TraceSink | None
+    :param settings: Reads the launch settings; a callable because a host's settings hot-reload.
+    :ptype settings: Callable[[], LaunchSettings]
+    :param clients: The completion-client factory, for a drive that also analyses what it launched. The
+        extractor itself calls no model.
+    :ptype clients: CompletionClients | None
+    :param client: The scripted client the extractor calls; ``None`` is a fresh one with the toy scripts.
+    :ptype client: ScriptedExtractionClient | None
+    :param cell_executor: What runs each run's cells; ``None`` is the engine's in-process default.
+    :ptype cell_executor: CellExecutor | None
+    :param kind_cell_timeout_s: The per-cell deadline the launcher wires for its kind
+        (``KindWiring.cell_timeout_s``); ``None`` leaves the engine's default.
+    :ptype kind_cell_timeout_s: float | None
+    :param job_lease_s: How long the host's job leases last unless renewed.
+    :ptype job_lease_s: float
+    :param kind_max_concurrent_cells: The width the extractor declares it is safe at, which the launcher hands
+        the launch (``KindWiring.max_concurrent_cells``); ``None`` declares no limit of its own.
+    :ptype kind_max_concurrent_cells: int | None
+    :return: The host, and the scripted client its extractor calls — so a caller can see what was asked.
+    :rtype: tuple[LaunchHost, ScriptedExtractionClient]
+    """
+    eval_host = toyhost_host(profile=profile, storage=storage, trace_sink=trace_sink, clients=clients)
+    world = eval_host.profile.world
+    assert world is not None, "the toy host declares a world"
+    client = client if client is not None else ScriptedExtractionClient()
+
+    def place(run: EvalRun) -> dict[str, WorldPlacement]:
+        # The algebra over what this run's kind can actually do: the dimensions its seed sets,
+        # through the carriers the extractor attaches.
+        seed = WorldSeed(namespaces=run.resolved_world_seed or {})
+        return world.place(seeded=ToyExtractorKind.seedable_dimensions(seed), carriers=ToyExtractorKind.CARRIERS)
+
+    async def launch(request: LaunchRequest) -> EvalRun:
+        # The subject the launch names, as this host captures it — never a constant, or every launch
+        # would measure one subject whatever it asked for.
+        # Admission resolved it (`resolve_subject` below), so a launcher never meets a subject the host lacks.
+        subject = TOYHOST_SUBJECTS[request.subject_id]
+        # The launch's case set when it names one, else every invoice. A set's cases are already stored.
+        cases = request.cases_or(toyhost_test_cases(request.template))
+        for case in cases:
+            await run_blocking(eval_host.blocking_executor, eval_host.storage.save_test_case, case)
+        # What the template states for the kind, as the dispatch validated it: the fields this run
+        # grades. The run records the same validated spec, so what it graded and what it says it
+        # graded are one value.
+        spec = request.kind_spec_as(ExtractorSpec)
+        graded = ToyExtractorKind(
+            client=client,
+            world=world,
+            graded_fields=tuple(spec.graded_fields),
+            goal_checks=tuple(request.template.goal_state_checks),
+            max_concurrent_cells=kind_max_concurrent_cells,
+        )
+        # Everything the request already says — scope, model, repeats, overlays, the template's seed —
+        # the engine stamps. What is here is what only this kind resolves. Nothing is model-scored on
+        # this path, so there is no judge, and the extractor has no default model to fall back on.
+        return await launch_run(
+            launch_host,
+            request,
+            KindWiring(
+                kind_factory=lambda _cell: graded,
+                subject=subject,
+                test_cases=cases,
+                cell_timeout_s=kind_cell_timeout_s,
+                max_concurrent_cells=graded.max_concurrent_cells,
+                payload={
+                    "toyhost": {
+                        "grader_version": TOYHOST_GRADER_VERSION,
+                        "chunk_tokens": RUN_CHUNK_TOKENS,
+                        "retriever_top_k": RUN_RETRIEVER_TOP_K,
+                        "extraction_schema": "v1",
+                        "ocr_engine_version": "tess-5.3.1",
+                        # Who reviews is a setup value of the rig a launch may set. The dispatch resolved
+                        # it against the kind's standing pool, so it is always present and no default is
+                        # restated here.
+                        "reviewer_pool": request.apparatus_settings["reviewer_pool"],
+                    }
+                },
+            ),
+        )
+
+    def resolve_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
+        if subject_id in TOYHOST_SUBJECTS:
+            return None
+        return UnknownSubject(remedy=f"the toy host holds subjects {', '.join(sorted(TOYHOST_SUBJECTS))}")
+
+    # The extractor honours no simulated user, no judge and no cassette, so a launch naming one
+    # is refused at the dispatch rather than handed to this launcher to ignore.
+    kinds = {
+        TOY_EXTRACTOR_KIND: LaunchableKind(
+            launch=launch,
+            resolve_subject=resolve_subject,
+            unhonoured_launch_arguments=frozenset(
+                {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
+            ),
+            # What each arm will run, asked before the launcher is, so the engine prices every arm.
+            plan_arm=plan_toyhost_arm,
+            # The one apparatus value a launch sets: who reviews the extractions, the host's standing
+            # pool when a launch sets none.
+            apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
+        )
+    }
+    # Admitting a template reads the same registry the launch does, for the fields each kind never acts on.
+    if eval_host.template_checks is not None:
+        eval_host = replace(eval_host, template_checks=replace(eval_host.template_checks, kinds=kinds))
+    launch_host = LaunchHost(
+        eval_host=eval_host,
+        kinds=kinds,
+        # Every arm is priced by the engine before its launcher runs; the toy prices from its rate card.
+        launch_pricer=price_toyhost_arm,
+        settings=settings,
+        # The toy host has no timeout layer of its own, so a run's job is bounded by the engine's.
+        job_timeout_factory=default_job_timeout,
+        world_placements=place,
+        cell_executor=cell_executor,
+        job_lease_s=job_lease_s,
+    )
+    return launch_host, client
+
+
+__all__ = [
+    "TOYHOST_LAUNCH_SETTINGS",
+    "TOYHOST_REVIEWER_POOL",
+    "TOYHOST_SUBJECTS",
+    "plan_toyhost_arm",
+    "price_toyhost_arm",
+    "toyhost_launch_host",
+]

@@ -144,7 +144,7 @@ These principles are enforced, not just stated: `3tears-enforcement` runs
 static-analysis scanners across the ecosystem that check pattern compliance
 at commit time.
 
-## The four families
+## The families
 
 | Family | Packages | Role |
 |---|---|---|
@@ -152,6 +152,7 @@ at commit time.
 | **Infrastructure** | `nats`, `observe`, `epoch`, `iam`, `mcp`, `registry`, `scheduled-jobs`, `media-contracts`, `enforcement`, `backup`, `object-store` | Cross-cutting platform services: transport, telemetry, coherence, tool routing, scheduling, storage, and static verification |
 | **Agent framework** | `agent-tools`, `agent-memory`, `agent-skills`, `agent-workspace`, `agent-acl`, `agent-audit`, `agent-wake`, `agent-identity`, `agent-intention`, `agent-knowledge` | Everything an LLM agent needs to act, remember, and evolve safely at scale |
 | **Models, channels, LangGraph** | `models`, `channels`, `langgraph` | The surface that connects an agent to LLM providers, chat channels, and LangGraph orchestration |
+| **Evaluation** | `evals` | Finding out whether a change to an LLM-backed feature made it better |
 
 ## Module index
 
@@ -203,6 +204,12 @@ at commit time.
 | [`models`](models.md) | One factory surface for LLM/embedding providers, with circuit breakers and usage tracking. |
 | [`channels`](channels.md) | Write agent logic once, deliver it across Slack, Discord, and WebSocket. |
 | [`langgraph`](langgraph.md) | Three-tier LangGraph checkpointing that scales the same on a laptop or a fleet. |
+
+### Evaluation
+
+| Module | Solves |
+|---|---|
+| [`evals`](../../packages/evals/README.md) | Evals for LLM features, from a classifier to a tool-using agent: what a change moved, with the uncertainty that says whether the move is real. |
 
 ## How to adopt
 

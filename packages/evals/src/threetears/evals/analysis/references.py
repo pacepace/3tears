@@ -1,0 +1,469 @@
+"""Resolve the model's references against the decision surface — the one place a number is filled.
+
+The generating model names WHERE a number lives — a cell and a measure (or a judged dimension) —
+and this module reads the figure off the analysis's :class:`~threetears.evals.kernel.surface.DecisionSurface`.
+Every code-filled number on an analysis goes through :func:`resolve_reading`: its evidence rows, and the
+interval rows the report draws under a finding. One
+resolver rather than one per consumer, because two lookups of "the value of this measure at this
+cell" are two answers to one question, and the input that separates them is the one nobody wrote a
+fixture for.
+
+A reference that names nothing the surface holds is an :class:`UnresolvableReference`, which the
+generator's repair round feeds back — the message names what the cell DOES hold, so the model can
+pick a real reading instead of guessing again.
+
+**The writer names a cell by a short alias** (``c1``, ``c2``, …) that :func:`cell_aliases` mints and
+:func:`cell_of_alias` reads back — one mapping for evidence rows, decisions and prose alike.
+The generator translates every alias to the cell's full ``cell_ref`` before resolving or storing
+anything, so everything below this seam, and every stored analysis, carries the full identity.
+
+**The point estimate is the cell's MEAN**, over its non-faulted observations — the population every
+bar is adjudicated over, so a reading and a bar verdict on one cell describe the same observations. A
+cost or latency reading is over the turns the candidate took (population ``delivered``), for the bar and
+the reading alike, and a cell where no result took a turn has none to resolve.
+The interval is computed over the cell's cases, not its observations: where ``n_cases`` is below ``n``
+the observations are repeats of the same cases, and the standard error is the cluster-robust one read
+on ``n_cases - 1`` degrees of freedom (:func:`threetears.evals.analysis.stats.clustered_standard_error`).
+Observations of a single case carry no between-case spread, so such a reading has no interval, and
+:attr:`ResolvedReading.dispersion` says why.
+
+**One reading is a** :class:`ReadingRef` — a name and the namespace it is in, stated rather than
+inferred — wherever code reads one off an authored evidence row. The authored models have already been validated strictly, so a
+reading carries no policy of its own: what it names either resolves here or is refused here.
+
+**Every interval here is computed and labelled at one level.** A measure's arrives already computed
+on its summary, a judged dimension's is computed here from its cluster-robust sem, and both widths come from
+:func:`threetears.evals.analysis.stats.mean_interval` at :data:`threetears.evals.analysis.stats.INTERVAL_LEVEL` — the same
+constant the dispersion text and every interval the report draws state. The level is not a second decision this
+module makes; it reads the one the width was computed at.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from threetears.evals.analysis import stats
+from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import ReadingKind
+from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
+from threetears.evals.kernel.metrics import MeritAxis, classifier_label_of
+from threetears.evals.kernel.surface import (
+    CellFacts,
+    DecisionSurface,
+    JudgedDimensionFacts,
+    JudgedReading,
+    MeasureFacts,
+)
+
+
+class ResolvedReading(BaseModel):
+    """One reading at one cell, as code resolved it — everything a consumer may need to draw or state it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cell_ref: str
+    measure_id: str
+    reading: ReadingKind
+    mean: float
+    #: Observations behind the mean: a case judged k times counts k. Never shown to a reader as a count.
+    n: int
+    #: Distinct test cases behind the mean (the bundle's ``n_independent``): the draws its interval is read over,
+    #: and the count every chart payload's ``n`` and the evidence table carry. None where none was recorded.
+    n_cases: int | None
+    sem: float | None
+    ci_low: float | None
+    ci_high: float | None
+    unit: str | None
+    higher_is_better: bool | None
+    merit_axis: MeritAxis | None
+    dispersion: str
+    #: A judged reading's evidence tier, as the surface froze it for the cell's judges; None for a measure.
+    judged_tier: JudgedEvidenceTier | None
+    #: Each case's mean, ascending, where the cell has fewer cases than a chart draws a band from
+    #: (:data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR`); None at or above it.
+    case_means: list[float] | None = None
+
+
+class ReadingRef(EvalBaseModel):
+    """One reading: a measure, or a judged dimension, named in its namespace."""
+
+    measure_id: str = Field(description="The measure (or judged dimension) — spelled as the surface spells it.")
+    reading: ReadingKind = Field(
+        description="Which of a cell's two namespaces the name is in — stated, never inferred."
+    )
+
+
+#: What starts a cell alias: the writer names cells ``c1``, ``c2``, … (:func:`cell_aliases`).
+CELL_ALIAS_PREFIX = "c"
+
+
+def cell_aliases(cells: Iterable[CellFacts]) -> dict[str, str]:
+    """Mint the short alias a writer names each cell by — the one mint, read by the bundle view and the resolver.
+
+    A cell's identity is two 64-hex digests, which tokenize poorly and which a writer has to copy
+    into every reading it names; each copy costs output tokens and is a place to mistype a digest,
+    and a mistype buys the paid repair round. So the writer is shown ``c1``, ``c2``, … and
+    code maps each back through :func:`cell_of_alias`.
+
+    Numbered in the order given, one alias per distinct cell. Both callers pass the same list —
+    the bundle's ``cell_measures``, which the decision surface's ``cells`` is a copy of — so the
+    alias the writer saw and the one the resolver reads are equal by construction. An alias is
+    meaningful only against the bundle it was minted from, which is why the generator translates
+    every alias to the full ``cell_ref`` before anything is stored.
+
+    :param cells: The cells, in the order to number them.
+    :ptype cells: Iterable[CellFacts]
+    :return: ``alias -> cell_ref``, in minted order.
+    :rtype: dict[str, str]
+    """
+    aliases: dict[str, str] = {}
+    seen: set[str] = set()
+    for cell in cells:
+        ref = cell_ref(cell.variant_key, cell.apparatus_class_id)
+        if ref not in seen:
+            seen.add(ref)
+            aliases[f"{CELL_ALIAS_PREFIX}{len(aliases) + 1}"] = ref
+    return aliases
+
+
+def cell_of_alias(surface: DecisionSurface, alias: str) -> str:
+    """Resolve the alias a writer named a cell by to the cell's ``cell_ref``, or refuse it.
+
+    The one place an alias is read: evidence rows, charts, decisions and figure references in prose
+    all come through here.
+
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param alias: The cell as the writer named it.
+    :ptype alias: str
+    :return: The cell's full ``cell_ref``.
+    :rtype: str
+    :raises UnresolvableReference: No cell carries that alias.
+    """
+    aliases = cell_aliases(surface.cells)
+    ref = aliases.get(alias)
+    if ref is None:
+        known = ", ".join(aliases) or "(none — the surface holds no cell)"
+        raise UnresolvableReference(
+            f"reference names cell {alias!r}, which is no cell's alias; a cell is named by its `cell` in "
+            f"`cell_measures` — the cells are: {known}"
+        )
+    return ref
+
+
+def in_writer_terms(text: str, surface: DecisionSurface) -> str:
+    """Name every cell in a refusal the way the writer names it — by alias, never by its full ``cell_ref``.
+
+    Everything below the alias seam speaks full refs, so a refusal raised there (a measure a real cell
+    does not carry, a statistic it lacks) quotes the digest pair. That text is sent back on the repair
+    round, and a writer shown the handle it was never taught to use can copy it — which is refused. So
+    the generator passes a refusal through here where it hands it to the writer — the repair round and
+    the provenance of the analysis that round produced — and nowhere else: the tally and the attempt
+    record keep the full refs, since an alias is meaningful only against the bundle it was minted from.
+
+    :param text: The refusal as the resolver worded it.
+    :ptype text: str
+    :param surface: The surface the aliases were minted from.
+    :ptype surface: DecisionSurface
+    :return: The text with each full ``cell_ref`` replaced by its alias.
+    :rtype: str
+    """
+    for alias, ref in cell_aliases(surface.cells).items():
+        text = text.replace(ref, alias)
+    return text
+
+
+def cell_index(surface: DecisionSurface) -> dict[str, CellFacts]:
+    """Key a surface's cells by the ``cell_ref`` a reference carries.
+
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :return: ``cell_ref -> CellFacts`` for every cell.
+    :rtype: dict[str, CellFacts]
+    """
+    return {cell_ref(cell.variant_key, cell.apparatus_class_id): cell for cell in surface.cells}
+
+
+def require_cell(surface: DecisionSurface, ref: str) -> CellFacts:
+    """Return the cell a reference names, or refuse naming the cells that exist.
+
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param ref: The reference's cell (a ``cell_ref``).
+    :ptype ref: str
+    :return: The cell's facts.
+    :rtype: CellFacts
+    :raises UnresolvableReference: No cell carries that ref.
+    """
+    cells = cell_index(surface)
+    cell = cells.get(ref)
+    if cell is None:
+        known = ", ".join(sorted(cells)) or "(none — the surface holds no cell)"
+        raise UnresolvableReference(
+            f"reference names cell {ref!r}, which the decision surface does not hold — the cells are: {known}"
+        )
+    return cell
+
+
+def resolve_reading(
+    surface: DecisionSurface, ref: str, measure_id: str, reading: ReadingKind = "measure"
+) -> ResolvedReading:
+    """Read one numeric reading off the surface.
+
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param ref: The cell the reference names (a ``cell_ref``).
+    :ptype ref: str
+    :param measure_id: The measure (or judged dimension) it names.
+    :ptype measure_id: str
+    :param reading: Which of the cell's two namespaces to read — already a :data:`ReadingKind`, because
+        every model-authored kind is validated against the authored models before it gets here.
+    :ptype reading: ReadingKind
+    :return: The resolved reading.
+    :rtype: ResolvedReading
+    :raises UnresolvableReference: The cell, or the reading in it, does not exist; the measure is
+        categorical (it has no point estimate); or it has no mean (nothing was scored).
+    :raises ValueError: ``reading`` is neither kind — a caller that bypassed the authored models,
+        which no repair round can correct.
+    :raises RuntimeError: The surface holds a reading with no facts entry for its name — see
+        :func:`_measure_facts`.
+    """
+    cell = require_cell(surface, ref)
+    if reading == "judged":
+        return _resolve_judged(surface, cell, ref, measure_id)
+    if reading == "measure":
+        return _resolve_measure(surface, cell, ref, measure_id)
+    raise ValueError(
+        f"reading {reading!r} is neither 'measure' nor 'judged' — validate model output against the authored models"
+    )
+
+
+def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measure_id: str) -> ResolvedReading:
+    """Resolve a ``measure`` reading.
+
+    :raises UnresolvableReference: See :func:`resolve_reading`.
+    """
+    summary = _find_measure(cell, measure_id)
+    if summary is None:
+        judged_hint = (
+            f" `{measure_id}` IS a judged dimension in this cell — set reading to 'judged'."
+            if any(j.dimension == measure_id for j in cell.judged)
+            else ""
+        )
+        raise UnresolvableReference(
+            f"reference names measure {measure_id!r} at cell {ref!r}, which measured no such measure.{judged_hint} "
+            f"Its measures are: {', '.join(m.name for m in cell.measures.measures) or '(none)'}"
+        )
+    if summary.categories:
+        raise UnresolvableReference(
+            f"reference names measure {measure_id!r} at cell {ref!r} as a point estimate, but it is categorical and "
+            f"has none — its evidence is its category counts, which only a `breakdown` chart draws; in prose, "
+            f"reference one category's count as `{{{{<cell>|{measure_id}|measure|count:<category>}}}}`"
+        )
+    if summary.texts:
+        raise UnresolvableReference(
+            f"reference names measure {measure_id!r} at cell {ref!r} as a point estimate, but it is text — its "
+            "observations are evidence to quote, listed whole, and no number stands for what was said"
+        )
+    # A boolean measure's point estimate is its rate, bounded by the Wilson interval its summary carries.
+    point = summary.rate if summary.rate is not None else summary.mean
+    if point is None:
+        raise UnresolvableReference(f"reference names measure {measure_id!r} at cell {ref!r}, which has no mean (n=0)")
+    facts = _measure_facts(surface, measure_id)
+    return ResolvedReading(
+        cell_ref=ref,
+        measure_id=measure_id,
+        reading="measure",
+        mean=point,
+        n=summary.n,
+        n_cases=summary.n_independent or None,
+        sem=summary.sem,
+        ci_low=summary.ci_low,
+        ci_high=summary.ci_high,
+        unit=facts.unit,
+        higher_is_better=summary.higher_is_better,
+        merit_axis=facts.merit_axis,
+        case_means=summary.case_means,
+        dispersion=(
+            # F1 is a function of one confusion matrix: there is no spread to estimate at any n, so "unestimable at
+            # … cases" would imply more data could supply one.
+            "none by construction: one value computed from the cell's confusion counts"
+            if (label := classifier_label_of(measure_id)) is not None and label[0] == "f1"
+            else _dispersion(summary.sem, summary.ci_low, summary.ci_high, summary.n, summary.n_independent or None)
+        ),
+        judged_tier=None,
+    )
+
+
+def _resolve_judged(surface: DecisionSurface, cell: CellFacts, ref: str, dimension: str) -> ResolvedReading:
+    """Resolve a ``judged`` reading, computing its interval the way a measure's is computed.
+
+    :raises UnresolvableReference: See :func:`resolve_reading`.
+    """
+    judged = _find_judged(cell, dimension)
+    if judged is None:
+        measure_hint = (
+            f" `{dimension}` IS a measure in this cell — set reading to 'measure'."
+            if _find_measure(cell, dimension) is not None
+            else ""
+        )
+        raise UnresolvableReference(
+            f"reference names judged dimension {dimension!r} at cell {ref!r}, which scored no such dimension."
+            f"{measure_hint} Its judged dimensions are: {', '.join(j.dimension for j in cell.judged) or '(none)'}"
+        )
+    if judged.mean is None:
+        raise UnresolvableReference(
+            f"reference names judged dimension {dimension!r} at cell {ref!r}, which has no scores"
+        )
+    # The same interval function the bundle computes every measure's interval with, so a judged
+    # interval and a measure's drawn side by side are at one level by construction — and inside the
+    # dimension's scale, which a mean near its top would otherwise overrun. The sem is over the cases,
+    # so the degrees of freedom are too.
+    facts = _dimension_facts(surface, dimension)
+    interval = (
+        None
+        if judged.sem is None
+        else stats.mean_interval(judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range)
+    )
+    ci_low, ci_high = (None, None) if interval is None else interval
+    return ResolvedReading(
+        cell_ref=ref,
+        measure_id=dimension,
+        reading="judged",
+        mean=judged.mean,
+        n=judged.n,
+        n_cases=judged.n_independent or None,
+        sem=judged.sem,
+        ci_low=ci_low,
+        ci_high=ci_high,
+        unit=None,
+        higher_is_better=facts.higher_is_better,
+        merit_axis="quality",
+        dispersion=_dispersion(judged.sem, ci_low, ci_high, judged.n, judged.n_independent or None),
+        judged_tier=judged.evidence_tier,
+        case_means=judged.case_means,
+    )
+
+
+def _measure_facts(surface: DecisionSurface, measure_id: str) -> MeasureFacts:
+    """The surface's facts for a measure a cell carries — which the surface guarantees exist.
+
+    A missing entry is a surface built inconsistently, never something the model wrote: the unit,
+    axis and direction a figure is stated with are unknown, and guessing them would call an
+    unknown-polarity measure one thing or another. So it is a hard error rather than a repairable
+    refusal — a repair round would regenerate against the same surface and meet the same gap.
+
+    :raises RuntimeError: The surface holds no entry for ``measure_id``.
+    """
+    facts = surface.measures.get(measure_id)
+    if facts is None:
+        raise RuntimeError(
+            f"the decision surface carries measure {measure_id!r} in a cell and no `measures` entry for it — every "
+            "measure a cell carries has one, so this surface was built inconsistently"
+        )
+    return facts
+
+
+def _dimension_facts(surface: DecisionSurface, dimension: str) -> JudgedDimensionFacts:
+    """The surface's facts for a judged dimension a cell scored — which the surface guarantees exist.
+
+    :raises RuntimeError: The surface holds no entry for ``dimension``; see :func:`_measure_facts`.
+    """
+    facts = surface.dimensions.get(dimension)
+    if facts is None:
+        raise RuntimeError(
+            f"the decision surface carries judged dimension {dimension!r} in a cell and no `dimensions` entry for it — "
+            "every dimension a cell scored has one, so this surface was built inconsistently"
+        )
+    return facts
+
+
+def _find_measure(cell: CellFacts, name: str) -> MeasureSummary | None:
+    return next((m for m in cell.measures.measures if m.name == name), None)
+
+
+def _find_judged(cell: CellFacts, dimension: str) -> JudgedReading | None:
+    return next((j for j in cell.judged if j.dimension == dimension), None)
+
+
+def _dispersion(
+    sem: float | None, ci_low: float | None, ci_high: float | None, n: int, n_cases: int | None, unit: str = ""
+) -> str:
+    """State a reading's spread in words, including when there is none to state.
+
+    The interval it states is already computed over the cases, so a clustered cell needs no caveat
+    beside it; the one case it explains is the interval a single case cannot have. The figures are spelled in
+    ``unit`` where the row states one — a percent's interval reads ``[88.1%, 100%]`` — and bare otherwise.
+
+    :return: The dispersion text an evidence row carries.
+    :rtype: str
+    """
+    if ci_low is None or ci_high is None:
+        if n_cases == 1 and n > 1:
+            return f"unestimable: {n} obs of one case, which has no between-case spread"
+        # Cases, never observations: the count every interval is read over, and the count a reader is shown
+        # beside it. A reading with no case count recorded states none rather than its observations.
+        if n_cases is None:
+            return "unestimable"
+        return f"unestimable at {n_cases} case{'' if n_cases == 1 else 's'}"
+    # A rate carries its interval and no standard error, and its interval is its spread: stated, never
+    # reported as unestimable because the sem it does not have is absent.
+    # The unit on each end where it sits on the number (``[88.1%, 100%]``); a spaced unit is the value's, and the
+    # interval beside it stays bare (``[0.8, 1.1]`` under ``0.95 s``), as it always read.
+    on_the_number = unit == PERCENT or is_money(unit)
+    low, high = ((with_unit(bound, unit) if on_the_number else format_number(bound)) for bound in (ci_low, ci_high))
+    text = f"{stats.INTERVAL_LEVEL:.0%} CI [{low}, {high}]"
+    if sem is not None:
+        text = f"sem {number_in(sem, unit)}; {text}"
+    return text
+
+
+def restated_dispersion(reading: ResolvedReading, factor: float, *, unit: str = "") -> str:
+    """A reading's spread in words, its standard error and interval restated by ``factor`` onto its measure's ruler.
+
+    The evidence table states a reading's value on the one ruler the report states its measure on, so its spread
+    beside it is restated with it: a value in s beside an interval in ms is the two-ruler defect within one row.
+
+    :param reading: The resolved reading.
+    :ptype reading: ResolvedReading
+    :param factor: Its measure's ruler factor (``1.0`` where the ruler is the measure's own unit).
+    :ptype factor: float
+    :param unit: The ruler's unit, which the restated figures are spelled in; empty for a bare number.
+    :ptype unit: str
+    :return: :attr:`ResolvedReading.dispersion` where nothing is restated; otherwise the same words over restated
+        figures.
+    :rtype: str
+    """
+    if factor == 1.0 or reading.ci_low is None or reading.ci_high is None:
+        return reading.dispersion
+    if (label := classifier_label_of(reading.measure_id)) is not None and label[0] == "f1":
+        return reading.dispersion
+    return _dispersion(
+        None if reading.sem is None else reading.sem * factor,
+        reading.ci_low * factor,
+        reading.ci_high * factor,
+        reading.n,
+        reading.n_cases,
+        unit,
+    )
+
+
+__all__ = [
+    "CELL_ALIAS_PREFIX",
+    "ReadingRef",
+    "ResolvedReading",
+    "cell_aliases",
+    "cell_index",
+    "cell_of_alias",
+    "in_writer_terms",
+    "require_cell",
+    "resolve_reading",
+    "restated_dispersion",
+]

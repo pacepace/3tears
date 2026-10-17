@@ -1,0 +1,705 @@
+"""Measure what temperature does to a judge: the same borderline evidence re-judged at the pinned temperature and at the provider's default.
+
+Every judge call is requested at :data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE` unless a config
+says otherwise (#633). The issue asked that policy to rest on a measurement, not an assertion: how far a judge's
+scores of the SAME evidence vary across repeats at that temperature, against how far they vary at the provider's
+default (temperature not sent), on the borderline cases temperature is expected to move. This module takes it, on a
+run that has finished, over the machinery a judge repeat uses (:mod:`threetears.evals.run.judge_repeat`):
+
+- **The same judge setup, two samplings.** Each result's judge input is rebuilt from what its run recorded
+  (:func:`~threetears.evals.run.judge_repeat.collect_repeatable`, the judge repeat's own collection and refusals):
+  the judge pin, the prompt per dim, the template, the case and the evidence the cell's kind rendered. Only the
+  temperature differs: every call on the ``pinned`` side is requested at ``DEFAULT_JUDGE_TEMPERATURE``, every call on
+  the ``provider_default`` side is sent none. A config that pins its own temperature is overridden on both sides —
+  this compares the two settings — while its prompt and model are kept.
+- **As recorded, not as today.** The run is collected under the ``as_recorded`` policy, not the ``today`` one a judge
+  repeat uses: a run that recorded no judge temperature, or was asked with request settings other than today's,
+  is accepted, because both sides force their own temperature, both are sent
+  the request settings a judge call sends now, and nothing is paired with the run's own scores. What cannot be
+  reproduced at all — no recorded apparatus, an edited template, evidence never stored — is still refused.
+- **Borderline by default.** A scored dim of a result is borderline when its stored score sits inside the scale (2-4
+  on 1-5), or when a recorded judge repeat or second judge of it answered differently (a "can't tell" included).
+  ``selection="all"`` takes every scored dim instead.
+- **Repeated at each setting, interleaved.** Each borderline dim is judged ``repeats`` times at each setting, the two
+  settings alternating call round by call round, so a provider changing under the measurement moves both alike.
+- **Spent here, read there.** This module asks and records every answer
+  (:class:`~threetears.evals.kernel.JudgeTemperatureAnswers`, on the comparison's :class:`EvalJudgeTemperatureCheck`);
+  the reading — per-case variance and self-agreement at
+  each setting, side by side — is :func:`~threetears.evals.analysis.read_judge_temperatures`, which spends nothing.
+  The ``judge_temperature`` operation and the ``judge-temperature`` command do both.
+- **The temperature sent is checked, never assumed.** Each answer records the temperature its client reports sending
+  (:func:`~threetears.evals.run.judge.sent_temperature`). A run whose every borderline score records that its model
+  was sent none (a model that refuses a temperature) is refused before anything is spent: both sides would be the
+  same sampling. An answer recorded at anything other than its side's setting — a client that dropped the
+  temperature, or reports none — is left out of that side's figures by the reading, and the comparison is marked not
+  comparable, with the reason.
+- **Priced before it is paid for.** Every call, parse retries included, is priced on the client it will be made on
+  and admitted against the host's out-of-run cap before the first is sent. Each call made is written to the
+  out-of-run ledger under purpose ``judge``, stamped with the run, whether it returns or raises.
+- **A measurement of the judge, never a change to the result.** Nothing is written to the results: the forced
+  temperatures are not the run's judge, so recording them as repeats would split the run's own self-agreement. The
+  comparison's own record (:class:`EvalJudgeTemperatureCheck`) keeps the answers, and the comparison is read off them.
+- **Priced in the call, spent in the work.** :func:`judge_temperature_work` makes every refusal and admits every call
+  before returning; the work it returns makes the calls, as a job or awaited in the foreground.
+"""
+
+from __future__ import annotations
+
+import math
+import uuid
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import Field, field_validator
+
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.judge_temperature import (
+    DEFAULT_TEMPERATURE_REPEATS,
+    MIN_TEMPERATURE_REPEATS,
+    TEMPERATURE_SETTINGS,
+    JudgeTemperatureAnswers,
+    TemperatureAnswer,
+    TemperatureCaseAnswers,
+    TemperatureSelection,
+    TemperatureSetting,
+    TemperatureSkip,
+)
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.capped_completion import refresh_prices
+from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
+from threetears.evals.kernel.job_leases import LeasedJobKind
+from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
+from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
+from threetears.evals.schema.job_lease import (
+    CancelRequestedAtField,
+    CancelRequestReasonField,
+    FaultsField,
+    LeaseField,
+    LostField,
+)
+from threetears.evals.schema.refusal import RefusalField
+from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, CoreSchemaVersion, EvalResult, utc_now_iso
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
+from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
+from threetears.evals.run.judge_repeat import (
+    BudgetedJudgeClient,
+    CollectedRepeat,
+    PlannedRepeat,
+    collect_repeatable,
+    planned_judge_call,
+)
+from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
+from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
+from threetears.evals.schema.logs import get_logger
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel.host.eval_host import EvalHost
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome
+    from threetears.evals.schema.models import JudgeConfig
+
+log = get_logger(__name__)
+
+
+class JudgeTemperatureEstimate(EvalBaseModel):
+    """What comparing a run's judge at the two temperatures would be priced at, against its cap — no call made.
+
+    :ivar run_id: The run.
+    :ivar judge_model: The run's judge pin.
+    :ivar selection: Which scored dims would be re-judged.
+    :ivar repeats: Calls per dim per setting.
+    :ivar results: The results that would be re-judged.
+    :ivar cases: The (result, dim) pairs that would be re-judged.
+    :ivar max_calls: The most calls it can make: both settings, every repeat, each attempt and parse retry.
+    :ivar ceiling_usd: The most those calls can cost together, as the clients price them; ``None`` when a client
+        cannot say.
+    :ivar cap_usd: The out-of-run cap it would be held to; ``None`` when the host enforces none.
+    :ivar would_start: Whether every call would be admitted.
+    :ivar refusal: Why it would not, when it would not.
+    :ivar skipped: The run's results that would not be re-judged, each with why.
+    """
+
+    run_id: str
+    judge_model: str
+    selection: TemperatureSelection
+    repeats: int
+    results: int
+    cases: int
+    max_calls: int
+    ceiling_usd: float | None
+    cap_usd: float | None
+    would_start: bool
+    refusal: str | None = None
+    skipped: list[TemperatureSkip]
+
+    def render(self) -> str:
+        """The estimate in a line: what would be re-judged, the most it costs, the cap, and whether it would start."""
+        ceiling = "unpriceable" if self.ceiling_usd is None else f"${self.ceiling_usd:.4f}"
+        cap = "none enforced" if self.cap_usd is None else f"${self.cap_usd:.2f}"
+        verdict = "would start" if self.would_start else f"would be refused: {self.refusal}"
+        return (
+            f"estimate: judge temperature comparison on run {self.run_id} (judge {self.judge_model}) — "
+            f"{self.cases} {self.selection} case(s) over {self.results} result(s), {self.repeats} repeat(s) at each "
+            f"of 2 temperatures, at most {self.max_calls} call(s) priced at up to {ceiling}; out-of-run cap {cap}; "
+            f"{verdict}."
+        )
+
+
+def _disagreed(result: EvalResult, dim: str, stored: int) -> bool:
+    """Whether a recorded repeat or second judge of ``dim`` answered other than ``stored`` — a "can't tell" included."""
+    for repeat in result.judge_repeats:
+        for entry in repeat.scores:
+            if entry.dim == dim and entry.first_score == stored:
+                if entry.cannot_tell is not None or (entry.repeat is not None and entry.repeat.score != stored):
+                    return True
+    for second in result.judge_seconds:
+        for score in second.scores:
+            if score.dim == dim and score.first_score == stored:
+                if score.cannot_tell is not None or (score.second is not None and score.second.score != stored):
+                    return True
+    return False
+
+
+def borderline_dims(result: EvalResult) -> set[str]:
+    """The scored dims of ``result`` that are borderline: the cases temperature is expected to move.
+
+    A dim is borderline when its stored score sits strictly inside its scale (2, 3 or 4 on 1-5; never on pass/fail,
+    whose two scores are both its ends), or when a judge repeat or a second judge recorded on the result answered it
+    differently from the stored score, or could not tell. A pass/fail dim is therefore borderline only once something
+    has disagreed on it: run a judge repeat first, or select every dim.
+
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: The borderline dims, as their scores spell them.
+    :rtype: set[str]
+    """
+    chosen: set[str] = set()
+    for score in result.judge_scores():
+        low, high = SCALES[score.scale].scores
+        if low < score.score < high or _disagreed(result, score.dim, score.score):
+            chosen.add(score.dim)
+    return chosen
+
+
+def _select(
+    collected: CollectedRepeat, selection: TemperatureSelection
+) -> tuple[list[PlannedRepeat], list[TemperatureSkip]]:
+    """Narrow each planned result to the dims ``selection`` takes, skipping a result left with none.
+
+    :raises ValidationFailedError: No result has a dim ``selection`` takes, or every one of their stored scores
+        records that its model was sent no temperature.
+    """
+    planned: list[PlannedRepeat] = []
+    skipped = [TemperatureSkip(result_id=skip.result_id, reason=skip.reason) for skip in collected.skipped]
+    for one in collected.planned:
+        if selection == "all":
+            planned.append(one)
+            continue
+        borderline = borderline_dims(one.result)
+        dims = [dim for dim in one.dims if dim in borderline]
+        if not dims:
+            skipped.append(
+                TemperatureSkip(
+                    result_id=one.result.id,
+                    reason="no borderline dim: every stored score is at an end of its scale and nothing disagreed",
+                )
+            )
+            continue
+        planned.append(PlannedRepeat(result=one.result, inputs=one.inputs, dims=dims))
+    run_id = collected.run.id
+    if not planned:
+        raise ValidationFailedError(
+            f"no result of run '{run_id}' has a borderline dim to compare temperatures on — every stored score is "
+            "at an end of its scale and no repeat or second judge disagreed with one",
+            remedy=(
+                "select every dim (selection='all'), or run a judge repeat first so disagreement can mark a case "
+                "borderline"
+            ),
+        )
+    recorded = [one.result.judge_score(dim) for one in planned for dim in one.dims]
+    if all(score is not None and score.judge_temperature == MODEL_DEFAULT_TEMPERATURE for score in recorded):
+        raise ValidationFailedError(
+            f"every score the comparison would re-judge on run '{run_id}' records that its judge was sent no "
+            "temperature — a model that refuses one, so a call at the pinned temperature would be sent none too and "
+            "both sides would be the same sampling",
+            remedy="compare temperatures on a run judged by a model that takes a temperature",
+        )
+    return planned, skipped
+
+
+@dataclass
+class _Prepared:
+    """A comparison built and priced: a judge service per setting over budgeted clients, and each result's context."""
+
+    run_id: str
+    judge_model: str
+    planned: list[PlannedRepeat]
+    skipped: list[TemperatureSkip]
+    budget: OutOfRunBudget
+    services: dict[TemperatureSetting, JudgeService]
+    contexts: list[JudgeContext]
+    calls: list[tuple[BudgetedJudgeClient, list[PlannedCall]]]
+
+
+async def _prepare(
+    host: EvalHost,
+    run_id: str,
+    scope_id: str,
+    *,
+    out_of_run_cap_usd: float | None,
+    result_ids: Sequence[str] | None,
+    selection: TemperatureSelection,
+    repeats: int,
+) -> _Prepared:
+    """Collect the run, build a judge per setting over budgeted clients, and plan every call — admitting nothing yet.
+
+    The caller enters every service, which releases every client built here.
+
+    :raises ValidationFailedError: ``repeats`` is under :data:`MIN_TEMPERATURE_REPEATS`, or the run cannot be compared.
+    :raises ValueError: The host supplies no completion clients.
+    """
+    if repeats < MIN_TEMPERATURE_REPEATS:
+        raise ValidationFailedError(
+            f"repeats {repeats} is under {MIN_TEMPERATURE_REPEATS}: one answer per setting has no variance to compare",
+            remedy=f"pass repeats of at least {MIN_TEMPERATURE_REPEATS}",
+        )
+    clients = host.completion_clients("a judge temperature comparison")
+
+    def collect(storage: EvalStorage) -> tuple[CollectedRepeat, list[PlannedRepeat], list[TemperatureSkip]]:
+        # As recorded, not as a call is asked today: the recorded temperature is irrelevant here (both sides force
+        # their own), and a run judged under other request settings than today's is still the same judge, prompt
+        # and evidence, which is all this replays. Both
+        # sides are sent today's settings alike and nothing is paired with the run's own scores, so the two
+        # sides still differ by temperature alone. What cannot be reproduced at all is still refused.
+        collected = collect_repeatable(storage, run_id, scope_id, result_ids, request_settings="as_recorded")
+        return (collected, *_select(collected, selection))
+
+    collected, planned, skipped = await run_blocking(host.blocking_executor, collect, host.storage)
+    budget = OutOfRunBudget(
+        store=host.storage,
+        scope_id=scope_id,
+        cap_usd=out_of_run_cap_usd,
+        template_id=collected.run.template_id,
+        run_id=collected.run.id,
+        blocking_executor=host.blocking_executor,
+    )
+    inner = judge_clients_for_run(clients, collected.judge_model)
+    configs: dict[str, JudgeConfig] = {}
+    for one in planned:
+        configs.update(one.inputs.configs)
+    services: dict[TemperatureSetting, JudgeService] = {}
+    for setting, requested, _ in TEMPERATURE_SETTINGS:
+
+        def budgeted(
+            model: str | None, _temperature: float | None, sent: float | None = requested
+        ) -> BudgetedJudgeClient:
+            # The setting's temperature, whatever the dim's config asks: this compares the two settings.
+            return BudgetedJudgeClient(inner(model, sent), budget)
+
+        services[setting] = JudgeService(
+            client_factory=budgeted, configs=configs, failure_describer=host.failure_describer
+        )
+    contexts: list[JudgeContext] = []
+    by_client: dict[int, tuple[BudgetedJudgeClient, list[PlannedCall]]] = {}
+    for one in planned:
+        context = build_judge_context(
+            template=one.inputs.template,
+            test_case=one.inputs.test_case,
+            goal_outcomes=one.result.goal_state_outcomes,
+            judged_artifact=one.inputs.judged_artifact,
+            judge_evidence=one.inputs.judge_evidence,
+        )
+        contexts.append(context)
+        for service in services.values():
+            for request in judge_requests(
+                template=one.inputs.template, judge_service=service, context=context, only=frozenset(one.dims)
+            ):
+                client: BudgetedJudgeClient = service.client_for(request)
+                by_client.setdefault(id(client), (client, []))[1].extend(
+                    [planned_judge_call(request)] * (JUDGE_CALL_ATTEMPTS * repeats)
+                )
+    return _Prepared(
+        run_id=collected.run.id,
+        judge_model=collected.judge_model,
+        planned=planned,
+        skipped=skipped,
+        budget=budget,
+        services=services,
+        contexts=contexts,
+        calls=list(by_client.values()),
+    )
+
+
+async def _close(services: dict[TemperatureSetting, JudgeService]) -> None:
+    """Release every client the services minted."""
+    for service in services.values():
+        await service.aclose()
+
+
+async def estimate_judge_temperature_comparison(
+    host: EvalHost,
+    run_id: str,
+    scope_id: str,
+    *,
+    out_of_run_cap_usd: float | None,
+    selection: TemperatureSelection = "borderline",
+    repeats: int = DEFAULT_TEMPERATURE_REPEATS,
+    result_ids: Sequence[str] | None = None,
+) -> JudgeTemperatureEstimate:
+    """Price comparing a run's judge at the two temperatures against the cap it would be held to, and make no call.
+
+    The same collection, selection, calls and admission :func:`judge_temperature_work` makes, so ``would_start``
+    is its answer.
+
+    :param host: The host: the run's store and the judge clients.
+    :ptype host: EvalHost
+    :param run_id: The finished run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param out_of_run_cap_usd: The cap it would be held to; ``None`` when the host enforces none.
+    :ptype out_of_run_cap_usd: float | None
+    :param selection: ``borderline`` (the default) or ``all`` scored dims.
+    :ptype selection: TemperatureSelection
+    :param repeats: Calls per dim per setting, at least :data:`MIN_TEMPERATURE_REPEATS`.
+    :ptype repeats: int
+    :param result_ids: The results to draw from; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :return: The estimate.
+    :rtype: JudgeTemperatureEstimate
+    :raises NotFoundError: No run with that id, or a record it names does not load.
+    :raises ValidationFailedError: The comparison cannot be made (see :func:`judge_temperature_work`).
+    :raises ValueError: The host supplies no completion clients.
+    """
+    prepared = await _prepare(
+        host,
+        run_id,
+        scope_id,
+        out_of_run_cap_usd=out_of_run_cap_usd,
+        result_ids=result_ids,
+        selection=selection,
+        repeats=repeats,
+    )
+    try:
+        for client, _ in prepared.calls:
+            await refresh_prices(client.inner)
+        ceilings = [
+            client.inner.price_ceiling(system=call.system, user=call.user, response_format=call.response_format)
+            for client, calls in prepared.calls
+            for call in calls
+        ]
+        refusal: str | None = None
+        try:
+            for client, calls in prepared.calls:
+                client.admit(calls)
+        except ValidationFailedError as refused:
+            refusal = str(refused)
+    finally:
+        await _close(prepared.services)
+    return JudgeTemperatureEstimate(
+        run_id=prepared.run_id,
+        judge_model=prepared.judge_model,
+        selection=selection,
+        repeats=repeats,
+        results=len(prepared.planned),
+        cases=sum(len(one.dims) for one in prepared.planned),
+        max_calls=len(ceilings),
+        ceiling_usd=None if None in ceilings else math.fsum(c for c in ceilings if c is not None),
+        cap_usd=out_of_run_cap_usd,
+        would_start=refusal is None,
+        refusal=refusal,
+        skipped=prepared.skipped,
+    )
+
+
+class EvalJudgeTemperatureCheck(CoreDocumentModel):
+    """One judge temperature comparison over a finished run: what was asked, how it ended, and every answer.
+
+    Nothing of the comparison is written to the run's results — the forced temperatures are not the run's judge — so
+    this is its one durable record: written as it starts (``running``, carrying the job's lease) and again as it ends,
+    with the :class:`~threetears.evals.kernel.JudgeTemperatureAnswers` once it has run. The reading of the answers
+    (:func:`~threetears.evals.analysis.read_judge_temperatures`) spends nothing and is made from this record whenever
+    it is asked, so a comparison started from a transport is answered by polling its job, in any process.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): it records what nothing stored can make again, so every
+    build reads it, upgraded across core versions and never dropped.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    doc_type: Literal["eval_judge_temperature_check"] = "eval_judge_temperature_check"
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    run_id: str = Field(min_length=1, description="The finished run whose judge is compared at the two temperatures.")
+    selection: TemperatureSelection = Field(description="Which scored dims were re-judged: borderline or all.")
+    repeats: int = Field(ge=MIN_TEMPERATURE_REPEATS, description="Calls per dim at each temperature.")
+    result_ids: list[str] | None = Field(
+        default=None, description="The results the comparison drew from; None for every result of the run."
+    )
+    outcome: JobOutcome = "running"
+    answers: JudgeTemperatureAnswers | None = Field(
+        default=None,
+        description=(
+            "Every answer, per case and setting, with the spend: written as each call returns, so a comparison "
+            "cancelled, timed out or failed part-way keeps every answer it paid for; whole once it has completed."
+        ),
+    )
+    detail: str | None = Field(default=None, description="Why it ended other than completed.")
+    created_at: str = Field(default_factory=utc_now_iso)
+    ended_at: str | None = None
+    lease: LeaseField = None
+    cancel_requested_at: CancelRequestedAtField = None
+    cancel_request_reason: CancelRequestReasonField = None
+    lost: LostField = None
+    faults: FaultsField = Field(default_factory=list)
+    refusal: RefusalField = None
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "eval_judge_temperature_check":
+            raise ValueError(f"doc_type must be 'eval_judge_temperature_check', got '{v}'")
+        return v
+
+
+#: A judge temperature comparison's record.
+JUDGE_TEMPERATURE_JOB: LeasedJobKind[EvalJudgeTemperatureCheck] = leased_job_kind(
+    "judge temperature", EvalJudgeTemperatureCheck
+)
+
+#: A comparison's wall-clock ceiling as a job: generous, since every call is bounded by its client and the comparison
+#: stops on an account refusal; it exists so one whose provider hangs is ended rather than held forever.
+JUDGE_TEMPERATURE_BUDGET_S = 6 * 3600.0
+
+
+async def judge_temperature_work(
+    host: EvalHost,
+    run_id: str,
+    scope_id: str,
+    *,
+    out_of_run_cap_usd: float | None,
+    selection: TemperatureSelection = "borderline",
+    repeats: int = DEFAULT_TEMPERATURE_REPEATS,
+    result_ids: Sequence[str] | None = None,
+) -> JobWork[EvalJudgeTemperatureCheck]:
+    """Admit re-judging a finished run's borderline cases at each temperature — every call priced, none made — as work.
+
+    The call half: the run is collected, selected and refused here, a judge built per setting over budgeted clients,
+    and every call, parse retries included, priced on the client it will be made on and admitted against
+    ``out_of_run_cap_usd``, so a comparison the cap refuses is refused here with nothing spent. The returned work makes
+    the calls — ``repeats`` per dim at each setting, interleaved — and ends its record with every answer. Nothing is
+    written to the results. Run it as a job (:func:`~threetears.evals.run.start_job_work`) or in the foreground
+    (:func:`~threetears.evals.run.run_job_work`), and read the record's answers with
+    :func:`~threetears.evals.analysis.read_judge_temperatures`.
+
+    :param host: The host: the run's store, its judge clients — through the run-pinned resolution the run scored
+        through — and how a judge call that raised reads.
+    :ptype host: EvalHost
+    :param run_id: The finished run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param out_of_run_cap_usd: The most the calls may be priced at together; ``None`` when the host enforces none.
+    :ptype out_of_run_cap_usd: float | None
+    :param selection: ``borderline`` (the default: see :func:`borderline_dims`) or ``all`` scored dims.
+    :ptype selection: TemperatureSelection
+    :param repeats: Calls per dim per setting, at least :data:`~threetears.evals.kernel.MIN_TEMPERATURE_REPEATS`.
+    :ptype repeats: int
+    :param result_ids: The results to draw from; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :return: The admitted work; its record is the comparison.
+    :rtype: JobWork[EvalJudgeTemperatureCheck]
+    :raises NotFoundError: No run with that id, or a record it names does not load.
+    :raises ValidationFailedError: The run is still running; its judging cannot be reproduced; ``result_ids`` names a
+        result outside it; ``repeats`` is under the floor; no result has a dim ``selection`` takes; every score to
+        re-judge records a model that refuses a temperature; or the calls cannot be priced under the enforced cap
+        or are priced above it. All before any call.
+    :raises ValueError: The host supplies no completion clients.
+    """
+    prepared = await _prepare(
+        host,
+        run_id,
+        scope_id,
+        out_of_run_cap_usd=out_of_run_cap_usd,
+        result_ids=result_ids,
+        selection=selection,
+        repeats=repeats,
+    )
+    try:
+        for client, calls in prepared.calls:
+            await refresh_prices(client.inner)
+            client.admit(calls)
+    except BaseException:
+        await _close(prepared.services)
+        raise
+    record = EvalJudgeTemperatureCheck(
+        scope_id=scope_id,
+        run_id=prepared.run_id,
+        selection=selection,
+        repeats=repeats,
+        result_ids=None if result_ids is None else list(result_ids),
+    )
+
+    async def compare(recorder: JobRecorder[EvalJudgeTemperatureCheck]) -> EvalJudgeTemperatureCheck:
+        async def keep(so_far: JudgeTemperatureAnswers) -> None:
+            await recorder.save(recorder.record.model_copy(update={"answers": so_far}))
+
+        answers = await _ask(
+            prepared, selection=selection, repeats=repeats, out_of_run_cap_usd=out_of_run_cap_usd, keep=keep
+        )
+        return end_record(recorder.record, "completed", answers=answers)
+
+    async def discard() -> None:
+        await _close(prepared.services)
+
+    return JobWork(
+        kind=JUDGE_TEMPERATURE_JOB, record=record, run=compare, budget_s=JUDGE_TEMPERATURE_BUDGET_S, discard=discard
+    )
+
+
+async def _ask(
+    prepared: _Prepared,
+    *,
+    selection: TemperatureSelection,
+    repeats: int,
+    out_of_run_cap_usd: float | None,
+    keep: Callable[[JudgeTemperatureAnswers], Awaitable[None]],
+) -> JudgeTemperatureAnswers:
+    """Make an admitted comparison's calls, and gather every answer per case and setting.
+
+    :param prepared: The admitted comparison.
+    :ptype prepared: _Prepared
+    :param selection: Which dims were selected.
+    :ptype selection: TemperatureSelection
+    :param repeats: Calls per dim per setting.
+    :ptype repeats: int
+    :param out_of_run_cap_usd: The cap the calls were admitted under.
+    :ptype out_of_run_cap_usd: float | None
+    :param keep: Records the answers so far, called as each call returns — what makes a comparison stopped part-way
+        keep what it paid for.
+    :ptype keep: Callable[[JudgeTemperatureAnswers], Awaitable[None]]
+    :return: Per case and setting every answer in call order, the case count and the spend.
+    :rtype: JudgeTemperatureAnswers
+    """
+    answered: dict[tuple[str, str, TemperatureSetting], list[JudgeOutcome]] = {}
+    stopped: str | None = None
+    try:
+        for one, context in zip(prepared.planned, prepared.contexts, strict=True):
+            for _ in range(repeats):
+                for setting, _, _ in TEMPERATURE_SETTINGS:
+                    outcomes = await judge_dims(
+                        template=one.inputs.template,
+                        judge_service=prepared.services[setting],
+                        context=context,
+                        only=frozenset(one.dims),
+                    )
+                    for dim, outcome in outcomes:
+                        answered.setdefault((one.result.id, dim, setting), []).append(outcome)
+                    await keep(
+                        _answers(
+                            prepared,
+                            answered,
+                            selection=selection,
+                            repeats=repeats,
+                            stopped=None,
+                            out_of_run_cap_usd=out_of_run_cap_usd,
+                        )
+                    )
+                    if any(outcome.account_refused for _, outcome in outcomes):
+                        stopped = (
+                            f"the account behind the judge refused a call while re-judging result '{one.result.id}', "
+                            "so every later call would be refused too"
+                        )
+                        break
+                if stopped:
+                    break
+            if stopped:
+                break
+    finally:
+        await _close(prepared.services)
+    answers = _answers(
+        prepared,
+        answered,
+        selection=selection,
+        repeats=repeats,
+        stopped=stopped,
+        out_of_run_cap_usd=out_of_run_cap_usd,
+    )
+    log.info(
+        "eval.judge_temperature run=%s cases=%d repeats=%d calls=%d cost=%s",
+        answers.run_id,
+        answers.cases,
+        repeats,
+        answers.calls_made,
+        "unpriced" if answers.cost_usd is None else f"${answers.cost_usd:.6f}",
+    )
+    return answers
+
+
+def _answers(
+    prepared: _Prepared,
+    answered: dict[tuple[str, str, TemperatureSetting], list[JudgeOutcome]],
+    *,
+    selection: TemperatureSelection,
+    repeats: int,
+    stopped: str | None,
+    out_of_run_cap_usd: float | None,
+) -> JudgeTemperatureAnswers:
+    """Every answer gathered so far, per case and setting in call order, with what the calls made so far spent."""
+    cases: list[TemperatureCaseAnswers] = []
+    for one in prepared.planned:
+        for dim in one.dims:
+            stored = one.result.judge_score(dim)
+            assert stored is not None  # only scored dims are planned, from this very result
+            for setting, _, _ in TEMPERATURE_SETTINGS:
+                if (outcomes_of := answered.get((one.result.id, dim, setting))) is None:
+                    continue
+                cases.append(
+                    TemperatureCaseAnswers(
+                        result_id=one.result.id,
+                        rubric_dim=dim,
+                        scale=stored.scale,
+                        stored_score=stored.score,
+                        setting=setting,
+                        answers=[
+                            TemperatureAnswer(
+                                score=outcome.score,
+                                config_id=outcome.config_id,
+                                cannot_tell=outcome.cannot_tell,
+                                error=(outcome.error or "no answer")
+                                if outcome.score is None and outcome.cannot_tell is None
+                                else None,
+                            )
+                            for outcome in outcomes_of
+                        ],
+                    )
+                )
+    spends = [*prepared.budget.recorded, *prepared.budget.unrecorded]
+    costs = [spend.cost_usd for spend in spends]
+    return JudgeTemperatureAnswers(
+        run_id=prepared.run_id,
+        judge_model=prepared.judge_model,
+        selection=selection,
+        repeats=repeats,
+        results=len(prepared.planned),
+        cases=sum(len(one.dims) for one in prepared.planned),
+        answers=cases,
+        skipped=prepared.skipped,
+        stopped=stopped,
+        calls_made=len(spends),
+        cost_usd=None if None in costs else math.fsum(c for c in costs if c is not None),
+        cap_usd=out_of_run_cap_usd,
+    )
+
+
+__all__ = [
+    "JUDGE_TEMPERATURE_BUDGET_S",
+    "JUDGE_TEMPERATURE_JOB",
+    "EvalJudgeTemperatureCheck",
+    "JudgeTemperatureEstimate",
+    "borderline_dims",
+    "estimate_judge_temperature_comparison",
+    "judge_temperature_work",
+]

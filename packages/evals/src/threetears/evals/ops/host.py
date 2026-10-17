@@ -1,0 +1,150 @@
+"""What the operations run over: a launching host, and how it generates an analysis in the background.
+
+Every operation that reads takes the :class:`~threetears.evals.kernel.host.EvalHost`; every one that
+starts long work — a launch, an analysis generation — needs the process's job manager too, which the
+:class:`~threetears.evals.run.LaunchHost` builds. :class:`OpsHost` is the two together with the
+things neither carries: what a background generation is told (its prompt, its output cap and its
+wall-clock budget) — the host's configuration and never the engine's guess. How many cases a launch
+would run is its kinds' answer (``LaunchableKind.plan_arm``), which a launch estimate asks as the launch does.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.job_timeout import default_job_timeout
+from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
+from threetears.evals.run.definition_seed import SeedCorpus
+from threetears.evals.run.launch import LaunchHost, LaunchSettings
+from threetears.evals.schema import EvalRun, WorldPlacement
+
+
+def _reading_settings() -> LaunchSettings:
+    """The settings of a host that launches nothing (:meth:`OpsHost.reading`), built fresh on every read.
+
+    One run at a time, uncapped, no metered tools. Read only by the launch and the out-of-run cap, and a reading
+    host has no kind to launch. Built per call rather than held at module level, so no two hosts share an instance.
+
+    :return: The settings.
+    :rtype: LaunchSettings
+    """
+    return LaunchSettings(
+        max_launch_arms=1,
+        max_admitted_runs=1,
+        judge_concurrency=1,
+        enforcement_enabled=False,
+        max_cost_usd=1.0,
+        max_metered_calls=None,
+        max_out_of_run_cost_usd=1.0,
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class AnalysisGeneration:
+    """How this host generates an analysis as a background job.
+
+    :ivar prompt_id: The registry key the generator prompt resolves under, recorded on every analysis as
+        its provenance; :data:`~threetears.evals.kernel.ANALYSIS_GEN_PROMPT` unless the host names its own.
+    :ivar resolve_prompt: The host's override of the generator prompt, awaited once a generation's bundle has
+        evidence; ``None`` (the default) runs the shipped default,
+        :data:`~threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT`.
+    :ivar max_output_tokens: The output cap the host's generator clients are built with, for the
+        pre-spend disclosure.
+    :ivar budget_s: The job's wall-clock ceiling on its generator calls; a generation that outruns it is recorded
+        ``timed_out``. Derive it ABOVE the generation's own ceiling
+        (``Ceilings().generation_ceiling_s`` of :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for
+        one request on its client): a budget below it cancels a repair round-trip still writing inside
+        its cap, after both calls were billed.
+    """
+
+    prompt_id: str = ANALYSIS_GEN_PROMPT
+    resolve_prompt: Callable[[], Awaitable[str]] | None = None
+    max_output_tokens: int
+    budget_s: float
+
+    async def prompt(self) -> str:
+        """The generator prompt a generation runs: the host's override when it registered one, else the shipped default.
+
+        :return: The prompt text.
+        :rtype: str
+        """
+        if self.resolve_prompt is None:
+            return EVAL_ANALYSIS_GEN_DEFAULT
+        return await self.resolve_prompt()
+
+    def __post_init__(self) -> None:
+        """Refuse an empty prompt id, and a cap or budget that is not positive.
+
+        :raises ValueError: ``prompt_id`` is blank, or ``max_output_tokens`` or ``budget_s`` is not positive.
+        """
+        if not self.prompt_id.strip():
+            raise ValueError("AnalysisGeneration.prompt_id is blank; name the registry key the prompt resolves under")
+        if self.max_output_tokens <= 0:
+            raise ValueError(f"AnalysisGeneration.max_output_tokens must be positive; got {self.max_output_tokens}")
+        if self.budget_s <= 0:
+            raise ValueError(f"AnalysisGeneration.budget_s must be positive; got {self.budget_s}")
+
+
+def _placed_nowhere(run: EvalRun) -> dict[str, WorldPlacement]:
+    """No placement: a reading host's world is declared for its runs' reads, and it launches none to place."""
+    return {}
+
+
+@dataclass(frozen=True, kw_only=True)
+class OpsHost:
+    """The host the operations, and the actions over them, work in.
+
+    :ivar launch: The launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, its kinds and
+        the job manager every long-running operation is tracked by.
+    :ivar generation: How an analysis is generated in the background; ``None`` for a host that does not
+        generate analyses here, whose generation start is refused saying so.
+    :ivar seed_corpus: The host's seed corpus for a scope (``load_seed_corpus(its directory, scope_id)``), which a case
+        rename reads so a rename never changes how definition drift finds the case; ``None`` for a host that
+        seeds no template cases.
+    """
+
+    launch: LaunchHost
+    generation: AnalysisGeneration | None = None
+    seed_corpus: Callable[[str], SeedCorpus] | None = None
+
+    @classmethod
+    def reading(cls, eval_host: EvalHost) -> OpsHost:
+        """The host an eval host's runs are read through, and nothing launched: what serving ``as_host(...)`` needs.
+
+        Its launching host declares no kind, so a launch is refused by name, and it generates no analysis. Every read
+        (templates, runs, campaigns, reports, gates) works over ``eval_host``'s storage.
+
+        :param eval_host: The host whose runs are read, as :func:`~threetears.evals.quick.as_host` builds one.
+        :ptype eval_host: EvalHost
+        :return: The host.
+        :rtype: OpsHost
+        """
+        launch = LaunchHost(
+            eval_host=eval_host,
+            kinds={},
+            settings=_reading_settings,
+            job_timeout_factory=default_job_timeout,
+            # A world's placement is stamped on a launched run, and nothing launches here.
+            world_placements=None if eval_host.profile.world is None else _placed_nowhere,
+        )
+        return cls(launch=launch)
+
+    @property
+    def eval_host(self) -> EvalHost:
+        """The host every read goes through — the launching host's own."""
+        return self.launch.eval_host
+
+    def out_of_run_cap(self) -> float | None:
+        """The cap a call made outside any run is held to: the host's out-of-run cap, read once, or ``None`` with enforcement off.
+
+        One reading for every out-of-run operation — an analysis generation and a judge repeat — so the two
+        cannot hold their calls to different ceilings.
+        """
+        settings = self.launch.settings()
+        return settings.max_out_of_run_cost_usd if settings.enforcement_enabled else None
+
+
+__all__ = ["AnalysisGeneration", "OpsHost"]

@@ -125,7 +125,8 @@ jobs:
 
       - name: Test (unit + enforcement; integration runs in its own job below)
         if: steps.scope.outputs.needed == 'true'
-        run: uv run pytest packages/ tests/ -m "not integration" -v
+        # four workers, one package per worker, as ./scripts/test.sh runs it locally
+        run: uv run pytest packages/ tests/ -m "not integration" -n 4 --dist loadgroup -v
 
       # The step above only ever sees the OpenTelemetry uv.lock pins, which is always recent, so a
       # declared floor can fall behind the code with everything green. It did: observe imported a
