@@ -104,6 +104,12 @@ Host contract change: `TemplateChecks` gains a required field.
   name is never overwritten, a name another live case of the revision carries is not given twice, and only `name` is
   written (conditionally), so the case keeps its id, `content_hash` and `seed_digest`. A host's own fill-only naming
   pass after the seed can be dropped.
+- **A name fill that does not land says why.** It was dropped with nothing counted or logged. Now
+  `SeedOutcome.name_fill_failed` (new, `dict[str, dict[str, str]]`) maps each case whose fill the store refused to the
+  store's reason, logged at WARNING, and `SeedOutcome.name_fill_contended` (new, `dict[str, list[str]]`) lists each
+  whose conditional write lost to another writer, logged at INFO; both keyed `<template>/<name>` under
+  `template_case`, counted by `total_name_fill_failed` and `total_name_fill_contended`, and worded by `summary()`. The
+  case stays nameless and the next boot tries again.
 
 ### 3tears-evals: a template whose every revision is archived is absent to the seed
 

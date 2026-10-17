@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -43,7 +44,14 @@ import pytest
 from threetears.evals.actions import Caller, definition_drift_actions, eval_catalogue, standard_tools
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.campaigns import add_runs_to_campaign, create_campaign
-from threetears.evals.kernel import JUDGE_KIND, ConflictError, EvalStorage, RefusedInput, ValidationFailedError
+from threetears.evals.kernel import (
+    JUDGE_KIND,
+    ConflictError,
+    EvalStorage,
+    RefusedInput,
+    StorageError,
+    ValidationFailedError,
+)
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.host import TemplateChecks
 from threetears.evals.ops import OpsHost, case_rename, templates_list
@@ -1208,6 +1216,64 @@ def test_the_seed_never_overwrites_a_stored_name_with_the_corpus_s() -> None:
 
     assert not boot.named
     assert _cases_on(storage, _subject(storage))[0].name == "double-charge"
+
+
+class _NameRefusingStorage(EvalStorage):
+    """A store that refuses every conditional test-case write, as a store down for writes refuses the name fill."""
+
+    def save_test_case(self, test_case: EvalTestCase, *, if_match: str | None = None) -> None:
+        if if_match is not None:
+            raise StorageError("the document store is read-only for maintenance")
+        super().save_test_case(test_case, if_match=if_match)
+
+
+class _ContendedStorage(EvalStorage):
+    """A store where another writer writes each test case just after the seed reads it with its token."""
+
+    def load_test_case_with_etag(self, test_case_id: str, scope_id: str) -> tuple[EvalTestCase | None, str | None]:
+        current, etag = super().load_test_case_with_etag(test_case_id, scope_id)
+        if current is not None:
+            super().save_test_case(current)
+        return current, etag
+
+
+def test_a_name_fill_the_store_refuses_is_recorded_with_its_reason_and_logged_and_the_next_boot_fills_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    storage, store = memory_storage()
+    _store_nameless(storage, "a")
+    corpus = _own_corpus(_own("a"))
+    key = f"{SUBJECT}/a"
+
+    with caplog.at_level(logging.WARNING, logger="threetears.evals.run.definition_seed"):
+        refused = _boot(_NameRefusingStorage(store), corpus)
+
+    assert refused.name_fill_failed == {"template_case": {key: "the document store is read-only for maintenance"}}
+    assert refused.total_name_fill_failed == 1 and not refused.named and not refused.name_fill_contended
+    assert f"1 NAMELESS, NAMING REFUSED BY STORAGE ({key}: the document store is read-only" in refused.summary()
+    assert any(
+        r.levelno == logging.WARNING and key in r.getMessage() and "read-only for maintenance" in r.getMessage()
+        for r in caplog.records
+    ), "the refusal is logged at WARNING with the store's reason"
+    assert _cases_on(storage, _subject(storage))[0].name is None, "the case stays nameless"
+
+    assert _boot(storage, corpus).named == {"template_case": [key]}, "the next boot fills it"
+
+
+def test_a_name_fill_lost_to_another_writer_is_recorded_as_contended_and_the_next_boot_fills_it() -> None:
+    storage, store = memory_storage()
+    _store_nameless(storage, "a")
+    corpus = _own_corpus(_own("a"))
+    key = f"{SUBJECT}/a"
+
+    contended = _boot(_ContendedStorage(store), corpus)
+
+    assert contended.name_fill_contended == {"template_case": [key]}
+    assert contended.total_name_fill_contended == 1 and not contended.named and not contended.name_fill_failed
+    assert f"1 nameless, naming lost to another writer, retried next boot ({key})" in contended.summary()
+    assert _cases_on(storage, _subject(storage))[0].name is None, "the other writer's write is not undone"
+
+    assert _boot(storage, corpus).named == {"template_case": [key]}, "the next boot fills it"
 
 
 def _refusing_cases(*, refuse: str) -> Any:
