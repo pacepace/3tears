@@ -1,20 +1,357 @@
-"""ComfyUI image generation provider using httpx with workflow submission and polling."""
+"""ComfyUI: a client for its HTTP API, and an image generation provider built on it.
+
+:class:`ComfyUIClient` is one ComfyUI server's API for a caller that brings its own graph (a
+workflow in ComfyUI's API format): put input pictures in its input folder, queue the graph, wait
+for it, read its pictures back, and ask how busy the server is. Reads are retried with backoff
+when the server is unreachable, times out or answers 5xx; queueing a graph and uploading a
+picture are retried only when the request never left (a refused connection), so a slow answer
+never queues the same graph twice. A graph ComfyUI rejects or fails raises :class:`ComfyUIError`
+with ComfyUI's own messages.
+
+:class:`ComfyUIImageProvider` is the ``ImageGenerationBackend`` over a built-in txt2img graph.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
+import json
 import secrets
+import time
+from collections.abc import Awaitable, Callable, Mapping
+from types import TracebackType
 from typing import Any
 
 import httpx
 
 from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
+from threetears.models.providers.image import http_retry
+from threetears.models.providers.image.http_retry import RetryPolicy
 from threetears.models.providers.image.options import dimensions_for, result_metadata
 
 __all__ = [
+    "ComfyUIClient",
+    "ComfyUIError",
     "ComfyUIImageProvider",
 ]
+
+#: the most of ComfyUI's error text kept on a :class:`ComfyUIError`
+_MAX_ERROR_TEXT = 2000
+
+
+class ComfyUIError(RuntimeError):
+    """ComfyUI refused a request or a graph failed.
+
+    :param message: what went wrong, with ComfyUI's own words when it gave any
+    :ptype message: str
+    :param status_code: the HTTP status, when the server answered one; ``None`` for a graph that
+        was queued and then failed
+    :ptype status_code: int | None
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        """record the message and the status.
+
+        :param message: what went wrong
+        :ptype message: str
+        :param status_code: the HTTP status, if any
+        :ptype status_code: int | None
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ComfyUIClient:
+    """one ComfyUI server's HTTP API, open for the length of an ``async with`` block.
+
+    :param base_url: the server's address (``http://host:8188``), or any prefix that proxies its
+        API (SwarmUI's ``.../ComfyBackendDirect``)
+    :ptype base_url: str
+    :param timeout: seconds each request may take
+    :ptype timeout: float
+    :param poll_interval: seconds between looks at a queued graph's history
+    :ptype poll_interval: float
+    :param retry: sends per request and the pauses between them; ``None`` is three sends
+    :ptype retry: RetryPolicy | None
+    :param client_id: the ``client_id`` sent with each queued graph (ComfyUI's per-client channel);
+        ``None`` sends none
+    :ptype client_id: str | None
+    :param transport: an httpx transport (a test's ``httpx.MockTransport``); ``None`` is the network
+    :ptype transport: httpx.AsyncBaseTransport | None
+    :param sleep: how the pause between looks at a queued graph is taken; ``None`` is ``asyncio.sleep``
+    :ptype sleep: Callable[[float], Awaitable[None]] | None
+    :param clock: a monotonic clock for waits; ``None`` is ``time.monotonic``
+    :ptype clock: Callable[[], float] | None
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 2.0,
+        retry: RetryPolicy | None = None,
+        client_id: str | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        """capture the settings; the connection opens on ``async with``.
+
+        :param base_url: the server's address
+        :ptype base_url: str
+        :param timeout: seconds each request may take
+        :ptype timeout: float
+        :param poll_interval: seconds between looks at a queued graph
+        :ptype poll_interval: float
+        :param retry: sends per request and pauses, or ``None``
+        :ptype retry: RetryPolicy | None
+        :param client_id: sent with each queued graph, or ``None``
+        :ptype client_id: str | None
+        :param transport: an httpx transport, or ``None``
+        :ptype transport: httpx.AsyncBaseTransport | None
+        :param sleep: how a pause between looks is taken, or ``None``
+        :ptype sleep: Callable[[float], Awaitable[None]] | None
+        :param clock: a monotonic clock, or ``None``
+        :ptype clock: Callable[[], float] | None
+        :return: nothing
+        :rtype: None
+        """
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.poll_interval = poll_interval
+        self.client_id = client_id
+        self._retry = retry or RetryPolicy()
+        self._transport = transport
+        self._sleep = sleep
+        self._clock = clock or time.monotonic
+        self._stack: contextlib.AsyncExitStack | None = None
+        self._http: httpx.AsyncClient | None = None
+
+    async def __aenter__(self) -> ComfyUIClient:
+        """open the connection.
+
+        :return: self
+        :rtype: ComfyUIClient
+        """
+        stack = contextlib.AsyncExitStack()
+        self._http = await stack.enter_async_context(httpx.AsyncClient(timeout=self.timeout, transport=self._transport))
+        self._stack = stack
+        return self
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        """close the connection.
+
+        :param exc_type: the exception's type, if the block raised
+        :ptype exc_type: type[BaseException] | None
+        :param exc: the exception, if the block raised
+        :ptype exc: BaseException | None
+        :param tb: its traceback
+        :ptype tb: TracebackType | None
+        :return: nothing
+        :rtype: None
+        """
+        stack, self._stack, self._http = self._stack, None, None
+        if stack is not None:
+            await stack.aclose()
+
+    # --- requests ------------------------------------------------------------------------------
+
+    async def _send(
+        self, method: str, path: str, *, repeatable: bool, timeout: float | None = None, **kwargs: Any
+    ) -> httpx.Response:
+        """one request, sent again as far as is safe (``http_retry.send``); a 4xx or 5xx raises.
+
+        :param method: ``GET`` or ``POST``
+        :ptype method: str
+        :param path: the path under ``base_url``
+        :ptype path: str
+        :param repeatable: True when running it twice changes nothing (a read)
+        :ptype repeatable: bool
+        :param timeout: this request's timeout in seconds; ``None`` is the client's
+        :ptype timeout: float | None
+        :param kwargs: what httpx's ``get``/``post`` take (``json``, ``params``, ``files``)
+        :ptype kwargs: Any
+        :return: the answer (2xx or 3xx)
+        :rtype: httpx.Response
+        :raises RuntimeError: when used outside ``async with``
+        :raises ComfyUIError: when the server refuses (4xx), or fails (5xx) past what may be retried
+        :raises httpx.TransportError: when the server can't be reached past the attempts
+        """
+        if self._http is None:
+            raise RuntimeError("ComfyUIClient is used inside `async with` only")
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        response = await http_retry.send(
+            self._http, method, f"{self.base_url}{path}", repeatable=repeatable, policy=self._retry, **kwargs
+        )
+        if response.status_code >= 400:
+            raise ComfyUIError(
+                f"ComfyUI {method} {path} answered {response.status_code}: {_text(response)}",
+                status_code=response.status_code,
+            )
+        return response
+
+    async def queue(self, graph: Mapping[str, Any]) -> str:
+        """queue a graph (ComfyUI's API format). Returns its prompt id.
+
+        :param graph: the graph, node id -> ``{"class_type", "inputs"}``
+        :ptype graph: Mapping[str, Any]
+        :return: the prompt id ComfyUI gave it
+        :rtype: str
+        :raises ComfyUIError: when ComfyUI rejects the graph (its node errors are in the message)
+        """
+        body_out: dict[str, Any] = {"prompt": graph}
+        if self.client_id is not None:
+            body_out["client_id"] = self.client_id
+        response = await self._send("POST", "/prompt", repeatable=False, json=body_out)
+        body = response.json()
+        if body.get("node_errors"):
+            raise ComfyUIError(f"ComfyUI rejected the graph: {_short(body['node_errors'])}")
+        return str(body["prompt_id"])
+
+    async def history(self, prompt_id: str) -> dict[str, Any] | None:
+        """a queued graph's history entry, or ``None`` while it hasn't finished.
+
+        :param prompt_id: the graph's prompt id
+        :ptype prompt_id: str
+        :return: its entry (``outputs``, ``status``), or None
+        :rtype: dict[str, Any] | None
+        """
+        response = await self._send("GET", f"/history/{prompt_id}", repeatable=True)
+        entry = response.json().get(prompt_id)
+        return entry if isinstance(entry, dict) else None
+
+    async def wait(
+        self, prompt_id: str, *, max_wait_seconds: float | None = None, max_polls: int | None = None
+    ) -> dict[str, Any]:
+        """wait for a queued graph to finish. Returns its history entry.
+
+        :param prompt_id: the graph's prompt id
+        :ptype prompt_id: str
+        :param max_wait_seconds: how long to wait; ``None`` with no ``max_polls`` waits ten minutes
+        :ptype max_wait_seconds: float | None
+        :param max_polls: how many looks to take at most
+        :ptype max_polls: int | None
+        :return: the history entry
+        :rtype: dict[str, Any]
+        :raises ComfyUIError: when the graph failed (ComfyUI's messages in the text)
+        :raises TimeoutError: when it hadn't finished within the bound
+        """
+        if max_wait_seconds is None and max_polls is None:
+            max_wait_seconds = 600.0
+        until = None if max_wait_seconds is None else self._clock() + max_wait_seconds
+        polls = 0
+        while True:
+            await (self._sleep or asyncio.sleep)(self.poll_interval)
+            polls += 1
+            entry = await self.history(prompt_id)
+            if entry is not None:
+                status = entry.get("status") or {}
+                if status.get("status_str") == "error":
+                    raise ComfyUIError(f"ComfyUI graph {prompt_id} failed: {_short(status.get('messages', []))}")
+                return entry
+            if (max_polls is not None and polls >= max_polls) or (until is not None and self._clock() >= until):
+                raise TimeoutError(f"ComfyUI graph {prompt_id} did not finish (after {polls} looks)")
+
+    @staticmethod
+    def images(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """the pictures a finished graph saved, in node order: ``{"filename", "subfolder", "type"}``.
+
+        :param entry: a history entry (``wait``'s answer)
+        :ptype entry: Mapping[str, Any]
+        :return: the pictures
+        :rtype: list[dict[str, Any]]
+        """
+        outputs = entry.get("outputs") or {}
+        return [dict(im) for node in outputs.values() for im in (node.get("images") or [])]
+
+    async def view(self, image: Mapping[str, Any]) -> bytes:
+        """one saved picture's bytes.
+
+        :param image: one of ``images``' entries (a bare ``{"filename"}`` reads the output folder)
+        :ptype image: Mapping[str, Any]
+        :return: the picture
+        :rtype: bytes
+        """
+        params = {"filename": image["filename"]}
+        for key in ("subfolder", "type"):
+            if image.get(key):
+                params[key] = image[key]
+        return (await self._send("GET", "/view", repeatable=True, params=params)).content
+
+    async def run(self, graph: Mapping[str, Any], *, max_wait_seconds: float | None = None) -> list[dict[str, Any]]:
+        """queue a graph, wait for it, and return the pictures it saved (``images``).
+
+        :param graph: the graph
+        :ptype graph: Mapping[str, Any]
+        :param max_wait_seconds: how long to wait for it
+        :ptype max_wait_seconds: float | None
+        :return: the pictures
+        :rtype: list[dict[str, Any]]
+        """
+        prompt_id = await self.queue(graph)
+        return self.images(await self.wait(prompt_id, max_wait_seconds=max_wait_seconds))
+
+    async def upload_image(self, data: bytes, filename: str, *, content_type: str = "image/png") -> str:
+        """put a picture in the server's input folder (for a ``LoadImage`` node). Returns its name there.
+
+        :param data: the picture
+        :ptype data: bytes
+        :param filename: its name; ComfyUI may give it another when the name is taken
+        :ptype filename: str
+        :param content_type: its media type
+        :ptype content_type: str
+        :return: the name a ``LoadImage`` node reads it by
+        :rtype: str
+        """
+        response = await self._send(
+            "POST", "/upload/image", repeatable=False, files={"image": (filename, data, content_type)}
+        )
+        body = response.json()
+        sub = body.get("subfolder") or ""
+        return f"{sub}/{body['name']}" if sub else str(body["name"])
+
+    async def queue_depth(self, *, timeout: float | None = None) -> int:
+        """how many graphs are running or waiting on the server.
+
+        :param timeout: this request's timeout; ``None`` is the client's
+        :ptype timeout: float | None
+        :return: running plus pending
+        :rtype: int
+        """
+        body = (await self._send("GET", "/queue", repeatable=True, timeout=timeout)).json()
+        return len(body.get("queue_running") or []) + len(body.get("queue_pending") or [])
+
+
+def _text(response: httpx.Response) -> str:
+    """the start of an error answer's body, for a message.
+
+    :param response: the answer
+    :ptype response: httpx.Response
+    :return: its text, cut short
+    :rtype: str
+    """
+    try:
+        return response.text[:_MAX_ERROR_TEXT]
+    except UnicodeDecodeError, AttributeError:
+        return "(no readable body)"
+
+
+def _short(value: Any) -> str:
+    """ComfyUI's error structure as text, cut short.
+
+    :param value: the structure
+    :ptype value: Any
+    :return: its JSON, cut short
+    :rtype: str
+    """
+    return json.dumps(value, default=str)[:_MAX_ERROR_TEXT]
 
 
 # minimal default txt2img workflow for ComfyUI
@@ -93,11 +430,12 @@ _DRAWN_SEEDS = 2**32
 
 
 class ComfyUIImageProvider:
-    """image generation provider for ComfyUI API via httpx.
+    """image generation provider for ComfyUI API, over :class:`ComfyUIClient`.
 
-    submits workflow to ComfyUI prompt endpoint and polls history
-    for completion. extracts output image filename and fetches
-    generated image data. typically self-hosted without authentication.
+    submits the built-in txt2img workflow, polls history for completion and
+    fetches the generated image. typically self-hosted without authentication.
+    a server that can't be reached, or that answers 5xx, is tried again on
+    reads; the workflow itself is sent again only when it never left.
 
     every image gets its own seed (the one asked for, else a new one), so the
     same prompt does not make the same picture each time; the seed used comes
@@ -166,7 +504,7 @@ class ComfyUIImageProvider:
         :rtype: GeneratedImage
         :raises ValueError: when the size or aspect cannot be read, or the size is too large
         :raises TimeoutError: if max poll attempts exceeded
-        :raises httpx.HTTPStatusError: if API returns error status code
+        :raises ComfyUIError: if ComfyUI refuses the workflow or it fails
         """
         effective_prompt = prompt
         if style is not None:
@@ -187,24 +525,15 @@ class ComfyUIImageProvider:
 
         workflow = _build_workflow(effective_prompt, width=width, height=height, seed=used_seed)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            submit_response = await client.post(
-                f"{self.base_url}/prompt",
-                json={"prompt": workflow},
-            )
-            submit_response.raise_for_status()
-
-            prompt_id = submit_response.json()["prompt_id"]
-            filename = await self._poll_for_result(client, prompt_id)
-
-            image_response = await client.get(
-                f"{self.base_url}/view",
-                params={"filename": filename},
-            )
-            image_response.raise_for_status()
+        async with ComfyUIClient(self.base_url, timeout=self.timeout, poll_interval=self._poll_interval) as comfy:
+            prompt_id = await comfy.queue(workflow)
+            pictures = ComfyUIClient.images(await comfy.wait(prompt_id, max_polls=self._max_polls))
+            if not pictures:
+                raise ComfyUIError(f"ComfyUI graph {prompt_id} finished without a picture")
+            data = await comfy.view({"filename": pictures[0]["filename"]})
 
         result = GeneratedImage(
-            data=image_response.content,
+            data=data,
             mime_type="image/png",
             width=width,
             height=height,
@@ -218,39 +547,6 @@ class ComfyUIImageProvider:
             ),
         )
         return result
-
-    async def _poll_for_result(
-        self,
-        client: httpx.AsyncClient,
-        prompt_id: str,
-    ) -> str:
-        """polls ComfyUI history endpoint until result is available.
-
-        :param client: httpx async client
-        :ptype client: httpx.AsyncClient
-        :param prompt_id: prompt ID from submission response
-        :ptype prompt_id: str
-        :return: output image filename
-        :rtype: str
-        :raises TimeoutError: if max poll attempts exceeded
-        """
-        for _ in range(self._max_polls):
-            await asyncio.sleep(self._poll_interval)
-
-            history_response = await client.get(
-                f"{self.base_url}/history/{prompt_id}",
-            )
-            history_response.raise_for_status()
-
-            history_data = history_response.json()
-            if prompt_id in history_data:
-                outputs = history_data[prompt_id].get("outputs", {})
-                for node_output in outputs.values():
-                    images = node_output.get("images", [])
-                    if images:
-                        return str(images[0]["filename"])
-
-        raise TimeoutError(f"ComfyUI generation did not complete after {self._max_polls} polls")
 
 
 def _build_workflow(prompt_text: str, *, width: int, height: int, seed: int) -> dict[str, Any]:

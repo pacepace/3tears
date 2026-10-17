@@ -127,6 +127,11 @@ class UpstreamHttpError(RuntimeError):
         self.body = body
 
 
+#: transport failures that mean the request never reached the upstream: safe to send again even
+#: when sending it twice would not be (``idempotent=False``)
+_NOT_SENT: tuple[type[Exception], ...] = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
 class _Retryable(Exception):
     """private signal that an attempt failed in a retryable way.
 
@@ -308,6 +313,7 @@ class TracedHttpClient:
         json: Any = None,
         timeout: float | None = None,
         follow_redirects: bool | None = None,
+        idempotent: bool = True,
     ) -> httpx.Response:
         """perform one upstream request with tracing, retry, and breaking.
 
@@ -346,6 +352,13 @@ class TracedHttpClient:
         :param follow_redirects: per-call override of the client's redirect
             policy; ``None`` uses the client-level default
         :ptype follow_redirects: bool | None
+        :param idempotent: whether sending the request twice is harmless. ``False``
+            (a POST that starts work, takes a payment, queues a job) is sent again
+            only when it never left -- a refused connection, a connect or pool
+            timeout -- because a read timeout, a dropped connection or a 5xx may
+            mean the upstream acted on it; any of those ends the call at once with
+            :class:`UpstreamHttpError`. ``True`` (the default) retries as above
+        :ptype idempotent: bool
         :return: full upstream response (caller inspects any non-2xx; not
             raised on 4xx/5xx except retry exhaustion). carries the attempt
             count under :data:`ATTEMPTS_EXTENSION` in ``extensions``
@@ -368,9 +381,11 @@ class TracedHttpClient:
         # status-less UpstreamHttpError that cannot say whether the upstream timed out or
         # refused the connection -- two failures that call for different operator action.
         transport_error: BaseException | None = None
+        # set when a request that must not run twice failed after it left: no further attempt
+        stopped = False
 
         async def _attempt_once() -> None:
-            nonlocal captured, attempts, transport_error
+            nonlocal captured, attempts, transport_error, stopped
             attempts += 1
             try:
                 response = await self._client.request(
@@ -393,11 +408,17 @@ class TracedHttpClient:
                 transport_error = exc
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
+                if not idempotent and not isinstance(exc, _NOT_SENT):
+                    stopped = True
+                    return
                 raise
             captured = response
             if response.status_code >= 500:
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
+                if not idempotent:
+                    stopped = True
+                    return
                 raise _Retryable
             if response.status_code < 400 and self._circuit_breaker is not None:
                 # 2xx/3xx is a genuine upstream success; a 4xx client error
@@ -421,12 +442,12 @@ class TracedHttpClient:
             host=request_host,
         )
 
-        if not succeeded or captured is None:
+        if stopped or not succeeded or captured is None:
             status = captured.status_code if captured is not None else None
             body = captured.content if captured is not None else b""
             raise UpstreamHttpError(
                 f"upstream request to {self._host or request_host or 'the upstream'} "
-                f"failed after {self._max_attempts} attempts",
+                f"failed after {attempts} attempt{'s' if attempts != 1 else ''}",
                 status_code=status,
                 body=body,
             ) from transport_error
@@ -510,6 +531,7 @@ class TracedHttpClient:
         json: Any = None,
         timeout: float | None = None,
         follow_redirects: bool | None = None,
+        idempotent: bool = True,
     ) -> httpx.Response:
         """POST ``path`` (delegates to :meth:`request`).
 
@@ -531,6 +553,8 @@ class TracedHttpClient:
         :param follow_redirects: per-call redirect-policy override; None uses
             the client-level default
         :ptype follow_redirects: bool | None
+        :param idempotent: whether sending it twice is harmless (see :meth:`request`)
+        :ptype idempotent: bool
         :return: full upstream response
         :rtype: httpx.Response
         """
@@ -544,6 +568,7 @@ class TracedHttpClient:
             json=json,
             timeout=timeout,
             follow_redirects=follow_redirects,
+            idempotent=idempotent,
         )
 
     @asynccontextmanager

@@ -56,6 +56,30 @@ import 3tears are not scanned (`scope_import_roots`), and a command line goes in
 `threetears.core.tracing` are `threetears.observe`, and the context it described (three contextvars,
 `correlation_id`, `session_id`, `conversation_id`) is one context set with `set_context(**tags)`.
 
+### A self-hosted image server's API, retried as far as it is safe to
+
+samhla (a consumer) drives ComfyUI and SwarmUI with its own graphs and parameters, and had written
+the same raw urllib client five times: no retries, and nothing to stop a slow answer from queueing a
+picture twice. The stock `ComfyUIImageProvider` only ran its built-in graph.
+
+**Added (models):** `threetears.models.providers.image.ComfyUIClient` (`queue(graph)`, `wait`,
+`run`, `images`, `view`, `upload_image`, `queue_depth`; `ComfyUIError` with ComfyUI's own messages
+for a rejected or failed graph) and `SwarmUIClient` (`generate(params)`, `call`, `list_backends`,
+`toggle_backend`, `reconnect_backend`, `refresh_models`, `comfy()` for its ComfyUI proxy;
+`SwarmUIError` for the refusals SwarmUI answers with HTTP 200 and an `error` body). Both take a
+`RetryPolicy`: a read is sent again when the server can't be reached, times out or answers 5xx; a
+request that starts work (queue a graph, draw a picture, upload) only when it never left. SwarmUI's
+expired session, a model added since its last scan (one rescan) and a pinned backend still
+connecting (bounded waits) are handled where they happen.
+
+**Added (core):** `TracedHttpClient.request(..., idempotent=False)` (and `post`): a request that
+must not run twice is sent again only after a refused connection or a connect or pool timeout; a
+read timeout, a dropped connection or a 5xx ends it at once with `UpstreamHttpError`. The default
+(`True`) retries exactly as before.
+
+**Changed (models):** `ComfyUIImageProvider` runs on `ComfyUIClient`: the same request, now retried
+on reads; a rejected or failed graph raises `ComfyUIError` instead of an httpx status error.
+
 ## v0.70.0 -- 2026-10-16
 
 ### models: a subscription reply says why it stopped and who served it; an OpenRouter reasoning budget reaches the wire
