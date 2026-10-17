@@ -18,6 +18,7 @@ from threetears.git_store import (
     GitDurableStore,
     GitRepo,
     GitRepoConfig,
+    GitStoreError,
     RowChange,
 )
 
@@ -227,3 +228,34 @@ async def test_trailers_must_be_single_lines(make_repo: Any) -> None:
         await repo.commit([Change("keepers", key("1"), keeper("1"))], "x", trailers={"Op-Seq": "1\n2"})
     with pytest.raises(ValueError):
         await repo.commit([Change("keepers", key("1"), keeper("1"))], "   ")
+
+
+@pytest.mark.parametrize("made", [True, False], ids=["existing folder", "folder not made yet"])
+async def test_a_work_tree_inside_another_repo_is_refused(
+    make_repo: Any, git_cli: Any, tmp_path: Path, made: bool
+) -> None:
+    # found adopting it in samhla: its characters folder sits inside its code checkout, and a store opened there
+    # committed into the code repository (--is-inside-work-tree is "true" for any folder of a checkout)
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    git_cli(outer, "init", "-q", "-b", "main")
+    (outer / "README").write_text("code\n")
+    git_cli(outer, "add", "README")
+    git_cli(outer, "commit", "-q", "-m", "code")
+    if made:
+        (outer / "chars").mkdir()
+    with pytest.raises(GitStoreError, match="is inside the git repo"):
+        await make_repo(work_tree=outer / "chars")
+    log = subprocess.run(["git", "-C", str(outer), "log", "--oneline"], capture_output=True, text=True, check=True)
+    assert len(log.stdout.splitlines()) == 1  # nothing landed in the outer repository
+
+
+async def test_a_repo_of_its_own_inside_another_is_used(make_repo: Any, git_cli: Any, tmp_path: Path) -> None:
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    git_cli(outer, "init", "-q", "-b", "main")
+    inner = outer / "data"
+    inner.mkdir()
+    git_cli(inner, "init", "-q", "-b", "main")  # nested, but its own root: fine
+    repo = await make_repo(work_tree=inner)
+    assert repo.git.exists()

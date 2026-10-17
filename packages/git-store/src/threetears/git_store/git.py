@@ -277,18 +277,44 @@ class Git:
 
     # ------------------------------------------------------------------ the repository itself
 
-    def exists(self) -> bool:
-        """whether the working tree is a usable git checkout.
+    def toplevel(self) -> Path | None:
+        """the root of the git repository the working tree is in: itself, or one it sits inside.
 
-        :return: ``True`` when ``git rev-parse --is-inside-work-tree`` says so
-        :rtype: bool
+        :return: that root, resolved; ``None`` when the folder is in no repository (or isn't there)
+        :rtype: Path | None
         """
         if not self.work_tree.is_dir():
-            return False
+            return None
         try:
-            return self.run("rev-parse", "--is-inside-work-tree").strip() == "true"
+            out = self.run("rev-parse", "--show-toplevel").strip()
         except GitError:
-            return False
+            return None
+        return Path(out).resolve() if out else None
+
+    def exists(self) -> bool:
+        """whether the working tree is a git checkout of its own.
+
+        A folder inside another repository is not: ``--is-inside-work-tree`` says "true" for any folder of a
+        checkout, and a store there committed into the outer repository (found adopting it in samhla, whose
+        characters folder sits inside its code checkout).
+
+        :return: ``True`` when the working tree is the root of its repository
+        :rtype: bool
+        """
+        top = self.toplevel()
+        return top is not None and top == self.work_tree.resolve()
+
+    def enclosing(self) -> Path | None:
+        """the root of another repository the working tree sits inside (or would, once made), if any.
+
+        :return: that repository's root, or ``None`` when the working tree is a repo of its own or in none
+        :rtype: Path | None
+        """
+        probe = self.work_tree
+        while not probe.is_dir() and probe != probe.parent:
+            probe = probe.parent
+        top = Git(probe).toplevel()
+        return top if top is not None and top != self.work_tree.resolve() else None
 
     def init(self, branch: str) -> None:
         """make a new, empty repository in the working tree, on ``branch``.

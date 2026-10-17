@@ -413,11 +413,16 @@ class GitRepo:
         :return: None
         :rtype: None
         :raises GitError: when git refuses
+        :raises GitStoreError: when the working tree sits inside another git repository
         """
         if self.git.exists():
             if self.config.remote_url is not None and not self.git.has_remote():
                 self.git.set_remote(self.config.remote_url)
             return
+        outer = self.git.enclosing()
+        if outer is not None:
+            # never init or clone inside another checkout, nor use it: commits would land in that repository
+            raise GitStoreError(f"{self.config.work_tree} is inside the git repo {outer}, not a repo of its own")
         if self.config.remote_url is not None:
             self.git.clone(self.config.remote_url, self.config.branch)
         else:
