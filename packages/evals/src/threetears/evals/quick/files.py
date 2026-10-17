@@ -25,11 +25,13 @@ import asyncio
 import importlib.util
 import re
 import sys
+import logging
 import traceback
 from collections.abc import Sequence
 from pathlib import Path
 
 from threetears.evals.kernel.eval_file import loading_eval_file
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
     EXIT_FAILED,
@@ -40,6 +42,9 @@ from threetears.evals.quick.cli import (
 )
 from threetears.evals.quick.contract import Eval
 from threetears.evals.quick.toml_file import load_toml
+
+log = get_logger(__name__)
+
 
 #: The file suffixes the command line runs as eval files rather than host commands.
 EVAL_FILES: tuple[str, ...] = (".py", ".toml")
@@ -133,9 +138,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_REFUSED
         try:
             return run_file(Path(args[0]), verbose="--verbose" in rest)
-        except Exception:
+        except Exception as unanticipated:
             # NOSILENT: printed whole to stderr; the distinct exit code is the point — uncaught, Python exits 1, which
             # is the code for a run that did not complete.
+            contain(
+                unanticipated,
+                log=log,
+                what=f"{DEFAULT_PROG} {args[0]}: failed on an unanticipated error",
+                level=logging.ERROR,
+            )
             sys.stderr.write(f"{DEFAULT_PROG} {args[0]}: failed on an unanticipated error\n{traceback.format_exc()}")
             return EXIT_FAILED
     return run_cli(args)

@@ -38,6 +38,7 @@ the engine runs.
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import random
 import time
@@ -58,7 +59,7 @@ from threetears.evals.kernel.storage import RUN_LOST_STATUS, JobRecordStore, Lea
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.job_lease import JobLease, JobLoss, LeasedRecord, with_fault
 from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -755,12 +756,14 @@ class JobLeases:
                 # store just failed it. Kept on the hold instead, and written on the record if the failures go
                 # on to cost the lease (_expire); one a later renewal recovers from cost the job nothing.
                 held.last_failure = f"{type(failed).__name__}: {failed}"
-                log.exception(
-                    "eval.job_lease renewal failed %s=%s scope=%s — retried in %.0fs",
-                    held.kind.name,
-                    record_id,
-                    held.scope_id,
-                    self.renew_every_s,
+                contain(
+                    failed,
+                    log=log,
+                    what=(
+                        f"eval.job_lease renewal failed {held.kind.name}={record_id} scope={held.scope_id} "
+                        f"— retried in {self.renew_every_s:.0f}s"
+                    ),
+                    level=logging.ERROR,
                 )
             if self._held.get(record_id) is not held:
                 return  # released while the renewal ran: its job wrote its own ending
@@ -821,30 +824,32 @@ class JobLeases:
         try:
             await run_blocking(self._pool(), _note_fault, self._store, held.kind, held.record_id, held.scope_id, entry)
         # prawduct:ok-broad-except — the store may be what failed; logged with the renewal failure it was to record
-        except Exception:
+        except Exception as unwritten:
             # NOSILENT: the job is still fenced and stopped below and its record still reads lost; only the cause it
             # was to carry is missing, because the store that would hold it is what failed, so it is logged whole.
-            log.exception(
-                "eval.job_lease %s=%s scope=%s: why it was stopped could not be written on its record either; the "
-                "renewal failure: %s",
-                held.kind.name,
-                held.record_id,
-                held.scope_id,
-                why,
+            contain(
+                unwritten,
+                log=log,
+                what=(
+                    f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: why it was stopped "
+                    f"could not be written on its record either; the renewal failure: {why}"
+                ),
+                level=logging.ERROR,
             )
         try:
             await run_blocking(self._pool(), settle_job_record, self._store, held.kind, held.record_id, held.scope_id)
         # prawduct:ok-broad-except — the store may be what failed; the record reads lost to the next reader regardless
-        except Exception:
+        except Exception as unsettled:
             # NOSILENT: the job is fenced and stopped below regardless, and its lapsed lease reads lost to every
             # reader, the first of which writes the loss this write could not.
-            log.exception(
-                "eval.job_lease %s=%s scope=%s: the loss could not be written here; the next reader writes it. The "
-                "renewal failure: %s",
-                held.kind.name,
-                held.record_id,
-                held.scope_id,
-                why,
+            contain(
+                unsettled,
+                log=log,
+                what=(
+                    f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: the loss could not be "
+                    f"written here; the next reader writes it. The renewal failure: {why}"
+                ),
+                level=logging.ERROR,
             )
         held.stop()
 
@@ -963,15 +968,18 @@ class JobLeases:
                 if await run_blocking(self._pool(), self._end_lost, one, cause):
                     ended.append(one.record_id)
             # prawduct:ok-broad-except — one record's failed write must not keep the rest of a shutdown from ending theirs
-            except Exception:
+            except Exception as unwritten_loss:
                 # NOSILENT: the record is left out of the records this returns as written lost, which is true; the
                 # failed write IS the write of this record, so nothing is left to carry the error, and its job, not
                 # fenced, writes its own ending as it unwinds — or it reads lost once its lease lapses.
-                log.exception(
-                    "eval.job_lease shutdown could not write %s=%s scope=%s lost — it reads lost once its lease lapses",
-                    one.kind.name,
-                    one.record_id,
-                    one.scope_id,
+                contain(
+                    unwritten_loss,
+                    log=log,
+                    what=(
+                        f"eval.job_lease shutdown could not write {one.kind.name}={one.record_id} "
+                        f"scope={one.scope_id} lost — it reads lost once its lease lapses"
+                    ),
+                    level=logging.ERROR,
                 )
         self._close_pool()
         return ended

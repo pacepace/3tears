@@ -25,6 +25,7 @@ there, and the launch's runs live there, because a run lives in its template's s
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import contextlib
 import math
@@ -98,7 +99,7 @@ from threetears.evals.run.runner import (
     template_as_graded,
 )
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN, FIND_TEMPLATE
 
 if TYPE_CHECKING:
@@ -849,11 +850,16 @@ class LaunchGroup:
             try:
                 await teardown.aclose()
             # prawduct:allow prawduct/broad-except -- one member's failed release must not leak the others' or mask the launch refusal
-            except Exception:
+            except Exception as unreleased:
                 # NOSILENT: the caller re-raises the refusal that abandoned the group, which never started, so no
                 # member ran; what failed is releasing this process's clients,
                 # which nothing a member's record measures, and an error_details entry would count as a run's fault.
-                log.exception("eval.launch_group group=%s a member's teardown failed while abandoning", self.id)
+                contain(
+                    unreleased,
+                    log=log,
+                    what=f"eval.launch_group group={self.id} a member's teardown failed while abandoning",
+                    level=logging.ERROR,
+                )
         self.members.clear()
         self._teardowns.clear()
 

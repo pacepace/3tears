@@ -146,6 +146,9 @@ async def test_a_conforming_host_action_passes_and_its_job_returns_its_draft() -
     assert status.state == "completed" and status.result == {"text": "{}"}
 
 
+@pytest.mark.expect_contained(
+    AssertionError, why="the test drives a misbehaving action whose example call raises the kit's own assertion"
+)
 async def test_the_kit_catches_a_spend_action_that_calls_its_model_in_the_call() -> None:
     cases = _cases(_draft_in_call)
 
@@ -155,6 +158,9 @@ async def test_the_kit_catches_a_spend_action_that_calls_its_model_in_the_call()
         await cases["rubric_propose.call"].check(conformance_host)
 
 
+@pytest.mark.expect_contained(
+    AssertionError, why="the test drives a misbehaving action whose example call raises the kit's own assertion"
+)
 async def test_the_call_case_names_how_a_call_that_made_a_request_then_ended() -> None:
     """The guard refuses the request inside the call; that refusal is named beside the failure, not dropped."""
     cases = _cases(_draft_in_call)
@@ -165,6 +171,9 @@ async def test_the_call_case_names_how_a_call_that_made_a_request_then_ended() -
         await cases["rubric_propose.call"].check(conformance_host)
 
 
+@pytest.mark.expect_contained(
+    AssertionError, why="the test drives a misbehaving action whose example call raises the kit's own assertion"
+)
 async def test_the_kit_catches_a_handler_that_waits_on_its_own_job() -> None:
     """It makes no request in its call and returns JobsStarted — and still holds the call until its model answers."""
     cases = _cases(_waits_on_its_job, call_return_timeout_s=0.2)

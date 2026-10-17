@@ -75,7 +75,7 @@ from threetears.evals.schema.completion import CompletionGenerator, CompletionRe
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
 from threetears.evals.kernel.text_block import one_line, under
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -898,7 +898,12 @@ class ReporterKind:
                         telemetry=telemetry,
                     )
                 # Everything else is the harness's: a defect below the kind. Failing the candidate for either would score it for the rig.
-                log.exception("Reporter cell failed outside the candidate's own call")
+                contain(
+                    exc,
+                    log=log,
+                    what="Reporter cell failed outside the candidate's own call",
+                    level=logging.ERROR,
+                )
                 return CandidateOutput(infra_errors=[f"apparatus: {type(exc).__name__}: {exc}"], telemetry=telemetry)
 
         return CandidateOutput(

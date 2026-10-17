@@ -62,6 +62,7 @@ call + parse + cost-log still flow through
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -99,7 +100,7 @@ from threetears.evals.run.judge import (
     judge_reply_format,
     run_judge_llm,
 )
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -648,7 +649,7 @@ class JudgeService:
                 Exception
             ) as exc:  # prawduct:allow prawduct/broad-except -- one client's teardown must not strand the others
                 # NOSILENT: the first failure is raised once every client has been offered its release.
-                log.warning("releasing a judge client failed; its pool may leak", exc_info=True)
+                contain(exc, log=log, what="releasing a judge client failed; its pool may leak")
                 if first_error is None:
                     first_error = exc
         if first_error is not None:
@@ -667,10 +668,14 @@ class JudgeService:
         """
         try:
             await self.aclose()
-        except Exception:  # prawduct:allow prawduct/broad-except -- teardown must never displace the body's exception
+        except (
+            Exception
+        ) as unreleased:  # prawduct:allow prawduct/broad-except -- teardown must never displace the body's exception
             # NOSILENT: the service holds no run id, and a client pool that will not close is this process's leak,
             # not something the run measured — an error_details entry would count it as one of the run's faults.
-            log.exception("releasing the judge clients failed; a pool may leak")
+            contain(
+                unreleased, log=log, what="releasing the judge clients failed; a pool may leak", level=logging.ERROR
+            )
 
     async def score_transcript(self, context: JudgeContext) -> JudgeOutcome:
         """Score the transcript (decision-quality) axis — excludes goal outcomes."""

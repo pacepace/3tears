@@ -30,6 +30,7 @@ action's typed result as JSON, which polling the job returns.
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -58,7 +59,7 @@ from threetears.evals.schema.job_lease import (
 from threetears.evals.schema.refusal import RefusalField
 from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -304,7 +305,7 @@ async def _run_to_end[R: EvalDocumentModel](
     # prawduct:ok-broad-except — the job's record is where its ending is stated; the boundary writes it failed
     except Exception as broke:
         # NOSILENT: the record's ending is ``failed`` with this error as its detail (and its refusal), written below.
-        log.exception("eval.job %s=%s scope=%s failed", name, record_id, scope_id)
+        contain(broke, log=log, what=f"eval.job {name}={record_id} scope={scope_id} failed", level=logging.ERROR)
         # An engine refusal is kept as data beside its words, so a poll serves its kind as a refused call's.
         refusal = job_refusal(broke) if isinstance(broke, EvalServiceError) else None
         ended = end_record(recorder.record, "failed", _failure_detail(broke), refusal=refusal)

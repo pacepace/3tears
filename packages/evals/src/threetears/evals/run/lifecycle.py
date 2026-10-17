@@ -15,6 +15,7 @@ interprets. The host chooses what a scope is and passes it through.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -32,7 +33,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, reproducible_judge_inputs
 from threetears.evals.run.run_document import fault_entry, record_run_faults, update_eval_run
 from threetears.evals.run.runner import build_judge_context, judge_dims
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:
@@ -493,13 +494,15 @@ def _record_unrecorded_completeness(storage: JobStore, run_id: str, scope_id: st
     try:
         outcome = record_run_faults(storage, run_id, scope_id, [entry])
     # prawduct:ok-broad-except — any storage fault here would mislabel a run that succeeded; logged with both errors
-    except Exception:
-        log.exception(
-            "eval.completeness run=%s scope=%s: why its completeness was not recorded could not be written on the "
-            "run either; the first error: %s",
-            run_id,
-            scope_id,
-            entry,
+    except Exception as unwritten:
+        contain(
+            unwritten,
+            log=log,
+            what=(
+                f"eval.completeness run={run_id} scope={scope_id}: why its completeness was not recorded could not "
+                f"be written on the run either; the first error: {entry}"
+            ),
+            level=logging.ERROR,
         )
         return
     if outcome in ("missing", "refused"):
@@ -601,11 +604,14 @@ def record_completeness(
         outcome = update_eval_run(storage, run_id, scope_id, _stamp)
     # prawduct:ok-broad-except — any storage fault here would mislabel a run that succeeded
     except Exception as broke:
-        log.exception(
-            "eval.completeness run=%s scope=%s NOT recorded — the run keeps its real status "
-            "and its completeness reads as unknown",
-            run_id,
-            scope_id,
+        contain(
+            broke,
+            log=log,
+            what=(
+                f"eval.completeness run={run_id} scope={scope_id} NOT recorded — the run keeps its real status "
+                "and its completeness reads as unknown"
+            ),
+            level=logging.ERROR,
         )
         _record_unrecorded_completeness(storage, run_id, scope_id, fault_entry(_COMPLETENESS_NOT_RECORDED, broke))
         return

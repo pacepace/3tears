@@ -68,6 +68,7 @@ outcome; an ``around`` hook's code after its yield, and the ``annotate`` hook, r
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -105,7 +106,7 @@ from threetears.evals.actions import (
 from threetears.evals.kernel import EvalServiceError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import OpsHost
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
@@ -524,9 +525,14 @@ async def _note(annotate: CallAnnotator, call: ToolCall, outcome: ActionOutcome)
             call.action,
         )
         return None
-    except Exception:
+    except Exception as unannotated:
         # Log only: a tool call is a transport exchange with no record of its own, and its outcome is already the caller's.
-        log.exception("annotate hook failed on %s/%s; the outcome stands with no note", call.tool, call.action)
+        contain(
+            unannotated,
+            log=log,
+            what=f"annotate hook failed on {call.tool}/{call.action}; the outcome stands with no note",
+            level=logging.ERROR,
+        )
         return None
     if note is None:
         return None
@@ -546,9 +552,14 @@ async def _entered(around: CallHook, call: ToolCall) -> AsyncGenerator[None, Act
     hook = around(call)
     try:
         await anext(hook)
-    except Exception:
+    except Exception as unentered:
         # Log only: a tool call is a transport exchange with no record of its own, and its outcome is already the caller's.
-        log.exception("around hook failed before its yield on %s/%s; the call runs unobserved", call.tool, call.action)
+        contain(
+            unentered,
+            log=log,
+            what=f"around hook failed before its yield on {call.tool}/{call.action}; the call runs unobserved",
+            level=logging.ERROR,
+        )
         return None
     return hook
 
@@ -566,9 +577,14 @@ async def _finished_within(hook: AsyncGenerator[None, ActionOutcome], call: Tool
             except StopAsyncIteration:
                 # NOSILENT: the hook took its outcome and finished — the one way a hook is meant to end
                 return
-            except Exception:
+            except Exception as unfinished:
                 # Log only: a tool call is a transport exchange with no record of its own, and its outcome is already the caller's.
-                log.exception("around hook failed after its yield on %s/%s; the outcome stands", call.tool, call.action)
+                contain(
+                    unfinished,
+                    log=log,
+                    what=f"around hook failed after its yield on {call.tool}/{call.action}; the outcome stands",
+                    level=logging.ERROR,
+                )
                 return
             log.error(
                 "around hook yielded twice on %s/%s; it yields once, and the outcome stands", call.tool, call.action
@@ -620,7 +636,7 @@ async def _close(hook: AsyncGenerator[None, ActionOutcome], call: ToolCall, defe
     except Exception as raised:
         # Log only: a tool call is a transport exchange with no record of its own, and its outcome is already the caller's.
         if raised is not defect:
-            log.exception("around hook failed closing %s/%s", call.tool, call.action)
+            contain(raised, log=log, what=f"around hook failed closing {call.tool}/{call.action}", level=logging.ERROR)
         return
     # It caught the defect and yielded again: close it, so it does not linger half-run.
     await _close(hook, call, None)

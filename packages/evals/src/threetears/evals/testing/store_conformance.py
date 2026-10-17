@@ -59,8 +59,12 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import EVAL_DOC_TYPES
 from threetears.evals.schema.store_port import DocumentStore, StoreConflict
+
+log = get_logger(__name__)
+
 
 __all__ = [
     "STORE_CONFORMANCE_CASES",
@@ -616,6 +620,7 @@ def _one_of_many_racing_creates_lands(store: DocumentStore) -> None:
                 return
             except Exception as error:
                 # NOSILENT: carried to the checking thread, which re-raises it as itself
+                contain(error, log=log, what="a store write raised in a racing writer; carried to the checking thread")
                 failed.append(error)
             else:
                 landed.append(writer)
@@ -672,6 +677,7 @@ def _one_of_many_racing_writers_lands(store: DocumentStore) -> None:
                 refused.append(writer)
             except Exception as error:
                 # NOSILENT: carried to the checking thread, which re-raises it as itself
+                contain(error, log=log, what="a store write raised in a racing writer; carried to the checking thread")
                 failed.append(error)
             else:
                 landed.append(writer)
