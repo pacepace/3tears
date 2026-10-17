@@ -46,13 +46,14 @@ each other by position, which the stored model checks. Confidence is a tier, nev
 Every refusal below reads a structured field of the generator's output — a cell or reading it
 names, a caveat kind, a question it answers, a position it links — against the bundle. The model's prose is the
 interpretive layer, and whether it is accurate, insightful and relevant is measured by evaluating the reporter as a
-candidate, not by code here. Two checks also read a few words. :func:`_reject_unestablished_nulls` refuses a
-finding title in a common null phrasing ("does not change", "no difference") when the finding cites no null the
-bundle established. The join is structural; only "does this title say arms are alike" is read off the words, by a
-curated phrase list (:mod:`threetears.evals.analysis.null_claims`), so a reworded null passes it and nothing is
-parsed. :func:`_reject_arms_outside_the_evidence` refuses a finding title naming an arm none of the finding's
-readings or trials is taken at; only "which arms does this title name" is read off the words, by the names the
-bundle gives each arm (:mod:`threetears.evals.analysis.arm_mentions`).
+candidate, not by code here. Two checks on finding titles also read a few words, and
+:func:`_reject_unsound_titles` raises one refusal joining both, so a title breaking each is told of each in its one
+repair. :func:`_unestablished_null_titles` refuses a finding title in a common null phrasing ("does not change", "no
+difference") when the finding cites no null the bundle established. The join is structural; only "does this title
+say arms are alike" is read off the words, by a curated phrase list (:mod:`threetears.evals.analysis.null_claims`),
+so a reworded null passes it and nothing is parsed. :func:`_stray_arm_titles` refuses a finding title naming an arm
+none of the finding's readings or trials is taken at; only "which arms does this title name" is read off the words,
+by the names the bundle gives each arm (:mod:`threetears.evals.analysis.arm_mentions`).
 
 **A recommendation is pinned, and an exploratory campaign adopts nothing.** Every recommendation names the findings
 it rests on, a finding names only trials the bundle holds, and in a campaign that declared no question before its
@@ -418,7 +419,7 @@ async def generate_analysis(
         enumeration drifts every time one is added and this list already had; read the
         chain in :func:`_assemble_and_validate`, where each ``_reject_*`` function
         documents its own. Every one reads a structured field; the null-claim check on a
-        finding's title also matches a short phrase list (:func:`_reject_unestablished_nulls`).
+        finding's title also matches a short phrase list (:func:`_unestablished_null_titles`).
     """
     tally = tally if tally is not None else GenerationTally()
     if not measuring_writers:
@@ -793,8 +794,8 @@ def _assemble_and_validate(
     written. What else code fills — every number an evidence reading resolves to — sits beside it on
     ``resolutions``, and the bundle it was written over is stored with it. Every check here reads a structured field
     or a reference's grammar; the null-claim check on a finding's title also matches a short phrase list
-    (:func:`_reject_unestablished_nulls`), and the arm check matches the names the bundle gives each arm
-    (:func:`_reject_arms_outside_the_evidence`).
+    (:func:`_unestablished_null_titles`), and the arm check matches the names the bundle gives each arm
+    (:func:`_stray_arm_titles`).
 
     :raises GenerationError: The provider cut the call short (not repaired).
     :raises SoundnessRefusal: The output does not match the contract, a position, reading or trial points nowhere,
@@ -840,8 +841,7 @@ def _resolved_analysis(
     document = _with_cell_refs(document, surface)
     _reject_contradicted_arms(document, bundle)
     _reject_unseparated_adoptions(document, bundle)
-    _reject_unestablished_nulls(document, bundle)
-    _reject_arms_outside_the_evidence(document, bundle)
+    _reject_unsound_titles(document, bundle)
     document = render_prose_figures(document, surface, bundle.measure_catalog)
     resolutions = [
         _resolution_of(finding, surface, where=f"findings[{index}]") for index, finding in enumerate(document.findings)
@@ -1116,8 +1116,23 @@ def _reject_exploratory_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
 _NAMED_NULLS = 5
 
 
-def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
-    """Refuse a finding title saying arms are alike when the finding cites no null the bundle established.
+def _reject_unsound_titles(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
+    """Refuse finding titles that state a null established nowhere or name an arm their finding cites nothing of.
+
+    Both checks run before either refuses, and one refusal carries both accounts: a title breaking each, told only
+    of the first, would be repaired into the second and the analysis lost on the one repair round.
+
+    :raises SoundnessRefusal: Either check found a title at fault; the message is each check's account, in turn.
+    """
+    faults = [
+        fault for fault in (_unestablished_null_titles(document, bundle), _stray_arm_titles(document, bundle)) if fault
+    ]
+    if faults:
+        raise SoundnessRefusal(" Separately: ".join(faults))
+
+
+def _unestablished_null_titles(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> str | None:
+    """Account for each finding title saying arms are alike when the finding cites no null the bundle established.
 
     A title is what a skimming reader takes away, and a null stated there decides as surely as a measured one:
     "halving the budget does not change latency, cost or delivery" stops anyone measuring it again. The bundle
@@ -1135,8 +1150,9 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
     Runs after cells are translated from aliases, so it joins on full refs; the refusal names them, and the repair
     round renders them back into the writer's aliases.
 
-    :raises SoundnessRefusal: A finding's title makes a null claim and the finding cites no reading the bundle
-        established alike.
+    :return: The refusal's account when a finding's title makes a null claim and the finding cites no reading the
+        bundle established alike, otherwise ``None``; :func:`_reject_unsound_titles` raises it.
+    :rtype: str | None
     """
     established = _established_nulls(bundle)
     said = [
@@ -1146,7 +1162,7 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
         for claim in null_claims(finding.title)
     ]
     if not said:
-        return
+        return None
     named = []
     for (cell, reading, name), how in sorted(established.items()):
         citing = [
@@ -1160,7 +1176,7 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
         if named
         else ""
     )
-    raise SoundnessRefusal(
+    return (
         f"{'; '.join(said)}, which states that arms are alike, but that finding cites no reading the bundle "
         "established alike (a comparison reading `equivalent` in `multiple_comparisons`, or a guardrail reading "
         "`held`). A contrast that did not separate is unresolved, not unchanged (rule 4). Say what you judge most "
@@ -1169,8 +1185,8 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
     )
 
 
-def _reject_arms_outside_the_evidence(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
-    """Refuse a finding title naming an arm none of that finding's readings or trials is taken at.
+def _stray_arm_titles(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> str | None:
+    """Account for each finding title naming an arm none of that finding's readings or trials is taken at.
 
     The reader is shown a finding's title over the readings it cites, so a title naming an arm the finding cites
     nothing of states a result the reader cannot see: a production memo (2026-10) titled a finding "GPT-6 Luna Pro
@@ -1185,11 +1201,13 @@ def _reject_arms_outside_the_evidence(document: AuthoredAnalysis, bundle: Analys
     Runs after cells are translated from aliases, so it joins on full refs; the refusal names the arm's cells by them,
     and the repair round renders them back into the writer's aliases.
 
-    :raises SoundnessRefusal: A finding's title names an arm that none of its evidence rows or trials is taken at.
+    :return: The refusal's account when a finding's title names an arm that none of its evidence rows or trials is
+        taken at, otherwise ``None``; :func:`_reject_unsound_titles` raises it.
+    :rtype: str | None
     """
     vocabulary = arm_vocabulary(bundle.variant_index)
     if not vocabulary:
-        return
+        return None
     arm_of_trial = {trial.trial_id: trial.arm for trial in bundle.trials}
     cells_of: dict[str, list[str]] = {}
     for cell in bundle.cell_measures:
@@ -1208,13 +1226,14 @@ def _reject_arms_outside_the_evidence(document: AuthoredAnalysis, bundle: Analys
                 for variant in sorted(mention.name.variants, key=lambda key: names.get(key, key))
             )
             stray.append(f'findings[{position}].title names "{mention.written}" (the arm {arms})')
-    if stray:
-        raise SoundnessRefusal(
-            f"{'; '.join(stray)}, but none of that finding's evidence rows or trials is taken at that arm, so the "
-            "reader is shown nothing of it. A title claims no more than its evidence (rule 9): cite that arm's "
-            "reading in the finding's evidence, or, if what the title says of it is a second claim, give that claim "
-            "a finding of its own"
-        )
+    if not stray:
+        return None
+    return (
+        f"{'; '.join(stray)}, but none of that finding's evidence rows or trials is taken at that arm, so the "
+        "reader is shown nothing of it. A title claims no more than its evidence (rule 9): drop that arm from the "
+        "title, cite that arm's reading in the finding's evidence, or, if what the title says of it is a second "
+        "claim, give that claim a finding of its own."
+    )
 
 
 def _cited(finding: AuthoredFinding) -> set[tuple[str, str, str]]:

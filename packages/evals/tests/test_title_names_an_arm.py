@@ -280,6 +280,24 @@ class TestATitleNamingAnArmItsFindingCitesNothingOfIsRefused:
         assert analysis.document.findings[1].title == title
 
 
+class TestATitleBreakingBothTitleChecksIsToldOfBothInItsOneRepair:
+    async def test_the_one_refusal_names_the_null_and_the_arm_and_the_repaired_memo_is_stored(self) -> None:
+        bundle = _bundle()
+        both = "GPT-6 Luna Pro does not change cost per document"
+        fixed = "GPT-6 Luna is the cheaper arm"
+        client = _MemoSequence(_memo(bundle, both, at=(TOYHOST_NARROW,)), _memo(bundle, fixed, at=(TOYHOST_NARROW,)))
+
+        analysis = await _generate(bundle, client)
+
+        refusal = analysis.generation.repaired_refusal
+        assert refusal is not None
+        assert 'findings[1].title says "' in refusal and "states that arms are alike" in refusal
+        assert 'findings[1].title names "GPT-6 Luna Pro"' in refusal
+        assert "drop that arm from the title" in refusal
+        assert len(client.calls) == 2 and refusal in client.calls[1]["user"]
+        assert analysis.document.findings[1].title == fixed
+
+
 class TestATitleNamingOnlyCitedArmsIsAccepted:
     async def test_a_name_heading_another_arm_s_names_only_its_own(self) -> None:
         bundle = _bundle()
