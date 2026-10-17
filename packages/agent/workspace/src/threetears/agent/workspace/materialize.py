@@ -1453,11 +1453,19 @@ async def bind(
             ),
             name=f"workspace.bind.watch:{workspace_id.hex}:{root_name}",
         )
-        body_raised: BaseException | None = None
         try:
             yield disk_root
-        except BaseException as body_exc:
-            body_raised = body_exc
+        except BaseException:
+            # the body failed: nothing it wrote is captured back, and its exception propagates once
+            # the watcher below has been torn down
+            log.warning(
+                "workspace.bind.exception_skip_capture",
+                extra={
+                    "workspace_id": str(workspace_id),
+                    "root_name": root_name,
+                },
+            )
+            raise
         finally:
             # tear the watcher down deterministically whether or not the
             # body raised; the bounded wait_for guarantees bind exit does
@@ -1474,22 +1482,15 @@ async def bind(
                     },
                 )
             except asyncio.CancelledError:
-                # NOSILENT: this IS the watcher cancellation requested on the line above; any
-                # other exception is programmer error and falls to the handler below.
-                pass
+                # the watcher's own cancellation, requested above, surfaces here and ends it; the
+                # caller's cancellation, arriving while this waits, must not be absorbed with it
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
             except Exception as cancel_exc:
                 contain(
                     cancel_exc, log=log, what=f"workspace.bind.watcher_cancel_error: {cancel_exc}", level=logging.ERROR
                 )
-        if body_raised is not None:
-            log.warning(
-                "workspace.bind.exception_skip_capture",
-                extra={
-                    "workspace_id": str(workspace_id),
-                    "root_name": root_name,
-                },
-            )
-            raise body_raised
         changed = await _capture_back(
             workspace=workspace,
             disk_root=disk_root,
