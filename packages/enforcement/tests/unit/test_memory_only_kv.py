@@ -33,6 +33,12 @@ class TestTheWalkerCatchesWhatItMust:
         source.write_text(f'def go(js):\n    return {callee}(js, storage="file")\n')
         assert file_backed_kv_calls(source) == [(2, callee)]
 
+    def test_a_file_that_is_not_valid_utf8_is_still_read(self, tmp_path: Path) -> None:
+        """the shared parse cache refuses invalid utf-8; the walker falls back to a lenient read."""
+        source = tmp_path / "latin1.py"
+        source.write_bytes(b'# caf\xe9\nasync def go(nc):\n    return await nc.kv_bucket(name="x", storage="file")\n')
+        assert file_backed_kv_calls(source) == [(3, "kv_bucket")]
+
     def test_several_opens_in_one_module_are_all_reported(self, tmp_path: Path) -> None:
         source = tmp_path / "many.py"
         source.write_text(

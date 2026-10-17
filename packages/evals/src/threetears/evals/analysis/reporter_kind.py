@@ -72,6 +72,7 @@ from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.models import DimName, EvalTestCase, JudgedArtifact, JudgeEvidence, RubricDim
 from threetears.evals.schema.completion import CompletionGenerator, CompletionResult, RequestCeiling
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
+from threetears.evals.kernel.text_block import one_line, under
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.schema.logs import get_logger
 
@@ -523,11 +524,6 @@ def judge_case_material(case: ReporterCase, *, generated_over: AnalysisContextBu
 # shown ``posture.tier`` or ``cell_ref`` docks readability for vocabulary no reader ever meets.
 
 
-def _one_line(text: str) -> str:
-    """Text a heading or a bold lead carries, on one line — a newline would end either mid-sentence."""
-    return " ".join(text.splitlines())
-
-
 def _confidence(confidence: ConfidenceTier) -> str:
     """A confidence tier in words."""
     return CONFIDENCE_WORDS[confidence]
@@ -948,7 +944,7 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
                 if analysis.design_snapshot is not None
                 else answer.question_id
             )
-            questions.append(f"- {_one_line(asked)} — {answer.resolution}: {_one_line(answer.answer)}{rests}")
+            questions.append(f"- {one_line(asked)} — {answer.resolution}: {one_line(answer.answer)}{rests}")
         sections.append(questions)
 
     if document.decisions:
@@ -956,17 +952,17 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
         for decision in document.decisions:
             rests = f" Rests on {positions(decision.rests_on)}." if decision.rests_on else ""
             decisions.append(
-                f"- **{_one_line(decision.proposal)}** — {decision.disposition}; "
+                f"- **{one_line(decision.proposal)}** — {decision.disposition}; "
                 f"confidence {_confidence(decision.confidence)}.{rests}"
             )
             if decision.revisit_when:
-                decisions.append(f"  - Revisit when: {decision.revisit_when}")
+                decisions += under(decision.revisit_when, "    ", first="  - Revisit when: ")
         sections.append(decisions)
 
     if document.findings:
         findings = ["## Findings"]
         for position, (finding, resolution) in enumerate(zip(document.findings, resolutions, strict=True)):
-            findings += ["", f"### F{position + 1}. {_one_line(finding.title)}", ""]
+            findings += ["", f"### F{position + 1}. {one_line(finding.title)}", ""]
             facts = [f"Confidence: {_confidence(finding.confidence)}."]
             if resolution is not None:
                 facts.append(f"Stands on: {stands_on_words(analysis, resolution.evidence_tier)}.")
@@ -987,7 +983,9 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
                 )
                 findings += ["", "Evidence:", "", *table]
             if finding.caveats:
-                findings += ["", "Caveats:", *(f"- {caveat.kind}: {caveat.text}" for caveat in finding.caveats)]
+                findings += ["", "Caveats:"]
+                for caveat in finding.caveats:
+                    findings += under(caveat.text, "  ", first=f"- {caveat.kind}: ")
             if finding.durable.strip():
                 findings += ["", f"Carried forward: {finding.durable.strip()}"]
         sections.append(findings)
@@ -996,9 +994,9 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
         steps = ["## What to run next", ""]
         for number, step in enumerate(document.next, start=1):
             lever = f" ({step.lever})" if step.lever else ""
-            steps.append(f"{number}. **{_one_line(step.title)}** — {step.leverage} leverage{lever}")
+            steps.append(f"{number}. **{one_line(step.title)}** — {step.leverage} leverage{lever}")
             if step.why.strip():
-                steps.append(f"   - Why: {step.why.strip()}")
+                steps += under(step.why, "     ", first="   - Why: ")
         sections.append(steps)
 
     if not sections:

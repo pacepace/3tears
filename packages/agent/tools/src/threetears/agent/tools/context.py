@@ -8,6 +8,7 @@ from datetime import UTC, datetime, tzinfo
 from typing import Any, Final
 from uuid import UUID, uuid7
 
+from threetears.observe.text_block import one_line, under
 from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.tools.text_window import window_text
@@ -813,7 +814,7 @@ class ToolContextManager:
                 check = "[-]"
             else:
                 check = "[ ]"
-            lines.append(f"{i + 1}. {check} {desc}")
+            lines.extend(under(desc, "       ", first=f"{i + 1}. {check} "))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -932,7 +933,7 @@ class ToolContextManager:
         for ref in self._memory_refs_projection:
             itype = ref["item_type"]
             tag = f"[{itype}:{ref['item_id']}]"
-            items.append(f"- {tag} {ref['short_desc']}")
+            items.append(f"- {tag} {one_line(str(ref['short_desc'] or ''))}".rstrip())
         # A description is the stored item's own opening words: fenced as
         # material, with the rule, since this block goes into a prompt this
         # code does not assemble.
@@ -979,13 +980,15 @@ class ToolContextManager:
             lines = ["[Conversation Variables]"]
             for var in variables:
                 vtype = (var.get("metadata") or {}).get("value_type", "string")
-                lines.append(f"- {var['key']} ({vtype}): {var['content']}")
+                head = f"- {var['key']} ({vtype}): "
+                lines.extend(under(str(var["content"] or ""), "  ", first=head))
             sections.append("\n".join(lines))
 
         if tool_results:
             # A preview is the tool's own words: fenced as material, with its rule.
             previews = "\n".join(
-                f"- [{item['context_id']}] {item['key']}: {item['short_desc']}" for item in tool_results
+                f"- [{item['context_id']}] {item['key']}: {one_line(str(item['short_desc'] or ''))}".rstrip()
+                for item in tool_results
             )
             sections.append(f"[Tool Results]\n{explained_fence(previews)}")
 

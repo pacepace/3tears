@@ -12,6 +12,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: (repo-relative path, method) -> why its L1 write is not a read's row
@@ -46,7 +49,7 @@ def unfenced_read_caches(roots: list[Path], repo_root: Path) -> list[str]:
             source = path.read_text(encoding="utf-8")
             if "write_to_cache_sync(" not in source:
                 continue
-            for function in ast.walk(ast.parse(source)):
+            for function in ast.walk(parse_python_path(path)):
                 if not isinstance(function, ast.AsyncFunctionDef) or (relative, function.name) in _NOT_A_READ:
                     continue
                 for node in ast.walk(function):

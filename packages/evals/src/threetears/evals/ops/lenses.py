@@ -1360,6 +1360,7 @@ def estimate_text(estimate: LaunchEstimate) -> str:
             if arm.predicted_usd is not None
             else "unpriced"
         )
+        # one line: an arm's description is its repr'd model and template id and its counts (run.launch)
         lines.append(f"- {arm.described}: {figure} — {arm.outcome}; {arm.basis}")
         if arm.refusal is not None:
             lines.append(f"  refused: {arm.refusal}")

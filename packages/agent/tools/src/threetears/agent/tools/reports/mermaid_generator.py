@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from threetears.observe.text_block import one_line
 from threetears.agent.tools.reports.severity import (
     DEFAULT_SEVERITY_CONFIG,
     SeverityConfig,
@@ -50,7 +51,7 @@ class MermaidGenerator:
             count = counts.get(sev, 0)
             if count > 0:
                 label = severity_label(sev, cfg)
-                lines.append(f'    "{label}" : {count}')
+                lines.append(f'    "{one_line(label)}" : {count}')
         return "\n".join(lines)
 
     @staticmethod
@@ -121,7 +122,7 @@ class MermaidGenerator:
             sev = str(f["severity"]).lower()
             sev_lbl = severity_label(sev, cfg)
             label = f"{title}\\n[{sev_lbl}]"
-            lines.append(f'    {node_id}["{label}"]')
+            lines.append(f'    {node_id}["{one_line(label)}"]')
             if prev_node is not None:
                 lines.append(f"    {prev_node} --> {node_id}")
             prev_node = node_id
@@ -171,7 +172,7 @@ class MermaidGenerator:
             title = f["title"]
             sev = str(f["severity"]).lower()
             label = f"{title}\\n[{sev}]"
-            lines.append(f'    {node_id}["{label}"]')
+            lines.append(f'    {node_id}["{one_line(label)}"]')
             color = _severity_colors.get(sev)
             if color:
                 style_defs.append(f"    style {node_id} fill:{color},color:#fff")

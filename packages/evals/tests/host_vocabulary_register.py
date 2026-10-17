@@ -184,6 +184,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/out_of_run.py": {},
     "schema/out_of_run_spend.py": {},
     "kernel/offload.py": {},
+    "kernel/text_block.py": {},
     "kernel/spend.py": {},
     "kernel/status_filter.py": {},
     "kernel/storage.py": {},
