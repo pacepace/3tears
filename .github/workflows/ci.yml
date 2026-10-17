@@ -221,4 +221,4 @@ jobs:
         # agent/acl needs Postgres alone: its NATS is an in-memory double. It is here
         # because its integration tests measure, against a real table, the teardown
         # queries (`list_owned_by`, `schema_in_use`) a consumer drops schemas on.
-        run: uv run pytest packages/core packages/nats packages/epoch packages/scheduled-jobs packages/agent/acl -m integration -v
+        run: uv run pytest packages/core packages/nats packages/epoch packages/scheduled-jobs packages/agent/acl packages/git-store -m integration -v

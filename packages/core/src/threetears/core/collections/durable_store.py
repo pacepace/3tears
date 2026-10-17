@@ -19,7 +19,9 @@ default and may be overridden.
 
 from __future__ import annotations
 
+import builtins
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Generic
 
@@ -90,6 +92,27 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
             cas=original_timestamp,
             conn=conn,
         )
+
+    async def list(self, filters: Mapping[str, Any] | None = None) -> builtins.list[EntityT]:
+        """every entity whose row matches the equality ``filters``, read from L3 and cached in L1.
+
+        The store's :meth:`DurableStore.scan` answers; each row is cached in L1 only while no write
+        or eviction of this collection landed during the scan (:meth:`scan_ticket`), so a row a
+        scan read before a newer commit can never be left behind in L1. L2 is not filled: a scan's
+        rows are not each a fenced read of their key.
+
+        :param filters: column to value; ``None`` or empty for every row
+        :ptype filters: Mapping[str, Any] | None
+        :return: the entities, in the store's order
+        :rtype: list[EntityT]
+        """
+        ticket = self.scan_ticket()
+        rows = await self._durable_store.scan(self.table_name, dict(filters or {}))
+        entities: builtins.list[EntityT] = []
+        for row in rows:
+            self.write_to_cache_sync(row, read_since=ticket)
+            entities.append(self.entity_class(row, is_new=False, collection=self))
+        return entities
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete the entity from L3 via the structured ``DurableStore.delete`` (no SQL)."""

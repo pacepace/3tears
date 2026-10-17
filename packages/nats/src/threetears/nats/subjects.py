@@ -1595,6 +1595,24 @@ class Subjects:
         )
 
     # ------------------------------------------------------------------
+    # git-store (a git working tree as the durable tier)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def git_store_advanced(cls) -> Subject:
+        """broadcast subject a git-store writer announces a new commit of a repository on.
+
+        one subject for every repository: the message names the repository and branch, and
+        each process that keeps its own clone of it fetches and fast-forwards. the message is a
+        trigger only -- what changed is read from git, never from the message. consumed by
+        :mod:`threetears.git_store.advanced`.
+
+        :return: subject ``{ns}.git-store.advanced``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.git-store.advanced", kind="point")
+
+    # ------------------------------------------------------------------
     # channels (cross-pod room fanout)
     # ------------------------------------------------------------------
 
