@@ -216,8 +216,8 @@ _logger = get_logger(__name__)
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"
 
 #: The ``ClaudeCodeChatModel`` constructor params we forward. The anthropic factory's other kwargs
-#: (``timeout`` / ``max_retries`` / ``max_tokens`` / ``base_url`` …) are HTTP-API concepts the CLI
-#: backend does not accept — dropped rather than passed through to a constructor error.
+#: (``timeout`` / ``max_tokens`` / ``base_url`` …) are HTTP-API concepts the CLI backend does not
+#: accept — dropped rather than passed through to a constructor error.
 _FORWARDED_KWARGS = frozenset(
     {
         "system_prompt",
@@ -234,6 +234,11 @@ _FORWARDED_KWARGS = frozenset(
         # either credential (see _SubscriptionChatModel.thinking / .effort).
         "thinking",
         "effort",
+        # The CLI's own API retries and output cap, set through its environment (see
+        # _SubscriptionChatModel.max_retries / .max_output_tokens). The anthropic factory forwards
+        # max_retries only when a caller set it, so the CLI's default stands otherwise.
+        "max_retries",
+        "max_output_tokens",
     }
 )
 
@@ -285,6 +290,15 @@ _API_DEFAULT_EFFORT = "high"
 #: pins in the bundled CLI's effort resolution, so the effort sent is pinned here as well as in the flag.
 _EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
 
+#: The CLI's variable for how many times it retries a failed API call itself. Unset, the CLI retries
+#: up to ten times, invisibly to the caller, and it lowers a larger value to its own ceiling (10 and 15,
+#: read from the bundled 2.1.286).
+_MAX_RETRIES_ENV = "CLAUDE_CODE_MAX_RETRIES"
+
+#: The CLI's variable for the most output tokens one reply may have. Unset, the CLI applies each
+#: model's own default.
+_MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+
 #: What starts the caller's system prompt. The CLI sends its own identity line as a system block of
 #: its own ahead of the caller's, and the two reached the model with no separator between them.
 _AFTER_CLI_IDENTITY = "\n\n"
@@ -313,6 +327,27 @@ def _output_format(output_config: Any) -> dict[str, Any]:
     if not isinstance(fmt, dict) or fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
         raise ValueError(f"a subscription model can only honour a json_schema output_config, not {output_config!r}")
     return {"type": "json_schema", "schema": fmt["schema"]}
+
+
+def _cli_count(name: str, value: Any, *, least: int) -> str | None:
+    """A whole-number setting as the CLI's environment takes it, or ``None`` when it is unset.
+
+    :param name: the setting's keyword, named when it is refused
+    :ptype name: str
+    :param value: the setting, ``None`` when unset
+    :ptype value: Any
+    :param least: the smallest value the setting takes
+    :ptype least: int
+    :return: the value as text, or ``None``
+    :rtype: str | None
+    :raises ValueError: when the value is not a whole number of at least ``least`` -- a setting the
+        CLI cannot honour is refused, never dropped
+    """
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < least:
+        raise ValueError(f"a subscription model's {name} must be a whole number of at least {least}, not {value!r}")
+    return str(value)
 
 
 def is_subscription_token(credential: str) -> bool:
@@ -619,6 +654,13 @@ def _subscription_model_cls() -> type:
         thinking: dict[str, Any] | None = None
         effort: str | None = None
 
+        # The CLI's own retries of a failed API call, and the most output tokens one reply may
+        # have, sent as CLAUDE_CODE_MAX_RETRIES / CLAUDE_CODE_MAX_OUTPUT_TOKENS (see
+        # :data:`_MAX_RETRIES_ENV`, :data:`_MAX_OUTPUT_TOKENS_ENV`). ``None`` leaves the CLI's own
+        # default. Declared here for the same reason as :attr:`tools`.
+        max_retries: int | None = Field(default=None, strict=True, ge=0)
+        max_output_tokens: int | None = Field(default=None, strict=True, gt=0)
+
         def _build_options(self, **overrides: Any) -> Any:
             """Force ``tools`` from :attr:`tools`, and cut the CLI off from the host's Claude config.
 
@@ -630,6 +672,15 @@ def _subscription_model_cls() -> type:
             overrides.setdefault("tools", self.tools)
             overrides.setdefault("thinking", self.thinking or _NO_THINKING)
             overrides.setdefault("effort", self.effort or _API_DEFAULT_EFFORT)
+            # Not options of the SDK's: the CLI reads both from its environment. A per-call value
+            # outranks the model's.
+            cli_env: dict[str, str] = {}
+            retries = _cli_count("max_retries", overrides.pop("max_retries", self.max_retries), least=0)
+            if retries is not None:
+                cli_env[_MAX_RETRIES_ENV] = retries
+            cap = _cli_count("max_output_tokens", overrides.pop("max_output_tokens", self.max_output_tokens), least=1)
+            if cap is not None:
+                cli_env[_MAX_OUTPUT_TOKENS_ENV] = cap
             if "output_config" in overrides:
                 overrides["output_format"] = _output_format(overrides.pop("output_config"))
             from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415
@@ -649,7 +700,7 @@ def _subscription_model_cls() -> type:
             isolation = claude_cli_isolation(self.oauth_token)
             # A caller that deliberately points the CLI at a configuration or directory of its
             # own has made that choice; only an unset one falls back to the isolated default.
-            options.env = {**isolation.env, **(options.env or {}), _EFFORT_ENV: str(options.effort)}
+            options.env = {**isolation.env, **(options.env or {}), _EFFORT_ENV: str(options.effort), **cli_env}
             if isinstance(options.system_prompt, str) and options.system_prompt.strip():
                 options.system_prompt = _AFTER_CLI_IDENTITY + options.system_prompt.lstrip("\n")
             if not options.cwd:
@@ -882,6 +933,7 @@ def _subscription_model_cls() -> type:
             tool_calls: list[dict[str, Any]] = []
             generation_info: dict[str, Any] = {}
             attempts = _StructuredAttempts()
+            served: str | None = None
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
                 async for msg in client.receive_response():
@@ -897,12 +949,13 @@ def _subscription_model_cls() -> type:
                                 await run_manager.on_llm_new_token(text)
                         tool_calls.extend(self._caller_tool_calls(msg.content))
                         attempts.saw(msg.content)
+                        served = _turn_model(msg) or served
                     elif isinstance(msg, UserMessage):
                         attempts.answered(msg)
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
                         answer, generation_info = _settle(
-                            msg, options.output_format, tool_calls, "\n".join(all_text), attempts
+                            msg, options.output_format, tool_calls, "\n".join(all_text), attempts, served=served
                         )
                         if options.output_format is not None and answer is not None:
                             # The answer is the structured one. The model's prose before it is
@@ -978,6 +1031,7 @@ def _subscription_model_cls() -> type:
             # Every message's text, streamed or held, for a failed result that says nothing itself.
             produced: list[str] = []
             attempts = _StructuredAttempts()
+            served: str | None = None
 
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
@@ -1011,6 +1065,7 @@ def _subscription_model_cls() -> type:
                         text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
                         produced.append(text)
                         attempts.saw(msg.content)
+                        served = _turn_model(msg) or served
                         if structured:
                             if text:
                                 held.append(text)
@@ -1032,7 +1087,7 @@ def _subscription_model_cls() -> type:
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
                         answer, generation_info = _settle(
-                            msg, options.output_format, tool_calls, "\n".join(produced), attempts
+                            msg, options.output_format, tool_calls, "\n".join(produced), attempts, served=served
                         )
                         usage = _usage_metadata(msg.usage)
                         content = ""
@@ -1477,7 +1532,13 @@ def _assistant_failure(message: Any) -> ModelProviderError | None:
 
 
 def _settle(
-    result: Any, output_format: Any, tool_calls: list[dict[str, Any]], text: str, attempts: _StructuredAttempts
+    result: Any,
+    output_format: Any,
+    tool_calls: list[dict[str, Any]],
+    text: str,
+    attempts: _StructuredAttempts,
+    *,
+    served: str | None = None,
 ) -> tuple[Any | None, dict[str, Any]]:
     """Decide how a call ended: its structured answer and generation info, or the error it raises.
 
@@ -1498,6 +1559,8 @@ def _settle(
     :ptype text: str
     :param attempts: the call's ``StructuredOutput`` attempts
     :ptype attempts: _StructuredAttempts
+    :param served: the model the CLI named on the call's last model turn (:func:`_turn_model`)
+    :ptype served: str | None
     :return: ``(structured answer or None, generation info)``
     :rtype: tuple[Any | None, dict[str, Any]]
     :raises ModelProviderError: when the call failed
@@ -1520,21 +1583,132 @@ def _settle(
         )
     if answer is not None and (schema := _schema_of(output_format)) is not None:
         answer = _without_call_syntax(answer, schema)
-    return answer, _generation_info(result, tool_calls, unwrapped=unwrapped)
+    return answer, _generation_info(result, tool_calls, answered=answer is not None, unwrapped=unwrapped, served=served)
 
 
-def _generation_info(result: Any, tool_calls: list[dict[str, Any]], *, unwrapped: bool = False) -> dict[str, Any]:
-    """What a call that did not fail says, as generation info.
+#: The CLI's ``stop_reason`` -- the Messages API's, for the call's last model turn -- for a turn that
+#: ended where the model meant it to. ``None`` is a CLI that reported none.
+_NORMAL_STOPS = frozenset({None, "end_turn", "stop_sequence"})
 
-    Only :func:`_settle` builds it, after deciding the call did not fail, so ``is_error`` is always
-    false here -- a result the CLI flagged is reported by the error :func:`_settle` raises instead.
+#: The CLI's ``stop_reason`` for a reply cut short by the output cap or the context window.
+_TRUNCATED_STOPS = frozenset({"max_tokens", "model_context_window_exceeded"})
+
+#: The CLI's ``stop_reason`` for a reply the model refused to give.
+_REFUSED_STOPS = frozenset({"refusal"})
+
+#: The CLI's ``terminal_reason`` for a query loop that ran to its end. ``None`` is a CLI that
+#: reported none (one older than the field, or a result that bypassed the loop).
+_COMPLETED_LOOPS = frozenset({None, "completed"})
+
+
+def _finish_reason(result: Any, tool_calls: list[dict[str, Any]], *, answered: bool) -> str:
+    """How a call that did not fail ended, in the ``finish_reason`` words LangChain's chat models use.
+
+    Read from the CLI's own ``stop_reason`` and ``terminal_reason``. It used to be ``stop`` for every
+    call that handed no tool calls back, so a reply the output cap cut short read as finished.
+
+    - ``tool_calls``: the call stopped to hand tool calls back.
+    - ``length``: the output cap or the context window cut the reply short.
+    - ``content_filter``: the model refused.
+    - ``stop``: the model's turn ended normally and the CLI's loop completed, or the call delivered
+      the structured answer it asked for (its last turn is the ``StructuredOutput`` call, which the
+      API reports as ``tool_use``).
+    - Anything else is the CLI's own word, never ``stop``: the ``terminal_reason`` when the loop did
+      not complete (``aborted_streaming``, ``hook_stopped``, ...), else the ``stop_reason``
+      (``pause_turn``, ...). A reason this module does not know is not read as a finished reply.
 
     :param result: the CLI's ``ResultMessage``
     :ptype result: Any
     :param tool_calls: the tool calls the call handed back
     :ptype tool_calls: list[dict[str, Any]]
+    :param answered: whether the call delivered a structured answer
+    :ptype answered: bool
+    :return: the finish reason
+    :rtype: str
+    """
+    stop = result.stop_reason
+    loop = result.terminal_reason
+    if tool_calls:
+        return "tool_calls"
+    if stop in _TRUNCATED_STOPS:
+        return "length"
+    if stop in _REFUSED_STOPS:
+        return "content_filter"
+    if answered or (stop in _NORMAL_STOPS and loop in _COMPLETED_LOOPS):
+        return "stop"
+    return str(stop if loop in _COMPLETED_LOOPS else loop)
+
+
+#: The model the CLI names on an assistant message it wrote itself -- a failure notice, a placeholder
+#: -- rather than one a model turn produced.
+_SYNTHETIC_MODEL = "<synthetic>"
+
+
+def _turn_model(message: Any) -> str | None:
+    """The model that wrote an assistant message, as the CLI names it.
+
+    The CLI names the model that actually answered, so a turn served by ``fallback_model`` (or a
+    server-side fallback) names the fallback, not the model asked for.
+
+    :param message: the CLI's ``AssistantMessage``
+    :ptype message: Any
+    :return: the model id, or ``None`` for a message the CLI wrote itself or one naming no model
+    :rtype: str | None
+    """
+    model = message.model
+    return model if isinstance(model, str) and model and model != _SYNTHETIC_MODEL else None
+
+
+def _served_model(result: Any, served: str | None) -> str | None:
+    """The model that served a call: the last model turn's, else the result's only per-model usage key.
+
+    ``ResultMessage.model_usage`` is keyed by every model the call used. More than one key names no
+    single model, so it decides nothing.
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param served: the model the CLI named on the call's last model turn
+    :ptype served: str | None
+    :return: the model id, or ``None`` when the CLI named none
+    :rtype: str | None
+    """
+    if served is not None:
+        return served
+    usage = result.model_usage
+    if isinstance(usage, dict) and len(usage) == 1:
+        [model] = usage
+        return str(model)
+    return None
+
+
+def _generation_info(
+    result: Any,
+    tool_calls: list[dict[str, Any]],
+    *,
+    answered: bool = False,
+    unwrapped: bool = False,
+    served: str | None = None,
+) -> dict[str, Any]:
+    """What a call that did not fail says, as generation info.
+
+    Only :func:`_settle` builds it, after deciding the call did not fail, so ``is_error`` is always
+    false here -- a result the CLI flagged is reported by the error :func:`_settle` raises instead.
+    The CLI's own ``stop_reason`` and ``terminal_reason`` ride along as it sent them (``None`` when
+    it sent none), beside the ``finish_reason`` derived from them (:func:`_finish_reason`), so a
+    reader can tell a CLI that said ``end_turn`` from one that said nothing. ``model_name`` is the
+    model that served the call (:func:`_served_model`), the key LangChain's chat models put the
+    response's model under; it is absent when the CLI named none, never the model asked for.
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param tool_calls: the tool calls the call handed back
+    :ptype tool_calls: list[dict[str, Any]]
+    :param answered: whether the call delivered a structured answer
+    :ptype answered: bool
     :param unwrapped: whether the answer was recovered from a placeholder (:func:`_unwrapped_answer`)
     :ptype unwrapped: bool
+    :param served: the model the CLI named on the call's last model turn
+    :ptype served: str | None
     :return: generation info
     :rtype: dict[str, Any]
     """
@@ -1545,8 +1719,12 @@ def _generation_info(result: Any, tool_calls: list[dict[str, Any]], *, unwrapped
         "num_turns": result.num_turns,
         "session_id": result.session_id,
         "is_error": False,
-        "finish_reason": "tool_calls" if tool_calls else "stop",
+        "stop_reason": result.stop_reason,
+        "terminal_reason": result.terminal_reason,
+        "finish_reason": _finish_reason(result, tool_calls, answered=answered),
     }
+    if (model_name := _served_model(result, served)) is not None:
+        info["model_name"] = model_name
     if unwrapped:
         info["structured_output_unwrapped"] = 1
     if result.usage:
@@ -1561,6 +1739,13 @@ def _usage_metadata(usage: Any) -> UsageMetadata | None:
     ``langchain_anthropic`` uses, so a caller reads a subscription call's usage the way it reads
     an API call's.
 
+    ``output_token_details.reasoning`` is the CLI's ``output_tokens_details.thinking_tokens`` (the
+    Messages API's name for the thinking share of ``output_tokens``, which it already includes), under
+    LangChain's standard key for reasoning tokens. It is set only when the CLI sends that count,
+    and absent otherwise -- never ``0`` standing in for a count nobody reported. The CLI (read from
+    2.1.286) sums the count over the call's requests, and adds a request whose reply carried none as
+    ``0``; that is its figure, passed on as it is.
+
     :param usage: ``ResultMessage.usage``
     :ptype usage: Any
     :return: usage metadata, or ``None`` when the CLI reported none
@@ -1573,12 +1758,17 @@ def _usage_metadata(usage: Any) -> UsageMetadata | None:
     cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
     output = int(usage.get("output_tokens") or 0)
     prompt = uncached + cache_read + cache_creation
-    return UsageMetadata(
+    metadata = UsageMetadata(
         input_tokens=prompt,
         output_tokens=output,
         total_tokens=prompt + output,
         input_token_details={"cache_read": cache_read, "cache_creation": cache_creation},
     )
+    details = usage.get("output_tokens_details")
+    thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
+    if isinstance(thinking, int) and not isinstance(thinking, bool):
+        metadata["output_token_details"] = {"reasoning": thinking}
+    return metadata
 
 
 def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -> BaseChatModel:
@@ -1596,6 +1786,14 @@ def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -
     model turns a structured call gets: with no built-in and no bound tool it may take the CLI's
     schema retries (:data:`_STRUCTURED_OUTPUT_TURNS`); with any, one turn, so a rejected
     ``StructuredOutput`` attempt fails the call (see :func:`_answers_only_in_schema`).
+
+    The CLI retries a failed API call itself, up to ten times when nobody says otherwise, and caps a
+    reply at each model's own default. ``max_retries`` (a whole number, ``0`` for none) and
+    ``max_output_tokens`` (a positive whole number) set those, on the model or bound per call; they
+    reach the CLI as ``CLAUDE_CODE_MAX_RETRIES`` / ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``, and a value the
+    CLI cannot take raises ``ValueError``. Unset, the CLI's defaults stand. The CLI's own re-asks for
+    a structured answer (:data:`_STRUCTURED_OUTPUT_ATTEMPTS`) are separate, and not retries of a
+    failed call.
 
     :param model_name: the Anthropic model id
     :ptype model_name: str

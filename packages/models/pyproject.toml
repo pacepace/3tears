@@ -34,7 +34,8 @@ dependencies = [
     # ChatStreamChunk the openrouter factory extends with the served `provider` field.
     "langchain-openrouter>=0.2.9",
     # imported directly (providers/openrouter.declare_served_provider patches its ChatResult /
-    # ChatStreamChunk), so declared directly rather than trusted to arrive transitively
+    # ChatStreamChunk, and _declare_reasoning_budget its ChatRequestReasoning), so declared directly
+    # rather than trusted to arrive transitively
     "openrouter>=0.9.2,<1.0",
     "uuid-utils",  # uuid7 message ids for a pooled CLI call (claude_cli_pool.LentClient)
 ]

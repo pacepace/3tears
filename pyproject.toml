@@ -36,6 +36,8 @@ dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-timeout>=2.3",
+    # the unit suite runs on four workers, one package per worker (see the root conftest)
+    "pytest-xdist>=3.6",
     "mypy>=1.8",
     # jsonschema ships no inline types, and threetears.models validates every
     # structured-output schema through it. Stubs here rather than a blanket
