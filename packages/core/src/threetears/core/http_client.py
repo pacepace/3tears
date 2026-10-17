@@ -19,6 +19,11 @@ the three concerns are reused, never hand-rolled:
   (homed in ``core``) never imports ``threetears.models`` and its transitive
   ``langchain`` weight. ``core`` already depends on ``observe`` but not on
   ``models``; the injection keeps that layering seam intact.
+
+one call skips all three on purpose: :meth:`TracedHttpClient.probe`, the health check, asks once
+and answers ``True`` or ``False``. an upstream that is often off (a machine powered down, a service
+scaled to zero) is checked again and again, and not answering is the answer there, not an error --
+:meth:`~TracedHttpClient.request` would log every exhausted call at ERROR.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 from threetears.core.config import DEFAULT_HTTP_TIMEOUT_SECONDS
-from threetears.observe import retry_with_backoff, traced
+from threetears.observe import get_logger, retry_with_backoff, traced
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
@@ -38,7 +43,10 @@ if TYPE_CHECKING:
 
 __all__ = ["ATTEMPTS_EXTENSION", "CircuitBreakerLike", "TracedHttpClient", "UpstreamHttpError"]
 
+log = get_logger(__name__)
+
 _SPAN_NAME = "threetears.core.http_client.request"
+_PROBE_SPAN_NAME = "threetears.core.http_client.probe"
 
 #: key on :attr:`httpx.Response.extensions` carrying how many attempts this
 #: client spent to obtain the response, the successful one included.
@@ -659,6 +667,61 @@ class TracedHttpClient:
             yield response
         finally:
             await stream_cm.__aexit__(None, None, None)
+
+    @traced(name=_PROBE_SPAN_NAME)
+    async def probe(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> bool:
+        """whether the upstream answers ``path`` at all: one quiet try, for a health check.
+
+        for an upstream that is often away (a machine that is powered down, a service scaled to
+        zero) checked on a schedule, where not answering is the expected answer rather than a
+        fault. unlike :meth:`request` it sends ONE attempt with no retry, never touches the circuit
+        breaker (neither checked nor fed: a probe asks whether the upstream is there, whatever the
+        breaker currently thinks, and a down machine's probes must not trip it for real traffic),
+        and never raises for a network failure. that failure, and an error status, are logged at
+        DEBUG only. the response body is not read.
+
+        :param path: request path joined onto ``upstream_base_url``, or an absolute URL
+        :ptype path: str
+        :param method: HTTP verb; ``GET`` by default, ``HEAD`` for an endpoint that serves one
+        :ptype method: str
+        :param headers: optional per-call request headers (never retained, never logged)
+        :ptype headers: Mapping[str, str] | None
+        :param timeout: seconds to wait for the answer; ``None`` uses the client's configured
+            timeout. keep it short: a probe that waits long is a slow way to learn "no"
+        :ptype timeout: float | None
+        :return: ``True`` when the upstream answered with a status below 400; ``False`` when it
+            answered 4xx/5xx, refused the connection, timed out, or dropped it
+        :rtype: bool
+        """
+        status: int | None = None
+        error: str | None = None
+        try:
+            async with self._client.stream(
+                method,
+                path,
+                headers=dict(headers) if headers else None,
+                timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+            ) as response:
+                status = response.status_code
+        # NOSILENT: not answering is the probe's answer (False), logged at DEBUG below
+        except httpx.TransportError as exc:
+            error = type(exc).__name__
+        host = self._host or httpx.URL(path).host or None
+        self._record_span_attributes(method=method, status_code=status, host=host)
+        answered = status is not None and status < 400
+        if not answered:
+            log.debug(
+                "http probe: the upstream did not answer",
+                extra={"extra_data": {"host": host, "method": method, "status_code": status, "error": error}},
+            )
+        return answered
 
     def _record_span_attributes(self, *, method: str, status_code: int | None, host: str | None = None) -> None:
         """set host/method/status on the active span; never a header value.
