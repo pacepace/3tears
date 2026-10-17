@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         LeaseLost,
         LeaseTimeout,
         LeaseUnavailable,
+        SyncHeldLease,
     )
     from threetears.core.data.collection_factory import create_dynamic_collection
     from threetears.core.data.migrations import MigrationRunner
@@ -100,6 +101,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "LeaseLost": ("threetears.core.coordination", "LeaseLost"),
     "LeaseTimeout": ("threetears.core.coordination", "LeaseTimeout"),
     "LeaseUnavailable": ("threetears.core.coordination", "LeaseUnavailable"),
+    "SyncHeldLease": ("threetears.core.coordination", "SyncHeldLease"),
     "MigrationRunner": ("threetears.core.data.migrations", "MigrationRunner"),
     "PLURAL_PREFIX_BY_NAMESPACE_TYPE": ("threetears.core.namespaces", "PLURAL_PREFIX_BY_NAMESPACE_TYPE"),
     "Page": ("threetears.core.pagination", "Page"),
@@ -166,6 +168,7 @@ __all__ = [
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",
+    "SyncHeldLease",
     "MigrationRunner",
     "PLURAL_PREFIX_BY_NAMESPACE_TYPE",
     "Page",

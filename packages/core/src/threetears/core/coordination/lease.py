@@ -22,6 +22,12 @@ to HOLD a lease across real work, renewed in the background and told when it is 
     ...                        # watch held.lost / await held.until_lost()
     await held.release()       # or: async with held: ...
 
+the same from synchronous code (a CLI, a batch script), renewed on :mod:`threetears.core.sync`'s
+shared loop while the calling thread works::
+
+    with lease.hold_sync("set.june", ttl=60, renew_every=20, max_wait_seconds=600) as held:
+        ...                    # held.check() raises LeaseLost once it is lost
+
 to hold keys in a bucket ANOTHER owner declared and handed over already bound, as readers that
 test a key's existence see them (a writer's claim, a registration)::
 
@@ -48,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -56,6 +63,7 @@ from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid7
 
 from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
+from threetears.core.sync import run as run_sync
 from threetears.nats.errors import LockLossReason
 from threetears.observe import get_logger
 
@@ -76,6 +84,7 @@ __all__ = [
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",
+    "SyncHeldLease",
 ]
 
 log = get_logger(__name__)
@@ -742,6 +751,101 @@ class HeldLease:
         await self.release()
 
 
+class SyncHeldLease:
+    """a :class:`HeldLease` for synchronous code: renewed on the shared loop while the caller's thread works.
+
+    returned by :meth:`KVLease.hold_sync` (construct it only through that). The renewal is
+    :class:`HeldLease`'s own, running on :mod:`threetears.core.sync`'s loop; this wrapper gives a
+    thread with no loop of its own the loss signal in a form it can use. Like :class:`HeldLease`,
+    losing the lease is REPORTED: :attr:`lost` is a :class:`threading.Event` a thread can test or
+    wait on, and :meth:`check` raises :class:`LeaseLost` for a holder that wants to stop between
+    steps. Release it with :meth:`release`, or use it as a context manager.
+
+    :ivar key: the KV key held
+    :ivar lost: set once this process is no longer the holder; never cleared
+    """
+
+    def __init__(self, held: HeldLease, lost: threading.Event) -> None:
+        """wrap ``held``. internal: use :meth:`KVLease.hold_sync`.
+
+        :param held: the lease, renewing on the shared loop
+        :ptype held: HeldLease
+        :param lost: set by ``held``'s loss callback, on the loop's thread
+        :ptype lost: threading.Event
+        :return: None
+        :rtype: None
+        """
+        self._held = held
+        self.key = held.key
+        self.lost = lost
+
+    @property
+    def held(self) -> bool:
+        """whether this process may still act as the holder.
+
+        :return: ``False`` once lost or released
+        :rtype: bool
+        """
+        return not self.lost.is_set() and self._held.held
+
+    @property
+    def lost_reason(self) -> LeaseLossReason | None:
+        """why the lease was lost, or ``None`` while it is held (or after a release, which is no loss).
+
+        :return: the loss reason
+        :rtype: LeaseLossReason | None
+        """
+        return self._held.lost_reason
+
+    def check(self) -> None:
+        """raise if the lease was lost; return quietly while it is held or after a release.
+
+        :return: None
+        :rtype: None
+        :raises LeaseLost: the lease was lost; another holder may already be acting on the key
+        """
+        if self.lost.is_set():
+            reason = self._held.lost_reason
+            raise LeaseLost(
+                f"lease {self.key!r} was lost ({reason.value if reason is not None else 'unknown'})", reason=reason
+            )
+
+    def release(self) -> None:
+        """stop renewing and give the key back; blocks until done. Idempotent.
+
+        :return: None
+        :rtype: None
+        """
+        run_sync(self._held.release)
+
+    def __enter__(self) -> SyncHeldLease:
+        """enter a ``with`` block holding the lease.
+
+        :return: this held lease
+        :rtype: SyncHeldLease
+        """
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """release on exit, whatever the body did.
+
+        :param exc_type: pending exception class or None
+        :ptype exc_type: type[BaseException] | None
+        :param exc: pending exception instance or None
+        :ptype exc: BaseException | None
+        :param tb: pending traceback or None
+        :ptype tb: TracebackType | None
+        :return: None
+        :rtype: None
+        """
+        self.release()
+
+
 def _hold_seconds(ttl: timedelta | float, renew_every: timedelta | float) -> tuple[int, float]:
     """validate a hold's timing: a whole-second TTL of at least one, renewed more often than it expires.
 
@@ -1241,6 +1345,78 @@ class KVLease:
             max_hold_seconds=max_hold_seconds,
             on_lost=on_lost,
         )
+
+    def hold_sync(
+        self,
+        key: str,
+        *,
+        ttl: timedelta | float,
+        renew_every: timedelta | float,
+        max_wait_seconds: int = 0,
+        log_extra: Mapping[str, Any] | None = None,
+        retake: bool = False,
+        name: str = "the lease",
+        renew_failure_level: int = logging.INFO,
+        max_hold: timedelta | float | None = None,
+        on_lost: Callable[[LeaseLossReason], None] | None = None,
+    ) -> SyncHeldLease:
+        """:meth:`hold`, from synchronous code: acquire ``key`` and renew it in the background.
+
+        blocks until the lease is held (or refused), then returns while :mod:`threetears.core.sync`'s
+        shared loop renews it. This lease's NATS client must live on that loop -- opened through
+        :func:`threetears.core.sync.run` -- and the lease used only from synchronous code; a client
+        opened on another loop cannot be driven from this one. Every keyword is :meth:`hold`'s.
+
+        :param key: KV key to hold
+        :ptype key: str
+        :param ttl: see :meth:`hold`
+        :ptype ttl: timedelta | float
+        :param renew_every: see :meth:`hold`
+        :ptype renew_every: timedelta | float
+        :param max_wait_seconds: see :meth:`hold`; the call blocks this long at most for a held key
+        :ptype max_wait_seconds: int
+        :param log_extra: see :meth:`hold`
+        :ptype log_extra: Mapping[str, Any] | None
+        :param retake: see :meth:`hold`
+        :ptype retake: bool
+        :param name: see :meth:`hold`
+        :ptype name: str
+        :param renew_failure_level: see :meth:`hold`
+        :ptype renew_failure_level: int
+        :param max_hold: see :meth:`hold`
+        :ptype max_hold: timedelta | float | None
+        :param on_lost: see :meth:`hold`; called on the shared loop's thread, not the caller's, so it
+            must not block or raise
+        :ptype on_lost: Callable[[LeaseLossReason], None] | None
+        :return: the held lease, already renewing; a context manager that releases it
+        :rtype: SyncHeldLease
+        :raises RuntimeError: called from inside a running event loop (use :meth:`hold` there)
+        :raises ValueError: see :meth:`hold`
+        :raises LeaseUnavailable: the key is held and ``max_wait_seconds`` is 0
+        :raises LeaseTimeout: the key stayed held past ``max_wait_seconds``
+        """
+        lost = threading.Event()
+
+        def _lost(reason: LeaseLossReason) -> None:
+            lost.set()
+            if on_lost is not None:
+                on_lost(reason)
+
+        held = run_sync(
+            lambda: self.hold(
+                key,
+                ttl=ttl,
+                renew_every=renew_every,
+                max_wait_seconds=max_wait_seconds,
+                log_extra=log_extra,
+                retake=retake,
+                name=name,
+                renew_failure_level=renew_failure_level,
+                max_hold=max_hold,
+                on_lost=_lost,
+            )
+        )
+        return SyncHeldLease(held, lost)
 
     async def refresh_handle(
         self, handle: LeaseHandle, ttl_seconds: int | None, *, adopt_own_revision: bool = False
