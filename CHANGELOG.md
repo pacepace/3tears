@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a judge campaign's report states each arm's cost per reply
+
+- **`threetears.evals.kernel.production_replicating_cost` takes `candidate_kind`** (keyword, required, no default):
+  the result's `EvalResult.candidate_kind` (#828). For a judge-kind result it sums the judge role, since the judge
+  under test is the subject and is metered under that role alone; for any other kind it sums the candidate, inner
+  agent and external roles as before. Over a judge campaign every reading of an arm's own spend read nothing before
+  and now reads that spend: the scoreboard's cost per reply (a production memo over 16 judge runs printed "—" for
+  every arm while its findings quoted the spend), the cost measure a contrast tests and the decision rule's cost
+  clause reads, a frontier point's cost, the telemetry rollup and a run summary's `mean_prod_cost_usd`. Breaking for
+  a host calling it: pass `candidate_kind=result.candidate_kind`.
+
 ### 3tears-evals: a host binds the cell identity the engine reads
 
 - **`bind_cell_identity` is exported** (`threetears.evals.schema`, `host-contract`): the context manager the run loop
