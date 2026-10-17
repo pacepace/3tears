@@ -30,10 +30,9 @@ import asyncio
 import os
 import signal
 from collections import deque
-from contextlib import suppress
 from collections.abc import AsyncIterator, Mapping
 
-from threetears.observe import get_logger
+from threetears.observe import cancel_and_wait, get_logger
 
 __all__ = [
     "READ_AHEAD_BYTES",
@@ -317,11 +316,9 @@ async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[by
         await buffer.close()
         # A real producer failure already reached the consumer through `buffer.close(failure)`
         # and was raised out of `get()`. This await only reaps the task.
-        filler.cancel()
         # NOSILENT: awaiting a task we just cancelled raises CancelledError by definition, and
         # that is the acknowledgement rather than an error.
-        with suppress(asyncio.CancelledError):
-            await filler
+        await cancel_and_wait(filler)
     # wait for the child to finish INSIDE the timed region, so ``timeout`` bounds the whole
     # restore (a child that reads its stdin fast but then processes for a long time is still capped).
     await proc.wait()
