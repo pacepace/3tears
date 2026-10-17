@@ -84,7 +84,7 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup
 from threetears.core.egress import EgressDriver
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from .._private_hosts import refuse_private_hosts
 from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
@@ -423,9 +423,11 @@ class MultiDocumentDriver(ScrapeDriver):
                 doc_extra: dict[str, Any] = {"session_state": session_state} if session_state else {}
                 page = await self._document_driver.render(doc_url, timeout=timeout, **doc_extra)
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others: a single unreachable or malformed document would otherwise discard every sibling already fetched in this poll
-                log.warning(
-                    "multi-document: one document fetch failed, skipping",
-                    extra={"extra_data": {"url": doc_url, "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="multi-document: one document fetch failed, skipping",
+                    extra={"url": doc_url, "error": str(exc)},
                 )
                 continue
             if seen_urls is not None:

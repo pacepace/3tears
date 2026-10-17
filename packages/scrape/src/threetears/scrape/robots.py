@@ -37,6 +37,7 @@ once per origin is a poor trade.
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import time
 from collections import OrderedDict
@@ -45,7 +46,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from ._private_hosts import refuse_private_hosts
 
@@ -373,8 +374,13 @@ class RobotsGate:
             # stand-in that lacks it raises `AttributeError`, which lands in the same handler
             # as a KV outage and for the same reason: this runs while the caller is unwinding.
             await self._delay_pacer.refund(origin)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the caller is unwinding; a failed refund costs throughput that self-heals, where raising would lose the original error. Logged with its traceback below
-            log.exception("scrape robots: could not return %s's fleet turn; it will refill instead", origin)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the caller is unwinding; a failed refund costs throughput that self-heals, where raising would lose the original error. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape robots: could not return {origin}'s fleet turn; it will refill instead",
+                level=logging.ERROR,
+            )
 
     def _capped_delay(self, origin: str, parser: RobotFileParser, *, announce: bool = True) -> float | None:
         """The ``Crawl-delay`` this origin is governed by after capping, or ``None`` if none.
@@ -479,8 +485,13 @@ class RobotsGate:
 
         try:
             claim = await self._delay_pacer.claim(origin)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
-            log.exception("scrape robots: crawl-delay pacer unavailable for %s; using this pod's own clock", origin)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape robots: crawl-delay pacer unavailable for {origin}; using this pod's own clock",
+                level=logging.ERROR,
+            )
             return 0.0, False
         if claim.claimed:
             return 0.0, True
@@ -532,8 +543,8 @@ class RobotsGate:
         url = f"{origin}/robots.txt"
         try:
             status, body = await asyncio.wait_for(self._fetch(url), timeout=_FETCH_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreachable robots.txt is not a refusal; letting it raise would turn one 500 on a text file into a stopped scrape the site never objected to. Logged with its traceback below
-            log.info("scrape robots: could not read %s; proceeding as unrestricted", url, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreachable robots.txt is not a refusal; letting it raise would turn one 500 on a text file into a stopped scrape the site never objected to. Logged with its traceback below
+            contain(exc, log=log, what=f"scrape robots: could not read {url}; proceeding as unrestricted")
             return None
         if status != 200 or not body:
             log.debug("scrape robots: %s returned %s; proceeding as unrestricted", url, status)
@@ -541,8 +552,8 @@ class RobotsGate:
         parser = RobotFileParser()
         try:
             parser.parse(body.splitlines())
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the grammar is loose and implementations disagree; an unparseable file is a site that failed to express a restriction, not one that expressed a total ban. Logged with its traceback below
-            log.info("scrape robots: %s did not parse; proceeding as unrestricted", url, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the grammar is loose and implementations disagree; an unparseable file is a site that failed to express a restriction, not one that expressed a total ban. Logged with its traceback below
+            contain(exc, log=log, what=f"scrape robots: {url} did not parse; proceeding as unrestricted")
             return None
         return parser
 

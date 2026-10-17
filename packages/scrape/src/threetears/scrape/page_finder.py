@@ -45,7 +45,7 @@ from threetears.agent.tools import ToolExecutor
 from threetears.agent.tools.builtin.web_fetch import create_web_fetch_tool
 from threetears.agent.tools.builtin.web_search import create_web_search_tool
 from threetears.models import LlmPurpose, create_chat_model
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.search.aggregate import aggregate
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
@@ -458,7 +458,7 @@ async def _verify_candidate_page(
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-unverified
             # a fetch failure here must degrade to "unverified," never raise into the caller --
             # same "surface for review, never silently drop" discipline as bounded_retry_structured_call.
-            log.warning("page-finder verification fetch failed for %s: %s", url, exc)
+            contain(exc, log=log, what=f"page-finder verification fetch failed for {url}: {exc}")
             return False, "nodriver", f"could not fetch candidate page for verification: {exc}"
     finally:
         if owns_client:
