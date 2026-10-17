@@ -329,20 +329,24 @@ def get_logger(name: str) -> ThreeTearsLogger:
     return logger  # type: ignore[return-value]
 
 
-#: Libraries whose DEBUG output is voluminous and, in the AWS SDK's case, discloses
+#: Libraries whose output is voluminous and, in the AWS SDK's case, discloses
 #: credentials. ``configure_logging`` sets the ROOT level, so without this these
-#: follow a consumer's DEBUG setting: botocore narrates every request twice and
-#: prints the SigV4 CanonicalRequest, the StringToSign, and the full
+#: follow it: at DEBUG botocore narrates every request twice and prints the SigV4
+#: CanonicalRequest, the StringToSign, and the full
 #: ``Authorization: AWS4-HMAC-SHA256 Credential=... Signature=...`` header for each
-#: one. 3tears ships the S3 object store that makes those calls, so every consumer
-#: inherits it. Nothing in the platform reads AWS SDK debug output, and a failed
-#: call still raises a ``ClientError`` carrying the detail.
+#: one, and at INFO httpx logs a line for every request (``HTTP Request: POST ...
+#: "HTTP/1.1 200 OK"``), which buries an application's own lines under
+#: ``TracedHttpClient``'s traffic. 3tears ships the S3 object store and the HTTP
+#: client that make those calls, so every consumer inherits them. Nothing in the
+#: platform reads their chatter, and a failed call still raises with the detail.
 NOISY_LIBRARY_LOGGERS: tuple[str, ...] = (
     "botocore",
     "aiobotocore",
     "boto3",
     "s3transfer",
     "urllib3",
+    "httpx",
+    "httpcore",
 )
 
 
@@ -368,8 +372,9 @@ def configure_logging(
         (e.g. ``["myapp/src/"]``).  Appended to the global
         ``path_strip_prefixes`` list.
     :param quiet_noisy_libraries: hold the libraries in
-        :data:`NOISY_LIBRARY_LOGGERS` at INFO instead of letting them follow a
-        DEBUG root level.  Default ``True``.  Pass ``False`` when you are
+        :data:`NOISY_LIBRARY_LOGGERS` one step quieter than a root below WARNING
+        (INFO under a DEBUG root, WARNING under an INFO root) instead of letting
+        them follow it.  Default ``True``.  Pass ``False`` when you are
         debugging one of those libraries and genuinely want its trace.
     :param process_id: put ``[pid:<id>]`` on every line, for a deployment where
         several processes write one log.  Default ``False``.  It also applies to
@@ -405,12 +410,14 @@ def configure_logging(
     tt_root = logging.getLogger("threetears")
     tt_root.setLevel(level_val)
 
-    # Only below INFO. At INFO or higher the root is already quieter than the
-    # clamp, and setting INFO here would RAISE these libraries' verbosity above a
-    # WARNING root -- the opposite of the point.
-    if quiet_noisy_libraries and level_val < logging.INFO:
+    # One step quieter than the root, and only while the root is below WARNING: a
+    # DEBUG root holds them at INFO, an INFO root at WARNING. At WARNING or higher
+    # the root is already as quiet as the clamp, and setting a level here would
+    # RAISE these libraries' verbosity above it -- the opposite of the point.
+    if quiet_noisy_libraries and level_val < logging.WARNING:
+        clamp = logging.INFO if level_val < logging.INFO else logging.WARNING
         for noisy in NOISY_LIBRARY_LOGGERS:
-            logging.getLogger(noisy).setLevel(logging.INFO)
+            logging.getLogger(noisy).setLevel(clamp)
 
 
 def configure_third_party_logging(name: str, level: str | None = None) -> None:

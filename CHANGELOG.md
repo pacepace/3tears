@@ -31,6 +31,15 @@ never retries, never raises for a network failure, never touches the circuit bre
 does not read the body. `request` logs every exhausted call at ERROR, so a machine that is often off, checked
 every minute, filled the log with errors; consumers fell back to plain `httpx`.
 
+### observe: httpx's request lines no longer flood an INFO log
+
+**Changed (observe), behaviour to note:** `NOISY_LIBRARY_LOGGERS` gains `httpx` and `httpcore`, and
+`configure_logging` now holds those libraries one step quieter than a root below WARNING: at WARNING under an
+INFO root (before, an INFO root left them alone), at INFO under a DEBUG root (as before). A root at WARNING or
+higher still leaves them alone. httpx logs every request at INFO, so an application on `TracedHttpClient` got
+one `HTTP Request: POST ... "HTTP/1.1 200 OK"` line per call, burying its own lines. A consumer that wants those
+lines (or botocore's INFO lines) back passes `quiet_noisy_libraries=False`.
+
 ### enforcement: `print_log_lines`, the log lines that bypass `threetears.observe` in an application
 
 **Added (enforcement): the `print_log_lines` domain.** In every module that imports 3tears, it flags

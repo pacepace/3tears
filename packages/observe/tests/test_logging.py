@@ -512,3 +512,43 @@ class TestNoisyThirdPartyLoggersAreClamped:
         configure_logging(level="WARNING")
         for name in ("botocore", "aiobotocore", "boto3", "s3transfer", "urllib3"):
             assert logging.getLogger(name).level == logging.NOTSET, name
+
+
+class TestHttpClientLibrariesAreQuietAtInfo:
+    """``TracedHttpClient`` runs on httpx, which logs every request at INFO.
+
+    An application at INFO then gets one ``HTTP Request: POST ... 200 OK`` line per call,
+    burying its own lines (and, where a job's last log line is shown as its status, replacing
+    them). So under an INFO root the noisy libraries are held at WARNING; under a DEBUG root they
+    stay at INFO, as before.
+    """
+
+    _ALL = ("botocore", "aiobotocore", "boto3", "s3transfer", "urllib3", "httpx", "httpcore")
+
+    def test_httpx_and_httpcore_are_noisy_libraries(self) -> None:
+        from threetears.observe import NOISY_LIBRARY_LOGGERS
+
+        assert {"httpx", "httpcore"} <= set(NOISY_LIBRARY_LOGGERS)
+
+    def test_an_info_root_holds_them_at_warning(self) -> None:
+        configure_logging(level="INFO")
+        assert logging.getLogger().level == logging.INFO
+        for name in self._ALL:
+            assert logging.getLogger(name).level == logging.WARNING, name
+
+    def test_a_debug_root_holds_them_at_info(self) -> None:
+        configure_logging(level="DEBUG")
+        for name in self._ALL:
+            assert logging.getLogger(name).level == logging.INFO, name
+
+    def test_an_httpx_request_line_is_not_written_under_an_info_root(self, caplog: pytest.LogCaptureFixture) -> None:
+        configure_logging(level="INFO")
+        logging.getLogger("httpx").info('HTTP Request: POST http://example.test/ "HTTP/1.1 200 OK"')
+        assert not [r for r in caplog.records if r.name == "httpx"]
+
+    def test_declining_the_clamp_leaves_them_alone_at_info(self) -> None:
+        for name in self._ALL:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+        configure_logging(level="INFO", quiet_noisy_libraries=False)
+        for name in self._ALL:
+            assert logging.getLogger(name).level == logging.NOTSET, name
