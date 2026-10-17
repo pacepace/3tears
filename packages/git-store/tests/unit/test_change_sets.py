@@ -125,6 +125,20 @@ async def test_a_nested_transaction_that_fails_drops_only_its_own_writes(make_re
     assert change_set.result.paths == ("aria/keepers/V3/1.json",)
 
 
+async def test_a_failed_savepoint_puts_back_a_row_it_rewrote(make_repo: Any) -> None:
+    repo = await make_repo()
+    store = GitDurableStore(repo)
+    change_set = ChangeSet(repo, "outer")
+    async with change_set.transaction():
+        await store.upsert("keepers", keeper("1", score=1), conn=change_set)
+        with pytest.raises(RuntimeError):
+            async with change_set.transaction():
+                await store.upsert("keepers", keeper("1", score=2), conn=change_set)
+                raise RuntimeError("savepoint rolls back")
+    stored = await store.fetch_one("keepers", key("1"))
+    assert stored is not None and stored["score"] == 1
+
+
 async def test_a_set_that_raises_commits_nothing(make_repo: Any) -> None:
     repo = await make_repo()
     store = GitDurableStore(repo)

@@ -142,15 +142,15 @@ class ChangeSet:
         at = self._index.get(change_key(table, pk))
         return None if at is None else self.changes[at]
 
-    def _truncate(self, length: int) -> None:
-        """drop every write after the first ``length``.
+    def _restore(self, saved: list[Change]) -> None:
+        """put the writes back as they were when a savepoint opened.
 
-        :param length: how many to keep
-        :ptype length: int
+        :param saved: the writes then, rows a later write replaced included
+        :ptype saved: list[Change]
         :return: None
         :rtype: None
         """
-        del self.changes[length:]
+        self.changes[:] = saved
         self._index = {change_key(c.table, c.pk): i for i, c in enumerate(self.changes)}
 
     def transaction(self, **options: Any) -> AbstractAsyncContextManager[ChangeSet]:
@@ -172,13 +172,14 @@ class ChangeSet:
         :rtype: AsyncIterator[ChangeSet]
         :raises ChangeConflictError: when the outermost level commits and a row changed since read
         """
-        mark = len(self.changes)
+        # a copy, not a length: a write inside the savepoint may replace a row written before it
+        saved = list(self.changes)
         self._depth += 1
         try:
             yield self
         except BaseException:
             self._depth -= 1
-            self._truncate(mark if self._depth > 0 else 0)
+            self._restore(saved if self._depth > 0 else [])
             raise
         self._depth -= 1
         if self._depth == 0:
