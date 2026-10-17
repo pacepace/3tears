@@ -31,7 +31,7 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from threetears.iam.oidc import coerce_email_verified
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 try:
     from defusedxml import ElementTree as DefusedElementTree
@@ -250,6 +250,6 @@ def _parse_xml(payload: bytes, *, context: str) -> Any:
     """
     try:
         return DefusedElementTree.fromstring(payload)
-    except Exception:
-        log.warning("saml: failed to parse %s", context)
+    except Exception as exc:
+        contain(exc, log=log, what=f"saml: failed to parse {context}")
         return None
