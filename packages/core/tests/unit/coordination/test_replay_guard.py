@@ -971,7 +971,14 @@ class TestRebindOnReconnect:
             await recorded.hooks[0]()
 
         failures = [_extra(r) for r in caplog.records if "after a NATS reconnect" in r.getMessage()]
-        assert failures == [{"bucket": "pop_nonces", "error": "KvError: broker still down"}], failures
+        assert failures == [
+            {
+                "bucket": "pop_nonces",
+                "error": "KvError: broker still down",
+                "contained_site": "threetears.core.coordination.replay_guard:ReplayGuard._rebind_after_reconnect",
+                "exc_type": "KvError",
+            }
+        ], failures
 
     @pytest.mark.asyncio
     async def test_a_client_without_reconnect_hooks_still_binds(self) -> None:

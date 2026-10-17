@@ -16,7 +16,7 @@ from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.generation import WriteGeneration
 from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.exceptions import CorruptCacheEntry, GenerationUnavailableError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "FlushStrategy",
@@ -713,20 +713,23 @@ async def _flush_per_entity(
                 # parent will never land -- log as an "orphan chain"
                 # event so operators can run the conversation repair
                 # endpoint (or otherwise reset the cache).
-                log.error(
-                    "Orphan chain — FK violation exhausted retries, dropping"
-                    if fk_violation
-                    else "Flush write permanently failed after max retries, dropping",
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        "Orphan chain — FK violation exhausted retries, dropping"
+                        if fk_violation
+                        else "Flush write permanently failed after max retries, dropping"
+                    ),
                     extra={
-                        "extra_data": {
-                            "table": pw.table_name,
-                            "entity_id": str(pw.entity_id),
-                            "retries": next_retry,
-                            "retry_limit": retry_limit,
-                            "fk_violation": fk_violation,
-                            "error": str(exc),
-                        }
+                        "table": pw.table_name,
+                        "entity_id": str(pw.entity_id),
+                        "retries": next_retry,
+                        "retry_limit": retry_limit,
+                        "fk_violation": fk_violation,
+                        "error": str(exc),
                     },
+                    level=logging.ERROR,
                 )
                 # permanent drop: release the in-flight claim and evict the
                 # durable row (version-guarded — a newer coalesced write is kept).
@@ -843,9 +846,11 @@ async def flush_pending(
                 # in the fresh set was committed -- replay it through the per-entity
                 # loop, which preserves the FK-aware re-enqueue policy per write.
                 # The fallback is the safety net, never weakened.
-                log.warning(
-                    "Atomic batch flush failed, falling back to per-entity flush",
-                    extra={"extra_data": {"total": len(fresh), "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="Atomic batch flush failed, falling back to per-entity flush",
+                    extra={"total": len(fresh), "error": str(exc)},
                 )
                 flushed += await _flush_per_entity(fresh, write_buffer, registry, landed)
         else:

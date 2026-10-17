@@ -38,7 +38,9 @@ from typing import Any
 
 import pytest
 
-from threetears.observe import BuildOnce
+from threetears.observe import BuildOnce, contain, get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "CONTAINER_STAGGER_ENV",
@@ -149,7 +151,8 @@ def _ping_docker() -> bool:
         client = docker.from_env()  # type: ignore[attr-defined]
         client.ping()
         result = True
-    except Exception:
+    except Exception as exc:
+        contain(exc, log=log, what="docker daemon ping failed; treating docker as unreachable")
         result = False
     return result
 

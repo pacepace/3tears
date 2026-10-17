@@ -120,6 +120,10 @@ class _FakeJetStream:
     def __init__(self, healed_kv: _FakeKv) -> None:
         self._healed_kv = healed_kv
 
+    async def add_stream(self, _config: Any) -> None:
+        # the re-open declares the stream before binding; here it is declared without error
+        return None
+
     async def create_key_value(self, _config: Any) -> _FakeKv:
         return self._healed_kv
 

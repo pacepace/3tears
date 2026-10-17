@@ -22,6 +22,7 @@ none changes nothing.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable, Sequence
@@ -56,7 +57,7 @@ from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredenti
 # no client, so it is safe eagerly; the annotation needs no runtime object because
 # this module has `from __future__ import annotations`.
 from threetears.nats.subjects import Subject, Subjects
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
@@ -857,10 +858,13 @@ class NatsProxyL3Backend:
             return
         try:
             self._on_superseded(error)
-        except Exception:  # prawduct:allow prawduct/broad-except -- a runtime exit hook that fails must not replace the refusal the caller is owed
-            _logger.exception(
-                "on_superseded callback raised; the supersession error is still raised to the caller",
-                extra={"extra_data": {"namespace": self.default_namespace}},
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a runtime exit hook that fails must not replace the refusal the caller is owed
+            contain(
+                exc,
+                log=_logger,
+                what="on_superseded callback raised; the supersession error is still raised to the caller",
+                extra={"namespace": self.default_namespace},
+                level=logging.ERROR,
             )
 
     async def execute_batch(
@@ -1241,9 +1245,10 @@ class _ProxyAcquireCM:
             try:
                 await self._connection.abort_tx()
             except Exception as abort_exc:
-                _logger.warning(
-                    "proxy connection close: dangling tx rollback failed: %s",
+                contain(
                     abort_exc,
+                    log=_logger,
+                    what=f"proxy connection close: dangling tx rollback failed: {abort_exc}",
                 )
 
 

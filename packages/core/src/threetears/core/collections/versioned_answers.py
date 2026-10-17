@@ -70,7 +70,7 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.nats.collection_key_requests import MAX_PURGED_KEYS, CollectionKeysRequestError
 from threetears.nats.errors import KvError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["AnswerNotComputable", "VersionedAnswer", "VersionedAnswers"]
 
@@ -573,10 +573,10 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             # NOSILENT: said once, not per retirement
             if not self._markers_kept_logged:
                 self._markers_kept_logged = True
-                log.warning(
-                    "retired answers' keys could not be purged; their delete markers stay: table=%s error=%s",
-                    self.table_name,
+                contain(
                     exc,
+                    log=log,
+                    what=f"retired answers' keys could not be purged; their delete markers stay: table={self.table_name} error={exc}",
                 )
 
     async def _retire_until_current(self) -> None:
@@ -591,7 +591,11 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 await self.retire_older_than(target)
             except Exception as exc:  # noqa: BLE001 -- a retirement that fails for any reason must be tried again, not wedge the next ones
                 # NOSILENT: the old answers wait for the next call, which tries again
-                log.warning("retiring old answers failed: table=%s below=%d error=%s", self.table_name, target, exc)
+                contain(
+                    exc,
+                    log=log,
+                    what=f"retiring old answers failed: table={self.table_name} below={target} error={exc}",
+                )
                 self._wanted = self._retired_below
                 return
             self._retired_below = target

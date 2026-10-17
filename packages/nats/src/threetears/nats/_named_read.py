@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.nats._publish import run_bounded
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
@@ -128,5 +128,5 @@ async def read_through_named_consumer(
             await subscription.unsubscribe()
         # NOSILENT: logged; the consumer behind it is reaped by the server once nothing listens
         except Exception as exc:  # noqa: BLE001 -- teardown continues regardless
-            log.debug("named read unsubscribe on %s failed: %s", read.filter_subject, exc)
+            contain(exc, log=log, what=f"named read unsubscribe on {read.filter_subject} failed: {exc}")
     return messages

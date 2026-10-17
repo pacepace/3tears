@@ -78,7 +78,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, Literal, Protocol, TypeVar
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.nats.errors import NatsClientError
 from threetears.nats.forward import forward, serve_owner
@@ -1004,9 +1004,11 @@ async def serve_pipe(
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- boundary: every handler failure is framed to the caller, never swallowed
-            log.info(
-                "pipe handler raised; framing the error to the caller",
-                extra={"extra_data": {"tool": tool, "pod_id": pod_id, "error_type": type(exc).__name__}},
+            contain(
+                exc,
+                log=log,
+                what="pipe handler raised; framing the error to the caller",
+                extra={"tool": tool, "pod_id": pod_id, "error_type": type(exc).__name__},
             )
             try:
                 await stream.send_error(exc)

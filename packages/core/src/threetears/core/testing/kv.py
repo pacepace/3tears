@@ -75,6 +75,7 @@ starts again at 1, as a recreated stream's sequence does.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable
@@ -83,7 +84,7 @@ from typing import Any
 
 from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["FakeKvBucket", "FakeNatsClient"]
 
@@ -902,7 +903,12 @@ class FakeNatsClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- logged; the declaration is kept, as in the real client
-                log.error("asking whether KV bucket %s is still wanted failed; it is restored: %s", name, exc)
+                contain(
+                    exc,
+                    log=log,
+                    what=f"asking whether KV bucket {name} is still wanted failed; it is restored: {exc}",
+                    level=logging.ERROR,
+                )
                 wanted = True
             if not wanted:
                 # forgotten instead of put back, as the real restoration does
@@ -946,7 +952,12 @@ class FakeNatsClient:
             try:
                 await refill.on_restored(self._buckets[name])
             except Exception as exc:  # noqa: BLE001 -- a declarer's hook; logged and left owed, as the real client does
-                log.error("refilling KV bucket %s failed: %s: %s -- it stays owed", name, type(exc).__name__, exc)
+                contain(
+                    exc,
+                    log=log,
+                    what=f"refilling KV bucket {name} failed: {type(exc).__name__}: {exc} -- it stays owed",
+                    level=logging.ERROR,
+                )
                 continue
             refill.owed = False
 
@@ -975,7 +986,7 @@ class FakeNatsClient:
             try:
                 await callback()
             except Exception as exc:  # noqa: BLE001 -- one bad hook must not abort the others, as in the real client
-                log.warning("reconnect callback failed: %s", exc)
+                contain(exc, log=log, what=f"reconnect callback failed: {exc}")
 
     async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
         """record a message and deliver it to this client's subscribers on that subject.

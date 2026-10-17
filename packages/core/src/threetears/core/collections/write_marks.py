@@ -42,13 +42,14 @@ own catch-up. ``TRUNCATE`` fires no statement-level row trigger and leaves no ma
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.generation import GenerationSource
@@ -277,16 +278,19 @@ async def install_write_mark_triggers(
                         )
                     # prawduct:allow prawduct/broad-except -- a table dropped meanwhile, or a missing function; logged, and the next install retries
                     except Exception as exc:
-                        log.error(
-                            "could not give a switched-on table its write-mark trigger; its writes advance only "
-                            "after their commit until it has one",
+                        contain(
+                            exc,
+                            log=log,
+                            what=(
+                                "could not give a switched-on table its write-mark trigger; its writes advance only "
+                                "after their commit until it has one"
+                            ),
                             extra={
-                                "extra_data": {
-                                    "schema": schema,
-                                    "table": table,
-                                    "error": f"{type(exc).__name__}: {exc}",
-                                }
+                                "schema": schema,
+                                "table": table,
+                                "error": f"{type(exc).__name__}: {exc}",
                             },
+                            level=logging.ERROR,
                         )
                         continue
                     created.append(f"{schema}.{table}")
@@ -532,10 +536,15 @@ class WriteMarkReconciler:
             except Exception as exc:
                 failed.add(table)
                 _ISOLATED.labels(table=table).inc()
-                log.error(
-                    "a marked table's write generation could not be advanced; its marks are kept and the pass "
-                    "drains the other tables",
-                    extra={"extra_data": {"table": table, "error": f"{type(exc).__name__}: {exc}"}},
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        "a marked table's write generation could not be advanced; its marks are kept and the pass "
+                        "drains the other tables"
+                    ),
+                    extra={"table": table, "error": f"{type(exc).__name__}: {exc}"},
+                    level=logging.ERROR,
                 )
                 continue
             done.add(table)
