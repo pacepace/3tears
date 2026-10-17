@@ -21,8 +21,7 @@ from typing import TYPE_CHECKING, Any, Final, Self, get_args
 import httpx
 from pydantic import BaseModel
 
-from threetears.evals.kernel import beside_eval_file, note_spend, strict_response_format
-from threetears.evals.kernel.capped_completion import prompt_token_bound
+from threetears.evals.kernel import beside_eval_file, note_spend, prompt_token_bound, strict_response_format
 from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.negotiation import (
     ANTHROPIC_MIN_THINKING_BUDGET,

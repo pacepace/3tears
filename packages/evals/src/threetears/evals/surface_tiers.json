@@ -482,6 +482,7 @@
 "threetears.evals.kernel.production_replicating_cost": "stable",
 "threetears.evals.kernel.program_cost": "provisional",
 "threetears.evals.kernel.prompt_drift": "stable",
+"threetears.evals.kernel.prompt_token_bound": "provisional",
 "threetears.evals.kernel.PromptContractError": "provisional",
 "threetears.evals.kernel.PromptDrift": "stable",
 "threetears.evals.kernel.PROPOSER_PROMPT": "provisional",

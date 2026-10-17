@@ -2406,6 +2406,11 @@
       "signature": "prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift",
       "tier": "stable"
     },
+    "threetears.evals.kernel.prompt_token_bound": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.PromptContractError": {
       "kind": "exception",
       "signature": "",
