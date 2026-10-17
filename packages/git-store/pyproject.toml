@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-git-store"
+version = "0.70.0"
+description = "A git working tree as a durable store: rows as files, every change set one commit, one writer per repository"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# needs the `git` program on PATH; no pygit2.
+dependencies = [
+    "3tears>=0.70.0,<0.71.0",
+    # [client]: the writer lease, forwarding and the advanced broadcast use the NATS client at runtime.
+    "3tears-nats[client]>=0.70.0,<0.71.0",
+    "3tears-observe>=0.70.0,<0.71.0",
+    "pydantic>=2",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-nats = { workspace = true }
+3tears-observe = { workspace = true }
