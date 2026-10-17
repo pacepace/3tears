@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A git working tree as the durable tier: 3tears-git-store
+
+scriob keeps its stories in git and reads them through 3tears' cache tiers; samhla is moving its
+characters into git the same way. The parts of scriob's git tier that are not about stories now
+live here, so both build on one copy.
+
+**Added (new package, git-store):** `threetears.git_store`. A product brings a `RowCodec` (how a row
+becomes bytes; `JsonCodec` ships) and a `Layout` (where a row's file lives; `TemplateLayout` builds
+one from path templates such as `"{character}/keepers/{batch}/{tile}.json"`, escaping key values
+so a key can never point outside its folder). `GitRepo` owns one working tree: `change()` gathers
+collection saves (`save_entity(..., conn=cs)`) into ONE commit, refused whole when a row changed
+since it was read (`ChangeConflictError`, a `ConcurrentModificationError`) or when a hand edit is in
+the way (`HandEditPendingError`); `commit_paths` commits hand edits; `history`, `read_at`, `status`,
+`sync`, `push`. A journal in the git directory lets the next writer put back a change a crash
+interrupted. One process per repository is the writer, by `KVLease.hold`; the others forward their
+change sets to it over `threetears.nats.forward` (family `git-store`) and get the commit or the
+same typed refusal back. Pushes are plain, never forced; a refused push stops pushing and shows in
+`status()`. After a push the writer announces `RepoAdvanced`, and clones that are not the writer
+fetch and fast-forward. `GitDurableStore` is the `DurableStore` / `BulkDurableStore` /
+`BulkDeletingStore` collections run on, with working compare-and-swap; `bind_collections` drops
+every row any commit changed (hand commits and pulled commits included) from the collections'
+caches. `GitRepos` and `RoutedGitStore` keep many repositories at once: one per entity, one shared,
+or several.
+
+**Added (core):** `DurableStoreCollection.list(filters)`: a scan through the collection's store,
+each row cached in L1 only while no write or eviction of the collection overtook the scan.
+
+**Added (nats):** `Subjects.git_store_advanced()`, `{ns}.git-store.advanced`.
+
 ### A self-hosted image server's API, retried as far as it is safe to
 
 samhla (a consumer) drives ComfyUI and SwarmUI with its own graphs and parameters, and had written

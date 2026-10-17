@@ -29,3 +29,4 @@ packages/registry/src/threetears/registry/health.py :: R5 :: 1 :: backlog :: a h
 packages/registry/src/threetears/registry/registration.py :: R4 :: 1 :: backlog :: the bootstrap JWT is not bound to the body and carries no jti
 packages/scrape/src/threetears/scrape/operator_control.py :: R7 :: 1 :: backlog :: a control message needs only the session id
 packages/scrape/src/threetears/scrape/operator_pipe.py :: R7 :: 1 :: backlog :: an attach to the display needs only the session id
+packages/git-store/src/threetears/git_store/writer.py :: N1 :: 1 :: backlog :: a forwarded change set is committed for whoever may publish on the git-store forward family; the grant is the only gate

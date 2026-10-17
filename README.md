@@ -120,6 +120,7 @@ The entity tiers and the durable storage under them.
 | [`3tears`](packages/core/) | `threetears.core` | Three-tier entities, collections, and caching. L1 SQLite, L2 NATS KV, L3 PostgreSQL. `DataStore` for dynamic tables. Canonical `MigrationRunner` with platform and agent scopes, multi-package composition, and topological ordering |
 | [`3tears-conversations`](packages/conversations/) | `threetears.conversations` | `Conversation` entity, three-tier `ConversationsCollection`, and per-agent schema migrations |
 | [`3tears-datasources`](packages/datasources/) | `threetears.datasources` | Datasource entities, collections, and a driver abstraction for PostgreSQL, Redshift, Snowflake, and BigQuery backends |
+| [`3tears-git-store`](packages/git-store/) | `threetears.git_store` | A git working tree as the durable tier. Rows are files, every change set one commit, one writer per repository by a NATS lease, compare-and-swap saves, and hand edits committed and dropped from every cache |
 | [`3tears-object-store`](packages/object-store/) | `threetears.object_store` | Streaming S3-compatible object store for large binary artifacts. Pcaps, database dumps, rendered reports, and evidence, kept out of the entity tiers rather than pushed through them |
 | [`3tears-backup`](packages/backup/) | `threetears.backup` | Encrypted, grandfather-father-son rotated database backups to any `ObjectStore`, with restore verification |
 
@@ -244,6 +245,7 @@ graph LR
         LG[langgraph]
         BACK[backup]
         OBJ[object-store]
+        GIT[git-store]
         CORE[core]
         NATS[nats]
         MEDIA[media-contracts]
@@ -281,6 +283,8 @@ graph LR
     MCP --> NATS
     BACK --> OBJ
     OBJ --> CORE
+    GIT --> CORE
+    GIT --> NATS
     SEARCH --> MEDIA
     CORE --> L1
     CORE --> L2
