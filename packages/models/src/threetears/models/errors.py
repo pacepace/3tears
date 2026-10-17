@@ -17,6 +17,7 @@ __all__ = [
     "friendly_api_error",
     "identify_provider",
     "is_provider_error",
+    "is_rate_limit",
 ]
 
 
@@ -330,6 +331,25 @@ def friendly_api_error(exc: Exception) -> str:
         message = "OpenRouter returned an error. Please retry in 1-2 minutes."
 
     return message
+
+
+def is_rate_limit(exc: BaseException) -> bool:
+    """Whether a model call failed because one model's route is rate-limited, not because its provider is down.
+
+    A :class:`ModelRateLimitError`, any SDK error carrying HTTP 429 (``status_code``),
+    and OpenRouter's mid-stream error, which its chat model raises as a ``ValueError``
+    ending ``(code: 429)``. A 429 belongs to one model on one route: OpenRouter
+    limits per model and upstream host, so it says nothing about the provider's
+    other models.
+
+    :param exc: what the call raised
+    :ptype exc: BaseException
+    :return: ``True`` for a rate limit
+    :rtype: bool
+    """
+    if isinstance(exc, ModelRateLimitError) or getattr(exc, "status_code", None) == 429:
+        return True
+    return isinstance(exc, ValueError) and "OpenRouter API" in str(exc) and "(code: 429)" in str(exc)
 
 
 def is_provider_error(exc: BaseException) -> bool:

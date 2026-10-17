@@ -1,0 +1,884 @@
+"""Cassette layer — tool recording and replay for deterministic, quota-free evals.
+
+A run with ``cassette_mode='capture'`` executes real tools and records what they answered into its
+own corpus; a later run with ``'replay'`` names that corpus (``EvalRun.cassette_corpus_id``) and is
+served from it without touching a third-party service. Where a template's prompt effectively
+dictates what the candidate asks its tools, that gives a pinned corpus of genuine tool output — a
+regression lane for a new prompt, a new model or a new judge that costs nothing to re-run.
+
+The kind supplies the seams; the engine hands each cell its lane
+----------------------------------------------------------------
+
+The engine never reaches into a candidate. :func:`~threetears.evals.run.runner.execute_run` builds
+the run's :class:`CassetteLane` once (:meth:`CassetteLane.for_run`) and hands each cell's ``prepare``
+that cell's :class:`CassetteCell`, which already knows the corpus, the template and the case. The
+kind calls :meth:`CassetteCell.wire` with the
+:class:`~threetears.evals.kernel.cassettes.CassetteSeams` its candidate exposes, and the cell arms
+them; the vocabulary a kind implements is :mod:`threetears.evals.kernel.cassettes`.
+
+* **Action seam** — each declared synchronous tool is swapped for a :class:`CassetteProxy`, which
+  wraps ``act()`` — or ``act_sync()``, for a kind whose tools block inside its own turn loop
+  (:class:`~threetears.evals.kernel.cassettes.SyncActionSeam`). Both entry points take one
+  record-and-replay implementation on the cell, so the two paths key, capture, replay and fail
+  identically, and a recording made on either replays on either.
+* **Delivery seam** — capture hands the kind a recorder it calls where background work STARTS and
+  where it ends; replay hands it a replay it calls where it would have started live work.
+
+Every recording is keyed by what was asked and by which time it was asked
+--------------------------------------------------------------------------
+
+A recording's :class:`~threetears.evals.schema.models.CassetteKey` is the corpus, template, case,
+tool, action, a digest of the parameters (or of the background work's request) and the
+**occurrence** — the Nth time this cell asked exactly that, counted in the order the candidate
+asked. A session that rolls ``1d20`` twice replays both of its rolls in order, and two scouts that
+raced each other home in the capture are each paired with the request that sent them. Background
+work is recorded against its request at the moment it starts and written when it ends — delivered,
+failed, or still in flight when the cell ended — so how the work finished is part of what a replay
+serves. Replay never falls back to the real tool:
+
+* :class:`~threetears.evals.kernel.cassettes.CassetteMiss` — the corpus never recorded this ask.
+* :class:`~threetears.evals.kernel.cassettes.CassetteExhausted` — it recorded this ask fewer times
+  than the candidate has now made it.
+* :class:`~threetears.evals.kernel.cassettes.CassetteCorrupt` — a recording could not be read
+  back: its row no longer loads, the store failed, or its payload no longer rebuilds as the type the
+  seam declares; or a capture could not clear the case's previous recording.
+
+Every one is an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`. A failed write
+during capture is logged and leaves a hole at exactly that key, which a replay reports as a miss or
+an exhaustion naming it — never as a neighbouring answer served in its place.
+
+The store is touched at the cell's edges only
+---------------------------------------------
+
+A seam is called from the kind's own code, mid-cell and often on the event loop, where no store call may
+be made (:class:`~threetears.evals.schema.StoreCalledOnEventLoop`). So the cassettes never call the store
+while the cell runs: the runner opens the cell before its ``prepare`` (:meth:`CassetteCell.open` — a replay
+reads the case's recordings once, a capture clears them) and writes what a capture recorded once the cell
+has ended (:meth:`CassetteCell.flush`), both off the loop. Every call in between is served from, or
+recorded into, the cell's own memory.
+
+One corpus per capture run, one session per case
+------------------------------------------------
+
+A corpus is the capture run's own, named by its id, so two runs capturing at once — a launch over
+several models starts one concurrent run per model — never write into each other's. Within a run,
+opening a capture cell first clears whatever the corpus already holds for the case, so the corpus holds
+exactly one session per case: the last cell of that case to run. Cells of one case never capture at
+once, even in a run executing its cells concurrently (:func:`~threetears.evals.run.runner.execute_run`
+gives them turns in the run's order), so which cell is last is fixed by the run's id. Capture
+at ``k=1`` for a corpus whose every case is the session you meant.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections import Counter
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from functools import partial
+from typing import TYPE_CHECKING, Any, Literal
+
+from threetears.evals.kernel.cassettes import (
+    ActionSeam,
+    CassetteCorrupt,
+    CassetteExhausted,
+    CassetteMiss,
+    CassetteSeams,
+    DeliveryOutcome,
+    DeliveryTicket,
+    Recordable,
+    ReplayedDelivery,
+    SyncActionSeam,
+    SyncToolLike,
+    ToolLike,
+)
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.schema.models import AsyncDelivery, CassetteKey, CassetteSeam, EvalCassette
+from threetears.evals.kernel.storage import CassetteStore
+from threetears.evals.run.run_document import fault_entry
+from threetears.evals.schema.logs import get_logger
+
+if TYPE_CHECKING:
+    from threetears.evals.schema.models import EvalRun
+
+log = get_logger(__name__)
+
+
+#: The ``action`` component every delivery-seam record is stored under. Background work is not an
+#: action, so its records share one engine-owned name rather than borrowing one of the tool's.
+DELIVERY_ACTION = "delivery"
+
+
+def params_hash(params: Mapping[str, Any]) -> str:
+    """Render a params mapping into a deterministic 16-char hex hash.
+
+    Part of every cassette key. Two equivalent mappings produce the same hash regardless of key
+    insertion order at any nesting level; lists keep their order, because order in a list is usually
+    meaning (a dice pool, a ranked shortlist).
+
+    ``default=str`` renders datetimes, UUIDs and other non-JSON values a model may surface through
+    tool params, rather than raising: a raise would fire only at capture time and silently leave a
+    gap in the corpus.
+
+    :param params: The action parameters, or the background work's request.
+    :ptype params: Mapping[str, Any]
+    :return: A 16-char hex prefix of the sha256 of the canonical JSON — 64 bits, ample within one case.
+    :rtype: str
+    """
+    canonical = json.dumps(dict(params or {}), sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _rebuild[R: Recordable](payload_type: type[R], recorded: dict[str, Any], *, key: CassetteKey) -> R:
+    """Rebuild one recording as its seam's declared type, a misfit raised as the rig's fault.
+
+    :raises CassetteCorrupt: The recording does not validate as ``payload_type``.
+    """
+    try:
+        return payload_type.model_validate(recorded)
+    except ValueError as exc:
+        raise CassetteCorrupt(
+            f"Cassette recording {key.doc_id!r} does not rebuild as {payload_type.__name__}: {exc}. "
+            "The corpus predates a change to that type; re-capture the template."
+        ) from exc
+
+
+def _blocks(seam: object) -> bool:
+    """Whether an action seam drives its tools by blocking calls — the one decision the two flavours differ in.
+
+    :raises ValueError: The seam is both an ``ActionSeam`` and a ``SyncActionSeam``.
+    :raises TypeError: It is neither.
+    """
+    awaited = isinstance(seam, ActionSeam)
+    blocking = isinstance(seam, SyncActionSeam)
+    if awaited and blocking:
+        raise ValueError(
+            f"{type(seam).__name__} is both an ActionSeam (arm_tools) and a SyncActionSeam (arm_sync_tools); a cell "
+            "wires one, so declare the one whose entry point the candidate calls — act or act_sync."
+        )
+    if not awaited and not blocking:
+        raise TypeError(
+            f"{type(seam).__name__} is neither an ActionSeam nor a SyncActionSeam: an action seam declares "
+            "recorded_tools and arms them through arm_tools or arm_sync_tools."
+        )
+    return blocking
+
+
+class ReplayReportDefect(ValueError):
+    """A kind reported the background work a replay cell served as something it was not.
+
+    Every piece of background work a replay serves is a harness's payload, so the kind's record of it
+    must say ``substituted=True`` — and must exist: a replayed delivery missing from
+    ``async_deliveries`` would let the cell's production cost be published as though nothing had been
+    substituted. The engine knows what it served, so it holds the kind's report to it.
+    """
+
+
+# =============================================================================
+# CassetteCell — one cell's lane
+# =============================================================================
+
+
+class CassetteCell:
+    """One cell's handle on its run's cassette lane — what a kind's ``prepare`` is handed as ``cassettes``.
+
+    Built by :meth:`CassetteLane.cell` for each cell, already bound to the corpus, the template, the
+    case and the candidate model, so a kind names none of them. It counts each ask's occurrences for
+    the whole cell, keeps the capture's open background work until the cell ends, and remembers what
+    it replayed, so the runner can hold the kind's report to it.
+    """
+
+    def __init__(
+        self,
+        *,
+        mode: Literal["capture", "replay"],
+        store: CassetteStore,
+        scope_id: str,
+        corpus_id: str,
+        template_id: str,
+        test_case_id: str,
+        model: str,
+        holes: list[str] | None = None,
+    ) -> None:
+        """Bind the cell to its run's corpus and its own coordinates.
+
+        :param mode: Whether the cell records or replays.
+        :ptype mode: Literal['capture', 'replay']
+        :param store: Where the corpus lives.
+        :ptype store: CassetteStore
+        :param scope_id: The scope the corpus lives in.
+        :ptype scope_id: str
+        :param corpus_id: The capture run whose corpus this is.
+        :ptype corpus_id: str
+        :param template_id: The template the cell runs.
+        :ptype template_id: str
+        :param test_case_id: The cell's case.
+        :ptype test_case_id: str
+        :param model: The cell's candidate model — capture provenance.
+        :ptype model: str
+        :param holes: Where a recording the capture failed to write is named, one ``error_details`` entry each, for
+            the runner to write on the capture run (:attr:`CassetteLane.holes`); ``None`` keeps none.
+        :ptype holes: list[str] | None
+        """
+        self._mode: Literal["capture", "replay"] = mode
+        self._store = store
+        self._scope_id = scope_id
+        self._corpus_id = corpus_id
+        self._template_id = template_id
+        self._test_case_id = test_case_id
+        self._model = model
+        self._holes = holes
+        self._occurrences: Counter[tuple[str, str, str]] = Counter()
+        self._open: dict[CassetteKey, None] = {}
+        self._served: Counter[str] = Counter()
+        self._replayed_tools: frozenset[str] = frozenset()
+        self._wired = False
+        self._closed = False
+        self._opened = False
+        #: Replay: the case's recordings as :meth:`open` read them, and why each that did not load did not.
+        self._recordings: dict[str, EvalCassette] = {}
+        self._unreadable: dict[str, str] = {}
+        #: Replay: why the case's recordings could not be read at all, raised by every read of them.
+        self._read_failure: str | None = None
+        #: Capture: the recordings made so far, by key, written by :meth:`flush` when the cell has ended.
+        self._pending: dict[str, EvalCassette] = {}
+
+    @property
+    def mode(self) -> Literal["capture", "replay"]:
+        """Whether this cell records its tools' answers or replays them."""
+        return self._mode
+
+    @property
+    def wired(self) -> bool:
+        """Whether the cell's kind has wired its candidate's seams."""
+        return self._wired
+
+    # -- keys and IO ------------------------------------------------------------------------------
+
+    def _next_key(self, tool: str, action: str, params: Mapping[str, Any]) -> CassetteKey:
+        """The key of this ask's next occurrence in the cell."""
+        phash = params_hash(params)
+        occurrence = self._occurrences[(tool, action, phash)]
+        self._occurrences[(tool, action, phash)] += 1
+        return CassetteKey(
+            corpus_id=self._corpus_id,
+            template_id=self._template_id,
+            test_case_id=self._test_case_id,
+            tool=tool,
+            action=action,
+            params_hash=phash,
+            occurrence=occurrence,
+        )
+
+    def _read(self, key: CassetteKey, *, seam: CassetteSeam) -> EvalCassette:
+        """The recording of ``key``, from the case's recordings as :meth:`open` read them, or the rig's failure to have
+        one.
+
+        :raises CassetteMiss: The corpus never recorded this ask.
+        :raises CassetteExhausted: It recorded this ask ``key.occurrence`` times.
+        :raises CassetteCorrupt: The case's recordings could not be read, this row does not load, or it was recorded at
+            the other seam.
+        """
+        if self._read_failure is not None:
+            raise CassetteCorrupt(f"Cassette recording {key.doc_id!r} could not be read back: {self._read_failure}")
+        if (why := self._unreadable.get(key.doc_id)) is not None:
+            raise CassetteCorrupt(f"Cassette recording {key.doc_id!r} could not be read back: {why}")
+        recorded = self._recordings.get(key.doc_id)
+        if recorded is None:
+            raise CassetteMiss(key) if key.occurrence == 0 else CassetteExhausted(key)
+        if recorded.seam != seam:
+            raise CassetteCorrupt(
+                f"Cassette recording {key.doc_id!r} was recorded at the {recorded.seam} seam and is asked for at the "
+                f"{seam} seam; re-capture the template."
+            )
+        return recorded
+
+    def _write(self, cassette: EvalCassette) -> None:
+        """Keep one recording for :meth:`flush`, which writes it once the cell has ended; a later one of its key replaces it."""
+        self._pending[cassette.id] = cassette
+
+    def _save(self, cassette: EvalCassette) -> None:
+        """Save one recording; a failure is logged, named among the lane's holes, and leaves a hole a replay reports."""
+        try:
+            self._store.save_cassette(cassette)
+        except StorageError as exc:
+            # NOSILENT: named among the lane's holes, which the runner writes to the capture run's error_details (the
+            # lane hands every capture cell its list), and a replay asking this key reports the hole as a miss.
+            # Loud but not fatal: the live answer still reaches the candidate, so a transient write
+            # failure costs one recording rather than the turn. The key is explicit, so a replay
+            # reports the hole as a miss naming it rather than pairing a neighbour into its place.
+            # The corpus is the capture run's, so the hole is also kept for the runner to write on that run
+            # (``error_details``), where an operator deciding whether to replay it reads it.
+            log.error(
+                "Cassette capture: failed to record %s (%s). This corpus is INCOMPLETE — a replay asking this "
+                "will stop the cell; re-capture before replaying it.",
+                cassette.id,
+                exc,
+            )
+            if self._holes is not None:
+                self._holes.append(
+                    fault_entry(
+                        f"cassette capture: recording {cassette.id} not written, so this run's corpus is incomplete "
+                        "and a replay asking it stops its cell; re-capture before replaying it",
+                        exc,
+                    )
+                )
+
+    # -- the cell's edges: read and cleared before it, written after it ---------------------------
+
+    def open(self) -> None:
+        """Read or clear the case's recordings, before the cell's ``prepare``: the cell's one store read.
+
+        Every store call the cassettes make happens at the cell's edges — here, and in :meth:`flush` — never while
+        it runs, so nothing a kind calls inside the cell reaches the store: a seam is called from the kind's own
+        code, often on the event loop, where a store may not be called. The runner calls this off the loop.
+
+        A **replay** reads the case's recordings once (:meth:`~threetears.evals.kernel.EvalStorage.read_case_cassettes`)
+        and serves every call from them; a store that fails that read fails each call that asks for a recording, and a
+        row that does not load fails the call that asks for it, as reading that row would. A **capture** clears what
+        the corpus already holds for the case, so the case's recording is this cell's session alone.
+
+        :raises ValueError: The cell was already opened.
+        :raises CassetteCorrupt: A capture could not clear the case's previous recording.
+        """
+        if self._opened:
+            raise ValueError("this cell's cassettes are already open; the runner opens a cell once")
+        self._opened = True
+        if self._mode == "replay":
+            try:
+                recordings = self._store.read_case_cassettes(
+                    corpus_id=self._corpus_id,
+                    template_id=self._template_id,
+                    test_case_id=self._test_case_id,
+                    scope_id=self._scope_id,
+                )
+            except StorageError as exc:
+                # NOSILENT: kept, not dropped: every call that asks for a recording raises it as CassetteCorrupt
+                # (_read), as reading that recording would have; a replay that asks for none was served nothing.
+                self._read_failure = str(exc)
+                return
+            self._recordings, self._unreadable = recordings.readable, recordings.unreadable
+            return
+        try:
+            self._store.delete_case_cassettes(
+                corpus_id=self._corpus_id,
+                template_id=self._template_id,
+                test_case_id=self._test_case_id,
+                scope_id=self._scope_id,
+            )
+        except StorageError as exc:
+            raise CassetteCorrupt(
+                f"Cassette capture could not clear corpus {self._corpus_id!r}'s previous recording of case "
+                f"{self._test_case_id!r}, so this cell's session would be mixed into it: {exc}"
+            ) from exc
+
+    def flush(self) -> None:
+        """Write what the capture recorded, once the cell has ended: the cell's store writes, after :meth:`close`.
+
+        Each recording is written on its own, so a write that fails costs that recording alone: it is logged and
+        named among the lane's holes, and a replay asking for it reports the hole. The runner calls this off the
+        loop. Idempotent: what was written is not written again.
+
+        :raises ValueError: The cell has not ended (:meth:`close`), so its background work may still settle.
+        """
+        if not self._closed:
+            raise ValueError("a cell's cassettes are flushed after it ends; close it first")
+        pending, self._pending = self._pending, {}
+        for cassette in pending.values():
+            self._save(cassette)
+
+    # -- wiring -----------------------------------------------------------------------------------
+
+    def wire(self, seams: CassetteSeams) -> None:
+        """Arm every seam a cell's kind supplies.
+
+        Every refusal of the declaration is made before anything is armed, so a refused declaration
+        leaves the candidate as the kind built it. It touches no store: the runner opened the cell
+        (:meth:`open`) before handing it to ``prepare``.
+
+        :param seams: The cell candidate's seams.
+        :ptype seams: CassetteSeams
+        :raises TypeError: ``seams`` is not a :class:`~threetears.evals.kernel.cassettes.CassetteSeams`.
+        :raises ValueError: The cell was already wired, or was never opened; ``seams`` declares no seam at all;
+            its action seam names no tool; a tool is declared on both seams; or the action seam did not
+            apply the wrap exactly once over every tool it declared.
+        """
+        if not self._opened:
+            raise ValueError("this cell's cassettes were never opened; the runner opens a cell before its prepare")
+        if self._wired:
+            raise ValueError(
+                "this cell's cassettes are already wired; a kind wires its candidate's seams once per cell"
+            )
+        if not isinstance(seams, CassetteSeams):
+            raise TypeError(
+                f"{type(seams).__name__} is not a CassetteSeams: a cassette run wires a candidate only through "
+                "the action_seam and delivery_seams its kind supplies."
+            )
+        action = seams.action_seam
+        deliveries = dict(seams.delivery_seams)
+        if action is None and not deliveries:
+            raise ValueError(
+                f"{type(seams).__name__} supplies no cassette seam: nothing of this candidate could be recorded "
+                "or replayed, so a replay run would go live. Supply an action seam, a delivery seam, or launch "
+                "with cassette_mode='off'."
+            )
+        blocking = _blocks(action) if action is not None else False
+        recorded: dict[str, type[Recordable]] = {}
+        if action is not None:
+            recorded = dict(action.recorded_tools)
+            if not recorded:
+                raise ValueError(
+                    "the action seam names no tool to record; a candidate with no synchronous tool to record "
+                    "supplies action_seam=None."
+                )
+            if both := sorted(recorded.keys() & deliveries.keys()):
+                raise ValueError(
+                    f"{', '.join(repr(name) for name in both)} declared on both the action seam and a delivery "
+                    "seam. An asynchronous tool's act() returns an acknowledgement, so recording it as an action "
+                    "would replay the acknowledgement and never the delivery; declare it on the delivery seam only."
+                )
+        self._wired = True
+        if action is not None:
+            self._wire_action_seam(action, recorded, blocking=blocking)
+        for tool, seam in deliveries.items():
+            if self._mode == "capture":
+                seam.arm_capture(_Recorder(partial(self._start, tool)))
+            else:
+                seam.arm_replay(_Replay(partial(self._replay, tool, seam.payload_type)))
+        if self._mode == "replay":
+            self._replayed_tools = frozenset(deliveries)
+
+    def _wire_action_seam(
+        self, seam: ActionSeam | SyncActionSeam, recorded: Mapping[str, type[Recordable]], *, blocking: bool
+    ) -> None:
+        """Have the action seam swap each recorded tool for a cassette proxy, and hold it to doing so.
+
+        One wrap serves both action seams; ``blocking`` only chooses which of the proxy's entry points
+        is bound, and which arming method the seam is called through.
+        """
+        applied: list[frozenset[str]] = []
+
+        def proxy(tool: Any, result_type: type[Recordable]) -> CassetteProxy:
+            if blocking:
+                return CassetteProxy(tool, act_sync=partial(self._act_sync, tool, result_type))
+            return CassetteProxy(tool, act=partial(self._act, tool, result_type))
+
+        def wrap(tools: Mapping[str, Any]) -> dict[str, Any]:
+            if missing := sorted(recorded.keys() - tools.keys()):
+                raise ValueError(
+                    f"the action seam declares {', '.join(repr(name) for name in missing)} as recorded, but the "
+                    f"candidate's tools are {sorted(tools)}; an unwrapped tool would run live under replay."
+                )
+            applied.append(frozenset(tools))
+            return {name: proxy(tool, recorded[name]) if name in recorded else tool for name, tool in tools.items()}
+
+        if isinstance(seam, SyncActionSeam):
+            seam.arm_sync_tools(wrap)
+        else:
+            seam.arm_tools(wrap)
+        if len(applied) != 1:
+            raise ValueError(
+                f"the action seam applied the cassette wrap {len(applied)} times; it must apply it exactly once, "
+                "or its recorded tools run unwrapped (live, under replay) or wrapped twice."
+            )
+
+    # -- what the seams do ------------------------------------------------------------------------
+
+    async def _act(
+        self, tool: ToolLike, result_type: type[Recordable], action: str, parameters: dict[str, Any]
+    ) -> Recordable:
+        """Capture or replay one awaited call — a :class:`CassetteProxy`'s ``act``.
+
+        One of the action seam's two entry points; every rule is in :meth:`_open_action` and
+        :meth:`_record_action`, so the only thing this owns is how the live tool is called.
+        """
+        if not tool.can_dispatch(action):
+            return await tool.act(action, parameters)
+        key, replayed = self._open_action(tool.name, result_type, action, parameters)
+        if replayed is not None:
+            return replayed
+        return self._record_action(key, await tool.act(action, parameters))
+
+    def _act_sync(
+        self, tool: SyncToolLike, result_type: type[Recordable], action: str, parameters: dict[str, Any]
+    ) -> Recordable:
+        """Capture or replay one blocking call — a :class:`CassetteProxy`'s ``act_sync``.
+
+        The other entry point: :meth:`_act` with the live tool called without awaiting.
+        """
+        if not tool.can_dispatch(action):
+            return tool.act_sync(action, parameters)
+        key, replayed = self._open_action(tool.name, result_type, action, parameters)
+        if replayed is not None:
+            return replayed
+        return self._record_action(key, tool.act_sync(action, parameters))
+
+    def _open_action(
+        self, tool: str, result_type: type[Recordable], action: str, parameters: dict[str, Any]
+    ) -> tuple[CassetteKey, Recordable | None]:
+        """Key one recordable call and, in replay, serve it — the half of an action that is not the live call.
+
+        :return: The call's key, and the recording rebuilt as ``result_type`` in replay or ``None`` in
+            capture, where the caller runs the tool live and hands the result to :meth:`_record_action`.
+        :rtype: tuple[CassetteKey, Recordable | None]
+        :raises CassetteMiss: Replay, and the corpus never recorded this call.
+        :raises CassetteExhausted: Replay, and it recorded this call fewer times than it is now made.
+        :raises CassetteCorrupt: Replay, and the recording could not be read back or rebuilt.
+        """
+        key = self._next_key(tool, action, parameters)
+        if self._mode == "replay":
+            recorded = self._read(key, seam="action")
+            return key, _rebuild(result_type, recorded.response or {}, key=key)
+        return key, None
+
+    def _record_action(self, key: CassetteKey, result: Recordable) -> Recordable:
+        """Record a captured call's live result under its key, and hand the result on unchanged."""
+        self._write(
+            EvalCassette.build(
+                key,
+                scope_id=self._scope_id,
+                seam="action",
+                captured_model=self._model,
+                response=result.model_dump(mode="json"),
+            )
+        )
+        return result
+
+    def _start(self, tool: str, request: Mapping[str, Any]) -> DeliveryTicket:
+        """Open the capture of one piece of background work — a recorder's ``started``."""
+        key = self._next_key(tool, DELIVERY_ACTION, request)
+        self._open[key] = None
+        return _Ticket(partial(self._settle, key))
+
+    def _settle(
+        self, key: CassetteKey, outcome: DeliveryOutcome, payload: Recordable | None, error: str | None
+    ) -> None:
+        """Record how one captured piece of background work ended — a ticket's settlement.
+
+        :raises ValueError: The work was already settled.
+        """
+        if self._closed:
+            # The cell has ended and already recorded this work as undelivered, which is what its
+            # session saw; a payload arriving after the cell is not part of the session.
+            log.warning(
+                "Cassette capture: %s settled after its cell ended; recorded as undelivered, as the session saw it",
+                key.doc_id,
+            )
+            return
+        if key not in self._open:
+            raise ValueError(f"background work {key.doc_id!r} was already settled; a ticket is settled once")
+        del self._open[key]
+        response = payload.model_dump(mode="json") if payload is not None else None
+        self._write(self._delivery(key, outcome, response=response, error=error))
+
+    def _delivery(
+        self,
+        key: CassetteKey,
+        outcome: DeliveryOutcome,
+        *,
+        response: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> EvalCassette:
+        """The recording of one piece of background work."""
+        return EvalCassette.build(
+            key,
+            scope_id=self._scope_id,
+            seam="delivery",
+            captured_model=self._model,
+            outcome=outcome,
+            response=response,
+            error=error,
+        )
+
+    def _replay[P: Recordable](
+        self, tool: str, payload_type: type[P], request: Mapping[str, Any]
+    ) -> ReplayedDelivery[P]:
+        """Serve one piece of background work from the corpus — a replay's ``next``."""
+        key = self._next_key(tool, DELIVERY_ACTION, request)
+        recorded = self._read(key, seam="delivery")
+        self._served[tool] += 1
+        if recorded.outcome == "delivered":
+            return ReplayedDelivery(
+                outcome="delivered", payload=_rebuild(payload_type, recorded.response or {}, key=key)
+            )
+        if recorded.outcome == "failed":
+            return ReplayedDelivery(outcome="failed", error=recorded.error)
+        return ReplayedDelivery(outcome="undelivered")
+
+    # -- the cell's end ---------------------------------------------------------------------------
+
+    def close(self) -> None:
+        """End the cell: record the capture's background work still in flight as undelivered.
+
+        Called by the runner once the kind's ``invoke`` has returned or been cancelled. It touches no store: what
+        the capture recorded is written by :meth:`flush`, after it. Idempotent.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        for key in self._open:
+            self._write(self._delivery(key, "undelivered"))
+        self._open.clear()
+
+    def hold(self, deliveries: Sequence[AsyncDelivery] | None, *, complete: bool) -> None:
+        """Hold the kind's report of its background work to what this cell replayed.
+
+        Every entry for a tool this cell replayed must be substituted — the tool could not run live
+        here — and, on a ``complete`` report, there must be at least one such entry per piece of work
+        the cell served. A reading taken when a deadline cut the cell off is held to the first rule
+        only: it may legitimately not have caught up.
+
+        :param deliveries: The kind's ``async_deliveries``.
+        :ptype deliveries: Sequence[AsyncDelivery] | None
+        :param complete: Whether this is the kind's returned output rather than a mid-cell reading.
+        :ptype complete: bool
+        :raises ReplayReportDefect: The report says a replayed piece of work ran live, or leaves one out.
+        """
+        if not self._replayed_tools:
+            return
+        entries = list(deliveries or [])
+        if live := sorted({e.tool for e in entries if e.tool in self._replayed_tools and not e.substituted}):
+            raise ReplayReportDefect(
+                f"async_deliveries reports work by {', '.join(map(repr, live))} as live (substituted=False), but "
+                "this replay cell armed that tool to replay and it ran no live work; report a replayed "
+                "delivery with substituted=True."
+            )
+        if not complete:
+            return
+        reported = Counter(e.tool for e in entries if e.tool in self._replayed_tools)
+        if short := sorted(tool for tool, served in self._served.items() if reported[tool] < served):
+            raise ReplayReportDefect(
+                "async_deliveries leaves out replayed work: "
+                + ", ".join(f"{tool!r} served {self._served[tool]}, reported {reported[tool]}" for tool in short)
+                + ". Report every piece of background work the candidate started, replayed ones included."
+            )
+
+
+# =============================================================================
+# What the seams are handed — thin, so every rule lives on the cell
+# =============================================================================
+
+
+class CassetteProxy:
+    """A recorded synchronous tool, as the candidate sees it once its cell is wired.
+
+    Composition and ``__getattr__`` delegation: every attribute except the
+    :class:`~threetears.evals.kernel.cassettes.ToolLike` and
+    :class:`~threetears.evals.kernel.cassettes.SyncToolLike` members passes through to the wrapped
+    tool, so the candidate's own tool machinery interacts with the proxy exactly as with the tool.
+    A call goes to the cell: in capture the tool runs live and its result is recorded under the
+    call's key and occurrence (a failed result too — a failure pattern is itself replayable signal);
+    in replay the recording of this call's occurrence is served and the tool is never called.
+
+    **One entry point is bound, by the seam that wired it.** ``act`` for an
+    :class:`~threetears.evals.kernel.cassettes.ActionSeam`, ``act_sync`` for a
+    :class:`~threetears.evals.kernel.cassettes.SyncActionSeam`. Both are defined here, so the other
+    one can never fall through ``__getattr__`` to the wrapped tool's live method; calling it is refused
+    before anything is keyed.
+    """
+
+    def __init__(
+        self,
+        wrapped: ToolLike | SyncToolLike,
+        *,
+        act: Callable[[str, dict[str, Any]], Awaitable[Recordable]] | None = None,
+        act_sync: Callable[[str, dict[str, Any]], Recordable] | None = None,
+    ) -> None:
+        """Wrap one tool for one cell.
+
+        :param wrapped: The tool.
+        :ptype wrapped: ToolLike | SyncToolLike
+        :param act: The cell's capture-or-replay of one awaited call to it.
+        :ptype act: Callable[[str, dict[str, Any]], Awaitable[Recordable]] | None
+        :param act_sync: The cell's capture-or-replay of one blocking call to it.
+        :ptype act_sync: Callable[[str, dict[str, Any]], Recordable] | None
+        :raises ValueError: Not exactly one of ``act`` and ``act_sync`` was given.
+        """
+        if (act is None) == (act_sync is None):
+            raise ValueError(
+                "a CassetteProxy is bound to exactly one entry point — act for an ActionSeam, act_sync for a "
+                "SyncActionSeam"
+            )
+        self._wrapped = wrapped
+        self._act = act
+        self._act_sync = act_sync
+
+    @property
+    def name(self) -> str:
+        """The wrapped tool's name — the candidate-facing identity is unchanged."""
+        return self._wrapped.name
+
+    def can_dispatch(self, action: str) -> bool:
+        """Whether the wrapped tool dispatches ``action`` — forwarded verbatim.
+
+        Declared rather than left to :meth:`__getattr__`: a port member reachable only through
+        ``__getattr__`` is invisible to a type checker and to a runtime-checkable ``isinstance``.
+        """
+        return self._wrapped.can_dispatch(action)
+
+    def __getattr__(self, item: str) -> Any:
+        """Delegate every attribute the proxy does not define to the wrapped tool."""
+        return getattr(self._wrapped, item)
+
+    async def act(self, action: str, parameters: dict[str, Any]) -> Recordable:
+        """Capture or replay this awaited call through the cell's corpus.
+
+        **An action the wrapped tool cannot dispatch never reaches the corpus.** It is not a
+        recordable event: a model inventing an action name is ordinary candidate behaviour, and the
+        answer to it is the tool's own unknown-action answer — the same one a run without cassettes
+        gives.
+
+        :raises TypeError: The tool was wired on a synchronous action seam; call :meth:`act_sync`.
+        :raises CassetteMiss: Replay, and the corpus never recorded this call.
+        :raises CassetteExhausted: Replay, and the corpus recorded this call fewer times than it is now made.
+        :raises CassetteCorrupt: Replay, and the recording could not be read back.
+        """
+        if self._act is None:
+            raise TypeError(f"{self.name!r} was wired on a SyncActionSeam; its calls go through act_sync")
+        return await self._act(action, parameters)
+
+    def act_sync(self, action: str, parameters: dict[str, Any]) -> Recordable:
+        """Capture or replay this blocking call through the cell's corpus — :meth:`act`'s twin, unawaited.
+
+        The same rules, through the same code: an undispatchable action gets the tool's own answer and
+        never reaches the corpus, and a replay serves the recording of this call's occurrence or raises.
+
+        :raises TypeError: The tool was wired on an awaited action seam; call :meth:`act`.
+        :raises CassetteMiss: Replay, and the corpus never recorded this call.
+        :raises CassetteExhausted: Replay, and the corpus recorded this call fewer times than it is now made.
+        :raises CassetteCorrupt: Replay, and the recording could not be read back.
+        """
+        if self._act_sync is None:
+            raise TypeError(f"{self.name!r} was wired on an ActionSeam; its calls go through act")
+        return self._act_sync(action, parameters)
+
+
+class _Ticket:
+    """One captured piece of background work, handed back by ``started`` to be settled once."""
+
+    def __init__(self, settle: Callable[[DeliveryOutcome, Recordable | None, str | None], None]) -> None:
+        self._settle = settle
+
+    def delivered(self, payload: Recordable) -> None:
+        """Record that the work reached the candidate with ``payload``."""
+        self._settle("delivered", payload, None)
+
+    def failed(self, error: str) -> None:
+        """Record that the work ended in an error and delivered nothing."""
+        self._settle("failed", None, error)
+
+
+class _Recorder:
+    """One asynchronous tool's capture, for one cell."""
+
+    def __init__(self, start: Callable[[Mapping[str, Any]], DeliveryTicket]) -> None:
+        self._start = start
+
+    def started(self, request: Mapping[str, Any]) -> DeliveryTicket:
+        """Begin recording one piece of background work, against the request that started it."""
+        return self._start(request)
+
+
+class _Replay[P: Recordable]:
+    """One asynchronous tool's replay, for one cell."""
+
+    def __init__(self, serve: Callable[[Mapping[str, Any]], ReplayedDelivery[P]]) -> None:
+        self._serve = serve
+
+    def next(self, request: Mapping[str, Any]) -> ReplayedDelivery[P]:
+        """Take the recording of this request's next occurrence, in place of starting live work."""
+        return self._serve(request)
+
+
+# =============================================================================
+# CassetteLane — the per-run object the runner builds and splits into cells
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class CassetteLane:
+    """One run's cassette lane: its mode, its store, and the corpus it records into or replays.
+
+    Built once per run by the runner (:meth:`for_run`) and split into one :class:`CassetteCell` per
+    cell (:meth:`cell`), which the runner hands that cell's ``prepare``. One lane per run is what
+    binds a run's whole matrix to one corpus.
+
+    :ivar mode: ``'capture'`` or ``'replay'``; ``'off'`` is refused, since a run with cassettes off has
+        no lane.
+    :ivar store: Where cassettes are read and written.
+    :ivar scope_id: The scope every record this lane touches lives in.
+    :ivar corpus_id: The corpus: a capture run's own id, or the capture run a replay names.
+    :ivar holes: Every recording a capture failed to write, one ``error_details`` entry each, appended by the lane's
+        cells as they fail; the runner writes them on the capture run, which is this lane's run.
+    """
+
+    mode: Literal["capture", "replay"]
+    store: CassetteStore
+    scope_id: str
+    corpus_id: str
+    holes: list[str] = field(default_factory=list, compare=False)
+
+    def __post_init__(self) -> None:
+        """Refuse a lane in a mode that records and replays nothing.
+
+        :raises ValueError: ``mode`` is not ``'capture'`` or ``'replay'``.
+        """
+        if self.mode not in ("capture", "replay"):
+            raise ValueError(
+                f"CassetteLane requires mode 'capture' or 'replay', got {self.mode!r}; "
+                "a run with cassettes off has no lane (CassetteLane.for_run returns None)."
+            )
+
+    @classmethod
+    def for_run(cls, run: EvalRun, store: CassetteStore) -> CassetteLane | None:
+        """The lane a run's own cassette settings call for, or ``None`` when its cassettes are off.
+
+        :param run: The run: its ``cassette_mode``, its ``scope_id``, and the corpus — its own ``id`` for a
+            capture, ``cassette_corpus_id`` for a replay.
+        :ptype run: EvalRun
+        :param store: Where its cassettes are read and written.
+        :ptype store: CassetteStore
+        :return: The lane, or ``None`` for ``cassette_mode='off'``.
+        :rtype: CassetteLane | None
+        """
+        if run.cassette_mode == "off":
+            return None
+        if run.cassette_mode == "capture":
+            return cls(mode="capture", store=store, scope_id=run.scope_id, corpus_id=run.id)
+        # EvalRun refuses a replay that names no corpus, so this is the replay's own.
+        assert run.cassette_corpus_id is not None
+        return cls(mode="replay", store=store, scope_id=run.scope_id, corpus_id=run.cassette_corpus_id)
+
+    def cell(self, *, template_id: str, test_case_id: str, model: str) -> CassetteCell:
+        """The handle one cell of this run is given.
+
+        :param template_id: The template the cell runs.
+        :ptype template_id: str
+        :param test_case_id: The cell's case.
+        :ptype test_case_id: str
+        :param model: The cell's candidate model.
+        :ptype model: str
+        :return: The cell's handle, unwired.
+        :rtype: CassetteCell
+        """
+        return CassetteCell(
+            mode=self.mode,
+            store=self.store,
+            scope_id=self.scope_id,
+            corpus_id=self.corpus_id,
+            template_id=template_id,
+            test_case_id=test_case_id,
+            model=model,
+            holes=self.holes,
+        )
+
+
+__all__ = [
+    "DELIVERY_ACTION",
+    "CassetteCell",
+    "CassetteLane",
+    "CassetteProxy",
+    "ReplayReportDefect",
+    "params_hash",
+]

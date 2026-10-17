@@ -1,0 +1,3964 @@
+"""The generic trial loop: every cell of a run, whatever kind of candidate it measures.
+
+:func:`execute_run` runs a run's matrix — each ``(test_case × model × k_iteration)`` once, in a
+shuffled order derived from the run's id (:func:`cell_execution_order`) — and :func:`run_one_result`
+runs one cell: it asks the template's candidate kind for a candidate, judges what it produced, and
+builds the :class:`~threetears.evals.schema.models.EvalResult` and its sibling
+:class:`~threetears.evals.schema.models.EvalTrace`. Nothing here knows what a subject is.
+
+The candidate-kind seam
+-----------------------
+
+Everything that differs between one evaluable subject and another lives behind one seam.
+:func:`run_one_result` dispatches on ``template.candidate_kind``
+**exactly once**, at the top of the cell, and everything after that point — judging, goal-state
+recording, usage capture, the cell summary, storage — reads a
+:class:`~threetears.evals.kernel.candidate_kind.CandidateOutput`. The protocol is
+:mod:`threetears.evals.kernel.candidate_kind`; every implementation belongs to whoever owns its
+subject, and reaches the runner as a :class:`KindFactory` on :attr:`RunnerOptions.candidate_kinds`
+with its collaborators already bound. A host's kinds live in its own adapter; the one this
+package ships is the reporter kind, :mod:`threetears.evals.analysis.reporter_kind`.
+
+The host reaches this loop only through the :class:`~threetears.evals.kernel.host.eval_host.EvalHost`
+it is handed — its storage, trace sink, cell timeout, failure describer, blocking-I/O executor and
+vocabulary — and through the run's options: the kind factories and values such as the rate table, the
+metered-call ledger and the judge concurrency. That is what lets any host run a trial through the same
+function every other host does.
+
+Result lifecycle
+----------------
+
+For each cell:
+
+1. Ask the template's kind's factory for the cell's kind, and refuse a judged run of a kind no judge
+   can read before anything is spent.
+2. ``prepare`` the candidate. A kind that cannot build one names the termination arm, and the cell is
+   recorded as one cleanly-excluded result.
+3. ``invoke`` it. The kind reports its output, its mechanical facts, its telemetry and its errors —
+   the candidate's own failures and the rig's apart — and, through the cell's sink, what it is waiting
+   on and how to read what it has spent so far, so a cell its deadline cancels is still recorded.
+   An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``prepare`` or
+   ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on.
+4. Run the rubric judge, when a judge service is wired and the cell produced something to judge.
+5. Build one :class:`~threetears.evals.schema.models.EvalResult`, and one trace document beside it.
+
+A cell cut off before step 5 — by its deadline, its run's cancel, or an apparatus fault — is built
+from its sink instead (``_cut_short_cell``): the spend it had reported, its errors with the cut's own
+charge, and, when the cut struck the judge phase, the evidence and every score that came back.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import math
+import random
+import time
+import uuid
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import (
+    AbstractContextManager,
+    contextmanager,
+    nullcontext,
+)
+from dataclasses import dataclass, field, replace
+from functools import partial
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
+
+from threetears.evals.kernel.candidate_kind import (
+    CandidateKind,
+    CandidateKindDefect,
+    CandidateOutput,
+    CandidatePreparationFailed,
+    CellPending,
+    CellSink,
+    CostCapReached,
+    UnknownCandidateKind,
+    VariantConfig,
+)
+from threetears.evals.kernel.capped_completion import refresh_prices
+from threetears.evals.kernel.covariates import (
+    count_delivered_turns,
+    count_dropped_tool_calls,
+    count_refused_tool_attaches,
+    count_truncated_rounds,
+    derive_covariates,
+)
+from threetears.evals.kernel.dsl import evaluate_with_detail
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.completion import CompletionProtocolDefect
+from threetears.evals.run.judge import defect_usage
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.kernel.host.timeouts import EvalCellTimeout
+from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
+from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
+from threetears.evals.schema.models import (
+    OUTCOME_DIM_ID,
+    TRANSCRIPT_DIM_ID,
+    AsyncDelivery,
+    CellTermination,
+    ConversationStopCause,
+    EvalResult,
+    EvalRun,
+    EvalTemplate,
+    EvalTestCase,
+    EvalTrace,
+    GoalStateOutcome,
+    JudgeCutShort,
+    JudgedArtifact,
+    JudgeEvidence,
+    LatencyMetrics,
+    PreconditionOutcome,
+    RoleUsage,
+    RubricScore,
+    eval_trace_doc_id,
+    scored_dim_ids,
+    utc_now_iso,
+)
+from threetears.evals.kernel.scoring import CellSummary, boundary_dim_names
+from threetears.evals.schema.call_ledger import CallLedger
+from threetears.evals.schema.world_events import Firings, WorldEvent
+from threetears.evals.kernel.world_session import WorldSession
+from threetears.evals.kernel.usage_capture import (
+    ExternalRateTable,
+    RoleUsageLedger,
+    async_delivery_usage,
+    blended_cost_roles,
+    cell_cost,
+)
+from threetears.evals.run.cassette_proxy import CassetteCell, CassetteLane
+from threetears.evals.run.executor import CellExecutor, InProcessCellExecutor
+from threetears.evals.run.judge_service import (
+    JudgeContext,
+    JudgeOutcome,
+    JudgeRequest,
+    JudgeService,
+    fold_judge_outcomes,
+)
+from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
+from threetears.evals.run.run_document import fault_entry, record_run_faults
+from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.schema.logs import get_logger
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel.host.world import WorldRegistry
+    from threetears.evals.run.budget import CapBreach
+
+log = get_logger(__name__)
+
+
+#: The per-cell wall-clock ceiling a caller building options by hand gets — see
+#: :attr:`RunnerOptions.cell_timeout_s`. A launch whose kind can legitimately run longer raises it.
+DEFAULT_CELL_TIMEOUT_S = 600.0
+
+
+#: Judge calls in flight at once while one result is scored — the code default behind
+#: ``eval.judge_concurrency``. Stated here rather than read from the section because the
+#: runner takes configuration as values through :class:`RunnerOptions`;
+#: a host with a configured setting copies it onto each run's options. See the field's docstring for why 4 and why the phase gathers at all.
+DEFAULT_JUDGE_CONCURRENCY = 4
+
+
+@dataclass(kw_only=True)
+class RunnerOptions:
+    """The run's own knobs that don't fit on the run document — per-run values, never host wiring.
+
+    What every run of a host shares — its storage, tracing, cell timeout, executor and failure
+    describer — is the :class:`~threetears.evals.kernel.host.eval_host.EvalHost` the loop is
+    handed. What is here is decided per run: the kinds a launch bound for it, its ceilings and
+    rates, its ledger, its probe of the job it runs in, and a test's pinned cell order.
+    """
+
+    # Judge calls in flight at once while one result is scored. The 2 + N single-dim calls
+    # (transcript axis, outcome axis, one per declared rubric dim) are independent, so the
+    # phase gathers them under a semaphore of this width and assembles the scores in
+    # dimension order afterwards — see ``judge_dims``. ``1`` reproduces the serial phase
+    # exactly. ``start_run`` copies the live ``eval.judge_concurrency`` here per run, which
+    # is what makes that setting hot; a caller building options by hand gets the default.
+    judge_concurrency: int = DEFAULT_JUDGE_CONCURRENCY
+    # Per-cell hard ceiling. Bounds the WHOLE per-result execution (the kind's own work +
+    # judging) through the host's cell timeout, so one hung cell is capped here instead of stalling
+    # the run to the job's backstop (matrix-adaptive, ~N × this ceiling). When it
+    # fires the run proceeds to the rest, and the cell keeps what it had spent and is charged by
+    # what it was waiting on: the candidate's turn or its background work FAILS it, the
+    # simulator, the judge or the rig EXCLUDES it (``_DEADLINE_CHARGE``). A kind whose own work
+    # can legitimately run longer than the default has its launch raise this to match.
+    cell_timeout_s: float = DEFAULT_CELL_TIMEOUT_S
+    # Measurement-condition probe: returns how many eval jobs are executing
+    # right now, INCLUDING this one. The contention that corrupts a latency pool comes from a
+    # concurrent JOB — which today means a second RUN, and the job manager is the only thing that
+    # can see one — or from this run's own cells running side by side, which the run knows itself
+    # (``max_concurrent_cells``). The launch that handed the run to a job manager supplies the probe, per run.
+    # What it measures is jobs, not runs, because a non-run job spending on the same provider account
+    # would contend exactly as a run does. ``None`` (a direct or test invocation with nothing wired)
+    # records no execution_mode at all rather than asserting "serial": nobody looked.
+    concurrent_eval_jobs_probe: Callable[[], int] | None = None
+    # Rate table for the run's counted external calls — one entry per (provider, unit),
+    # resolved ONCE at launch from the operator's declared rates and the providers this
+    # run can actually reach. It rides here rather than being read per cell because the
+    # rates are hot-reloadable: an operator editing one mid-run would otherwise leave one
+    # run's cells measured against two, with only the dollars to tell them apart.
+    # ``None`` — the default for any caller that resolved nothing — leaves external calls
+    # counted and unpriced, which every cost surface discloses; it is never a claim that
+    # the calls were free.
+    external_rates: ExternalRateTable | None = None
+    # The run's metered-call ledger — the same object a kind's collaborators declare on every
+    # subject they build, so what the dispatcher counts and what the runner reports are one
+    # tally rather than two that can disagree. It rides here for the reason
+    # ``external_rates`` does, plus one of its own: the ceiling bounds the RUN, and a
+    # per-cell object would silently turn it into a per-cell ceiling N times larger.
+    # ``None`` — every caller that built its own options, and every non-eval path —
+    # leaves metered calls uncounted, which is what those callers already had.
+    metered_calls: MeteredCallLedger | None = None
+    # Injection seam for the within-run cell shuffle. ``None`` — every production
+    # caller — means the order is derived from the run's own id (see
+    # :func:`cell_execution_order`), so nothing has to be threaded through the
+    # service to make a run reproducible. A test supplies its own
+    # :class:`random.Random` when it needs to pin a specific permutation; it is a
+    # generator rather than an integer seed so a caller cannot accidentally share
+    # one stream between the shuffle and some future use.
+    cell_order_rng: random.Random | None = None
+    # The candidate kinds this run wires, keyed by the name a template carries, each as the
+    # factory that builds the kind for one cell (:class:`KindFactory`), with the collaborators the
+    # launch bound for this run. Every kind arrives this way: the runner has no way to build a
+    # collaborator it has never heard of, and a factory is how a kind is handed the cell it is
+    # driving. An empty table wires nothing, so a template naming any kind raises rather than
+    # being quietly re-routed.
+    candidate_kinds: Mapping[str, KindFactory] = field(default_factory=dict)
+    # How many of the run's cells may execute at once. ``1`` — the default for every caller that
+    # builds its own options, and what a launch declaring latency under test (``measure_latency``)
+    # sets — runs them strictly one after another, so a cell's wall-clock is read with nothing else
+    # of its run beside it. Above 1 the run executes its cells concurrently, and every cell it
+    # records is stamped measured under concurrency (``execution_mode``), which keeps its latency out
+    # of every comparison. :func:`execute_run` narrows it to the run's own matrix, so a run of one
+    # cell is serial whatever was asked, and refuses — before a cell's ``prepare`` — a kind declaring a
+    # narrower width than the run executes at (``CandidateKind.max_concurrent_cells``), since only the kind
+    # knows whether it is safe beside itself.
+    max_concurrent_cells: int = 1
+    # What runs the cells (:class:`~threetears.evals.run.executor.CellExecutor`): a host's own pool or
+    # queue, or ``None`` for the in-process default, which covers serial and concurrent alike.
+    cell_executor: CellExecutor | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a width no run can execute at.
+
+        :raises ValueError: ``max_concurrent_cells`` is below 1.
+        """
+        if self.max_concurrent_cells < 1:
+            raise ValueError(
+                f"a run executes at least one cell at a time; got max_concurrent_cells={self.max_concurrent_cells}"
+            )
+
+
+@dataclass(frozen=True)
+class CellContext:
+    """What the runner knows about one cell when it asks a kind's factory for the cell's kind.
+
+    Handed to a :class:`KindFactory` once per cell, before ``prepare``. Everything on it is the
+    engine's own vocabulary: the host the cell runs for (its failure describer, its world), the
+    scenario and the case, the cell's coordinates, its opening measurement-conditions sample and
+    the run's options — the rate table, the metered-call ledger and the conditions probe a kind's
+    own measurement reads.
+
+    :ivar host: The host the run belongs to.
+    :ivar template: The scenario being run.
+    :ivar test_case: The cell's case.
+    :ivar eval_run_id: The run this cell belongs to.
+    :ivar k_iteration: Which repetition this cell is.
+    :ivar concurrent_eval_jobs: The cell's opening measurement-conditions sample, which a kind that
+        keeps sampling through its own work samples against.
+    :ivar options: The run's options.
+    """
+
+    host: EvalHost
+    template: EvalTemplate
+    test_case: EvalTestCase
+    eval_run_id: str
+    k_iteration: int
+    concurrent_eval_jobs: int | None
+    options: RunnerOptions
+
+
+class KindFactory(Protocol):
+    """Builds the candidate kind for one cell.
+
+    The one shape a kind reaches the runner in (:attr:`RunnerOptions.candidate_kinds`). A host
+    binds the kind's collaborators when it builds the factory — a client, a subject factory, the
+    host's own subject object — and the runner supplies the cell. A kind that needs nothing per
+    cell returns the same instance every time, which :class:`~threetears.evals.kernel.candidate_kind.CandidateKind`
+    permits because it holds no state between cells.
+    """
+
+    def __call__(self, context: CellContext) -> CandidateKind:
+        """Return the kind that drives this cell.
+
+        :param context: The cell, as the runner knows it.
+        :ptype context: CellContext
+        """
+        ...  # pragma: no cover — protocol
+
+
+class CellOutcome(NamedTuple):
+    """The two documents one eval cell produces.
+
+    They are separate because ``trace`` and ``otel_trace`` are most of a stored
+    result's bytes and no list, aggregate or cost path reads them — so the analysis
+    record stays narrow and the payload lives in a sibling
+    :class:`~threetears.evals.schema.models.EvalTrace` keyed by the result's id.
+
+    A :class:`~typing.NamedTuple` rather than a dataclass so a caller that only wants
+    the result can unpack and ignore the rest (``result, _ = await run_one_result(...)``)
+    while the fields stay named and typed.
+    """
+
+    result: EvalResult
+    #: Always present, even when empty — a cell that recorded nothing still produced a
+    #: definite answer about what it recorded. :meth:`EvalStorage.save_eval_result`
+    #: declines to write an empty one rather than making that decision here.
+    trace: EvalTrace
+
+
+class EveryCellApparatusFailedError(RuntimeError):
+    """Raised by :func:`execute_run` when an apparatus fault excluded every cell of the run.
+
+    Each cell is recorded and persisted first, as any excluded cell is; this is raised after the
+    last one, so the job manager files the run ``failed`` with the faults as its error. A rig that
+    failed every cell measured nothing, and an operator has to repair it before a relaunch can.
+
+    :ivar total: The cells the run produced, every one excluded.
+    :ivar faults: Each cell's apparatus message, in execution order.
+    """
+
+    def __init__(self, total: int, *, faults: Sequence[str]) -> None:
+        """Record how many cells the rig excluded and why.
+
+        :param total: The cells the run produced.
+        :ptype total: int
+        :param faults: Each cell's apparatus message.
+        :ptype faults: Sequence[str]
+        """
+        self.total = total
+        self.faults = list(faults)
+        distinct = list(dict.fromkeys(self.faults))
+        shown = "; ".join(distinct[:3]) + (f"; and {len(distinct) - 3} more" if len(distinct) > 3 else "")
+        super().__init__(
+            f"the eval apparatus failed every one of the run's {total} cell(s), so the run measured nothing — "
+            f"repair the rig before relaunching: {shown}"
+        )
+
+
+#: Whose failure a cell deadline is, by what was pending when it struck, and how the message
+#: names it: a failure is charged to whoever caused it.
+#:
+#: The candidate's own turn and the background work it started are the configuration under
+#: test — the model a background tool runs on is a setting of it, as the candidate's model is
+#: — so a
+#: deadline spent waiting on either FAILS the cell. The simulator, the judge and the apparatus
+#: are the rig, so a deadline spent on one of them EXCLUDES it. The charge lands on the error
+#: field ``classify_result`` already reads, so there is one classification, not two.
+#:
+#: ``background_work`` charges the candidate because the background work a kind reports in flight
+#: runs on a model of the configuration's: a tool whose background work runs no model the
+#: configuration sets would need its own arm.
+#:
+#: ``judge`` is the rig too, and lands on the judge's own field rather than ``infra_error``: by then
+#: the candidate's work has finished and been paid for, so the deadline is charged to each dim it
+#: cut off (``judge_error``, which excludes the cell exactly as an infra error does) and the cell
+#: keeps its evidence and the scores that came back. That is what lets a re-judge recover it — an
+#: infra error is permanent, and a re-judge clears only the judge's.
+_DEADLINE_CHARGE: dict[CellPending, tuple[Literal["candidate", "infra", "judge"], str]] = {
+    "apparatus": ("infra", "the eval apparatus"),
+    "candidate": ("candidate", "the candidate's turn"),
+    "background_work": ("candidate", "background work the candidate started"),
+    "simulator": ("infra", "the simulated user"),
+    "judge": ("judge", "the judge"),
+}
+
+
+@dataclass
+class ErrorLedger:
+    """Accumulates a cell's errors, categorized candidate-vs-infra at the source.
+
+    Replaces the flat ``error_details`` list so scoring can classify structurally:
+    a **candidate** error is a model the candidate's configuration
+    runs failing — its own turn model, or the model its background work runs on (→ fail); an **infra**
+    error is a harness/delivery failure (→ exclude). A cell's deadline lands on whichever
+    side :data:`_DEADLINE_CHARGE` names for what it struck. Categorizing here, at each append site, avoids re-parsing a joined
+    string later (fragile-parse rule). ``combined`` reproduces the old
+    ``runner_error`` display string (candidate details first, then infra).
+    """
+
+    candidate: list[str] = field(default_factory=list)
+    infra: list[str] = field(default_factory=list)
+    #: An apparatus fault was recorded — the measuring rig broke, so nothing this cell
+    #: produces from here on is evidence about the candidate. Read by the cell loop to
+    #: stop driving turns; see :meth:`add_apparatus` for why it is a flag and not a
+    #: substring search over ``infra``.
+    apparatus_failed: bool = False
+    #: The apparatus fault was the calling ACCOUNT being refused. Carried out of the cell as
+    #: ``CandidateOutput.account_refused``, which stops the whole run — see
+    #: :meth:`add_account_refusal`.
+    account_refused: bool = False
+
+    @classmethod
+    def of(cls, candidate: CandidateOutput | None) -> ErrorLedger:
+        """The ledger a kind's report amounts to — empty when it reported nothing.
+
+        :param candidate: What the kind returned, or a reading of what it had so far, or ``None``.
+        :ptype candidate: CandidateOutput | None
+        :return: A fresh ledger holding the report's errors and its account refusal.
+        :rtype: ErrorLedger
+        """
+        if candidate is None:
+            return cls()
+        return cls(
+            candidate=list(candidate.candidate_errors),
+            infra=list(candidate.infra_errors),
+            account_refused=candidate.account_refused,
+        )
+
+    def add_candidate(self, msg: str) -> None:
+        """Record a candidate-attributable error: a model the configuration runs failed, not its account.
+
+        The candidate's own turn model, or a model its configuration sets for a tool it
+        drives in the background.
+        """
+        self.candidate.append(msg)
+
+    def add_infra(self, msg: str) -> None:
+        """Record a harness/infra error (factory, simulator, delivery, a timeout charged to the rig)."""
+        self.infra.append(msg)
+
+    def add_apparatus(self, msg: str) -> None:
+        """Record an apparatus fault: infra for scoring, plus a flag that stops the cell.
+
+        Infra, because the scoring question is the same one — a broken rig is not the
+        candidate's failure and must not be scored as one. The extra flag is what makes
+        it *stop*, and that matters for a reason the classification alone does not cover:
+        :func:`~threetears.evals.kernel.result_condition.classify_result` gives ``candidate_error``
+        precedence over ``infra_error``, so a cell that keeps driving turns after the rig
+        broke can pick up a candidate LLM error and be relabelled a candidate failure —
+        a harness fault attributed to the candidate. It also stops paying for turns whose
+        output cannot be scored, and stops a deterministic fault (a malformed seed, a
+        cassette miss) re-firing every remaining turn.
+
+        A flag rather than a prefix search over ``infra``: the parse-the-string version is
+        the fragile-parse rule this ledger's categories exist to retire.
+        """
+        self.infra.append(f"apparatus: {msg}")
+        self.apparatus_failed = True
+
+    def add_account_refusal(self, msg: str) -> None:
+        """Record an apparatus fault that was the calling account being refused.
+
+        Everything :meth:`add_apparatus` does — excluded, and the cell stops — plus the flag the
+        run reads: the key is refused or the balance is gone for every cell after this one too,
+        so the run stops rather than paying to exclude them one by one.
+        """
+        self.add_apparatus(msg)
+        self.account_refused = True
+
+    @property
+    def account_refusal(self) -> str | None:
+        """The cell's infra errors when the calling account was refused, else None — what stops the run.
+
+        Never ``None`` for a refused account: both ways the flag is set carry an infra entry with
+        it (:meth:`add_account_refusal` records one, and ``CandidateOutput`` refuses the flag
+        without one), so the run loop reads this one property rather than the flag and the
+        message separately.
+        """
+        return self.infra_error if self.account_refused else None
+
+    @property
+    def candidate_error(self) -> str | None:
+        """Joined candidate errors, or None if there were none."""
+        return "; ".join(self.candidate) or None
+
+    @property
+    def infra_error(self) -> str | None:
+        """Joined infra errors, or None if there were none."""
+        return "; ".join(self.infra) or None
+
+    @property
+    def combined(self) -> str | None:
+        """All errors joined for human display (``EvalResult.runner_error``)."""
+        return "; ".join(self.candidate + self.infra) or None
+
+
+@dataclass(frozen=True)
+class _JudgePhase:
+    """One cell's judge phase as it began: what the judge reads, and every dim it asks.
+
+    :ivar judged_artifact: The kind's declaration, which picked the axes.
+    :ivar evidence: What the kind rendered for its judge.
+    :ivar dims: Every dim the phase asks, in the order it asks them (:func:`scored_dim_ids`).
+    :ivar judge_config_ids: What asks each of them — its config's id, or the built-in prompt's identity
+        (:meth:`JudgeService.judge_config_ids`) — recorded for every dim, so one whose call raised or was
+        cut off with its cell still says which judge it was to be asked by.
+    """
+
+    judged_artifact: JudgedArtifact
+    evidence: JudgeEvidence
+    dims: tuple[str, ...]
+    judge_config_ids: Mapping[str, str]
+    #: The asked dims on the boundary axis (guardrails), stamped onto a can't-tell as a score's axis is.
+    boundary_dims: frozenset[str] = frozenset()
+
+
+class _JudgeRecord(NamedTuple):
+    """What a cell's judge phase leaves on its result, however the phase ended."""
+
+    transcript_score: RubricScore | None
+    outcome_score: RubricScore | None
+    rubric_scores: list[RubricScore]
+    #: Mirrors the outcome axis's reasoning — the holistic "did it work" signal.
+    judge_reasoning: str
+    judge_config_ids: dict[str, str]
+    #: ``"<dim>: <error>"`` for each dim that failed or did not finish, joined; ``None`` when none.
+    judge_error: str | None
+    judge_cannot_tell: dict[str, str]
+    #: The can't-tell dims on the boundary axis, sorted.
+    judge_cannot_tell_boundary: list[str]
+    #: The judge role's rows, for the calls that returned — what the result's cost reads them from.
+    usage: list[RoleUsage]
+    #: dim -> the reply the provider cut short, for each dim ``judge_error`` names for that cause.
+    judge_cut_short: dict[str, JudgeCutShort]
+
+
+def _judge_record(
+    phase: _JudgePhase, outcomes: Sequence[tuple[str, JudgeOutcome]], *, unfinished: str | None = None
+) -> _JudgeRecord:
+    """Fold a judge phase's returned calls into what the result stores, naming any dim that did not finish.
+
+    One fold for every way the phase ends — every call returned, the phase raised, or the cell was
+    cut off mid-phase — so a paid score is kept whichever it was. Outcomes are put in the phase's
+    own dim order first, whatever order they arrived in, so a cut-off phase's scores sit where a
+    finished one's would.
+
+    :param phase: The phase as it began.
+    :ptype phase: _JudgePhase
+    :param outcomes: ``(dim_id, outcome)`` for each call that returned.
+    :ptype outcomes: Sequence[tuple[str, JudgeOutcome]]
+    :param unfinished: Why a dim with no returned call did not finish. ``None`` asserts every call
+        returned.
+    :ptype unfinished: str | None
+    :return: The record.
+    :rtype: _JudgeRecord
+    :raises RuntimeError: ``unfinished`` is ``None`` and a dim the phase asks returned no call — the
+        judge phase dropped one, which no record may hide.
+    """
+    first_index = {dim: index for index, dim in reversed(list(enumerate(phase.dims)))}
+    settled = sorted(outcomes, key=lambda pair: first_index.get(pair[0], len(phase.dims)))
+    returned = Counter(dim for dim, _ in settled)
+    cut: list[str] = []
+    for dim in phase.dims:
+        if returned[dim]:
+            returned[dim] -= 1
+        else:
+            cut.append(dim)
+    if cut and unfinished is None:
+        raise RuntimeError(f"the judge phase returned no call for {', '.join(cut)}")
+    folded = fold_judge_outcomes(settled)
+    axes = {dim: outcome for dim, outcome in settled if dim in (TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID)}
+    transcript = axes.get(TRANSCRIPT_DIM_ID)
+    outcome = axes.get(OUTCOME_DIM_ID)
+    outcome_score = outcome.score if outcome is not None else None
+    errors = [*folded.errors, *((dim, unfinished) for dim in cut if unfinished is not None)]
+    return _JudgeRecord(
+        transcript_score=transcript.score if transcript is not None else None,
+        outcome_score=outcome_score,
+        rubric_scores=[oc.score for dim, oc in settled if dim not in axes and oc.score is not None],
+        judge_reasoning=outcome_score.reasoning if outcome_score is not None else "",
+        # Every dim the phase asked, whatever became of its call: a dim whose call raised or was cut off names the
+        # judge it was to be asked by, so a re-judge of it can tell whether today's judge is that one.
+        judge_config_ids={
+            **{dim: phase.judge_config_ids[dim] for dim in phase.dims if dim in phase.judge_config_ids},
+            **folded.config_ids,
+        },
+        judge_error="; ".join(f"{dim}: {error}" for dim, error in errors) or None,
+        judge_cannot_tell=folded.cannot_tell,
+        judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
+        usage=folded.usage,
+        judge_cut_short=folded.cut_short,
+    )
+
+
+def _budget_stopped_cell_error(breach: CapBreach | None) -> str:
+    """The infra error a cell the run's cost cap cut short carries, naming the numbers it was stopped on."""
+    if breach is None:
+        return "the run's cost cap was reached inside the cell, which stopped making paid calls"
+    unpriced = f" and {breach.unpriced_results} unpriced" if breach.unpriced_results else ""
+    return (
+        f"the run's cost cap was reached inside the cell (${breach.accumulated_usd:.4f} priced{unpriced} against a "
+        f"${breach.max_cost_usd:.4f} cap), which stopped making paid calls"
+    )
+
+
+def _declared_cell_width(kind: object) -> int | None:
+    """How many cells ``kind`` declares it is safe to drive at once
+    (:attr:`~threetears.evals.kernel.candidate_kind.CandidateKind.max_concurrent_cells`).
+
+    :param kind: A candidate kind.
+    :ptype kind: object
+    :return: The declared width; ``None`` for a kind declaring no limit of its own; ``1`` for a kind that declares
+        nothing, which is the safe width — a kind is never run wider than it said it can be.
+    :rtype: int | None
+    :raises TypeError: The declaration is neither ``None`` nor an ``int`` of at least 1.
+    """
+    declared = getattr(kind, "max_concurrent_cells", 1)
+    if declared is None:
+        return None
+    if isinstance(declared, bool) or not isinstance(declared, int) or declared < 1:
+        raise TypeError(
+            f"{type(kind).__name__} declares max_concurrent_cells={declared!r}; a kind declares the most cells it can "
+            "drive at once as an int of at least 1, or None for no limit of its own"
+        )
+    return declared
+
+
+def _refuse_an_unusable_amount(amount: float | None, *, what: str) -> None:
+    """Refuse a dollar amount no cap can count: a negative one, or one that is not finite."""
+    if amount is None:
+        return
+    if isinstance(amount, bool) or not isinstance(amount, int | float) or not math.isfinite(amount) or amount < 0:
+        raise ValueError(f"{what} is a finite amount of US dollars, 0 or more; got {amount!r}")
+
+
+@dataclass(eq=False)
+class _HeldCall:
+    """One reservation on a cell's sink — :class:`~threetears.evals.kernel.candidate_kind.CellReservation`.
+
+    :ivar sink: The cell's sink, which holds it.
+    :ivar source: Whose call it is; its cost lands on that source's total when it settles.
+    :ivar held_usd: The ceiling held against the cap — ``0.0`` for a call that could not be priced, which
+        holds nothing.
+    :ivar closed: Whether it was settled or released.
+    """
+
+    sink: _CellSink
+    source: CellPending
+    held_usd: float
+    closed: bool = False
+
+    def settle(self, cost_usd: float | None) -> None:
+        """Replace the held ceiling with what the call cost, in one step.
+
+        :param cost_usd: What the call cost; ``None`` when nothing priced it.
+        :ptype cost_usd: float | None
+        :raises ValueError: The reservation was already closed, or ``cost_usd`` is not a usable amount.
+        """
+        if self.closed:
+            raise ValueError(f"this {self.source} call's reservation was already closed; settle a reservation once")
+        _refuse_an_unusable_amount(cost_usd, what=f"a {self.source} call's cost")
+        self.closed = True
+        self.sink.close_reservation(self, cost_usd, settled=True)
+
+    def release(self) -> None:
+        """Stop holding the ceiling, counting nothing; a no-op once closed."""
+        if self.closed:
+            return
+        self.closed = True
+        self.sink.close_reservation(self, None, settled=False)
+
+
+@dataclass
+class _CellSink:
+    """The engine's record of one cell as it runs — everything a deadline's record is built from.
+
+    :func:`execute_run` bounds each cell with the host's ``cell_timeout``, which cancels it from
+    outside; every local of the cancelled frame dies with it, so a record of what the cell had
+    spent, or of what it was waiting on, cannot be taken from its return value.
+    The run loop builds one of these per cell, hands it down through :func:`run_one_result` to
+    the kind's ``invoke`` — the kind-facing half is
+    :class:`~threetears.evals.kernel.candidate_kind.CellSink` — and reads it in its own timeout
+    arm, which reads nothing else about the cell.
+
+    It holds two things the kind reports — :attr:`pending` and how to read the candidate side
+    so far — and three the engine observes for itself: the judge calls that returned, the kind
+    dispatched to, and what ``invoke`` returned once it has. Beside those it is the cell's account with
+    the run's cost cap: its spend by source (:attr:`spent`), the ceilings of its priced calls in flight
+    (:attr:`held`), and the breach it met, which every running cell's question of the cap reads. **Nothing may assign
+    :attr:`pending` in a ``finally``** — a cancel unwinds through those, and a write there would
+    overwrite the answer with whatever the unwind was doing.
+    """
+
+    #: What the cell is waiting on right now — the component a deadline striking at this
+    #: moment would be waiting for. See :data:`_DEADLINE_CHARGE` for whose failure each is.
+    pending: CellPending = "apparatus"
+    #: Each judge call that has returned, in completion order — appended as each settles,
+    #: so a deadline mid-phase keeps the calls already paid for.
+    judged: list[tuple[str, JudgeOutcome]] = field(default_factory=list)
+    #: The kind the cell dispatched to, once it has, for the record the deadline arm writes.
+    kind_name: str | None = None
+    #: What the kind's ``invoke`` returned, whole, once it has — the one source both the
+    #: completed cell's record and a deadline in judging read the candidate side from.
+    returned: CandidateOutput | None = None
+    #: The cell's errors as the run loop reads them after the cell, however it ended: built
+    #: from what ``invoke`` returned, or at a deadline from the kind's reading plus the
+    #: deadline's own charge.
+    errors: ErrorLedger = field(default_factory=ErrorLedger)
+    #: How to read the candidate side so far, as the kind registered it — see
+    #: :meth:`~threetears.evals.kernel.candidate_kind.CellSink.report_progress`.
+    progress: Callable[[], CandidateOutput] | None = None
+    #: The judge phase, once it has begun — what it reads and every dim it asks — so a cell cut
+    #: off while it is judged keeps the evidence and can name the dims that did not finish.
+    judging: _JudgePhase | None = None
+    #: The cell's handle on the run's cassette lane, once it has one — ``None`` for a run with
+    #: cassettes off. Kept here so every exit, a cut-short one included, closes it and holds the
+    #: kind's report to what the cell replayed.
+    cassettes: CassetteCell | None = None
+    #: The cell's handle on the host's world — ``None`` for a host that declares none. Kept here, and
+    #: built by the engine rather than the kind, so every exit records what fired before it and the
+    #: end state if it was read: the session survives a cancel that destroys the kind's frame.
+    world: WorldSession | None = None
+    #: The run's cost cap as this cell asks it: the pending spend handed in plus every running sibling's
+    #: (:func:`execute_run`'s ``gate_for``) — what :meth:`cost_cap_reached` and :meth:`reserve` ask.
+    #: ``None`` for a run with no cap wired, which nothing inside a cell can reach.
+    budget_gate: Callable[[float | None], CapBreach | None] | None = None
+    #: The breach the cell's own question reached, once it has — the cell is then cut short by the
+    #: run's ceiling, and the run stops ``budget_stopped`` once the cell is saved.
+    budget_breach: CapBreach | None = None
+    #: The cell's spend so far, one running total per source, each only ever added to
+    #: (:meth:`add_spend`) — ``None`` once part of a source's spend could not be priced. Kept apart so
+    #: no part of the cell reporting its spend can replace another part's: the cap counts their sum.
+    spent: dict[CellPending, float | None] = field(default_factory=dict)
+    #: The reservations of the priced calls in flight, whose ceilings the cap counts as spent until each
+    #: is settled to what its call cost or released.
+    held: list[_HeldCall] = field(default_factory=list)
+    #: The cell's whole spend once its result is built (:meth:`conclude`), until the result is recorded.
+    concluded_usd: float | None = None
+    #: Whether :meth:`conclude` has run — ``concluded_usd`` is ``None`` for an unpriced result too.
+    concluded: bool = False
+    #: The one reading taken, once :meth:`side` has taken it.
+    _read: CandidateOutput | None = None
+
+    @property
+    def world_events(self) -> list[WorldEvent] | None:
+        """What moved the cell's world, or ``None`` when no world was opened for it.
+
+        :return: The session's events once the kind seeded through it; ``None`` for a host with no world and
+            for a kind that never seeded — nobody opened the world, which is not "nothing moved it".
+        :rtype: list[WorldEvent] | None
+        """
+        if self.world is None or not self.world.opened:
+            return None
+        return list(self.world.events)
+
+    @property
+    def end_state(self) -> dict[str, Any] | None:
+        """The world the cell left, once it was read; ``None`` when it never was.
+
+        :return: The session's one end-state reading, or ``None``.
+        :rtype: dict[str, Any] | None
+        """
+        return self.world.end_state_read if self.world is not None else None
+
+    def waiting_on(self, pending: CellPending) -> None:
+        """Name what the cell is waiting on from here.
+
+        :param pending: The component the next await is waiting for.
+        :ptype pending: CellPending
+        """
+        self.pending = pending
+
+    def report_progress(self, read: Callable[[], CandidateOutput]) -> None:
+        """Register how to read the candidate side so far.
+
+        :param read: What ``invoke`` would return if the cell ended now.
+        :ptype read: Callable[[], CandidateOutput]
+        """
+        self.progress = read
+
+    @property
+    def in_flight_usd(self) -> float | None:
+        """What this cell has spent and holds that the run has not yet recorded — what the cap counts for it.
+
+        The sum of every source's running total and every held reservation's ceiling, or ``None`` once any
+        source went unpriced. Once the cell's result is built (:meth:`conclude`) it is the larger of that
+        and the result's own cost, so the count never drops while the cell is saved; the run loop takes
+        the cell out of the in-flight set in the same step it records the result.
+
+        :return: The pending spend, or ``None`` when part of it could not be priced.
+        :rtype: float | None
+        """
+        if any(total is None for total in self.spent.values()):
+            live: float | None = None
+        else:
+            live = math.fsum([*(total or 0.0 for total in self.spent.values()), *(h.held_usd for h in self.held)])
+        if not self.concluded:
+            return live
+        if live is None or self.concluded_usd is None:
+            return None
+        return max(live, self.concluded_usd)
+
+    def add_spend(self, source: CellPending, cost_usd: float | None) -> None:
+        """Add spend to ``source``'s running total — see
+        :meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`.
+
+        :param source: Whose spend it is.
+        :ptype source: CellPending
+        :param cost_usd: What it cost; ``None`` when part of it could not be priced.
+        :ptype cost_usd: float | None
+        :raises ValueError: ``cost_usd`` is negative or not finite.
+        """
+        _refuse_an_unusable_amount(cost_usd, what=f"{source} spend")
+        total = self.spent.get(source, 0.0)
+        self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
+
+    def reserve(self, source: CellPending, ceiling_usd: float | None) -> _HeldCall:
+        """Hold one paid call's ceiling against the cap, or refuse the call — see
+        :meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`.
+
+        Two questions, so a refusal reports the right numbers: whether the cap is already reached without
+        the call, and whether the call's ceiling would take the run past it. Neither awaits, so no other
+        cell can be admitted between the question and the hold.
+
+        :param source: Whose call it is.
+        :ptype source: CellPending
+        :param ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded.
+        :ptype ceiling_usd: float | None
+        :return: The reservation.
+        :rtype: _HeldCall
+        :raises CostCapReached: The cap has no room for the call; the breach is recorded.
+        :raises ValueError: ``ceiling_usd`` is negative or not finite.
+        """
+        _refuse_an_unusable_amount(ceiling_usd, what="a call's ceiling")
+        if self.cost_cap_reached():
+            raise CostCapReached(f"the run's cost cap was already reached, so this cell's {source} call was not made")
+        held = _HeldCall(sink=self, source=source, held_usd=ceiling_usd or 0.0)
+        if ceiling_usd is not None and self.budget_gate is not None:
+            pending = self.in_flight_usd
+            breach = self.budget_gate(None if pending is None else pending + ceiling_usd)
+            if breach is not None:
+                self._record(replace(breach, refused_call_usd=ceiling_usd))
+                raise CostCapReached(
+                    f"this cell's {source} call, priced at up to ${ceiling_usd:.4f}, would take the run past its "
+                    f"${breach.max_cost_usd:.4f} cost cap, so it was not made"
+                )
+        if ceiling_usd is not None:
+            self.held.append(held)
+        return held
+
+    def cost_cap_reached(self) -> bool:
+        """Whether the run's cost cap is reached counting every running cell's spend and reservations.
+
+        Records the breach the first time it is reached, so the run loop stops the run on the numbers
+        the cell was stopped on even if it never asks again.
+
+        :return: ``True`` once the cap is reached; always ``False`` for a run with no cap wired.
+        :rtype: bool
+        """
+        if self.budget_gate is None:
+            return False
+        breach = self.budget_gate(self.in_flight_usd)
+        if breach is not None:
+            self._record(breach)
+        return breach is not None
+
+    def conclude(self, cost_usd: float | None) -> None:
+        """Hold the cell's whole spend, now its result is built, until the run records it.
+
+        :param cost_usd: The result's ``cost_usd``.
+        :ptype cost_usd: float | None
+        """
+        self.concluded_usd = cost_usd
+        self.concluded = True
+
+    def _record(self, breach: CapBreach) -> None:
+        """Keep the first breach the cell met — the numbers it was stopped on."""
+        if self.budget_breach is None:
+            self.budget_breach = breach
+
+    def close_reservation(self, held: _HeldCall, cost_usd: float | None, *, settled: bool) -> None:
+        """Close one reservation: stop holding its ceiling, and count what its call cost when it settled.
+
+        One synchronous step, so no question of the cap can see the call counted nowhere.
+        """
+        if settled:
+            self.add_spend(held.source, cost_usd)
+        if any(entry is held for entry in self.held):
+            self.held = [entry for entry in self.held if entry is not held]
+
+    def begin_judging(self, phase: _JudgePhase) -> None:
+        """Mark the judge phase begun: the cell now waits on the judge, and the phase is on record.
+
+        One method for both, so a cell cut off while it waits on the judge always has the phase
+        whose dims it names as unfinished.
+
+        :param phase: What the judge reads and the dims it asks.
+        :ptype phase: _JudgePhase
+        """
+        self.judging = phase
+        self.pending = "judge"
+
+    def adopt(self, candidate: CandidateOutput) -> None:
+        """Hold what the kind's ``invoke`` returned as the cell's candidate side.
+
+        Any kind: once ``invoke`` returns, its output is the authority on what the candidate
+        side spent, produced and failed at, and a cell cancelled while it is judged still has
+        all of it — kept whole, so a field the completed record stores cannot be missing from
+        the deadline's record for want of a second copy here.
+
+        :param candidate: What the kind's ``invoke`` returned.
+        :ptype candidate: CandidateOutput
+        """
+        self.returned = candidate
+        self.errors = ErrorLedger.of(candidate)
+
+    def side(self) -> CandidateOutput | None:
+        """The candidate side as the cell left it: what ``invoke`` returned, else the kind's reading.
+
+        Reads the kind's registered reading at most once, and only when ``invoke`` never
+        returned — called by the deadline arm after the cancel has unwound, so what the unwind
+        itself recorded is in it. ``None`` when the kind returned nothing and registered no
+        reading: it reported nothing, which the record then says.
+
+        :return: The candidate side, or ``None``.
+        :rtype: CandidateOutput | None
+        """
+        if self.returned is not None:
+            return self.returned
+        if self._read is None and self.progress is not None:
+            self._read = self.progress()
+        return self._read
+
+    @property
+    def account_refusal(self) -> str | None:
+        """What stops the run after this cell: a call the provider refused for the calling account.
+
+        The candidate side and the simulator report through :attr:`errors`; a judge call reports
+        on its outcome in :attr:`judged`, which is kept however the cell ended. Either way the
+        cell is excluded, and every later cell would meet the same key.
+
+        :return: The refusal's message, or ``None`` when no call of this cell was refused for the account.
+        :rtype: str | None
+        """
+        if (refusal := self.errors.account_refusal) is not None:
+            return refusal
+        judged = [f"judge {dim_id}: {outcome.error}" for dim_id, outcome in self.judged if outcome.account_refused]
+        return "; ".join(judged) or None
+
+
+@dataclass
+class _CellTraceScopes:
+    """The two trace-sink windows one cell opens, and the record they leave behind.
+
+    **The runner owns the harvest and a kind owns only the extents**, and that split is the
+    no-host-shapes rule made structural: the host-shaped span payload never crosses the
+    candidate-kind seam (see :mod:`threetears.evals.kernel.candidate_kind`), while the decision of
+    *where* each window opens stays with the code that knows which work is a turn and which
+    is apparatus.
+
+    This is the engine side of :class:`~threetears.evals.kernel.candidate_kind.CellSpanWindow`, which
+    is the whole of what a kind is handed — structurally, so the two scopes are all a kind
+    can reach, and the sink, the cell identity and the record stay on this side of the seam.
+
+    Two scopes rather than one, and the difference between their extents is a measurement
+    decision: identity covers the slot startup and teardown, because that work is the
+    cell's; collection does not, because it is apparatus rather than a turn and belongs in
+    no bucket the candidate is compared on.
+    """
+
+    #: The host's tracing, or ``None`` — a decision made at the call site, never a mechanism
+    #: that stopped working. A sink that is present and broken is the other case entirely.
+    sink: TraceSink | None
+    #: The identity both scopes are opened against — one object per cell, handed to both.
+    cell: CellIdentity
+    #: The sink's record, once a collection window has opened and closed. Read through
+    #: rather than checked: a sink yielding anything but the record is a programming error,
+    #: and :attr:`harvested` is what separates that from nobody having watched.
+    collected: CellTrace | None = None
+    #: A collection window completed. ``False`` covers both "no sink" and "the kind opened
+    #: none", and keeps either from being read as a sink that collected nothing.
+    harvested: bool = False
+
+    def identity(self) -> AbstractContextManager[None]:
+        """Mark everything inside as this cell's work, apparatus included.
+
+        :return: The sink's identity scope, or a no-op when nothing is watching.
+        :rtype: AbstractContextManager[None]
+        """
+        return self.sink.cell_identity(self.cell) if self.sink is not None else nullcontext()
+
+    @contextmanager
+    def collecting(self) -> Iterator[None]:
+        """Collect the spans the candidate's own work emits.
+
+        The record is read after the scope closes, never inside it: the sink narrows to this
+        cell as it exits, so reading early asks for an answer it has not worked out yet. A
+        body that raises leaves :attr:`harvested` false and the cell recording no trace —
+        the same answer as a cell that never ran its turns.
+
+        :yield: Nothing. The record lands on :attr:`collected` once the window closes.
+        :rtype: Iterator[None]
+        """
+        if self.sink is None:
+            yield
+            return
+        with self.sink.cell_spans(self.cell) as collected:
+            yield
+        self.collected = collected
+        self.harvested = True
+
+
+def _candidate_kind_for(name: str, *, context: CellContext) -> CandidateKind:
+    """Build the kind a template names — the table behind the seam's one dispatch.
+
+    Every kind arrives as a factory on :attr:`RunnerOptions.candidate_kinds`, because the runner
+    has no way to build a collaborator it has never heard of; the factory is handed the cell.
+
+    :param name: ``template.candidate_kind`` — read at exactly one place, by the caller.
+    :ptype name: str
+    :param context: The cell, carrying the run's options and so the kinds this host wired.
+    :ptype context: CellContext
+    :return: The kind to prepare and invoke.
+    :rtype: CandidateKind
+    :raises UnknownCandidateKind: No kind by that name is wired on this host.
+    """
+    wired = context.options.candidate_kinds
+    if (factory := wired.get(name)) is None:
+        raise UnknownCandidateKind(name, known=list(wired))
+    return factory(context)
+
+
+def _busier_conditions_sample(previous: int | None, observed: int | None) -> int | None:
+    """Keep the busier of two measurement-condition samples (R4).
+
+    The runner samples around the kind and the kind samples through its own work, and the
+    covariate is the high-water mark across all of it. ``None`` on either side is "nobody
+    looked", which never displaces a real reading and never becomes one.
+
+    :param previous: The busiest reading so far, or ``None``.
+    :ptype previous: int | None
+    :param observed: A further reading, or ``None``.
+    :ptype observed: int | None
+    :return: The busier of the two, or ``None`` when neither was measured.
+    :rtype: int | None
+    """
+    if observed is None:
+        return previous
+    return observed if previous is None else max(previous, observed)
+
+
+async def run_one_result(
+    host: EvalHost,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    subject_id: str,
+    model: str,
+    k_iteration: int,
+    eval_run_id: str,
+    scope_id: str,
+    judge_service: JudgeService | None,
+    options: RunnerOptions,
+    variant: DerivedVariantIdentity,
+    cassettes: CassetteLane | None = None,
+    subject_snapshot: SubjectSnapshot | None = None,
+    judge_model: str | None = None,
+    sink: _CellSink | None = None,
+) -> CellOutcome:
+    """Run one ``(test_case, model, k)`` and return the two documents it produced — see :func:`_run_one_result`.
+
+    The cell runs inside its own slice of the run's metered-call ledger
+    (:meth:`~threetears.evals.run.metering.MeteredCallLedger.cell`), opened here so the slice is the
+    cell's own calls whether or not the run's other cells are calling beside it.
+
+    **What a capture recorded is written here, once the cell has ended**, however it ended — returned, raised,
+    or cut off by its deadline — and off the loop (:meth:`~threetears.evals.run.cassette_proxy.CassetteCell.flush`).
+    Written before this returns, so the next cell of the case, which clears the case's recording when it opens,
+    finds this one's session already written.
+    """
+    if sink is None:
+        sink = _CellSink()
+    try:
+        return await _run_one_result_in_its_slice(
+            host,
+            template=template,
+            test_case=test_case,
+            subject_id=subject_id,
+            model=model,
+            k_iteration=k_iteration,
+            eval_run_id=eval_run_id,
+            scope_id=scope_id,
+            judge_service=judge_service,
+            options=options,
+            variant=variant,
+            cassettes=cassettes,
+            subject_snapshot=subject_snapshot,
+            judge_model=judge_model,
+            sink=sink,
+        )
+    finally:
+        if sink.cassettes is not None:
+            await _flush_cell_cassettes(host, sink.cassettes)
+
+
+async def _flush_cell_cassettes(host: EvalHost, cell: CassetteCell) -> None:
+    """End a cell's cassettes and write what its capture recorded, off the loop, even while the cell is cancelled.
+
+    :raises asyncio.CancelledError: A cancellation arrived while the recordings were written; delivered once they are.
+    """
+    cell.close()
+    flushing = asyncio.ensure_future(run_blocking(host.blocking_executor, cell.flush))
+    cancelled = await wait_through_cancellation(flushing)
+    flushing.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _run_one_result_in_its_slice(
+    host: EvalHost,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    subject_id: str,
+    model: str,
+    k_iteration: int,
+    eval_run_id: str,
+    scope_id: str,
+    judge_service: JudgeService | None,
+    options: RunnerOptions,
+    variant: DerivedVariantIdentity,
+    cassettes: CassetteLane | None,
+    subject_snapshot: SubjectSnapshot | None,
+    judge_model: str | None,
+    sink: _CellSink,
+) -> CellOutcome:
+    """:func:`_run_one_result` inside the cell's slice of the run's metered-call ledger."""
+    with options.metered_calls.cell() if options.metered_calls is not None else nullcontext():
+        return await _run_one_result(
+            host,
+            template=template,
+            test_case=test_case,
+            subject_id=subject_id,
+            model=model,
+            k_iteration=k_iteration,
+            eval_run_id=eval_run_id,
+            scope_id=scope_id,
+            judge_service=judge_service,
+            options=options,
+            variant=variant,
+            cassettes=cassettes,
+            subject_snapshot=subject_snapshot,
+            judge_model=judge_model,
+            sink=sink,
+        )
+
+
+async def _run_one_result(
+    host: EvalHost,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    subject_id: str,
+    model: str,
+    k_iteration: int,
+    eval_run_id: str,
+    scope_id: str,
+    judge_service: JudgeService | None,
+    options: RunnerOptions,
+    variant: DerivedVariantIdentity,
+    cassettes: CassetteLane | None = None,
+    subject_snapshot: SubjectSnapshot | None = None,
+    judge_model: str | None = None,
+    sink: _CellSink | None = None,
+) -> CellOutcome:
+    """Run one ``(test_case, model, k)`` and return the two documents it produced.
+
+    Pure-function-style: no persistence here, caller decides when to save. Returns a
+    :class:`CellOutcome` — the analysis record and its debug payload are separate
+    documents, so a function that runs a cell hands back both rather than one object
+    that pretends to be both.
+
+    **The candidate is built and driven behind one seam**: this
+    function dispatches on ``template.candidate_kind`` exactly once, and everything after
+    that point — judging, goal-state recording, usage capture, the cell summary, storage —
+    reads a :class:`~threetears.evals.kernel.candidate_kind.CandidateOutput` and knows nothing about
+    subjects, simulators or worlds. That is what makes one refactor cover every kind of
+    subject rather than one.
+
+    The HOST half of the subject pair is not an argument here: a kind that needs the host's
+    rich subject has it bound into its factory by the host that built it, once per run, so the
+    engine never holds it.
+
+    ``subject_snapshot`` is the ENGINE half of that pair — a key, a label and content
+    hashes, and nothing else. ``None`` for a caller that resolved none, which is every
+    direct and fixture invocation; the run loop passes the run's own. It is deliberately
+    NOT the host's own record of its subject: a snapshot that retained what the candidate was
+    made of would scale a run's retention with what it produced rather than with its
+    matrix.
+
+    ``subject_id`` is the run's subject key, passed separately rather than
+    read off the host's subject — which rides on the run's optional host
+    payload, and an ad-hoc run legitimately carries none, while the key is
+    required and non-empty. Reading it off that payload stamped a blank
+    subject onto results of runs that had one.
+
+    ``cassettes`` is the run's cassette lane (:meth:`CassetteLane.for_run`), ``None`` for a run with
+    cassettes off. The cell's own handle on it is handed to the kind's ``prepare``, which must wire
+    its candidate's seams through it; a kind that does not is refused before ``invoke``, since its
+    tools would run live under a replay. The kind's report of the background work the cell replayed
+    is held to what the cell actually served.
+
+    ``variant`` is this cell's resolved contestant identity, computed once per
+    model by the caller (which holds the run) and stamped onto every result
+    this function returns, successful or not. Required: every result carries the key
+    (:func:`~threetears.evals.kernel.identity.resolve_variant_identity`).
+
+    ``judge_model`` is the judge the run records, stamped onto the result on every exit. The run
+    loop passes ``run.judge_model``, the one carrier of that fact; a direct caller passes the
+    judge it wired, or ``None`` when nothing judges the cell.
+
+    ``sink`` is the cell's :class:`_CellSink`, owned by the caller so it survives this function
+    being cancelled: the run loop passes one, this function hands it to the kind's ``invoke``,
+    and the run loop reads it when the cell's deadline strikes, which is the only way a
+    cancelled cell's spend and pending work reach its record. ``None`` — a direct caller that
+    bounds nothing — builds a fresh one. It is also how a refusal for the calling account
+    (``CandidateOutput.account_refused``) reaches the run: the cell is recorded as any other
+    apparatus fault is, and :func:`execute_run` reads ``sink.account_refusal`` after the
+    cell however it ended.
+    """
+    if sink is None:
+        sink = _CellSink()
+    # 1. The cell's own bookkeeping, above the seam and independent of what kind of
+    # candidate this is.
+    # Attribution metadata: the REAL subject the run was launched
+    # against rides on the result as metadata only — the candidate's runtime identity is
+    # whatever the kind minted, and comes back on its output.
+    #
+    # Taken from the RUN's subject key, which is required and non-empty, rather than off the
+    # subject recovered from the host payload — that payload is optional and yields an empty
+    # snapshot for an ad-hoc or fixture run, so reading it stamped ``subject_id=""`` onto results
+    # of a run that had a perfectly good key. Those results then fell out of every
+    # subject-partitioned surface, and the counter that would have disclosed it is gone: a blank
+    # subject is unrepresentable ON THE RUN, which is what retired the counter, and was not yet
+    # unrepresentable on the RESULT.
+    real_subject_id = subject_id
+    # R4: measurement conditions are sampled around the work, not read off it afterwards —
+    # by the time the result is built, a concurrent run that contended for the provider
+    # quota may already have finished.
+    concurrent_eval_jobs = sample_concurrent_eval_jobs(options)
+
+    def _excluded_cell(
+        *, error: str, termination: CellTermination, preconditions: Sequence[PreconditionOutcome] = ()
+    ) -> CellOutcome:
+        """Record one cleanly-excluded cell for a fault that happened before any turn.
+
+        Every fault that reaches this is a kind failing to PREPARE a candidate — for the
+        conversational turn, the factory, either half of the seeding step, or a precondition
+        that did not hold — and they share everything except which one it was. The
+        ``termination`` the kind raised with is what tells an operator where to look, and
+        telling them wrongly sends them to the wrong half of the apparatus.
+
+        No candidate turn ran, but the CELL did — see :func:`_degraded_capture_fields` for why
+        every capture field then says "measured nothing" rather than "not captured". Nothing was
+        spent on any of these paths, so the sink holds nothing and the zero total is a real sum.
+
+        :param error: The message, already prefixed with what kind of fault it was.
+        :ptype error: str
+        :param termination: Which arm the kind named.
+        :ptype termination: CellTermination
+        :param preconditions: The t=0 assertion's outcomes, for the arm that has them.
+        :ptype preconditions: Sequence[PreconditionOutcome]
+        :return: The cell, with an empty trace.
+        :rtype: CellOutcome
+        """
+        result = EvalResult(
+            scope_id=scope_id,
+            eval_run_id=eval_run_id,
+            test_case_id=test_case.id,
+            model=model,
+            # Stamped on the excluded arm too: a cell whose candidate could never be built is
+            # still a cell of a run that knows which kind it was asking for. Read off the
+            # dispatch's own local, which is bound before this closure's single call site.
+            candidate_kind=candidate_kind_name,
+            k_iteration=k_iteration,
+            subject_id=real_subject_id,
+            runner_error=error,
+            infra_error=error,
+            precondition_outcomes=list(preconditions),
+            **_degraded_capture_fields(
+                sink=sink,
+                variant=variant,
+                concurrent_eval_jobs=concurrent_eval_jobs,
+                termination=termination,
+                judge_model=judge_model,
+                rate_table=options.external_rates,
+            ),
+        )
+        return CellOutcome(result, _empty_trace(result_id=result.id, scope_id=scope_id, eval_run_id=eval_run_id))
+
+    def _apparatus_cell(fault: ApparatusError, *, during: Literal["prepare", "invoke"]) -> CellOutcome:
+        """Record one cell an apparatus fault ended: excluded, with what it had spent and why.
+
+        The candidate side is whatever the kind had reported through the cell's sink when the fault
+        unwound it — its reading registered with ``report_progress`` — so the spend already billed
+        is on the record, and the fault is recorded through :meth:`ErrorLedger.add_apparatus`,
+        which excludes the cell and is what :func:`execute_run` reads to tell a rig that failed
+        every cell from one that failed some.
+
+        :param fault: What reached the engine.
+        :ptype fault: ApparatusError
+        :param during: Which of the kind's operations raised it, for the operator's log line.
+        :ptype during: Literal['prepare', 'invoke']
+        :return: The cell, with whatever output the kind had produced as its trace.
+        :rtype: CellOutcome
+        """
+        log.warning(
+            "Eval cell excluded: an apparatus fault reached the engine from %s's %s (test_case=%s model=%s k=%s "
+            "run=%s): %s: %s",
+            candidate_kind_name,
+            during,
+            test_case.id,
+            model,
+            k_iteration,
+            eval_run_id,
+            type(fault).__name__,
+            fault,
+        )
+        errors = sink.errors = ErrorLedger.of(sink.side())
+        errors.add_apparatus(f"{type(fault).__name__}: {fault}")
+        side = sink.side()
+        return _cut_short_cell(
+            sink=sink,
+            scope_id=scope_id,
+            eval_run_id=eval_run_id,
+            test_case_id=test_case.id,
+            model=model,
+            k_iteration=k_iteration,
+            subject_id=real_subject_id,
+            variant=variant,
+            concurrent_eval_jobs=sample_concurrent_eval_jobs(options, concurrent_eval_jobs),
+            termination="apparatus_failed",
+            judge_model=judge_model,
+            rate_table=options.external_rates,
+            # The judge phase follows ``invoke``, so it never began; nothing is left unfinished.
+            unfinished_judging=None,
+            metered_calls_refused=_cell_metered_refusals(
+                metered_cell_tally(options.metered_calls),
+                side.telemetry.metered_calls_refused if side is not None else None,
+            ),
+        )
+
+    # A NONCE rather than the cell's coordinates, and that is the whole point:
+    # this run's own next model and next k iteration reuse the same
+    # (run, test case) pair, so coordinates would pool a cell with its own
+    # siblings exactly when a concurrent job keeps the shared buffer alive
+    # across them. Minted per execution, so nothing else can carry it.
+    trace_scopes = _CellTraceScopes(
+        sink=host.trace_sink,
+        cell=CellIdentity(
+            run_id=eval_run_id,
+            test_case_id=test_case.id,
+            cell_id=str(uuid.uuid7()),
+            subject_id=subject_id,
+        ),
+    )
+
+    # =========================================================================
+    # 2. THE DISPATCH — the one site that reads ``template.candidate_kind``
+    #
+    # Everything above is the cell's own bookkeeping and everything below sees a
+    # ``CandidateOutput``: an ``output`` to judge, ``mechanical_facts`` to record, and the
+    # telemetry the cell measured. No code below this line drives a turn, builds a subject,
+    # or reads a world — which is the property that makes one refactor cover every kind.
+    #
+    # **What a judge reads arrives the same way**: the subject, the case material and the
+    # artifact are the kind's to render (``CandidateOutput.judge_evidence``), so the runner hands
+    # them to the judge's context unread and holds no subject or transcript shape of its own.
+    # =========================================================================
+    # Read ONCE, into a name the rest of the cell uses: the seam's whole point is that
+    # ``template.candidate_kind`` has exactly one reader, and a second read — even a log
+    # line's — is a second place that knows what a subject is. ``test_candidate_kind.py``
+    # caught exactly that when the no-window warning below reached for the template again.
+    candidate_kind_name = template.candidate_kind
+    kind = _candidate_kind_for(
+        candidate_kind_name,
+        context=CellContext(
+            host=host,
+            template=template,
+            test_case=test_case,
+            eval_run_id=eval_run_id,
+            k_iteration=k_iteration,
+            concurrent_eval_jobs=concurrent_eval_jobs,
+            options=options,
+        ),
+    )
+    sink.kind_name = candidate_kind_name
+    # What a judge reads of this kind's output is the kind's own declaration, read before
+    # ``prepare`` so a judged run of a kind no judge can read is refused before anything is
+    # spent. Like an unknown kind, it would fail every cell identically.
+    # A kind that omits the declaration would otherwise fail on a bare AttributeError here;
+    # name the missing contract instead.
+    judged_artifact = getattr(kind, "judged_artifact", None)
+    if not isinstance(judged_artifact, JudgedArtifact):
+        raise TypeError(
+            f"candidate kind {candidate_kind_name!r} declares no judged_artifact (got {judged_artifact!r}); every "
+            "CandidateKind states what a judge reads of it — JudgedArtifact.TRANSCRIPT, DOCUMENT or UNJUDGED"
+        )
+    if judge_service is not None and judged_artifact is JudgedArtifact.UNJUDGED:
+        raise ValueError(
+            f"candidate kind {candidate_kind_name!r} declares judged_artifact={judged_artifact.value!r}, so there is "
+            "nothing for a judge to read, and this run wires a judge service; pass no judge service, or wire a kind "
+            "that renders what a judge reads"
+        )
+    # The width the run executes at was sized from what the kind's launcher said the kind declares
+    # (``KindWiring.max_concurrent_cells``); the kind's own declaration is the authority on whether it is safe
+    # there. Refused before ``prepare``, and the RUN rather than the cell, like an unknown kind: every cell would
+    # be driven wider than its kind said it can be.
+    declared_width = _declared_cell_width(kind)
+    if declared_width is not None and declared_width < options.max_concurrent_cells:
+        raise ValueError(
+            f"candidate kind {candidate_kind_name!r} declares max_concurrent_cells={declared_width}, and this run "
+            f"executes {options.max_concurrent_cells} cells at once; a kind is never driven wider than it declares it "
+            "is safe at — its launcher hands the kind's own declaration to KindWiring.max_concurrent_cells, which "
+            "sizes the run"
+        )
+    # This CELL's slice of the run's metered-call ledger is its meter, opened by ``run_one_result``
+    # around the whole dispatch, ``prepare`` included, and read after the kind returns. It lives at the
+    # dispatch site rather than inside a kind because the ledger belongs to the RUN: a kind that never
+    # thought to count is the default case, and a per-kind count is a line every future kind has to
+    # remember. ``ClassifierKind`` did not, and every classifier cell stored ``None`` under a ledger that
+    # was in force — the value ``EvalResult.metered_calls_refused`` documents as meaning nobody counted.
+    # The cell's handle on the run's cassette lane, already bound to its corpus, template and case,
+    # so one kind instance can drive every cell without being told which it is driving.
+    cell_cassettes = (
+        cassettes.cell(template_id=template.id, test_case_id=test_case.id, model=model)
+        if cassettes is not None
+        else None
+    )
+    sink.cassettes = cell_cassettes
+    # The cell's handle on the host's world, built here rather than by the kind so that what the
+    # kind does to its world — the seed, the triggers, the end state — is on the sink whatever way
+    # the cell ends. ``None`` for a host that declares no world. Built over the profile's registry, which
+    # is the declaration; a host whose world is per-cell state binds this cell's own table on it
+    # (``WorldSession.bind``) from ``prepare``, so no two cells — of this run or a concurrent one — share
+    # a path to one world, and a host declaring ``binds_per_cell`` that forgets is refused at seed.
+    # Commissioned whatever the run's stamp: the runner IS the rig, and the seed it applies through this
+    # session is what arms the cell's events. A host grading a cell it witnessed builds its own session
+    # with ``provenance="witnessed"``.
+    # A template that declares preconditions has them asserted by the engine against the world at t=0 — read back
+    # the moment the seed settles, before any turn (see below, after ``prepare``).
+    world_session = (
+        WorldSession(host.profile.world, provenance="commissioned", read_at_seed=bool(template.preconditions))
+        if host.profile.world is not None
+        else None
+    )
+    sink.world = world_session
+    try:
+        if cell_cassettes is not None:
+            # The cassettes' one store read (a replay's recordings) or write (a capture's clear) before the cell,
+            # off the loop: nothing the kind calls inside the cell reaches the store.
+            await run_blocking(host.blocking_executor, cell_cassettes.open)
+        # The subject arrives as a PAIR and the split is the point: the engine's snapshot is a
+        # key, a label and content hashes, handed over here, while the host's rich object was
+        # bound into the kind's factory by its host and is read by the kind alone.
+        instance = await kind.prepare(
+            subject_snapshot=subject_snapshot,
+            variant_config=VariantConfig(candidate_model=model),
+            world_seed=template.world_seed,
+            # Every kind alike, and the reason this is an argument rather than something a
+            # kind reaches for: the windows are this CELL's, minted above with its nonce, and
+            # a kind wired for a whole run would otherwise have to be told which cell it is
+            # driving to find them.
+            span_window=trace_scopes,
+            cassettes=cell_cassettes,
+            world=world_session,
+        )
+    except CandidatePreparationFailed as failure:
+        # A kind that cannot build its candidate records one cleanly excluded cell, under the
+        # arm the kind itself named — because naming the wrong half of the apparatus sends an
+        # operator to the wrong place, and only the kind knows which half it was.
+        return _excluded_cell(
+            error=failure.error,
+            termination=failure.termination,
+            preconditions=failure.preconditions,
+        )
+    except ApparatusError as fault:
+        return _apparatus_cell(fault, during="prepare")
+    if cell_cassettes is not None and not cell_cassettes.wired:
+        # Refused before anything runs, and the RUN rather than the cell: a kind that does not wire
+        # the handle it was given is the kind's own code, so every cell would do the same, and its
+        # tools would run live under a replay, spending exactly what the replay exists not to spend.
+        raise ValueError(
+            f"candidate kind {candidate_kind_name!r} was handed this cell's cassettes in a "
+            f"{cell_cassettes.mode} run and did not wire them; a kind wires its candidate's CassetteSeams "
+            "through prepare's cassettes before returning, or the run launches with cassette_mode='off'"
+        )
+    if template.preconditions:
+        # The engine asserts the template's presumptions itself, at t=0, for every kind — so a host whose kind forgets
+        # cannot score a world that never held what the probe presumes as the subject's failure. A kind that asserts
+        # them in ``prepare`` still may: a failure there excluded the cell above, and a pass is asked again here over
+        # the same t=0 reading, which gives the same answer.
+        failed = _failed_preconditions(template, test_case, world_session, world=host.profile.world)
+        if failed is not None:
+            error, outcomes = failed
+            return _excluded_cell(error=error, termination="precondition_failed", preconditions=outcomes)
+    # The candidate is what the cell now waits on; a kind refines this through the sink as its
+    # work alternates with other components' — the conversational kind's with the simulator and the rig.
+    sink.waiting_on("candidate")
+    try:
+        candidate = await kind.invoke(instance, test_case, sink)
+        if world_session is not None and world_session.opened:
+            # The world the cell LEFT, read back through every attached dimension's ``read`` handle once
+            # ``invoke`` has returned — the reading the kind took to grade, if it took one, since the
+            # session reads once. Here rather than in each kind, so a kind that never thought to read
+            # its world still stores what its candidate left behind, and none can store the seed instead.
+            sink.waiting_on("apparatus")
+            # A perturbation schedule the kind never announced its turns for would leave a cell keyed as
+            # perturbed with nothing perturbed: the kind's code, so refused here rather than recorded.
+            world_session.require_schedule_announced(ran_its_course=_ran_its_course(candidate, sink))
+            await world_session.end_state()
+    except ApparatusError as fault:
+        # The rig broke under the candidate — a replay miss, a corrupt recording, a harness fault
+        # a kind's tool boundary re-raised as the seam tells it to. That is THIS cell's exclusion,
+        # never the run's: every later cell may meet a working rig. The cell's record is built
+        # from its sink, which closes the cassette handle and folds its background work's spend.
+        return _apparatus_cell(fault, during="invoke")
+    finally:
+        # However ``invoke`` ended — returned, raised, or cancelled by the deadline — the capture's
+        # session ended here, and background work it left in flight is recorded as such. The
+        # cut-short record closes it too (idempotently), for the exits that are built before this runs.
+        if cell_cassettes is not None:
+            cell_cassettes.close()
+    if sink.budget_breach is not None or candidate.stop_cause is ConversationStopCause.BUDGET_STOPPED:
+        # The run's cost cap cut the cell short: what it holds is a truncated measurement, never the
+        # candidate's failure, so it is excluded on the rig's side and named for what stopped it.
+        candidate = candidate.model_copy(
+            update={"infra_errors": [*candidate.infra_errors, _budget_stopped_cell_error(sink.budget_breach)]}
+        )
+    sink.adopt(candidate)
+    if cell_cassettes is not None:
+        cell_cassettes.hold(candidate.async_deliveries, complete=True)
+    # Held to the declaration before anything below reads the output — see :func:`hold_to_declaration`.
+    hold_to_declaration(candidate_kind_name, judged_artifact, candidate)
+    metered_cell = metered_cell_tally(options.metered_calls)
+
+    # 3. Below the dispatch: ``output`` + ``mechanical_facts`` + telemetry, and nothing
+    # kind-shaped. ``trace`` is the judged artifact AND the stored transcript — one document,
+    # because for every kind so far they are the same one.
+    telemetry = candidate.telemetry
+    trace = candidate.output
+    # Held here so a kind that skipped a check is refused before the judge phase is paid for, and so the
+    # judge reads the outcomes the cell will store; the assembly holds the output again, idempotently,
+    # because it is what every completed cell — a witnessed one included — passes through.
+    goal_outcomes = hold_to_goal_checks(candidate_kind_name, template.goal_state_checks, candidate)
+    # Refused HERE, before the judge phase is paid for, though the rows are folded only when the
+    # cell is assembled: a kind double-reporting its background work's spend is its own code, so
+    # every cell would do it, and judging the cell first would spend on a record that cannot be built.
+    refuse_inner_agent_usage(telemetry.usage)
+    refuse_engine_derived_host_measures(candidate.host_measures)
+
+    # The trace sink's record of the candidate's own work, handed to the assembly whole: it reads
+    # the spans and the three named latency buckets off it. ``None`` for a cell that wired no sink,
+    # and for one whose kind opened no collection window.
+    spans: CellTrace | None = None
+    # Branching on whether a window CLOSED, not on what it yielded. ``collected is None``
+    # would also be what a sink yielding None produces, and recording that as "nobody was
+    # watching" would file a broken sink under the one state the design says must stay
+    # distinguishable from it. Read through the record instead and let such a sink raise
+    # where it can be attributed.
+    if trace_scopes.harvested:
+        collected = trace_scopes.collected
+        if collected is None:
+            raise TypeError(
+                f"trace sink {type(host.trace_sink).__name__} closed a collection window having yielded "
+                "None from cell_spans rather than a CellTrace"
+            )
+        spans = collected
+        if collected.total_ms is None and host.trace_sink is not None:
+            # The window opened, closed, and nothing the total is summed from landed in it.
+            # The cell still leaves the cost-vs-latency comparison, so it is still disclosed —
+            # separately, because the repair is the opposite one. "Opened no window" is fixed
+            # by opening one; this is fixed on the candidate's own call path, which has to
+            # emit the turn-root span the total is summed across (``summarize_span_durations_ms``
+            # sums ``agent.invoke``). A kind driving a scripted client emits none by nature,
+            # and that is a fixture reading an honest zero-coverage answer rather than a bug.
+            log.warning(
+                "Eval run %s: candidate kind %r opened a span collection window for test_case=%s and no "
+                "turn-root span landed in it, so this cell reports no total latency and drops out of the "
+                "cost-vs-latency comparison — the candidate's call path emits none",
+                eval_run_id,
+                candidate_kind_name,
+                test_case.id,
+            )
+    elif host.trace_sink is not None and telemetry.untimed_reason is not None:
+        # The kind SAYS there was nothing to time. The cell still leaves the latency axis — it
+        # has no latency — but the warning below would blame the kind for an omission it did
+        # not make, once per cell of every such run.
+        log.info(
+            "Eval run %s: candidate kind %r did no timed work for test_case=%s (%s); this cell reports no latency",
+            eval_run_id,
+            candidate_kind_name,
+            test_case.id,
+            telemetry.untimed_reason,
+        )
+    elif host.trace_sink is not None:
+        # A sink was wired, the kind was handed this cell's windows, and none ever closed — so
+        # the cell reports no latency at all, and `decompose_total_ms` and the frontier read
+        # that as "timed nothing" and drop it from the axis every campaign compares cost
+        # against. Said out loud because the alternative is a cell that silently leaves the
+        # comparison. It is the kind's own omission, not a reach it lacks: the windows arrive
+        # as ``prepare``'s ``span_window``, which every kind alike is given.
+        log.warning(
+            "Eval run %s: candidate kind %r opened no span collection window for test_case=%s, so this cell "
+            "reports no latency at all and drops out of the cost-vs-latency comparison — every kind is handed "
+            "this cell's windows as prepare's span_window and this one opened neither",
+            eval_run_id,
+            candidate_kind_name,
+            test_case.id,
+        )
+
+    # 4. Judge — dual-score axes (transcript + outcome) are universal; per-dim
+    # rubric scores only when the template declares dimensions. Judging needs a
+    # judge service and a non-empty transcript; factory / immediate-error slots
+    # (no trace) skip it and leave the scores None.
+    judged = _unjudged_record()
+    # Timed off a monotonic clock, not harvested: the judge emits no spans (llm.call
+    # spans come from the candidate's own call path alone), and it runs after the harvest
+    # closes, so it sits outside every turn-root span the total sums. None until the
+    # phase actually runs — see LatencyMetrics.judge_ms.
+    judge_ms: float | None = None
+    # ``trace`` alone gates the phase whatever the kind: empty output means nothing was
+    # produced to judge. Which axes are judged is the kind's declaration; what each reads is the
+    # evidence the kind rendered, which the declaration check above guarantees is here.
+    judge_evidence = candidate.judge_evidence
+    if judge_service is not None and trace and judge_evidence is not None:
+        phase = _JudgePhase(
+            judged_artifact=judged_artifact,
+            evidence=judge_evidence,
+            dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+            judge_config_ids=judge_service.judge_config_ids(template.rubric, judged_artifact=judged_artifact),
+            boundary_dims=boundary_dim_names(template.rubric),
+        )
+        sink.begin_judging(phase)
+        judged, judge_ms = await _run_judge_phase(
+            phase,
+            template=template,
+            test_case=test_case,
+            judge_service=judge_service,
+            goal_outcomes=goal_outcomes,
+            concurrency=options.judge_concurrency,
+            settled=sink.judged,
+            eval_run_id=eval_run_id,
+            sink=sink,
+        )
+
+    # Second (and final) conditions sample — see sample_concurrent_eval_jobs. Taken after
+    # the judging that closes the cell, so the whole window is covered. The assembly folds
+    # in the busiest count the kind itself observed.
+    concurrent_eval_jobs = sample_concurrent_eval_jobs(options, concurrent_eval_jobs)
+
+    # 5. Build the EvalResult and its trace — through the one assembly every completed cell takes,
+    # the host-observed ones (:func:`~threetears.evals.run.witnessed.record_witnessed_cell`) included. The ids are this cell's own,
+    # minted here, which is the one thing a host recording a cell after the fact supplies instead.
+    return assemble_completed_cell(
+        scope_id=scope_id,
+        eval_run_id=eval_run_id,
+        test_case_id=test_case.id,
+        model=model,
+        candidate_kind=candidate_kind_name,
+        k_iteration=k_iteration,
+        subject_id=real_subject_id,
+        variant=variant,
+        judge_model=judge_model,
+        output=candidate,
+        goal_checks=template.goal_state_checks,
+        judged_artifact=judged_artifact,
+        rate_table=options.external_rates,
+        result_id=str(uuid.uuid7()),
+        scored_at=utc_now_iso(),
+        judged=judged,
+        judge_ms=judge_ms,
+        spans=spans,
+        concurrent_eval_jobs=concurrent_eval_jobs,
+        metered_cell=metered_cell,
+        world_events=sink.world_events,
+        end_state=sink.end_state,
+    )
+
+
+async def _run_judge_phase(
+    phase: _JudgePhase,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    judge_service: JudgeService,
+    goal_outcomes: list[GoalStateOutcome],
+    concurrency: int,
+    settled: list[tuple[str, JudgeOutcome]],
+    eval_run_id: str,
+    sink: CellSink | None,
+) -> tuple[_JudgeRecord, float]:
+    """Run one cell's judge phase and fold what it left, however it ended: the one judge phase a completed cell takes.
+
+    The runner's cells and a judged witnessed cell (:func:`judge_witnessed_output`) both come through
+    here, so a host-observed cell is scored by exactly the calls, the context and the fold a run's is.
+
+    :param phase: What the judge reads and the dims it asks.
+    :ptype phase: _JudgePhase
+    :param template: The template whose intent and rubric the judge reads.
+    :ptype template: EvalTemplate
+    :param test_case: The case the cell answered.
+    :ptype test_case: EvalTestCase
+    :param judge_service: The judge.
+    :ptype judge_service: JudgeService
+    :param goal_outcomes: The cell's goal-state outcomes, which the judge reads beside the evidence.
+    :ptype goal_outcomes: list[GoalStateOutcome]
+    :param concurrency: Judge calls in flight at once.
+    :ptype concurrency: int
+    :param settled: A caller-owned list each returned call is appended to, so a caller whose deadline
+        cancels the phase still holds what was paid for.
+    :ptype settled: list[tuple[str, JudgeOutcome]]
+    :param eval_run_id: The run, for the log line a judge failure writes.
+    :ptype eval_run_id: str
+    :param sink: The cell's sink, which holds each call against the run's cost cap; ``None`` for a witnessed
+        cell, which no run's cap bounds.
+    :ptype sink: CellSink | None
+    :return: What the phase leaves on the result, and its wall clock in milliseconds.
+    :rtype: tuple[_JudgeRecord, float]
+    :raises CompletionProtocolDefect: A judge completion does not meet the protocol. Every other failure of the phase
+        is folded into the record; this one is the host's code, which every cell would meet, so it fails the run.
+    """
+    judge_started = time.monotonic()
+    try:
+        outcomes = await judge_dims(
+            template=template,
+            judge_service=judge_service,
+            concurrency=concurrency,
+            settled=settled,
+            sink=sink,
+            context=build_judge_context(
+                template=template,
+                test_case=test_case,
+                goal_outcomes=goal_outcomes,
+                judged_artifact=phase.judged_artifact,
+                judge_evidence=phase.evidence,
+            ),
+        )
+    except CompletionProtocolDefect:
+        # The host's completion type breaks the protocol: not a judging outcome, and every cell would meet it,
+        # so it fails the run (as a kind's defect does) instead of becoming an error on each dimension.
+        log.error("Eval run %s: a judge completion breaks the protocol; the run fails", eval_run_id)
+        raise
+    except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
+        # NOSILENT: the judge record names every dim the phase did not finish as failed with this cause.
+        log.exception("Judge service failed during eval run %s", eval_run_id)
+        # The calls that returned before it raised were paid for and keep their scores; the
+        # rest are named as failed with the cause.
+        judged = _judge_record(phase, settled, unfinished=f"the judge phase raised {type(e).__name__}: {e}")
+    else:
+        judged = _judge_record(phase, outcomes)
+    finally:
+        # Stamped on the way out of EVERY exit, not just the scoring one. A judge
+        # that raised after two minutes spent those two minutes, and leaving the
+        # phase untimed there would file real wall-clock under the same absence as
+        # a run that never had a judge at all — judge_error is what says it failed.
+        judge_ms = (time.monotonic() - judge_started) * 1000.0
+    return judged, judge_ms
+
+
+async def judge_witnessed_output(
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    output: CandidateOutput,
+    goal_outcomes: list[GoalStateOutcome],
+    judged_artifact: JudgedArtifact,
+    judge_service: JudgeService,
+    concurrency: int,
+    eval_run_id: str,
+    settled: list[tuple[str, JudgeOutcome]] | None = None,
+) -> tuple[_JudgeRecord, float] | tuple[None, None]:
+    """Judge a host-observed cell's output through the runner's own judge phase, as the runner gates it.
+
+    The gate is the runner's: an output with nothing in it, or with no evidence rendered, is not judged.
+    Used by :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
+
+    :param template: The template whose intent and rubric the judge reads.
+    :ptype template: EvalTemplate
+    :param test_case: The case the observation answers.
+    :ptype test_case: EvalTestCase
+    :param output: What the candidate produced.
+    :ptype output: CandidateOutput
+    :param goal_outcomes: The goal-check outcomes the cell will store (:func:`hold_to_goal_checks`), which
+        the judge reads.
+    :ptype goal_outcomes: list[GoalStateOutcome]
+    :param judged_artifact: What the kind declares a judge reads.
+    :ptype judged_artifact: JudgedArtifact
+    :param judge_service: The judge, built from the run's recorded apparatus.
+    :ptype judge_service: JudgeService
+    :param concurrency: Judge calls in flight at once.
+    :ptype concurrency: int
+    :param eval_run_id: The run.
+    :ptype eval_run_id: str
+    :param settled: A caller-owned list each returned call is appended to, the defect's billed call included,
+        so a caller the phase raised to still holds what was paid for; ``None`` when it keeps none.
+    :ptype settled: list[tuple[str, JudgeOutcome]] | None
+    :return: What the phase left and its wall clock; ``(None, None)`` when the output gave it nothing to judge.
+    :rtype: tuple[_JudgeRecord, float] | tuple[None, None]
+    :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
+        judge error on the cell.
+    """
+    if not output.output or output.judge_evidence is None:
+        return None, None
+    phase = _JudgePhase(
+        judged_artifact=judged_artifact,
+        evidence=output.judge_evidence,
+        dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+        judge_config_ids=judge_service.judge_config_ids(template.rubric, judged_artifact=judged_artifact),
+        boundary_dims=boundary_dim_names(template.rubric),
+    )
+    return await _run_judge_phase(
+        phase,
+        template=template,
+        test_case=test_case,
+        judge_service=judge_service,
+        goal_outcomes=goal_outcomes,
+        concurrency=concurrency,
+        settled=settled if settled is not None else [],
+        eval_run_id=eval_run_id,
+        sink=None,
+    )
+
+
+def hold_to_declaration(kind_name: str, judged_artifact: JudgedArtifact, output: CandidateOutput) -> None:
+    """Refuse output that contradicts the kind's own declaration of what a judge reads.
+
+    A judge reads nothing but the evidence the kind renders — the engine has no transcript or
+    subject renderer to fall back on — so a judged kind owes it for every output it produced, and an
+    unjudged kind rendering some is contradicting its own declaration. An EMPTY output owes none
+    whatever the kind: it is a cell that produced nothing, and nothing is judged.
+
+    One check for both callers that record a completed cell: the runner, before its judge phase
+    reads the output, and :func:`~threetears.evals.run.witnessed.record_witnessed_cell`, whose host declares the same
+    thing for the kind that produced what it observed.
+
+    :param kind_name: The kind, for the refusal's message.
+    :ptype kind_name: str
+    :param judged_artifact: What the kind declares a judge reads.
+    :ptype judged_artifact: JudgedArtifact
+    :param output: What the kind produced.
+    :ptype output: CandidateOutput
+    :raises CandidateKindDefect: The output contradicts the declaration.
+    """
+    has_evidence = output.judge_evidence is not None
+    if judged_artifact is JudgedArtifact.UNJUDGED:
+        contradicts = has_evidence
+    else:
+        contradicts = bool(output.output) and not has_evidence
+    if contradicts:
+        raise CandidateKindDefect(kind_name, declared=judged_artifact, has_evidence=has_evidence)
+
+
+#: The stop causes of a conversation that ran to its own end, past any turn it would announce; with no stop
+#: cause (a kind that does not converse), a clean cell ran its course too (:func:`_ran_its_course`).
+_RAN_ITS_COURSE_STOP_CAUSES = frozenset({ConversationStopCause.MAX_TURNS})
+
+
+def _ran_its_course(output: CandidateOutput, sink: _CellSink) -> bool:
+    """Whether a cell ran to its own end, so it must have announced a turn under a perturbation schedule.
+
+    No error on the output, no breach of the run's cost cap, and a conversation — if the kind held one —
+    that stopped on its turn budget. Every other ending may have come before turn 1
+    (:meth:`~threetears.evals.kernel.world_session.WorldSession.require_schedule_announced`).
+
+    :param output: What the kind returned.
+    :ptype output: CandidateOutput
+    :param sink: The cell's sink, which records a cost-cap breach reached inside the cell.
+    :ptype sink: _CellSink
+    :return: ``True`` when the cell ran its course.
+    :rtype: bool
+    """
+    if output.infra_errors or output.candidate_errors or sink.budget_breach is not None:
+        return False
+    return output.stop_cause is None or output.stop_cause in _RAN_ITS_COURSE_STOP_CAUSES
+
+
+def hold_to_goal_checks(kind_name: str, goal_checks: Sequence[str], output: CandidateOutput) -> list[GoalStateOutcome]:
+    """The mechanical facts a completed cell stores, held to grading every goal check its template declares.
+
+    The engine knows the set — ``template.goal_state_checks`` — and a kind grades it
+    (:func:`grade_goal_checks`); nothing else notices a kind that grades a subset or none. Unnoticed,
+    its cells carry no outcome for the checks it skipped, and every per-check rate is computed over
+    the cells that happened to grade them while reading as though it covered the run.
+
+    - **An excluded cell** (any ``infra_errors``) is in no rate
+      (:func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts`), so what it graded is stored as
+      reported.
+    - **A failed candidate** (any ``candidate_errors``) may stop before its kind grades anything. A candidate
+      failure counts every check as failed — but only the checks a result carries — so each check it did
+      not grade is carried here as failed and not evaluated, the rule a candidate-charged deadline already
+      follows (:func:`_unevaluated_goal_checks`).
+    - **Otherwise** the kind graded the checks it chose to, which is the kind's own code and so every cell
+      would do the same: refused, naming what it did not grade.
+
+    A kind's own facts ride beside the checks untouched: only the template's expressions are counted, so
+    ``field_accuracy >= 0.92`` neither covers a check nor needs one.
+
+    :param kind_name: The kind, for the refusal's message.
+    :ptype kind_name: str
+    :param goal_checks: The template's goal checks, in order.
+    :ptype goal_checks: Sequence[str]
+    :param output: What the kind returned.
+    :ptype output: CandidateOutput
+    :return: The facts to store: ``output.mechanical_facts``, plus an unevaluated, failed outcome per check a
+        failed candidate's kind did not grade.
+    :rtype: list[GoalStateOutcome]
+    :raises ValueError: A cell with neither error graded fewer of the template's goal checks than it declares.
+    """
+    facts = list(output.mechanical_facts)
+    if output.infra_errors:
+        return facts
+    ungraded = Counter(goal_checks) - Counter(fact.expression for fact in facts)
+    if not ungraded:
+        return facts
+    if output.candidate_errors:
+        detail = "not evaluated: the candidate failed before its kind graded this check, which fails the candidate"
+        # In the template's order: one per ungraded occurrence, so a check written twice is carried twice.
+        for expression in goal_checks:
+            if ungraded[expression] > 0:
+                ungraded[expression] -= 1
+                facts.append(GoalStateOutcome(expression=expression, passed=False, detail=detail))
+        return facts
+    raise ValueError(
+        f"candidate kind {kind_name!r} completed a cell without grading the template's goal check(s) "
+        f"{', '.join(map(repr, ungraded.elements()))}; a kind grades every one of template.goal_state_checks "
+        "through grade_goal_checks (construct it with the template's checks), or every per-check rate is "
+        "computed over cells that never graded the check"
+    )
+
+
+def refuse_inner_agent_usage(usage: Sequence[RoleUsage]) -> None:
+    """Refuse a kind's telemetry that reports its background work's spend a second time.
+
+    Background work reports its spend on its :class:`~threetears.evals.schema.models.AsyncDelivery`,
+    which the engine folds (:func:`_candidate_side_usage`); a kind reporting ``inner_agent`` rows of
+    its own would be counted beside it. Its own function so the runner can refuse before its judge
+    phase pays for anything, while the fold itself happens once, when the cell is assembled.
+
+    :param usage: The rows the kind reported on its telemetry.
+    :ptype usage: Sequence[RoleUsage]
+    :raises ValueError: The kind reported ``inner_agent`` rows on its telemetry.
+    """
+    if any(row.role == "inner_agent" for row in usage):
+        raise ValueError(
+            "a candidate kind reported inner_agent usage on its telemetry; background work reports its spend on "
+            "its AsyncDelivery entry (cost_usd, tokens, llm_calls, external_spend), which the runner folds — "
+            "reporting it on the telemetry too would count it twice"
+        )
+
+
+def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float | str]) -> None:
+    """Refuse a kind's ``host_measures`` that land a measure the engine derives.
+
+    ``accuracy`` is derived from each observation's ``match``
+    (:data:`~threetears.evals.kernel.metrics.ACCURACY_MEASURE`); a kind landing it too would put a
+    second producer of one reading beside the engine's, and which one a surface reported would depend
+    on the walk's precedence rather than on what was measured. Called by the runner before its judge
+    phase pays for anything, and by the assembly every completed cell takes, a witnessed one included.
+
+    **Every other engine-owned name is refused too**
+    (:func:`~threetears.evals.kernel.metrics.undeclarable_host_measures`): a core measure (``cost_usd``,
+    ``score`` …) or a name in a namespace the engine mints (``goal_state:…``, ``classifier:…``). A host
+    cannot declare one, so a kind landing it reports a value no host described, and the analysis walk would pool it into
+    the engine's own observations of that name with ``n`` inflated. Refused rather than dropped: a kind's measures are
+    its own code, so every cell would carry the same key, and a run whose numbers silently lost a measure the kind
+    meant to report is worse than one that stops before paying for a judge. The classifier track's own keys
+    (``match``, ``confusion_cell``) are the one legitimate core-named write. A result stored before its name
+    became engine-owned is held to the same rule where it is read: the walk drops the key and names it as
+    unreported.
+
+    :param host_measures: What the kind measured, by name.
+    :ptype host_measures: Mapping[str, bool | float | str]
+    :raises ValueError: ``host_measures`` names ``accuracy`` or any other engine-owned measure.
+    """
+    if ACCURACY_MEASURE in host_measures:
+        raise ValueError(
+            f"a candidate kind landed {ACCURACY_MEASURE!r} on host_measures, which the engine derives from each "
+            f"observation's {MATCH_MEASURE!r}; land the bool {MATCH_MEASURE!r} and the engine reports "
+            f"{ACCURACY_MEASURE!r} from it"
+        )
+    if taken := undeclarable_host_measures(host_measures):
+        raise ValueError(
+            f"a candidate kind landed {', '.join(repr(name) for name in taken)} on host_measures, which only the "
+            "engine measures — a host cannot declare a measure so named, and its values would pool into the "
+            "engine's own observations of it; declare the host's measure under a name of its own"
+        )
+
+
+def _unjudged_record() -> _JudgeRecord:
+    """The record of a cell nothing judged: every score absent, nothing failed.
+
+    A function rather than a constant so no two cells share its lists.
+
+    :return: The record.
+    :rtype: _JudgeRecord
+    """
+    return _JudgeRecord(
+        transcript_score=None,
+        outcome_score=None,
+        rubric_scores=[],
+        judge_reasoning="",
+        judge_config_ids={},
+        judge_error=None,
+        judge_cannot_tell={},
+        judge_cannot_tell_boundary=[],
+        usage=[],
+        judge_cut_short={},
+    )
+
+
+def assemble_completed_cell(
+    *,
+    scope_id: str,
+    eval_run_id: str,
+    test_case_id: str,
+    model: str,
+    candidate_kind: str,
+    k_iteration: int,
+    subject_id: str,
+    variant: DerivedVariantIdentity,
+    judge_model: str | None,
+    output: CandidateOutput,
+    goal_checks: Sequence[str],
+    judged_artifact: JudgedArtifact,
+    rate_table: ExternalRateTable | None,
+    result_id: str,
+    scored_at: str,
+    judged: _JudgeRecord | None,
+    judge_ms: float | None,
+    spans: CellTrace | None,
+    concurrent_eval_jobs: int | None,
+    metered_cell: MeteredCallTally | None,
+    world_events: list[WorldEvent] | None,
+    end_state: dict[str, Any] | None,
+) -> CellOutcome:
+    """Build one completed cell's :class:`EvalResult` and :class:`EvalTrace` from what its candidate produced.
+
+    **The one assembly path a completed cell takes**, whoever ran it: :func:`run_one_result` calls it
+    once its judge phase is over, and :func:`~threetears.evals.run.witnessed.record_witnessed_cell` calls it for a cell
+    a host observed rather than ran. Everything derived from the output — the candidate side's usage rows with its
+    background work folded in, the error taxonomy, the blended cost, the covariates, the latency record,
+    the trace document's id — is derived here and nowhere else, so a host-recorded cell and a run's cell
+    over the same output are the same record. Pure: it persists nothing, and mints nothing — the ids and
+    the timestamp are the caller's.
+
+    :param scope_id: The run's partition.
+    :ptype scope_id: str
+    :param eval_run_id: The run.
+    :ptype eval_run_id: str
+    :param test_case_id: The case.
+    :ptype test_case_id: str
+    :param model: The candidate model.
+    :ptype model: str
+    :param candidate_kind: The kind that produced the output.
+    :ptype candidate_kind: str
+    :param k_iteration: The repeat.
+    :ptype k_iteration: int
+    :param subject_id: The run's subject key.
+    :ptype subject_id: str
+    :param variant: The run's resolved contestant identity.
+    :ptype variant: DerivedVariantIdentity
+    :param judge_model: The judge the run records, or ``None``.
+    :ptype judge_model: str | None
+    :param output: What the candidate produced.
+    :ptype output: CandidateOutput
+    :param goal_checks: The template's goal checks the cell is held to (:func:`hold_to_goal_checks`), so the
+        stored result carries a failed, not-evaluated outcome for each one a failed candidate's kind
+        never graded; empty for a cell no template set.
+    :ptype goal_checks: Sequence[str]
+    :param judged_artifact: What the kind declares a judge reads, kept on the trace beside the evidence.
+    :ptype judged_artifact: JudgedArtifact
+    :param rate_table: The run's rate table, which prices external calls.
+    :ptype rate_table: ExternalRateTable | None
+    :param result_id: The result's id; the trace's id is derived from it.
+    :ptype result_id: str
+    :param scored_at: When the result was recorded.
+    :ptype scored_at: str
+    :param judged: What the judge phase left, or ``None`` for a cell nothing judged.
+    :ptype judged: _JudgeRecord | None
+    :param judge_ms: The judge phase's wall clock, or ``None`` when it did not run.
+    :ptype judge_ms: float | None
+    :param spans: The trace sink's record of the candidate's own work, or ``None`` when nothing was collected.
+    :ptype spans: CellTrace | None
+    :param concurrent_eval_jobs: The busiest count of concurrent eval jobs the caller sampled; the kind's
+        own is folded in here.
+    :ptype concurrent_eval_jobs: int | None
+    :param metered_cell: The cell's slice of the run's metered-call ledger, or ``None`` when nothing counted.
+    :ptype metered_cell: MeteredCallTally | None
+    :param world_events: What moved the cell's world, or ``None`` when no world was opened.
+    :ptype world_events: list[WorldEvent] | None
+    :param end_state: The world the cell left, or ``None`` when it was never read.
+    :ptype end_state: dict[str, Any] | None
+    :return: The cell.
+    :rtype: CellOutcome
+    :raises ValueError: The output lands a measure the engine derives, or a clean cell left one of
+        ``goal_checks`` ungraded.
+    """
+    if judged is None:
+        judged = _unjudged_record()
+    refuse_engine_derived_host_measures(output.host_measures)
+    # Held HERE, the one point every completed cell passes through, so what is STORED counts a failed
+    # candidate against every check its template declares: a per-check rate counts a candidate failure
+    # only over the checks a result carries, so a cell that failed before its kind graded anything would
+    # otherwise drop out of every rate and inflate it.
+    goal_outcomes = hold_to_goal_checks(candidate_kind, goal_checks, output)
+    telemetry = output.telemetry
+    trace = output.output
+    async_deliveries = output.async_deliveries
+    # The candidate side's rows: the kind's own, and what its background work spent.
+    candidate_usage = _candidate_side_usage(telemetry.usage, async_deliveries, rate_table=rate_table)
+    concurrent_eval_jobs = _busier_conditions_sample(concurrent_eval_jobs, telemetry.concurrent_eval_jobs)
+    # The ledger the kind's report amounts to — the same one the runner's sink built on ``adopt``, and
+    # the same convention: "candidate details first, then infra" is the order an operator reads
+    # ``runner_error`` in, and it is one convention in one place.
+    errors = ErrorLedger.of(output)
+
+    # Span-derived latency buckets, read off the trace sink's record by this module, from the
+    # record's named fields, rather than splatting whatever mapping a sink chose to return:
+    # LatencyMetrics ignores unknown keys with no log, so one host misspelling a bucket would store
+    # a measured cell as unmeasured.
+    otel_spans: list[dict[str, Any]] = spans.spans if spans is not None else []
+    spans_ms: dict[str, float | None] = (
+        {"total_ms": spans.total_ms, "llm_ms": spans.llm_ms, "tool_ms": spans.tool_ms} if spans is not None else {}
+    )
+    # Built here rather than from the harvest alone because not every source is a span: the
+    # drain wait falls between spans and the judge phase runs after them, so a cell whose
+    # spans never arrived can still have measured both. Any one measured COMPONENT is
+    # enough — discarding a real measurement for want of a span would defeat the point of
+    # timing the windows nothing else covers.
+    #
+    # The test is on the values, not on whether a span was harvested, and the difference
+    # is a fact rather than a style: a harvest can return spans that land in no bucket at
+    # all (a background tool's enqueue, its background task's own root), and summarizing those yields the three keys with
+    # every value None. Building on that would persist a carrier whose every field is
+    # unmeasured — a record asserting a measurement happened, on which the documented
+    # reading of `latency is None` ("this cell timed nothing whatever") would be a
+    # one-way claim rather than the contract callers are told to check.
+    latency: LatencyMetrics | None = None
+    measured = {name: value for name, value in spans_ms.items() if value is not None}
+    if measured or telemetry.async_wait_ms is not None or judge_ms is not None:
+        latency = LatencyMetrics(**spans_ms, async_wait_ms=telemetry.async_wait_ms, judge_ms=judge_ms)
+
+    # ``usage`` is a list on EVERY exit of a running cell — never None, which means no observation
+    # was made at all. It holds a row per (role, model, provider, unit) actually observed. An external
+    # row reports call volume, plus the provider's own units and dollars when the run resolved a rate
+    # for them; `cost_usd` below stays the authoritative blended spend either way.
+    #
+    # The candidate's own rows came back on its telemetry, already folded across its roles
+    # and its metered third-party calls — that arithmetic belongs where the ledgers are.
+    # What is added here is the one role the candidate did not incur: scoring it.
+    usage: list[RoleUsage] = [*candidate_usage, *judged.usage]
+    # The total is derived from the rows, never reported beside them: one statement of the spend,
+    # and an unpriced call in it makes the total unknown rather than quietly smaller.
+    cost_roles = blended_cost_roles(rate_table)
+    _warn_on_unreported_async_spend(async_deliveries, eval_run_id=eval_run_id)
+    result = EvalResult(
+        id=result_id,
+        scope_id=scope_id,
+        eval_run_id=eval_run_id,
+        test_case_id=test_case_id,
+        model=model,
+        # Stamped from the dispatch's single read rather than from the template: a template is
+        # store-mastered, so a reader following this cell back to one would get whatever the
+        # kind field says TODAY.
+        candidate_kind=candidate_kind,
+        # The host's own mechanical grade, carried verbatim and interpreted nowhere here: the
+        # measure registry is what knows a name's population, range and merit axis, and the
+        # analysis bundle reads these through it. ``{}`` from a kind that graded nothing is
+        # "measured none", which the bundle treats as the empty set and not as a gap.
+        host_measures=output.host_measures,
+        k_iteration=k_iteration,
+        candidate_instance_id=output.candidate_instance_id,
+        subject_id=subject_id,
+        goal_state_outcomes=goal_outcomes,
+        rubric_scores=judged.rubric_scores,
+        transcript_score=judged.transcript_score,
+        outcome_score=judged.outcome_score,
+        judge_config_ids=judged.judge_config_ids,
+        judge_reasoning=judged.judge_reasoning,
+        judge_model=judge_model,
+        cost_usd=cell_cost(usage, async_deliveries=async_deliveries, rate_table=rate_table),
+        cost_roles=list(cost_roles),
+        usage=usage,
+        # The cell-level half of the ceiling's disclosure. Zero and None say different
+        # things — "the ceiling was in force and never bound here" versus "nothing
+        # counted" — so the None is carried through rather than coerced.
+        metered_calls_refused=_cell_metered_refusals(metered_cell, telemetry.metered_calls_refused),
+        latency=latency,
+        covariates=derive_covariates(
+            usage=usage,
+            concurrent_eval_jobs=concurrent_eval_jobs,
+            dropped_tool_calls=count_dropped_tool_calls(trace),
+            refused_tool_attaches=count_refused_tool_attaches(trace),
+            truncated_rounds=count_truncated_rounds(trace),
+            turns_ended_by_budget=telemetry.turns_ended_by_budget,
+        ),
+        phase_timings=telemetry.phase_timings,
+        async_deliveries=async_deliveries,
+        # The kind's own report, stored verbatim: nothing below the dispatch reads inside it.
+        kind_payload=output.kind_payload,
+        world_events=world_events,
+        runner_error=errors.combined,
+        candidate_error=errors.candidate_error,
+        infra_error=errors.infra_error,
+        judge_error=judged.judge_error,
+        judge_cannot_tell=judged.judge_cannot_tell,
+        judge_cannot_tell_boundary=judged.judge_cannot_tell_boundary,
+        judge_cut_short=judged.judge_cut_short,
+        variant_key=variant.variant_key,
+        identity_version=variant.identity_version,
+        # Reached the end of the cell. Stated on the success path too, and not only on the
+        # exits that lost something, because the point of the field is that "nothing was
+        # cancelled" is an answer rather than the absence of one. It says nothing about whether
+        # the cell ERRORED: a candidate whose LLM
+        # failed still completed, and the error taxonomy above is what carries that.
+        termination="completed",
+        # Why the conversation inside it stopped, as the kind reported it — a separate fact
+        # from termination, and None from a kind that does not converse.
+        stop_cause=output.stop_cause,
+        # Counted, never inferred: what tells a model failure after delivered turns from a refusal.
+        turns_delivered=count_delivered_turns(trace, reported=telemetry.turns_delivered),
+        scored_at=scored_at,
+    )
+    judge_evidence = output.judge_evidence
+    return CellOutcome(
+        result,
+        EvalTrace(
+            id=eval_trace_doc_id(result.id),
+            scope_id=scope_id,
+            result_id=result.id,
+            eval_run_id=eval_run_id,
+            trace=trace,
+            otel_trace=otel_spans,
+            # What the judge reads, kept with the declaration that picked its axes, so a re-judge
+            # sends the same evidence rather than re-rendering it through a kind that may have
+            # changed since. ``None`` for both on an unjudged kind's cell and on an empty output.
+            judge_evidence=judge_evidence,
+            judged_artifact=judged_artifact if judge_evidence is not None else None,
+            # What the candidate did, as the kind recorded it — the input a re-check re-grades from.
+            call_ledger=output.call_ledger,
+            # What the world held when the cell ended — the other input a re-check re-grades from.
+            end_state=end_state,
+        ),
+    )
+
+
+def _empty_trace(*, result_id: str, scope_id: str, eval_run_id: str) -> EvalTrace:
+    """The trace document for a cell that recorded no turns and harvested no spans.
+
+    Built rather than returning ``None`` so every exit of ``run_one_result`` answers the
+    same shape; :meth:`EvalStorage.save_eval_result` is the one place that decides an
+    empty payload is not worth a row.
+    """
+    return EvalTrace(
+        id=eval_trace_doc_id(result_id),
+        scope_id=scope_id,
+        result_id=result_id,
+        eval_run_id=eval_run_id,
+    )
+
+
+def _cut_short_cell(
+    *,
+    sink: _CellSink,
+    scope_id: str,
+    eval_run_id: str,
+    test_case_id: str,
+    model: str,
+    k_iteration: int,
+    subject_id: str,
+    variant: DerivedVariantIdentity,
+    concurrent_eval_jobs: int | None,
+    termination: CellTermination,
+    judge_model: str | None,
+    rate_table: ExternalRateTable | None,
+    unfinished_judging: str | None,
+    ungraded_goal_checks: Sequence[GoalStateOutcome] = (),
+    metered_calls_refused: int | None = None,
+) -> CellOutcome:
+    """The two documents of a cell cut off before :func:`run_one_result` returned them.
+
+    Its deadline, its run's cancel and an apparatus fault all end a cell this way, and all three
+    build its record from the one thing that survives the cut: the cell's sink. The candidate side
+    and its spend are :func:`_degraded_capture_fields`'s; the errors are whatever the caller put on
+    ``sink.errors``, its own charge included; and a judge phase the cut struck keeps everything it
+    had — the evidence on the trace, so a re-judge can send it again, the scores that came back,
+    and each dim that did not finish named on ``judge_error`` with ``unfinished_judging`` as its
+    cause. That is the state a re-judge repairs: the candidate's finished, paid-for work is not
+    thrown away for want of a judge's reply.
+
+    :param sink: The cell's sink, its ``errors`` already holding the cut's own charge where it has one.
+    :ptype sink: _CellSink
+    :param scope_id: The run's scope.
+    :ptype scope_id: str
+    :param eval_run_id: The run.
+    :ptype eval_run_id: str
+    :param test_case_id: The cell's case.
+    :ptype test_case_id: str
+    :param model: The cell's candidate model.
+    :ptype model: str
+    :param k_iteration: Which repetition.
+    :ptype k_iteration: int
+    :param subject_id: The run's subject key.
+    :ptype subject_id: str
+    :param variant: The cell's resolved contestant identity.
+    :ptype variant: DerivedVariantIdentity
+    :param concurrent_eval_jobs: The cell's measurement-conditions sample.
+    :ptype concurrent_eval_jobs: int | None
+    :param termination: How the cell ended.
+    :ptype termination: CellTermination
+    :param judge_model: The judge the run pins, or ``None``.
+    :ptype judge_model: str | None
+    :param rate_table: The run's rate card, or ``None``.
+    :ptype rate_table: ExternalRateTable | None
+    :param unfinished_judging: Why a judge dim that did not return did not finish — the cut's own
+        message — or ``None`` for a cut that cannot strike the judge phase.
+    :ptype unfinished_judging: str | None
+    :param ungraded_goal_checks: See :func:`_degraded_capture_fields`.
+    :ptype ungraded_goal_checks: Sequence[GoalStateOutcome]
+    :param metered_calls_refused: The cell's refused metered calls, where the caller still holds the
+        dispatch's baseline; ``None`` where it does not.
+    :ptype metered_calls_refused: int | None
+    :return: The result and its trace.
+    :rtype: CellOutcome
+    """
+    judged = (
+        _judge_record(sink.judging, sink.judged, unfinished=unfinished_judging) if sink.judging is not None else None
+    )
+    errors = sink.errors
+    side = sink.side()
+    judge_fields: dict[str, Any] = (
+        {
+            "transcript_score": judged.transcript_score,
+            "outcome_score": judged.outcome_score,
+            "rubric_scores": judged.rubric_scores,
+            "judge_reasoning": judged.judge_reasoning,
+            "judge_config_ids": judged.judge_config_ids,
+            "judge_error": judged.judge_error,
+            "judge_cannot_tell": judged.judge_cannot_tell,
+            "judge_cut_short": judged.judge_cut_short,
+        }
+        if judged is not None
+        else {}
+    )
+    result = EvalResult(
+        scope_id=scope_id,
+        eval_run_id=eval_run_id,
+        test_case_id=test_case_id,
+        model=model,
+        k_iteration=k_iteration,
+        subject_id=subject_id,
+        candidate_kind=sink.kind_name,
+        runner_error=errors.combined,
+        candidate_error=errors.candidate_error,
+        infra_error=errors.infra_error,
+        metered_calls_refused=metered_calls_refused,
+        **judge_fields,
+        **_degraded_capture_fields(
+            sink=sink,
+            variant=variant,
+            concurrent_eval_jobs=concurrent_eval_jobs,
+            termination=termination,
+            judge_model=judge_model,
+            rate_table=rate_table,
+            ungraded_goal_checks=ungraded_goal_checks,
+        ),
+    )
+    # The output the cell delivered before it was cut, for whoever reads why; empty when it was
+    # cut before any, which storage declines to write. The judge's evidence rides with it once the
+    # judge phase began.
+    trace = EvalTrace(
+        id=eval_trace_doc_id(result.id),
+        scope_id=scope_id,
+        result_id=result.id,
+        eval_run_id=eval_run_id,
+        trace=list(side.output) if side is not None else [],
+        judge_evidence=sink.judging.evidence if sink.judging is not None else None,
+        judged_artifact=sink.judging.judged_artifact if sink.judging is not None else None,
+        # Read only once ``invoke`` returned, so a cell cut off before that stores none; one cut off
+        # while judged keeps what was read.
+        end_state=sink.end_state,
+    )
+    return CellOutcome(result, trace)
+
+
+def metered_cell_tally(
+    ledger: MeteredCallLedger | None,
+    baseline: MeteredCallTally | None = None,
+) -> MeteredCallTally | None:
+    """One cell's slice of the run's metered-call tally, or ``None`` when nothing counted.
+
+    Inside a cell the runner is running, the slice is the cell's own meter
+    (:meth:`~threetears.evals.run.metering.MeteredCallLedger.cell`), which credits each call to the
+    cell that made it as the ledger decides it — exact whether the run's cells execute serially or
+    side by side, and still one ledger, so a per-run ceiling cannot become a per-cell one N times larger.
+    Outside one, the difference between ``baseline`` and the ledger's tally now is the slice, which
+    holds only while nothing else of the run calls between the two.
+
+    ``None`` when the run carries no ledger (every caller that built its own
+    ``RunnerOptions``, and every non-eval path), which the caller must not read as
+    zero: it means nobody counted, where zero would mean the ceiling was in force and
+    this cell never touched it.
+
+    The runner reads it for the cell's refusal count, and a kind that settles its own usage
+    rows reads it for :func:`fold_metered_cell`; both ask here so the two cannot disagree
+    about what one cell metered.
+
+    :param ledger: The run's ledger, or ``None``.
+    :ptype ledger: MeteredCallLedger | None
+    :param baseline: The tally taken at the top of this cell, read only outside a metered cell; ``None``
+        there means nothing counted.
+    :ptype baseline: MeteredCallTally | None
+    :return: The cell's slice, or ``None``.
+    :rtype: MeteredCallTally | None
+    """
+    if ledger is None:
+        return None
+    if (meter := ledger.open_cell()) is not None:
+        return meter.tally()
+    if baseline is None:
+        return None
+    return ledger.tally().delta_from(baseline)
+
+
+def fold_metered_cell(external_usage: RoleUsageLedger, cell: MeteredCallTally | None) -> None:
+    """Fold one cell's action-seam tally into the external role's rows.
+
+    The tally's per-provider spends go in one at a time rather than summed: two providers'
+    weighted units are not one quantity, so the row keying is what keeps them apart.
+
+    **A tool that named no provider still made its calls**, and they land in a row of their
+    own rather than disappearing. The tally counts every metered call in ``calls`` but only
+    an attributed one produces a spend entry, so folding the spends alone would drop those
+    calls out of ``usage`` silently — a cell that made ten unattributable metered calls
+    would read as having made none. A tool should declare its provider; this is what keeps the
+    volume honest when one does not, and it is a function rather than an inline block so a
+    test can drive the real fold instead of asserting a copy of it.
+
+    The runner's fold rather than the metering module's: metering counts calls and knows
+    nothing about role rows, and folding a tally into one is the eval accumulation layer's
+    work. Engine API: a kind that builds its own usage rows calls it with its external ledger
+    when it settles.
+
+    :param external_usage: The cell's external-role ledger.
+    :ptype external_usage: RoleUsageLedger
+    :param cell: This cell's slice of the run tally, or ``None`` when nothing counted.
+    :ptype cell: MeteredCallTally | None
+    """
+    if cell is None or not cell.calls:
+        return
+    for spend in cell.spends:
+        external_usage.add_external_unpriced(spend)
+    attributed = sum(spend.calls for spend in cell.spends)
+    if attributed < cell.calls:
+        external_usage.add_external_unpriced(ExternalSpend(provider=None, calls=cell.calls - attributed))
+
+
+def _cell_metered_refusals(cell: MeteredCallTally | None, reported: int | None) -> int | None:
+    """This cell's refused metered calls: the runner's own count, plus anything a kind added.
+
+    The runner's slice is the authority, because the ledger being refused against is the
+    RUN's and the dispatch site is the only place that holds it. A kind reports here only
+    what that ledger could not see — a provider it meters itself — so the two are added
+    rather than one winning: dropping either would publish a refusal count lower than what
+    happened.
+
+    ``None`` from both means nobody counted, which is not zero. Zero means the ceiling was
+    in force and never bound this cell, and ``EvalResult.metered_calls_refused`` says the
+    two are never collapsed — so a present count on either side makes the answer a number,
+    and only a total absence stays absent.
+
+    :param cell: This cell's slice of the run's ledger, or ``None`` when the run carries none.
+    :ptype cell: MeteredCallTally | None
+    :param reported: What the kind counted itself, or ``None`` when it counted nothing.
+    :ptype reported: int | None
+    :return: The cell's refusals, or ``None`` when neither side counted.
+    :rtype: int | None
+    """
+    if cell is None and reported is None:
+        return None
+    return (cell.refused if cell is not None else 0) + (reported or 0)
+
+
+def _degraded_capture_fields(
+    *,
+    sink: _CellSink,
+    variant: DerivedVariantIdentity,
+    concurrent_eval_jobs: int | None,
+    termination: CellTermination,
+    judge_model: str | None,
+    rate_table: ExternalRateTable | None,
+    ungraded_goal_checks: Sequence[GoalStateOutcome] = (),
+) -> dict[str, Any]:
+    """Capture fields for a cell that did not reach the end of :func:`run_one_result`.
+
+    A subject-factory failure, an apparatus fault seeding the world, an unmet
+    precondition, an apparatus fault out of the kind, a cell timeout and a cancel all build their
+    result here, and all must say what they captured the same way — because every tri-state here
+    reads its empty arm and its absent arm differently:
+
+    - ``usage`` is always a list: the rows the cell's candidate side reported plus the judge
+      calls that returned, which is ``[]`` when capture ran and attributed no roles. ``None``
+      means no per-role observation exists at all, so handing it to a cell that DID run would
+      report the apparatus as never having looked.
+    - ``covariates`` is a real (if sparse) mapping for the same reason, and it is worth
+      having: a cell that failed or timed out under concurrent load is exactly the
+      observation an operator wants to stratify.
+    - ``phase_timings`` is what the candidate side reported — ``{}`` when it reported none, as
+      distinct from nobody looking.
+    - the variant is stamped even here: the cell still observed a specific contestant, and
+      dropping the key would bias any grouping toward the cells that succeeded.
+    - ``judge_model`` is stamped for the same reason: a blank on this field means the run
+      pinned no judge, and every surface reads it that way. This is what the cell WOULD have
+      been judged by; that no judging happened is carried by the scores being absent, not by
+      pretending nobody pinned a judge.
+
+    Collected in one place so the contract has a single definition rather than one copy per
+    degraded exit — a new capture field added to only some of them is the silent failure.
+
+    **Every exit reads the cell's sink, so the dollars and the rows are derived, not chosen**.
+    The candidate side is :meth:`_CellSink.side`: what ``invoke`` returned, else the
+    reading the kind registered, else nothing. The pre-turn exits have nothing, so their total
+    is a real zero over the run's roles. A cell timeout holds what its kind had reported when
+    the deadline struck — for the conversational kind the turns and deliveries recorded and the
+    simulator's replies, for the reporter the generator calls that returned — plus the judge
+    calls that returned, because :func:`execute_run` owns the sink and reads it after the
+    cancel, rather than taking the record from a frame the cancel destroyed. Any kind
+    alike: the sink is on the seam. ``cost_roles`` therefore names the run's roles on every
+    exit, timeout included: they are the roles the total sums. What a timed-out total cannot
+    hold is the call that was in flight when the deadline struck, whose spend no response ever
+    reported — for a single-call kind that is the whole of it; ``termination`` is what tells a
+    reader the total stops there (see
+    :func:`~threetears.evals.kernel.usage_capture.resolve_result_usage`).
+
+    **Once the kind's ``invoke`` has returned, its whole output is the candidate side's record**
+    (:attr:`_CellSink.returned`): a deadline in judging keeps the goal-state facts, host
+    measures, stop cause, instance id, kind payload, phase timings, async deliveries and conditions sample
+    the completed record would have stored, read from the same object. A reading taken
+    mid-``invoke`` is read the same way, except for the goal state: graded only at the end of
+    ``invoke``, so before that the record carries ``ungraded_goal_checks``. ``latency`` is not
+    rebuilt — the span record and the judge's clock lived in the cancelled frame.
+
+    **``metered_calls_refused`` is deliberately NOT here.** Its baseline is the dispatch
+    site's, taken around ``prepare`` and ``invoke``, and none of these exits reaches the
+    line that reads it: a factory or seed failure in the kind's preparation precedes any turn, so
+    there was no call for a ceiling to refuse, and a timed-out cell's count is the gap this
+    leaves. **A kind's own ``prepare`` refusing** (:exc:`CandidatePreparationFailed`) is
+    the one where "precedes any turn" is one kind's shape standing in for every kind's: a
+    kind that meters inside ``prepare`` and then refuses records ``None`` while its calls are
+    in the run's ledger. No kind in the tree does, so this is stated rather than fixed. The
+    run-level record (``EvalRun.metered_calls_refused``) is unaffected either way — the
+    ledger belongs to the run, not to the cell.
+
+    ``termination`` is the branch the caller took, recorded because the record cannot
+    recover it. It was once a parallel ``spend_measured`` boolean from which the cost arm
+    was derived; with every exit summing what its sink holds, no arm is derived from it any more.
+
+    ``rate_table`` is the run's rate card, and it is required rather than defaulted: which
+    roles the run's totals sum is a property of the run, so a degraded exit that omitted it
+    would quietly file a priced run's dead cell under the unpriced composition.
+
+    :param sink: The cell's sink — holding nothing on a pre-turn exit.
+    :ptype sink: _CellSink
+    :param variant: The cell's resolved contestant identity.
+    :ptype variant: DerivedVariantIdentity
+    :param concurrent_eval_jobs: The cell's measurement-conditions sample.
+    :ptype concurrent_eval_jobs: int | None
+    :param termination: How the cell ended.
+    :ptype termination: CellTermination
+    :param judge_model: The judge the run pins, or ``None``.
+    :ptype judge_model: str | None
+    :param rate_table: The run's rate card, or ``None`` when it priced nothing.
+    :ptype rate_table: ExternalRateTable | None
+    :param ungraded_goal_checks: What the goal state reads as when the cell ended before its kind's
+        ``invoke`` returned — the template's checks, failed and unevaluated, for a deadline
+        charged to the candidate (:func:`_unevaluated_goal_checks`); nothing on every other exit.
+        Ignored once ``invoke`` has returned, since the kind's own checks are then the record.
+    :ptype ungraded_goal_checks: Sequence[GoalStateOutcome]
+    :return: The keyword arguments every degraded ``EvalResult`` spreads.
+    :rtype: dict[str, Any]
+    """
+    side = sink.side()
+    judged = fold_judge_outcomes(sink.judged)
+    if sink.cassettes is not None:
+        # The cell ended here, wherever it was — inside ``prepare`` included, which the close after
+        # ``invoke`` never reaches. Idempotent, so a cell already closed is unchanged.
+        sink.cassettes.close()
+    if side is None:
+        # The kind reported nothing: a pre-turn exit, or a kind cut off inside the one call it
+        # makes. Every tri-state reads its empty arm — see the list above.
+        usage: list[RoleUsage] = [*judged.usage]
+        async_deliveries: list[AsyncDelivery] | None = []
+        phase_timings: dict[str, float] = {}
+        trace: list[dict[str, Any]] = []
+    else:
+        if sink.cassettes is not None:
+            sink.cassettes.hold(side.async_deliveries, complete=False)
+        usage = [
+            *_candidate_side_usage(side.telemetry.usage, side.async_deliveries, rate_table=rate_table),
+            *judged.usage,
+        ]
+        async_deliveries = side.async_deliveries
+        phase_timings = dict(side.telemetry.phase_timings)
+        trace = side.output
+        concurrent_eval_jobs = _busier_conditions_sample(concurrent_eval_jobs, side.telemetry.concurrent_eval_jobs)
+    returned = sink.returned
+    cost_roles = blended_cost_roles(rate_table)
+    return {
+        "usage": usage,
+        "cost_usd": cell_cost(usage, async_deliveries=async_deliveries, rate_table=rate_table),
+        # ``{}`` when the kind reported none: the host's grader never ran.
+        "host_measures": dict(side.host_measures) if side is not None else {},
+        "goal_state_outcomes": list(returned.mechanical_facts) if returned is not None else list(ungraded_goal_checks),
+        "stop_cause": side.stop_cause if side is not None else None,
+        # What the kind had delivered when the cell ended, as it counted or stamped it; None when nothing
+        # counted — a pre-turn exit, or a kind cut off before it reported anything.
+        "turns_delivered": count_delivered_turns(
+            trace, reported=side.telemetry.turns_delivered if side is not None else None
+        ),
+        "candidate_instance_id": side.candidate_instance_id if side is not None else None,
+        "kind_payload": side.kind_payload if side is not None else None,
+        # What fired before the cell ended, from the session the engine owns — so a cut-off cell
+        # keeps it, as it keeps its spend.
+        "world_events": sink.world_events,
+        "cost_roles": list(cost_roles),
+        "covariates": derive_covariates(
+            usage=usage,
+            concurrent_eval_jobs=concurrent_eval_jobs,
+            dropped_tool_calls=count_dropped_tool_calls(trace),
+            refused_tool_attaches=count_refused_tool_attaches(trace),
+            truncated_rounds=count_truncated_rounds(trace),
+            turns_ended_by_budget=side.telemetry.turns_ended_by_budget if side is not None else None,
+        ),
+        "phase_timings": phase_timings,
+        "async_deliveries": async_deliveries,
+        "variant_key": variant.variant_key,
+        "identity_version": variant.identity_version,
+        "judge_model": judge_model,
+        "termination": termination,
+    }
+
+
+def _candidate_side_usage(
+    usage: Sequence[RoleUsage],
+    async_deliveries: Sequence[AsyncDelivery] | None,
+    *,
+    rate_table: ExternalRateTable | None,
+) -> list[RoleUsage]:
+    """The candidate side's rows: the kind's own, plus what its background work spent.
+
+    Background work reports its spend on its :class:`~threetears.evals.schema.models.AsyncDelivery`,
+    so the runner folds it (:func:`~threetears.evals.kernel.usage_capture.async_delivery_usage`)
+    rather than each kind — work still in flight when the cell ended included, and a substituted
+    entry, which can report none, contributing nothing. That is the one path such spend takes: a kind
+    reporting ``inner_agent`` rows of its own would be counted beside it, so it is refused. The
+    dollars are not summed here: the cell's cost is derived from these rows once, by
+    :func:`~threetears.evals.kernel.usage_capture.cell_cost`.
+
+    :param usage: The rows the kind reported on its telemetry.
+    :ptype usage: Sequence[RoleUsage]
+    :param async_deliveries: The kind's background work.
+    :ptype async_deliveries: Sequence[AsyncDelivery] | None
+    :param rate_table: The run's rate table, which prices the work's external calls.
+    :ptype rate_table: ExternalRateTable | None
+    :return: The rows.
+    :rtype: list[RoleUsage]
+    :raises ValueError: The kind reported ``inner_agent`` rows on its telemetry.
+    """
+    refuse_inner_agent_usage(usage)
+    return [*usage, *async_delivery_usage(async_deliveries, rate_table=rate_table)]
+
+
+def _warn_on_unreported_async_spend(async_deliveries: list[AsyncDelivery] | None, *, eval_run_id: str) -> None:
+    """Log when background work that delivered from a model reported nothing it spent.
+
+    A live entry — not substituted — that delivered and names the model its work ran on necessarily
+    spent on that model, so one reporting no tokens, no calls and no dollars is a kind that forgot to
+    carry its spend, not work that spent nothing; the cell's production-replicating cost is then short
+    by it. Work that failed or was still in flight may honestly have spent nothing yet, so it is not
+    held to this — a detector that cries wolf trains its reader to ignore it. A log rather
+    than a raise: ``None`` is also an honest "the tool could not say", and a cell that produced real
+    scores must not be failed over its telemetry.
+    """
+    if async_deliveries is None:
+        return
+    # ``model is not None`` already excludes a substituted entry: AsyncDelivery refuses one that names a model.
+    silent = [
+        entry
+        for entry in async_deliveries
+        if entry.status == "delivered" and entry.model is not None and not entry.reported_spend
+    ]
+    if not silent:
+        return
+    log.warning(
+        "Eval run %s: %d live async delivery(ies) ran on a model and report no spend at all — the kind is likely "
+        "not carrying its background work's spend on AsyncDelivery, and this cell's cost is short by it",
+        eval_run_id,
+        len(silent),
+    )
+
+
+def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = None) -> int | None:
+    """Sample how much eval work is executing beside this cell, keeping the busiest observation so far (R4).
+
+    The count is the larger of the eval jobs executing (the probe, this one included) and the run's own
+    cell width (:attr:`RunnerOptions.max_concurrent_cells`): a run executing its cells concurrently has
+    that many of its own cells contending for the same provider and the same box, which corrupts a
+    latency pool exactly as a second job does, so its every cell reads ``execution_mode = "concurrent"``.
+
+    ``None`` when no probe is wired and the run's cells are serial — recorded as no ``execution_mode`` at
+    all rather than as "serial", because nothing looked. Sampling repeatedly through the cell and keeping
+    the max is what makes the covariate honest across a cell that runs for minutes: a
+    second job starting halfway through contaminated this measurement just as surely as
+    one that was already running, and boundary samples alone would report it as clean.
+
+    The reading is still a floor, not a guarantee: a job that starts and ends entirely
+    between two samples is invisible. Sampling every turn narrows that window to a turn;
+    closing it entirely would need the job manager to push, not the cell to poll.
+
+    The probe is caller-supplied, so it is a boundary: a raising one degrades this covariate
+    to unmeasured rather than taking the cell down. That matters most at the cell-timeout
+    call site, whose entire purpose is preserving a degraded observation — losing the
+    result to a telemetry probe would destroy the very evidence the timeout path exists to
+    keep. The failure is logged, never swallowed silently, and :func:`execute_run` writes each distinct one on
+    its run's ``error_details`` as its loop ends, with how many samples it cost.
+    """
+    # The run's own width is known, not sampled: a concurrent run is concurrent for every cell it records.
+    own = options.max_concurrent_cells if options.max_concurrent_cells > 1 else None
+    if options.concurrent_eval_jobs_probe is None:
+        return _busiest(previous, own)
+    try:
+        observed = options.concurrent_eval_jobs_probe()
+    except Exception:  # prawduct:ok-broad-except — caller-supplied probe; a telemetry read must not fail a cell
+        log.exception("Concurrent-eval-job probe raised; recording execution_mode as unmeasured")
+        return _busiest(previous, own)
+    return _busiest(_busiest(previous, observed), own)
+
+
+#: Where an ``error_details`` entry for a raising concurrency probe says its error happened.
+_PROBE_FAILED = (
+    "concurrency probe (RunnerOptions.concurrent_eval_jobs_probe) raised, so the cells it was sampled for read "
+    "execution_mode as unmeasured"
+)
+
+
+def _counting_failures(probe: Callable[[], int], failures: Counter[str]) -> Callable[[], int]:
+    """``probe``, each failure counted in ``failures`` by its :func:`fault_entry` before it is re-raised."""
+
+    def counted() -> int:
+        try:
+            return probe()
+        except Exception as raised:
+            failures[fault_entry(_PROBE_FAILED, raised)] += 1
+            raise
+
+    return counted
+
+
+def _probe_fault_entries(failures: Counter[str]) -> list[str]:
+    """One ``error_details`` entry per distinct probe failure, saying how many samples it cost."""
+    return [f"{entry} ({count} sample{'s' if count != 1 else ''})" for entry, count in failures.items()]
+
+
+async def _record_contained_faults(host: EvalHost, run: EvalRun, faults: list[str]) -> None:
+    """Write the errors the loop contained on the run's ``error_details``; a write that fails is logged, never raised.
+
+    Run as the loop ends, however it ends, so it must not replace what ended it: a failed write is logged at ERROR
+    with every entry it was carrying, which are the errors themselves.
+    """
+    try:
+        outcome = await run_blocking(
+            host.blocking_executor, record_run_faults, host.storage, run.id, run.scope_id, faults
+        )
+    # prawduct:ok-broad-except — the loop's own ending is what the caller must see; this is logged with every entry
+    except Exception:
+        log.exception(
+            "eval.run run=%s scope=%s: the errors its loop contained could not be written on the run: %s",
+            run.id,
+            run.scope_id,
+            faults,
+        )
+        return
+    if outcome in ("missing", "refused"):
+        log.error(
+            "eval.run run=%s scope=%s: the errors its loop contained could not be written on the run (%s): %s",
+            run.id,
+            run.scope_id,
+            outcome,
+            faults,
+        )
+
+
+def _busiest(a: int | None, b: int | None) -> int | None:
+    """The larger of two conditions samples, either of which may be absent."""
+    if a is None:
+        return b
+    return a if b is None else max(a, b)
+
+
+def assert_preconditions(
+    template: EvalTemplate, test_case: EvalTestCase, seeded: Mapping[str, Any], *, world: WorldRegistry | None
+) -> list[PreconditionOutcome]:
+    """Assert at t=0 that the world this template presumes actually holds.
+
+    A precondition is runnable, so the moment the world is seeded is the moment to ask. What comes
+    back is empty when every presumption held — which is the common case and the one that must
+    cost nothing on the record — and the WHOLE set when any did not, because an exclusion is read
+    by asking what was presumed and which part of it the world failed.
+
+    **Evaluated against the same state the goal judge reads**, and against the world at t=0 rather
+    than at the end: this is the question of whether the subject was ever placed in the state the
+    probe was written for, and asking it after the run would ask whether the subject left it.
+
+    **An expression that cannot be evaluated counts as not holding.** The alternative is to treat
+    an unevaluable presumption as satisfied, which scores a cell whose world nobody checked — the
+    missing-value semantics this whole contract exists to end. Parse errors cannot reach here
+    (``Precondition`` refuses them where the template is written) and a path naming no declared
+    dimension cannot either (``resolve_preconditions`` refuses that where the template is used),
+    so what is left is a genuine evaluation fault and it belongs on the excluded record. **A
+    presumption that is not established — one resting on a value the seeded world does not hold —
+    does not hold either**, negated or not: the DSL keeps an unknown unknown through ``not``, so
+    ``not state.x == "y"`` over a world holding no ``x`` is not a presumption the world satisfied.
+
+    **The engine calls it for every cell** (:func:`run_one_result`), after ``prepare`` returns and before
+    the first turn, against the world its session read back when the seed settled — so no kind has to
+    remember to, and a failed presumption is excluded rather than scored as the subject's failure. It
+    stays engine API for a kind that wants to refuse earlier, inside its own ``prepare``
+    (:exc:`~threetears.evals.kernel.candidate_kind.CandidatePreparationFailed` with
+    ``termination="precondition_failed"``): the assertion is pure over the t=0 world, so asking it twice
+    gives one answer.
+
+    :param template: The template whose presumptions these are.
+    :ptype template: EvalTemplate
+    :param test_case: The case, for its variation parameters — an expression may read
+        ``variation.tone`` beside the world.
+    :ptype test_case: EvalTestCase
+    :param seeded: The seeded world, immediately after seeding and before any turn, keyed by declared
+        dimension name — read back through the dimensions' ``read`` handles, or named from the
+        seed by :meth:`~threetears.evals.kernel.host.world.WorldRegistry.named`. Read with an
+        empty call ledger: at t=0 the candidate has made no call, and no tool has refused one.
+    :ptype seeded: Mapping[str, Any]
+    :param world: The host's world registry (``profile.world``), so a path reads the dimension the
+        authoring gate resolved it to.
+    :ptype world: WorldRegistry | None
+    :return: Every outcome when at least one did not hold; empty when they all did.
+    :rtype: list[PreconditionOutcome]
+    """
+    outcomes: list[PreconditionOutcome] = []
+    for precondition in template.preconditions:
+        try:
+            held, detail = evaluate_with_detail(
+                precondition.expression,
+                end_state=seeded,
+                ledger=CallLedger(refused=[]),
+                world=world,
+                variation=dict(test_case.variation_params),
+            )
+        # prawduct:ok-broad-except — DSL evaluation boundary; an unevaluable presumption excludes
+        except Exception as e:
+            held, detail = False, f"<error: {e}>"
+        outcomes.append(
+            PreconditionOutcome(
+                expression=precondition.expression, presumes=precondition.presumes, held=held, detail=detail
+            )
+        )
+    return outcomes if any(not outcome.held for outcome in outcomes) else []
+
+
+def _failed_preconditions(
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    session: WorldSession | None,
+    *,
+    world: WorldRegistry | None,
+) -> tuple[str, list[PreconditionOutcome]] | None:
+    """The engine's own t=0 assertion of a template's preconditions: the exclusion it makes, or None when they held.
+
+    Asserted against the world the cell's session read back the moment its seed settled
+    (:attr:`~threetears.evals.kernel.world_session.WorldSession.seeded_state`). A cell whose kind never seeded
+    through its session has no t=0 world the engine saw, so its presumptions are asserted against an empty one,
+    where none is established — excluded rather than scored, since a presumption nobody checked is not one that
+    held (:func:`assert_preconditions`).
+
+    :param template: The template whose presumptions to assert.
+    :ptype template: EvalTemplate
+    :param test_case: The case, for its variation parameters.
+    :ptype test_case: EvalTestCase
+    :param session: The cell's world session, or None for a host that declares no world.
+    :ptype session: WorldSession | None
+    :param world: The host's world registry.
+    :ptype world: WorldRegistry | None
+    :return: ``(runner_error, outcomes)`` for an excluded cell, or None when every presumption held.
+    :rtype: tuple[str, list[PreconditionOutcome]] | None
+    """
+    opened = session is not None and session.opened
+    seeded = session.seeded_state if session is not None and opened else None
+    outcomes = assert_preconditions(template, test_case, seeded or {}, world=world)
+    if not outcomes:
+        return None
+    error = f"precondition: {precondition_failure_text(outcomes)}"
+    if not opened:
+        error += (
+            " — the cell's world was never seeded through the engine's world session, so the engine had no world at "
+            "t=0 to assert the template's preconditions against"
+        )
+    return error, outcomes
+
+
+def precondition_failure_text(outcomes: Sequence[PreconditionOutcome]) -> str:
+    """One line naming what was presumed and what the world held instead.
+
+    Engine API beside :func:`assert_preconditions`, for the same reason: the outcome is the
+    engine's ``PreconditionOutcome``, and every world-bearing kind that excludes a cell on a
+    failed presumption reports it in this one form.
+
+    :param outcomes: The t=0 outcomes, including the ones that held.
+    :ptype outcomes: Sequence[PreconditionOutcome]
+    :return: The text for ``runner_error`` / ``infra_error``. Names only the presumptions that FAILED —
+        the satisfied ones are on the record for a reader who wants them, and repeating them in a
+        one-line summary would bury the ones that matter.
+    :rtype: str
+    """
+    return "; ".join(
+        f"{outcome.presumes!r} did not hold ({outcome.expression} — {outcome.detail})"
+        for outcome in outcomes
+        if not outcome.held
+    )
+
+
+class GoalCheckUnevaluable(RuntimeError):
+    """A goal check raised while being evaluated — a fault of the rig, not a verdict on the candidate.
+
+    The check is a claim about the world, and a check that cannot be evaluated has made no claim.
+    Scoring it as failed would put a harness or DSL fault on the candidate's record, so a kind that
+    catches it raises :class:`~threetears.evals.kernel.host.ApparatusError` from ``invoke``, which
+    the runner records as an apparatus fault that excludes the cell.
+
+    Engine API beside :func:`evaluate_goal_state`, which raises it: a kind catches it to tell a
+    rig fault from a verdict, whichever kind evaluates the template's goal checks.
+    """
+
+    def __init__(self, expression: str, error: BaseException) -> None:
+        """Name the expression that could not be evaluated and why.
+
+        :param expression: The goal check's text.
+        :ptype expression: str
+        :param error: What its evaluation raised.
+        :ptype error: BaseException
+        """
+        super().__init__(f"goal check {expression!r} could not be evaluated: {type(error).__name__}: {error}")
+        self.expression = expression
+
+
+def evaluate_goal_state(
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    ledger: CallLedger,
+    end_state: Mapping[str, Any],
+    fired: Firings | None,
+    world: WorldRegistry | None,
+) -> list[GoalStateOutcome]:
+    """Run every expression in ``template.goal_state_checks`` and capture outcomes.
+
+    **Engine API, for every kind that leaves a world behind.**
+    ``goal_state_checks`` is a field of the engine's own template, read by the engine's DSL
+    against the engine's world state, so any kind that leaves a world behind grades it here rather
+    than re-implementing the evaluation and the rig-fault rule beside itself.
+
+    :param template: The template whose goal checks to run.
+    :ptype template: EvalTemplate
+    :param test_case: The case, for its variation parameters.
+    :ptype test_case: EvalTestCase
+    :param ledger: The calls the candidate made that succeeded.
+    :ptype ledger: CallLedger
+    :param end_state: The world the cell left behind, keyed by declared dimension name.
+    :ptype end_state: Mapping[str, Any]
+    :param fired: What fired (:attr:`WorldSession.fired`), or ``None`` when no world events were recorded.
+    :ptype fired: Firings | None
+    :param world: The host's world registry (``profile.world``).
+    :ptype world: WorldRegistry | None
+    :return: One outcome per goal check, in the template's order.
+    :rtype: list[GoalStateOutcome]
+    :raises GoalCheckUnevaluable: An expression raised while being evaluated.
+    """
+    return grade_goal_checks(
+        template.goal_state_checks,
+        ledger=ledger,
+        end_state=end_state,
+        fired=fired,
+        variation=test_case.variation_params,
+        world=world,
+    )
+
+
+def grade_goal_checks(
+    expressions: Sequence[str],
+    *,
+    ledger: CallLedger,
+    end_state: Mapping[str, Any],
+    fired: Firings | None,
+    variation: Mapping[str, Any],
+    world: WorldRegistry | None,
+) -> list[GoalStateOutcome]:
+    """Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
+
+    **Callable by every kind.** A kind fills a :class:`~threetears.evals.schema.call_ledger.CallLedger`
+    as its candidate acts, reads its end state, and grades here; :func:`evaluate_goal_state` is the
+    same call over a template's checks. The check-controls gate
+    (:mod:`threetears.evals.run.check_controls`) grades a template's control end states through here,
+    so a check proven to discriminate at authoring is proven under the rule a run will grade it by.
+
+    :param expressions: The goal checks, in order.
+    :ptype expressions: Sequence[str]
+    :param ledger: The calls the candidate made that succeeded, and those a tool refused — a cell's, or a control's
+        stated calls.
+    :ptype ledger: CallLedger
+    :param end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
+        control end state.
+    :ptype end_state: Mapping[str, Any]
+    :param fired: What fired, read by ``fired()`` and ``fired_armed()`` — a cell's
+        (:attr:`~threetears.evals.kernel.world_session.WorldSession.fired`), a stored result's
+        (:meth:`~threetears.evals.schema.world_events.Firings.of` its world events), or a control's.
+        Required rather than defaulted: ``None`` says no world events were recorded, and a check
+        reading either then raises rather than scoring "nothing fired" for a cell nobody watched.
+    :ptype fired: Firings | None
+    :param variation: The case parameters a check may read as ``variation.*``.
+    :ptype variation: Mapping[str, Any]
+    :param world: The host's world registry (``profile.world``), so a path reads the dimension the
+        authoring gate resolved it to.
+    :ptype world: WorldRegistry | None
+    :return: One outcome per expression, in order. A check whose value rests on something the end state
+        does not hold is *not established* — never a pass, negated or not — and is recorded failed
+        with a detail starting :data:`~threetears.evals.kernel.dsl.NOT_ESTABLISHED` that names
+        the paths that resolved to nothing, so a reader can tell it from a check that evaluated False.
+    :rtype: list[GoalStateOutcome]
+    :raises GoalCheckUnevaluable: An expression raised while being evaluated.
+    """
+    outcomes: list[GoalStateOutcome] = []
+    for expr in expressions:
+        try:
+            passed, detail = evaluate_with_detail(
+                expr, end_state=end_state, ledger=ledger, world=world, variation=dict(variation), fired=fired
+            )
+        except Exception as e:  # prawduct:ok-broad-except — DSL evaluation boundary; re-raised as a named rig fault
+            log.warning("Goal-state expression failed to evaluate: %r → %s", expr, e)
+            raise GoalCheckUnevaluable(expr, e) from e
+        outcomes.append(GoalStateOutcome(expression=expr, passed=passed, detail=detail))
+    return outcomes
+
+
+def template_as_graded(template: EvalTemplate, refused: Mapping[str, str] | None) -> EvalTemplate:
+    """The template a run's cells are graded on: its goal checks less the ones the grammar refused at launch.
+
+    A template stored before a grammar rule can carry a check the rule now refuses, and grading it raises in
+    every cell — each then a rig fault, with the check's reason buried in a generic apparatus error and every
+    other measure of the cell lost with it. The launch freezes the refused checks on the run
+    (:func:`~threetears.evals.schema.models.refused_goal_checks`); the cells grade the rest, and every surface
+    counts the refused check as excluded, with its reason.
+
+    :param template: The template as stored.
+    :ptype template: EvalTemplate
+    :param refused: The run's refused checks, or None when it recorded none.
+    :ptype refused: Mapping[str, str] | None
+    :return: ``template`` itself when nothing was refused, else a copy without the refused checks.
+    :rtype: EvalTemplate
+    """
+    if not refused:
+        return template
+    return template.model_copy(
+        update={"goal_state_checks": [check for check in template.goal_state_checks if check not in refused]}
+    )
+
+
+def _unevaluated_goal_checks(template: EvalTemplate, *, waiting_on: str) -> list[GoalStateOutcome]:
+    """The template's goal-state checks, as a candidate-charged deadline leaves them: unevaluated, failed.
+
+    A deadline that strikes while the candidate's turn or its background work is pending cancels
+    the cell before the goal state is graded, and fails the candidate (``_DEADLINE_CHARGE``). A
+    candidate failure counts every goal-state check as failed, and
+    :func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts` is where every per-check rate
+    applies that — but only to the checks a result carries. Carrying them here is what puts this
+    cell in those rates; left empty, an arm whose candidate keeps hitting its deadline would show
+    per-check pass rates over only the cells it finished, while pass^k counted it as failing.
+
+    ``passed`` is ``False`` because nothing held: no check was evaluated, and ``detail`` says so.
+
+    :param template: The scenario the cell ran, whose checks are the ones a finished cell grades.
+    :ptype template: EvalTemplate
+    :param waiting_on: What the deadline struck while waiting on, as ``_DEADLINE_CHARGE`` names it.
+    :ptype waiting_on: str
+    :return: One failed, unevaluated outcome per ``template.goal_state_checks`` entry, in order.
+    :rtype: list[GoalStateOutcome]
+    """
+    detail = f"not evaluated: the cell's deadline struck while waiting on {waiting_on}, which fails the candidate"
+    return [GoalStateOutcome(expression=expr, passed=False, detail=detail) for expr in template.goal_state_checks]
+
+
+def build_judge_context(
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    goal_outcomes: list[GoalStateOutcome],
+    judged_artifact: JudgedArtifact,
+    judge_evidence: JudgeEvidence,
+) -> JudgeContext:
+    """The evidence a result's judge reads, built from the cell's own records.
+
+    One construction shared by the cell's judge phase and a later re-judge, so a re-score
+    is handed exactly the inputs the phase was: the template's intent, the case's
+    variation, the goal-state outcomes, and the kind's declaration and rendered evidence —
+    which the re-judge reads back off the cell's stored trace.
+
+    :param template: The run's template, which supplies the intent.
+    :ptype template: EvalTemplate
+    :param test_case: The case the cell ran.
+    :ptype test_case: EvalTestCase
+    :param goal_outcomes: The cell's goal-state outcomes.
+    :ptype goal_outcomes: list[GoalStateOutcome]
+    :param judged_artifact: The kind's declaration, which picks the axes.
+    :ptype judged_artifact: JudgedArtifact
+    :param judge_evidence: What the kind rendered for its judge.
+    :ptype judge_evidence: JudgeEvidence
+    :return: The context every judge call for the result shares.
+    :rtype: JudgeContext
+    """
+    return JudgeContext(
+        case_id=test_case.id,
+        intent=template.intent,
+        variation=dict(test_case.variation_params),
+        goal_outcomes=goal_outcomes,
+        judged_artifact=judged_artifact,
+        judge_evidence=judge_evidence,
+    )
+
+
+def judge_requests(
+    *,
+    template: EvalTemplate,
+    judge_service: JudgeService,
+    context: JudgeContext,
+    only: frozenset[str] | None = None,
+) -> list[JudgeRequest]:
+    """The judge calls one result's judging consists of, built and not sent, in dimension order.
+
+    The one decision of which calls there are — :func:`judge_dims` sends exactly these, and a caller
+    that must price a result's judging before paying for it (a judge repeat) prices exactly these. The
+    order is the transcript axis, the outcome axis, then ``template.rubric`` in declaration order; a
+    document candidate has no turns and no goal, so the two conversation axes are absent for one.
+
+    :param template: The run's template, whose ``rubric`` names the per-dim calls.
+    :ptype template: EvalTemplate
+    :param judge_service: The judge that builds each call.
+    :ptype judge_service: JudgeService
+    :param context: The evidence every call reads.
+    :ptype context: JudgeContext
+    :param only: Restrict the calls to these dim ids; ``None`` builds every call.
+    :ptype only: frozenset[str] | None
+    :return: Each call as it would be sent.
+    :rtype: list[JudgeRequest]
+    """
+    conversational = context.judged_artifact is JudgedArtifact.TRANSCRIPT
+    requests = [
+        *(
+            [judge_service.transcript_request(context), judge_service.outcome_request(context)]
+            if conversational
+            else []
+        ),
+        *[judge_service.dimension_request(dim, context) for dim in template.rubric],
+    ]
+    return [request for request in requests if only is None or request.dim_id in only]
+
+
+async def judge_dims(
+    *,
+    template: EvalTemplate,
+    judge_service: JudgeService,
+    context: JudgeContext,
+    concurrency: int = DEFAULT_JUDGE_CONCURRENCY,
+    only: frozenset[str] | None = None,
+    settled: list[tuple[str, JudgeOutcome]] | None = None,
+    sink: CellSink | None = None,
+) -> list[tuple[str, JudgeOutcome]]:
+    """Make the judge calls for one result and return each outcome, in dimension order.
+
+    The one place that decides which calls a result's judging consists of, shared by the
+    cell's judge phase (:func:`run_one_result`) and by a later re-judge of the dims whose
+    judging failed, so a re-score asks exactly the question the phase asked.
+
+    **The calls run concurrently, bounded by ``concurrency``, and nothing in the result
+    depends on which finished first.** Each call is one prompt scoring one dimension and
+    no call reads another's output. The judge client builds each request locally, which
+    is what makes gathering on the one client the service caches per ``(model,
+    temperature)`` sound; the port states the requirement
+    (:class:`~threetears.evals.schema.completion.CompletionClient`). ``concurrency=1`` reproduces a
+    serial phase exactly.
+
+    The order is DIMENSION order — transcript axis, outcome axis, then ``template.rubric``
+    in declaration order — never completion order: ``gather`` returns positionally.
+
+    The transcript and outcome axes are conversation-shaped: a document candidate
+    (``context.judged_artifact`` is ``DOCUMENT``) has no turns to read for the first and no goal
+    to have reached for the second, so they are not called for one and are absent from the
+    return.
+
+    A call that RAISES (a client factory refusing, a prompt builder failing) is caught per
+    dimension and returned as an outcome carrying the exception's type as its error, so one
+    dimension's crash does not discard the scores its siblings paid for. **Except a host's
+    completion breaking the protocol** (:class:`~threetears.evals.schema.completion.CompletionProtocolDefect`):
+    that is the host's code, which every call would meet, so it is raised — the call's hold on the cap
+    released, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
+
+    :param template: The run's template, whose ``rubric`` names the per-dim calls.
+    :ptype template: EvalTemplate
+    :param judge_service: The judge; one cached client per ``(model, temperature)``.
+    :ptype judge_service: JudgeService
+    :param context: The finished transcript and its evidence, shared by every call.
+    :ptype context: JudgeContext
+    :param concurrency: Calls in flight at once.
+    :ptype concurrency: int
+    :param only: Restrict the calls to these dim ids; ``None`` makes every call.
+    :ptype only: frozenset[str] | None
+    :param settled: A caller-owned list each call's outcome is appended to as it returns, in
+        completion order — so a caller whose deadline cancels this phase still holds the
+        calls already paid for, which the return value cannot give it.
+    :ptype settled: list[tuple[str, JudgeOutcome]] | None
+    :param sink: The cell's sink when the calls are a cell's, which holds each one against the run's cost cap:
+        a call is reserved at its ceiling (:meth:`JudgeService.price_ceiling`) before it is sent and
+        settled to what it cost when it returns, and one the cap has no room for is not sent — its dim
+        comes back unscored, its error naming the cap. ``None`` for calls no run's cap bounds (a re-judge,
+        whose calls are priced out of run).
+    :ptype sink: CellSink | None
+    :return: ``(dim_id, outcome)`` for every call made, in dimension order.
+    :rtype: list[tuple[str, JudgeOutcome]]
+    :raises CompletionProtocolDefect: A judge completion does not meet the protocol; the other calls are cancelled
+        first.
+    """
+    gate = asyncio.Semaphore(concurrency)
+
+    async def _judge_one(request: JudgeRequest) -> JudgeOutcome:
+        dim_id = request.dim_id
+        async with gate:
+            try:
+                if sink is not None:
+                    await refresh_prices(judge_service.client_for(request))
+                held = sink.reserve("judge", judge_service.price_ceiling(request)) if sink is not None else None
+            except CostCapReached as refused:
+                outcome = JudgeOutcome(score=None, error=f"not judged: {refused.detail}")
+            except Exception as e:  # prawduct:ok-broad-except — judge boundary; pricing builds the dim's client, whose refusal is this dim's alone
+                # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
+                log.exception("Judge dim=%s could not be priced for case=%s", dim_id, context.case_id)
+                outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
+            else:
+                try:
+                    outcome = await judge_service.score_request(request, case_id=context.case_id)
+                except CompletionProtocolDefect as defect:
+                    # The host's completion type, not this dim's luck: every call would meet it, so it fails
+                    # the run rather than this dim. What its calls were billed is settled against the cap and
+                    # handed to the caller's record as this dim's outcome, so the run's spend still sums it.
+                    billed = defect_usage(defect)
+                    if held is not None:
+                        if billed is None:
+                            held.release()
+                        else:
+                            held.settle(billed.cost_usd)
+                    if settled is not None:
+                        settled.append(
+                            (
+                                dim_id,
+                                JudgeOutcome(
+                                    score=None, config_id=request.judge_config_id, error=str(defect), usage=billed
+                                ),
+                            )
+                        )
+                    raise
+                except (
+                    Exception
+                ) as e:  # prawduct:ok-broad-except — judge boundary; one dim's crash must not discard its siblings
+                    # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
+                    log.exception("Judge dim=%s raised for case=%s", dim_id, context.case_id)
+                    outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
+                except BaseException:
+                    # A cancel — the cell's deadline, or its run's — holds nothing against the cap once it unwinds.
+                    if held is not None:
+                        held.release()
+                    raise
+                if held is not None:
+                    # What the cell's judge spend is summed from: the outcome's usage, every attempt in it. A call that
+                    # returned nothing at all reported no usage, and counts nothing, as the judge fold reads it.
+                    held.settle(outcome.usage.cost_usd if outcome.usage is not None else 0.0)
+        if settled is not None:
+            settled.append((dim_id, outcome))
+        return outcome
+
+    requests = judge_requests(template=template, judge_service=judge_service, context=context, only=only)
+    # ``return_exceptions`` stays False on purpose: every other Exception is caught per call above, so
+    # anything that reaches gather is a BaseException — a cell timeout's cancellation — or a host's
+    # protocol defect, and must propagate, not be recorded as a score. Each call is a task of its own so
+    # that, when one raises, the rest are cancelled and waited for (each releasing what it held) rather
+    # than left running behind a phase that has already failed.
+    calls = [asyncio.ensure_future(_judge_one(request)) for request in requests]
+    try:
+        outcomes = await asyncio.gather(*calls)
+    except BaseException:
+        for call in calls:
+            call.cancel()
+        await asyncio.gather(*calls, return_exceptions=True)
+        raise
+    return [(request.dim_id, oc) for request, oc in zip(requests, outcomes, strict=True)]
+
+
+@dataclass
+class _RunStop:
+    """What stops a run, once one of its cells decided it — the first decision wins.
+
+    A run executing its cells side by side cannot stop by raising from the cell that decided: the
+    cells already running beside it have spent, and are recorded, saved and reported first. So the
+    decision is held here, every cell not yet begun sees it and never starts, and
+    :func:`execute_run` raises it once the last running cell has ended. A serial run reaches the same
+    raise one cell sooner than it used to be raised, with nothing run in between.
+    """
+
+    #: The cost cap's breach the run stops on, when the cap stopped it.
+    breach: CapBreach | None = None
+    #: The provider's refusal of the calling account, when that stopped it.
+    refusal: str | None = None
+
+    @property
+    def decided(self) -> bool:
+        """Whether a cell has stopped the run."""
+        return self.breach is not None or self.refusal is not None
+
+    def budget(self, breach: CapBreach) -> None:
+        """Stop the run on its cost cap, unless something stopped it first."""
+        if not self.decided:
+            self.breach = breach
+
+    def exhausted(self, refusal: str) -> None:
+        """Stop the run on its account's refusal, unless something stopped it first."""
+        if not self.decided:
+            self.refusal = refusal
+
+
+@dataclass
+class RunCallbacks:
+    """Optional progress / persistence hooks for the run loop."""
+
+    on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+    on_result: Callable[[EvalResult], Awaitable[None]] | None = None
+
+
+def cell_execution_order(
+    run: EvalRun,
+    test_cases: list[EvalTestCase],
+    *,
+    rng: random.Random | None = None,
+) -> list[tuple[int, EvalTestCase]]:
+    """The order a run's cells are executed in — the full matrix, shuffled.
+
+    Cells run one after another over hours, and the box they run on does not hold
+    still: another job starts, a provider slows down, a leak degrades the process.
+    Executed in nested ``k -> test case`` order, every such drift lands on the
+    matrix as *structure* — the last case measured always sits later in the
+    degradation than the first, so a case-level comparison silently carries the clock.
+    Shuffling turns that same drift into noise spread across the coordinates, which
+    is the difference between a confound and a wider error bar. It cannot remove
+    the drift, and nothing here claims to: what it removes is the alignment between
+    drift and the thing being compared.
+
+    **The order is derived from the run's own id, so it is recorded by
+    construction** — a run document is all anyone needs to reproduce which cell ran
+    when, with no extra stored field to keep in sync. Note precisely what that
+    reproducibility is: *this run document* always yields *this* order. Re-launching
+    the same matrix mints a new run with a new id and therefore a new order, which
+    is the point — two runs of one configuration should not share a position
+    effect.
+
+    **The seed is deliberately NOT part of the measurement-context key.** The
+    context key names the conditions two runs must share to pool as repetitions,
+    and this shuffle exists precisely so that cell position stops being one of
+    them. Hashing a per-run-unique value would give every run a unique key and make
+    nothing comparable with anything — inverting the key's purpose to record a
+    quantity the shuffle was added to render irrelevant.
+
+    :param run: The run whose matrix is being ordered; supplies ``k_runs`` and the id the
+        order is derived from.
+    :ptype run: EvalRun
+    :param test_cases: The resolved cases, one per matrix column.
+    :ptype test_cases: list[EvalTestCase]
+    :param rng: Generator to shuffle with. ``None`` derives one from ``run.id``.
+    :ptype rng: random.Random | None
+    :return: Every ``(k_iteration, test_case)`` cell exactly once, in the order the run will
+        execute them. Every cell is at the run's one candidate model.
+    :rtype: list[tuple[int, EvalTestCase]]
+    """
+    cells = [(k, tc) for k in range(1, run.k_runs + 1) for tc in test_cases]
+    # ``random.Random(str)`` seeds off a hash of the string that does not depend on
+    # PYTHONHASHSEED, so the same run id gives the same order in every process.
+    (rng or random.Random(run.id)).shuffle(cells)
+    return cells
+
+
+async def execute_run(
+    host: EvalHost,
+    *,
+    run: EvalRun,
+    template: EvalTemplate,
+    test_cases: list[EvalTestCase],
+    judge_service: JudgeService | None,
+    options: RunnerOptions,
+    callbacks: RunCallbacks | None = None,
+    budget_gate: Callable[[float | None], CapBreach | None] | None = None,
+    on_cost: Callable[[float | None], None] | None = None,
+    cell_sink: list[CellSummary] | None = None,
+) -> list[CellSummary]:
+    """Execute an entire :class:`EvalRun` end-to-end.
+
+    Produces one :class:`EvalResult` per ``(test_case × model × k_iteration)``.
+    Persists each via ``host.storage.save_eval_result``; the run document is
+    *not* mutated here — the job manager owns status transitions — save for one
+    append: an error this loop contained so it could not fail a cell (a capture
+    recording that could not be written, a concurrency probe that raised) is
+    written on the run's ``error_details`` as the loop ends, however it ends,
+    where an operator reads it rather than only in the log. Each cell runs
+    under ``host.cell_timeout``, its spans go to ``host.trace_sink``, and its
+    write runs on ``host.blocking_executor``.
+
+    Cells are executed in the shuffled order :func:`cell_execution_order` derives
+    from the run's id, not in nested ``k × model × test case`` order. The produced set is
+    the identical matrix; only the sequence moves, so that drift over the run's duration
+    spreads across the coordinates instead of aligning with one of them.
+
+    **Serial or concurrent.** ``options.max_concurrent_cells`` cells run at once through
+    ``options.cell_executor`` (:mod:`threetears.evals.run.executor`), starting in that order;
+    ``1`` — what a launch declaring latency under test sets — runs each to its end before the
+    next begins. A run executing its cells concurrently stamps every cell ``execution_mode =
+    "concurrent"``, so the latency it recorded is kept out of every comparison. Each cell is
+    the same work either way: its own sink, its own slice of the metered-call ledger, its own
+    cassette handle, world session and trace windows. Two cells of one case do not capture at
+    once, because a capture clears the case's previous recording as it starts.
+
+    Returns one :class:`CellSummary` per cell, **not** the results themselves.
+    Storage is where a result lives; a caller wanting a transcript, scores or
+    spans loads them back by ``result_id``, having checked ``persisted``.
+    Accumulating the full records here as well made a run's peak memory scale
+    with its total trace volume, which is unbounded in the matrix size — a
+    large sweep could exhaust the container before it finished. Callers that
+    need each result *as it lands* have ``callbacks.on_result``, which sees the
+    whole record and retains nothing.
+
+    Every candidate kind arrives as a factory on ``options.candidate_kinds``, with whatever
+    collaborators it needs bound by the host that built it, so this loop takes no subject
+    factory and no simulator of its own. ``judge_service`` is the stateless single-dim judge;
+    ``None`` skips all scoring (results carry empty score lists / None axes).
+
+    ``cell_sink`` is the same list this returns, handed in by a caller that needs
+    to see what was delivered even when this function does not return at all.
+    Every way a run stops early destroys the frame before the ``return``: the
+    cost cap raises, the job timeout cancels, an operator's cancel cancels. A
+    caller owing a record of the run's shortfall — which is exactly the situation
+    where there IS one — cannot get it from a return value that never arrives, so
+    it passes a list, reads it in its own ``finally``, and this loop appends to it
+    rather than to one of its own. Omitted, the loop keeps its own list and
+    behaves as before.
+
+    Cost cap: ``budget_gate`` is checked BEFORE each cell — when it
+    returns a :class:`~threetears.evals.run.budget.CapBreach` (this run's accumulated cost
+    has exceeded its cap, or a result's spend could not be priced) the loop stops GRACEFULLY by raising
+    :class:`~threetears.evals.run.budget.BudgetStoppedError`, carrying that breach so the
+    stop reports the ceiling and the spend that crossed it rather than asserting
+    that one did. ``None`` from the gate means the run may proceed. The gate takes the spend
+    pending beyond what it has recorded — between cells, what the cells still running have spent and hold —
+    because a running cell asks it too, through its sink: each cell keeps its spend by source, each only ever
+    added to (:meth:`_CellSink.add_spend`), and holds the ceiling of every priced call it has in flight
+    (:meth:`_CellSink.reserve`), and every question of the cap counts the sum over every running cell. A cell
+    the cap stops that way is recorded excluded, no cell starts beside it, and the loop raises
+    :class:`~threetears.evals.run.budget.BudgetStoppedError` once every running cell is saved. **The bound on
+    overshoot**: a reserved call is refused before it is made when its ceiling would pass the cap, so a run
+    whose paid calls are all reserved — the simulator's, the judge phase's, and a kind's own when it reserves
+    them — never spends past its cap at any width. A call nobody can price holds nothing and is admitted only
+    while the cap is not reached, so such calls pass it by at most one per running cell; spend a kind neither
+    reserves nor reports is counted when its cell's result lands, one whole cell per running cell.
+    Every already-run cell is saved before its successor's check, so nothing
+    produced is lost; the job manager translates the raise into the
+    ``budget_stopped`` status. ``on_cost`` is invoked with each saved result's
+    ``cost_usd`` so the cap accumulates this run's spend in memory and trips on
+    the next cell once it's over — ``None`` for a result whose spend went unpriced, which
+    the cap counts as such. Both default ``None`` (no gating / no
+    recording) — the pure-function contract for tests and cap-disabled contexts.
+
+    Apparatus faults: a cell an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
+    ended is recorded excluded and the loop goes on. Only when EVERY cell of the run ended that
+    way does the loop raise :class:`EveryCellApparatusFailedError`, after the last cell is saved:
+    the rig never worked, so the run measured nothing, and the job manager files it ``failed``.
+
+    Cancellation: a cancel that lands while a cell runs is delivered once that cell is recorded —
+    excluded under the ``cancelled`` termination, with the spend its sink holds — and saved, so
+    the money a cancelled run spent on its last cell is on the record with the rest.
+
+    Account exhaustion: when a cell's candidate, simulator or judge call was refused for the
+    calling ACCOUNT (``_CellSink.account_refusal`` — out of credit, or the key refused), that
+    cell is saved and reported like any other, and then the loop stops by raising
+    :class:`~threetears.evals.run.budget.AccountExhaustedError` once the cells still running have ended:
+    every model behind the key would get the same answer, so no further cell is launched. The error carries how far the
+    run got and what its delivered results cost, summed from the cells this loop recorded; the job manager
+    translates it into the ``exhausted`` status. Unlike the cost cap this needs no caller wiring —
+    the refusal is observed, not configured.
+
+    :raises ValueError: ``judge_service`` and ``run.judge_model`` disagree about whether this run is
+        judged — one is set and the other is not. Refused before any cell runs, so nothing
+        has been spent.
+    :raises BudgetStoppedError: The cost cap tripped before a cell, or inside one.
+    :raises AccountExhaustedError: A cell's call was refused for the calling account.
+    :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
+    :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first.
+    """
+    from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
+
+    # Every result is stamped with ``run.judge_model``, and every read surface takes a blank there
+    # to mean "this run was not judged". So a judged run with no judge model would file its scores
+    # with their judge lost, and an unjudged run naming one claims a judge that scored nothing. The launch that resolves the judge
+    # lives with the host, so the runner is the one point every host's judged run passes through,
+    # and the one place the pairing can be held.
+    if (judge_service is None) != (run.judge_model is None):
+        raise ValueError(
+            "a judged run must name its judge and an unjudged run must name none: "
+            f"judge_service is {'set' if judge_service is not None else 'None'} but "
+            f"run.judge_model is {run.judge_model!r}. Record on the run the model the judge service "
+            "scores with, or pass no judge service."
+        )
+
+    # A check the grammar refused at launch is graded on no cell, so a template stored before a grammar rule
+    # does not turn every cell into a rig fault; the run names the check and why (`EvalRun.refused_goal_checks`).
+    template = template_as_graded(template, run.refused_goal_checks)
+    callbacks = callbacks or RunCallbacks()
+    total = len(test_cases) * run.k_runs
+    done = 0
+    # Each cell an apparatus fault excluded, by its fault — see the check after the loop.
+    apparatus_failures: list[str] = []
+    # The caller's list when it supplied one, so what it can read mid-flight is
+    # the identical object this returns — never a copy that could disagree.
+    summaries: list[CellSummary] = cell_sink if cell_sink is not None else []
+
+    # One lane for the whole run, so every cell records into — or replays — the one corpus the run
+    # names: its own id for a capture, the capture it names for a replay. ``None`` with cassettes off.
+    cassettes = CassetteLane.for_run(run, host.storage)
+    # A caller-supplied probe that raises degrades its covariate to unmeasured (``sample_concurrent_eval_jobs``),
+    # logged there; each distinct failure is also counted here, to be written on the run as the loop ends.
+    probe_failures: Counter[str] = Counter()
+    if (probe := options.concurrent_eval_jobs_probe) is not None:
+        options = replace(options, concurrent_eval_jobs_probe=_counting_failures(probe, probe_failures))
+
+    # The variant is the resolved contestant stack, which a run holds fixed — it is one
+    # arm — so resolve it once rather than per cell. Every result the loop produces carries it, timeouts and stubs
+    # included: a cell that failed still observed a specific variant, and
+    # dropping the key there would silently bias any grouping toward successes.
+    #
+    # READ from what the launch stamped on the run, never derived a second time here. The run
+    # carries the lever map its own launch resolved, and digesting that map is what makes this
+    # loop's keys the same keys the run says it has. A second independent derivation would agree
+    # today and is exactly the drift this pre-image was added to remove: two readers of one
+    # question, authored apart, where either can move without the other hearing about it. The
+    # run is authoritative; a run that carries no map (one its host assembled without the launch)
+    # falls through to the derivation inside.
+    variant = resolve_variant_identity(run=run, profile=host.profile)
+    model = run.candidate_model
+
+    # Shuffled rather than nested k -> model -> test case: within-run drift
+    # (a box that slows, a neighbouring job, a leak) would otherwise land on the
+    # matrix aligned with the coordinate being compared. See
+    # :func:`cell_execution_order` for the order's derivation and why its seed is
+    # not a measurement condition. Cells START in this order however many run at once.
+    order = cell_execution_order(run, test_cases, rng=options.cell_order_rng)
+    # The run's width, narrowed to its own matrix: a run of one cell is serial whatever was asked, and
+    # its cells say so (``execution_mode`` reads the width off these options).
+    width = min(options.max_concurrent_cells, max(len(order), 1))
+    if width != options.max_concurrent_cells:
+        options = replace(options, max_concurrent_cells=width)
+    executor = options.cell_executor if options.cell_executor is not None else InProcessCellExecutor()
+    # The sinks of the cells running now. The cost cap reads them, so a cell asking it — and a cell
+    # about to start — is weighed against every other cell's spend in flight, not its own alone.
+    in_flight: list[_CellSink] = []
+    # What stops the run, once a cell decided it. Later cells see it and never start; the cells
+    # already running finish, are saved and reported, and the stop is raised once they all have.
+    stop = _RunStop()
+    # Callbacks are awaited one at a time, so a host's progress write (a read-modify-write on the run)
+    # never races another cell's.
+    reporting = asyncio.Lock()
+    # A capture clears the case's previous recording as its cell wires up, so two cells of one case
+    # capturing at once would interleave their writes. They take turns; cells of different cases do not.
+    case_turns: dict[str, asyncio.Lock] | None = {} if run.cassette_mode == "capture" and width > 1 else None
+
+    def spend_in_flight(excluding: _CellSink | None) -> float | None:
+        """Spend the running cells have made or hold and the run has not yet recorded; ``None`` when any is unpriced."""
+        pending: list[float] = []
+        for other in in_flight:
+            if other is excluding:
+                continue
+            if (usd := other.in_flight_usd) is None:
+                return None
+            pending.append(usd)
+        return math.fsum(pending)
+
+    def gate_for(sink: _CellSink) -> Callable[[float | None], CapBreach | None] | None:
+        """The cap as one cell asks it: its own pending spend plus every other cell's in flight."""
+        if budget_gate is None:
+            return None
+        gate = budget_gate
+
+        def ask(spent_usd: float | None) -> CapBreach | None:
+            others = spend_in_flight(sink)
+            return gate(None if spent_usd is None or others is None else spent_usd + others)
+
+        return ask
+
+    async def run_cell(k: int, tc: EvalTestCase) -> None:
+        """One cell of the matrix, waiting its turn on its case first when the run captures."""
+        if stop.decided:
+            return
+        if case_turns is None:
+            await one_cell(k, tc)
+            return
+        async with case_turns.setdefault(tc.id, asyncio.Lock()):
+            await one_cell(k, tc)
+
+    async def one_cell(k: int, tc: EvalTestCase) -> None:
+        # A stop decided while this cell waited for its turn reaches it here too.
+        if stop.decided:
+            return
+        # Cost cap: stop gracefully BEFORE spending on the next
+        # cell if this run's accumulated cost — with what the cells already running have
+        # reported — has exceeded its cap. Results already saved are preserved; the stop
+        # becomes a ``budget_stopped`` run.
+        # A running cell the cap already refused a call stops the run once it is saved; a cell starting now
+        # would only spend beside it, so it does not start.
+        breach = next((other.budget_breach for other in in_flight if other.budget_breach is not None), None)
+        if breach is None and budget_gate is not None:
+            breach = budget_gate(spend_in_flight(None))
+        if breach is not None:
+            log.warning(
+                "Eval run %s stopping: $%.4f priced spend and %d unpriced result(s) against its $%.4f cap "
+                "after %d/%d results",
+                run.id,
+                breach.accumulated_usd,
+                breach.unpriced_results,
+                breach.max_cost_usd,
+                done,
+                total,
+            )
+            stop.budget(breach)
+            return
+        # Per-cell timeout: bound the WHOLE result execution (candidate turn + delivery drain +
+        # judging) so a hung cell is capped here and the run proceeds to the rest, instead of
+        # stalling to the matrix-adaptive eval_job backstop.
+        #
+        # The deadline cancels the cell from outside, so everything its frame held dies with it.
+        # What the record needs survives on ``sink``, which this loop owns, the kind reports
+        # into, and the timeout arm reads: the spend already billed, the
+        # per-role rows, the output so far, and what the cell was waiting on when it struck.
+        sink = _CellSink()
+        sink.budget_gate = gate_for(sink)
+        in_flight.append(sink)
+        try:
+            await run_and_record(k, tc, sink)
+        finally:
+            # Recorded (``on_cost``) or abandoned with the run: either way its spend is in flight no more.
+            if sink in in_flight:
+                in_flight.remove(sink)
+
+    async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
+        nonlocal done
+        cancelled_in_cell = False
+        run_defect: CandidateKindDefect | CompletionProtocolDefect | None = None
+        try:
+            async with host.cell_timeout(options.cell_timeout_s):
+                result, cell_trace = await run_one_result(
+                    host,
+                    template=template,
+                    test_case=tc,
+                    subject_id=run.subject_snapshot.subject_id,
+                    model=model,
+                    k_iteration=k,
+                    eval_run_id=run.id,
+                    scope_id=run.scope_id,
+                    judge_service=judge_service,
+                    options=options,
+                    judge_model=run.judge_model,
+                    cassettes=cassettes,
+                    variant=variant,
+                    subject_snapshot=run.subject_snapshot,
+                    sink=sink,
+                )
+        except EvalCellTimeout as timed_out:
+            # NOSILENT: the cell is recorded cut short (``cell_timeout``), the deadline charged in its errors.
+            charged_to, waiting_on = _DEADLINE_CHARGE[sink.pending]
+            log.error(
+                "Eval cell timed out after %.0fs waiting on %s (test_case=%s model=%s k=%s run=%s attribution=%s)",
+                timed_out.elapsed_s,
+                waiting_on,
+                tc.id,
+                model,
+                k,
+                run.id,
+                timed_out.attribution,
+            )
+            # Whose failure the deadline is follows what it struck: the candidate's own turn or
+            # the background work it started fails the cell; the simulator, the judge or the rig
+            # excludes it. Recorded beside the errors the kind had
+            # reported, so one it recorded before the deadline keeps its own category and
+            # ``classify_result`` reads one set of fields for every exit. Kept on the sink, where
+            # the account-refusal check below reads it however the cell ended. A deadline in the
+            # judge phase is charged to each dim it cut off instead (``_cut_short_cell``); a kind
+            # naming the judge outside that phase is waiting on nothing the engine runs, so on the rig.
+            errors = sink.errors = ErrorLedger.of(sink.side())
+            msg = f"cell timeout while waiting on {waiting_on}: {timed_out}"
+            if charged_to == "candidate":
+                errors.add_candidate(msg)
+            elif charged_to == "infra" or sink.judging is None:
+                errors.add_infra(msg)
+            # Checks the kind already reported are kept as it reported them (``_degraded_capture_fields``).
+            # A candidate-charged deadline before that cancelled the grading, so the checks a candidate
+            # failure counts as failed are the template's own — stamped as unevaluated failures, so
+            # ``counted_goal_verdicts`` counts them as it counts every other candidate failure's.
+            # A rig-charged deadline is in no per-check rate and stamps none.
+            result, cell_trace = _cut_short_cell(
+                sink=sink,
+                scope_id=run.scope_id,
+                eval_run_id=run.id,
+                test_case_id=tc.id,
+                model=model,
+                k_iteration=k,
+                subject_id=run.subject_snapshot.subject_id,
+                variant=variant,
+                # The cell ran — long enough to time out. A timed-out cell is the single most
+                # valuable observation for "was something else running?", so the conditions are
+                # sampled here rather than nulled.
+                concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
+                termination="cell_timeout",
+                judge_model=run.judge_model,
+                rate_table=options.external_rates,
+                unfinished_judging=f"did not finish: {msg}",
+                ungraded_goal_checks=(
+                    _unevaluated_goal_checks(template, waiting_on=waiting_on) if charged_to == "candidate" else []
+                ),
+            )
+        except asyncio.CancelledError:
+            # NOSILENT: the cell is recorded excluded with what it spent, and the cancel is re-raised once it is saved.
+            # The run was cancelled while this cell ran. The cancel still ends the run — it is
+            # re-raised below, once the cell is accounted for — but the cell's spend was real, and
+            # it lives only on this sink, so it is recorded as an excluded cell first rather than
+            # dropped with the frame. Excluded on the rig's side: nothing the candidate did ended it.
+            _, waiting_on = _DEADLINE_CHARGE[sink.pending]
+            log.warning(
+                "Eval cell cancelled with its run while waiting on %s (test_case=%s model=%s k=%s run=%s); "
+                "recording what it had spent",
+                waiting_on,
+                tc.id,
+                model,
+                k,
+                run.id,
+            )
+            errors = sink.errors = ErrorLedger.of(sink.side())
+            msg = f"cell cancelled with its run while waiting on {waiting_on}"
+            if sink.judging is None:
+                errors.add_infra(msg)
+            result, cell_trace = _cut_short_cell(
+                sink=sink,
+                scope_id=run.scope_id,
+                eval_run_id=run.id,
+                test_case_id=tc.id,
+                model=model,
+                k_iteration=k,
+                subject_id=run.subject_snapshot.subject_id,
+                variant=variant,
+                concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
+                termination="cancelled",
+                judge_model=run.judge_model,
+                rate_table=options.external_rates,
+                unfinished_judging=f"did not finish: {msg}",
+            )
+            cancelled_in_cell = True
+        except (CandidateKindDefect, CompletionProtocolDefect) as defect:
+            # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
+            # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
+            # which every cell would meet, so it fails the run; it is re-raised below. But what the cell was billed
+            # before it was found is real spend, and lives only on this sink: the cell is recorded excluded first,
+            # so the run's totals and its cost cap count it, as a cancelled cell's are.
+            log.error(
+                "Eval cell hit %s, which fails its run (test_case=%s model=%s k=%s run=%s); recording what it spent",
+                type(defect).__name__,
+                tc.id,
+                model,
+                k,
+                run.id,
+            )
+            errors = sink.errors = ErrorLedger.of(sink.side())
+            errors.add_apparatus(f"{type(defect).__name__}: {defect}")
+            result, cell_trace = _cut_short_cell(
+                sink=sink,
+                scope_id=run.scope_id,
+                eval_run_id=run.id,
+                test_case_id=tc.id,
+                model=model,
+                k_iteration=k,
+                subject_id=run.subject_snapshot.subject_id,
+                variant=variant,
+                concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
+                termination="apparatus_failed",
+                judge_model=run.judge_model,
+                rate_table=options.external_rates,
+                unfinished_judging=f"did not finish: the run failed on {type(defect).__name__}",
+            )
+            run_defect = defect
+        # The cell's whole spend is known now and is not recorded until it is saved; until then it is
+        # what this cell has in flight, for every other cell's question of the cap.
+        sink.conclude(result.cost_usd)
+        # A write failure loses the cell — this loop holds no second copy that
+        # could stand in for the lost record. Say so loudly and carry the answer
+        # on the summary; the run still proceeds, because one unwritable cell is
+        # not a reason to discard the rest of a sweep that has already been paid for.
+        #
+        # Off the loop, and waited for to its end even through a cancel: the write cannot be
+        # interrupted once a worker has it, so abandoning the wait would record this cell as lost
+        # while its row lands anyway. The cancel is delivered once the cell is accounted for below.
+        saving = asyncio.ensure_future(
+            run_blocking(host.blocking_executor, host.storage.save_eval_result, result, cell_trace)
+        )
+        cancelled_while_saving = await wait_through_cancellation(saving)
+        try:
+            saving.result()
+            persisted = True
+        except StorageError:
+            # NOSILENT: carried on the cell's summary as not persisted, which the run's completeness counts as a
+            # lost cell and every surface discloses as DEGRADED.
+            persisted = False
+            log.error(
+                "Eval result NOT persisted — cell is lost (result=%s run=%s test_case=%s model=%s k=%s)",
+                result.id,
+                run.id,
+                tc.id,
+                model,
+                k,
+            )
+        summaries.append(CellSummary.from_result(result, persisted=persisted))
+        done += 1
+        # Accumulate this cell's spend into the per-run cost cap so the
+        # run trips its own cap on the next cell once it's over.
+        # Passed as it stands: ``None`` is unpriced spend, which the cap counts
+        # as such and an enforcing cap stops on. Out of the in-flight set in the same step, so the
+        # cap never counts it twice.
+        in_flight.remove(sink)
+        if on_cost is not None:
+            on_cost(result.cost_usd)
+        if cancelled_in_cell or cancelled_while_saving:
+            raise asyncio.CancelledError
+        if run_defect is not None:
+            raise run_defect
+        if sink.errors.apparatus_failed:
+            apparatus_failures.append(sink.errors.infra_error or "an apparatus fault")
+        async with reporting:
+            if callbacks.on_result is not None:
+                await callbacks.on_result(result)
+            if callbacks.on_progress is not None:
+                await callbacks.on_progress({"completed": done, "total": total, "current_model": model})
+        # The account paying for the run refused one of this cell's calls. The cell is already
+        # saved, counted and reported above; every later cell would be refused the same way, so
+        # none is launched. Checked after the cell rather than before the next one so a refusal
+        # on the LAST cell still ends the run ``exhausted`` instead of ``completed``. Read off the
+        # sink, which answers it however the cell ended: its ledger (``adopt`` built it from what
+        # the kind returned, the timeout arm from the kind's reading when its deadline struck
+        # first) and the judge calls that returned.
+        if (refusal := sink.account_refusal) is not None:
+            log.warning(
+                "Eval run %s stopping: the provider account refused a call after %d/%d results",
+                run.id,
+                done,
+                total,
+            )
+            stop.exhausted(refusal)
+            return
+        # The cell asked the cap mid-cell and was told it was reached, so it stopped making calls and
+        # was recorded excluded. The run stops here rather than at the next cell's gate, so a cut-short
+        # LAST cell still ends the run ``budget_stopped`` rather than ``completed``.
+        if sink.budget_breach is not None:
+            log.warning(
+                "Eval run %s stopping: its cost cap was reached inside a cell after %d/%d results",
+                run.id,
+                done,
+                total,
+            )
+            stop.budget(sink.budget_breach)
+
+    try:
+        await executor.execute([partial(run_cell, k, tc) for k, tc in order], width=width)
+    finally:
+        faults = [*(cassettes.holes if cassettes is not None else []), *_probe_fault_entries(probe_failures)]
+        if faults:
+            await _record_contained_faults(host, run, faults)
+
+    if stop.refusal is not None:
+        priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
+        accumulated_usd = sum(priced)
+        unpriced_results = len(summaries) - len(priced)
+        raise AccountExhaustedError(
+            done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=stop.refusal
+        )
+    if stop.breach is not None:
+        # The breach the gate reports now counts every cell, which ``on_cost`` has recorded; the one the
+        # run was stopped on stands in only should that read come back inside the cap.
+        breach = (budget_gate(0.0) if budget_gate is not None else None) or stop.breach
+        log.warning(
+            "Eval run %s stopped by its cost cap: $%.4f priced spend and %d unpriced result(s) against its $%.4f cap "
+            "after %d/%d results",
+            run.id,
+            breach.accumulated_usd,
+            breach.unpriced_results,
+            breach.max_cost_usd,
+            done,
+            total,
+        )
+        raise BudgetStoppedError(done, total, breach)
+
+    # Every cell was excluded by an apparatus fault: the rig never worked, so the run measured
+    # nothing at all. Ending it ``completed`` would publish a run with no measurement as a
+    # finished one; it fails instead, naming the faults, because an operator has to repair the
+    # rig — re-capture a corpus, fix a seam — before any relaunch can measure. A run where SOME
+    # cells measured completes, and its completeness record counts the ones the rig excluded.
+    if total and len(apparatus_failures) == total:
+        raise EveryCellApparatusFailedError(total, faults=apparatus_failures)
+
+    return summaries
+
+
+__all__ = [
+    "DEFAULT_CELL_TIMEOUT_S",
+    "DEFAULT_JUDGE_CONCURRENCY",
+    "CellContext",
+    "CellOutcome",
+    "ErrorLedger",
+    "EveryCellApparatusFailedError",
+    "GoalCheckUnevaluable",
+    "template_as_graded",
+    "KindFactory",
+    "RunCallbacks",
+    "RunnerOptions",
+    "assert_preconditions",
+    "build_judge_context",
+    "cell_execution_order",
+    "evaluate_goal_state",
+    "execute_run",
+    "fold_metered_cell",
+    "grade_goal_checks",
+    "judge_dims",
+    "metered_cell_tally",
+    "precondition_failure_text",
+    "run_one_result",
+    "sample_concurrent_eval_jobs",
+]

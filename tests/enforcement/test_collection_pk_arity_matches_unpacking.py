@@ -7,6 +7,7 @@ against it, ``l2_key`` composes the cache key from it, ``BaseEntity`` derives
 its addressing ``_id`` from it, and the L1 backends build their WHERE clauses
 from it.
 
+
 A collection can nonetheless contradict its own declaration, because
 ``fetch_from_store`` / ``delete_from_store`` are hand-written SQL and nothing
 forced them to agree. ``TableTemplateCollection`` did exactly that: its
@@ -36,6 +37,8 @@ import ast
 from pathlib import Path
 
 import pytest
+
+from threetears.enforcement.common import parse_python_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
@@ -117,7 +120,7 @@ def test_declared_pk_arity_matches_id_unpacking(path: Path) -> None:
     :return: nothing
     :rtype: None
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = parse_python_path(path)
     violations: list[str] = []
 
     for node in ast.walk(tree):

@@ -19,6 +19,9 @@ import ast
 import re
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _CATALOG = re.compile(
@@ -60,7 +63,7 @@ def _sql_strings(path: Path) -> list[tuple[int, str]]:
     :return: ``(line, text)`` pairs
     :rtype: list[tuple[int, str]]
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = parse_python_path(path)
     inner: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):

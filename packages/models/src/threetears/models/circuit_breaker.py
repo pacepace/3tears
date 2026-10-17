@@ -1,4 +1,10 @@
-"""per-provider circuit breaker for fault isolation in model routing.
+"""per-provider circuit breaker for fault isolation in model routing, and per model for rate limits.
+
+A rate limit (HTTP 429) belongs to one model's route: OpenRouter limits per
+model and upstream host. Counted against the provider, one model's 429s opened
+the breaker for every model on OpenRouter (metallm dev e2e, 2026-10-15: 26 OpenRouter 429s, then three models refused). A
+rate limit is counted against that model's own breaker; any other failure
+against the provider's.
 
 Exposes both a thread-safe :class:`CircuitBreaker` and a LangChain
 ``BaseCallbackHandler`` factory (``CircuitBreaker.make_callback()``) that
@@ -70,14 +76,28 @@ class CircuitOpenError(Exception):
         rather than the provider's own -- a revoked key, not an outage. the credential is
         never named
     :ptype credential_scoped: bool
+    :param model_name: the one model whose circuit is open for its rate limit, ``None`` when
+        the provider's is
+    :ptype model_name: str | None
     """
 
-    def __init__(self, provider_name: str, remaining_seconds: float, *, credential_scoped: bool = False) -> None:
+    def __init__(
+        self,
+        provider_name: str,
+        remaining_seconds: float,
+        *,
+        credential_scoped: bool = False,
+        model_name: str | None = None,
+    ) -> None:
         self.provider_name = provider_name
         self.remaining_seconds = remaining_seconds
         self.credential_scoped = credential_scoped
+        self.model_name = model_name
         scope = " (one credential on it; the provider itself may be healthy)" if credential_scoped else ""
-        super().__init__(f"Circuit open for {provider_name}{scope}, retry in {remaining_seconds:.0f}s")
+        target = (
+            f"{model_name} on {provider_name} (rate-limited; its other models are not)" if model_name else provider_name
+        )
+        super().__init__(f"Circuit open for {target}{scope}, retry in {remaining_seconds:.0f}s")
 
 
 class CircuitBreaker:
@@ -102,6 +122,9 @@ class CircuitBreaker:
         one customer's revoked key tripping its own breaker does not read as the provider
         going down; the credential itself is never logged
     :ptype credential_scoped: bool
+    :param model_name: the one model this breaker guards for its rate limits
+        (:meth:`CircuitBreakerRegistry.get` with ``model=``), ``None`` for the provider
+    :ptype model_name: str | None
     """
 
     def __init__(
@@ -112,9 +135,11 @@ class CircuitBreaker:
         *,
         clock: Callable[[], float] | None = None,
         credential_scoped: bool = False,
+        model_name: str | None = None,
     ) -> None:
         self._provider_name = provider_name
         self._credential_scoped = credential_scoped
+        self._model_name = model_name
         self._failure_threshold = failure_threshold
         self._recovery_timeout_seconds = recovery_timeout_seconds
         self._clock = clock if clock is not None else _monotonic
@@ -233,7 +258,13 @@ class CircuitBreaker:
         :return: the log ``extra``
         :rtype: dict[str, Any]
         """
-        return {"extra_data": {"provider": self._provider_name, "credential_scoped": self._credential_scoped}}
+        return {
+            "extra_data": {
+                "provider": self._provider_name,
+                "credential_scoped": self._credential_scoped,
+                "model": self._model_name,
+            }
+        }
 
     def _subject(self) -> str:
         """what a transition line names: the provider, or one credential on it.
@@ -241,7 +272,8 @@ class CircuitBreaker:
         :return: the subject of the log line
         :rtype: str
         """
-        return f"one credential on {self._provider_name}" if self._credential_scoped else self._provider_name
+        where = f"one credential on {self._provider_name}" if self._credential_scoped else self._provider_name
+        return f"{self._model_name}'s rate limit on {where}" if self._model_name else where
 
     @property
     def last_activity(self) -> float:
@@ -273,7 +305,9 @@ class CircuitBreaker:
                 # a probe is already testing the provider: fast-fail the rest so
                 # recovery is a single request, not a thundering herd.
                 if self._probe_in_flight:
-                    raise CircuitOpenError(self._provider_name, 0.0, credential_scoped=self._credential_scoped)
+                    raise CircuitOpenError(
+                        self._provider_name, 0.0, credential_scoped=self._credential_scoped, model_name=self._model_name
+                    )
                 self._probe_in_flight = True
                 return
 
@@ -290,7 +324,9 @@ class CircuitBreaker:
                 return
 
             remaining = self._recovery_timeout_seconds - elapsed
-            raise CircuitOpenError(self._provider_name, remaining, credential_scoped=self._credential_scoped)
+            raise CircuitOpenError(
+                self._provider_name, remaining, credential_scoped=self._credential_scoped, model_name=self._model_name
+            )
 
     def record_success(self) -> None:
         """records successful request and transitions state if needed.
@@ -363,17 +399,21 @@ class CircuitBreaker:
                 extra=self._log_extra(),
             )
 
-    def make_callback(self) -> BaseCallbackHandler:
-        """builds a LangChain callback that drives this breaker.
+    def make_callback(self, *, rate_limit: CircuitBreaker | None = None) -> BaseCallbackHandler:
+        """builds a LangChain callback that drives this breaker, and the model's own for its rate limits.
 
-        the callback short-circuits ``on_llm_start`` by calling
-        :meth:`check`, records a success in ``on_llm_end``, and records a
-        failure in ``on_llm_error``.
+        the callback short-circuits ``on_llm_start`` by calling :meth:`check`
+        on both, records a success on both in ``on_llm_end``, and records a
+        failure in ``on_llm_error``: a rate limit on ``rate_limit``, anything
+        else on this breaker.
 
+        :param rate_limit: the model's own breaker (:meth:`CircuitBreakerRegistry.get` with
+            ``model=``); ``None`` counts a rate limit against this breaker
+        :ptype rate_limit: CircuitBreaker | None
         :return: callback handler suitable for ``model.with_config(callbacks=[...])``
         :rtype: BaseCallbackHandler
         """
-        return CircuitBreakerCallback(self)
+        return CircuitBreakerCallback(self, rate_limit=rate_limit)
 
 
 class CircuitBreakerCallback(BaseCallbackHandler):
@@ -395,14 +435,22 @@ class CircuitBreakerCallback(BaseCallbackHandler):
 
     raise_error: bool = True
 
-    def __init__(self, breaker: CircuitBreaker) -> None:
-        """initialises the callback with the breaker it should drive.
+    def __init__(self, breaker: CircuitBreaker, *, rate_limit: CircuitBreaker | None = None) -> None:
+        """initialises the callback with the breakers it should drive.
 
-        :param breaker: backing circuit breaker
+        :param breaker: the provider's breaker, which every failure but a rate limit counts against
         :ptype breaker: CircuitBreaker
+        :param rate_limit: the model's own breaker, which its rate limits count against
+        :ptype rate_limit: CircuitBreaker | None
         """
         super().__init__()
         self._breaker = breaker
+        self._rate_limit = rate_limit
+
+    def _check(self) -> None:
+        self._breaker.check()
+        if self._rate_limit is not None:
+            self._rate_limit.check()
 
     def on_llm_start(
         self,
@@ -428,7 +476,7 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         _ = prompts
         _ = run_id
         _ = kwargs
-        self._breaker.check()
+        self._check()
 
     def on_chat_model_start(
         self,
@@ -454,7 +502,7 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         _ = messages
         _ = run_id
         _ = kwargs
-        self._breaker.check()
+        self._check()
 
     def on_llm_end(
         self,
@@ -476,6 +524,8 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         _ = run_id
         _ = kwargs
         self._breaker.record_success()
+        if self._rate_limit is not None:
+            self._rate_limit.record_success()
 
     def on_llm_error(
         self,
@@ -500,7 +550,13 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         """
         _ = run_id
         _ = kwargs
+        from threetears.models.errors import is_rate_limit
+
         if isinstance(error, CircuitOpenError):
+            return
+        if self._rate_limit is not None and isinstance(error, Exception) and is_rate_limit(error):
+            # one model's route is limited: its own breaker, never the provider's other models
+            self._rate_limit.record_failure()
             return
         self._breaker.record_failure()
 
@@ -516,8 +572,10 @@ class CircuitBreakerRegistry:
     creates circuit breakers on demand. thread-safe access to shared breaker
     instances.
 
-    a breaker is keyed by provider, never by model: a provider's failures are
-    shared across its models, and that granularity is deliberate. what a
+    a breaker is keyed by provider: a provider's failures are shared across its
+    models, and that granularity is deliberate -- except for a rate limit, which
+    belongs to one model's route, so ``model=`` gives a model its own breaker for
+    its rate limits (:meth:`CircuitBreaker.make_callback`). what a
     multi-tenant caller also needs is to keep CREDENTIALS apart -- one
     customer's revoked, rate-limited or out-of-credit key failing repeatedly
     must not fast-fail every other customer on the same provider. passing
@@ -577,10 +635,10 @@ class CircuitBreakerRegistry:
         self._credential_idle_seconds = credential_idle_seconds
         self._max_credential_breakers = max_credential_breakers
         self._clock = clock if clock is not None else _monotonic
-        # (provider_name, credential fingerprint or None) -> breaker, least recently
-        # asked-for first, and the clock reading of each key's last get()
-        self._breakers: OrderedDict[tuple[str, str | None], CircuitBreaker] = OrderedDict()
-        self._last_get: dict[tuple[str, str | None], float] = {}
+        # (provider_name, credential fingerprint or None, model or None) -> breaker, least
+        # recently asked-for first, and the clock reading of each key's last get()
+        self._breakers: OrderedDict[tuple[str, str | None, str | None], CircuitBreaker] = OrderedDict()
+        self._last_get: dict[tuple[str, str | None, str | None], float] = {}
         # every provider ever asked for, so status() keeps reporting one whose
         # breakers were all dropped as idle (they were CLOSED) instead of losing it
         self._providers: set[str] = set()
@@ -599,7 +657,7 @@ class CircuitBreakerRegistry:
             return None
         return hashlib.blake2b(credential.encode(), key=self._fingerprint_key, digest_size=8).hexdigest()
 
-    def get(self, provider_name: str, *, credential: str | None = None) -> CircuitBreaker:
+    def get(self, provider_name: str, *, credential: str | None = None, model: str | None = None) -> CircuitBreaker:
         """returns the circuit breaker for a provider (and credential), creating one if needed.
 
         without ``credential`` there is one breaker per provider, as there always
@@ -611,15 +669,17 @@ class CircuitBreakerRegistry:
             calls on this provider are made with more than one; ``None`` for one
             breaker per provider
         :ptype credential: str | None
-        :return: circuit breaker instance for the provider and credential
+        :param model: the model whose rate limits this breaker counts, ``None`` for the provider's own
+        :ptype model: str | None
+        :return: circuit breaker instance for the provider, credential and model
         :rtype: CircuitBreaker
         """
-        key = (provider_name, self._fingerprint(credential))
+        key = (provider_name, self._fingerprint(credential), model)
         now = self._clock()
         with self._lock:
             breaker = self._breakers.get(key)
             if breaker is None:
-                if key[1] is not None:
+                if _droppable(key):
                     self._evict_credential_breakers_locked(now)
                 breaker = CircuitBreaker(
                     provider_name=provider_name,
@@ -627,6 +687,7 @@ class CircuitBreakerRegistry:
                     recovery_timeout_seconds=self._recovery_timeout_seconds,
                     clock=self._clock,
                     credential_scoped=key[1] is not None,
+                    model_name=model,
                 )
                 self._breakers[key] = breaker
                 self._providers.add(provider_name)
@@ -645,12 +706,12 @@ class CircuitBreakerRegistry:
         last_used = {
             key: max(self._last_get.get(key, 0.0), breaker.last_activity)
             for key, breaker in self._breakers.items()
-            if key[1] is not None and breaker.state is CircuitState.CLOSED
+            if _droppable(key) and breaker.state is CircuitState.CLOSED
         }
         for key, used in last_used.items():
             if now - used >= self._credential_idle_seconds:
                 self._drop_locked(key)
-        credential_count = sum(1 for key in self._breakers if key[1] is not None)
+        credential_count = sum(1 for key in self._breakers if _droppable(key))
         for key in sorted((k for k in last_used if k in self._breakers), key=lambda k: last_used[k]):
             if credential_count < self._max_credential_breakers:
                 break
@@ -663,11 +724,11 @@ class CircuitBreakerRegistry:
                 extra={"extra_data": {"credential_breakers": credential_count, "cap": self._max_credential_breakers}},
             )
 
-    def _drop_locked(self, key: tuple[str, str | None]) -> None:
+    def _drop_locked(self, key: tuple[str, str | None, str | None]) -> None:
         """forget one breaker. **caller holds the lock.**
 
-        :param key: ``(provider_name, fingerprint)``
-        :ptype key: tuple[str, str | None]
+        :param key: ``(provider_name, fingerprint, model)``
+        :ptype key: tuple[str, str | None, str | None]
         :return: nothing
         :rtype: None
         """
@@ -678,8 +739,8 @@ class CircuitBreakerRegistry:
         """forces circuit breakers for a provider back to CLOSED state.
 
         without ``credential`` every breaker on the provider is reset, whatever
-        credential it was created for; with it, only that credential's. no-op
-        when no such breaker exists.
+        credential or model it was created for; with it, only that credential's.
+        no-op when no such breaker exists.
 
         :param provider_name: identifier for provider to reset
         :ptype provider_name: str
@@ -690,7 +751,7 @@ class CircuitBreakerRegistry:
         with self._lock:
             breakers = [
                 breaker
-                for (name, key_fingerprint), breaker in self._breakers.items()
+                for (name, key_fingerprint, _model), breaker in self._breakers.items()
                 if name == provider_name and (credential is None or key_fingerprint == fingerprint)
             ]
         for breaker in breakers:
@@ -710,7 +771,12 @@ class CircuitBreakerRegistry:
         :rtype: dict[str, CircuitState]
         """
         with self._lock:
-            snapshot = [(name, breaker.state) for (name, _fingerprint), breaker in self._breakers.items()]
+            # the provider's own breakers: one model's rate limit is not the provider's state (model_status)
+            snapshot = [
+                (name, breaker.state)
+                for (name, _fingerprint, model), breaker in self._breakers.items()
+                if model is None
+            ]
             providers = sorted(self._providers)
         result: dict[str, CircuitState] = dict.fromkeys(providers, CircuitState.CLOSED)
         for name, state in snapshot:
@@ -718,3 +784,31 @@ class CircuitBreakerRegistry:
             if current is None or _STATE_SEVERITY[state] > _STATE_SEVERITY[current]:
                 result[name] = state
         return result
+
+    def model_status(self) -> dict[str, CircuitState]:
+        """returns each rate-limited model's circuit state that is not closed, as ``provider/model``.
+
+        a model's breaker counts only its rate limits, so a closed one says
+        nothing and is left out; several credentials' breakers for one model
+        report the worst of them.
+
+        :return: mapping of ``provider/model`` to its open or half-open state
+        :rtype: dict[str, CircuitState]
+        """
+        with self._lock:
+            snapshot = [
+                (f"{name}/{model}", breaker.state)
+                for (name, _fingerprint, model), breaker in self._breakers.items()
+                if model is not None and breaker.state is not CircuitState.CLOSED
+            ]
+        result: dict[str, CircuitState] = {}
+        for name, state in snapshot:
+            current = result.get(name)
+            if current is None or _STATE_SEVERITY[state] > _STATE_SEVERITY[current]:
+                result[name] = state
+        return result
+
+
+def _droppable(key: tuple[str, str | None, str | None]) -> bool:
+    """whether a breaker may be dropped when idle: one credential's, or one model's -- never a provider's own."""
+    return key[1] is not None or key[2] is not None

@@ -1,0 +1,139 @@
+"""Spend is stored and summed at full float precision; only the text a person reads is rounded.
+
+A cheap model call costs around a hundred-thousandth of a dollar, so a total rounded to six places keeps
+two significant figures of it, and a call under half a micro-dollar is stored as $0. Real campaigns run
+a thousand times the calls these tests make, so every such loss is multiplied. These tests follow one
+cheap price, $1.2345678e-05 a call, from the usage row to the result's ``cost_usd``, the run's summary and
+the analysis bundle, and require it intact at each — the old rounding stored 1.2e-05 and summed 3.7e-05.
+
+Mutations that turn this file red: restoring ``round(..., 6)`` in ``RoleUsageLedger.rows``,
+``blended_cost``, the production-replicating sum or ``ExternalRateTable.money_for``.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Mapping
+from typing import Any
+
+import pytest
+
+from threetears.evals.analysis import inspect_campaign_bundle
+from threetears.evals.kernel import RoleUsageLedger
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.kernel.spend import ExternalRateTable
+from threetears.evals.kernel.usage_capture import blended_cost, production_replicating_cost
+from threetears.evals import Answer, Eval
+from threetears.evals.ops import dollars_text
+from threetears.evals.run import list_results
+from packages.evals.tests.off_loop import off_loop
+
+SCOPE = "cost-precision-tests"
+
+#: One cheap call's price: eight significant figures, below what six decimal places can hold.
+PRICE = 1.2345678e-05
+
+#: Three of them, summed without loss — the nearest float to the exact sum, which ``3 * PRICE`` also is.
+THREE = math.fsum([PRICE] * 3)
+
+CASES = [
+    {"text": "a cat", "label": "animal"},
+    {"text": "a fir", "label": "plant"},
+    {"text": "an oak", "label": "plant"},
+]
+
+
+async def cheap(case: Mapping[str, Any]) -> Answer:
+    """Answers right, at one cheap call's price."""
+    return Answer(case["label"], model="m-cheap", input_tokens=10, output_tokens=1, cost_usd=PRICE)
+
+
+async def dearer(case: Mapping[str, Any]) -> Answer:
+    """Answers right, at two cheap calls' price."""
+    return Answer(case["label"], model="m-dear", input_tokens=10, output_tokens=1, cost_usd=2 * PRICE)
+
+
+def test_the_fixture_price_is_one_six_places_would_have_lost() -> None:
+    assert round(PRICE, 6) != PRICE and round(THREE, 6) != THREE
+    assert THREE == 3.7037034e-05
+
+
+def test_a_row_folding_three_cheap_calls_keeps_every_digit() -> None:
+    ledger = RoleUsageLedger(role="candidate")
+    for _ in range(3):
+        ledger.add(model="m", prompt_tokens=10, completion_tokens=1, reasoning_tokens=None, cost_usd=PRICE)
+    (row,) = ledger.rows()
+    assert row.cost_usd == THREE
+    assert blended_cost([row], ("candidate",)) == THREE
+    assert production_replicating_cost([row], substituted_deliveries=0) == THREE
+
+
+def test_a_call_under_half_a_micro_dollar_is_not_stored_as_free() -> None:
+    ledger = RoleUsageLedger(role="candidate")
+    ledger.add(model="m", prompt_tokens=1, completion_tokens=1, reasoning_tokens=None, cost_usd=4e-7)
+    (row,) = ledger.rows()
+    assert row.cost_usd == 4e-7
+    assert blended_cost([row], ("candidate",)) == 4e-7
+
+
+def test_a_rate_priced_external_call_keeps_its_full_price() -> None:
+    table = ExternalRateTable(rates={("search", "credit"): PRICE})
+    spend = ExternalSpend(provider="search", provider_unit="credit", provider_units=3, calls=1, money=None)
+    assert table.money_for(spend) == 3 * PRICE
+
+
+async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() -> None:
+    comparison = await Eval(CASES, {"cheap": cheap, "dearer": dearer}, ["label"], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    summary = comparison.arms["cheap"]
+
+    # Each result: the row and the total derived from it carry the price exactly.
+    results = off_loop(list_results, comparison.host.storage, summary.run_id, SCOPE)
+    assert len(results) == 3
+    for result in results:
+        (row,) = result.usage
+        assert row.cost_usd == PRICE and result.cost_usd == PRICE
+
+    # The run summary: three calls, summed without loss.
+    assert summary.role_spend("candidate").cost_usd == THREE
+    assert "candidate spend: $0.0000370 over 3 call(s)" in summary.render()  # shown, not rounded to $0
+
+    # The bundle: the run's total, the cell's mean, and both after a JSON round trip.
+    bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
+    (run_summary,) = [s for s in bundle.run_summaries if s.run_id == summary.run_id]
+    assert run_summary.cost_usd == THREE
+    assert run_summary.prod_cost_usd == THREE
+    means = {
+        cell.variant_key: next(m.mean for m in cell.measures.measures if m.name == "cost_usd")
+        for cell in bundle.cell_measures
+    }
+    assert sorted(means.values()) == [PRICE, 2 * PRICE]
+    reread = json.loads(bundle.model_dump_json())
+    assert [s["cost_usd"] for s in reread["run_summaries"] if s["run_id"] == summary.run_id] == [THREE]
+
+    # Full precision still fingerprints deterministically: the same evidence assembles to the same bytes.
+    again = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
+    assert again.fingerprint() == bundle.fingerprint()
+
+
+@pytest.mark.parametrize(
+    ("amount", "shown"),
+    [
+        (0, "$0"),
+        (12.345, "$12.35"),
+        (1.2, "$1.20"),
+        (0.5, "$0.50"),
+        (0.1, "$0.10"),
+        (0.0999, "$0.0999"),
+        (0.0123, "$0.0123"),
+        (0.06, "$0.0600"),
+        (0.00016, "$0.000160"),
+        (1.2345678e-05, "$0.0000123"),
+    ],
+)
+def test_spend_reads_as_dollars_and_cents_from_ten_cents_up_and_three_significant_figures_below(
+    amount: float, shown: str
+) -> None:
+    assert dollars_text(amount) == shown

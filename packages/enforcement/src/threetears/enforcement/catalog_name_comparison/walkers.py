@@ -20,6 +20,8 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Final
 
+from threetears.enforcement.common import parse_python_path
+
 __all__ = ["find_catalog_name_violations", "violations_in"]
 
 #: ``name``-typed columns no application table is expected to have
@@ -130,7 +132,7 @@ def _texts(path: Path) -> Iterator[tuple[int, str]]:
     :return: ``(line, text)`` pairs
     :rtype: Iterator[tuple[int, str]]
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = parse_python_path(path)
     # a string standing alone as a statement is prose (a docstring), never a query
     inside: set[int] = {
         id(node.value)

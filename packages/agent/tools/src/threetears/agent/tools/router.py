@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.observe.text_block import under
 from threetears.observe import get_logger, traced
 
 from threetears.agent.tools.types import ChatModelFactory
@@ -173,9 +174,10 @@ class ToolRouter:
         # Build description string
         descriptions: list[str] = []
         for t in tool_llms:
-            descriptions.append(f"- {t['name']}: {t.get('description', '')}")
+            descriptions.extend(under(str(t.get("description") or ""), "  ", first=f"- {t['name']}: "))
         for t in mcp_tools:
-            descriptions.append(f"- mcp:{t['name']}: {t.get('description', '')}")
+            head = f"- mcp:{t['name']}: "
+            descriptions.extend(under(str(t.get("description") or ""), "  ", first=head))
         tool_descriptions = "\n".join(descriptions)
 
         prompt_text = self._routing_prompt.format(tool_descriptions=tool_descriptions)

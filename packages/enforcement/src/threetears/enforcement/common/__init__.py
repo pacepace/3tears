@@ -6,9 +6,12 @@ reaching into submodule paths.
 """
 
 from threetears.enforcement.common.ast_helpers import (
+    clear_parse_cache,
     iter_python_files,
+    nodes_by_type,
     note_unscanned,
     parse_python_file,
+    parse_python_path,
     relative_posix_path,
     is_private_name,
     is_logger_call,
@@ -82,6 +85,7 @@ __all__ = [
     "apply_exemptions",
     "argument_spellings",
     "callee_names",
+    "clear_parse_cache",
     "collect_class_base_graph",
     "constructed_registries",
     "constructed_registry_lines",
@@ -99,9 +103,11 @@ __all__ = [
     "iter_python_files",
     "l2_live_registries",
     "names_a_live_client",
+    "nodes_by_type",
     "note_unscanned",
     "parse_exemptions_with_rationale",
     "parse_python_file",
+    "parse_python_path",
     "receiver",
     "relative_posix_path",
     "repo_identity",

@@ -34,6 +34,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
 
@@ -124,7 +127,7 @@ def test_only_the_promoted_transport_speaks_smtp_or_builds_mime() -> None:
         relative = path.relative_to(_REPO_ROOT).as_posix()
         if relative == _SANCTIONED_TRANSPORT:
             continue
-        imported = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        imported = _imported_modules(parse_python_path(path))
         offending = _matches(imported, _SMTP_MODULES) | _matches(imported, _MIME_MODULES)
         violations.extend(f"{relative}: imports {name}" for name in sorted(offending))
     assert not violations, (
@@ -146,7 +149,7 @@ def test_no_package_reaches_a_mail_provider_sdk() -> None:
     """
     violations: list[str] = []
     for path in _source_files():
-        imported = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        imported = _imported_modules(parse_python_path(path))
         relative = path.relative_to(_REPO_ROOT).as_posix()
         violations.extend(f"{relative}: imports {name}" for name in sorted(_matches(imported, _PROVIDER_SDKS)))
     assert not violations, (

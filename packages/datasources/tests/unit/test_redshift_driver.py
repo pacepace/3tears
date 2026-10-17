@@ -339,6 +339,12 @@ class TestConstruction:
         await _cache_both(driver, c1, c2)
         del driver
         gc.collect()
+        # a collection a bridge worker starts can free the driver first, and the drain then runs
+        # on that thread: one run asserted between its two closes, 2 ms before the second
+        for _ in range(500):
+            if c1.close.called and c2.close.called:
+                break
+            await asyncio.sleep(0.01)
         c1.close.assert_called_once()
         c2.close.assert_called_once()
 

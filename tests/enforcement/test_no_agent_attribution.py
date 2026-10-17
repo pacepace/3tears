@@ -13,6 +13,7 @@ is what proves it.
 from __future__ import annotations
 
 import re
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -46,9 +47,14 @@ _CLEAN = [
 ]
 
 
+#: The test repository's own config and nothing of the machine's: a global ``core.hooksPath``
+#: (a dev container's ``/etc/git-hooks``) sent the installer to a directory it may not write.
+_ITS_OWN_CONFIG = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - fixed argv, a test repository
-        list(args), cwd=cwd, capture_output=True, text=True, check=False
+        list(args), cwd=cwd, capture_output=True, text=True, check=False, env={**os.environ, **_ITS_OWN_CONFIG}
     )
 
 

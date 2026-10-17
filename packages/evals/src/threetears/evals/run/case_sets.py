@@ -1,0 +1,167 @@
+"""Named, versioned case sets: minting the next version, and resolving one a launch targets.
+
+A :class:`~threetears.evals.schema.models.CaseSet` is a name, a version and a frozen, ordered list of one
+template's test cases. It is append-only: :func:`mint_case_set` writes the next version, and storing a version
+that exists is refused, so ``smoke v1`` names the same cases however the template has been edited since. A launch
+names a set (:class:`~threetears.evals.schema.models.CaseSetRef`); :func:`resolve_case_set` turns it into the
+cases the launch runs, refusing a set whose cases no longer all resolve, and the run records the set beside the
+ids it froze. The set is a label on that frozen identity, never a second one.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.schema.models import CaseSet, CaseSetRef
+from threetears.evals.kernel.remedies import FIND_CASE_SET, SCHEMA_REMEDY
+
+if TYPE_CHECKING:
+    from threetears.evals.schema.models import EvalTemplate, EvalTestCase
+    from threetears.evals.kernel.storage import CaseSetStore
+
+
+def _cases_of(storage: CaseSetStore, test_case_ids: Sequence[str], scope_id: str) -> dict[str, EvalTestCase]:
+    """The named cases that resolve in the scope, by id."""
+    return {case.id: case for case in storage.load_test_cases_by_ids(list(test_case_ids), scope_id)}
+
+
+def _refuse_cases_outside(
+    cases: dict[str, EvalTestCase], test_case_ids: Sequence[str], *, template_id: str, what: str
+) -> None:
+    """Refuse ids that resolve to no case in the scope, or to a case of another template.
+
+    :param cases: The ids that resolved, with their cases.
+    :ptype cases: dict[str, EvalTestCase]
+    :param test_case_ids: Every id the set names.
+    :ptype test_case_ids: Sequence[str]
+    :param template_id: The template the set belongs to.
+    :ptype template_id: str
+    :param what: The set, as a refusal names it.
+    :ptype what: str
+    :raises ValidationFailedError: Naming every missing id, or every case of another template.
+    """
+    if missing := [case_id for case_id in test_case_ids if case_id not in cases]:
+        raise ValidationFailedError(
+            f"{what} names case(s) that no longer resolve in this scope: {', '.join(missing)}; a set runs exactly its "
+            "cases",
+            remedy="mint a new version without them (case_set_mint)",
+        )
+    if strays := [case_id for case_id in test_case_ids if cases[case_id].template_id != template_id]:
+        raise ValidationFailedError(
+            f"{what} names case(s) of another template than {template_id!r}: {', '.join(strays)}; a set holds one "
+            "template's cases, because a run's cases are its template's",
+            remedy=f"name only cases of template {template_id!r}",
+        )
+
+
+def _one_template_name(storage: CaseSetStore, stored_id: str, template_id: str, scope_id: str) -> bool:
+    """Whether two template ids are one template: the same id, or two revisions of one name."""
+    if stored_id == template_id:
+        return True
+    stored, wanted = storage.load_template(stored_id, scope_id), storage.load_template(template_id, scope_id)
+    return stored is not None and wanted is not None and stored.name == wanted.name
+
+
+def mint_case_set(
+    storage: CaseSetStore,
+    *,
+    scope_id: str,
+    name: str,
+    template_id: str,
+    test_case_ids: Sequence[str],
+    tracked: bool = True,
+    seed_digest: str | None = None,
+) -> CaseSet:
+    """Store the next version of the case set ``name``: version 1 for a new name, else one past the latest.
+
+    :param storage: Where sets and their cases live.
+    :ptype storage: CaseSetStore
+    :param scope_id: The scope the set lives in.
+    :ptype scope_id: str
+    :param name: The set's name.
+    :ptype name: str
+    :param template_id: The template whose cases it lists. Every version of one name lists cases of one template name:
+        the latest version's template, or a revision of it (a set re-minted after its template's reset lists the
+        newer revision's cases).
+    :ptype template_id: str
+    :param test_case_ids: The cases, in order — each a stored case of the template in the scope.
+    :ptype test_case_ids: Sequence[str]
+    :param tracked: Whether the set is followed over time or made for one launch (metadata only).
+    :ptype tracked: bool
+    :param seed_digest: The digest of the seeded content this version was minted from, when a seed or a definition
+        reset mints it; None otherwise.
+    :ptype seed_digest: str | None
+    :return: The stored version.
+    :rtype: CaseSet
+    :raises ValidationFailedError: The list is empty or repeats a case, a case does not resolve or is another
+        template's, the name belongs to another template, or the list is the latest version's unchanged.
+    :raises ConflictError: Another writer stored this version first.
+    """
+    versions = storage.query_case_sets(scope_id, name=name)
+    latest = versions[0] if versions else None
+    if latest is not None and not _one_template_name(storage, latest.template_id, template_id, scope_id):
+        raise ValidationFailedError(
+            f"case set {name!r} lists template {latest.template_id!r}'s cases, not {template_id!r}'s",
+            remedy=f"name a new set for template {template_id!r}",
+        )
+    if latest is not None and list(test_case_ids) == latest.test_case_ids:
+        raise ValidationFailedError(
+            f"case set {latest.ref.label!r} already lists exactly these cases; a new version records a change",
+            remedy=f"target {latest.ref.label!r} as it is, or mint a version that changes its cases",
+        )
+    what = f"case set {name!r}"
+    _refuse_cases_outside(
+        _cases_of(storage, test_case_ids, scope_id), test_case_ids, template_id=template_id, what=what
+    )
+    try:
+        minted = CaseSet(
+            scope_id=scope_id,
+            name=name,
+            version=1 if latest is None else latest.version + 1,
+            template_id=template_id,
+            test_case_ids=list(test_case_ids),
+            tracked=tracked,
+            seed_digest=seed_digest,
+        )
+    except ValueError as e:
+        raise ValidationFailedError(f"invalid case set: {e}", remedy=SCHEMA_REMEDY) from e
+    storage.save_case_set(minted)
+    return minted
+
+
+def resolve_case_set(
+    storage: CaseSetStore, ref: CaseSetRef, *, template: EvalTemplate, scope_id: str
+) -> tuple[CaseSet, list[EvalTestCase]]:
+    """The set a launch names, and its cases in its order — or the refusal.
+
+    :param storage: Where sets and their cases live.
+    :ptype storage: CaseSetStore
+    :param ref: The set the launch names.
+    :ptype ref: CaseSetRef
+    :param template: The template the launch runs.
+    :ptype template: EvalTemplate
+    :param scope_id: The scope the launch runs in.
+    :ptype scope_id: str
+    :return: The stored set, and its cases in the set's order.
+    :rtype: tuple[CaseSet, list[EvalTestCase]]
+    :raises NotFoundError: No such version of the set in the scope.
+    :raises ValidationFailedError: The set lists another template's cases, or a case of it no longer resolves (every
+        missing id named).
+    """
+    case_set = storage.load_case_set(ref.name, ref.version, scope_id)
+    if case_set is None:
+        raise NotFoundError("case set", ref.label, remedy=FIND_CASE_SET)
+    what = f"case set {ref.label!r}"
+    if case_set.template_id != template.id:
+        raise ValidationFailedError(
+            f"{what} lists template {case_set.template_id!r}'s cases, and this launch runs {template.id!r}",
+            remedy=f"name a case set of template {template.id!r} ({FIND_CASE_SET})",
+        )
+    cases = _cases_of(storage, case_set.test_case_ids, scope_id)
+    _refuse_cases_outside(cases, case_set.test_case_ids, template_id=template.id, what=what)
+    return case_set, [cases[case_id] for case_id in case_set.test_case_ids]
+
+
+__all__ = ["mint_case_set", "resolve_case_set"]

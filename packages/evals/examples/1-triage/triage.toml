@@ -1,0 +1,14 @@
+# Rung 0, no Python: python -m threetears.evals triage.toml
+cases = "emails.jsonl"
+grader = ["category", "urgent", "needs_human"]
+recording = "recordings/triage-toml.jsonl"
+k = 3
+
+[runner]
+model = "deepseek/deepseek-v4-flash"
+prompt = "Triage this support email:\n\n{email}"
+
+[runner.output]
+category = ["billing", "bug", "account", "sales", "spam"]
+urgent = "bool"
+needs_human = "bool"

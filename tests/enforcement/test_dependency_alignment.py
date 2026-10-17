@@ -43,6 +43,16 @@ _DEPENDENCY_FLOORS = (
             "makes a leaf untakeable, and it would arrive one innocent import at a time"
         ),
     ),
+    DependencyFloor(
+        package="packages/evals",
+        allowed=("httpx", "pydantic"),
+        rationale=(
+            "owner ruling 2026-10-11: 3tears-evals depends on no other 3tears package. A base install "
+            "with no family dependency installs beside a family pinned at any other version, which is "
+            "what let the production host run pre-release tags against a frozen family and what lets a "
+            "product outside the family adopt it. The fastmcp transport is the one extra"
+        ),
+    ),
 )
 
 _CONFIG = DependencyAlignmentConfig(
