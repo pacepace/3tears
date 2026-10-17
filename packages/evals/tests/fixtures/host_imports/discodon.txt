@@ -304,6 +304,8 @@ threetears.evals.schema.VariationAxis
 threetears.evals.schema.VariationCounts
 threetears.evals.schema.WorldPlacement
 threetears.evals.schema.WorldSeed
+threetears.evals.schema.bind_cell_identity
+threetears.evals.schema.current_cell_identity
 threetears.evals.schema.nested_schemas
 threetears.evals.schema.utc_now_iso
 threetears.evals.storage.CoreReset
