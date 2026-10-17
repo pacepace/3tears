@@ -32,8 +32,6 @@ from datetime import timedelta
 from pathlib import Path
 from uuid import UUID
 
-import nats
-import nats.errors
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -50,6 +48,8 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .refusals import Violations, refused, watching_client_log
+
 pytestmark = pytest.mark.integration
 
 _NS = "nomgmt"
@@ -64,9 +64,6 @@ _WAIT = 10.0
 _CHECKPOINTS = "checkpoints"
 _NONCES = "entry_challenge_nonces"
 _NEVER_DECLARED = "survey-quota-cells"
-
-#: what a refused JetStream call surfaces as in nats-py: an unanswered request.
-_REFUSED = (nats.errors.TimeoutError, nats.errors.NoRespondersError)
 
 
 def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
@@ -238,7 +235,8 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_pat
             # === REFUSED: every stream-management verb, on every stream =============================
             raw = pod.raw
             copy_victim = {"sources": [{"name": f"KV_{victim}"}], "subjects": [], "storage": "memory"}
-            for subject, body in (
+            violations = Violations()
+            probes = (
                 (f"$JS.API.STREAM.CREATE.KV_{never_declared}", {"name": f"KV_{never_declared}", **copy_victim}),
                 (f"$JS.API.STREAM.UPDATE.KV_{own}", {"name": f"KV_{own}", **copy_victim}),
                 (f"$JS.API.STREAM.CREATE.{_NS}-exfil", {"name": f"{_NS}-exfil", **copy_victim}),
@@ -248,9 +246,12 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_pat
                 (f"$JS.API.STREAM.PURGE.KV_{own}", {}),
                 (f"$JS.API.STREAM.SNAPSHOT.KV_{own}", {"deliver_subject": f"{permissions.inbox_prefix}.snap"}),
                 (f"$JS.API.CONSUMER.CREATE.KV_{own}", {"stream_name": f"KV_{own}", "config": {}}),
-            ):
-                with pytest.raises(_REFUSED):
-                    await raw.request(subject, json.dumps(body).encode(), timeout=2)
+            )
+            with watching_client_log(violations):
+                for subject, body in probes:
+                    await refused(
+                        violations, raw.request(subject, json.dumps(body).encode(), timeout=5), naming=subject
+                    )
 
             # === nothing was copied, and the pod's own bucket was not reshaped =====================
             own_info = await admin_js.stream_info(f"KV_{own}")
