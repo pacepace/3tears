@@ -19,6 +19,7 @@
 "threetears.evals.schema.ActorPolicy": "stable",
 "threetears.evals.schema.ApparatusProvenance": "provisional",
 "threetears.evals.schema.ApparatusSettingValue": "provisional",
+"threetears.evals.schema.ArmSchedule": "provisional",
 "threetears.evals.schema.AsyncDelivery": "stable",
 "threetears.evals.schema.AsyncDeliveryStatus": "stable",
 "threetears.evals.schema.AsyncDocumentStore": "host-contract",

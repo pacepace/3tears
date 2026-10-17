@@ -2673,8 +2673,10 @@ class AnalysisContextBundle(EvalDocumentModel):
             "different launches, or were started on their own. Arms started together share one "
             "concurrency slot, so their measurement windows overlap by construction; arms started apart "
             "overlap only by the scheduler's chance, and a difference between them can be when they ran "
-            "as well as what they ran. None when every run shares one launch group, or there are fewer "
-            "than two runs."
+            "as well as what they ran. Also set when they were started as one launch whose arms ran one after "
+            "another, or side by side each at its own width, co-loading their providers (the runs' "
+            "arm_schedule). None when every run shares one launch group whose arms took their turns case by "
+            "case (or record no schedule), or there are fewer than two runs."
         ),
     )
     model_identity_disclosure: str | None = Field(

@@ -190,7 +190,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 4`
+  <br>`= 5`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -518,7 +518,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`seed_eval_definitions`** · function · Create any corpus definition whose natural key is absent from the corpus's scope.
   <br>`seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome`
 - **`start_run`** · *host contract* · async function · Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
-  <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> list[EvalRun]`
+  <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False, arm_schedule: ArmSchedule | None = None) -> list[EvalRun]`
 - **`sweep_abandoned_runs`** · function · Write lost every run left not ended by a process that has gone, in the scopes the host names.
   <br>`sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> AbandonedRunSweepReport`
 
@@ -1523,10 +1523,10 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 
 | Action | Class | Parameters | Description |
 |---|---|---|---|
-| `sweep_launch` | `spend`, job | `template_id`, `subject_id`, `campaign_name`, `campaign_behavior`, `campaign_description?`, `k_runs?`, `max_concurrent_arms?`, `judge_model?`, `simulator_model?`, `max_cost_usd?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `arms` | Launch arms that differ beyond the model, one after another, into one campaign, as one job. |
+| `sweep_launch` | `spend`, job | `template_id`, `subject_id`, `campaign_name`, `campaign_behavior`, `campaign_description?`, `k_runs?`, `arm_schedule?`, `judge_model?`, `simulator_model?`, `max_cost_usd?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `arms` | Launch arms that differ beyond the model into one campaign, as one job. |
 | `case_set_mint` | `write` | `case_set`, `template_id`, `test_case_ids`, `tracked?` | Store the next version of a named case set: a template's cases, frozen in order. |
-| `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?` | Launch a template's runs, one per model, as one job to poll: its arms prepared, its runs run. |
-| `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
+| `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `arm_schedule?` | Launch a template's runs, one per model, as one job to poll: its arms prepared, its runs run. |
+| `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `arm_schedule?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
 | `job_poll` | `read` | `job_id` | Read where a job stands — a launch, a run, a sweep, a generation, a judge pass — and its result. |
 | `job_cancel` | `write` | `job_id`, `reason?` | Ask a running job to stop; poll to see it land as cancelled. |
 | `run_get` | `read` | `run_id` | Summarise one run: how it ended, how its results came out, each measure's mean. |
@@ -1596,7 +1596,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `apply` | `boolean` | Store the re-graded check verdicts; false (the default) reports and writes nothing. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
-| `arms` | array of `object` | The arms, launched in this order: each {model, label?, overlays?, apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its siblings. |
+| `arm_schedule` | `'interleaved'` \| `'sequential'` \| `'concurrent'` or `null` | How the arms share time and provider capacity. interleaved (the default): every arm at once, their cases taken in turn case by case under one width shared by the launch, so a provider's bad minute lands on every arm alike. sequential: one arm after another. concurrent: every arm side by side at its own width, the fastest, loading the providers with every arm at once, so one arm can take a provider's rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run. |
+| `arms` | array of `object` | The arms, in the order they launch and take their turns: each {model, label?, overlays?, apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its siblings. |
 | `bar` | `number` or `null` | The pass^k a variant must clear, from 0 to 1; omitted ranks the variants without a verdict. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
@@ -1649,7 +1650,6 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
 | `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its launch job names, as run_ids), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
 | `limit` | `integer` | The most rows to return, up to 200. |
-| `max_concurrent_arms` | `integer` | How many of a sweep's arms run at once. 1 (the default) runs them one after another, so no arm shares another's provider load. To compare latency, also declare measure_latency. |
 | `max_cost_usd` | `number` or `null` | A per-run cost cap in dollars, at or below the host's ceiling; it can only lower that ceiling, and a value above it is refused. |
 | `measure_latency` | `boolean` | Declare latency under test: each run executes its cases one at a time, with no other run beside it. False runs several cases at once — far faster — and the latency then recorded is marked read under concurrency and never compared. |
 | `metric` | `string` or `null` | The measure to read; omitted reads the composite score. |

@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from threetears.evals.kernel import JobTimeoutFactory
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.host.kinds import freeze
-from threetears.evals.schema.models import EvalTemplate, WorldPlacement
+from threetears.evals.schema.models import ArmSchedule, EvalTemplate, WorldPlacement
 
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
@@ -85,6 +85,7 @@ from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.kernel.job_leases import DEFAULT_JOB_LEASE_S, JobLeases
 from threetears.evals.run.lifecycle import record_completeness
+from threetears.evals.run.arm_schedule import CellInterleaver, resolve_arm_schedule
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS, CellExecutor
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
@@ -794,24 +795,38 @@ class LaunchGroup:
     from several calls (``launch_group=``), each at its own overlays — the arms of a factorial, which differ
     in them — holds its arms distinct itself.
 
+    **How its members share time is the group's arm schedule** (:mod:`threetears.evals.run.arm_schedule`):
+    interleaved by default, every member's cells taken in turn case by case under one width shared by the
+    group; one after another; or side by side, each at its own width. Every member records it
+    (``EvalRun.arm_schedule``). A group composed from several calls, of one template or of several, is
+    interleaved over every member alike.
+
     :ivar id: The group's id, stamped on every member run.
     :ivar candidate_models: Every candidate model the launch names, across all its arms — the set the
         judge is chosen against (:func:`resolve_judge_pin`, and the launch tail that holds a launcher to
         it), so a candidate that is also the default judge moves every sibling's judge rather than its
         own run's alone.
     :ivar members: The prepared runs, their work functions and their job timeouts.
+    :ivar asked_schedule: The arm schedule the group was built with, or ``None`` for its default.
+    :ivar arm_schedule: The schedule its members run under, resolved as its first member is added (``None``
+        before): ``asked_schedule``, or its default for whether the members declare latency under test.
     """
 
-    def __init__(self, candidate_models: Sequence[str]) -> None:
+    def __init__(self, candidate_models: Sequence[str], *, arm_schedule: ArmSchedule | None = None) -> None:
         """Mint the group's id; it is stamped on every member run.
 
         :param candidate_models: Every candidate model the launch names. Required, because the judge is
             chosen against it: a group built without it could hand the launch a judge that is one
             of its own candidates.
         :ptype candidate_models: Sequence[str]
+        :param arm_schedule: How the members share time; ``None`` interleaves them, or runs them one after another
+            when they declare latency under test (:func:`~threetears.evals.run.arm_schedule.resolve_arm_schedule`).
+        :ptype arm_schedule: ArmSchedule | None
         """
         self.id = str(uuid.uuid7())
         self.candidate_models = list(candidate_models)
+        self.asked_schedule = arm_schedule
+        self.arm_schedule: ArmSchedule | None = None
         #: Whether the group's runs declared latency under test — decided by its first member, and held of
         #: every other (:meth:`add`). The job manager then gives the group every slot and runs its members
         #: one at a time.
@@ -819,6 +834,8 @@ class LaunchGroup:
         self.members: list[tuple[EvalRun, WorkFn, float]] = []
         self._teardowns: list[contextlib.AsyncExitStack] = []
         self._resolved: dict[tuple[str, ...], Any] = {}
+        self._interleaver = CellInterleaver()
+        self._interleaving = False
 
     async def resolve_once(self, key: tuple[str, ...], compute: Callable[[], Awaitable[Any]]) -> Any:
         """Resolve a launch-wide input the first time an arm asks for it, and hand every later arm the same.
@@ -846,10 +863,14 @@ class LaunchGroup:
     ) -> None:
         """Hold one prepared run, and what it must release if the group never starts.
 
+        The run records the group's arm schedule (``EvalRun.arm_schedule``), resolved as the first member is added.
+
         :raises ValueError: The run declares latency under test and the group's other runs do not, or the other way
             round. Arms measured as one experiment are measured one way: side by side their latency is read
             under contention, one at a time it is not, and comparing the two would compare the conditions.
             Nothing is held; the caller releases ``teardown`` with the rest of its refusal.
+        :raises ValidationFailedError: The group was asked to run its arms at once and the run declares latency under
+            test (:func:`~threetears.evals.run.arm_schedule.resolve_arm_schedule`). Nothing is held.
         """
         declared = bool(run.measure_latency)
         if self.measure_latency is not None and declared != self.measure_latency:
@@ -857,9 +878,57 @@ class LaunchGroup:
                 f"launch group {self.id} mixes runs that declare latency under test with runs that do not; launch "
                 "every arm of one group with the same measure_latency, so their latency is read under one condition"
             )
+        schedule = resolve_arm_schedule(self.asked_schedule, measure_latency=declared)
         self.measure_latency = declared
+        self.arm_schedule = run.arm_schedule = schedule
+        self._interleaver.expect(run.id)
         self.members.append((run, work, job_timeout_s))
         self._teardowns.append(teardown)
+
+    def begin(self) -> list[tuple[EvalRun, WorkFn, float]]:
+        """Close the group to further members, as it starts, and say what to start.
+
+        An interleaved group of more than one member shares its time between them, so each member's budget is the
+        whole group's (the sum of every member's): a member's cells wait their turn behind its siblings', and a
+        budget sized to its own matrix alone would cut it off with its cells each within their own deadline.
+
+        :return: Each member's run, work function and job budget, in the order added.
+        :rtype: list[tuple[EvalRun, WorkFn, float]]
+        """
+        self._interleaving = self.arm_schedule == "interleaved" and len(self.members) > 1
+        self._interleaver.seal()
+        if not self._interleaving:
+            return list(self.members)
+        shared_budget_s = sum(job_timeout_s for _, _, job_timeout_s in self.members)
+        return [(run, work, shared_budget_s) for run, work, _ in self.members]
+
+    def member_ended(self, run_id: str) -> None:
+        """Hear that one member's job ended, however it ended, so its siblings no longer wait their turn on it.
+
+        :param run_id: The member's run.
+        :ptype run_id: str
+        """
+        self._interleaver.withdraw(run_id)
+
+    def options_for(self, run_id: str, options: RunnerOptions) -> RunnerOptions:
+        """A member's runner options as its run executes, once the group has begun.
+
+        An interleaved group of more than one member hands each member's cells to the group's turns (through the
+        member's own executor, when it has one) and orders every member's cells by the group's id, so the same case
+        runs on every arm at once. Any other group leaves the options as they are.
+
+        :param run_id: The member's run.
+        :ptype run_id: str
+        :param options: Its options, as its launch built them.
+        :ptype options: RunnerOptions
+        :return: The options it executes under.
+        :rtype: RunnerOptions
+        """
+        if not self._interleaving:
+            return options
+        return replace(
+            options, cell_executor=self._interleaver.lane(run_id, options.cell_executor), cell_order_seed=self.id
+        )
 
     async def abandon(self) -> None:
         """Release every prepared member's clients; called when the group will not start.
@@ -1758,12 +1827,14 @@ async def start_run(
     case_set: CaseSetRef | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
+    arm_schedule: ArmSchedule | None = None,
 ) -> list[EvalRun]:
     """Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
 
     **A run carries exactly one arm**, and the candidate model is one of an arm's settings, so naming
     several models launches several runs: one :class:`LaunchGroup`, one run per model, every run
-    prepared before any starts and all of them started together in one concurrency slot. What the
+    prepared before any starts and all of them started together in one concurrency slot, sharing its time
+    as ``arm_schedule`` says (interleaved case by case, by default). What the
     arms share is resolved once for the group (:meth:`LaunchGroup.resolve_once`), so they answer the
     same questions under the same instruments and differ only in the model.
 
@@ -1857,6 +1928,14 @@ async def start_run(
         records the declaration (``EvalRun.measure_latency``) and the width it ran at
         (``EvalRun.cell_concurrency``).
     :ptype measure_latency: bool
+    :param arm_schedule: How the launch's arms share time (:mod:`threetears.evals.run.arm_schedule`):
+        ``interleaved`` runs every arm at once and takes their cells in turn, case by case, under one width shared
+        by the launch, so a provider's bad minute lands on every arm alike; ``sequential`` runs one arm after
+        another; ``concurrent`` runs every arm side by side at its own width, co-loading their providers. ``None``
+        (the default) is ``interleaved``, or ``sequential`` when latency is under test, which takes no other. Every
+        run records it (``EvalRun.arm_schedule``). Ignored with ``launch_group``, whose caller built the group with
+        its own.
+    :ptype arm_schedule: ArmSchedule | None
 
 
     **Every arm is priced before any launcher runs, by one rule.** Before calling the launcher this asks
@@ -1916,6 +1995,7 @@ async def start_run(
             case_set=case_set,
             margins=margins,
             measure_latency=measure_latency,
+            arm_schedule=arm_schedule,
         )
     ).start()
 
@@ -1945,6 +2025,7 @@ async def admit_launch(
     case_set: CaseSetRef | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
+    arm_schedule: ArmSchedule | None = None,
 ) -> AdmittedLaunch:
     """The first half of :func:`start_run`: every refusal it makes and every arm priced — no launcher run, nothing
     spent.
@@ -1988,6 +2069,7 @@ async def admit_launch(
         case_set=case_set,
         margins=margins,
         measure_latency=measure_latency,
+        arm_schedule=arm_schedule,
     )
 
 
@@ -2186,6 +2268,7 @@ async def _admit_run(
     case_set: CaseSetRef | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
+    arm_schedule: ArmSchedule | None = None,
 ) -> AdmittedLaunch:
     """:func:`admit_launch` under a settings snapshot its caller read.
 
@@ -2197,6 +2280,8 @@ async def _admit_run(
     """
     # NOTE: the "at least one model" refusal is NOT here, because it is not the same
     # refusal for every kind — each kind's plan (or, for one that plans nothing, its launcher) makes its own.
+    # A schedule latency cannot be read under is refused before anything is read or reserved.
+    resolve_arm_schedule(arm_schedule, measure_latency=measure_latency)
     mode = _refuse_launch_arguments(
         host,
         settings,
@@ -2303,7 +2388,7 @@ async def _admit_run(
         :rtype: tuple[LaunchGroup, tuple[_Dispatched, list[LaunchRequest]]]
         """
         dispatched = await dispatch()
-        group = LaunchGroup(candidate_models=models)
+        group = LaunchGroup(candidate_models=models, arm_schedule=arm_schedule)
         return group, (dispatched, await priced(group, dispatched))
 
     # This call is the whole launch. A caller holding a ticket for several launches
@@ -3229,7 +3314,12 @@ class AdmittedLaunch:
                     attached = True
                     if cancelled_while_attaching:
                         raise asyncio.CancelledError
-                await job_manager.start_group(group.members, measure_latency=bool(group.measure_latency))
+                await job_manager.start_group(
+                    group.begin(),
+                    measure_latency=bool(group.measure_latency),
+                    in_turn=group.arm_schedule == "sequential",
+                    on_member_end=group.member_ended,
+                )
             except BaseException:
                 log.warning("%s group=%s abandoned before starting", self._event, group.id)
                 await group.abandon()
@@ -3934,7 +4024,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                     template=template,
                     test_cases=test_cases,
                     judge_service=judge.service if judge is not None else None,
-                    options=options,
+                    # Read as the run starts, once its group has begun: an interleaved launch's runs take turns.
+                    options=launch_group.options_for(run.id, options),
                     callbacks=RunCallbacks(on_progress=progress_fn),
                     # Mid-run cap: accumulate each delivered result's cost
                     # in memory and stop gracefully once this run's total exceeds its

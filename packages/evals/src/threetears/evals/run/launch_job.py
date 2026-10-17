@@ -40,7 +40,7 @@ from threetears.evals.schema.job_lease import (
     LostField,
 )
 from threetears.evals.schema.refusal import RefusalField
-from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
+from threetears.evals.schema.models import ArmSchedule, CoreSchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 
 #: The reason recorded on a run its launch's cancel stopped.
@@ -74,6 +74,11 @@ class EvalLaunch(CoreDocumentModel):
     )
     k_runs: int = Field(ge=1, description="Repeats of every case.")
     n_variations: int = Field(ge=0, description="New cases the launch generates before its runs start; 0 for none.")
+    arm_schedule: ArmSchedule | None = Field(
+        default=None,
+        description="How the launch's arms shared time (`ArmSchedule`), as each of its runs records it too; None for a "
+        "launch stored before the field existed.",
+    )
     run_ids: list[str] = Field(
         default_factory=list, description="The runs the launch started, in arm order; empty until they start."
     )
@@ -111,6 +116,7 @@ def launch_job_work(
     k_runs: int,
     n_variations: int,
     scope_id: str,
+    arm_schedule: ArmSchedule | None = None,
 ) -> JobWork[EvalLaunch]:
     """An admitted launch as work: its launchers run, its runs started together and waited for to their end.
 
@@ -130,6 +136,8 @@ def launch_job_work(
     :ptype n_variations: int
     :param scope_id: The scope its runs live in.
     :ptype scope_id: str
+    :param arm_schedule: The schedule its arms run under, as resolved, recorded on the launch.
+    :ptype arm_schedule: ArmSchedule | None
     :return: The work; its record is the launch, its id the launch group's.
     :rtype: JobWork[EvalLaunch]
     """
@@ -142,6 +150,7 @@ def launch_job_work(
         models=list(models),
         k_runs=k_runs,
         n_variations=n_variations,
+        arm_schedule=arm_schedule,
     )
 
     async def launch(recorder: JobRecorder[EvalLaunch]) -> EvalLaunch:

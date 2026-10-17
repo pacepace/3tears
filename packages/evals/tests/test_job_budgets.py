@@ -192,6 +192,8 @@ async def test_a_sweep_whose_budget_runs_out_reads_timed_out_and_stops_its_arms(
             SweepArm(model=RUN_MODELS[0], label=style, overlays={"prompt_style": style})
             for style in ("terse", "verbose")
         ],
+        # Arm after arm, so the budget runs out with the second arm not yet launched.
+        arm_schedule="sequential",
     )
 
     (job,) = (await sweep_launch(fixture.host, arguments, TOYHOST_SCOPE, created_by="agent:test")).jobs

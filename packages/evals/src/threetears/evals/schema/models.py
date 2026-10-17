@@ -2696,6 +2696,19 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
 #: harness and not the candidate — as the reason it is short.
 EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled", "budget_stopped", "exhausted"]
 
+#: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
+#:
+#: - ``interleaved`` — every arm ran at once, its cells taken in turn with every other arm's case by case under one
+#:   width shared by the whole launch, so a provider's bad minute lands on every arm alike and the arms' same cases
+#:   ran close together in time.
+#: - ``sequential`` — one arm ran after another, so no arm shared another's provider load, and a difference between
+#:   them can also be when each ran.
+#: - ``concurrent`` — every arm ran side by side at its own width, so the launch loaded its providers with every arm
+#:   at once, and a provider's rationing could land on one arm more than another.
+#:
+#: A launch of one arm records the schedule it was launched under, which runs that one arm alone either way.
+ArmSchedule = Literal["interleaved", "sequential", "concurrent"]
+
 #: Statuses a run can still leave under its own power — it is either queued or
 #: executing, and something in-process is expected to write its terminal status.
 #: Derived by subtraction in :data:`TERMINAL_RUN_STATUSES` so a new status added
@@ -3706,6 +3719,16 @@ class EvalRun(CoreDocumentModel):
             "How many of the run's cells executed at once: 1 is serial. Above 1, every result stamps "
             "`execution_mode` `concurrent` and its latency is kept out of every comparison, bar and ranking. "
             "A run its host assembled without a launch states its own width, and is serial unless it says otherwise."
+        ),
+    )
+    arm_schedule: ArmSchedule | None = Field(
+        default=None,
+        description=(
+            "How this run's arm shared time and provider capacity with the other arms of its comparison "
+            "(`ArmSchedule`): `interleaved`, every arm's cells taken in turn case by case under one width shared by "
+            "the launch; `sequential`, one arm after another; `concurrent`, every arm side by side at its own width, "
+            "co-loading the providers. A disclosure, never part of the run's identity or its context key, so it never "
+            "splits a cell. None: a run its host assembled without a launch, or stored before the field existed."
         ),
     )
 
@@ -6121,6 +6144,7 @@ __all__ = [
     "run_label_problem",
     "MeasureDeclaration",
     "EvalRunStatus",
+    "ArmSchedule",
     "EvalTemplate",
     "EvalTestCase",
     "GoalCheckControl",

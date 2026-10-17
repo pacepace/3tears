@@ -197,13 +197,24 @@ async def test_a_launch_measuring_latency_runs_its_arms_one_after_another_with_n
         )
 
 
-async def test_the_arms_of_a_launch_not_measuring_latency_still_run_side_by_side() -> None:
+async def test_the_arms_of_a_concurrent_launch_run_side_by_side_each_at_its_own_width() -> None:
+    client = _SleepingClient()
+    host, storage = off_loop(_launching, client)
+
+    runs = await _launch(host, models=RUN_MODELS[:2], arm_schedule="concurrent")
+
+    assert client.peak > DEFAULT_MAX_CONCURRENT_CELLS, "the two arms' cells should overlap, each run at its width"
+    for run in runs:
+        assert off_loop(_modes, storage, run) == {"concurrent"}
+
+
+async def test_the_arms_of_a_default_launch_share_one_width_and_still_run_side_by_side() -> None:
     client = _SleepingClient()
     host, storage = off_loop(_launching, client)
 
     runs = await _launch(host, models=RUN_MODELS[:2])
 
-    assert client.peak > DEFAULT_MAX_CONCURRENT_CELLS, "the two arms' cells should overlap, each run at its width"
+    assert client.peak == DEFAULT_MAX_CONCURRENT_CELLS, "two interleaved arms load the provider as one run would"
     for run in runs:
         assert off_loop(_modes, storage, run) == {"concurrent"}
 

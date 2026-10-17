@@ -104,6 +104,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
 from threetears.evals.schema.models import (
     CHECK_REFUSED_UNDER_CURRENT_GRAMMAR,
+    ArmSchedule,
     BudgetStop,
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
@@ -790,6 +791,9 @@ class EvalSummary(BaseModel):
     :ivar errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
         as the caller that summarised the run named it (an eval: its own
         ``id``, else its position), else by its stored test case id.
+    :ivar arm_schedule: How the run's arm shared time and provider capacity with the other arms of its launch, as the
+        run records it (``EvalRun.arm_schedule``): ``interleaved``, ``sequential`` or ``concurrent``, the last
+        co-loading its providers with every arm at once; ``None`` for a run that records none.
     :ivar max_cost_usd: The spend ceiling the run was held to, in US dollars; ``None`` when none bound it.
     :ivar max_cost_usd_origin: Where that ceiling came from, as the run records it: ``chosen`` (the launch named
         it), ``inherited`` (the host's default), ``uncapped`` (ceiling enforcement was off, so nothing bounded
@@ -846,6 +850,7 @@ class EvalSummary(BaseModel):
     intent_source: str | None = None
     errors: list[str]
     stopped_because: str | None = None
+    arm_schedule: ArmSchedule | None = None
     max_cost_usd: float | None = None
     max_cost_usd_origin: CostCapOrigin | None = None
     judge_shares_candidate_model: list[str] = []
@@ -1376,6 +1381,7 @@ def summarize_run(
         errors=errors,
         stopped_because=run.cancellation_reason
         or (budget_stop_line(run.budget_stops) if run.budget_stops else run.budget_stop_reason),
+        arm_schedule=run.arm_schedule,
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,
         judge_shares_candidate_model=self_judging_models(run, results),

@@ -222,6 +222,9 @@ class _GroupSlot:
     and runs its members one at a time, in the order they were added. It gives up the drift balance of
     arms measured side by side for latency read with nothing beside it; each run still shuffles its
     own cells.
+
+    **A group whose arms run one after another takes turns too** (``in_turn``, a launch's ``sequential``
+    schedule): its members run one at a time in the order added, in its one slot.
     """
 
     def __init__(
@@ -231,6 +234,7 @@ class _GroupSlot:
         *,
         weight: int = 1,
         exclusive_turn: asyncio.Lock | None = None,
+        in_turn: bool = False,
     ) -> None:
         """Bind the group to the manager's semaphore.
 
@@ -245,6 +249,8 @@ class _GroupSlot:
             such groups never each hold part of the semaphore waiting for the rest; given exactly
             when the group takes every slot, whose members then run one at a time.
         :ptype exclusive_turn: asyncio.Lock | None
+        :param in_turn: Run the members one at a time, in the order added, whether or not the group takes every slot.
+        :ptype in_turn: bool
         """
         self._semaphore = semaphore
         self._remaining = members
@@ -252,13 +258,14 @@ class _GroupSlot:
         self._exclusive_turn = exclusive_turn
         self._held = False
         self._acquiring = asyncio.Lock()
-        # Members of a group measuring latency run one at a time; the lock is FIFO, so in the order added.
-        self._member_turn = asyncio.Lock() if exclusive_turn is not None else None
+        # Members of a group measuring latency, or running its arms one after another, run one at a time; the lock
+        # is FIFO, so in the order added.
+        self._member_turn = asyncio.Lock() if exclusive_turn is not None or in_turn else None
 
     @asynccontextmanager
     async def hold(self) -> AsyncIterator[None]:
         """Enter the group's slot, acquiring it for the group if no member has yet — and, for a group
-        measuring latency, wait for this member's turn."""
+        whose members take turns, wait for this member's turn."""
         async with self._acquiring:
             if not self._held:
                 if self._exclusive_turn is None:
@@ -281,6 +288,16 @@ class _GroupSlot:
             self._held = False
             for _ in range(self._weight):
                 self._semaphore.release()
+
+
+def _tell_member_end(on_member_end: Callable[[str], None], run_id: str, _task: asyncio.Task[None]) -> None:
+    """Tell a group's caller one member's task is done; what the hook raises is logged, never the task's."""
+    try:
+        on_member_end(run_id)
+    # prawduct:ok-broad-except — a done callback: a raising hook would surface only on the loop's handler, unnamed
+    except Exception:
+        # NOSILENT: logged with the run; the hook is the launch's bookkeeping, and the run's record is already its own.
+        log.exception("eval.start_group run=%s: the member-end hook raised", run_id)
 
 
 class AdmissionTicket:
@@ -907,7 +924,12 @@ class EvalJobManager:
             log.warning("Task %s: its record written lost: %s", job_id, cause)
 
     async def start_group(
-        self, members: Sequence[tuple[EvalRun, WorkFn, float | None]], *, measure_latency: bool = False
+        self,
+        members: Sequence[tuple[EvalRun, WorkFn, float | None]],
+        *,
+        measure_latency: bool = False,
+        in_turn: bool = False,
+        on_member_end: Callable[[str], None] | None = None,
     ) -> list[str]:
         """Start several runs as one group: they share one concurrency slot and start together.
 
@@ -919,6 +941,12 @@ class EvalJobManager:
             slot, so no other run executes beside it, and its members run one at a time
             (:class:`_GroupSlot`). Latency-blind otherwise: one slot, members side by side.
         :ptype measure_latency: bool
+        :param in_turn: The members run one at a time, in the order given, in the group's one slot (a launch running
+            its arms one after another). Implied by ``measure_latency``.
+        :ptype in_turn: bool
+        :param on_member_end: Told each member's run id once its task is done, however it ended — before it started
+            included — so whatever its siblings wait on from it (an interleaved launch's turns) stops waiting.
+        :ptype on_member_end: Callable[[str], None] | None
         :return: The run ids, in the order given.
         :rtype: list[str]
         :raises ValueError: ``members`` is empty.
@@ -950,7 +978,7 @@ class EvalJobManager:
         slot = (
             _GroupSlot(self._semaphore, len(members), weight=self._max_concurrent, exclusive_turn=self._exclusive_turn)
             if measure_latency
-            else _GroupSlot(self._semaphore, len(members))
+            else _GroupSlot(self._semaphore, len(members), in_turn=in_turn)
         )
         for run, work, job_timeout_s in members:
             if self._leases is not None:
@@ -968,6 +996,8 @@ class EvalJobManager:
             # Released on the TASK's end, not in the coroutine's ``finally``: a task cancelled before
             # its first step never runs its body, and its share of the slot would never come back.
             task.add_done_callback(lambda _task: slot.leave())
+            if on_member_end is not None:
+                task.add_done_callback(functools.partial(_tell_member_end, on_member_end, run.id))
             self._tasks[run.id] = task
         return [run.id for run, _, _ in members]
 
