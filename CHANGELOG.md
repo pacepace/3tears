@@ -6,6 +6,45 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: synchronous callers get a supported bridge and a synchronous lease; TracedHttpClient gets a quiet probe
+
+**Added (core): `threetears.core.sync.run(work, *, timeout=None)`.** Runs one async call to the end from
+synchronous code (a CLI, a batch script, a worker thread with no loop) and returns its result. `work` is a
+coroutine or a no-argument factory, which is called on the loop so what it builds belongs there. Every call
+shares one loop in a daemon thread, so a resource one call opens (a NATS connection, an HTTP client) serves the
+next. A timeout cancels the work and raises `TimeoutError`; Ctrl-C while waiting cancels it too. Called from
+inside a running event loop it raises `RuntimeError` rather than stall or deadlock that loop. Consumers wrote
+their own bridges because `threetears.core._bridge.sync_await` is private and waits without bound.
+
+**Added (core): `KVLease.hold_sync(key, *, ttl, renew_every, ...) -> SyncHeldLease`.** `hold`, from
+synchronous code: it blocks until the lease is held (or refused), then `sync`'s loop renews it while the
+caller's thread works. Same keywords and the same loss rules as `hold`. `SyncHeldLease` is a context manager
+that releases on exit, with `held`, `lost_reason`, `lost` (a `threading.Event`), `check()` (raises `LeaseLost`
+once lost) and `release()`. The lease's NATS client must be opened through `sync.run`. Exported from
+`threetears.core` and `threetears.core.coordination`.
+
+**Added (core): `TracedHttpClient.probe(path, *, method="GET", headers=None, timeout=None) -> bool`.** A
+health check: one try, `True` for a status below 400, `False` for any other status or a network failure. It
+never retries, never raises for a network failure, never touches the circuit breaker, logs only at DEBUG, and
+does not read the body. `request` logs every exhausted call at ERROR, so a machine that is often off, checked
+every minute, filled the log with errors; consumers fell back to plain `httpx`.
+
+### enforcement: `print_log_lines`, the log lines that bypass `threetears.observe` in an application
+
+**Added (enforcement): the `print_log_lines` domain.** In every module that imports 3tears, it flags
+`print(..., file=sys.stderr)` (every spelling of stderr) and direct stdlib `logging` calls (`getLogger`,
+`basicConfig`, root-logger calls). Narrower than `codebase_conventions` and `no_stdlib_logging` on purpose, for
+an application whose command line prints its answers: `print` to stdout is left alone, modules that do not
+import 3tears are not scanned (`scope_import_roots`), and a command line goes in `exempt_files`. One call takes
+`# print-log: ok`. A floor, `minimum_scoped_modules` (default 1), fails a scan that reaches no 3tears module.
+`run_print_log_lines_enforcement(PrintLogLinesConfig(repo_root=..., src_roots=...))`.
+
+### docs
+
+`docs/observability.md` named modules that do not exist: `threetears.core.logging` and
+`threetears.core.tracing` are `threetears.observe`, and the context it described (three contextvars,
+`correlation_id`, `session_id`, `conversation_id`) is one context set with `set_context(**tags)`.
+
 ## v0.70.0 -- 2026-10-16
 
 ### models: a subscription reply says why it stopped and who served it; an OpenRouter reasoning budget reaches the wire

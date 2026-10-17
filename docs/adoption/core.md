@@ -31,7 +31,12 @@ the first few times.
 - **Declarative schema** (`TableDef`, `ColumnDef`, `IndexDef`,
   `ForeignKeyDef`) and the canonical `MigrationRunner` -- package-composing,
   topologically ordered, idempotent, version-tracked.
-- **Coordination primitives** (`KVLease`) for cross-pod mutual exclusion.
+- **Coordination primitives** (`KVLease`) for cross-pod mutual exclusion;
+  `KVLease.hold_sync` holds one across synchronous work.
+- **`threetears.core.sync`** -- `run(work, *, timeout=None)` runs one async call
+  to the end from synchronous code (a CLI, a batch script) on one shared loop.
+- **`TracedHttpClient`** -- traced, retried, circuit-broken outbound HTTP, and
+  `probe()`, a quiet one-try health check.
 - **`threetears.core.egress`** -- a seam for *how traffic leaves*, not a proxy
   implementation. `EgressDriver` is a `runtime_checkable` Protocol, so a
   consumer may supply its own exit and this package promises the shape;
