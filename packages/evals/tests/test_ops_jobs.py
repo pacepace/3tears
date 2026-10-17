@@ -1,0 +1,576 @@
+"""The operations and their one job contract, driven over the toy host.
+
+A launch and an analysis generation both start long work and return jobs; :func:`job_poll` reads each
+job from the record its work writes, and :func:`job_cancel` asks it to stop. Pinned here:
+
+- **A launch is one job**, its record naming the runs it started, polled to ``completed`` once every run has
+  ended; each run is a job of its own, summarised; one cancel of the launch stops every run it started.
+- **A generation is one job**, polled to ``completed`` naming the analysis it stored, whose report reads
+  three ways.
+- **A job outlives the process that ran it as an answer**: a run that reads ``running`` with no lease reads
+  ``lost``, written on its record, and its cancel is refused; a generation with no attempt record reads absent.
+  (Two processes over one store: ``test_job_leases.py``.)
+- **Cancel converges**: a held generation cancelled lands ``cancelled``; a held live run cancelled lands
+  ``cancelled`` through its own boundary.
+- **A generation is answered only in its scope and campaign**: polled or cancelled from another scope, or under
+  another campaign, it reads absent; the refused cancel leaves it running.
+- **Every refusal fires** — a job id of neither shape, cancelling a job that has ended, a generation on
+  a host without generation settings, a second generation of a campaign while one runs (releasing the
+  client it built when it loses the race), and generation settings that cannot bound a generation.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pytest
+
+from threetears.evals.actions import eval_catalogue, standard_tools
+from threetears.evals.kernel import ANALYSIS_GEN_PROMPT, ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.ops import (
+    AnalysisGeneration,
+    CampaignDefinition,
+    LaunchArguments,
+    analyses_list,
+    analysis_archive,
+    analysis_generate,
+    analysis_job_id,
+    await_job,
+    campaign_archive,
+    campaign_create,
+    campaigns_list,
+    job_cancel,
+    job_poll,
+    parse_job_id,
+    report_read,
+    run_delete,
+    run_get,
+    run_job_id,
+    run_launch,
+)
+from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, AnalysisContextBundle, judge_agreement
+from threetears.evals.run import LAUNCH_CANCEL_REASON
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
+from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
+from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.ops_support import (
+    CALLER,
+    RUN_MODELS,
+    TOYHOST_SCOPE,
+    TOYHOST_SUBJECT,
+    ops_fixture,
+    settled,
+)
+from packages.evals.tests.off_loop import off_loop
+
+
+def _launch(*models: str) -> LaunchArguments:
+    return LaunchArguments(
+        template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=list(models)
+    )
+
+
+# =============================================================================
+# Launch: one job, its runs named on its record
+# =============================================================================
+
+
+async def test_a_launch_is_one_job_naming_its_runs_polled_to_completed() -> None:
+    fixture = off_loop(ops_fixture)
+    started = await run_launch(fixture.host, _launch(*RUN_MODELS), TOYHOST_SCOPE)
+
+    (job,) = started.jobs
+    assert job.kind == "launch" and job.job_id.startswith("launch:") and job.target_id == toyhost_template().id
+    assert job.label == ", ".join(RUN_MODELS)
+    launched = await settled(fixture.host, job.job_id)
+    assert (launched.state, launched.status, launched.done, launched.detail) == ("completed", "completed", True, None)
+    assert len(launched.run_ids) == len(RUN_MODELS)
+    assert launched.progress["runs_started"] == launched.progress["runs_finished"] == len(RUN_MODELS)
+    for run_id in launched.run_ids:
+        status = await settled(fixture.host, run_job_id(run_id))
+        assert (status.state, status.status, status.done) == ("completed", "completed", True)
+        assert status.progress["completed"] == status.progress["total"] > 0
+        assert status.detail is None
+        summary = off_loop(run_get, fixture.host.eval_host, run_id, TOYHOST_SCOPE)
+        assert summary.status == "completed" and summary.n_results > 0
+        assert summary.run_id == run_id
+    run = off_loop(fixture.host.eval_host.storage.load_eval_run, launched.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None and job.job_id == f"launch:{run.launch_group_id}", "the launch is its runs' group"
+
+
+async def test_a_launch_awaited_in_the_foreground_returns_its_final_status() -> None:
+    fixture = off_loop(ops_fixture)
+    started = await run_launch(fixture.host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)
+
+    (status,) = await await_job(fixture.host, started, TOYHOST_SCOPE)
+
+    assert status.state == "completed" and len(status.run_ids) == 1
+
+
+async def test_cancelling_a_launch_stops_every_run_it_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = asyncio.Event()
+    extract = ScriptedExtractionClient.extract
+
+    async def held(self: ScriptedExtractionClient, request: Any) -> Any:
+        await gate.wait()
+        return await extract(self, request)
+
+    monkeypatch.setattr(ScriptedExtractionClient, "extract", held)
+    fixture = off_loop(ops_fixture)
+    (job,) = (await run_launch(fixture.host, _launch(*RUN_MODELS), TOYHOST_SCOPE)).jobs
+    async with asyncio.timeout(10):
+        while not (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).run_ids:
+            await asyncio.sleep(0.01)
+
+    await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE, reason="wrong template")
+    cancelled = await settled(fixture.host, job.job_id)
+
+    assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
+    assert cancelled.detail is not None and "wrong template" in cancelled.detail
+    for run_id in cancelled.run_ids:
+        run = await settled(fixture.host, run_job_id(run_id))
+        assert run.state == "cancelled" and run.detail == LAUNCH_CANCEL_REASON
+    assert not gate.is_set()
+
+
+async def test_a_launch_refused_in_its_call_starts_no_job_and_holds_no_room() -> None:
+    fixture = off_loop(ops_fixture)
+    with pytest.raises(NotFoundError):
+        await run_launch(
+            fixture.host, LaunchArguments(template_id="no-such", subject_id="s", models=["m"]), TOYHOST_SCOPE
+        )
+    assert fixture.host.launch.job_manager.admitted_count == 0
+
+
+async def test_a_run_reading_running_with_no_lease_is_written_lost_and_its_cancel_is_refused() -> None:
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None
+    off_loop(storage.save_eval_run, run.model_copy(update={"status": "running", "completed_at": None}))
+
+    lost = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
+    assert (lost.state, lost.status, lost.done) == ("lost", "cancelled", True)
+    assert lost.detail is not None and "no process can be running it" in lost.detail
+
+    with pytest.raises(ValidationFailedError, match="is cancelled — only pending/running runs can be cancelled"):
+        await job_cancel(fixture.host, run_job_id(run.id), TOYHOST_SCOPE, reason="stale")
+
+
+async def test_a_run_its_wall_clock_budget_stopped_reads_stopped_and_says_why() -> None:
+    """Every reader of a run's status names the clock stop as a stop, never as a failure."""
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None
+    reason = "wall-clock budget reached — the run's 660s time budget ran out after 660s"
+    off_loop(storage.save_eval_run, run.model_copy(update={"status": "budget_stopped", "budget_stop_reason": reason}))
+
+    status = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
+    assert (status.state, status.status, status.done) == ("stopped", "budget_stopped", True)
+    assert status.detail == reason
+
+    summary = off_loop(run_get, fixture.host.eval_host, run.id, TOYHOST_SCOPE)
+    assert summary.stopped_because == reason
+    assert f"  stopped: {reason}" in summary.render().splitlines()
+    assert not [error for error in summary.errors if "wall-clock" in error], "a stop is not among the faults"
+
+
+async def test_cancelling_a_run_that_has_ended_is_refused() -> None:
+    fixture = off_loop(ops_fixture)
+    with pytest.raises(ValidationFailedError, match="is completed — only pending/running runs can be cancelled"):
+        await job_cancel(fixture.host, run_job_id(fixture.campaign.run_ids[0]), TOYHOST_SCOPE)
+
+
+# =============================================================================
+# Analysis: one job, its record the generation attempt
+# =============================================================================
+
+
+async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
+    fixture = off_loop(ops_fixture)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    assert job.kind == "analysis" and parse_job_id(job.job_id)[:2] == ("analysis", fixture.campaign.id)
+
+    status = await settled(fixture.host, job.job_id)
+    assert (status.state, status.status) == ("completed", "stored") and status.analysis_id is not None
+
+    (line,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert line.id == status.analysis_id
+    markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
+    assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
+    # The page is that campaign's: titled by its name, with the question it declared quoted alone on the line under
+    # the title (first letter capitalized); a campaign that declares none is titled by its name and what it compares.
+    design = fixture.campaign.declared_design
+    assert design is not None
+    (question,) = design.questions
+    asked = " ".join(question.text.split())
+    assert markdown.body.startswith(f'# {fixture.campaign.name}\n"{asked[:1].upper()}{asked[1:]}"\n')
+    assert f"**{line.verdict}**" in markdown.body and line.findings >= 1
+    html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
+    assert "<script" not in html.body.lower()
+    canonical = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
+    assert AnalysisContextBundle.from_json(canonical.body).campaign_id == fixture.campaign.id
+
+
+async def test_a_held_generation_is_running_refuses_a_second_and_cancels_to_cancelled() -> None:
+    gate = asyncio.Event()
+    fixture = off_loop(ops_fixture, gate=gate)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    async with asyncio.timeout(10):
+        while not fixture.writers:
+            # The first generation's job prepares its client before it is held at its call.
+            await asyncio.sleep(0.01)
+
+    running = await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)
+    assert (running.state, running.done) == ("running", False)
+    with pytest.raises(ConflictError, match="is already running"):
+        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert len(fixture.writers) == 1, "the refused second generation built no client"
+
+    await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE)
+    cancelled = await settled(fixture.host, job.job_id)
+    assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
+
+    with pytest.raises(ValidationFailedError, match="is not running \\(it reads cancelled\\)"):
+        await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE)
+
+
+@pytest.mark.parametrize(
+    ("scope_id", "forged_campaign"),
+    [("some-other-scope", "not-my-campaign"), ("some-other-scope", None), (TOYHOST_SCOPE, "not-my-campaign")],
+    ids=["other-scope-forged-campaign", "other-scope-real-campaign", "same-scope-forged-campaign"],
+)
+async def test_a_generation_is_neither_polled_nor_cancelled_from_outside_its_campaign_and_scope(
+    scope_id: str, forged_campaign: str | None
+) -> None:
+    """The job manager is process-wide; a generation is live only to the scope and campaign that started it."""
+    gate = asyncio.Event()
+    fixture = off_loop(ops_fixture, gate=gate)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    await asyncio.sleep(0)
+    _, _, attempt = parse_job_id(job.job_id)
+    assert attempt is not None
+    probe = analysis_job_id(forged_campaign or fixture.campaign.id, attempt)
+
+    with pytest.raises(NotFoundError):
+        await job_poll(fixture.host, probe, scope_id)
+    with pytest.raises(NotFoundError):
+        await job_cancel(fixture.host, probe, scope_id)
+
+    owner = await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)
+    assert owner.state == "running", "the refused cancel left the owner's generation running"
+    gate.set()
+    finished = await settled(fixture.host, job.job_id)
+    assert (finished.state, finished.status) == ("completed", "stored")
+
+
+async def test_a_live_run_is_cancelled_through_the_job_contract_and_converges(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``job_cancel`` asks the live job to stop; its own boundary writes ``cancelled``, which ``job_poll`` then reads."""
+    gate = asyncio.Event()
+    extract = ScriptedExtractionClient.extract
+
+    async def held(self: ScriptedExtractionClient, request: Any) -> Any:
+        await gate.wait()
+        return await extract(self, request)
+
+    monkeypatch.setattr(ScriptedExtractionClient, "extract", held)
+    fixture = off_loop(ops_fixture)
+    (launch,) = (await run_launch(fixture.host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
+    async with asyncio.timeout(10):
+        while not (run_ids := (await job_poll(fixture.host, launch.job_id, TOYHOST_SCOPE)).run_ids):
+            await asyncio.sleep(0.01)
+        job_id = run_job_id(run_ids[0])
+        while (await job_poll(fixture.host, job_id, TOYHOST_SCOPE)).status != "running":
+            await asyncio.sleep(0.01)
+
+    await job_cancel(fixture.host, job_id, TOYHOST_SCOPE, reason="operator stop")
+    cancelled = await settled(fixture.host, job_id)
+
+    assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
+    assert cancelled.detail is not None and "operator stop" in cancelled.detail
+    assert not gate.is_set(), "the run was stopped while held, not after it finished"
+
+
+async def test_a_generation_that_loses_the_race_ends_its_attempt_having_built_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Between the check and the start another generation took the key: this one's attempt ends, refused, and the
+    start built no client to release, since the client is its job's."""
+    fixture = off_loop(ops_fixture)
+
+    def taken(*_: Any, **__: Any) -> str:
+        raise ConflictError("task 'other' is already running", remedy="try again")
+
+    monkeypatch.setattr(fixture.host.launch.job_manager, "start_task", taken)
+    with pytest.raises(ConflictError):
+        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert fixture.writers == []
+    (attempt,) = off_loop(
+        fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
+    )
+    assert attempt.outcome == "failed" and attempt.error is not None and "already running" in attempt.error
+
+
+async def test_a_generation_with_no_attempt_record_reads_absent() -> None:
+    fixture = off_loop(ops_fixture)
+    with pytest.raises(NotFoundError, match="analysis job"):
+        await job_poll(fixture.host, analysis_job_id(fixture.campaign.id, "0193-never"), TOYHOST_SCOPE)
+
+
+async def test_a_host_without_generation_settings_refuses_a_generation() -> None:
+    fixture = off_loop(ops_fixture, generation=False)
+    with pytest.raises(ValidationFailedError, match="does not generate analyses here"):
+        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert fixture.writers == []
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"prompt_id": " "}, "prompt_id is blank"),
+        ({"max_output_tokens": 0}, "max_output_tokens must be positive"),
+        ({"budget_s": 0.0}, "budget_s must be positive"),
+    ],
+)
+def test_generation_settings_that_cannot_bound_a_generation_are_refused(fields: dict[str, Any], message: str) -> None:
+    async def prompt() -> str:
+        return "p"
+
+    valid: dict[str, Any] = {"prompt_id": "p", "resolve_prompt": prompt, "max_output_tokens": 10, "budget_s": 1.0}
+    AnalysisGeneration(**valid)
+    with pytest.raises(ValueError, match=message):
+        AnalysisGeneration(**(valid | fields))
+
+
+async def test_a_generation_naming_no_prompt_runs_the_shipped_default() -> None:
+    """A host with no prompt registry names no prompt: the generator runs the default under the engine's id."""
+    generation = AnalysisGeneration(max_output_tokens=10, budget_s=1.0)
+
+    assert generation.prompt_id == ANALYSIS_GEN_PROMPT
+    assert await generation.prompt() == EVAL_ANALYSIS_GEN_DEFAULT
+
+
+async def test_a_generation_naming_a_prompt_runs_the_override() -> None:
+    async def prompt() -> str:
+        return "tuned"
+
+    assert await AnalysisGeneration(resolve_prompt=prompt, max_output_tokens=10, budget_s=1.0).prompt() == "tuned"
+
+
+# =============================================================================
+# Job ids
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("job_id", "parsed"),
+    [
+        ("run:r-1", ("run", "r-1", None)),
+        ("launch:l-1", ("launch", "l-1", None)),
+        ("sweep:s-1", ("sweep", "s-1", None)),
+        ("second-judge:p-1", ("second_judge", "p-1", None)),
+        ("judge-temperature:t-1", ("judge_temperature", "t-1", None)),
+        ("action:a-1", ("action", "a-1", None)),
+        ("analysis:c-1:a-1", ("analysis", "c-1", "a-1")),
+        ("analysis:c:with:colons:a-1", ("analysis", "c:with:colons", "a-1")),
+    ],
+)
+def test_a_job_id_reads_back_into_what_it_names(job_id: str, parsed: tuple[str, str, str | None]) -> None:
+    assert parse_job_id(job_id) == parsed
+
+
+@pytest.mark.parametrize(
+    "job_id",
+    [
+        "r-1",
+        "run:",
+        "launch:",
+        "action:",
+        "second-judge:",
+        "analysis:",
+        "analysis:c-1",
+        "analysis::a-1",
+        "analysis:c-1:",
+    ],
+)
+def test_a_job_id_of_neither_shape_is_refused(job_id: str) -> None:
+    with pytest.raises(ValidationFailedError, match="names no job"):
+        parse_job_id(job_id)
+
+
+# =============================================================================
+# Campaign curation
+# =============================================================================
+
+
+def test_a_campaign_is_created_archived_and_listed_as_typed_lines() -> None:
+    fixture = ops_fixture()
+    host = fixture.host.eval_host
+    created = campaign_create(
+        host,
+        CampaignDefinition(
+            name="widths",
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            behavior="speed",
+            run_ids=fixture.campaign.run_ids,
+            exploratory=True,
+        ),
+        TOYHOST_SCOPE,
+        created_by=CALLER.identity,
+    )
+    assert created.run_count == len(fixture.campaign.run_ids)
+    stored = host.storage.load_campaign(created.id, TOYHOST_SCOPE)
+    assert stored is not None and stored.created_by == CALLER.identity
+
+    assert campaign_archive(host, created.id, TOYHOST_SCOPE, archived=True).archived
+    active = {line.id for line in campaigns_list(host, TOYHOST_SCOPE, archived=False).campaigns}
+    assert created.id not in active and fixture.campaign.id in active
+
+
+async def test_an_analysis_is_archived_and_restored_through_the_action_its_delete_points_to() -> None:
+    """``analysis_delete`` says "archive instead"; ``analysis_archive`` is that action, and it is reversible."""
+    fixture = off_loop(ops_fixture)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
+    assert analysis_id is not None
+    tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}
+    deleting = tools["evals_admin"].action("analysis_delete")
+    assert deleting is not None and "archive instead" in deleting.summary
+    assert tools["evals"].action("analysis_archive") is not None, "the action the delete's advice names exists"
+
+    archived = await tools["evals"].call(
+        {"action": "analysis_archive", "analysis_id": analysis_id, "archived": True, "archive_reason": "superseded"},
+        host=fixture.host,
+        caller=CALLER,
+    )
+    assert not archived.is_error and archived.structured is not None and archived.structured["archived"] is True
+    stored = off_loop(fixture.host.eval_host.storage.load_analysis, analysis_id, TOYHOST_SCOPE)
+    assert stored is not None and stored.archived and stored.archived_reason == "superseded"
+
+    restored = off_loop(analysis_archive, fixture.host.eval_host, analysis_id, TOYHOST_SCOPE, archived=False)
+    assert not restored.archived
+    with pytest.raises(NotFoundError):
+        off_loop(analysis_archive, fixture.host.eval_host, "no-such-analysis", TOYHOST_SCOPE, archived=True)
+
+
+async def test_an_agent_lists_reads_and_deletes_the_insights_an_analysis_minted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#651: holding only the standard tools, an agent reaches the insight ledger end to end."""
+    import packages.evals.tests.ops_support as support
+
+    memo = support.memo_payload
+
+    def durable_memo(bundle: Any) -> dict[str, Any]:
+        payload = memo(bundle)
+        payload["findings"][0]["durable"] = "the wide chunk is slower per document than the narrow one"
+        return payload
+
+    monkeypatch.setattr(support, "memo_payload", durable_memo)
+    fixture = off_loop(ops_fixture)
+    tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}
+    evals, admin = tools["evals"], tools["evals_admin"]
+    started = await evals.call(
+        {"action": "analysis_generate", "campaign_id": fixture.campaign.id}, host=fixture.host, caller=CALLER
+    )
+    assert not started.is_error and started.structured is not None
+    (job,) = started.structured["jobs"]
+    analysis_id = (await settled(fixture.host, job["job_id"])).analysis_id
+    assert analysis_id is not None
+
+    listed = await evals.call(
+        {"action": "insights_list", "campaign_filter": fixture.campaign.id}, host=fixture.host, caller=CALLER
+    )
+    assert not listed.is_error and listed.structured is not None
+    (line,) = listed.structured["insights"]
+    assert line["source_analysis_id"] == analysis_id and line["standing"] == "live"
+    assert line["statement"] in listed.text
+
+    elsewhere = await evals.call(
+        {"action": "insights_list", "campaign_filter": "no-such-campaign"}, host=fixture.host, caller=CALLER
+    )
+    assert not elsewhere.is_error and elsewhere.structured is not None and elsewhere.structured["insights"] == []
+    assert "source_campaign_id='no-such-campaign'" in elsewhere.text, "an empty filtered read names what it searched"
+
+    read = await evals.call({"action": "insight_get", "insight_id": line["id"]}, host=fixture.host, caller=CALLER)
+    assert not read.is_error and read.structured is not None
+    stored = off_loop(fixture.host.eval_host.storage.load_insight, line["id"], TOYHOST_SCOPE)
+    assert stored is not None and read.structured["insight"] == stored.model_dump(mode="json")
+    assert f"analysis {analysis_id}" in read.text
+
+    assert off_loop(analysis_archive, fixture.host.eval_host, analysis_id, TOYHOST_SCOPE, archived=True).archived
+    retracted = await evals.call({"action": "insight_get", "insight_id": line["id"]}, host=fixture.host, caller=CALLER)
+    assert retracted.structured is not None and retracted.structured["standing"] == "retracted"
+
+    assert evals.action("insight_delete") is None, "a destructive action is only on the admin tool"
+    refused = await admin.call(
+        {"action": "insight_delete", "insight_id": line["id"], "confirm": "wrong"}, host=fixture.host, caller=CALLER
+    )
+    assert (
+        refused.is_error
+        and off_loop(fixture.host.eval_host.storage.load_insight, line["id"], TOYHOST_SCOPE) is not None
+    )
+    deleted = await admin.call(
+        {"action": "insight_delete", "insight_id": line["id"], "confirm": line["id"]}, host=fixture.host, caller=CALLER
+    )
+    assert not deleted.is_error and deleted.structured == {
+        "insight_id": line["id"],
+        "source_campaign_id": fixture.campaign.id,
+    }
+    assert off_loop(fixture.host.eval_host.storage.load_insight, line["id"], TOYHOST_SCOPE) is None
+    gone = await evals.call({"action": "insight_get", "insight_id": line["id"]}, host=fixture.host, caller=CALLER)
+    assert gone.is_error
+
+
+async def test_an_agent_rates_through_the_action_and_its_rating_is_never_a_persons() -> None:
+    """``result_rate`` fixes ``rater_kind`` to agent: the judge's agreement with people lists it, never pools it."""
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    (judged,) = [
+        result
+        for run_id in fixture.campaign.run_ids[:1]
+        for result in off_loop(storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)[:1]
+    ]
+    assert judged.judge_score(TOYHOST_JUDGED_DIMENSION) is not None, "the toy result is judged on that dimension"
+    tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}
+
+    outcome = await tools["evals"].call(
+        {
+            "action": "result_rate",
+            "result_id": judged.id,
+            "rubric_dim": TOYHOST_JUDGED_DIMENSION,
+            "score": 4,
+            "rating_reason": "faithful layout",
+        },
+        host=fixture.host,
+        caller=CALLER,
+    )
+
+    assert not outcome.is_error, outcome.text
+    (rating,) = off_loop(storage.query_calibration_ratings, TOYHOST_SCOPE, result_id=judged.id)
+    assert (rating.rater, rating.rater_kind, rating.score) == (CALLER.identity, "agent", 4)
+    agreement = judge_agreement([rating], [judged])
+    assert agreement.dimensions == [] and [u.reason for u in agreement.unpaired] == ["rated_by_an_agent"]
+    action = tools["evals"].action("result_rate")
+    assert action is not None and "rater_kind" not in action.params.model_fields, "the caller cannot claim a person"
+
+
+def test_the_launch_action_offers_exactly_the_launchs_own_arguments() -> None:
+    """The action's parameters are derived from the operation's one declaration, so neither can gain a field alone."""
+    actions = {action.name: action for action in eval_catalogue().actions}
+    for name in ("run_launch", "launch_estimate"):
+        params = actions[name].params
+        assert issubclass(params, LaunchArguments)
+        for field_name, declared in LaunchArguments.model_fields.items():
+            assert params.model_fields[field_name].description == declared.description
+
+
+def test_a_run_is_deleted_when_confirm_echoes_its_id() -> None:
+    fixture = ops_fixture()
+    run_id = fixture.campaign.run_ids[0]
+    deleted = run_delete(fixture.host.eval_host, run_id, TOYHOST_SCOPE, confirm=run_id)
+    assert deleted.run_id == run_id and deleted.results_deleted > 0
+    assert fixture.campaign.id in deleted.campaigns_detached
+    assert fixture.host.eval_host.storage.load_eval_run(run_id, TOYHOST_SCOPE) is None

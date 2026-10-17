@@ -21,3 +21,6 @@ packages/agent/tools/src/threetears/agent/tools/server.py:*:ToolServer
 packages/search/src/threetears/search/testing/http_server.py:*:LocalHttpServer
 # rationale: ClaudeCliPool is a subprocess pool, not a write buffer -- _live counts live CLIs per launch key and its sleep loop evicts idle CLIs; there is nothing to flush
 packages/models/src/threetears/models/claude_cli_pool.py:*:ClaudeCliPool
+
+# rationale: the evals client is a standalone base-install client; it accepts an injected `http=` client for hosts that have a shared one. 3tears-evals depends on httpx and pydantic only, never threetears.core, so the traced wrapper is unreachable on its base install; Model(http=...) and Clients(http=...) hand an injected AsyncClient through to _Live, which opens its own only when none is given.
+packages/evals/src/threetears/evals/providers/model.py:*:_Live

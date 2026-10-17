@@ -1,0 +1,793 @@
+"""The store conformance kit passes on the in-memory reference store, and each of its cases can fail.
+
+Three things are proved here:
+
+* **The reference store conforms.** Every case of ``STORE_CONFORMANCE_CASES`` runs against
+  ``InMemoryDocumentStore``, parametrised exactly the way the kit's docstring tells an adopter to.
+* **No case is vacuous.** :data:`_FAULTS` is a table of broken stores, each the reference store with one
+  rule of the port broken, and the cases each one must turn red. A case that no fault reaches fails
+  :func:`test_every_case_is_turned_red_by_some_fault` — a check nothing can fail is a check that proves
+  nothing, and the kit is only worth what it can catch in someone else's adapter.
+* **What is the reference store's own**, beyond the port: a document without its scope or id is
+  refused, a sweep may delete as it iterates, and a conditional write's compare and write happen under
+  one lock, so the kit's racing-writers case holds even with every write slowed down.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import threading
+import time
+from collections.abc import Iterator, Sequence
+from typing import Any
+
+import pytest
+
+from threetears.evals.schema import DocumentStore, StoreConflict
+from threetears.evals.storage import InMemoryDocumentStore
+from threetears.evals.testing import STORE_CONFORMANCE_CASES, StoreConformanceCase, StoreConformanceFailure
+
+_SCOPE = "scope-a"
+
+
+def _doc(doc_id: str, **fields: object) -> dict[str, object]:
+    return {"id": doc_id, "scope_id": _SCOPE, "doc_type": "eval_run", **fields}
+
+
+# --- the reference store conforms ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
+def test_the_reference_store_conforms(case: StoreConformanceCase) -> None:
+    case.run(InMemoryDocumentStore())
+
+
+def test_case_names_are_unique() -> None:
+    names = [case.name for case in STORE_CONFORMANCE_CASES]
+    assert len(names) == len(set(names))
+
+
+def test_a_failure_names_the_case_and_the_rule() -> None:
+    case = next(c for c in STORE_CONFORMANCE_CASES if c.name == "etag.stale_write_is_refused")
+    with pytest.raises(StoreConformanceFailure) as raised:
+        case.run(_IgnoresIfMatch())
+    message = str(raised.value)
+    assert message.startswith(f"{case.name}: {case.rule} — ")
+    assert "expected StoreConflict" in message
+
+
+def test_a_store_raising_something_else_is_not_reported_as_a_broken_rule() -> None:
+    """A backend fault propagates as itself, so an adopter reads its own error rather than the kit's."""
+
+    class _Down(InMemoryDocumentStore):
+        def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+            raise ConnectionError("database is down")
+
+    case = next(c for c in STORE_CONFORMANCE_CASES if c.name == "scope.miss_is_an_outcome")
+    with pytest.raises(ConnectionError, match="database is down"):
+        case.run(_Down())
+
+
+# --- the faults: each the reference store with one rule broken -------------------------------------
+
+
+class _MergeCreates(InMemoryDocumentStore):
+    """``merge_fields`` on a missing document creates it."""
+
+    def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
+        if self.get(doc_id, scope_id) is None:
+            self.upsert({"id": doc_id, "scope_id": scope_id, "doc_type": "conformance_doc", **fields})
+            return True
+        return super().merge_fields(doc_id, scope_id, fields)
+
+
+class _GetIgnoresScope(InMemoryDocumentStore):
+    """``get`` finds an id in whichever scope holds it."""
+
+    def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+        for (_, stored_id), document in self.documents.items():
+            if stored_id == doc_id:
+                return copy.deepcopy(document)
+        return None
+
+
+class _OneDocumentPerId(InMemoryDocumentStore):
+    """A write evicts the same id from every other scope, as a store keyed by id alone would."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        for key in [key for key in self.documents if key[1] == document["id"]]:
+            del self.documents[key]
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+class _IgnoresDocType(InMemoryDocumentStore):
+    """The typed reads return documents of any type."""
+
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        return [d for i in doc_ids if (d := self.get(i, scope_id)) is not None]
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return [copy.deepcopy(d) for (scope, _), d in self.documents.items() if scope == scope_id]
+
+
+class _InjectsItsEtag(InMemoryDocumentStore):
+    """Reads hand back the store's own ``_etag`` column inside the document."""
+
+    def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+        document, etag = super().get_with_etag(doc_id, scope_id)
+        return None if document is None else {**document, "_etag": etag}
+
+
+class _UpsertMerges(InMemoryDocumentStore):
+    """An upsert merges into the stored document instead of replacing it."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        stored = self.get(document["id"], document["scope_id"]) or {}
+        super().upsert({**stored, **document}, if_match=if_match, create_only=create_only)
+
+
+class _SharesReferences(InMemoryDocumentStore):
+    """``get`` hands back the stored dict itself."""
+
+    def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+        return self.documents.get((scope_id, doc_id))
+
+
+def _exclude_top_level(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]:
+    return {key: value for key, value in document.items() if key not in {path.split(".")[0] for path in paths}}
+
+
+class _ExcludeDropsTheTopField(InMemoryDocumentStore):
+    """``exclude`` drops a path's whole top-level field, siblings and all."""
+
+    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        exclude = kwargs.pop("exclude", ())
+        return [_exclude_top_level(d, exclude) for d in super().get_many(doc_type, doc_ids, scope_id, **kwargs)]
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        exclude = kwargs.pop("exclude", ())
+        return [_exclude_top_level(d, exclude) for d in super().by_doc_type(doc_type, scope_id, **kwargs)]
+
+
+def _exclude_truncating(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]:
+    result = copy.deepcopy(document)
+    for path in paths:
+        head, _, rest = path.partition(".")
+        if rest and not isinstance(result.get(head), dict):
+            result.pop(head, None)
+    return result
+
+
+class _ExcludeTruncatesAtANonObject(InMemoryDocumentStore):
+    """An ``exclude`` path that runs through a non-object drops the field it runs through."""
+
+    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        exclude = kwargs.get("exclude", ())
+        return [_exclude_truncating(d, exclude) for d in super().get_many(doc_type, doc_ids, scope_id, **kwargs)]
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        exclude = kwargs.get("exclude", ())
+        return [_exclude_truncating(d, exclude) for d in super().by_doc_type(doc_type, scope_id, **kwargs)]
+
+
+class _KeepFillsNone(InMemoryDocumentStore):
+    """``keep`` hands back every named field, ``None`` for one the document does not carry."""
+
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        found = super().get_many(doc_type, doc_ids, scope_id, exclude=exclude)
+        return [{field: d.get(field) for field in keep} if keep else d for d in found]
+
+
+class _AcceptsKeepAndExclude(InMemoryDocumentStore):
+    """``get_many`` applies ``keep`` and ignores ``exclude`` rather than refusing the pair."""
+
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        return (
+            super().get_many(doc_type, doc_ids, scope_id, keep=keep)
+            if keep
+            else super().get_many(doc_type, doc_ids, scope_id, exclude=exclude)
+        )
+
+
+class _GetManyRepeats(InMemoryDocumentStore):
+    """``get_many`` returns a document once per time its id is named."""
+
+    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return [d for i in doc_ids for d in super().get_many(doc_type, [i], scope_id, **kwargs)]
+
+
+class _PredicatesCompareText(InMemoryDocumentStore):
+    """``by_doc_type`` compares predicates as text, so ``1`` matches ``"1"``."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        names = {"order_by", "descending", "limit", "exclude"}
+        predicates = {key: value for key, value in kwargs.items() if key not in names}
+        rows = super().by_doc_type(doc_type, scope_id, **{key: kwargs[key] for key in names & kwargs.keys()})
+        return [d for d in rows if all(str(d.get(key)) == str(value) for key, value in predicates.items())]
+
+
+class _PredicatesComparePythonEquality(InMemoryDocumentStore):
+    """``by_doc_type`` compares predicates with Python ``==``, so ``True`` matches ``1`` and ``False`` matches ``0``."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        names = {"order_by", "descending", "limit", "exclude"}
+        predicates = {key: value for key, value in kwargs.items() if key not in names}
+        rows = super().by_doc_type(doc_type, scope_id, **{key: kwargs[key] for key in names & kwargs.keys()})
+        return [d for d in rows if all(d.get(key) == value for key, value in predicates.items())]
+
+
+class _NoneMatchesOnlyNull(InMemoryDocumentStore):
+    """A ``None`` predicate matches a field stored as null, but not one that is absent."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        rows = super().by_doc_type(doc_type, scope_id, **kwargs)
+        nulls = [key for key, value in kwargs.items() if value is None]
+        return [d for d in rows if all(key in d for key in nulls)]
+
+
+class _OrdersAsText(InMemoryDocumentStore):
+    """``order_by`` sorts every value as text, so 10 sorts before 2."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        order_by, descending, limit = (
+            kwargs.pop("order_by", None),
+            kwargs.pop("descending", True),
+            kwargs.pop("limit", None),
+        )
+        rows = super().by_doc_type(doc_type, scope_id, **kwargs)
+        if order_by is not None:
+            rows.sort(key=lambda d: (d.get(order_by) is not None, str(d.get(order_by))), reverse=descending)
+        return rows[:limit] if limit is not None else rows
+
+
+class _MissingSortsHighest(InMemoryDocumentStore):
+    """A document without the order field sorts above every one that has it, as a SQL default can."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        order_by, descending = kwargs.get("order_by"), kwargs.get("descending", True)
+        rows = super().by_doc_type(doc_type, scope_id, **kwargs)
+        if order_by is None:
+            return rows
+        present = [d for d in rows if d.get(order_by) is not None]
+        absent = [d for d in rows if d.get(order_by) is None]
+        return absent + present if descending else present + absent
+
+
+class _LimitsBeforeOrdering(InMemoryDocumentStore):
+    """``limit`` cuts the unordered rows, then orders what is left."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        limit = kwargs.pop("limit", None)
+        order_by, descending = kwargs.pop("order_by", None), kwargs.pop("descending", True)
+        rows = super().by_doc_type(doc_type, scope_id, **kwargs)
+        rows = rows[:limit] if limit is not None else rows
+        if order_by is not None:
+            rows.sort(key=lambda d: (d.get(order_by) is not None, d.get(order_by)), reverse=descending)
+        return rows
+
+
+class _FieldInIgnored(InMemoryDocumentStore):
+    """``by_doc_type`` drops ``field_in``, so a membership read returns every document the rest of it matches."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        kwargs.pop("field_in", None)
+        return super().by_doc_type(doc_type, scope_id, **kwargs)
+
+
+class _FieldInComparesPythonEquality(InMemoryDocumentStore):
+    """``field_in`` is compared with Python ``in``, so a listed ``1`` matches ``true`` and a listed ``0`` ``false``."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = kwargs.pop("field_in", None) or {}
+        rows = super().by_doc_type(doc_type, scope_id, **kwargs)
+        return [d for d in rows if all(d.get(field) in list(values) for field, values in field_in.items())]
+
+
+class _FieldInEmptyMatchesAll(InMemoryDocumentStore):
+    """An empty ``field_in`` sequence is read as no predicate on its field."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = {field: values for field, values in (kwargs.pop("field_in", None) or {}).items() if len(values)}
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
+class _FieldInReadsOncePerValue(InMemoryDocumentStore):
+    """``field_in`` is answered by one equality read per listed value, concatenated, so a repeated value repeats."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = kwargs.pop("field_in", None) or {}
+        if len(field_in) != 1:
+            return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+        ((field, values),) = field_in.items()
+        return [row for value in values for row in super().by_doc_type(doc_type, scope_id, **{**kwargs, field: value})]
+
+
+class _FieldInOverridesFieldEq(InMemoryDocumentStore):
+    """A field named in both ``field_in`` and ``field_eq`` is accepted, the membership predicate winning."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = kwargs.pop("field_in", None) or {}
+        for field in field_in:
+            kwargs.pop(field, None)
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
+class _FieldInReadsAStringAsOneValue(InMemoryDocumentStore):
+    """A string where ``field_in`` wants a sequence is read as the one value it names, not refused."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = {
+            field: [values] if isinstance(values, str) else values
+            for field, values in (kwargs.pop("field_in", None) or {}).items()
+        }
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
+class _FieldInSkipsNonScalars(InMemoryDocumentStore):
+    """A value of ``field_in`` that is not a scalar is dropped from the list, not refused."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = {
+            field: [v for v in values if v is None or isinstance(v, str | int | float)]
+            for field, values in (kwargs.pop("field_in", None) or {}).items()
+        }
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
+class _NoEtags(InMemoryDocumentStore):
+    """A store without conditional writes: no token, and ``if_match`` ignored."""
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        return self.get(doc_id, scope_id), None
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        super().upsert(document)
+
+
+class _IgnoresIfMatch(InMemoryDocumentStore):
+    """The etag compare is broken: every conditional write lands."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        super().upsert(document)
+
+
+class _IgnoresCreateOnly(InMemoryDocumentStore):
+    """The create-only precondition is dropped on the way to the backend: every create lands, replacing."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        super().upsert(document, if_match=if_match)
+
+
+class _EtagScheme(DocumentStore):
+    """The reference store's documents under an etag scheme of the double's own, for the faults that break the etag.
+
+    Each document lives in an inner :class:`InMemoryDocumentStore`, reached through its public methods only; what
+    the double changes is the token a caller sees. :meth:`token` names the token the scheme gives a stored document
+    (the inner store's own etag, unless a scheme says otherwise), :meth:`get_with_etag` hands that out, and a
+    conditional write presenting it is translated back to the inner store's current etag by :meth:`inner_etag`, so
+    the inner store still does the write. A token that is not the scheme's current one is refused as stale.
+
+    The double's own lock spans the translation and the write, so its compare and its write are one step as the
+    reference store's are: a scheme is caught for the tokens it hands out, never for a race the double opened.
+    """
+
+    def __init__(self) -> None:
+        """Start empty, over a fresh reference store."""
+        self.inner = InMemoryDocumentStore()
+        self.lock = threading.RLock()
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        """The token the scheme gives a stored document: by default the inner store's etag, unchanged.
+
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :param document: The stored document, as the inner store hands it back.
+        :ptype document: dict[str, Any]
+        :param inner_etag: The inner store's etag for it.
+        :ptype inner_etag: str
+        :return: The token a caller sees.
+        :rtype: str
+        """
+        return inner_etag
+
+    def written(self, doc_id: str, scope_id: str) -> None:
+        """Called under the lock after each write that landed, whole-document or merge; a scheme's state moves here.
+
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        """
+
+    def inner_etag(self, doc_id: str, scope_id: str, if_match: str) -> str | None:
+        """Translate a caller's token to the inner store's etag the write presents.
+
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :param if_match: The token the caller presented.
+        :ptype if_match: str
+        :return: The inner store's current etag, when ``if_match`` is the scheme's current token for the document; a
+            scheme may return ``None`` to let the write land unconditionally.
+        :rtype: str | None
+        :raises StoreConflict: ``if_match`` is not the document's current token, or there is no such document.
+        """
+        document, etag = self.inner.get_with_etag(doc_id, scope_id)
+        if document is None or etag is None or self.token(doc_id, scope_id, document, etag) != if_match:
+            raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} no longer carries etag {if_match!r}")
+        return etag
+
+    def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+        return self.inner.get(doc_id, scope_id)
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        with self.lock:
+            document, etag = self.inner.get_with_etag(doc_id, scope_id)
+            if document is None or etag is None:
+                return None, None
+            return document, self.token(doc_id, scope_id, document, etag)
+
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        return self.inner.get_many(doc_type, doc_ids, scope_id, exclude=exclude, keep=keep)
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return self.inner.by_doc_type(doc_type, scope_id, **kwargs)
+
+    def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
+        return self.inner.iter_by_doc_type(doc_type, scope_id)
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        doc_id, scope_id = document["id"], document["scope_id"]
+        with self.lock:
+            # An etag and create_only together reach the inner store as given, and it refuses the pair.
+            if if_match is not None and not create_only:
+                if_match = self.inner_etag(doc_id, scope_id, if_match)
+            self.inner.upsert(document, if_match=if_match, create_only=create_only)
+            self.written(doc_id, scope_id)
+
+    def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
+        with self.lock:
+            landed = self.inner.merge_fields(doc_id, scope_id, fields)
+            if landed:
+                self.written(doc_id, scope_id)
+            return landed
+
+    def delete(self, doc_id: str, scope_id: str) -> bool:
+        with self.lock:
+            return self.inner.delete(doc_id, scope_id)
+
+
+class _EtagNeverMoves(_EtagScheme):
+    """Every write leaves the document's etag where it was: the token is the document's id."""
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return f"etag-{doc_id}"
+
+
+class _MergeKeepsTheEtag(_EtagScheme):
+    """``merge_fields`` writes without minting a new etag: after a merge the document keeps the token it had."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: The token a merge kept, keyed by the inner etag that merge minted.
+        self.kept: dict[str, str] = {}
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return self.kept.get(inner_etag, inner_etag)
+
+    def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
+        with self.lock:
+            _, before = self.get_with_etag(doc_id, scope_id)
+            landed = super().merge_fields(doc_id, scope_id, fields)
+            _, minted = self.inner.get_with_etag(doc_id, scope_id)
+            if before is not None and minted is not None:
+                self.kept[minted] = before
+            return landed
+
+
+class _EtagSurvivesDelete(_EtagScheme):
+    """``delete`` forgets the document but not its etag, so the old token still writes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: The token each deleted document carried, honoured until the next write to its key.
+        self.survivors: dict[tuple[str, str], str] = {}
+
+    def inner_etag(self, doc_id: str, scope_id: str, if_match: str) -> str | None:
+        if self.inner.get(doc_id, scope_id) is None and self.survivors.get((scope_id, doc_id)) == if_match:
+            # The inner store has no etag for a gone document, so the surviving token writes unconditionally.
+            return None
+        return super().inner_etag(doc_id, scope_id, if_match)
+
+    def written(self, doc_id: str, scope_id: str) -> None:
+        self.survivors.pop((scope_id, doc_id), None)
+
+    def delete(self, doc_id: str, scope_id: str) -> bool:
+        with self.lock:
+            _, etag = self.get_with_etag(doc_id, scope_id)
+            deleted = super().delete(doc_id, scope_id)
+            if etag is not None:
+                self.survivors[(scope_id, doc_id)] = etag
+            return deleted
+
+
+class _EtagIsAVersionFromOne(_EtagScheme):
+    """The etag is a per-document version that restarts at 1, so a re-created document reuses its predecessor's."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: How many writes each stored document has had since it was created.
+        self.versions: dict[tuple[str, str], int] = {}
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return f"v{self.versions[(scope_id, doc_id)]}"
+
+    def written(self, doc_id: str, scope_id: str) -> None:
+        self.versions[(scope_id, doc_id)] = self.versions.get((scope_id, doc_id), 0) + 1
+
+    def delete(self, doc_id: str, scope_id: str) -> bool:
+        with self.lock:
+            self.versions.pop((scope_id, doc_id), None)
+            return super().delete(doc_id, scope_id)
+
+
+class _EtagIsAContentHash(_EtagScheme):
+    """The etag is a digest of the document, so rewriting the same content keeps it and re-creating it revives it."""
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()
+
+
+class _ComparesThenWritesApart(InMemoryDocumentStore):
+    """A conditional write compares the etag, then writes in a second step, so racing writers all pass the compare."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        if if_match is not None:
+            _, etag = self.get_with_etag(document["id"], document["scope_id"])
+            if etag != if_match:
+                raise StoreConflict("stale etag")
+            time.sleep(0.005)  # the gap between the compare and the write, where another writer arrives
+        super().upsert(document)
+
+
+class _RefusesUnconditionalOverwrite(InMemoryDocumentStore):
+    """A write without ``if_match`` to a document that exists is refused."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        if if_match is None and self.get(document["id"], document["scope_id"]) is not None:
+            raise StoreConflict("refusing an unconditional overwrite")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+class _MergeReplaces(InMemoryDocumentStore):
+    """``merge_fields`` replaces the document with the locating fields plus the merged ones."""
+
+    def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
+        stored = self.get(doc_id, scope_id)
+        if stored is None:
+            return False
+        self.upsert({"id": doc_id, "scope_id": scope_id, "doc_type": stored["doc_type"], **fields})
+        return True
+
+
+class _MergeSetsLocatingFields(_EtagScheme):
+    """``merge_fields`` writes whatever it is handed, the locating fields included.
+
+    The merge skips every check the reference store's ``merge_fields`` makes, so it cannot go through it: it
+    updates the stored document in place, under the key the merge named, through the inner store's public
+    ``documents`` table, as an unchecked ``UPDATE`` would. A write there mints no inner etag, so the scheme's
+    token counts the merges on top of the inner etag, and a merge still moves the token a caller holds.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: How many merges each key has had; part of its token, since a merge here leaves the inner etag alone.
+        self.merges: dict[tuple[str, str], int] = {}
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return f"{inner_etag}+{self.merges.get((scope_id, doc_id), 0)}"
+
+    def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
+        key = (scope_id, doc_id)
+        with self.lock:
+            document = self.inner.documents.get(key)
+            if document is None or not fields:
+                return False
+            document.update(fields)
+            self.merges[key] = self.merges.get(key, 0) + 1
+            return True
+
+
+class _DeleteAlwaysReportsTrue(InMemoryDocumentStore):
+    """``delete`` reports ``True`` whether or not there was a document."""
+
+    def delete(self, doc_id: str, scope_id: str) -> bool:
+        super().delete(doc_id, scope_id)
+        return True
+
+
+class _SweepIgnoresDocType(InMemoryDocumentStore):
+    """``iter_by_doc_type`` yields every id in the scope, whatever its type."""
+
+    def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
+        yield from [doc_id for (scope, doc_id) in list(self.documents) if scope == scope_id]
+
+
+class _RoutesOnlyTheTypesItWasBuiltFor(InMemoryDocumentStore):
+    """A store routing each ``doc_type`` to a table of its own, built before the out-of-run ledger existed.
+
+    Its router has no table for ``eval_out_of_run_spend``, so a document of that type is written nowhere
+    — the shape an adopter's store is in the day the engine adds a document type.
+    """
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        if document["doc_type"] == "eval_out_of_run_spend":
+            return
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+#: Each broken store, and the cases it must turn red. A case may fail under other faults too; what is
+#: asserted is that these ones go red, and that every case is listed against at least one fault.
+_FAULTS: dict[type[DocumentStore], frozenset[str]] = {
+    _MergeCreates: frozenset({"scope.miss_is_an_outcome"}),
+    _GetIgnoresScope: frozenset({"scope.isolates_every_method"}),
+    _OneDocumentPerId: frozenset({"scope.one_id_two_scopes"}),
+    _IgnoresDocType: frozenset({"scope.doc_type_is_part_of_typed_reads"}),
+    _InjectsItsEtag: frozenset({"read.document_as_written"}),
+    _UpsertMerges: frozenset({"write.upsert_replaces"}),
+    _SharesReferences: frozenset({"write.copied_in_and_out"}),
+    _ExcludeDropsTheTopField: frozenset({"projection.exclude_drops_one_leaf"}),
+    _ExcludeTruncatesAtANonObject: frozenset({"projection.exclude_ignores_dead_paths"}),
+    _KeepFillsNone: frozenset({"projection.keep_named_fields"}),
+    _AcceptsKeepAndExclude: frozenset({"projection.keep_and_exclude_refused"}),
+    _GetManyRepeats: frozenset({"projection.get_many_absent_and_repeated"}),
+    _PredicatesCompareText: frozenset({"query.predicates_are_anded"}),
+    _PredicatesComparePythonEquality: frozenset({"query.predicates_are_anded"}),
+    _NoneMatchesOnlyNull: frozenset({"query.none_matches_absent_or_null"}),
+    _OrdersAsText: frozenset({"order.by_stored_type"}),
+    _MissingSortsHighest: frozenset({"order.missing_sorts_lowest"}),
+    _LimitsBeforeOrdering: frozenset({"order.limit_after_ordering"}),
+    _FieldInIgnored: frozenset({"query.field_in_matches_any", "query.field_in_empty_matches_nothing"}),
+    _FieldInComparesPythonEquality: frozenset({"query.field_in_matches_any"}),
+    _FieldInEmptyMatchesAll: frozenset({"query.field_in_empty_matches_nothing"}),
+    _FieldInReadsOncePerValue: frozenset({"query.field_in_matches_any"}),
+    _FieldInOverridesFieldEq: frozenset({"query.field_in_and_field_eq_refused"}),
+    _FieldInReadsAStringAsOneValue: frozenset({"query.field_in_string_refused"}),
+    _FieldInSkipsNonScalars: frozenset({"query.field_in_non_scalar_refused"}),
+    _NoEtags: frozenset({"etag.found_document_has_one", "etag.stale_write_is_refused"}),
+    _IgnoresIfMatch: frozenset(
+        {
+            "etag.racing_writers_one_lands",
+            "etag.stale_write_is_refused",
+            "etag.current_write_lands",
+            "etag.gone_document_is_refused",
+            "etag.recreated_document_is_new",
+            "etag.merge_moves_it",
+            "retry.reread_recovers_a_lost_race",
+        }
+    ),
+    _IgnoresCreateOnly: frozenset({"create.only_on_absence", "create.racing_creates_one_lands"}),
+    _EtagNeverMoves: frozenset({"etag.current_write_lands", "etag.stale_write_is_refused", "etag.merge_moves_it"}),
+    _MergeKeepsTheEtag: frozenset({"etag.merge_moves_it"}),
+    _EtagSurvivesDelete: frozenset({"etag.gone_document_is_refused"}),
+    _EtagIsAVersionFromOne: frozenset({"etag.recreated_document_is_new"}),
+    _EtagIsAContentHash: frozenset({"etag.current_write_lands", "etag.recreated_document_is_new"}),
+    _ComparesThenWritesApart: frozenset({"etag.racing_writers_one_lands"}),
+    _RefusesUnconditionalOverwrite: frozenset({"etag.unconditional_write_lands"}),
+    _MergeReplaces: frozenset({"merge.sets_fields_keeps_rest"}),
+    _MergeSetsLocatingFields: frozenset({"merge.refuses_empty_and_locating"}),
+    _DeleteAlwaysReportsTrue: frozenset({"delete.removes_and_reports"}),
+    _SweepIgnoresDocType: frozenset({"delete.sweep_by_doc_type"}),
+    _RoutesOnlyTheTypesItWasBuiltFor: frozenset({"doc_types.every_engine_type_is_stored"}),
+}
+
+_CASES = {case.name: case for case in STORE_CONFORMANCE_CASES}
+
+
+def test_the_fault_table_names_only_real_cases() -> None:
+    named = frozenset().union(*_FAULTS.values())
+    assert named <= _CASES.keys(), sorted(named - _CASES.keys())
+
+
+def test_every_case_is_turned_red_by_some_fault() -> None:
+    covered = frozenset().union(*_FAULTS.values())
+    assert set(_CASES) <= covered, f"cases no fault can fail: {sorted(set(_CASES) - covered)}"
+
+
+@pytest.mark.parametrize(
+    ("fault", "case_name"),
+    [(fault, name) for fault, names in _FAULTS.items() for name in sorted(names)],
+    ids=lambda value: value.__name__.strip("_") if isinstance(value, type) else value,
+)
+def test_a_broken_store_fails_the_case_for_the_rule_it_breaks(fault: type[DocumentStore], case_name: str) -> None:
+    """A broken store raises; a :class:`StoreConflict` escaping a case that expected a write to land counts too."""
+    with pytest.raises((StoreConformanceFailure, StoreConflict)):
+        _CASES[case_name].run(fault())
+
+
+# --- the reference store's own properties ----------------------------------------------------------
+
+
+def test_it_satisfies_the_port() -> None:
+    store: DocumentStore = InMemoryDocumentStore()
+    assert store.get("absent", _SCOPE) is None
+
+
+def test_a_document_without_its_scope_or_id_is_refused() -> None:
+    store = InMemoryDocumentStore()
+    with pytest.raises(KeyError):
+        store.upsert({"id": "d1", "doc_type": "eval_run"})
+    with pytest.raises(KeyError):
+        store.upsert({"scope_id": _SCOPE, "doc_type": "eval_run"})
+
+
+def test_field_in_given_a_string_is_refused_rather_than_read_as_its_characters() -> None:
+    store = InMemoryDocumentStore()
+    store.upsert(_doc("d1", run="r"))
+    with pytest.raises(TypeError, match="sequence of values"):
+        store.by_doc_type("eval_run", _SCOPE, field_in={"run": "r1"})
+
+
+def test_a_sweep_may_delete_as_it_goes() -> None:
+    store = InMemoryDocumentStore()
+    for doc_id in ("d1", "d2", "d3"):
+        store.upsert(_doc(doc_id))
+    for doc_id in store.iter_by_doc_type("eval_run", _SCOPE):
+        assert store.delete(doc_id, _SCOPE) is True
+    assert store.documents == {}
+
+
+class _SlowWrites(dict[tuple[str, str], dict[str, Any]]):
+    """A documents table whose every write takes long enough for another thread to arrive."""
+
+    def __setitem__(self, key: tuple[str, str], value: dict[str, Any]) -> None:
+        time.sleep(0.01)
+        super().__setitem__(key, value)
+
+
+def test_the_racing_writers_case_holds_when_every_write_is_slow() -> None:
+    """The kit's race case, made deterministic for the reference store: its compare and write are one locked step.
+
+    With each write slowed, a store that compared outside the lock would let every writer pass the compare
+    during another's write; the reference store still lands exactly one per round.
+    """
+    store = InMemoryDocumentStore()
+    store.documents = _SlowWrites(store.documents)
+    _CASES["etag.racing_writers_one_lands"].run(store)

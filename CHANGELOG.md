@@ -6,6 +6,76 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: an analysis of a large campaign starts inside the host's call budget
+
+- **Fixed: assembling a campaign's bundle read every kept trial's trace one at a time, whole.** A 16-run judge campaign
+  (about 1,800 results) made up to 500 point reads of `eval_trace`, each hauling the trial's turns and spans to use
+  only what its judge was handed, so `analysis_generate` and `analysis_estimate` ran past a host's 120s call budget.
+  The bundle now reads every kept trial's judge evidence in one store call, projected to the evidence:
+  `EvalStorage.load_judge_evidence(result_ids, scope_id)` returns it by result id through the store's existing
+  `get_many(..., keep=...)`. Breaking for a host that implements `CampaignReadStore` itself: `load_eval_trace` is
+  replaced there by `load_judge_evidence`.
+- **Host contract: `DocumentStore.by_doc_type` takes `field_in`, a membership predicate.** Breaking for a host's
+  store, which must implement it: `field_in: Mapping[str, Sequence[Any]] | None = None`, keyword-only, its values
+  scalars, ANDed with `**field_eq`. A document matches when the field's stored value equals ANY listed value, compared on the stored
+  JSON type exactly as `field_eq` is (a listed `None` matches the field absent or null); repeated values are matched
+  once; an empty sequence matches nothing and asks the backend nothing; a field named in both `field_in` and
+  `field_eq` raises `ValueError`; a string in place of a sequence, or a value that is not a scalar, raises
+  `TypeError`. `field_in_values` (`threetears.evals.schema`) checks a call and reads its values as the port says, and
+  `STORE_CONFORMANCE_CASES` gains `query.field_in_matches_any`, `query.field_in_empty_matches_nothing` and
+  `query.field_in_and_field_eq_refused`. The in-memory, SQLite, routed and async-bridged stores implement it; the
+  SQLite store passes each type's values as one JSON array, so no list outgrows its bound-parameter limit.
+- **Fixed: every other read of a campaign's bundle grew with the campaign too.** Assembly read results once per run
+  (and again per archived run when a declared control needed them), each template up to three times, ratings once per
+  run twice over, and the archived flag once per minting analysis. Each is now one store call, so a bundle costs nine
+  or ten calls whatever its size. New on `EvalStorage`: `query_eval_results_by_runs(run_ids, scope_id)` (one
+  `by_doc_type` with `field_in`), `load_templates(template_ids, scope_id)`, `analyses_archived(analysis_ids,
+  scope_id)` (each a `get_many`, the last projected to the flag) and `query_calibration_ratings(..., run_ids=)`.
+  Breaking for a host that implements `CampaignReadStore`, `TierReadStore` or `LensStore` itself: they name these in
+  place of `query_eval_results_by_run`, `load_template`, `analysis_archived` and `run_id=`. `judges_tiers` takes the
+  `ratings` and `templates` its caller already read.
+- **Changed: `analysis_generate` returns its job before assembling anything; the job prepares and prices.** The call
+  now checks only that the host generates analyses, the campaign exists, no generation of it is running and a named
+  writer is allowed, records the attempt `running` with its lease, and returns. The job assembles the bundle, resolves
+  the prompt, builds the client, holds the host's default writer to its allowed list and prices the first call. A
+  refusal there (an empty bundle, an unknown prompt, a default writer the host does not allow, a first call over the
+  cap or unpriceable under it) no longer raises to the caller: the job ends `failed` with `refused before any call:
+  <why>` and the refusal's kind, which `job_poll` reads, with no call made and the client released. The running
+  attempt names the writer asked for (`(the host's default writer, not yet resolved)` when none was) and an empty
+  `bundle_fingerprint` until the job has assembled the bundle; no stored field changed. The returned
+  `JobHandle.label` is likewise `(the host's default writer, not yet resolved)` when no model was named, and a host
+  that supplies no completion clients no longer gets its `ValueError` from the call: the job ends `failed` with it
+  (and logs it). `analysis_estimate` still answers in its call, over the batched bundle reads.
+  `running_analysis_attempt` takes the attempt's fields rather than a `PreparedGeneration`, and
+  `prepare_analysis_generation` takes `attempt_id`, `on_assembled` and `started_at`. A refusal is a designed ending,
+  recorded on the attempt and not logged as a task failure; the ended attempt keeps the `started_at` its call
+  recorded, not the moment preparation finished.
+- **New: a generation's preparation is bounded.** The job starts with no budget of its own, so a store call that hung
+  during assembly would have left the attempt `running` for as long as its lease kept renewing. Preparation now runs
+  under `ANALYSIS_PREPARATION_BUDGET_S` (`ops.analysis`; 900 s: preparation makes no model call, so a hang reads
+  as refused within minutes): one that outruns it ends the attempt `failed` with `refused before any call: preparation did not
+  finish in <N> s`, the client released.
+- **Fixed: a client was leaked when the generation's budget could not be built**: the budget is now built inside the
+  guard that releases the client.
+- **Host contract: `EvalStorage` refuses a store whose `by_doc_type` does not declare `field_in`.** A store written
+  before `field_in` took it into `**field_eq` as an equality against a mapping and answered every membership read
+  with no documents. `EvalStorage(store)` now raises `TypeError` naming the missing parameter; `**kwargs` alone does
+  not count, so a wrapper must declare `field_in` and forward it. `STORE_CONFORMANCE_CASES` gains
+  `query.field_in_string_refused` and `query.field_in_non_scalar_refused`, which hold a host store to the port's
+  `TypeError`s. `CORE_ADDRESSING_FIELDS["eval_trace"]` lists the five fields the judge-evidence projection keeps
+  (`result_id`, `eval_run_id`, `judge_evidence`, `judged_artifact`, `schema_minor`).
+- **Fixed: `RoutedDocumentStore.holds_documents` abandoned a store's sweep part-way**, returning at its first id; it
+  now reads the ids through before answering, as `relocate` already did.
+
+### 3tears-evals: a busy launch no longer loses its own job leases
+
+- **Fixed: under a busy launch, a healthy process's leases lapsed and its runs were written lost.** Renewals ran one
+  after another on the host's blocking executor, behind every cell's store work, so none returned inside the lease
+  (a launch of 8 runs at width 4 lost all nine leases at 60s while its cells kept landing results); and a renewal that
+  lost three conditional writes to the run's own progress writes waited a whole interval. `JobLeases` now does its
+  store round-trips on a small pool of its own, renews every held lease at once, and tries a contended renewal
+  again within the interval after a short jittered wait. `JobLeases(blocking_executor=)` is still accepted and ignored.
+
 ## v0.70.0 -- 2026-10-16
 
 ### Text a model reads stays under the item it belongs to
@@ -80,6 +150,487 @@ OpenRouter's mid-stream `(code: 429)`); `CircuitBreakerRegistry.get(..., model=)
 **Changed (models):** `create_chat_model` gives each model its own breaker for its rate limits; any
 other failure still counts against the provider's. `status()` reports the provider's own breakers
 only. A caller passing its own `breaker=` keeps the old behaviour.
+
+### 3tears-evals: the question under the title, verdicts by arm, and a case renamed through the package (evaladopt.33)
+
+Breaking for a host in one place: `TemplateChecks` takes a required `kinds`. Every typed verdict is unchanged; only
+the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
+
+**The host contract**
+
+- **`TemplateChecks(kinds=...)` is required.** Breaking: it is the host's launch registry by kind name, the mapping
+  its `LaunchHost` is built with. `create_template`, `update_template`, the boot seed, a definition reset and its
+  drift read now refuse a template stating a field its kind's entry ignores (`LaunchableKind.ignored_template_fields`),
+  with the message the launch dispatch gives; an update that only sets `archived` is exempt, and a kind the registry
+  does not carry is refused nothing at authoring. To port, build `TemplateChecks` with `kinds=` your registry and drop
+  your own call to `refuse_ignored_template_fields` from `refuse_undeliverable_template`: every path that admits a
+  template calls it for you, and the name is no longer exported from `threetears.evals.run`.
+- **A stored case is renamed through the package.** `case_rename(host, scope_id, case_id, name)`
+  (`threetears.evals.ops`) and the `cases_rename` write action (`test_case_id`, `case_name`) write the case's `name`
+  and nothing else, through the store's write path, and answer with a `CaseRenamed` (`test_case_id`, `old_name`,
+  `new_name`). The case keeps its id, its `content_hash`, its results and its seed record, and the next report calls
+  it by the new name. Refused: a name the report would print as `case N` (spaces, a bare number, a generated id, over
+  40 characters; `ValidationFailedError`), a name another case of its template or of a case set listing it carries
+  (`ConflictError`), and an unknown case (`NotFoundError`). A host that renamed a case by writing its document calls
+  this instead.
+- **A rename refuses rather than undoes a concurrent write.** `case_rename` writes on the token it read the case with
+  (`EvalStorage.load_test_case_with_etag`, and `save_test_case(if_match=)`, both new): a retirement or an edit that
+  landed in between refuses the rename with `ConflictError`. A host's own store implementing `DefinitionStore` adds
+  the method and the keyword.
+- **`OpsHost.seed_corpus`, for a host that seeds template cases.** The `cases_rename` action reads it (and
+  `case_rename` takes it as `corpus=`), so renaming a template case seeded before seeds recorded a name records its
+  old name as its `seed_name`, and drift still finds it. Wire it as `lambda scope_id: load_seed_corpus(<your
+  directory>, scope_id)`; without it, such a case reads as new to the corpus once renamed.
+- **The six separate ceiling names are removed; `Ceilings` replaces them.** Breaking: `run.SCHEDULER_CALL_ATTEMPTS`,
+  `run.SIMULATOR_MAX_TOKENS`, `run.SIMULATOR_ANSWER_BUDGET_TOKENS`, `gen.PROPOSER_MAX_TOKENS`,
+  `analysis.generation_ceiling_s` and `analysis.judge_phase_ceiling_s` are no longer exported, as `.32` said. To port, read
+  the same value or function from the field of `threetears.evals.run.Ceilings()` of the same name in lower case.
+- **A quick call fills a stored case's name only when it has none**, so running the same quick eval again keeps a
+  name `case_rename` gave it.
+
+**The page**
+
+- **The declared question stands alone under the title**, quoted whole, and a subhead under it carries what the
+  question need not: each arm by the version that answered it, with the label every table calls it by in brackets
+  (`gpt-4o-2024-08-06 (gpt-4o)`), and the rule's sentence (`Switch to v2 only if …
+  Otherwise stay on v1.`). The `Asked before the run: "…"` line is gone. The Decision section opens on its `Clauses`
+  table, whose title links up to the subhead, so the rule is said once.
+- **A verdict names both arms, never "the control".** On the contrasts, the guardrails, the verdict line, the gate
+  and the console: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within the
+  measure's margin`, `v2 and v1 not separated`; a guardrail `held: v2 shown no worse than v1 by more than the
+  margin`. Rung 3's console opens `invoices: nothing separated v2 from v1`.
+- **The outcome bar tells a failure's causes apart in ink alone**, one style per cause on every bar, and its key
+  names each (`failed: check`, `failed: judge`). There are five styles, one per failure cause, in the one failed hue:
+  solid, two lighter tones edged lighter and heavier, then hatched one way and cross-hatched, so a fourth cause no
+  longer repeats the first's swatch. In Trials, a judge's fail is named by its dimensions, else `failed by
+  the judge`.
+- **The console lists its misses in the page's order**: the verdict's cases missed and the top misses as the Trials
+  table lists the failed trials, so rung 0 names `gdpr-delete` first on both surfaces. Both order by the stored case
+  id, and a generated `{template}-{index}` id by its number, so case 2 comes before case 10.
+
+**The surface**
+
+- **518 names are declared** (523 before): `case_rename` and `CaseRenamed` are added, both `host-contract`, and the
+  six separate ceiling names and `refuse_ignored_template_fields` are removed.
+
+**Machine-readable**
+
+- New fields: `TemplateChecks.kinds` (required), `TableBlock.title_ref` (the anchor a table's title links to),
+  `OpsHost.seed_corpus`, `CaseResult.case_id` (the stored test case's id).
+- New: `EvalStorage.load_test_case_with_etag`, `save_test_case(if_match=)` and `case_rename(corpus=)`.
+- New: `IgnoresTemplateFields` (`threetears.evals.kernel.host`, `provisional`), the protocol `kinds` maps to; a
+  `LaunchableKind` satisfies it.
+
+### 3tears-evals: a typed decision rule, and the host's checks on the host (evaladopt.32)
+
+Breaking for a host, with no alias: three keywords, one flag and the prose decision rule are gone, and each bullet
+says what replaces it. `packages/evals/MIGRATIONS.toml` has the detail.
+
+**The host contract**
+
+- **The template checks are one value on the host.** `TemplateChecks(require_known_tools_allowed=,
+  refuse_undeclared_world_seed=, refuse_undeliverable_template=)` (`threetears.evals.kernel.host`) is set as
+  `EvalHost(template_checks=...)`. Breaking: `create_template`, `update_template`, `seed_eval_definitions`,
+  `reset_definitions` and `definition_drift_actions` no longer take the three keywords; each reads them off the host
+  it is handed and refuses a host with none (`RefusedInput`). To port, build the host with the three callables you
+  passed and drop them from every call.
+- **A reset's flag is `overwrite_customized`.** Breaking: `discard_customization` is gone, on `reset_definitions` and
+  the `definitions_reset` action alike. A reset row reads `discarded: true` only where a stored copy reading
+  `customized` or `unknown` was written over under the flag; a case written fresh or over a stale copy reads false.
+- **A template's own cases seed with it.** `SeedCorpus.template_cases` holds `SeedTemplateCase`s (`template`,
+  `variation_params`, `host_payload`, `stratum`), read from `template_cases/*.json`. The seed writes them into a
+  revision holding no cases (a new or changed case for one that holds cases waits under `needs_reset`), drift reads
+  them, and a reset writes them with the template's next revision, so a host's own seed of them can go.
+  `templates_list` shows each template's `revision`.
+- **The inner ceilings are one value.** `Ceilings()` (`threetears.evals.run`) holds `scheduler_call_attempts`,
+  `simulator_max_tokens`, `simulator_answer_budget_tokens`, `proposer_max_tokens`, `generation_ceiling_s` and
+  `judge_phase_ceiling_s`, so an outer budget is derived from a field rather than a copied number. The six separate
+  names stay exported in `.32` and leave in `.33` (below).
+
+**The typed decision rule**
+
+- **A question's rule is typed clauses, never prose.** `Question.decision` is a `DecisionRule` of
+  `RateDrop(max_points, reading=None)` and `CostLower()` clauses (`threetears.evals.kernel`); the settling logic is
+  unchanged. A `RateDrop` with no reading reads every pass/fail reading the arms share, a pass/fail scorer or grader
+  included; with one, that goal check, measure, scorer, grader or pass/fail judged dimension alone. Each is read on
+  its better end, so a lower-is-better measure's passes are its false count. Breaking: the prose parser is gone
+  (`parse_decision_rule`, `split_decision_rule`, `RuleClause`, the `unread` clause kind and the text-carrying
+  `DecisionRule`), and `evaluate_rule` takes the arms' names (`control=`, `candidate=`). To port, replace a
+  question's `Decision rule:` sentence with `decision=DecisionRule(...)`.
+- **A rule that cannot be read is refused where the design is declared** (`DesignRefused`): a live question whose
+  text says `Decision rule:` and declares no `decision`, or a `RateDrop` naming a reading the campaign does not
+  measure, which the refusal lists. A stored question of that shape still loads; its Decision section says the prose
+  rule is no longer read, and its verdict is exploratory.
+
+**The page**
+
+- **The rule is a sentence code writes, the arms by name**: `Switch to v2 only if no pass rate drops by more than 2
+  points and v2 costs less per reply. Otherwise stay on v1.` Each clause's row carries its own outcome and its reason
+  in counts and the margin, naming the arms, under one line: `Keep is the default: a switch needs every clause
+  shown, so an unsettled rule keeps v1 for now.`
+- **Nothing separated is never "no difference".** An exploratory verdict reads `Exploratory: nothing separated v2
+  from v1 on any reading.`; the cases table flags `regression` only where a candidate passed a case less often than
+  the control; a guardrail's decision is stated on its row's ruler, and an undecided one by the verdict line, not
+  under Not tested. Rung 3's console ends on why it exits 4 (`exit 4: the gate failed on guardrail ...`).
+- **A case passes when every check its template declares passes, on the console as on the page.** On the quick path
+  a `bool` grader or a field grader is a pass/fail check, so rung 0 reads 16/30 on both surfaces, and the console
+  counts cases with the page's trial reader.
+- **A lever no comparison exercised is no lever.** A model lever read off what ran that fewer than two results
+  exercised leaves the aliasing read, the factor pairs, the divergences, the coverage map and the next steps, and Not
+  tested says so in one line (`research model: no research call was made on either arm.`). A lever the campaign
+  declared as an axis is a level by declaration, whatever its calls.
+- **The Markdown report is safe to paste.** Every string a trial's record carries (its text, why it failed, a failed
+  check's name and expression, the judge's dimension, criterion and reason) is quoted in a fence or code span longer
+  than any backtick run inside it, so a `</details>` a judge wrote closes no fold. An author's headings, quotes,
+  fences and HTML are escaped, a trial's summary is one escaped line, only failed and lost trials get a record, and
+  the passed trials are one table.
+
+**Pricing and the client**
+
+- **One request reads the price catalogue once.** The read a `refresh_prices()` makes belongs to the task that made
+  it: that task's `price_ceiling` and its next call price from it and the call consumes it, so a failed read, a first
+  read included, is no longer fetched again by the call it was made for. Any other task, a child task included, and
+  any read older than `ceiling_stale_after`, read for themselves.
+- **`refresh_prices()` says what it found.** Breaking: `Model.refresh_prices()` returns a `PriceRefresh`
+  (`refreshed`, `fetched_at`, `failure`; it returned `None`), kept as `Model.last_price_refresh`.
+  `Clients.refresh_prices()` reads the shared catalogue once for every role, from `Catalogue.read()` and
+  `Catalogue.fetched_at`. A failed first read logs `eval.providers catalogue unread url=<url>: <why>`, from the
+  catalogue, not naming the model. A host that wrapped `refresh_prices()` to see a failed first read reads `failure`
+  with no `fetched_at` instead.
+- **The HTTP client is the model's, or yours.** `Model(transport=)` sets up the client a model opens itself, which
+  `aclose()` closes with its transport; `own_http=True` makes a client handed in with `http=` the model's to close,
+  and `Clients(own_http=True)` the factory's. `transport=` beside `http=`, or `own_http=True` without it, is a
+  `ValueError`. A derived model sends through its template's client and never closes it. A host that wrapped a model
+  only to close its client drops the wrapper.
+- **A template's new revision is priced from the one before it** while it has no priced result of its own, walking
+  back only while the candidate kind, judged dimensions and their judge pins, conversation shape, world seed and
+  allowed tools are unchanged; the basis names the revision it drew on, and a step that changed one of them leaves the
+  arm unpriced, naming what changed.
+
+**The surface**
+
+- **523 names are declared** (450 before), and nothing a host imports is provisional. Every name the host guide
+  teaches is held off `provisional` (`tests/test_guide_names_are_declared.py`), and each host's import list
+  (`tests/fixtures/host_imports/`) is held to the declared surface (`tests/test_host_imports_are_declared.py`). The
+  names the production host binds move up a tier; `Provider`, `StyleViolation`, `GateOutcome`, `GateToken` and
+  `EvalCaseStratum`, which no host imports, are `provisional`.
+
+**Machine-readable**
+
+- Core schema v15.3 (`CORE_SCHEMA_MINOR` 3, additive: `Question.decision`); stored core fixtures are regenerated.
+- Durable schema v15.5 (`DURABLE_SCHEMA_MINOR` 5, additive: `EvalTestCase.seed_digest`). A seeded template case's
+  `content_hash` and id are its content alone, its stratum left out as a generated case's is; `seed_digest` holds the
+  digest of what was seeded, stratum included, so a stratum the corpus relabels reads `stale` and one an operator
+  relabels reads `customized`.
+- Bundle shape 57: `unexercised_factors` (each an `UnexercisedFactor`, exported from `threetears.evals.analysis`). A
+  bundle stored before it still loads, its fingerprint moving on reload.
+- New fields: `EvalHost.template_checks`, `SeedCorpus.template_cases`, `TemplateLine.revision` (required),
+  `MetricDescriptor.pass_fail` (default `False`), `Model.last_price_refresh`, `EvalTestCase.seed_digest` (default
+  `None`).
+
+### 3tears-evals: the report reads as a result (evaladopt.31)
+
+Presentation only: `bundle.json` and every typed verdict are unchanged. The one machine-readable change is noted
+last.
+
+- **The page is Tufte's, not a dump.** `report.html` draws hairlines and whitespace, never boxes or washes; the
+  verdict line carries a thin rule in the hue of its kind (`data-tone`: decided, open, failed, summary); the
+  scoreboard is the key table, numerals right-aligned and tabular; a sticky text-only nav opens the section it
+  lands on; Cases, Trials, Not tested, Methods and the Glossary start folded (`<details class="section">` inside
+  the unchanged `<section id>`); every column header that is a term of art carries its one-sentence definition as
+  a hover title; light, dark, phone width and print. Still no script, no URL, no `url()`.
+- **Numbers a reader can hold.** A rate is a percent to one decimal (`98.9%`), a change in points
+  (`-1.1 pts [-4.2, 2] pts`), the interval's level in the column header (`Interval (99%)`) rather than in every
+  cell; a per-reply cost under a cent is stated per 1,000 replies (`Cost per 1,000 replies`, `$0.0459`).
+- **Each arm's value beside the control's.** The contrasts are one table: `Reading | ▸ control | arm | Change |
+  Interval | Verdict | Cases`, each value with its interval, the change drawn in the row as a small glyph on one
+  scale per unit (HTML) and printed as text (Markdown). The five standalone interval charts are gone; the outcome
+  bar is the page's one chart, each arm's label above a full-width bar, its key naming only the states that
+  occur. A one-arm page lists its readings over all cases.
+- **Only what went wrong is listed.** The Trials section opens with its census (`180 trials ran. Of them 179
+  passed and 1 failed.`), lists failed and lost trials only, opens the first twelve records, and folds the passed
+  trials into one table that keeps each result id reachable. The cases table puts failed ids first and mutes the
+  column.
+- **The first screen carries the minimum, and every fact that changes the reading.** The title is the campaign's
+  name; the declared question is quoted on its own line, and its decision rule opens the Decision section beside
+  its clauses (split where the parser splits it). A "too few cases" line says what is withheld and why
+  (`4 cases per arm: keep follows from the counts above. Whether the gap holds on more cases is not estimated: an
+  interval takes 5 independent cases.`) — the gap is measured and stated, only its interval is withheld — never a
+  bare number. An arm's label its row contradicts is said
+  under the scoreboard (`'cheaper candidate' is not cheaper: it cost more per reply than production.`). A finding
+  that stands on no reading is filed under Not tested; Coverage is folded into Methods.
+- **Machine-readable:** `Result.contrasts()` rows are the page's figures on the page's ruler and now carry
+  `unit`; `report.verdicts` and the bundle keep the measure's own units.
+- **Definition drift:** a judge case the host's `seeded_digests` do not name, under a template seeded before
+  `.30`, reads `stale` (never seeded; a reset writes it), one the map names but nothing stored matches reads
+  `customized`; `unknown` is only for a row with no record anywhere.
+
+### 3tears-evals: one report path, verdict first
+
+- **A report is one page, written by code.** Every door (`compare(...).report`, `campaign_report`, the command
+  line's `report`, the `report_read` action) renders the same page: a title and a basis line (a question declared
+  before the run, or `EXPLORATORY`), a verdict line code writes (the test setup failed and how to fix it, too few
+  cases, the declared questions, or leads only), a scoreboard counting each arm's trials as passed, failed or lost to
+  the test setup by cause, the memo's findings and recommendations, the contrasts against the control, every case,
+  one drill-down per trial, what was not tested, and the methods. No arm is called a winner, and below 5 usable cases
+  a rate is a count.
+- **`Report.write(dir)` / `Comparison.write(dir)`** write one scriptless HTML page, its Markdown and `bundle.json`;
+  the bundle is the machine form, and `report_read(format="json")` returns it. Two charts, an outcome bar and
+  interval rows, are drawn as inline SVG with every value written as text.
+- **The first screen carries the minimum.** The title is a name: the campaign's, with what it compares where no
+  question was declared (`invoices: does v2 do better than v1?`); a declared question is quoted whole on its own
+  line under the arms (`Asked before the run: "…"`), never cut down to a title. Line 2 ends with the design
+  (`30 cases × 3 repeats`). An exploratory verdict reads `no difference found between v2 and v1 on any reading`,
+  a guardrail not held `Not yet shown safe: v2 on no invented total.`, and `exploratory` links to the glossary.
+  Under the scoreboard only what changes the reading stays: the case floor, an arm's label its own row
+  contradicts, or an arm whose every trial failed. What was not charted and where a cost is a floor are in the
+  Methods; the one failure cause beside checks and the judge heads its own column (`Model failed`) with no legend
+  line. A one-arm page heads its readings by stratum and label `Readings`, since
+  it contrasts nothing.
+- **A case is named as its author named it.** An `Eval`'s case `id` (`double-charge`) is stored as the test
+  case's `name` (`EvalTestCase.name`, durable 15.4: additive, in no identity key, so a renamed case keeps its id
+  and its history) and names the case everywhere the page names one — the verdict's misses, the cases table, a
+  trial's summary — where it reads as a name; a generated id, a bare number or a sentence is `case N` as before.
+- **Removed:** the `threetears.evals.vega` adapter and the `[vega]` extra, the chart renderer seam and
+  `report_charts`, `ChartPalette` and `ChartFont`, the published Report JSON schema, the chart intent root
+  `threetears.evals.analysis.viz`, the arm table and the decision surface table. The memo writer no longer writes
+  a headline, a summary or a chart; it refuses an adoption in an exploratory campaign. Analyses regenerate
+  (`REGENERABLE_SCHEMA_VERSION` 11), and the bundle's shape is 54. `packages/evals/MIGRATIONS.toml` has the detail.
+
+### 3tears-evals joins the family: measuring what a change to an LLM-backed feature does
+
+A new package (`pip install 3tears-evals`, import root `threetears.evals`). Run each version of a feature, from a
+classifier to a tool-using agent, over the same frozen cases. It reports what moved and with what uncertainty, and
+for an agent it reports what the agent did to a world the application declares, not only what it said. The public
+API has three stability tiers, recorded per name in `api/surface.json` and declared in `scripts/public_surface.py`: a
+`host-contract` name (what a host writes against) moves only with a deprecation cycle, the old name working beside
+the new one for a minor release; a `stable` name may move in any release; and a `provisional` name is exported but
+promised nothing. Every name that leaves a public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py
+v<version>` prints a release's notes).
+
+- **Dependencies.** Python 3.14+, `pydantic` and `httpx`. The package depends on no other 3tears package. One
+  extra: `[fastmcp]` (the FastMCP transport).
+- **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
+  `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `negotiation`, `providers`. A consumer
+  imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
+  itself exports the roots, which of them fail to import without an extra and what each needs (`ROOT_EXTRAS`, each
+  root's `RootExtra`: the extra and the modules the root imports past the base install, so `transports.fastmcp` needs
+  `[fastmcp]` for `fastmcp`), all
+  host-contract so a host's import gate reads them rather than keep its own list, and `__version__`, the
+  installed version, which a host records beside what it stores since no stored document or analysis bundle carries
+  it.
+- **The quick path** (`threetears.evals`, `threetears.evals.quick`). `Eval(cases, runner, grader)` runs any function
+  from a case to an answer over a cases file, `k` times each, and `python -m threetears.evals <file>` runs every
+  `Eval` a file defines, or one TOML file with no Python. A grader is a field name, a function, a goal-check
+  expression over a world, or a `Judge` (a model grading against a rubric, checked against people's labels);
+  `grader(...)` declares a margin, a range or a guardrail on one. A runner mapping is a comparison: the first runner
+  is the control, and each reading gets a delta, an interval and a typed verdict (`improved`, `regressed`,
+  `not_separated`, `equivalent` or `untested`), guardrails decided apart; `Result.gate()` is the CI gate and
+  `Result.against` reads the same runs against another control. `World(State, tools=[...])` hosts an agent in a
+  seeded state, `Answer` carries an arm's spend and served model, and a case's reserved `stratum` splits every
+  reading. Four examples under `packages/evals/examples/` climb that ladder on cheap models through OpenRouter; with
+  no key each replays a recording of a live run kept beside it (`RECORD=1` records it again), so it runs offline on
+  what a model said, with no scripted stand-in for one.
+- **A command line.** `python -m threetears.evals` runs `run`, `ls`, `report`, `bundle`, `spend`, `gate`,
+  `frontier` and `judge-temperature` against a host named as `--host module:factory`. `gate --fail-on
+  regressed,breached` is a CI gate. A host adds its own subcommands (`HostCommand`). Exit codes are named:
+  `EXIT_OK` 0, `EXIT_RUN_DID_NOT_COMPLETE` 1, `EXIT_REFUSED` 2, `EXIT_FAILED` 3 (any unanticipated error), and
+  `EXIT_GATE_FAILED` 4.
+- **Adopting it in an application: one explicit host.** An `EvalHost` (`kernel.host`) carries the application's
+  vocabulary (`HostProfile`: measures, sweepable levers, kinds, bars, the world), its storage and its services.
+  Nothing reads a global or default host, so two hosts in one process never meet. Tenancy is one opaque
+  `scope_id`, required on every stored document. The subject under test is the application's, reached through a
+  candidate kind. A kind declares how many cells it runs at once, and plans and prices its own arms
+  (`plan_arm`). The adopter's guide is `docs/adopting-a-host.md`.
+- **A shipped completion client** (`threetears.evals.providers`, on the base install). `Model("deepseek/deepseek-v4-flash")`
+  speaks OpenRouter's, Anthropic's (`provider="anthropic"`) or any OpenAI-compatible (`provider="openai"`,
+  `base_url=`) chat API over `httpx`, with no SDK, no LangChain and no other 3tears package, and is the engine's
+  completion client as well as a runner's own (`text`, `json` with a strict schema validated on return, `prompt`).
+  `Clients` is the role factory a host hands `EvalHost` as `clients`, `describe_failure` its failure describer over
+  the client's one error, `ProviderError` (never the response body; `account` for a refused key or spent credit),
+  and `Catalogue` OpenRouter's public model list, read once and shared: rates, the parameters each model takes, and
+  what refusals taught. A setting a model does not take never fails the call: the closest one it accepts is sent
+  (`negotiation`), a refusal of one is resent and learned, and each completion reports what its request carried
+  (`sent_settings`, `temperature`); nothing else is retried. A reply's stop maps onto the engine's five words (an
+  unnamed or unknown one is `truncated`, logged with its raw value), counts are `None` when unreported, and the cost
+  is OpenRouter's own figure (plus the upstream's under bring-your-own-key) or the catalogue's rates for a direct
+  call, `None` with its reason when unpriced, never `0`. `Model(..., recording=path)` replays a recording offline and
+  records it live under `RECORD=1`, through `RecordedCompletions`. `Model` is also exported from `threetears.evals`.
+  An app on another client (3tears-models, LangChain, an SDK) wraps it in the `CompletionClient` port.
+- **One negotiation for every client** (`threetears.evals.negotiation`, on the base install: no SDK, no HTTP
+  client). Choosing the closest settings, reading a provider's refusal and resending are not the client's own:
+  `negotiate` takes a client's own `send` and refusal reader, resends in the fixed order (a temperature first,
+  keeping enforcement, then enforcement) at most once per setting and four times per call, learns into a shared
+  `LearnedSettings`, and returns what the served request carried (`Negotiated.sent_settings`, `.temperature`).
+  `read_router_refusal` (OpenRouter's 404 and the 400s it relays), `read_anthropic_refusal` and
+  `read_openai_refusal` read a refusal off a status and a JSON body, so a host's client of raw HTTP and the shipped client
+  read the same. Only what a served request proved is learned, for the store's life (the process, or the factory):
+  never enforcement (each call starts enforced and drops it for itself alone, since a 404 can be an outage), a
+  router 404's temperature only when dropping it alone was served, and a temperature refused beside reasoning only
+  beside reasoning; an effort refusal steps at most once before sending no effort word, and an output cap the
+  provider names is resent and kept. `facts_from_router_catalogue` reads a catalogue's `supported_parameters` as
+  only what no endpoint takes, `wire_settings_for` builds a client's asked settings from the engine's, and
+  `Clients` builds the simulator from `SIMULATOR_REQUEST_SETTINGS` as it builds the judge. The host guide
+  carries a minimal OpenRouter client built on it, and `testing.check_refusal_negotiation` scripts three routers (a
+  temperature refused under enforcement, no endpoint under enforcement, an upstream refusing the cap and the effort
+  word), naming each mistake a host's client makes in resending, reporting or remembering.
+- **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
+  store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
+  backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names
+  the host's own frame. `run_blocking` moves the call off the loop. Stored documents are read strictly: an unknown
+  field, a missing required one, or a newer schema is refused by name, never guessed. The one exception is a newer
+  minor of the evidence core, below.
+- **History is kept across releases.** The evidence core (cases, runs, results, traces, calibration ratings, the
+  out-of-run spend ledger, templates, judge configs, rubric dims, campaigns and job records) is read forever from
+  this release's **core schema v15**, the baseline. A later release upgrades an older core document in memory, one
+  version at a time, and the stored bytes change only on the next write. Analyses, insights and judge profiles can
+  be regenerated: one written by another build is refused, and the operator regenerates it. A cassette's format has
+  a version of its own (`CASSETTE_SCHEMA_VERSION` 1), so a change to the analyses never refuses a recorded corpus;
+  only a change to the cassette itself does, and the corpus is then re-captured. A major is deployed with no job
+  running.
+- **An additive core change rolls with no stop.** The core version is a major (`schema_version`, 15) and a minor
+  (`schema_minor`, 0). A minor is additive only (a new optional field, a new optional sub-object, a new value of an
+  open vocabulary, a new doc type) and carries a ledger sentence asserting that an older build that ignores it
+  reads the document correctly and writes it true. This release reads any newer minor of its own major, keeps
+  every field it does not declare (at every depth, out of every attribute, dump and digest) and writes them back on
+  its next write, so a mixed fleet shares one store through an additive change in either direction. An unknown
+  field at this build's minor or older, and a newer major, are refused as before; only the stored read is ever
+  tolerant, and `schema_minor` is a server field every authoring surface ignores. The vocabularies that grow
+  (usage roles, simulator purposes, ceiling and role origins, reasoning effort, out-of-run purposes, refusal kinds)
+  are open strings on stored documents, with a registry of the values this build knows, and every reader names a
+  value it does not know rather than folding or dropping it; what a caller passes in (an action's filter, a
+  writer's argument) still takes only a known value. Every other vocabulary on a core shape is closed, and
+  extending one is a major, deployed with no job running.
+- **Identity.** A configuration is keyed by the content that ran (`IDENTITY_VERSION` 24), so an edited prompt is
+  never averaged in with its old version, and a run's kind is part of its variant. A key is stored beside the lever
+  map it was computed from: a run's `variant_levers`, and a campaign control's `control_levers` and
+  `control_identity_version`, recorded when the control is named from a run and never taken from a caller. A
+  control matches its stored key, which the cells stamped under its own version keep, and, under a later
+  `IDENTITY_VERSION`, also the key its map re-keys to, so it is never stale while its old cells are there. Its arm
+  is the new version's cells wherever any exist; the old version's cells are named beside it as the control under
+  that version, disclosed, in no contrast, no contestant on the frontier, and not in the control's numbers. That re-keying follows a change to how
+  a lever map is digested only: a renamed lever, kind or overlay field, or a lever added to every map, gives new
+  runs a different map, which no recomputation of the stored one reaches, and the control then matches only its old
+  cells. A control
+  key typed by hand has no map: when no cell carries it the analysis says it cannot be resolved and how to name it
+  again, rather than reading it as no control. Unpriced
+  spend is unknown, never $0. A run that cannot confirm which model answered (no `served_model`) says so on every surface. That is
+  disclosed, never refused, never guessed.
+- **Cost before spend.** The engine prices every arm of every launch by one rule, using the judges and simulator
+  that arm will actually use, before any launcher runs. An arm that cannot be priced under an enforced cap is
+  refused. A launch's `max_cost_usd` and `max_metered_calls` may only lower the host's ceiling. Calls made outside
+  any run (case generation, analysis generation, second judges) are priced before they are made and ledgered once
+  they are. Every action job names its wall-clock budget (`budget_s` is required). A broken rig, a deadline or a
+  cancel costs one cell and keeps what was paid for.
+- **Agents in a declared world.** The host declares its world (`WorldRegistry`): each dimension of state with a
+  JSON Schema, seed and read handles that use production's own write paths, and the surfaces where the agent can
+  see it. A cell runs in its own `WorldSession` (bound per cell where the world is real per-cell state), with
+  settle, runtime triggers and ambient perturbation. The goal language reads `state.<dimension>` and
+  `fired("<dimension>")` and is three-valued, so a check over a missing value never passes. `recheck_goal_states`
+  re-grades stored end states. A conformance kit the host runs against its own world (`check_world_conformance`)
+  checks that seeds read back, that each surface moves only with its dimension, and that dimensions are
+  independent. A check it cannot run is reported as unavailable, never waived. Every run records, per dimension,
+  whether the case set it and whether the agent could see it, and state the agent saw that the run did not set is
+  disclosed as a confound.
+- **Conversations and witnessed sessions.** Multi-speaker conversations come with speaker rounds, an
+  `llm_decided` scheduler and session breaks, and simulator spend is stored per actor. `record_witnessed_cell`
+  records a session the host observed rather than ran, with `witnessed` provenance kept apart from
+  `commissioned`.
+- **Judges and calibration.** Rubric dimensions carry their names and scales. A judge is a model plus its config,
+  and a dimension judged by the built-in wording records which wording judged it. Every built-in prompt tells the
+  judge that sourced facts outrank its recall. A candidate does not judge itself when an alternate is configured.
+  A judge completion that breaks the protocol fails the run. Every judge call sends its reply's shape as a strict
+  `json_schema` in the portable subset, every enum in it a string enum (the one form every provider's strict mode
+  enforces; a Gemini model did not enforce an integer one): an ordinal score is asked for as `"1"` to `"5"` and read
+  back to its integer, a bare integer still read, and `strict_response_format` refuses a host schema enumerating
+  anything but strings, by name. Judged readings carry an evidence tier decided by code.
+  People and agents rate results (`rate_result`), and `judge_agreement` reports exact agreement and Cohen's kappa,
+  quadratic-weighted on 1–5 scales. The package also measures a judge's agreement with itself (repeat judging),
+  a second judge, and the judge's temperature. A judge's recorded identity is a fingerprint of its wording (the
+  built-in prompt's, or a config's and the reply-format suffix's), so a release that rewords either makes earlier
+  results another judge for agreement, profiles, drift and evidence tiers. The release policy covers that: such a
+  release's `MIGRATIONS.toml` notes carry `JUDGE_WORDING_CHANGE_SENTENCE`, and a pin test holds them to it. A run's
+  own `judge_config_ids` holds bare config ids, so a wording change never re-keys a run's context.
+- **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
+  given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
+  context bundle (shape 54, computed under cell model `CELL_MODEL_VERSION` 13, exported from `analysis`) holds the decision surface, comparisons with Holm correction for multiple comparisons
+  per declared question, materiality, bars and proposed bars, mechanism checks on swept levers (a setting that
+  never took effect does not read as one that changed nothing), strata, a time axis by build or by day, judge
+  agreement, and every confound and disclosure. `generate_analysis` has a model write the analysis over the frozen
+  bundle: findings, each naming the trials it is drawn from, and recommendations, each naming the findings it rests
+  on.
+- **Reports and charts.** A campaign's report is one page every door renders, verdict first, built by code from the
+  evidence bundle (see "one report path, verdict first" above): script-free standalone HTML or Markdown
+  (`report_html`, `report_markdown`, `Report.write`), with `bundle.json` as its machine form. With no analysis, a
+  code-only report lays out the evidence alone. Its two charts, an outcome bar and interval rows, are drawn by the
+  package as inline SVG.
+- **Driving it from code or an agent.** `ops` is one typed function per operation: launch, list, read, archive,
+  delete, campaign, analysis, report, estimate, pivot, history, export, rate, judge and more. `actions` binds each
+  operation to a `noun_verb` action with a permission class (read, spend, write, destructive), a flat parameter
+  model and a generated help index. `transports.fastmcp` mounts the catalogue on a FastMCP server. Long work runs
+  as durable jobs (`job_poll`, `job_cancel`) whose state survives a restart. They read `running`, `completed`,
+  `stopped`, `failed`, `cancelled`, `timed_out` or `lost`, and each record keeps the refusal it ended on and its
+  lease's faults. Every refusal names a remedy the caller can reach, and a stored run this build cannot read is
+  named (`runs_unreadable`), never raised raw.
+- **Asked and sent are two facts.** A run records what the engine asked each role for (`judge_asked_settings`,
+  `simulator_asked_settings`), and the engine's own roles ask in effort words: the judge `high` (`max_tokens`
+  10240, strict), the simulated user `low` (strict) and the analysis generator `medium`
+  (`analysis_gen_request_settings_for(*, answer_budget_tokens, reasoning_effort="medium",
+  reasoning_headroom_tokens=8192)`, which replaced `reasoning_budget_tokens`: its cap the answer budget plus a
+  reasoning headroom of at least 1024 tokens, never sent). None carries a token budget, so a host's own client builder
+  sends the effort word (`wire_settings_for` builds the request from every field). What a request actually carried is the client's to
+  say: a completion may carry an optional `sent_settings` member (not a protocol property, so every completion that
+  conformed still does), read by `sent_settings_of`, and stored per judge score, per usage row (every distinct value
+  the row's calls were sent with) and per out-of-run call; `None` is unverified, recorded and never refused. Cells
+  pool only where the judge and the simulated user were both asked and sent alike (`judge_sent_settings` and
+  `simulator_sent_settings` join the apparatus), so unverified never pools with verified and a run sent two ways only
+  with the same mixture; a judge sent other settings is another judge for agreement, profiles, drift and evidence
+  tiers, a second judge included, and a repeat sent differently is unpaired (`settings_changed`). `run_get`, `run_summary`, the bundle and the
+  report say in one sentence (`request_settings_disclosure`) where a role was sent other than asked, sent more than
+  one way, sent without enforcement or not reported; never about the candidate. A host whose client reports it ships
+  that in the same deploy that adopts the release, and its client never fails a call for a setting, in the
+  adapter's order: a refused setting is dropped or moved first, the temperature before any other, keeping
+  enforcement, and only a call that still finds no endpoint is sent unenforced (`strict_output=False`).
+- **Conformance kits** (`testing`): the store, reader, jobs and completion kits, and the import-boundary check
+  (`nonpublic_evals_imports`) a host runs over its own code. The completion kit checks the optional `sent_settings`
+  member's type when present, and requires it with `require_sent_settings=True`. Beside them, `RecordedCompletions`
+  records the calls a host's real completion client answers into a JSONL file once and replays them with no network,
+  so a suite runs offline on what a model actually said. A call is matched on its prompt and on the model,
+  temperature and request settings (`ClientRequestSettings`, a required `settings=` on `record`, `replay` and
+  `check_covers`) it was made with, and what each call was sent with is recorded and replayed beside them; a prompt
+  the recording does not hold, or holds only under other settings, is refused by name with the command that
+  re-records it, never sent live. A recording made before `v0.67.0-evaladopt.25` (recorder format 1, with no
+  `sent_settings`) is refused by name as older; format 2 records what each call was sent with, so re-record it. A recorder stands in for an analysis or out-of-run client too: it names its model
+  and prices a call (a replay at $0).
+- **Docs.** The package README; the ladder through the four examples; the concepts and their glossary; guides to
+  building an inventory, reading reports, evaluating agents, judges and calibration, measuring soundly, cost and
+  budgets, serving (the command line, the actions and MCP) and adopting a host; and the background pages (design,
+  with its prior art, and open problems). `docs/surface.md` maps the declared names by rung, and `docs/reference.md`
+  is generated from the code. The adopter's guide marks five mechanisms the first adopter shaped as provisional
+  (`AsyncDelivery` and `AsyncExternalSpend`, the `inner_agent` and `external` usage roles, `MeteredCallLedger`,
+  triggered world dimensions, and `SeedSection`'s zones): a second adopter's use decides whether each stays, and one
+  removed later is announced in that release's `MIGRATIONS.toml` notes.
+- **Pre-releases.** `v0.66.0-evaladopt.N` tags (through `.23`) and `v0.67.0-evaladopt.N` tags (`.24` and `.25`) were cut on
+  `feature/eval-adopt` for one adopter and never published. Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold
+  that pre-release's notes and the names that moved. **A store written before `v0.66.0-evaladopt.21` is not read:**
+  its core documents (schema v8 to v13) are refused by name as pre-release and its regenerable ones by version, so
+  such an adopter deletes its eval documents. **Nor is a store written before `v0.67.0-evaladopt.25`:** `.21` to
+  `.24` wrote a pre-release v14 baseline, and `.25` reset the baseline to v15 with no upgrader, so a v14 document is
+  refused by name as pre-release and such an adopter deletes its eval documents again. From `.25` on, the store is
+  the v15 baseline this release reads, and every core shape change is a version, as it will be after release: a minor
+  for an additive change, a major with an upgrader for any other. Every build before `.25` refuses every core document
+  `.25` or this release writes, so roll back no further than `.25`. Every pre-release before `.22`, `.21` included,
+  stamped its cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so
+  their corpora are re-captured.
+
+### Scripts: `typecheck.sh` takes one package, and lint and typecheck run the venv's own tools
+
+- **`./scripts/typecheck.sh <package>`** checks one package's import roots, the package named as `test.sh` names it
+  (`evals`, `agent/memory`); with none it checks every package, as before. Arguments after it pass through to mypy.
+- **`lint.sh` and `typecheck.sh` call `ruff` and `mypy` from a venv** (the repository's own `.venv`, then the
+  active `$VIRTUAL_ENV`) rather than through `uv run`, which re-resolves the workspace on every call. The checkout's
+  `.venv` comes first because it is the environment uv itself uses here, so a shell left activated in another venv
+  does not check this tree with that venv's tools; a clone before `uv sync` falls back to `uv run`.
 
 ## v0.69.0 -- 2026-10-15
 

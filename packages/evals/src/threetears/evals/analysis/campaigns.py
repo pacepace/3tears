@@ -1,0 +1,1302 @@
+"""The campaign family: authoring a campaign, its declaration, its membership and its control.
+
+A campaign is the analysis hub — a curated set of runs under one subject×behavior that a generated
+analysis attaches to — so the operations on it are analysis's. Each is a function over a
+:class:`CampaignStore` and typed parameters, the shape the curation family set
+(:mod:`threetears.evals.run.curation`), so a client of the package can author and curate campaigns
+without a host's service layer; a host's service keeps its own public names and delegates here, and
+every surface reaches these, so they translate failures alike.
+
+Launching a campaign's arms is not here: it composes the run package with this one, and neither
+package may import the other, so the launch is the adapter's and calls these.
+
+**Every writer of an existing campaign holds the campaign write lock**
+(:func:`~threetears.evals.kernel.campaign_writes.serialized_campaign_write`). Campaign documents
+carry no ETag, so each edit is a blind read-modify-write, and the run-delete cascade in the run
+package detaches runs under the same lock.
+
+**A campaign lives in one scope, and so do its runs.** ``scope_id`` is the engine's word for a
+partition it never interprets; the host chooses what a scope is and passes it through. Every
+operation here names the campaign's scope, and a run outside it is refused at attachment — at
+creation and at :func:`add_runs_to_campaign` alike — because every read of a campaign's members is
+a read within that one scope, and a member it cannot see is one no analysis of the campaign reads.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
+
+from pydantic import BaseModel, Field
+
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.analysis.revisions import refuse_pooled_revisions
+from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign_writes import serialized_campaign_write
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.schema.logs import get_logger
+from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.kernel.campaign import CampaignView, EvalCampaign
+    from threetears.evals.kernel.declaration import CampaignDesign
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalRunStamp, EvalTemplate
+    from threetears.evals.schema.values import SweepableValue
+
+log = get_logger(__name__)
+
+
+class CampaignStore(Protocol):
+    """Everything the campaign family reads and writes — and nothing else.
+
+    Cut to the calls this module makes rather than to what a storage layer offers: campaigns
+    themselves, the template a declaration's bars are checked against, and — for the view's
+    window and a control's designation — a member run's stamp, the run, and its results.
+
+    **Not composed from** :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore`, though one
+    member is redeclared from it. That port is the bundle's four reads and writes nothing;
+    composing would hand a consumer of the bundle a contract naming campaign writes, and a
+    consumer of this family the bundle's insight reads — the union-port problem the curation
+    family's port declines for the same reason.
+
+    Structural, so a host's own storage satisfies it by having the methods.
+    :class:`~threetears.evals.kernel.storage.EvalStorage` does, with no inheritance and no registration.
+    Positional parameters are positional-only, so an implementation's own parameter names never
+    have to match the port's.
+    """
+
+    def load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None:
+        """Load one campaign within a scope, or ``None``."""
+        ...
+
+    def save_campaign(self, campaign: EvalCampaign, /) -> None:
+        """Write a campaign; raises ``StorageError`` rather than returning a flag."""
+        ...
+
+    def list_campaigns(
+        self,
+        scope_id: str,
+        /,
+        *,
+        subject_id: str | None = None,
+        behavior: str | None = None,
+        archived: bool | None = None,
+    ) -> list[EvalCampaign]:
+        """Campaigns in a scope, newest first; each keyword is an optional equality filter."""
+        ...
+
+    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
+        """Load one template within a scope, or ``None``."""
+        ...
+
+    def load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]:
+        """The id, archived flag and start time of the named runs in one read; absent ids are skipped."""
+        ...
+
+    def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
+        """Load one run within a scope, or ``None``."""
+        ...
+
+    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
+        """Every result belonging to one run within a scope."""
+        ...
+
+
+#: Identity/lifecycle fields the family owns — never taken from caller input.
+#:
+#: ``created_by`` is here rather than in the authoring vocabulary because authorship a
+#: caller can type is not authorship: the field spent its whole life advertised as an
+#: optional key and written by nobody, on either surface. The surface knows who it is
+#: talking to and the caller does not have to be trusted about it, so the surface says.
+CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
+    "id",
+    "doc_type",
+    "schema_version",
+    "schema_minor",
+    "created_at",
+    "created_by",
+    "scope_id",
+)
+
+#: What an operator may change on a campaign after it exists.
+#:
+#: Deliberately short. Membership (``run_ids``) and the control designation have their own
+#: write paths carrying rules this one does not enforce, and letting a generic update reach
+#: them would be a second door into the same state with none of the guards. ``created_by``
+#: is absent because authorship is not editable — a later editor is not the author.
+_CAMPAIGN_UPDATABLE_FIELDS: tuple[str, ...] = ("name", "description", "declared_design")
+
+
+class OpenAxisFamily(EvalBaseModel):
+    """An open family of axes: a container whose members are declarable, though not enumerable."""
+
+    name: str = Field(description="The family's name. Not itself an axis — it identifies no knob")
+    recognises_members: bool = Field(
+        description=(
+            "Whether this host can tell a member from a typo. False means no member is accepted as an axis at all, "
+            "whatever it is called"
+        )
+    )
+    why_open: str = Field(description="Why the members cannot be listed, in the host's words")
+
+
+class DeclarableAxes(EvalBaseModel):
+    """What a campaign may declare it sweeps on this host — the vocabulary the authoring gate reads.
+
+    Served so an authoring form can offer the names rather than learn them from a refusal. It is
+    read off the same registry the gate decides with, and ``remedy`` is the very sentence the gate's
+    refusal ends with, so the offer and the refusal cannot disagree.
+    """
+
+    host_id: str = Field(description="The host whose registry this is")
+    levers: list[str] = Field(
+        description="Every fixed lever, in the host's reporting order — each one a declarable axis"
+    )
+    open_families: list[OpenAxisFamily] = Field(
+        description="Families whose members are declarable by name — `<family member>` rather than the family itself"
+    )
+    remedy: str = Field(description="The vocabulary as one sentence — exactly what a refused declaration is told")
+
+
+def create_campaign(
+    storage: CampaignStore,
+    definition: dict[str, Any],
+    *,
+    scope_id: str,
+    created_by: str,
+    profile: HostProfile,
+    control_from_run_id: str | None = None,
+    exploratory: bool = False,
+) -> EvalCampaign:
+    """Create and persist a campaign from an authoring definition.
+
+    A name the model does not declare is refused; server-owned identity/lifecycle fields in ``definition`` are ignored —
+    a fresh ``id`` and ``created_at`` are always assigned, and ``scope_id`` and ``created_by`` come
+    from the surface rather than from the caller. ``name`` / ``subject_id`` /
+    ``behavior`` are required (non-empty); the rest default per
+    :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+
+    **A campaign may be declared as it is created.** A ``declared_design`` in ``definition`` is
+    validated by the campaign contract, stamped with its author, and gated as :func:`update_campaign`
+    gates one. Its control is a variant key, which nobody types: ``control_from_run_id`` names one of the
+    campaign's runs and the key is resolved from it exactly as :func:`set_campaign_control` resolves
+    one, its pre-image recorded beside it. A design that types ``control`` itself is held to the key's
+    shape by the contract, and is a bare key dated this build's: it records no lever map, so a later identity
+    predicate cannot re-key it. The pre-image (``control_levers``, ``control_identity_version``) is the
+    server's and is refused when sent with another value.
+
+    **A campaign is declared or exploratory, and the caller says which.** Exactly one of a ``declared_design``
+    in ``definition`` and ``exploratory=True`` is given: neither is refused, naming both, and both are refused as
+    a contradiction. An exploratory campaign — someone learning to run evals, or testing an intuition with no
+    settled question — is not a lesser declared one, and its report says its readings confirm nothing; letting it
+    be the default meant a caller who forgot the design got that report without ever having chosen it.
+
+    ``exploratory`` is the caller's assertion, checked and never stored: whether a campaign is exploratory is
+    derived from ``declared_design is None`` wherever it is read, so a design declared later
+    (:func:`update_campaign`) ends it without a second flag to clear. Its report and analysis bundle say so once,
+    and its analysis reads a design inferred from the runs.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param definition: Campaign fields. Any ``run_ids`` it carries must live in ``scope_id``.
+    :ptype definition: dict[str, Any]
+    :param scope_id: The scope the campaign lives in — the one its member runs live in.
+    :ptype scope_id: str
+    :param created_by: Who is creating it, as the calling surface knows them. Keyword-only and
+        required, so a new surface cannot reach this function without deciding what it
+        records — which is the whole defect: the field existed for the campaign's entire
+        life and neither surface ever wrote it.
+    :ptype created_by: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :param control_from_run_id: One of ``definition``'s runs whose variant becomes the declared control, or
+        None. Requires a ``declared_design``, and one that does not type ``control`` itself.
+    :ptype control_from_run_id: str | None
+    :param exploratory: True to create the campaign with no design, saying so; required when ``definition``
+        declares none, and refused beside one.
+    :ptype exploratory: bool
+    :return: The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+    :rtype: EvalCampaign
+    :raises ValidationFailedError: ``definition`` declares no design and ``exploratory`` is False, or declares one
+        and ``exploratory`` is True; fails campaign validation, names a run that does
+        not exist in ``scope_id``, or declares a design this host cannot honour; or
+        ``control_from_run_id`` is given with no design, beside a typed ``control``, or names a run
+        the campaign does not hold; or the design sends a control pre-image the server would not store.
+    :raises LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
+        map disagrees with its own registry.
+    :raises StorageError: The campaign failed to persist (a failed write must not
+        read back as a created 201 for an id ``campaign_get`` then 404s).
+    """
+    from pydantic import ValidationError
+
+    from threetears.evals.kernel.campaign import EvalCampaign
+
+    # `created_by` is IGNORED here rather than refused, and that is deliberate: authorship is
+    # recorded by the server, never asked of the caller. Refusing it was once proposed on the
+    # strength of a surface's help text, "`created_by` is NOT accepted", which read in full means "your value will not be used" rather than
+    # "your request will be rejected". Refusing would also single out one member of
+    # `CAMPAIGN_SERVER_FIELDS` while `id` and `created_at` beside it stay ignored, so a
+    # caller round-tripping a campaign it just read would be refused for one of the three
+    # fields it echoed back — the case those fields are ignored FOR.
+    reject_unknown_authoring_fields("create_campaign", definition, EvalCampaign, CAMPAIGN_SERVER_FIELDS)
+    _refuse_an_unsaid_kind(declared=definition.get("declared_design") is not None, exploratory=exploratory)
+    clean = {k: v for k, v in definition.items() if k not in CAMPAIGN_SERVER_FIELDS}
+    clean["created_by"] = created_by
+    clean["scope_id"] = scope_id
+    try:
+        campaign = EvalCampaign(**clean)
+    except ValidationError as e:
+        raise ValidationFailedError(f"invalid campaign definition: {e}", remedy=SCHEMA_REMEDY) from e
+    _refuse_runs_outside_scope(storage, campaign.run_ids, scope_id)
+    _refuse_pooled_revisions(storage, campaign.run_ids, scope_id, what=f"campaign {campaign.name!r}")
+    campaign = campaign.model_copy(update={"template_id": _campaign_template(storage, campaign)})
+    if campaign.declared_design is not None:
+        campaign = campaign.model_copy(
+            update={
+                "declared_design": _with_server_owned_pre_image(
+                    definition["declared_design"], campaign.declared_design, stored=None
+                )
+            }
+        )
+    if control_from_run_id is not None:
+        if campaign.declared_design is None:
+            raise ValidationFailedError(
+                "control_from_run_id names the run whose variant is the control, and the control lives on the "
+                "declaration. A control is the reference point of a comparison, so there is nothing for it to "
+                "reference yet",
+                remedy="declare a design (`declared_design`) with it",
+            )
+        if campaign.declared_design.control is not None:
+            raise ValidationFailedError(
+                "the design types a `control` and control_from_run_id names one too",
+                remedy="give one: the run (control_from_run_id), whose variant key is resolved for you, or the key itself",
+            )
+        addressed = _address_control(storage, campaign, control_from_run_id, profile=profile)
+        campaign = campaign.model_copy(update={"declared_design": _with_control(campaign.declared_design, addressed)})
+    if campaign.declared_design is not None:
+        campaign = campaign.model_copy(
+            update={"declared_design": _stamp_declaration(campaign.declared_design, created_by)}
+        )
+
+    # A gate, not a page. A declaration naming an axis this host cannot vary, or a bar
+    # looser than the registered standard, is refused HERE — at authoring time, before any
+    # run is launched and any money is spent. Checked at analysis time instead, the campaign
+    # would run to completion and the defect would surface as a report nobody can act on.
+    if campaign.declared_design is not None:
+        _gate_declaration(storage, campaign, campaign.declared_design, profile=profile)
+
+    storage.save_campaign(campaign)
+    return campaign
+
+
+#: What a campaign is when it is not declared, said once for every refusal that asks the caller to choose.
+_THE_TWO_KINDS = (
+    "declared_design states what the campaign sets out to learn; exploratory: true says it has no settled question "
+    "yet, and its report will say its readings confirm nothing"
+)
+
+
+def _refuse_an_unsaid_kind(*, declared: bool, exploratory: bool) -> None:
+    """Refuse a create that does not say, or contradicts itself about, whether the campaign is declared.
+
+    :param declared: Whether the definition carries a design.
+    :ptype declared: bool
+    :param exploratory: The caller's assertion that it carries none.
+    :ptype exploratory: bool
+    :raises ValidationFailedError: Neither was said, or both were.
+    """
+    if declared and exploratory:
+        raise ValidationFailedError(
+            "the campaign both declares a design and says it is exploratory — exploratory means no design is declared",
+            remedy="send one: declared_design, or exploratory: true without it",
+        )
+    if not declared and not exploratory:
+        raise ValidationFailedError(
+            "a campaign is either declared or exploratory, and this create says neither",
+            remedy=f"send declared_design or exploratory: true — {_THE_TWO_KINDS}",
+        )
+
+
+def _campaign_template(storage: CampaignStore, campaign: EvalCampaign) -> str | None:
+    """The template a new campaign is over: the one it names, else the one every run it holds ran, else none.
+
+    A bar or a guardrail margin on a rubric dimension or goal-state check is read against the campaign's template,
+    so a campaign whose runs all ran one template is over that template whether or not its author typed the id —
+    typing it was the only way to declare such a bar, and the action that creates a campaign did not take it.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign: The campaign as defined, its runs already held to its scope.
+    :ptype campaign: EvalCampaign
+    :return: The template's id, or None when it names none and its runs ran more than one template, or none.
+    :rtype: str | None
+    :raises NotFoundError: The campaign names a template its scope does not hold.
+    """
+    if campaign.template_id:
+        if storage.load_template(campaign.template_id, campaign.scope_id) is None:
+            raise NotFoundError("template", campaign.template_id, remedy=FIND_TEMPLATE)
+        return campaign.template_id
+    ran = _templates_run(storage, campaign)
+    return ran[0] if len(ran) == 1 and ran[0] != "(no template)" else None
+
+
+def _templates_run(storage: CampaignStore, campaign: EvalCampaign) -> list[str]:
+    """The templates a campaign's runs ran, sorted, an ad-hoc run's as ``(no template)``."""
+    ran = {
+        run.template_id or "(no template)"
+        for run_id in campaign.run_ids
+        if (run := storage.load_eval_run(run_id, campaign.scope_id)) is not None
+    }
+    return sorted(ran)
+
+
+def _refuse_pooled_revisions(storage: CampaignStore, run_ids: Sequence[str], scope_id: str, *, what: str) -> None:
+    """Refuse membership that would hold runs of two revisions of one template (:mod:`.revisions`).
+
+    :raises ValidationFailedError: Naming the template and its revisions; nothing was written.
+    """
+    ran = (run.template_id for run_id in run_ids if (run := storage.load_eval_run(run_id, scope_id)) is not None)
+    refuse_pooled_revisions(ran, lambda template_id: storage.load_template(template_id, scope_id), what=what)
+
+
+def _refuse_runs_outside_scope(storage: CampaignStore, run_ids: Sequence[str], scope_id: str) -> None:
+    """Refuse membership of any run that does not resolve in the campaign's scope.
+
+    A run in another scope and a run that does not exist are the same thing from here — no read
+    within this scope returns either — and both are refused for one reason: every read of a
+    campaign's members is a read within its scope, so a member outside it is a run the campaign
+    claims and no analysis of the campaign can see. Refused all-or-nothing, naming every id, so a
+    partly-wrong request leaves the campaign as the caller last saw it.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param run_ids: The runs to be held.
+    :ptype run_ids: Sequence[str]
+    :param scope_id: The campaign's scope.
+    :ptype scope_id: str
+    :raises ValidationFailedError: One or more of ``run_ids`` does not resolve in ``scope_id``.
+    """
+    if not run_ids:
+        return
+    resolved = {stamp.id for stamp in storage.load_eval_run_stamps(run_ids, scope_id)}
+    if outside := sorted({run_id for run_id in run_ids if run_id not in resolved}):
+        raise ValidationFailedError(
+            f"run(s) {', '.join(repr(r) for r in outside)} do not exist in scope {scope_id!r} — a campaign holds "
+            "only runs in its own scope, because every read of its members is a read within that scope",
+            remedy=f"name runs of this scope ({FIND_RUN})",
+        )
+
+
+def _stamp_declaration(design: CampaignDesign, declared_by: str) -> CampaignDesign:
+    """Stamp who stated a declaration and when, on every write of one.
+
+    Authorship of the declaration is the surface's to record for the same reason the
+    campaign's is: a caller-typed name is not a record of who did it. ``declared_at`` moves
+    with it — an amended declaration is a new statement of intent, and dating it to when the
+    campaign was first declared would put yesterday's date on today's claim. What must NOT
+    move is the per-question history, which is why ``asked_at`` lives on the question and is
+    preserved by :func:`~threetears.evals.kernel.declaration.reconcile_question_edits`.
+
+    :param design: The declaration being written.
+    :ptype design: CampaignDesign
+    :param declared_by: Who is writing it, as the calling surface knows them.
+    :ptype declared_by: str
+    :return: The declaration with its authorship stamped.
+    :rtype: CampaignDesign
+    """
+    from threetears.evals.schema.models import utc_now_iso
+
+    return design.model_copy(update={"declared_by": declared_by, "declared_at": utc_now_iso()})
+
+
+def _gate_declaration(
+    storage: CampaignStore, campaign: EvalCampaign, design: CampaignDesign, *, profile: HostProfile
+) -> None:
+    """Refuse a declaration this host cannot honour — a gate, not a page.
+
+    Runs on every authoring write, not only creation: a declaration amended onto an existing
+    campaign is the same claim about what this host can vary, and gating only the first one
+    would leave the second door unguarded. It runs ONLY on writes — a stored declaration is
+    never re-gated on read, so a campaign authored before a rule was added to this gate still
+    loads, lists and analyses; the rule binds the next write of its declaration.
+
+    The campaign's template is read here because a bar may name one of its rubric dimensions or
+    goal-state checks, and which of those a campaign's results will carry is a fact about the
+    template the runs are scored against, not about the host. The template is read straight from
+    storage rather than through the service's ``get_template``, whose own refusals are about
+    launching runs from it and have nothing to say about what it declares.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign: The campaign the declaration is written on. Its ``behavior`` is what a registered
+        bar is keyed under; its ``template_id`` is read in the campaign's scope, and may be
+        blank or dangle — ``EvalCampaign.template_id`` is a reference, not a foreign key.
+        Either way no rubric dimension or goal-state check is known, and a bar naming one is
+        refused saying so.
+    :ptype campaign: EvalCampaign
+    :param design: The declaration to check.
+    :ptype design: CampaignDesign
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :raises ValidationFailedError: An axis the host will not accept — neither a registered
+        lever nor a recognised open-family member, pointing at :func:`declarable_axes` — a bar naming neither a
+        described measure nor a rubric dimension or goal-state check of the campaign's template, a
+        bar is looser than the registered incumbent, a bar contradicts the better-direction
+        of what it names.
+    """
+    from threetears.evals.kernel.declaration import NO_TEMPLATE_REMEDY, DesignRefused, refuse_an_undeclarable_design
+
+    template = storage.load_template(campaign.template_id, campaign.scope_id) if campaign.template_id else None
+    try:
+        refuse_an_undeclarable_design(design, behavior=campaign.behavior, template=template, profile=profile)
+    except DesignRefused as e:
+        # A refusal for want of a template says which templates the campaign's runs ran, when they ran several: the
+        # reason none was inferred, and the ids one of which to name.
+        ran = _templates_run(storage, campaign) if template is None and NO_TEMPLATE_REMEDY in e.fault else []
+        ran_note = (
+            f". This campaign's runs ran {len(ran)} templates ({', '.join(ran)}), so none of them is its template "
+            "until one is named"
+            if len(ran) > 1
+            else ""
+        )
+        raise ValidationFailedError(f"invalid campaign design: {e.fault}{ran_note}", remedy=e.remedy) from e
+
+
+def declarable_axes(profile: HostProfile) -> DeclarableAxes:
+    """The axes a campaign may declare on this host, read off the registry the gate decides with.
+
+    Read from the same profile the gate
+    (:func:`~threetears.evals.kernel.declaration.refuse_an_undeclarable_design`) is handed: an
+    offer drawn from any other registry could promise an axis the gate then refuses.
+
+    :param profile: The host whose registry the campaign is declared against.
+    :ptype profile: HostProfile
+    :return: The fixed levers, the open families whose members are declarable, and the remedy
+        sentence a refused declaration carries.
+    :rtype: DeclarableAxes
+    """
+    registry = profile.sweepables
+    return DeclarableAxes(
+        host_id=profile.host_id,
+        levers=list(registry.lever_names),
+        open_families=[
+            OpenAxisFamily(
+                name=family.name,
+                recognises_members=family.owns_member is not None,
+                why_open=family.open_family,
+            )
+            # The filter drops nothing: `open_families` is the declarations whose `open_family` is set.
+            for family in registry.open_families
+            if family.open_family is not None
+        ],
+        remedy=registry.axis_remedy,
+    )
+
+
+@serialized_campaign_write
+def update_campaign(
+    storage: CampaignStore,
+    campaign_id: str,
+    scope_id: str,
+    updates: dict[str, Any],
+    *,
+    updated_by: str,
+    profile: HostProfile,
+    exploratory: bool = False,
+    control_from_run_id: str | None = None,
+    clear_control: bool = False,
+) -> EvalCampaign:
+    """Amend a campaign's authored fields and its control — the write half the declaration needs.
+
+    A declaration is not a create-time-only fact: an operator learns what they were actually
+    asking somewhere in the middle of a campaign, and without this there is no way to say so
+    short of starting over. Without it, ``created_by`` would be carried faithfully by
+    storage, rendered correctly by a UI, and written by nobody.
+
+    Only ``_CAMPAIGN_UPDATABLE_FIELDS`` may be named, and an unrecognised key is refused
+    rather than ignored — a silently dropped key reads as an update that worked. Questions
+    inside a supplied ``declared_design`` are reconciled rather than replaced
+    (:func:`~threetears.evals.kernel.declaration.reconcile_question_edits`), and the declaration gate
+    runs here exactly as it does at creation.
+
+    **Declaring a design on an exploratory campaign needs nothing else**: exploratory is derived from
+    ``declared_design is None``, so the campaign is declared from this write on. **The way back is said, not
+    implied**, as it is at creation: ``declared_design`` set to None withdraws the declaration only beside
+    ``exploratory=True``, and is refused without it. ``exploratory=True`` is an assertion about the campaign this
+    update leaves, checked and never stored, so it is refused beside a design, and on a declared campaign whose
+    declaration this update keeps.
+
+    **The design is frozen once a run has joined.** A design is what the campaign's runs were launched to answer, so
+    once it holds a run, ``declared_design`` is refused in any form (set, replaced, withdrawn, or declared on an
+    exploratory campaign): a question added or reworded now would read as asked before results that existed when it
+    was asked. ``name`` and ``description`` stay editable, and the control may be addressed once, from a run, while
+    the design has none (which is how a comparison names its control after launching its arms); re-pointing or
+    clearing a control on a campaign with runs is refused too. The amended design is a new campaign
+    (``campaign_create``), launched into. :func:`~threetears.evals.kernel.declaration.preregistered_questions` is the
+    backstop for a design changed some other way.
+
+    **The control is named here too, in the same write**: ``control_from_run_id`` names a member run whose variant
+    becomes the declaration's control, resolved exactly as :func:`set_campaign_control` resolves it, and
+    ``clear_control`` clears it. Declaring a design and naming its control is one write rather than two, so a
+    refused designation leaves the design as it was too, as it does at creation. Either needs a declaration —
+    the one this update writes, or the stored one — and neither may stand beside a design that types its own
+    ``control``. A design this update writes replaces the stored one whole, so it keeps no control it does not
+    type or name here. **A typed control's pre-image is the server's**: a key unchanged from the stored one
+    keeps the stored lever map and identity version (an echoed declaration is not re-dated), any other typed
+    key has none and is dated this build's, and either one sent with another value is refused.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: The campaign to amend.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param updates: Partial field map; every key must be updatable.
+    :ptype updates: dict[str, Any]
+    :param updated_by: Who is amending it, as the calling surface knows them. Recorded on the
+        declaration when this update writes one; it never becomes ``created_by``, since
+        a later editor is not the author.
+    :ptype updated_by: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :param exploratory: True to say the campaign this update leaves declares no design; required to set
+        ``declared_design`` to None.
+    :ptype exploratory: bool
+    :param control_from_run_id: One of the campaign's runs whose variant becomes the declared control, or None.
+    :ptype control_from_run_id: str | None
+    :param clear_control: True to clear the declared control; a campaign declaring no design has none to clear.
+    :ptype clear_control: bool
+    :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    :raises ConflictError: The campaign holds a run, and the update writes ``declared_design``, clears its control, or
+        names a control where one is already declared (:func:`_refuse_frozen_design`).
+    :raises ValidationFailedError: ``updates`` is empty and no control is named or cleared, names a field that is
+        not updatable, drops a stored question, fails campaign validation, or declares a design this
+        host cannot honour; sets ``declared_design`` to None without ``exploratory``;
+        ``exploratory`` is True beside a design, or on a declared campaign this update leaves declared;
+        or ``control_from_run_id`` is given beside ``clear_control``, with no declaration to hold it, beside a
+        design typing ``control``, or naming a run the campaign does not hold; or the design sends a control
+        pre-image the server would not store.
+    :raises LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
+        map disagrees with its own registry.
+    :raises StorageError: The updated campaign failed to persist.
+    """
+    from pydantic import ValidationError
+
+    from threetears.evals.kernel.campaign import EvalCampaign
+    from threetears.evals.kernel.declaration import CampaignDesign, DesignRefused, reconcile_question_edits
+
+    names_control = control_from_run_id is not None or clear_control
+    if not updates and not names_control:
+        raise ValidationFailedError(
+            "the campaign update names nothing to change",
+            remedy=f"name at least one of {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}, or the control (control_from_run_id)",
+        )
+    if unknown := sorted(set(updates) - set(_CAMPAIGN_UPDATABLE_FIELDS)):
+        raise ValidationFailedError(
+            f"campaign fields not updatable here: {', '.join(unknown)}",
+            remedy=(
+                f"update only {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}, and name the control with control_from_run_id; "
+                "runs join and leave a campaign through campaign_runs_add and campaign_runs_remove"
+            ),
+        )
+    if control_from_run_id is not None and clear_control:
+        raise ValidationFailedError(
+            "the update both names a control run and clears the control",
+            remedy="send one: control_from_run_id to name the control, or clear_control alone to clear it",
+        )
+
+    if exploratory and updates.get("declared_design") is not None:
+        raise ValidationFailedError(
+            "the update both declares a design and says the campaign is exploratory — exploratory means no design "
+            "is declared",
+            remedy="send one: declared_design, or declared_design: null with exploratory: true",
+        )
+
+    campaign = storage.load_campaign(campaign_id, scope_id)
+    if campaign is None:
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
+    _refuse_frozen_design(
+        campaign,
+        writes_design="declared_design" in updates,
+        clears_control=clear_control,
+        names_control=control_from_run_id is not None,
+    )
+    if exploratory and "declared_design" not in updates and campaign.declared_design is not None:
+        raise ValidationFailedError(
+            f"campaign '{campaign_id}' declares a design and this update keeps it, so exploratory: true says "
+            "something the campaign would not be",
+            remedy="withdraw the declaration with it (declared_design: null), or leave exploratory out",
+        )
+
+    changes = {k: v for k, v in updates.items() if k != "declared_design"}
+
+    # The declaration this update leaves, and whether it writes one: the stored one, untouched, until the update
+    # withdraws it, replaces it, or names its control.
+    design = campaign.declared_design
+    rewrites = False
+    withdrawing = "declared_design" in updates and updates["declared_design"] is None
+    if withdrawing:
+        if not exploratory:
+            # Not a bare "clear it": a declaration is what an analysis of this campaign is
+            # judged against, and un-declaring one turns every coverage shortfall it named back
+            # into data nobody meant to collect, and every reading after it into one that
+            # confirms nothing. So the caller says so, as a create with no design does.
+            raise ValidationFailedError(
+                "setting declared_design to null withdraws the declaration and leaves the campaign exploratory, "
+                "which an update says rather than implies",
+                remedy="send exploratory: true with it to withdraw the declaration, or amend the declaration instead",
+            )
+        design, rewrites = None, True
+    elif "declared_design" in updates:
+        supplied = updates["declared_design"]
+        if not isinstance(supplied, CampaignDesign | dict):
+            # `**supplied` on a string, list or number raises TypeError, which the guard
+            # below does not catch and `translate_service_errors` does not translate — so a
+            # hand-authored declaration of the wrong shape reached the operator as a 500 on
+            # PATCH and as an unhandled failure over MCP. `create_campaign` builds the same
+            # field through `EvalCampaign(**clean)` and answers 400, and the two authoring
+            # doors must not disagree about the same value.
+            raise ValidationFailedError(
+                f"invalid campaign design: expected an object, got {type(supplied).__name__}",
+                remedy="send the design as an object of its fields",
+            )
+        try:
+            incoming = supplied if isinstance(supplied, CampaignDesign) else CampaignDesign(**supplied)
+        except ValidationError as e:
+            raise ValidationFailedError(f"invalid campaign design: {e}", remedy=SCHEMA_REMEDY) from e
+        stored_questions = campaign.declared_design.questions if campaign.declared_design else []
+        try:
+            incoming = incoming.model_copy(
+                update={"questions": reconcile_question_edits(stored_questions, incoming.questions)}
+            )
+        except DesignRefused as e:
+            raise ValidationFailedError(f"invalid campaign design: {e.fault}", remedy=e.remedy) from e
+        incoming = _with_server_owned_pre_image(supplied, incoming, campaign.declared_design)
+        _gate_declaration(storage, campaign, incoming, profile=profile)
+        if names_control and incoming.control is not None:
+            raise ValidationFailedError(
+                "the design types a `control` and this update "
+                + ("names one too (control_from_run_id)" if control_from_run_id is not None else "clears it"),
+                remedy="give one: the run (control_from_run_id), whose variant key is resolved for you, or the key itself",
+            )
+        design, rewrites = incoming, True
+
+    if names_control and design is not None:
+        addressed = (
+            None
+            if control_from_run_id is None
+            else _address_control(storage, campaign, control_from_run_id, profile=profile)
+        )
+        design, rewrites = _with_control(design, addressed), True
+    elif control_from_run_id is not None:
+        # Clearing a control on a campaign that declares none is not refused: there is nothing to clear, and a
+        # refusal would answer "remove the control" with "declare a design" — as set_campaign_control answers it.
+        raise ValidationFailedError(
+            f"control_from_run_id names the run whose variant is the control, and the control lives on the declaration, "
+            f"which campaign '{campaign_id}' "
+            + ("would no longer have once this update withdraws it" if withdrawing else "does not have")
+            + ". A control is the reference point of a comparison, so there is nothing for it to reference",
+            remedy=(
+                "leave control_from_run_id out when withdrawing the declaration"
+                if withdrawing
+                else "declare a design (declared_design) in the same update"
+            ),
+        )
+
+    if rewrites:
+        # The instance, not its dump: a stored design the update carries over keeps every field a newer build wrote
+        # on it, its questions and axes, which a dump would drop.
+        changes["declared_design"] = None if design is None else _stamp_declaration(design, updated_by)
+
+    try:
+        updated = edited_core_document(EvalCampaign, campaign, changes)
+    except ValidationError as e:
+        raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
+
+    storage.save_campaign(updated)
+    log.info(
+        "eval.update_campaign campaign=%s fields=%s control=%s by=%s",
+        campaign_id,
+        ",".join(sorted(updates)) or "(none)",
+        "(cleared)" if clear_control else f"from run {control_from_run_id}" if control_from_run_id else "(unchanged)",
+        updated_by,
+    )
+    return updated
+
+
+def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> EvalCampaign:
+    """Load a campaign by id.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: The campaign to load.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The campaign.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    """
+    campaign = storage.load_campaign(campaign_id, scope_id)
+    if campaign is None:
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
+    return campaign
+
+
+def get_campaign_view(storage: CampaignStore, campaign_id: str, scope_id: str) -> CampaignView:
+    """Load a campaign and enrich it with its read-time-derived window.
+
+    The window (a campaign's [start, end] time span) is DERIVED from the
+    member runs' ``created_at`` rather than stored, so it never drifts as runs
+    join or leave. Deriving it means reading the runs — only their id, archived
+    flag and start time (``CampaignStore.load_eval_run_stamps``), in one batch,
+    within the campaign's scope, which is where its members live.
+
+    **A member run that does not resolve is REPORTED, not skipped.** All three
+    fates are disclosed — resolved (feeds the window), archived, unresolvable —
+    because the third one is not rare: bulk eval-schema wipes delete runs
+    without going through the run-delete cascade, which is what detaches
+    memberships, so a campaign outlives its runs. A campaign can claim a
+    score of members and resolve none of them. Expect it to recur on
+    every rebuild; the disclosure is the durable answer, not a cleanup pass.
+
+    Every surface that reads one campaign reaches this, so they all answer
+    with the same facts.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: Campaign to load.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign and its member runs live in.
+    :ptype scope_id: str
+    :return: A :class:`~threetears.evals.kernel.campaign.CampaignView` — the campaign
+        plus its derived window (or ``None``).
+    :rtype: CampaignView
+    :raises NotFoundError: No campaign with that id in the scope.
+    """
+    from threetears.evals.kernel.campaign import CampaignView, derive_window
+
+    campaign = get_campaign(storage, campaign_id, scope_id)
+    archived_run_ids: list[str] = []
+    unresolved_run_ids: list[str] = []
+    created_ats: list[str] = []
+    # One batch read of the three scalars the window needs, reduced in the store: a
+    # member run is mostly the host's frozen payload, and a campaign has many of them.
+    loaded = {stamp.id: stamp for stamp in storage.load_eval_run_stamps(campaign.run_ids, scope_id)}
+    for run_id in campaign.run_ids:
+        run = loaded.get(run_id)
+        if run is None:
+            # Recorded rather than dropped: membership is refused outside the scope, so a
+            # member that does not resolve is a run destroyed outside the delete cascade —
+            # a fact about the campaign the reader needs, and not visible from run_ids.
+            unresolved_run_ids.append(run_id)
+            continue
+        # The window describes the COHORT — the runs a report over this
+        # campaign would actually read — so an archived member must not
+        # stretch it. Naming those members beside it keeps the narrower
+        # window from reading as missing data.
+        if run.archived:
+            archived_run_ids.append(run_id)
+        else:
+            created_ats.append(run.created_at)
+    window = derive_window(created_ats)
+    return CampaignView(
+        campaign=campaign,
+        window=window,
+        archived_run_ids=archived_run_ids,
+        unresolved_run_ids=unresolved_run_ids,
+    )
+
+
+def list_campaigns(
+    storage: CampaignStore,
+    scope_id: str,
+    *,
+    subject_id: str | None = None,
+    behavior: str | None = None,
+    archived: bool | None = None,
+) -> list[EvalCampaign]:
+    """List campaigns in a scope, newest first.
+
+    ``subject_id`` / ``behavior`` / ``archived`` are optional
+    equality filters; all ``None`` returns every campaign.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param scope_id: The scope to list.
+    :ptype scope_id: str
+    :param subject_id: Only campaigns over this subject.
+    :ptype subject_id: str | None
+    :param behavior: Only campaigns measuring this behavior.
+    :ptype behavior: str | None
+    :param archived: Only archived (``True``) or only active (``False``) campaigns.
+    :ptype archived: bool | None
+    :return: The matching campaigns, newest first.
+    :rtype: list[EvalCampaign]
+    """
+    return storage.list_campaigns(
+        scope_id,
+        subject_id=subject_id,
+        behavior=behavior,
+        archived=archived,
+    )
+
+
+@serialized_campaign_write
+def add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign:
+    """Attach runs to a campaign (de-duplicated, order-preserving) and persist.
+
+    Loads, merges, and re-saves here — rather than delegating a buried save to
+    storage — so a failed persist raises ``StorageError`` (the same write honesty
+    as analysis generation) instead of returning the in-memory campaign as if it
+    had been stored. Already-attached ids are ignored; a run may legitimately
+    belong to more than one campaign, but not twice to the same one. A run that
+    does not resolve in the campaign's scope is refused, as at creation.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: Campaign to attach to.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign and the runs live in.
+    :ptype scope_id: str
+    :param run_ids: Run ids to add; already-attached ids are ignored.
+    :ptype run_ids: list[str]
+    :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    :raises ValidationFailedError: A run does not exist in the scope; nothing was attached.
+    :raises StorageError: The updated campaign failed to persist.
+    """
+    campaign = storage.load_campaign(campaign_id, scope_id)
+    if campaign is None:
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
+    _refuse_runs_outside_scope(storage, [run_id for run_id in run_ids if run_id not in campaign.run_ids], scope_id)
+    _refuse_pooled_revisions(storage, [*campaign.run_ids, *run_ids], scope_id, what=f"campaign {campaign.name!r}")
+    seen = set(campaign.run_ids)
+    merged = list(campaign.run_ids)
+    for run_id in run_ids:
+        if run_id not in seen:
+            merged.append(run_id)
+            seen.add(run_id)
+    campaign.run_ids = merged
+    storage.save_campaign(campaign)
+    return campaign
+
+
+@serialized_campaign_write
+def remove_runs_from_campaign(
+    storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]
+) -> EvalCampaign:
+    """Detach runs from a campaign — the inverse of :func:`add_runs_to_campaign`.
+
+    Detaching removes campaign MEMBERSHIP only; the run document and its
+    results are untouched and stay readable, and the run keeps whatever other
+    campaigns it belongs to. This is how a campaign is curated back to the
+    cells it was designed with when a run was attached by mistake.
+
+    A requested id that is not attached is **refused**, naming the ids — a
+    detach that reports success for an id it never held is the same
+    confident-wrong answer as a filter that is accepted and silently ignored.
+    The refusal is all-or-nothing, so a partly-wrong request leaves the
+    campaign exactly as the caller last saw it.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: Campaign to detach from.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param run_ids: Run ids to remove; every one must currently be attached.
+    :ptype run_ids: list[str]
+    :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    :raises ValidationFailedError: One or more ids are not attached to this campaign.
+    :raises StorageError: The updated campaign failed to persist.
+    """
+    campaign = storage.load_campaign(campaign_id, scope_id)
+    if campaign is None:
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
+    attached = set(campaign.run_ids)
+    missing = [run_id for run_id in run_ids if run_id not in attached]
+    if missing:
+        raise ValidationFailedError(
+            f"campaign '{campaign_id}' does not hold run(s) {', '.join(repr(m) for m in missing)} — nothing was detached",
+            remedy=f"detach only runs the campaign holds: {', '.join(campaign.run_ids) or 'it holds none'}",
+        )
+    removing = set(run_ids)
+    # No control guard here, and its absence is the point. This path used to refuse when the
+    # detached run was the campaign's designated control, because the designation was a RUN ID
+    # and detaching it left a pointer at a non-member. The declaration names a VARIANT, so
+    # detaching a run cannot invalidate it: where another member carries the same contestant
+    # stack the design is untouched, and where none does, the bundle reports the control as
+    # unobserved rather than the campaign silently reading as an undesignated bag of runs. That
+    # is also the only place the question is answerable — resolving a variant means reading the
+    # observations, which a detach has no reason to pay for.
+    campaign.run_ids = [run_id for run_id in campaign.run_ids if run_id not in removing]
+    storage.save_campaign(campaign)
+    log.info("eval.remove_runs_from_campaign campaign=%s detached=%d", campaign_id, len(removing))
+    return campaign
+
+
+@serialized_campaign_write
+def set_campaign_control(
+    storage: CampaignStore,
+    campaign_id: str,
+    scope_id: str,
+    run_id: str | None,
+    *,
+    set_by: str,
+    profile: HostProfile,
+) -> EvalCampaign:
+    """Designate (or clear) the campaign's control, ADDRESSED from a member observation.
+
+    The control is a variant key — the resolved contestant stack every other cell is read
+    against — and a key is a sha256 nobody types. So the operator still points at something
+    they can see, a member run, and this resolves it: the run's observations are keyed
+    through the same predicate the analysis uses, and the key is written to
+    ``declared_design.control`` — beside its pre-image, the run's lever map
+    (``control_levers``) and the predicate that digested it (``control_identity_version``), so a
+    read under a later predicate re-keys the control instead of losing it
+    (:func:`~threetears.evals.kernel.declaration.resolve_declared_control`). That is the same
+    shape a swept level is authored in
+    (:meth:`~threetears.evals.kernel.declaration.SweptAxis._content_address_authored_levels`)
+    — the surface holding the content addresses it; the surface holding a key sends the key,
+    through :func:`update_campaign`.
+
+    **A run with no observation yet can be designated**, which is what lets an operator pick
+    the control while launching the arms rather than after the first result lands: the run
+    records the lever map its launch resolved, and the key is read from that map exactly as
+    the runner reads it to stamp every result the run will write.
+
+    **A run carries one arm, so it names one variant.**
+
+    **The campaign must already declare a design**, because that is where the control lives
+    and a declaration requires at least one axis. A control is the reference point of a
+    comparison, so a campaign with nothing declared to compare has nothing for one to
+    reference.
+
+    **Once, on a campaign with runs.** The control may be addressed while the design declares none, which is how a
+    comparison names its control after launching its arms; re-pointing it, or clearing it, once a run has joined is
+    refused, as every other change to a frozen design is (:func:`update_campaign`).
+
+    **The declaration is re-stamped**, because changing the control changes what the campaign
+    says it set out to learn. Leaving ``declared_by`` / ``declared_at`` where the axes' author
+    put them would render, directly above the control on the campaign page, the name and date
+    of somebody who did not designate it.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: Campaign to designate on.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign and its runs live in.
+    :ptype scope_id: str
+    :param run_id: An attached run whose variant becomes the control, or None to clear.
+    :ptype run_id: str | None
+    :param set_by: Who is designating, as the calling surface knows them. Keyword-only and
+        required for the same reason :func:`create_campaign`'s ``created_by`` is: this
+        writes the declaration, and a surface that reaches the write path without deciding
+        what it records is how authorship went unwritten for a field's entire life.
+    :ptype set_by: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign` — or the
+        campaign untouched when CLEARING a control on one that declares no design, since
+        there is nothing to clear and a refusal would answer the request with its opposite.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    :raises ConflictError: The campaign holds a run and already declares a control, which a designation would re-point
+        or a clear would remove: a control is addressed once (:func:`_refuse_frozen_design`).
+    :raises ValidationFailedError: A DESIGNATION was asked for and the campaign declares no
+        design; or ``run_id`` is not attached or does not resolve in the scope.
+    :raises LeverCoordinateError: The run recorded no lever map, and the host's variant map disagrees
+        with its own registry.
+    :raises StorageError: The updated campaign failed to persist.
+    """
+    campaign = storage.load_campaign(campaign_id, scope_id)
+    if campaign is None:
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
+    if campaign.declared_design is None:
+        # Below the clear, deliberately: the narrowing argues that a control has nothing to
+        # REFERENCE without a declared comparison, which is an argument about DESIGNATING.
+        # Refusing a clear here would answer "remove the control" with "declare a design" —
+        # the opposite of what was asked, for a call that is already a no-op.
+        if run_id is None:
+            return campaign
+        raise ValidationFailedError(
+            f"campaign '{campaign_id}' declares no design, and the control lives on the declaration. A control is "
+            "the reference point of a comparison, so there is nothing for it to reference yet",
+            remedy="declare one with campaign_update, which names the control in the same call (declared_design and "
+            "control_from_run_id)",
+        )
+    _refuse_frozen_design(
+        campaign, writes_design=False, clears_control=run_id is None, names_control=run_id is not None
+    )
+    addressed = None if run_id is None else _address_control(storage, campaign, run_id, profile=profile)
+
+    # Logged because the design is what every later analysis is computed against, and a
+    # designation is the one design fact an operator supplies by hand.
+    previous = campaign.declared_design.control
+    control = addressed.key if addressed is not None else None
+    amended = _stamp_declaration(_with_control(campaign.declared_design, addressed), set_by)
+    campaign = campaign.model_copy(update={"declared_design": amended})
+    storage.save_campaign(campaign)
+    log.info(
+        "eval.set_campaign_control campaign=%s control=%s was=%s from_run=%s by=%s",
+        campaign_id,
+        control or "(cleared)",
+        previous or "(none)",
+        run_id or "(n/a)",
+        set_by,
+    )
+    return campaign
+
+
+class _AddressedControl(NamedTuple):
+    """A control as a member run addresses it: the key, the map it was digested from, and the predicate."""
+
+    key: str
+    levers: dict[str, SweepableValue] | None
+    identity_version: int
+
+
+def _refuse_frozen_design(
+    campaign: EvalCampaign, *, writes_design: bool, clears_control: bool, names_control: bool
+) -> None:
+    """Refuse a change to the design of a campaign holding a run: its design is what those runs were launched to answer.
+
+    The one rule :func:`update_campaign` and :func:`set_campaign_control` hold a campaign to. With no run, nothing is
+    frozen. With one, the design is refused in any form (set, replaced, withdrawn, or declared on an exploratory
+    campaign, which would be a design declared after its data), and so is a control re-pointed or cleared; a control
+    addressed for the first time, while the design declares none, is allowed. ``name`` and ``description`` are never
+    asked about here.
+
+    :param campaign: The stored campaign.
+    :ptype campaign: EvalCampaign
+    :param writes_design: Whether the change writes ``declared_design``.
+    :ptype writes_design: bool
+    :param clears_control: Whether it clears the declared control.
+    :ptype clears_control: bool
+    :param names_control: Whether it addresses a control from a run.
+    :ptype names_control: bool
+    :raises ConflictError: The campaign holds a run and the change does one of the refused things.
+    """
+    if not campaign.run_ids:
+        return
+    declared_control = campaign.declared_design.control if campaign.declared_design is not None else None
+    if writes_design:
+        changed = "its design"
+    elif clears_control and declared_control is not None:
+        changed = "its control (clearing it)"
+    elif names_control and declared_control is not None:
+        changed = "its control (re-pointing it; a control is addressed once)"
+    else:
+        return
+    raise ConflictError(
+        f"campaign '{campaign.id}' holds {len(campaign.run_ids)} run(s), so its design is frozen: it is what those "
+        f"runs were launched to answer, and changing {changed} now would make a question asked after the results read "
+        "as one asked before them",
+        remedy=(
+            "create a new campaign with the amended design (campaign_create) and launch into it; name and description "
+            "stay editable here"
+        ),
+    )
+
+
+def _address_control(
+    storage: CampaignStore, campaign: EvalCampaign, run_id: str, *, profile: HostProfile
+) -> _AddressedControl:
+    """The variant key a member run's observations carry, with its pre-image, or a refusal naming what is missing.
+
+    **The key and its pre-image are read together, as the run reads them.** The key is the one the
+    run's observations were stamped with, under the predicate stamped beside it; the lever map is the
+    one the run recorded at launch (or, for a run its host assembled without the launch, the one this
+    build derives — kept only where it reproduces the stamped key). Recording the map is what lets a
+    read under a later predicate re-key the control
+    (:func:`~threetears.evals.kernel.declaration.resolve_declared_control`); a key alone would match no
+    run of its own arm the moment the predicate moved, and nothing could recover it.
+
+    A map that does not reproduce the key under this build's predicate is not recorded: it is not the
+    key's pre-image, and re-keying from it would move the control onto an arm nobody chose. The control
+    is then the bare key, as a typed one is, and says so where it is read. A recorded map stamped under
+    ANOTHER predicate is kept, because it is what that predicate digested — holding it to this build's
+    arithmetic is the version coupling the map exists to remove.
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign: The campaign being designated on.
+    :ptype campaign: EvalCampaign
+    :param run_id: The member run to address, read in the campaign's scope.
+    :ptype run_id: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The 64-hex variant key, the lever map it was digested from (None where none reproduces it), and
+        the identity version it was computed under.
+    :rtype: _AddressedControl
+    :raises ValidationFailedError: The run is not attached, or does not resolve in the campaign's
+        scope.
+    :raises LeverCoordinateError: The run recorded no lever map (its host assembled it without the launch),
+        and the host's variant map disagrees with its own registry — as assembling a bundle over the
+        run would refuse too.
+    """
+    from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
+
+    if run_id not in campaign.run_ids:
+        raise ValidationFailedError(
+            f"run '{run_id}' is not attached to campaign '{campaign.id}'",
+            remedy="include the run in the campaign's run_ids before designating its variant the control",
+        )
+    scope_id = campaign.scope_id
+    run = storage.load_eval_run(run_id, scope_id)
+    if run is None:
+        raise ValidationFailedError(
+            f"run '{run_id}' does not exist in scope '{scope_id}' — nothing to resolve a variant from",
+            remedy=f"name a run of this scope ({FIND_RUN})",
+        )
+    identity = resolve_variant_identity(run=run, profile=profile)
+    results = storage.query_eval_results_by_run(run_id, scope_id)
+    key = variant_key_of_run(results)
+    if key is None:
+        # A run launched a moment ago has no observation yet, and a designation made AT launch
+        # is the common case, not an edge: the operator picks the control while choosing the
+        # arms. Every result such a run writes is stamped by digesting the lever map
+        # `resolve_variant_identity` reads — the runner's own read — so the key its observations
+        # WILL carry is known now, from the same read, not a second derivation.
+        return _AddressedControl(identity.variant_key, identity.levers, identity.identity_version)
+    version = results[0].identity_version
+    reproduces = identity.variant_key == key
+    recorded_under_another = run.variant_levers is not None and version != IDENTITY_VERSION
+    return _AddressedControl(key, identity.levers if reproduces or recorded_under_another else None, version)
+
+
+def _with_control(design: CampaignDesign, addressed: _AddressedControl | None) -> CampaignDesign:
+    """``design`` with its control set from a member run, or cleared — the key and its pre-image as one.
+
+    The three fields are written together and only together: a key left beside the map of the control
+    it replaced would re-key, under the next predicate, onto the old control's arm.
+
+    :param design: The declaration the control lives on.
+    :ptype design: CampaignDesign
+    :param addressed: The control a member run addresses, or None to clear it.
+    :ptype addressed: _AddressedControl | None
+    :return: The declaration, unstamped; the caller stamps it as it does every declaration write.
+    :rtype: CampaignDesign
+    """
+    if addressed is None:
+        return design.model_copy(update={"control": None, "control_levers": None, "control_identity_version": None})
+    return design.model_copy(
+        update={
+            "control": addressed.key,
+            "control_levers": addressed.levers,
+            "control_identity_version": addressed.identity_version,
+        }
+    )
+
+
+#: The control's pre-image: what the server records beside a control's key, and a caller never sets.
+_CONTROL_PRE_IMAGE: tuple[str, ...] = ("control_levers", "control_identity_version")
+
+
+def _with_server_owned_pre_image(
+    supplied: CampaignDesign | Mapping[str, Any], design: CampaignDesign, stored: CampaignDesign | None
+) -> CampaignDesign:
+    """``design`` as a caller typed it, with its control's pre-image set by the server — or a refusal of the caller's.
+
+    The lever map and the identity version are what lets a later predicate re-key the control, so they are
+    worth exactly as much as their tie to the key. A caller can only break it: a lever map sent beside a
+    hand-changed key re-keys, on read, onto the map's arm rather than the key's, and the map is checked
+    against the key only under this build's predicate; a declaration echoed WITHOUT the pair would be
+    dated this build's by validation, which turns a control a later predicate cannot re-key into one that
+    reads as current. So the server decides the pair from the key alone: **a typed key unchanged from the
+    stored declaration keeps the stored pair**, and **any other typed key has no map and is dated this
+    build's** — the only predicate a key typed now can have been read under. A pre-image comes only from a
+    run (``control_from_run_id``), which writes all three together after this.
+
+    Refused rather than ignored when a value is sent that the server would not store, because a caller who
+    sends a lever map believes it set one; a value equal to the server's (a read echoed back whole) is
+    accepted, so round-tripping a declaration stays possible, and a null is no value.
+
+    :param supplied: The declaration as the caller sent it — a mapping, whose keys say what was sent, or a model,
+        whose lever map is compared and whose version is replaced.
+    :ptype supplied: CampaignDesign | Mapping[str, Any]
+    :param design: That declaration, validated.
+    :ptype design: CampaignDesign
+    :param stored: The declaration the campaign holds now, or None (a create, or a campaign that declared none).
+    :ptype stored: CampaignDesign | None
+    :return: ``design`` with the server's pre-image.
+    :rtype: CampaignDesign
+    :raises ValidationFailedError: ``supplied`` sends a lever map or an identity version the server would not store.
+    """
+    from threetears.evals.kernel.identity import IDENTITY_VERSION
+
+    if design.control is None:
+        server: dict[str, Any] = {"control_levers": None, "control_identity_version": None}
+    elif stored is not None and stored.control == design.control:
+        server = {"control_levers": stored.control_levers, "control_identity_version": stored.control_identity_version}
+    else:
+        server = {"control_levers": None, "control_identity_version": IDENTITY_VERSION}
+    # A null states nothing: it is what a declaration dumped without a control carries for both, and what the
+    # server stores for a typed key's map, so it can set nothing either way. A model's version is not compared:
+    # validation dates a typed key on construction, so a stamped version cannot be told from a stated one, and
+    # the server's replaces it either way. Its lever map is compared, as a mapping's is.
+    if isinstance(supplied, Mapping):
+        sent = {
+            field: getattr(design, field) if field == "control_levers" else supplied[field]
+            for field in _CONTROL_PRE_IMAGE
+            if supplied.get(field) is not None
+        }
+    else:
+        sent = {} if supplied.control_levers is None else {"control_levers": supplied.control_levers}
+    # Compared as a caller can send them: by the fields this build declares. A lever value a newer build wrote a
+    # field on keeps it on the stored side, and a caller echoing the declaration back cannot send what this build
+    # does not know, so comparing whole shapes would refuse every echo of such a campaign.
+    if refused := sorted(field for field, value in sent.items() if _as_declared(value) != _as_declared(server[field])):
+        raise ValidationFailedError(
+            f"the design sends {' and '.join(f'`{field}`' for field in refused)}, which the server records beside "
+            "the control's key and never takes from a caller: a lever map is recorded from the run the control "
+            "is addressed from, and a typed key is dated by the build accepting it",
+            remedy=(
+                "leave control_levers and control_identity_version out; name the control with control_from_run_id "
+                "to have its lever map recorded"
+            ),
+        )
+    return design.model_copy(update=server)
+
+
+def _as_declared(value: Any) -> Any:
+    """``value`` as this build declares it: a model as its dump, a mapping of models as a mapping of dumps."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {key: _as_declared(item) for key, item in value.items()}
+    return value
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        store: CampaignStore = storage
+        del store
+
+
+__all__ = [
+    "CAMPAIGN_SERVER_FIELDS",
+    "CampaignStore",
+    "DeclarableAxes",
+    "OpenAxisFamily",
+    "add_runs_to_campaign",
+    "create_campaign",
+    "declarable_axes",
+    "get_campaign",
+    "get_campaign_view",
+    "list_campaigns",
+    "remove_runs_from_campaign",
+    "set_campaign_control",
+    "update_campaign",
+]

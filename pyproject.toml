@@ -131,6 +131,9 @@ dev-dependencies = [
     # itself is NOT pinned here, because it needs the xmlsec1 system binary and nothing in
     # this package imports it -- assertion verification is the consumer's call.
     "defusedxml>=0.7",
+    # the FastMCP transport of 3tears-evals is behind its `fastmcp` extra; installed in dev so the
+    # transport's in-process client test runs rather than skipping. Same bounds as the extra.
+    "fastmcp>=3.4.2,<4",
 ]
 
 # The 3tears family is exempt from the cooldown above. That window exists to
@@ -167,6 +170,7 @@ dev-dependencies = [
 "3tears-datasources" = "PT0S"
 "3tears-enforcement" = "PT0S"
 "3tears-epoch" = "PT0S"
+"3tears-evals" = "PT0S"
 "3tears-geo" = "PT0S"
 "3tears-iam" = "PT0S"
 "3tears-langgraph" = "PT0S"
@@ -216,7 +220,15 @@ target-version = "py314"
 #
 # Turned on only once every finding was cleared. A gate that fails on a clean checkout is a gate
 # people learn to skip.
-select = ["SLF", "F", "N"]
+#
+# TC004 alone, added 2026-10-11 after a name imported only under `if TYPE_CHECKING:` was read at
+# RUNTIME: 3tears-evals' job_poll render called `JudgeTemperatureComparison.model_validate(...)`, so
+# every poll of a completed judge temperature job raised NameError while the job and its record were
+# fine. mypy cannot see it (the name IS defined for the checker) and F821 cannot either (the import
+# exists); TC004 is the rule for exactly that. The rest of TC is not selected: it moves imports INTO
+# type-checking blocks, the opposite direction, and is style rather than a fault. On adoption it found
+# that one site and one redundant re-import of a name the module already imported at runtime.
+select = ["SLF", "F", "N", "TC004"]
 
 # N (pep8-naming) enabled 2026-07-27 on Pace's instruction, after measuring whether the naming
 # conventions actually drift across the family. They do not: functions, classes, variables and
@@ -369,6 +381,8 @@ markers = [
     # had no test that could fail when it regressed.
     "real_robots_fetch: exercise the real robots default fetcher rather than the offline stub",
     "enforcement: a structural rule over the source tree rather than a behaviour",
+    "memory_probe: measures a run's peak heap with tracemalloc; deselect with -m 'not memory_probe' if slow",
+    "paid: spends money at a model provider; skipped unless opted in (THREETEARS_EVALS_PAID=1) with a provider key",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level
@@ -410,6 +424,7 @@ mypy_path = [
     "packages/datasources/src",
     "packages/enforcement/src",
     "packages/epoch/src",
+    "packages/evals/src",
     "packages/langgraph/src",
     "packages/mcp/src",
     "packages/media-contracts/src",
@@ -445,6 +460,7 @@ files = [
     "packages/datasources/src",
     "packages/enforcement/src",
     "packages/epoch/src",
+    "packages/evals/src",
     "packages/geo/src",
     "packages/iam/src",
     "packages/langgraph/src",

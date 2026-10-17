@@ -1,0 +1,963 @@
+"""Structural gate: the engine's packages import only what the allowed-dependency matrix permits.
+
+``threetears.evals`` is thirteen physical subpackages, and one allowed-dependency matrix says which may
+import which:
+
+============  ======  ======  =====  ========  ===  =======  =======  =====  ===========
+from          schema  kernel  run    analysis  gen  storage  testing  quick  third-party
+============  ======  ======  =====  ========  ===  =======  =======  =====  ===========
+schema        yes     --      --     --        --   --       --       --     pydantic
+kernel        yes     yes     --     --        --   --       --       --     pydantic
+run           yes     yes     yes    --        --   --       --       --     pydantic
+analysis      yes     yes     --     yes       --   --       --       --     pydantic
+gen           yes     yes     --     --        yes  --       --       --     pydantic
+storage       yes     --      --     --        --   yes      --       --     (none)
+testing       yes     yes     --     --        --   --       yes      --     (none)
+quick         yes     yes     yes    yes       --   yes      --       yes    pydantic
+============  ======  ======  =====  ========  ===  =======  =======  =====  ===========
+
+``schema`` is the stored shapes and the ports a host implements; ``kernel`` is the behaviour every
+other package runs on, with the host contract under ``kernel.host``. The schema reaches nothing of the
+engine, so a stored shape never depends on behaviour.
+
+The package carries no charting library: a report draws its two charts as inline SVG of its own
+(``analysis.report.svg``), so no package's third-party column names one.
+
+Three more sit above the engine, as the surfaces an agent drives it through, and the table does not
+name them:
+
+* ``ops`` -- typed operations and the job contract -- may import schema, kernel, run, analysis and itself; pydantic.
+* ``actions`` -- the action catalogue -- may import schema, kernel, run, ops and itself; pydantic. It reaches
+  analysis only through ``ops``.
+* ``transports`` -- one adapter per server -- may import schema, kernel, ops, actions and itself; pydantic, and each
+  adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
+
+Nothing in the engine imports any of the three, ``quick`` included, but ``testing``, whose jobs conformance kit
+runs ``ops`` and ``actions`` from above them (see below): the run summary it prints, the
+report it serializes and the spend it totals live in ``analysis``, below both.
+
+``providers`` is the shipped completion client: it speaks each provider's HTTP API and implements the completion
+port, so it may import schema, kernel and itself, ``run`` for the request settings a judged run records
+(``JUDGE_REQUEST_SETTINGS``, which its role factory builds a judge from, so the two cannot disagree), ``testing`` for
+the one replay format (``RecordedCompletions``, behind ``recording=``), ``negotiation``, and past the stdlib only
+``httpx`` and pydantic: no SDK, no LangChain, no other 3tears package. Nothing in the engine, and nothing above it,
+imports it, which keeps the engine provider-neutral (``tests/test_providers_boundary.py`` holds the same from the
+client's side, name by name); the package root re-exports its ``Model``, loaded by name on first read, and ``quick``
+builds one, inside the function that needs it, where an eval names a model by id (a ``Judge(model="...")``, a TOML
+file's ``model``), so importing ``quick`` loads no client. Its spend inside a runner call reaches ``quick`` through
+``kernel`` (``note_spend``), never by ``quick`` importing it.
+
+``negotiation`` is how a completion client sends the closest request settings a model takes and answers a
+provider's refusal of one: the shipped client uses it, and so does a host's own client, which is why it is a base
+root rather than part of the client. It may import schema and itself, and nothing past the stdlib: no SDK, no HTTP
+client, no pydantic of its own (:func:`test_negotiation_imports_on_a_base_install_with_no_sdk` imports it with every
+provider package made unimportable). Only ``providers`` imports it; the engine never sends a request.
+
+``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
+against its own adapter, and nothing in the engine may reach either. ``storage`` needs nothing but
+the port it implements, in ``schema``. ``testing`` reaches ``kernel`` too: the store kit needs only the
+port, but the reader kit derives identities and reads a host profile. And it reaches ``ops`` and ``actions``, above
+the engine, because the jobs conformance kit runs a catalogue's actions and polls their jobs as a transport does;
+nothing reaches ``testing``, so this adds no edge into the engine.
+
+``quick`` is the batteries: ``Eval`` and the command line. It is the one package that COMPOSES
+the others -- a launch from ``run``, a report from ``analysis``, the reference store from ``storage``
+-- which is why it is a package of its own rather than a module of ``run``: ``run`` building the
+in-memory store would be the engine reaching an adapter. Nothing in the engine imports ``quick``, so
+composing sits above everything it composes. ``python -m threetears.evals`` (``__main__``) is held to its
+row. It reaches ``providers`` for one thing: a model named by id is built as the shipped client's ``Model``.
+
+**The root** (``threetears.evals``) is held to a row of its own: the schema, the quick path whose names
+(``Eval``, ``Judge``, ...) and ``providers``, whose ``Model``, its module ``__getattr__`` serves on first use, so
+``import threetears.evals`` loads none of the engine. Nothing in the package imports the root: ``testing`` above
+all, which the root's lazy names would otherwise close a cycle through.
+
+No row names a 3tears package: the engine depends on none. Its loggers are stdlib loggers, taken from
+:mod:`threetears.evals.schema.logs`, which every package may import.
+
+**Placement is the path, not a list.** A module is in a package because it lives in that package's
+directory: ``threetears/evals/schema/``, ``kernel/``, ``run/``, ``analysis/``, ``gen/``, ``storage/``,
+``testing/`` or ``quick/``. The two markers the path cannot place -- the ``threetears.evals`` root and its
+``__main__`` -- are placed by name in :data:`~packages.evals.tests.package_placement.TREE_MARKERS`, the root
+held to a row of its own (``root``: the schema, ``quick`` and ``providers``, whose names it exports lazily) and
+``__main__`` to quick's. The rule
+itself lives in :mod:`packages.evals.tests.package_placement`.
+
+**What is checked:**
+
+* Every import edge out of a placed module: runtime, ``TYPE_CHECKING`` and function-level imports all
+  count, relative imports resolved and ``from pkg import submodule`` expanded to the submodule.
+* **Every module under ``threetears/evals/`` is placed**, and :func:`test_every_eval_module_is_placed`
+  keeps it that way, so a module born outside every package fails rather than going unchecked.
+* A consumer reaches a package only from one of the public roots (:data:`PUBLIC_ROOTS`), and only a
+  name that root's ``__all__`` declares. The consumers walked here are the toy host under
+  ``tests/fixtures/toyhost/`` -- the second consumer the engine is proven against, which implements
+  the host contract from outside as any other host will -- and the minimal courier host under
+  ``tests/fixtures/courierhost/``, the third. A host's own tree is the host's to walk on
+  the same terms. String couplings count too: a string literal that is wholly a dotted path below a
+  package root is refused like the import it stands for.
+* Filesystem couplings: a placed module may resolve data beside itself from ``__file__``, never a
+  directory above its own (:func:`test_no_placed_module_climbs_out_of_its_directory_by_path`). It
+  reads ``pathlib`` chains (``.parents[...]``, ``.parent.parent``); an ``os.path.dirname`` nest or a
+  path assembled from strings is not seen.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+import subprocess
+import sys
+from collections.abc import Iterator
+from pathlib import Path
+from typing import NamedTuple
+
+import pytest
+
+from packages.evals.tests.import_resolution import absolute_module
+from packages.evals.tests.package_placement import discover, eval_modules, join, placement, unplaced_modules
+
+#: The package's ``src``: the directory holding the ``threetears`` namespace.
+SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
+
+#: The package's tests directory, under which the toy host lives.
+TESTS_ROOT = Path(__file__).resolve().parent
+
+#: The repository root, which the probes run from.
+REPO_ROOT = TESTS_ROOT.parents[2]
+
+#: The matrix, for the thirteen packages.
+ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
+    "schema": frozenset({"schema"}),
+    "kernel": frozenset({"schema", "kernel"}),
+    "run": frozenset({"schema", "kernel", "run"}),
+    "analysis": frozenset({"schema", "kernel", "analysis"}),
+    "gen": frozenset({"schema", "kernel", "gen"}),
+    "storage": frozenset({"schema", "storage"}),
+    "testing": frozenset({"schema", "kernel", "ops", "actions", "testing"}),
+    "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "providers", "quick"}),
+    "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
+    "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
+    "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
+    "providers": frozenset({"schema", "kernel", "run", "testing", "negotiation", "providers"}),
+    "negotiation": frozenset({"schema", "negotiation"}),
+    # The package root: the schema, and what it exports lazily (the quick path's names, and `providers`' `Model`).
+    "root": frozenset({"schema", "quick", "providers", "root"}),
+}
+
+#: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
+#: leading segments, since the namespace itself is shared by the whole family).
+ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
+    "schema": frozenset({"pydantic"}),
+    "kernel": frozenset({"pydantic"}),
+    "run": frozenset({"pydantic"}),
+    "analysis": frozenset({"pydantic"}),
+    "gen": frozenset({"pydantic"}),
+    "storage": frozenset(),
+    "testing": frozenset(),
+    "quick": frozenset({"pydantic"}),
+    "root": frozenset(),
+    "ops": frozenset({"pydantic"}),
+    "actions": frozenset({"pydantic"}),
+    "transports": frozenset({"pydantic"}),
+    # The client's own HTTP, and the pydantic its `json` validates a reply with: no SDK, no other 3tears package.
+    "providers": frozenset({"httpx", "pydantic"}),
+    # The stdlib alone: what a host's own client of raw HTTP imports beside its own transport.
+    "negotiation": frozenset(),
+}
+
+#: The module-level third-party exceptions, one per extra: the FastMCP transport and nothing else may import
+#: ``fastmcp``, the ``[fastmcp]`` extra's dependency.
+THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
+    "transports.fastmcp": frozenset({"fastmcp"}),
+}
+
+#: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
+#: of these. ``kernel.host`` is a root of its own inside a package: the contract a host implements.
+#: ``negotiation`` is what a completion client sends and resends, and ``providers`` the shipped client.
+PUBLIC_ROOTS: tuple[str, ...] = (
+    "schema",
+    "kernel",
+    "kernel.host",
+    "run",
+    "analysis",
+    "gen",
+    "storage",
+    "testing",
+    "quick",
+    "ops",
+    "actions",
+    "transports.fastmcp",
+    "negotiation",
+    "providers",
+)
+
+#: The consumers walked, as globs under the tests directory.
+SECOND_CONSUMERS: tuple[str, ...] = ("fixtures/toyhost/**/*.py", "fixtures/courierhost/**/*.py")
+
+
+# --- the walk --------------------------------------------------------------------------------------
+
+
+class Edge(NamedTuple):
+    """One import edge out of an engine module, resolved to the module that owns the target."""
+
+    source: str
+    line: int
+    target: str
+
+
+class Violation(NamedTuple):
+    """An edge the matrix forbids, with the placements that make it forbidden."""
+
+    source: str
+    line: int
+    source_package: str
+    target: str
+    target_package: str
+
+    def render(self) -> str:
+        """Describe the violation on one line, with the line number to go and look at."""
+        return f"{self.source}:{self.line} ({self.source_package}) -> {self.target} ({self.target_package})"
+
+
+def _owner(target: str, modules: dict[str, Path]) -> str:
+    """The longest prefix of ``target`` that is a real module (an attribute path resolves upward)."""
+    parts = target.split(".")
+    while parts and ".".join(parts) not in modules:
+        parts.pop()
+    return ".".join(parts) or target
+
+
+def _import_edges(module: str, path: Path, modules: dict[str, Path], root: Path) -> Iterator[Edge]:
+    """Every import in ``path`` at any depth -- runtime, TYPE_CHECKING and function-level alike."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield Edge(module, node.lineno, alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            base = absolute_module(path, node, root=root)
+            for alias in node.names:
+                candidate = f"{base}.{alias.name}"
+                yield Edge(module, node.lineno, candidate if candidate in modules else base)
+
+
+def _in_the_engine(target: str) -> bool:
+    return target == "threetears.evals" or target.startswith("threetears.evals.")
+
+
+def third_party_root(target: str) -> str | None:
+    """The import root of ``target`` when it is neither the stdlib nor the engine; None otherwise."""
+    parts = target.split(".")
+    if not parts[0] or _in_the_engine(target) or parts[0] in sys.stdlib_module_names or parts[0] == "__future__":
+        return None
+    return ".".join(parts[:2]) if parts[0] == "threetears" else parts[0]
+
+
+def matrix_violations(root: Path) -> tuple[list[Violation], list[Violation]]:
+    """Package-matrix violations and third-party violations over every placed module."""
+    modules = discover(root)
+    package_violations: list[Violation] = []
+    third_party_violations: list[Violation] = []
+    for relative, path in sorted(eval_modules(root).items()):
+        source = join(relative)
+        source_package = placement(source)
+        if source_package not in ALLOWED_PACKAGES:
+            continue  # a module in no package fails test_every_eval_module_is_placed instead
+        for edge in _import_edges(source, path, modules, root):
+            if _in_the_engine(edge.target):
+                target = _owner(edge.target, modules)
+                target_package = placement(target)
+                if target_package is None:
+                    continue  # a module in no package fails test_every_eval_module_is_placed instead
+                if target_package not in ALLOWED_PACKAGES[source_package]:
+                    package_violations.append(Violation(source, edge.line, source_package, target, target_package))
+                continue
+            third_party = third_party_root(edge.target)
+            if third_party is None:
+                continue
+            allowed = ALLOWED_THIRD_PARTY[source_package] | THIRD_PARTY_EXCEPTIONS.get(relative, frozenset())
+            if third_party not in allowed:
+                third_party_violations.append(Violation(source, edge.line, source_package, third_party, "third-party"))
+    return package_violations, third_party_violations
+
+
+# --- the gate over today's tree --------------------------------------------------------------------
+
+
+def test_placed_modules_obey_the_package_matrix() -> None:
+    """No placed module imports a package its row forbids."""
+    package_violations, _ = matrix_violations(SOURCE_ROOT)
+    assert not package_violations, (
+        "These imports break the allowed-dependency matrix. Fix the import -- move the symbol to a "
+        "package the importer may reach, or pass it in as a value; there is no allowlist to add it to:\n  "
+        + "\n  ".join(v.render() for v in package_violations)
+    )
+
+
+def test_placed_modules_import_only_their_third_party_column() -> None:
+    """Past the stdlib, the packages reach pydantic, and each extra's dependency only its own module."""
+    _, third_party_violations = matrix_violations(SOURCE_ROOT)
+    assert not third_party_violations, (
+        "These third-party imports are outside the matrix's third-party column:\n  "
+        + "\n  ".join(v.render() for v in third_party_violations)
+    )
+
+
+def test_every_eval_module_is_placed() -> None:
+    """A module under threetears/evals/ must be born in the package directory that owns it."""
+    unplaced = sorted(unplaced_modules(SOURCE_ROOT))
+    assert not unplaced, (
+        f"Engine modules outside every package directory: {unplaced}. Create them under "
+        "threetears/evals/{schema,kernel,run,analysis,gen}/ (the package that owns the data it acts on, among "
+        "those the matrix lets it import from). The matrix holds no row for a module in no package, so it "
+        "would import anything unchecked."
+    )
+
+
+def test_the_placed_population_is_not_empty() -> None:
+    """The gate means nothing over an empty population, so assert the walk found placed modules."""
+    placed = {placement(join(r)) for r in eval_modules(SOURCE_ROOT)} - {None}
+    assert {"analysis", "schema", "kernel", "gen", "run"} <= placed, placed
+
+
+def _refers_to_file(node: ast.AST) -> bool:
+    return any(isinstance(n, ast.Name) and n.id == "__file__" for n in ast.walk(node))
+
+
+def path_climbs(root: Path) -> list[str]:
+    """``module:line`` for every placed module that walks above its own directory by path.
+
+    A package is installed as a directory, so a module finding a file by ``__file__`` may look
+    beside itself (``Path(__file__).parent / "x.json"`` is package data that travels with it) and
+    nowhere higher: a ``.parents[...]`` or ``.parent.parent`` over ``__file__`` reaches a directory
+    the package does not ship -- and the import walk above cannot see it, because nothing is imported.
+
+    :param root: The directory holding the ``threetears`` namespace.
+    :ptype root: Path
+    :return: The offending sites, sorted.
+    :rtype: list[str]
+    """
+    climbs: set[str] = set()
+    for relative, path in eval_modules(root).items():
+        if placement(join(relative)) not in ALLOWED_PACKAGES:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute) or not _refers_to_file(node.value):
+                continue
+            nested_parent = (
+                node.attr == "parent" and isinstance(node.value, ast.Attribute) and node.value.attr == "parent"
+            )
+            if node.attr == "parents" or nested_parent:
+                climbs.add(f"{relative}:{node.lineno}")
+    return sorted(climbs)
+
+
+def test_no_placed_module_climbs_out_of_its_directory_by_path() -> None:
+    """The packages find no file above their own directory through ``__file__``."""
+    climbs = path_climbs(SOURCE_ROOT)
+    assert not climbs, (
+        "These modules locate a file above their own directory by path, which an installed package does "
+        "not have. Take the location as a value from the host instead:\n  " + "\n  ".join(climbs)
+    )
+
+
+# --- the consumer column: public roots only --------------------------------------------------------
+
+
+class RootViolation(NamedTuple):
+    """A consumer import that reaches a package other than through a public root's ``__all__``."""
+
+    source: str
+    line: int
+    imported: str
+    why: str
+
+    def render(self) -> str:
+        """Describe the violation on one line, with the line number to go and look at."""
+        return f"{self.source}:{self.line} {self.imported} — {self.why}"
+
+
+def public_api(root: Path) -> dict[str, frozenset[str]]:
+    """Each public root's ``__all__``, and the package's own, read from its ``__init__.py`` without importing it.
+
+    The package itself declares the quick path's names (``Eval``, ``Judge``, ...), which a consumer imports from it.
+    Read statically so the check works on a synthetic tree and on a root whose import would fail,
+    which is the state a broken root is in. A root with no literal ``__all__`` declares nothing.
+
+    :param root: The directory holding the ``threetears`` namespace.
+    :ptype root: Path
+    :return: Absolute root module name -> the names it declares public.
+    :rtype: dict[str, frozenset[str]]
+    """
+    declared: dict[str, frozenset[str]] = {}
+    for relative in ("", *PUBLIC_ROOTS):
+        init = root.joinpath("threetears", "evals", *(relative.split(".") if relative else ()), "__init__.py")
+        names: frozenset[str] = frozenset()
+        if init.is_file():
+            for node in ast.parse(init.read_text(encoding="utf-8")).body:
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+                ):
+                    names = frozenset(ast.literal_eval(node.value))
+        declared[join(relative)] = names
+    return declared
+
+
+def consumer_files(tests_root: Path) -> list[tuple[str, Path]]:
+    """Every consumer source file the public-root rule binds, with a label for messages.
+
+    :param tests_root: The directory the consumer globs hang off.
+    :ptype tests_root: Path
+    :return: ``(label, file)`` pairs, sorted.
+    :rtype: list[tuple[str, Path]]
+    """
+    found: dict[str, Path] = {}
+    for pattern in SECOND_CONSUMERS:
+        for path in tests_root.glob(pattern):
+            found[path.relative_to(tests_root).as_posix()] = path
+    return sorted(found.items())
+
+
+def _in_a_package(module: str) -> bool:
+    """Whether ``module`` is one of the packages or below one."""
+    return placement(module) in ALLOWED_PACKAGES
+
+
+#: A string literal that IS a dotted path into one of the engine packages, below the package name.
+#: Whole-string and dotted only: a docstring or a sentence naming a module never matches, and a
+#: file path in slash form is a file to edit rather than a module to import, so it is left alone.
+_DOTTED_PACKAGE_PATH = re.compile(r"threetears\.evals\.(?:schema|kernel|run|analysis|gen)(?:\.\w+)+")
+
+
+def _string_addressed_imports(tree: ast.AST, declared: dict[str, frozenset[str]]) -> Iterator[tuple[int, str]]:
+    """``(line, path)`` for every string literal naming a module below a package root.
+
+    An ``importlib`` string, a registry's ``(module, attribute)`` reference or a module list a walk
+    imports by name all reach a module the way an ``import`` statement does, and the import walk
+    cannot see any of them. A public root named by string is admitted, exactly as a ``from`` import
+    of it is. A literal naming a root's attribute (``threetears.evals.schema.EvalRun``) is refused
+    too, because nothing tells it apart from a submodule by its spelling.
+    """
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _DOTTED_PACKAGE_PATH.fullmatch(node.value)
+            and node.value not in declared
+        ):
+            yield node.lineno, node.value
+
+
+def public_root_violations(
+    root: Path, consumers: list[tuple[str, Path]], *, consumer_root: Path
+) -> list[RootViolation]:
+    """Consumer imports of a package that do not go through a public root's ``__all__``.
+
+    Runtime, ``TYPE_CHECKING`` and function-level imports all count, and relative imports are
+    resolved. Four shapes are refused: a whole-module import of anything in a package (it grants
+    every name the module grows), a ``from`` import out of a module that is not a public root (a
+    submodule reached past its root), a name the root does not declare in ``__all__`` (the
+    ``threetears.evals`` package declares the quick path's names, and hands out no package as a module), and a
+    string literal that is a dotted path below a root (:func:`_string_addressed_imports`).
+
+    :param root: The directory holding the ``threetears`` namespace, for the roots' ``__all__``.
+    :ptype root: Path
+    :param consumers: The ``(label, file)`` pairs to walk.
+    :ptype consumers: list[tuple[str, Path]]
+    :param consumer_root: The directory the consumers' relative imports resolve against.
+    :ptype consumer_root: Path
+    :return: The violations, in file order.
+    :rtype: list[RootViolation]
+    """
+    declared = public_api(root)
+    violations: list[RootViolation] = []
+    for label, path in consumers:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        violations.extend(
+            RootViolation(label, line, f'"{dotted}"', "a string naming a module below a public root; name the root")
+            for line, dotted in _string_addressed_imports(tree, declared)
+        )
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                violations.extend(
+                    RootViolation(
+                        label, node.lineno, f"import {alias.name}", "a whole-module import; import names from its root"
+                    )
+                    for alias in node.names
+                    if _in_a_package(alias.name)
+                )
+                continue
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            base = absolute_module(path, node, root=consumer_root)
+            reaches_a_package = _in_a_package(base) or (
+                base == "threetears.evals" and any(_in_a_package(join(alias.name)) for alias in node.names)
+            )
+            if not reaches_a_package:
+                continue
+            if base not in declared:
+                violations.append(RootViolation(label, node.lineno, f"from {base} import …", "not a public root"))
+                continue
+            violations.extend(
+                RootViolation(label, node.lineno, f"from {base} import {alias.name}", f"not in {base}.__all__")
+                for alias in node.names
+                if alias.name not in declared[base]
+            )
+    return violations
+
+
+def test_the_toy_host_imports_only_public_names() -> None:
+    """The second consumer reaches the packages the way any client will: through the roots' ``__all__``."""
+    violations = public_root_violations(SOURCE_ROOT, consumer_files(TESTS_ROOT), consumer_root=REPO_ROOT)
+    assert not violations, (
+        "These imports reach an engine package other than through a public root's __all__. Import the "
+        "name from its package root; if the root does not export it, decide whether it is public API "
+        "(add it to that root's imports and __all__) or something the caller should not be reaching for. "
+        "There is no allowlist:\n  " + "\n  ".join(v.render() for v in violations)
+    )
+
+
+def test_the_example_hosts_are_held_to_the_rule_as_consumers() -> None:
+    """The walk reaches the two example hosts and nothing else under tests: white-box tests reach what they test."""
+    labels = {label for label, _path in consumer_files(TESTS_ROOT)}
+    assert {"fixtures/toyhost/kind.py", "fixtures/toyhost/run.py", "fixtures/courierhost/__init__.py"} <= labels
+    assert all(label.startswith(("fixtures/toyhost/", "fixtures/courierhost/")) for label in labels)
+
+
+def _example_host_reaches(path: Path) -> Iterator[tuple[int, str]]:
+    """``(line, module)`` for every import a host file makes into this repository's own tree."""
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+        if isinstance(node, ast.ImportFrom):
+            module = absolute_module(path, node, root=REPO_ROOT)
+            if module.startswith("packages."):
+                yield node.lineno, module
+        elif isinstance(node, ast.Import):
+            yield from ((node.lineno, alias.name) for alias in node.names if alias.name.startswith("packages."))
+
+
+def test_an_example_host_imports_only_itself() -> None:
+    """A host is reference code an adopter copies, so it reaches nothing of this repository's tests.
+
+    Its own package and the public roots (held above) are the whole of what it imports — its store
+    included, which is the engine's shipped ``InMemoryDocumentStore``. A host that borrowed a test
+    helper, a factory or another host's module would not run once copied out.
+    """
+    offenders = [
+        f"{label}:{line}: {module}"
+        for label, path in consumer_files(TESTS_ROOT)
+        for own in ["packages.evals.tests." + ".".join(Path(label).parts[:2])]
+        for line, module in _example_host_reaches(path)
+        if module != own and not module.startswith(own + ".")
+    ]
+    assert not offenders, "an example host imports from outside itself:\n  " + "\n  ".join(offenders)
+
+
+def test_every_public_root_declares_what_it_binds() -> None:
+    """Each root's ``__all__`` names something the root actually binds, so a declared name imports."""
+    import importlib
+
+    missing = []
+    for module, names in public_api(SOURCE_ROOT).items():
+        assert names, f"{module} declares no __all__, so nothing in it is public and every consumer import is refused"
+        loaded = importlib.import_module(module)
+        missing.extend(f"{module}.{name}" for name in sorted(names) if not hasattr(loaded, name))
+    assert not missing, "Declared in __all__ but not bound by the root:\n  " + "\n  ".join(missing)
+
+
+#: Each public root, imported first in a fresh interpreter, must load. Eager roots turn a submodule import into a
+#: whole-package import, so an import cycle surfaces only when a root is the FIRST thing a process imports.
+_ROOT_PROBE = "import importlib\nimportlib.import_module({module!r})\n"
+
+
+@pytest.mark.parametrize("relative", PUBLIC_ROOTS)
+def test_each_public_root_imports_first_and_alone(relative: str) -> None:
+    """A root that only imports after something else has warmed its package is a cycle waiting."""
+    module = join(relative)
+    proc = subprocess.run(
+        [sys.executable, "-c", _ROOT_PROBE.format(module=module)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert proc.returncode == 0, f"importing {module} first, in a fresh interpreter, failed:\n{proc.stderr}"
+
+
+#: Every provider SDK and HTTP client, made unimportable, then the negotiation root imported and run: a
+#: closest choice, and a negotiated call whose first request a router refuses (OpenRouter's production 404) and whose
+#: resend without the temperature is served. A host with its own client of raw HTTP installs the base package only,
+#: and is in exactly this state.
+_NEGOTIATION_WITHOUT_AN_SDK_PROBE = (
+    "import asyncio, sys\n"
+    "for barred in ('threetears.models', 'langchain_core', 'anthropic', 'openai', 'openrouter', 'httpx'):\n"
+    "    sys.modules[barred] = None\n"
+    "from threetears.evals.negotiation import (\n"
+    "    LearnedSettings, SettingFacts, WireSettings, closest_settings, negotiate, read_router_refusal)\n"
+    "sent, _ = closest_settings(WireSettings(max_tokens=10240, reasoning_max_tokens=8192), SettingFacts(), 'openai')\n"
+    "assert sent.reasoning_effort == 'high', sent\n"
+    "class Refused(Exception):\n"
+    "    pass\n"
+    "async def send(wire, facts):\n"
+    "    if wire.temperature is not None:\n"
+    "        raise Refused()\n"
+    "    return 'served'\n"
+    "body = {'error': {'code': 404, 'message': 'No endpoints found that can handle the requested parameters.'}}\n"
+    "done = asyncio.run(negotiate(\n"
+    "    WireSettings(max_tokens=100, temperature=0.0, strict_output=True), provider_family='router', model='m',\n"
+    "    send=send, read_refusal=lambda exc: read_router_refusal(404, body), learned=LearnedSettings()))\n"
+    "assert done.reply == 'served' and done.temperature is None and done.sent_settings.strict_output, done\n"
+    "assert not [n for n in sys.modules if n.startswith('threetears.evals.providers')]\n"
+)
+
+
+def test_negotiation_imports_on_a_base_install_with_no_sdk() -> None:
+    """The negotiation root imports and negotiates with no SDK, HTTP client, LangChain or 3tears-models installed."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _NEGOTIATION_WITHOUT_AN_SDK_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert proc.returncode == 0, f"the negotiation root needed a package the base install lacks:\n{proc.stderr}"
+
+
+# --- the checker fires: synthetic trees, one per forbidden and permitted shape ----------------------
+
+
+def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
+    """Build a ``threetears/evals/`` tree under ``tmp_path`` with the given sources (and package inits)."""
+    for relative, source in files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    engine = tmp_path / "threetears" / "evals"
+    for directory in {p for p in engine.rglob("*") if p.is_dir()} | {engine}:
+        init = directory / "__init__.py"
+        if not init.exists():
+            init.write_text("", encoding="utf-8")
+    return tmp_path
+
+
+def _consumers(root: Path) -> list[tuple[str, Path]]:
+    """Every file of a synthetic tree outside the engine, as the consumers it stands for."""
+    return sorted(
+        (path.relative_to(root).as_posix(), path)
+        for path in root.rglob("*.py")
+        if not path.relative_to(root).as_posix().startswith("threetears/evals/")
+    )
+
+
+#: Synthetic names (``legacy``, ``widgets``) for the unplaced modules: a real module here would be
+#: rewritten by the package move that places it, silently changing the case.
+_BASE_FILES = {
+    "threetears/evals/legacy.py": "",
+    "threetears/evals/schema/models.py": "",
+    "threetears/evals/run/jobs.py": "",
+    "threetears/evals/analysis/stats.py": "",
+    "threetears/evals/gen/proposers.py": "",
+    "threetears/evals/kernel/scoring.py": "",
+    "threetears/evals/ops/lenses.py": "",
+    "threetears/evals/negotiation/loop.py": "",
+    "threetears/evals/quick/contract.py": "",
+    "threetears/evals/providers/__init__.py": "",
+}
+
+
+@pytest.mark.parametrize(
+    ("relative", "source", "target", "target_package"),
+    [
+        (
+            "threetears/evals/run/loop.py",
+            "from ..analysis.stats import mean\n",
+            "threetears.evals.analysis.stats",
+            "analysis",
+        ),
+        (
+            "threetears/evals/run/loop.py",
+            "from threetears.evals.analysis import stats\n",
+            "threetears.evals.analysis.stats",
+            "analysis",
+        ),
+        (
+            "threetears/evals/run/loop.py",
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from threetears.evals.analysis.stats import mean\n",
+            "threetears.evals.analysis.stats",
+            "analysis",
+        ),
+        (
+            "threetears/evals/run/loop.py",
+            "def f():\n    import threetears.evals.analysis.stats\n",
+            "threetears.evals.analysis.stats",
+            "analysis",
+        ),
+        (
+            "threetears/evals/schema/leaf.py",
+            "from threetears.evals.run.jobs import J\n",
+            "threetears.evals.run.jobs",
+            "run",
+        ),
+        # The stored shapes never reach behaviour.
+        (
+            "threetears/evals/schema/leaf.py",
+            "from threetears.evals.kernel.scoring import S\n",
+            "threetears.evals.kernel.scoring",
+            "kernel",
+        ),
+        # quick sits beside ops, not above it.
+        (
+            "threetears/evals/quick/cli.py",
+            "from threetears.evals.ops.lenses import pivot_text\n",
+            "threetears.evals.ops.lenses",
+            "ops",
+        ),
+        (
+            "threetears/evals/analysis/lens.py",
+            "from threetears.evals.run import jobs\n",
+            "threetears.evals.run.jobs",
+            "run",
+        ),
+        (
+            "threetears/evals/gen/expand.py",
+            "import threetears.evals.analysis.stats\n",
+            "threetears.evals.analysis.stats",
+            "analysis",
+        ),
+        ("threetears/evals/__init__.py", "from threetears.evals.run import jobs\n", "threetears.evals.run.jobs", "run"),
+        # The engine sends no request, so it never reaches the negotiation; and the negotiation reaches no engine.
+        (
+            "threetears/evals/run/loop.py",
+            "from threetears.evals.negotiation.loop import negotiate\n",
+            "threetears.evals.negotiation.loop",
+            "negotiation",
+        ),
+        (
+            "threetears/evals/negotiation/settings.py",
+            "from threetears.evals.kernel.scoring import S\n",
+            "threetears.evals.kernel.scoring",
+            "kernel",
+        ),
+        # The client never reaches the quick path that builds it: the edge runs one way.
+        (
+            "threetears/evals/providers/model.py",
+            "from threetears.evals.quick.contract import Eval\n",
+            "threetears.evals.quick.contract",
+            "quick",
+        ),
+        # Nothing reaches the root, whose lazy names would close a cycle: the replay format above all.
+        ("threetears/evals/testing/recorded.py", "from threetears.evals import Model\n", "threetears.evals", "root"),
+    ],
+)
+def test_the_matrix_refuses_each_forbidden_edge(
+    tmp_path: Path, relative: str, source: str, target: str, target_package: str
+) -> None:
+    """Each forbidden shape is reported, naming the owning target module and its package."""
+    violations, _ = matrix_violations(_tree(tmp_path, {**_BASE_FILES, relative: source}))
+    assert [(v.target, v.target_package) for v in violations] == [(target, target_package)]
+
+
+@pytest.mark.parametrize(
+    ("relative", "source"),
+    [
+        ("threetears/evals/run/loop.py", "from threetears.evals.schema.models import M\nfrom . import jobs\n"),
+        (
+            "threetears/evals/analysis/lens.py",
+            "from threetears.evals.schema import models\nfrom .stats import mean\n",
+        ),
+        ("threetears/evals/gen/expand.py", "from ..schema.models import M\n"),
+        # The kernel reads the stored shapes it acts on.
+        ("threetears/evals/kernel/scoring.py", "from threetears.evals.schema.models import M\n"),
+        # An edge into a module in no package is the placement test's to refuse, not the walk's.
+        ("threetears/evals/run/loop.py", "from threetears.evals.legacy import execute_run\n"),
+        # An unplaced module is held to no row at all.
+        ("threetears/evals/legacy.py", "import acme.config\n"),
+        # The negotiation reads the settings shape it reports in; the adapter reads the negotiation.
+        (
+            "threetears/evals/negotiation/settings.py",
+            "from threetears.evals.schema.models import M\nfrom . import loop\n",
+        ),
+        ("threetears/evals/providers/model.py", "from threetears.evals.negotiation.loop import negotiate\n"),
+        # The root serves the quick path's names, and the client's Model, on first use, from the module defining each.
+        ("threetears/evals/__init__.py", "def f():\n    from threetears.evals.quick.contract import Eval\n"),
+        ("threetears/evals/__init__.py", "def f():\n    from threetears.evals.providers import Model\n"),
+        # quick builds the client's Model where an eval names a model by id.
+        ("threetears/evals/quick/judged.py", "def f():\n    from threetears.evals.providers import Model\n"),
+    ],
+)
+def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, source: str) -> None:
+    """The permitted shapes pass, so a checker that refuses everything cannot pass the refusals above."""
+    violations, third_party = matrix_violations(_tree(tmp_path, {**_BASE_FILES, relative: source}))
+    assert violations == [] and third_party == []
+
+
+@pytest.mark.parametrize(
+    ("relative", "source", "refused"),
+    [
+        ("threetears/evals/schema/leaf.py", "import httpx\nimport pydantic\nimport json\n", ["httpx"]),
+        ("threetears/evals/run/loop.py", "from langchain_openai import ChatOpenAI\n", ["langchain_openai"]),
+        # No charting library anywhere: the report draws its own SVG.
+        ("threetears/evals/analysis/report/svg.py", "import vl_convert\n", ["vl_convert"]),
+        # The negotiation is the base install's: no HTTP client, no SDK.
+        (
+            "threetears/evals/negotiation/loop.py",
+            "import httpx\nimport anthropic\nimport json\n",
+            ["httpx", "anthropic"],
+        ),
+        # The engine depends on no 3tears package, observe included: its loggers are its own.
+        ("threetears/evals/run/loop.py", "from threetears.observe import get_logger\n", ["threetears.observe"]),
+        # A sibling family package the manifest does not declare is a dependency like any other.
+        ("threetears/evals/run/loop.py", "from threetears.core import thing\n", ["threetears.core"]),
+        # A host package, at runtime, under TYPE_CHECKING, deferred, and reached by a relative climb.
+        ("threetears/evals/run/loop.py", "import acme.config\n", ["acme"]),
+        (
+            "threetears/evals/run/loop.py",
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from acme.config import X\n",
+            ["acme"],
+        ),
+        ("threetears/evals/run/loop.py", "def f():\n    import acme.config\n", ["acme"]),
+        ("threetears/evals/run/loop.py", "from ...config import X\n", ["threetears.config"]),
+    ],
+)
+def test_the_third_party_column(tmp_path: Path, relative: str, source: str, refused: list[str]) -> None:
+    """pydantic and the stdlib pass where their row says; the rest is refused."""
+    _, third_party = matrix_violations(_tree(tmp_path, {**_BASE_FILES, relative: source}))
+    assert [v.target for v in third_party] == refused
+
+
+def test_a_new_module_outside_every_package_is_seen(tmp_path: Path) -> None:
+    """The new-module check's input: an unlisted module at the top of the tree reads as unplaced."""
+    root = _tree(
+        tmp_path, {**_BASE_FILES, "threetears/evals/brand_new.py": "", "threetears/evals/widgets/chart.py": ""}
+    )
+    assert unplaced_modules(root) == {"legacy", "brand_new", "widgets", "widgets.chart"}
+
+
+@pytest.mark.parametrize(
+    ("source", "climbs"),
+    [
+        ('from pathlib import Path\nSEED = Path(__file__).resolve().parents[1] / "seed"\n', True),
+        ('from pathlib import Path\nSEED = Path(__file__).parent.parent / "seed"\n', True),
+        ('from pathlib import Path\nDATA = Path(__file__).resolve().parent / "palette.json"\n', False),
+        ('from pathlib import Path\nDATA = Path("x").parents[1]\n', False),
+    ],
+)
+def test_the_path_climb_rule(tmp_path: Path, source: str, climbs: bool) -> None:
+    """A climb over ``__file__`` is refused in a placed module; package data beside it is not.
+
+    The fourth case is a ``.parents`` that never touches ``__file__``, so a checker that refused
+    every ``.parents`` would fail it.
+    """
+    root = _tree(tmp_path, {**_BASE_FILES, "threetears/evals/run/seed.py": source})
+    assert path_climbs(root) == (["run.seed:2"] if climbs else [])
+
+
+#: A tree whose run root declares one public name and binds a second it does not declare, so the
+#: refusal of an undeclared name is not a refusal of an unbound one.
+_ROOTS_FILES = {
+    **_BASE_FILES,
+    "threetears/evals/run/__init__.py": (
+        "from threetears.evals.run.jobs import EvalJobManager, adaptive_job_timeout_s\n__all__ = ['EvalJobManager']\n"
+    ),
+    "threetears/evals/schema/__init__.py": "from threetears.evals.schema.models import EvalRun\n__all__ = ['EvalRun']\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("relative", "source", "imported"),
+    [
+        # A submodule reached past its root.
+        ("host/routes.py", "from threetears.evals.run.jobs import EvalJobManager\n", "from threetears.evals.run.jobs"),
+        (
+            "tools/probe.py",
+            "from threetears.evals.schema.models import EvalRun\n",
+            "from threetears.evals.schema.models",
+        ),
+        # Function-level and TYPE_CHECKING imports count, as the matrix's own rows count them.
+        (
+            "host/routes.py",
+            "def f():\n    from threetears.evals.run.jobs import EvalJobManager\n",
+            "from threetears.evals.run.jobs",
+        ),
+        (
+            "host/routes.py",
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from threetears.evals.schema.models import EvalRun\n",
+            "from threetears.evals.schema.models",
+        ),
+        # A name the root binds but does not declare.
+        (
+            "host/routes.py",
+            "from threetears.evals.run import adaptive_job_timeout_s\n",
+            "import adaptive_job_timeout_s",
+        ),
+        # A whole module, by either spelling.
+        ("host/routes.py", "import threetears.evals.run.jobs\n", "import threetears.evals.run.jobs"),
+        ("host/routes.py", "from threetears.evals import run\n", "from threetears.evals import"),
+        ("host/routes.py", "from threetears.evals.run import jobs\n", "import jobs"),
+        # A module reached by string: an importlib call, a reference held as data, a list a walk imports.
+        (
+            "host/routes.py",
+            'import importlib\nimportlib.import_module("threetears.evals.run.jobs")\n',
+            '"threetears.evals.run.jobs"',
+        ),
+        (
+            "host/app.py",
+            'SEED = ("threetears.evals.schema.models", "EvalRun")\n',
+            '"threetears.evals.schema.models"',
+        ),
+        ("tools/probe.py", 'MODULES = ["threetears.evals.schema.models"]\n', '"threetears.evals.schema.models"'),
+        # A root's attribute by string reads exactly like a submodule, so it is refused with them.
+        ("host/routes.py", 'TARGET = "threetears.evals.run.EvalJobManager"\n', '"threetears.evals.run.EvalJobManager"'),
+    ],
+)
+def test_the_public_root_rule_refuses_each_forbidden_import(
+    tmp_path: Path, relative: str, source: str, imported: str
+) -> None:
+    """Each shape that bypasses a root's ``__all__`` is reported once, naming what it imported."""
+    root = _tree(tmp_path, {**_ROOTS_FILES, relative: source})
+    violations = public_root_violations(root, _consumers(root), consumer_root=root)
+    assert len(violations) == 1, violations
+    assert imported in violations[0].imported
+
+
+@pytest.mark.parametrize(
+    ("relative", "source"),
+    [
+        ("host/app.py", "from threetears.evals.run import EvalJobManager\n"),
+        (
+            "host/routes.py",
+            "from threetears.evals.schema import EvalRun\nfrom threetears.evals.run import EvalJobManager\n",
+        ),
+        ("tools/probe.py", "def f():\n    from threetears.evals.schema import EvalRun\n"),
+        # A consumer's own modules import each other freely; the rule binds what it takes from the engine.
+        ("host/app.py", "from .routes import X\nimport acme.config\n"),
+        # A package's own modules import each other directly; the rule binds consumers, not the package.
+        ("threetears/evals/run/loop.py", "from threetears.evals.run.jobs import EvalJobManager\n"),
+        # By string: a root, a file path (a file to edit, not a module to import), a sentence that
+        # mentions a module, and a package's own string.
+        ("host/routes.py", 'SEED = ("threetears.evals.run", "EvalJobManager")\n'),
+        ("host/routes.py", 'PATH = "threetears/evals/run/jobs.py"\n'),
+        ("host/routes.py", '"""See threetears.evals.run.jobs for the admission rules."""\n'),
+        ("threetears/evals/run/loop.py", 'LOGGER = "threetears.evals.run.jobs"\n'),
+    ],
+)
+def test_the_public_root_rule_admits_each_permitted_import(tmp_path: Path, relative: str, source: str) -> None:
+    """The permitted shapes pass, so a checker that refuses everything cannot pass the refusals above."""
+    root = _tree(tmp_path, {**_ROOTS_FILES, relative: source})
+    assert public_root_violations(root, _consumers(root), consumer_root=root) == []
+
+
+def test_the_package_publishes_the_roots_this_gate_enforces() -> None:
+    """``threetears.evals.PUBLIC_ROOTS`` is the matrix's roots, in order, so a consumer reads the real set.
+
+    A host checks its own imports against the installed package's tuple rather than keeping a copy,
+    so the published tuple has to be exactly the set this gate holds consumers to: a root missing
+    from it refuses a legal import, and an extra one admits an import nothing here checks.
+    """
+    import threetears.evals
+
+    assert threetears.evals.PUBLIC_ROOTS == tuple(join(relative) for relative in PUBLIC_ROOTS)

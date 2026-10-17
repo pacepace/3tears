@@ -3,14 +3,14 @@
 **Status:** Working sequence -- 2026-08-04
 **Scope:** the cross-repo execution order for the search capability
 ([`search-spec.md`](search-spec.md)), its enablers, and the eval extraction
-([`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)).
+([`family-convergence.md` §4.2](family-convergence.md#42-evals----3tears-eval-contractsrungenanalysis-new-from-discodon)).
 Detailed in-repo sequencing for the search build stays in
 [`search-spec.md` §7](search-spec.md#7-sequencing); this document is the layer
 above it -- who can start what, and when, across five repos.
 **Not sequenced here:** the rest of the convergence program
-([chat-kit build §4.11](family-convergence.md#411-chat-ui--a-headless-typescript-kit-protocol-from-3tears-seeds-from-scriob-and-metallm),
-[tiled images §4.12](family-convergence.md#412-tiledzoomable-images--a-slim-acquisition-package-new-from-samsungs-design),
-[scrape consolidation §4.13](family-convergence.md#413-scraping--consolidate-on-3tears-scrape-exists-faidh-lineage),
+([chat-kit build §4.11](family-convergence.md#411-chat-ui----a-headless-typescript-kit-protocol-from-3tears-seeds-from-scriob-and-metallm),
+[tiled images §4.12](family-convergence.md#412-tiledzoomable-images----a-slim-acquisition-package-new-from-samsungs-design),
+[scrape consolidation §4.13](family-convergence.md#413-scraping----consolidate-on-3tears-scrape-exists-faidh-lineage),
 the observe/models/iam adoptions) -- except where an item below explicitly
 gates one of them.
 
@@ -44,14 +44,14 @@ All items independent; all can start today.
 - **discodon:** carve the eval **StorageProtocol**, migrate `EvalStorage` and
   the analysis bundle onto it (table migrations may trail); shape it per the
   store-shape rule.
-  → [`family-convergence.md` §4.2 (verified corrections)](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon),
+  → [`family-convergence.md` §4.2 (verified corrections)](family-convergence.md#42-evals----3tears-eval-contractsrungenanalysis-new-from-discodon),
   [open question 22](family-convergence.md#6-open-questions)
 - **discodon:** ~~reshape budget refusal to the
   `check(estimate)`/`record(spend)` port shape, copied from
   `threetears.search.contracts`, not invented.~~ **Withdrawn 2026-08-19 -- 
   this asked for the wrong shape.** See the correction below.
   → [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing);
-  [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)
+  [`family-convergence.md` §4.2](family-convergence.md#42-evals----3tears-eval-contractsrungenanalysis-new-from-discodon)
 - **metallm:** close the family version lag.
   → [`family-convergence.md` §5 (metallm)](family-convergence.md#5-implications-per-family-member)
 
@@ -104,7 +104,7 @@ and one of them is subtler than not-done.**
   analysis half is discharged from the other direction: `discodon/eval/analysis/`
   imports nothing storage-shaped at all. discodon #2390; the shape is recorded in
   full at
-  [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon),
+  [`family-convergence.md` §4.2](family-convergence.md#42-evals----3tears-eval-contractsrungenanalysis-new-from-discodon),
   which was updated the same day.
 
   (The two-method `EvalRunDocumentStore` the paragraph above measured is still
@@ -296,7 +296,7 @@ in [`structured-result-tiers.md`](structured-result-tiers.md)
 into three tasks. Task-03 is in flight
 ([#368](https://github.com/pacepace/3tears/pull/368)); tasks 01 and 02 are
 unbuilt. It belongs to the chat-kit workstream
-([§4.11](family-convergence.md#411-chat-ui--a-headless-typescript-kit-protocol-from-3tears-seeds-from-scriob-and-metallm)),
+([§4.11](family-convergence.md#411-chat-ui----a-headless-typescript-kit-protocol-from-3tears-seeds-from-scriob-and-metallm)),
 which this document explicitly does not sequence.
 
 See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
@@ -469,7 +469,7 @@ since this was last written.
 ***Correction 2026-08-20 -- discodon pulled the first link, and this document
 knew it in one place while saying the opposite in two.*** The storage port is
 carved (discodon #2390 -- see the Phase 1 correction, and
-[`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)),
+[`family-convergence.md` §4.2](family-convergence.md#42-evals----3tears-eval-contractsrungenanalysis-new-from-discodon)),
 so **"the storage port that is still uncarved *in discodon*" is false**, and
 with it the "hard-blocked" verdict. What remains of the chain is one link, not
 three: `replay.py` is still unbuilt here, and it can now be elicited against a
@@ -567,12 +567,15 @@ discodon's NATS convergence and sits outside this sequence.)
 
 ## Phase 5 -- Eval extraction
 
-- **3tears + discodon:** extract `3tears-eval-contracts` first (identity,
-  measures, spend/replay composition per
-  [D27/D28](search-spec.md#1-decisions-taken)), then `run` and `analysis`;
-  the generator ships package prompts plus the narrow completion protocol
-  satisfied by `3tears-models`, and may extract last.
-  → [`family-convergence.md` §4.2 (incl. verified corrections)](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon),
+- **3tears + discodon:** extract the eval system (identity, measures,
+  spend/replay composition per
+  [D27/D28](search-spec.md#1-decisions-taken)) as `3tears-evals`, which shipped
+  as one package, `packages/evals`, not the four first proposed; the generator
+  ships package prompts plus the narrow completion protocol, satisfied by
+  the package's own `httpx` client. `3tears-evals` depends on no other 3tears
+  package (owner ruling 2026-10-11), so the `3tears-models` adapter once planned
+  here was removed in pre-release `.27`.
+  → [`family-convergence.md` §4.2 (incl. verified corrections)](family-convergence.md#42-evals----3tears-eval-contractsrungenanalysis-new-from-discodon),
   [open questions 2, 3, 22](family-convergence.md#6-open-questions)
 - **discodon:** consume its own extraction -- first consumer, green before
   anyone else binds.
@@ -631,7 +634,7 @@ discodon's NATS convergence and sits outside this sequence.)
     import scan could see them.
 
   Shapes and evidence per item are in
-  [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon).
+  [`family-convergence.md` §4.2](family-convergence.md#42-evals----3tears-eval-contractsrungenanalysis-new-from-discodon).
   Take them as the contract: they are what a real consumer built.
 
   **Outstanding -- three requirements and one axis, and that is the whole list.**
@@ -660,9 +663,10 @@ discodon's NATS convergence and sits outside this sequence.)
   discodon's `EVAL_SYSTEM.md` §6 defers the physical package split until "a second
   real consumer pulls on it", while this phase waits on discodon's in-tree boundary
   -- which is four items from complete. Neither document moves on its own once
-  discodon closes them. `packages/` in this repo holds no `eval*` today, so the next
-  move after R2/R4/R7 is 3tears cutting `3tears-eval-contracts` and discodon
-  consuming its own extraction, per this phase's second bullet.
+  discodon closes them. `packages/evals` now holds the extraction, as one package
+  with no family dependency rather than the four first planned, so the next
+  move after R2/R4/R7 is discodon consuming its own extraction, per this
+  phase's second bullet.
 
 **Checkpoint:** discodon running on the extracted packages; the eval
 contracts ratified per
@@ -684,7 +688,7 @@ All parallel:
   → [`family-convergence.md` §5](family-convergence.md#5-implications-per-family-member)
 
 **Checkpoint:** the eval workstream of
-[`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)
+[`family-convergence.md` §4.2](family-convergence.md#42-evals----3tears-eval-contractsrungenanalysis-new-from-discodon)
 is delivered; the remaining §4 workstreams sequence on their own.
 
 ## Why this order
