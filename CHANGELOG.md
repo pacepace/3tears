@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the generator refuses a finding title naming an arm none of its readings or trials is taken at
+
+- **A finding's title names only arms the finding cites a reading or trial of** (#829). A production memo titled a
+  finding "GPT-6 Luna Pro and Ling 3.1 Flash quadrupled evaluation cost" over readings at two other arms, so Ling's
+  cost was shown nowhere. The generator now refuses such a title through its one repair round, naming the arm as the
+  title wrote it, its levels and its cells (in the writer's aliases), and offering to drop the arm from the title,
+  cite its reading, or give that claim a finding of its own; rule 9 of the writer's prompt states the rule. Which
+  arms a title names is read off the names the bundle gives each arm (`analysis/arm_mentions.py`), chosen to miss
+  rather than refuse a sound title: any model level, and on other levers a level carrying a letter and a digit
+  (`terse-v2`, `fanout-2`), but not a quantity with a one- or two-letter unit (`4x`, `8k`, `100ms`), and one with a
+  longer unit (`1024tok`) only written unspaced. Matching is case-insensitive without case folding, and any hyphen
+  or dash from `-` to U+2014 joins or glues a name alike.
+- A title that both states a null its finding established nowhere and names an arm it cites nothing of is told of
+  both in one refusal, so its one repair can fix both. Host-facing: a reporter case whose memo titles an uncited arm
+  now fails as the candidate's own failure.
+
+### 3tears-evals: `kernel.prompt_token_bound` (provisional) is the one bound a call's ceiling is priced on
+
+- **`threetears.evals.kernel.prompt_token_bound(system, user, response_format)`** (`provisional`) is exported beside
+  `call_ceiling`: one token per UTF-8 byte of the system prompt, user message and response directive (NFKC-expanded
+  where that is more), plus `PROMPT_FRAMING_TOKENS`, a bound never below what a byte-level tokenizer bills. The
+  shipped client prices its ceiling on it, so a host bringing its own client prices with the same bound.
+
+### 3tears-evals: the generation's input-size log line is a ballpark over the exact request, and says so
+
+- **The line now reads `approx_input_tokens=N (<basis>) max_output_tokens=...`** (#827), where it read
+  `approx_input_tokens=N max_output_tokens=...`. N is the characters of the exact system prompt, user message and
+  response schema the first call sends, over two, with its basis on the line; it was characters over four of a
+  differently rendered bundle, which ran low (a JSON-heavy bundle runs about 1.7 characters a token, so the new figure
+  still reads about 15% under such a bill). A ballpark, never a bound: the cap prices on `prompt_token_bound`.
+  Breaking for a host parsing the old line: the basis now sits in parentheses between the figure and
+  `max_output_tokens`.
+
 ### 3tears-evals: a judge case whose criterion the stored template lacks is withheld for a reset, not a refusal of the seed
 
 - The definition seed resolves a judge case's criterion template in the store first, so a template re-worded under the
