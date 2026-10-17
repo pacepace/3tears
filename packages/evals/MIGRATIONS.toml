@@ -58,6 +58,20 @@
 # callers.
 
 [[release]]
+version = "0.71.0"
+since = "v0.70.0"
+summary = """
+The first release after 3tears-evals joined the family: the burndown of Discodon's 0.70.0 adoption findings. No
+public name left a root; the breaking changes are signatures and behaviour, listed in `notes`.
+"""
+notes = [
+    "`LaunchHost` takes no `kinds`: the kind registry is `TemplateChecks.kinds`, and `LaunchHost.kinds` is a read-only property over `eval_host.template_checks.kinds` (#816). A host-contract signature change without a deprecation cycle, by owner ruling (2026-10-16): Discodon, the only host, builds the registry once already.",
+    "`kernel.production_replicating_cost` takes `candidate_kind` (keyword, required): pass `candidate_kind=result.candidate_kind`. A judge-kind result now sums the judge role (#828).",
+    "Both per-run ceilings stop a run between cells, never inside one: `CapBreach.refused_call_usd` is gone, the engine no longer raises `CostCapReached` (it still imports), and `MeteredCallLedger.refusal_message` raises for a host that declared metered tools. A stopped run ends `budget_stopped` with `EvalRun.budget_stops`.",
+    "The analysis generation's input-size log line puts its basis in parentheses between the figure and `max_output_tokens` (#827).",
+]
+
+[[release]]
 version = "0.70.0"
 since = "v0.69.0"
 summary = """
