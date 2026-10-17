@@ -39,7 +39,7 @@ import asyncio
 
 from threetears.nats import NatsClient, Subjects
 from threetears.nats.client import Subscription
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.channels.presence.room_state import RoomState
 from threetears.channels.presence.wire import RoomFrame
@@ -237,15 +237,15 @@ class RoomFanout:
                 continue
             try:
                 await socket.send_text(frame.payload)
-            except Exception:  # prawduct:allow prawduct/broad-except -- best-effort transient fanout: one dead socket must not starve the room's other members or deadletter the frame
-                log.debug(
-                    "room fanout delivery to a socket failed; skipping it",
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- best-effort transient fanout: one dead socket must not starve the room's other members or deadletter the frame
+                contain(
+                    exc,
+                    log=log,
+                    what="room fanout delivery to a socket failed; skipping it",
                     extra={
-                        "extra_data": {
-                            "room_id": frame.room_id,
-                            "connection_id": connection_id,
-                            "pod_id": self._room_state.pod_id,
-                        }
+                        "room_id": frame.room_id,
+                        "connection_id": connection_id,
+                        "pod_id": self._room_state.pod_id,
                     },
                 )
 

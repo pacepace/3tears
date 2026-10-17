@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from threetears.nats.subjects import Subject
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.epoch.listener import BumpCallback, EpochListener
 
@@ -72,10 +72,11 @@ async def catchup_tick(
         # prawduct:allow prawduct/broad-except -- one domain's failure must not
         # abandon the remaining domains in the same pass. re-raised below.
         except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "epoch catch-up failed for a subject; continuing with the rest of the pass",
-                exc_info=True,
-                extra={"extra_data": {"subject": subject.path}},
+            contain(
+                exc,
+                log=log,
+                what="epoch catch-up failed for a subject; continuing with the rest of the pass",
+                extra={"subject": subject.path},
             )
             if first_error is None:
                 first_error = exc

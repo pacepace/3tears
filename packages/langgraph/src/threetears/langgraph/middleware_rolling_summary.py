@@ -35,7 +35,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 
 from threetears.langgraph.streaming import NOSTREAM_TAG
 from threetears.langgraph.summarize import SummarizationFailedError, summarize_older_messages
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DEFAULT_ROLLING_SUMMARY_PREFIX",
@@ -300,7 +300,5 @@ class RollingSummaryMiddleware(AgentMiddleware):
             return
         try:
             await self._on_summarized(folded, text)
-        except (
-            Exception
-        ):  # prawduct:allow prawduct/broad-except -- the summary is stored; a listener's failure is not the turn's
-            log.warning("on_summarized failed; the summary is stored", exc_info=True)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the summary is stored; a listener's failure is not the turn's
+            contain(exc, log=log, what="on_summarized failed; the summary is stored")

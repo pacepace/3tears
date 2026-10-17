@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -50,7 +51,7 @@ from threetears.nats import (
     requires_async_result,
     result_stream_name,
 )
-from threetears.observe import InflightRequestsGauge, clear_context, get_logger
+from threetears.observe import InflightRequestsGauge, clear_context, contain, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog, ToolDefinition
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
@@ -539,6 +540,7 @@ class CallProxy:
             try:
                 request = ProxyCallRequest.model_validate_json(msg.data)
             except Exception as exc:
+                contain(exc, log=log, what="malformed call request")
                 response = ProxyCallResponse(
                     success=False,
                     content="",
@@ -860,7 +862,21 @@ class CallProxy:
             try:
                 fresh = await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at)
             except Exception as exc:  # noqa: BLE001 -- the ledger failing fails the check closed, with a reply
-                return self._pop_ledger_unavailable(request, exc)
+                contain(
+                    exc,
+                    log=log,
+                    what="tool call refused: the proof-of-possession replay ledger could not be reached, so the "
+                    "proof could not be checked and the call is denied; check the registry's NATS connection "
+                    "and its grant on the pop nonce bucket",
+                    extra={
+                        "tool_name": request.tool_name,
+                        "correlation_id": _correlation_id_str(request),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                    level=logging.ERROR,
+                )
+                return self._pop_ledger_unavailable(request)
             if not fresh:
                 raise IdentityTokenError("pop nonce replay")
             return None
@@ -1038,16 +1054,16 @@ class CallProxy:
                 request.tool_name,
                 request.tool_version,
             )
-        except Exception:  # noqa: BLE001 -- fail-open per Fork-2: a guard outage must never deny
-            log.warning(
-                "limit guard unreachable; serving fail-open",
+        except Exception as exc:  # noqa: BLE001 -- fail-open per Fork-2: a guard outage must never deny
+            contain(
+                exc,
+                log=log,
+                what="limit guard unreachable; serving fail-open",
                 extra={
-                    "extra_data": {
-                        "agent_id": agent_id_log,
-                        "customer_id": customer_id_log,
-                        "tool_name": request.tool_name,
-                        "correlation_id": correlation_id_log,
-                    }
+                    "agent_id": agent_id_log,
+                    "customer_id": customer_id_log,
+                    "tool_name": request.tool_name,
+                    "correlation_id": correlation_id_log,
                 },
             )
         else:
@@ -1092,19 +1108,20 @@ class CallProxy:
                     principal_is_tool_pod=principal.is_tool_pod,
                 )
             except Exception as exc:  # noqa: BLE001 -- fail closed WITH a reply; never a dropped call
-                log.error(
-                    "tool call refused: the authorizer could not reach the store it decides from, so the "
+                contain(
+                    exc,
+                    log=log,
+                    what="tool call refused: the authorizer could not reach the store it decides from, so the "
                     "call is denied rather than decided",
                     extra={
-                        "extra_data": {
-                            "agent_id": agent_id_log,
-                            "user_id": user_id_log,
-                            "tool_name": request.tool_name,
-                            "correlation_id": correlation_id_log,
-                            "error_type": type(exc).__name__,
-                            "error": str(exc),
-                        }
+                        "agent_id": agent_id_log,
+                        "user_id": user_id_log,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
                     },
+                    level=logging.ERROR,
                 )
                 response = ProxyCallResponse(
                     success=False,
@@ -1374,15 +1391,15 @@ class CallProxy:
         if self._usage_emitter is not None:
             try:
                 await self._usage_emitter.emit(request, response)
-            except Exception:  # noqa: BLE001 -- fire-and-forget: a usage-emit failure never affects the reply
-                log.warning(
-                    "endpoint usage emit failed",
+            except Exception as exc:  # noqa: BLE001 -- fire-and-forget: a usage-emit failure never affects the reply
+                contain(
+                    exc,
+                    log=log,
+                    what="endpoint usage emit failed",
                     extra={
-                        "extra_data": {
-                            "agent_id": agent_id_log,
-                            "tool_name": request.tool_name,
-                            "correlation_id": correlation_id_log,
-                        }
+                        "agent_id": agent_id_log,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
                     },
                 )
 
@@ -1423,13 +1440,12 @@ class CallProxy:
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
                     # NOSILENT: the answer is now lost. name it, rather than letting it surface as an
                     # unexplained timeout at the agent.
-                    log.error(
-                        "tool result could not be delivered to the caller after %d attempts; the "
-                        "answer is lost (subject=%s bytes=%d): %s",
-                        _RESULT_DELIVERY_ATTEMPTS,
-                        delivery_subject.path,
-                        len(payload),
+                    contain(
                         exc,
+                        log=log,
+                        what=f"tool result could not be delivered to the caller after {_RESULT_DELIVERY_ATTEMPTS} "
+                        f"attempts; the answer is lost (subject={delivery_subject.path} bytes={len(payload)}): {exc}",
+                        level=logging.ERROR,
                     )
                     return
                 log.warning(
@@ -1580,35 +1596,20 @@ class CallProxy:
             )
         return response
 
-    def _pop_ledger_unavailable(self, request: ProxyCallRequest, exc: Exception) -> ProxyCallResponse:
+    def _pop_ledger_unavailable(self, request: ProxyCallRequest) -> ProxyCallResponse:
         """the refusal for a call whose proof could not be checked against the replay ledger.
 
         The ledger's contract says a failure MUST be a failed check, never fresh, so the call is
         denied -- but not as ``TOOL_POP_UNVERIFIED``, which tells the caller its proof is bad. The
-        proof was never judged; the ledger could not be reached. Logged once at ERROR with the cause;
-        the reply carries the one shared message, the same a tool pod answers its own ledger outage
+        proof was never judged; the ledger could not be reached. The caller has already logged the cause
+        at ERROR; the reply carries the one shared message, the same a tool pod answers its own ledger outage
         with, and never the exception.
 
         :param request: the call request
         :ptype request: ProxyCallRequest
-        :param exc: what the ledger raised
-        :ptype exc: Exception
         :return: the :data:`~threetears.core.security.TOOL_POP_LEDGER_UNAVAILABLE` refusal
         :rtype: ProxyCallResponse
         """
-        log.error(
-            "tool call refused: the proof-of-possession replay ledger could not be reached, so the "
-            "proof could not be checked and the call is denied; check the registry's NATS connection "
-            "and its grant on the pop nonce bucket",
-            extra={
-                "extra_data": {
-                    "tool_name": request.tool_name,
-                    "correlation_id": _correlation_id_str(request),
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-            },
-        )
         return ProxyCallResponse(
             success=False,
             content="",
@@ -1670,16 +1671,16 @@ class CallProxy:
             # never reached a pod: TOOL_UNAVAILABLE, the retryable answer. left uncaught it killed
             # the dispatch task with the reply subject unanswered, and the caller learned nothing
             # until its own deadline -- a stream missing from a bus read as a dead tool.
-            log.warning(
-                "durable result waiter could not open; the call was never dispatched",
+            contain(
+                exc,
+                log=log,
+                what="durable result waiter could not open; the call was never dispatched",
                 extra={
-                    "extra_data": {
-                        "pod_id": pod_id,
-                        "tool_name": request.tool_name,
-                        "correlation_id": correlation_id_log,
-                        "stream": result_stream_name(),
-                        "detail": str(exc),
-                    }
+                    "pod_id": pod_id,
+                    "tool_name": request.tool_name,
+                    "correlation_id": correlation_id_log,
+                    "stream": result_stream_name(),
+                    "detail": str(exc),
                 },
             )
             return ProxyCallResponse(
@@ -1702,17 +1703,17 @@ class CallProxy:
             try:
                 delivered = await waiter.wait(timeout=timedelta(seconds=effective_timeout))
             except Exception as exc:  # noqa: BLE001 — every failure becomes a typed response, never a hang
-                log.warning(
-                    "tool result never arrived on its durable subject",
+                contain(
+                    exc,
+                    log=log,
+                    what="tool result never arrived on its durable subject",
                     extra={
-                        "extra_data": {
-                            "pod_id": pod_id,
-                            "tool_name": request.tool_name,
-                            "correlation_id": correlation_id_log,
-                            "subject": result_subject.path,
-                            "timeout": effective_timeout,
-                            "detail": str(exc),
-                        }
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "subject": result_subject.path,
+                        "timeout": effective_timeout,
+                        "detail": str(exc),
                     },
                 )
                 # TOOL_TIMEOUT, not TOOL_UNAVAILABLE: the pod ACCEPTED this call, so it may well be
@@ -1878,9 +1879,11 @@ class CallProxy:
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- a provider failure keeps the agent's token on the call, the safe side; logged
                 if not self._jwks_unreadable_logged:
                     self._jwks_unreadable_logged = True
-                    log.warning(
-                        "hub JWKS unreadable; the agent's token stays on calls to declaring pods until it is",
-                        extra={"extra_data": {"detail": str(exc)}},
+                    contain(
+                        exc,
+                        log=log,
+                        what="hub JWKS unreadable; the agent's token stays on calls to declaring pods until it is",
+                        extra={"detail": str(exc)},
                     )
             else:
                 self._jwks_unreadable_logged = False

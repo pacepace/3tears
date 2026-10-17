@@ -55,6 +55,7 @@ one implementation with no parallel path.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, cast
@@ -89,7 +90,7 @@ from threetears.langgraph.protocols import (
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "ThreeTierCheckpointSaver",
@@ -512,8 +513,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             storage_thread_id = self.storage_thread_id(thread_id, customer=customer)
             try:
                 result = await self._l1.get(storage_thread_id, checkpoint_ns)
-            except Exception:
-                log.warning("L1 checkpoint read failed", exc_info=True)
+            except Exception as exc:
+                contain(exc, log=log, what="L1 checkpoint read failed")
                 result = None
         return result
 
@@ -537,8 +538,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         storage_thread_id = self.storage_thread_id(thread_id, customer=customer)
         try:
             await self._l1.put(storage_thread_id, checkpoint_ns, data)
-        except Exception:
-            log.warning("L1 checkpoint write failed", exc_info=True)
+        except Exception as exc:
+            contain(exc, log=log, what="L1 checkpoint write failed")
 
     async def l1_delete(self, thread_id: str, *, customer: UUID | None = None) -> None:
         """delete a thread's L1 entry, swallowing errors.
@@ -556,8 +557,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         storage_thread_id = self.storage_thread_id(thread_id, customer=customer)
         try:
             await self._l1.delete(storage_thread_id)
-        except Exception:
-            log.warning("L1 checkpoint delete failed", exc_info=True)
+        except Exception as exc:
+            contain(exc, log=log, what="L1 checkpoint delete failed")
 
     # ------------------------------------------------------------------
     # L2 helpers
@@ -609,8 +610,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
             try:
                 result = await self._l2.get(self._l2_bucket, key)
-            except Exception:
-                log.warning("L2 checkpoint read failed", exc_info=True)
+            except Exception as exc:
+                contain(exc, log=log, what="L2 checkpoint read failed")
                 result = None
         return result
 
@@ -634,8 +635,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
         try:
             await self._l2.put(self._l2_bucket, key, data)
-        except Exception:
-            log.warning("L2 checkpoint write failed", exc_info=True)
+        except Exception as exc:
+            contain(exc, log=log, what="L2 checkpoint write failed")
 
     async def l2_delete(self, thread_id: str, checkpoint_ns: str, *, customer: UUID | None = None) -> None:
         """delete one thread+namespace L2 entry, swallowing errors.
@@ -663,8 +664,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
         try:
             await self._l2.delete(self._l2_bucket, key)
-        except Exception:
-            log.warning("L2 checkpoint delete failed", exc_info=True)
+        except Exception as exc:
+            contain(exc, log=log, what="L2 checkpoint delete failed")
 
     async def l2_delete_prefix(self, prefix: str) -> bool:
         """sweep every L2 key under ``prefix``, reporting whether it happened.
@@ -690,8 +691,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             return False
         try:
             await self._l2.delete_prefix(self._l2_bucket, prefix)
-        except Exception:
-            log.warning("L2 checkpoint prefix sweep failed", extra={"prefix": prefix}, exc_info=True)
+        except Exception as exc:
+            contain(exc, log=log, what="L2 checkpoint prefix sweep failed", extra={"prefix": prefix})
             return False
         return True
 
@@ -840,11 +841,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 try:
                     bundle = self.deserialize_checkpoint_tuple(cached)
                     return self._bundle_to_tuple(thread_id, checkpoint_ns, bundle)
-                except Exception:
-                    log.warning(
-                        "L1 checkpoint deserialization failed, falling through",
-                        exc_info=True,
-                    )
+                except Exception as exc:
+                    contain(exc, log=log, what="L1 checkpoint deserialization failed, falling through")
 
             # --- L2 attempt ---
             cached = await self.l2_get(thread_id, checkpoint_ns, customer=customer)
@@ -854,11 +852,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     tup = self._bundle_to_tuple(thread_id, checkpoint_ns, bundle)
                     await self.l1_put(thread_id, checkpoint_ns, cached, customer=customer)
                     return tup
-                except Exception:
-                    log.warning(
-                        "L2 checkpoint deserialization failed, falling through",
-                        exc_info=True,
-                    )
+                except Exception as exc:
+                    contain(exc, log=log, what="L2 checkpoint deserialization failed, falling through")
 
         # --- L3 (executor-backed) ---
         return await self._l3_get_tuple(thread_id, checkpoint_ns, checkpoint_id, customer=customer)
@@ -988,8 +983,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             )
             await self.l2_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
             await self.l1_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
-        except Exception:
-            log.warning("Failed to warm caches after L3 read", exc_info=True)
+        except Exception as exc:
+            contain(exc, log=log, what="Failed to warm caches after L3 read")
 
         return tup
 
@@ -1160,8 +1155,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             )
             await self.l2_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
             await self.l1_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
-        except Exception:
-            log.warning("Failed to warm caches after L3 write", exc_info=True)
+        except Exception as exc:
+            contain(exc, log=log, what="Failed to warm caches after L3 write")
 
         # --- Flush callback ---
         if self._flush_callback is not None:
@@ -1172,11 +1167,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                         "Flushed pending writes on checkpoint",
                         extra={"flushed_count": flushed},
                     )
-            except Exception:
-                log.warning(
-                    "Failed to flush pending writes on checkpoint",
-                    exc_info=True,
-                )
+            except Exception as exc:
+                contain(exc, log=log, what="Failed to flush pending writes on checkpoint")
 
         return result_config
 
@@ -1899,8 +1891,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a serializer raises what it raises on bytes it cannot read; every failure here is one row reported, never silent
             reported = replace(where, error_type=type(exc).__name__)
             unreadable.append(reported)
-            log.error(
-                "a stored checkpoint blob cannot be anonymized and is left as it is; the erasure is incomplete "
+            contain(
+                exc,
+                log=log,
+                what="a stored checkpoint blob cannot be anonymized and is left as it is; the erasure is incomplete "
                 "for this row until it is repaired or removed",
                 extra={
                     "thread_id": reported.thread_id,
@@ -1912,6 +1906,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     "idx": reported.idx,
                     "error_type": reported.error_type,
                 },
+                level=logging.ERROR,
             )
             return None
 

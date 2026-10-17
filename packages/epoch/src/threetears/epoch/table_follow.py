@@ -30,7 +30,7 @@ from datetime import timedelta
 from typing import Final
 
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.epoch.generation_tick import DEFAULT_BROADCAST_GRACE, GenerationWatcher, follow_generation_key
 
@@ -306,6 +306,7 @@ class TableFollower:
             # prawduct:allow prawduct/broad-except -- a watch that fails for any reason is started again;
             # stopping would leave the table followed with nothing to judge its mark
             except Exception as exc:  # noqa: BLE001
+                contain(exc, log=log, what="a write-generation watch failed", extra={"table": table})
                 health.last_error = f"{type(exc).__name__}: {exc}"
             health.consecutive_failures += 1
             if _reader_closed(self._source):

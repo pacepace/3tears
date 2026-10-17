@@ -55,7 +55,7 @@ from threetears.nats.kv import KvBucketLike
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject
 from uuid_utils import uuid7
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 from threetears.epoch.wire import EpochBumpMessage
 
@@ -407,8 +407,8 @@ class EpochClient:
         # outage, not a replaced counter. raising here would fail a catch-up
         # that the durable path does not even need KV for, and reporting a
         # changed identity would flush every cache in the fleet on a blip.
-        except Exception:  # noqa: BLE001
-            log.warning("epoch bucket identity unavailable; not treating as a replacement", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="epoch bucket identity unavailable; not treating as a replacement")
             return None
 
     async def _identity_from(self, bucket: KvBucketLike) -> str | None:

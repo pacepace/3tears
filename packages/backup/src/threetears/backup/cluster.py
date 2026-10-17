@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -52,7 +53,7 @@ from uuid import UUID, uuid7
 
 from threetears.media.contracts import ObjectStore
 from threetears.object_store import EncryptedObjectStore
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.backup.config import BackupConfig
 from threetears.backup.drivers import DbDumpDriver, driver_by_name, driver_for_version
@@ -355,9 +356,12 @@ class ClusterBackup:
                         )
                         await asyncio.sleep(delay)
                         continue
-                    log.exception(
-                        "cluster backup: database FAILED to dump; the set will be incomplete",
-                        extra={"extra_data": {"backup_id": str(backup_id), "database": database, "attempts": attempt}},
+                    contain(
+                        exc,
+                        log=log,
+                        what="cluster backup: database FAILED to dump; the set will be incomplete",
+                        extra={"backup_id": str(backup_id), "database": database, "attempts": attempt},
+                        level=logging.ERROR,
                     )
                     failures.append(DatabaseFailure(database=database, error=f"{type(exc).__name__}: {exc}"))
                     break
@@ -709,14 +713,14 @@ class ClusterBackup:
                 # out of the hard dependencies (see the module docstring), and the driver's own
                 # error classes are therefore unreachable here. The failure is recorded in the
                 # manifest, not swallowed.
-                log.warning(
-                    "cluster backup: snapshot export unavailable; inventory will not be synchronized with the dump",
+                contain(
+                    exc,
+                    log=log,
+                    what="cluster backup: snapshot export unavailable; inventory will not be synchronized with the dump",
                     extra={
-                        "extra_data": {
-                            "backup_id": str(backup_id),
-                            "database": database,
-                            "error": str(exc),
-                        }
+                        "backup_id": str(backup_id),
+                        "database": database,
+                        "error": str(exc),
                     },
                 )
                 snapshot = None
@@ -744,10 +748,10 @@ class ClusterBackup:
         """
         try:
             await conn.execute(_ROLLBACK_SQL)
-        except Exception:  # prawduct:allow prawduct/broad-except -- see the call sites
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- see the call sites
             # Logged, never raised: every caller is cleaning up after work that already
             # committed to the object store.
-            log.warning("cluster backup: could not end the inventory transaction", exc_info=True)
+            contain(exc, log=log, what="cluster backup: could not end the inventory transaction")
 
     async def _close_quietly(self, conn: _Connection) -> None:
         """Close the connection without letting a close failure fail a finished dump.
@@ -757,8 +761,8 @@ class ClusterBackup:
         """
         try:
             await conn.close()
-        except Exception:  # prawduct:allow prawduct/broad-except -- see the call site
-            log.warning("cluster backup: could not close the inventory connection", exc_info=True)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- see the call site
+            contain(exc, log=log, what="cluster backup: could not close the inventory connection")
 
     async def _read_manifest(self, key: str) -> BackupManifest:
         chunks = [chunk async for chunk in self._store.open_read(key)]

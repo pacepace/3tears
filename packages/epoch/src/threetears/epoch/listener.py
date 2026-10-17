@@ -20,12 +20,13 @@ deserialization, programming errors propagate.
 
 from __future__ import annotations
 
+import logging
 from typing import Awaitable, Callable
 
 from threetears.nats import NatsClient
 from threetears.nats.errors import SubscribeError
 from threetears.nats.subjects import Subject
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.epoch.client import EpochClient, _is_durable
 from threetears.epoch.wire import EpochBumpMessage
@@ -497,9 +498,12 @@ class EpochListener:
                 # bucket-wide path below: one consumer's bug must not deprive
                 # the others of a reset. re-raised after the loop.
                 except Exception as exc:  # noqa: BLE001
-                    log.exception(
-                        "epoch reset callback raised; continuing to the remaining consumers",
-                        extra={"extra_data": {"subject": subject.path}},
+                    contain(
+                        exc,
+                        log=log,
+                        what="epoch reset callback raised; continuing to the remaining consumers",
+                        extra={"subject": subject.path},
+                        level=logging.ERROR,
                     )
                     if scoped_error is None:
                         scoped_error = exc
@@ -540,9 +544,12 @@ class EpochListener:
             # deprive the remaining consumers of a reset they cannot otherwise
             # learn about. re-raised below, never swallowed.
             except Exception as exc:  # noqa: BLE001
-                log.exception(
-                    "epoch reset callback raised; continuing to the remaining consumers",
-                    extra={"extra_data": {"subject": subject.path}},
+                contain(
+                    exc,
+                    log=log,
+                    what="epoch reset callback raised; continuing to the remaining consumers",
+                    extra={"subject": subject.path},
+                    level=logging.ERROR,
                 )
                 if first_error is None:
                     first_error = exc

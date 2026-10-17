@@ -39,7 +39,7 @@ from threetears.langgraph.offload import (
     format_offload_handle,
     is_never_offload_tool,
 )
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["ToolResultOffloadMiddleware"]
 
@@ -145,16 +145,15 @@ async def _maybe_offload_result(
             # cannot swallow it.
             raise
         except Exception as exc:
-            log.warning(
-                "tool-result offload failed; falling back to full content",
+            contain(
+                exc,
+                log=log,
+                what="tool-result offload failed; falling back to full content",
                 extra={
-                    "extra_data": {
-                        "tool_name": tool_name,
-                        "content_chars": len(content),
-                        "error": str(exc),
-                    },
+                    "tool_name": tool_name,
+                    "content_chars": len(content),
+                    "error": str(exc),
                 },
-                exc_info=True,
             )
         if offload_result is not None:
             message_content = f"{offload_result.summary}\n\n{format_offload_handle(offload_result.handle)}"

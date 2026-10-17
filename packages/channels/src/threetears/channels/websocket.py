@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -38,7 +39,7 @@ from pydantic import ValidationError
 from threetears.agent.acl import AccessDenied, authorize_on_entity
 from threetears.channels.frames import Frame, OpRejected, RoomAccessRequest
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.agent.acl import AclCache
@@ -221,10 +222,12 @@ async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
     ok = True
     try:
         await websocket.send_text(payload)
-    except Exception:  # prawduct:allow prawduct/broad-except -- best-effort notification send: a dead socket must not crash the caller (the message loop or a nested frame handler), which continues or degrades on its own terms
-        log.debug(
-            "best-effort send failed; socket likely gone",
-            extra={"extra_data": {"context": context}},
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- best-effort notification send: a dead socket must not crash the caller (the message loop or a nested frame handler), which continues or degrades on its own terms
+        contain(
+            exc,
+            log=log,
+            what="best-effort send failed; socket likely gone",
+            extra={"context": context},
         )
         ok = False
     return ok
@@ -837,11 +840,12 @@ class WebSocketHandler:
             return
         try:
             await self._room_state.heartbeat(connection_id)
-        except Exception:  # prawduct:allow prawduct/broad-except -- presence refresh is best-effort: a failed write must not end a live connection; the sweeper's eviction is the bounded cost, and the log names it
-            log.warning(
-                "presence heartbeat refresh failed; the presence sweeper may drop this member from its rooms",
-                exc_info=True,
-                extra={"extra_data": {"connection_id": connection_id}},
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- presence refresh is best-effort: a failed write must not end a live connection; the sweeper's eviction is the bounded cost, and the log names it
+            contain(
+                exc,
+                log=log,
+                what="presence heartbeat refresh failed; the presence sweeper may drop this member from its rooms",
+                extra={"connection_id": connection_id},
             )
 
     async def _send_ping(self, websocket: Any) -> bool:
@@ -855,7 +859,8 @@ class WebSocketHandler:
         delivered = True
         try:
             await asyncio.wait_for(websocket.send_text(_HEARTBEAT_PING), timeout=self.heartbeat_interval)
-        except Exception:  # prawduct:allow prawduct/broad-except -- a failed or stalled ping IS the liveness verdict; the caller closes the connection and logs it
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a failed or stalled ping IS the liveness verdict; the caller closes the connection and logs it
+            contain(exc, log=log, what="heartbeat ping could not be delivered")
             delivered = False
         return delivered
 
@@ -876,9 +881,11 @@ class WebSocketHandler:
             try:
                 await asyncio.wait_for(websocket.close(code=_UNRESPONSIVE_CLOSE_CODE), timeout=self.heartbeat_interval)
             except Exception as exc:  # noqa: BLE001 -- the peer is gone; ending the connection does not depend on the close
-                log.debug(
-                    "closing an unresponsive websocket failed",
-                    extra={"extra_data": {"error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="closing an unresponsive websocket failed",
+                    extra={"error": str(exc)},
                 )
         return claimed
 
@@ -909,8 +916,8 @@ class WebSocketHandler:
                 data = json.loads(raw)
                 if data.get("type") == "auth":
                     token = data.get("token")
-            except Exception:
-                log.warning("websocket disconnected during authentication")
+            except Exception as exc:
+                contain(exc, log=log, what="websocket disconnected during authentication")
                 await self._close_with_error(websocket, UNAUTHENTICATED, "authentication failed")
                 return None
 
@@ -985,10 +992,11 @@ class WebSocketHandler:
             connection.handling_frame = False
             try:
                 raw = await websocket.receive_text()
-            except Exception:
-                log.debug(
-                    "websocket disconnected for user %s",
-                    user_id,
+            except Exception as exc:
+                contain(
+                    exc,
+                    log=log,
+                    what=f"websocket disconnected for user {user_id}",
                 )
                 break
             # any frame at all answers the heartbeat; until the loop reads again it is busy, and
@@ -1061,10 +1069,13 @@ class WebSocketHandler:
                     continue
                 try:
                     await self._route_frame(websocket, frame, connection_id=connection_id, connection=connection)
-                except Exception:  # prawduct:allow prawduct/broad-except -- per-frame safety net: a single frame's handler (a built-in path, an injected op_handler/frame_handler, a bad room id) must NEVER crash the whole socket; an unanticipated error becomes one error frame + a log and the connection keeps serving (recoverable rejections are already an OpRejected/error frame upstream)
-                    log.exception(
-                        "frame handler raised; surfacing an error and keeping the socket alive",
-                        extra={"extra_data": {"user_id": user_id, "frame_type": frame.type}},
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- per-frame safety net: a single frame's handler (a built-in path, an injected op_handler/frame_handler, a bad room id) must NEVER crash the whole socket; an unanticipated error becomes one error frame + a log and the connection keeps serving (recoverable rejections are already an OpRejected/error frame upstream)
+                    contain(
+                        exc,
+                        log=log,
+                        what="frame handler raised; surfacing an error and keeping the socket alive",
+                        extra={"user_id": user_id, "frame_type": frame.type},
+                        level=logging.ERROR,
                     )
                     await _safe_send(
                         websocket, Frame.error("internal error handling frame"), context="route-frame-except"
@@ -1124,16 +1135,19 @@ class WebSocketHandler:
                     await self._route_streaming(websocket, channel_message)
                 else:
                     await self._route_standard(websocket, channel_message)
-            except Exception:  # prawduct:allow prawduct/broad-except -- per-message safety net: the
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- per-message safety net: the
                 # chat ``message`` path lacked the same protection the typed cross-pod frame path
                 # already has (see the ``_route_frame`` call above) -- a router failure (an unknown
                 # target agent, a downstream dispatch error) must NEVER crash the whole socket; an
                 # unanticipated error becomes one error frame + a log and the connection keeps
                 # serving, matching design T3-D2's "never a silent drop, never a dead connection"
                 # posture for every message shape, not just typed frames.
-                log.exception(
-                    "chat message routing raised; surfacing an error and keeping the socket alive",
-                    extra={"extra_data": {"user_id": user_id}},
+                contain(
+                    exc,
+                    log=log,
+                    what="chat message routing raised; surfacing an error and keeping the socket alive",
+                    extra={"user_id": user_id},
+                    level=logging.ERROR,
                 )
                 await _safe_send(
                     websocket,
@@ -1581,10 +1595,12 @@ class WebSocketHandler:
                 # rest of the tail is pointless (best-effort, not best-effort-repeated-forever).
                 if not await _safe_send(websocket, payload, context="replay-payload"):
                     return
-        except Exception:  # prawduct:allow prawduct/broad-except -- resume is best-effort: a replay-source error surfaces as one error frame and the socket stays live (the client can re-resume) rather than crashing the connection
-            log.warning(
-                "resume replay failed; continuing live",
-                extra={"extra_data": {"room_id": room_id, "from_seq": from_seq}},
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- resume is best-effort: a replay-source error surfaces as one error frame and the socket stays live (the client can re-resume) rather than crashing the connection
+            contain(
+                exc,
+                log=log,
+                what="resume replay failed; continuing live",
+                extra={"room_id": room_id, "from_seq": from_seq},
             )
             await _safe_send(websocket, Frame.error("resume failed"), context="replay-source-except")
 
@@ -1655,11 +1671,12 @@ class WebSocketHandler:
                     continue
                 try:
                     allowed = await self._decide(room_id, self._join_action, connection.user_id, connection.customer_id)
-                except Exception:  # prawduct:allow prawduct/broad-except -- a member whose access cannot be confirmed is evicted, not kept; logged, and the room's other members are still decided
-                    log.warning(
-                        "room access could not be re-decided for a member; evicting",
-                        exc_info=True,
-                        extra={"extra_data": {"room_id": room_id, "user_id": connection.user_id}},
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- a member whose access cannot be confirmed is evicted, not kept; logged, and the room's other members are still decided
+                    contain(
+                        exc,
+                        log=log,
+                        what="room access could not be re-decided for a member; evicting",
+                        extra={"room_id": room_id, "user_id": connection.user_id},
                     )
                     allowed = False
                 if not allowed:
@@ -1762,14 +1779,18 @@ class WebSocketHandler:
         except Exception as exc:  # noqa: BLE001 -- the close below still has to happen
             # The peer never received the reason it is being disconnected, so from its side the
             # connection simply drops. Only this log connects the two.
-            log.debug(
-                "could not deliver websocket error message before closing",
-                extra={"extra_data": {"code": error_code, "reason": error_message, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="could not deliver websocket error message before closing",
+                extra={"code": error_code, "reason": error_message, "error": str(exc)},
             )
         try:
             await websocket.close(code=_POLICY_VIOLATION_CLOSE_CODE)
         except Exception as exc:  # noqa: BLE001 -- nothing further to try
-            log.debug(
-                "websocket close failed",
-                extra={"extra_data": {"error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="websocket close failed",
+                extra={"error": str(exc)},
             )
