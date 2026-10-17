@@ -607,6 +607,7 @@ class TestEpochListenerRegistrationOrdering:
 
         _seeded = 1
         nats = MagicMock()
+        nats.kv_bucket = FakeNatsClient().kv_bucket
         nats.subscribe_typed = AsyncMock(side_effect=SubscribeError("broker refused"))
         listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
 
@@ -623,6 +624,7 @@ class TestEpochListenerRegistrationOrdering:
 
         _seeded = 1
         nats = MagicMock()
+        nats.kv_bucket = FakeNatsClient().kv_bucket
         nats.subscribe_typed = AsyncMock(side_effect=[SubscribeError("transient"), None])
         listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
         subject = _subject("app.a.epoch")
