@@ -157,7 +157,7 @@ def test_a_quantity_with_a_longer_unit_names_its_arm_only_written_as_one_token()
     assert _named("Retrieving 8 chunks costs more", arms) == []
 
 
-@pytest.mark.parametrize("level", ["o3", "gpt-5", "claude-sonnet-4", "fanout-2", "v2", "x4", "8k-ctx"])
+@pytest.mark.parametrize("level", ["o3", "gpt-5", "acme-sonnet-4", "fanout-2", "v2", "x4", "8k-ctx"])
 def test_a_name_with_a_letter_and_a_digit_off_the_model_axis_is_still_a_name(level: str) -> None:
     named, plain = arms = [_entry(model="acme/gpt-6", preset=preset) for preset in (level, "plain-v1")]
     assert _named(f"{level} answers faster", arms) == [(level, _arm(named))]
