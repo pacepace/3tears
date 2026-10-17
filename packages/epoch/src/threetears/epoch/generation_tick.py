@@ -39,7 +39,7 @@ from typing import Final, Protocol
 from threetears.core.collections.generation import GenerationVerdict
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.epoch.generation import EpochGenerationReader
 
@@ -123,10 +123,11 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
         # prawduct:allow prawduct/broad-except -- one table's failure must not abandon the
         # remaining tables in the same pass. re-raised below.
         except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "write generation catch-up failed for a table; continuing with the rest of the pass",
-                exc_info=True,
-                extra={"extra_data": {"table": table_name}},
+            contain(
+                exc,
+                log=log,
+                what="write generation catch-up failed for a table; continuing with the rest of the pass",
+                extra={"table": table_name},
             )
             if first_error is None:
                 first_error = exc
