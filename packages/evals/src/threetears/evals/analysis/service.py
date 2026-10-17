@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -71,7 +70,7 @@ from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.storage import JobRecordStore
 from threetears.evals.schema.models import EvalTestCase, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
-from threetears.evals.kernel.capped_completion import refresh_prices
+from threetears.evals.kernel.capped_completion import prompt_token_bound, refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
 from threetears.evals.schema.logs import get_logger
@@ -230,26 +229,11 @@ class PreparedGeneration(NamedTuple):
     started_at: str | None = None
 
 
-def _approx_analysis_input_tokens(bundle: AnalysisContextBundle, prompt: str) -> int:
-    """Approximate the analysis generator call's input tokens, for pre-spend disclosure.
-
-    A deliberately coarse ``chars/4`` heuristic over the serialized bundle (the
-    generator's user message) plus the prompt (its system message) — the two
-    strings the generator actually sends. It is a *scale* signal for the
-    Visible-Costs log line, never a billing figure: the codebase has no per-token
-    pricing table (cost is only ever observed, from the provider's reported usage),
-    so the dollar cost is knowable only after the call. No tokenizer dependency is
-    pulled in for a number that needs only an order of magnitude.
-
-    :param bundle: The assembled context bundle the generator will read.
-    :ptype bundle: AnalysisContextBundle
-    :param prompt: The resolved ``eval_analysis_gen`` system prompt.
-    :ptype prompt: str
-    :return: An approximate input-token count.
-    :rtype: int
-    """
-    serialized = json.dumps(bundle.to_dict(), sort_keys=True)
-    return (len(serialized) + len(prompt)) // 4
+#: What the generation's ``input_tokens_bound`` log figure is, said on the line that logs it.
+INPUT_TOKENS_BOUND_BASIS = (
+    "one per UTF-8 byte of the system prompt, user message and response schema sent, plus framing: "
+    "at or above the provider's count, the bound the shipped client prices the cap on"
+)
 
 
 def describe_insight_id_filters(subject_id: str | None, source_campaign_id: str | None) -> str:
@@ -826,8 +810,16 @@ async def run_analysis_generation(
     prompt, client, resolved_model = prepared.prompt, prepared.client, prepared.resolved_model
 
     # Visible Costs: disclose the SCALE of the call BEFORE making it — model,
-    # approximate input size, output cap. No dollar figure (the codebase has no
-    # pricing table; the real cost is logged after, from the provenance).
+    # input size, output cap. No dollar figure: what the call was priced at is on
+    # its out-of-run ledger row, and what it cost is logged after, from the provenance.
+    #
+    # The input size is a BOUND over the exact first request the generator sends
+    # (`first_request`, its one derivation), never an estimate that can run low: a
+    # `chars/4` count over a differently rendered bundle logged 224,571 for a call
+    # billed 525,840 prompt tokens, since ids, numbers and punctuation tokenize far
+    # denser than prose, and it left the system prompt's additions and the response
+    # schema out. It is the bound the shipped client prices the cap on, so the size
+    # disclosed and the size priced agree.
     #
     # The prose says "the generator model", not "opus". It said "opus call starting"
     # while interpolating `resolved_model` two lines down, so a run with a `model=`
@@ -837,12 +829,13 @@ async def run_analysis_generation(
     # interpolation is the same defect with an extra step.
     log.info(
         "eval.generate_analysis campaign=%s scope=%s model=%s runs=%d "
-        "approx_input_tokens=%d max_output_tokens=%d (generator call starting — $ billed on completion)",
+        "input_tokens_bound=%d (%s) max_output_tokens=%d (generator call starting — $ billed on completion)",
         campaign_id,
         scope_id,
         resolved_model,
         len(bundle.run_ids),
-        _approx_analysis_input_tokens(bundle, prompt),
+        prompt_token_bound(*first_request(bundle, prompt, host.profile)),
+        INPUT_TOKENS_BOUND_BASIS,
         max_output_tokens,
     )
 
