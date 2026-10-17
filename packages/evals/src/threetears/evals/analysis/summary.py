@@ -1040,7 +1040,7 @@ class EvalSummary(BaseModel):
         """Each stratum's line, then its measures' lines indented beneath it."""
         lines: list[str] = []
         for stratum in self.strata:
-            said = f"{NO_STRATUM if stratum.stratum is None else stratum.stratum}: {stratum.n_cases} case(s), "
+            said = f"{NO_STRATUM if stratum.stratum is None else _shown(stratum.stratum)}: {stratum.n_cases} case(s), "
             said += f"{stratum.n_results} result(s)"
             if stratum.too_few:
                 said += f" — {TOO_FEW_CASES} (fewer than {STRATUM_MIN_CASES})"
@@ -1161,30 +1161,34 @@ class EvalSummary(BaseModel):
         :rtype: str
         """
         lines = [self.headline, f"  {self.results_text}"]  # one line: the results line is counts
-        lines += [f"  {line}" for line in (self.stopped_text, self.spend_cap_text) if line is not None]
+        # an operator's reason for a cancel is their own words, and can run over lines
+        lines += [f"  {one_line(line)}" for line in (self.stopped_text, self.spend_cap_text) if line is not None]
         # one line: a measure's line is its declared name and its figures (_measure_line)
         lines += [f"  {measure.text}" for measure in self.measure_lines if measure.state != "not_carried"]
         if self.confusion:
             lines.append("  confusion (expected → predicted):")
-            lines += [f"    {line}" for line in self.confusion_lines]
+            # a predicted label is whatever the candidate answered: _shown quotes one holding a line break
+            lines += [f"    {one_line(line)}" for line in self.confusion_lines]
             lines.append("  per label:")
-            lines += [f"    {line}" for line in self.label_lines]
+            lines += [f"    {one_line(line)}" for line in self.label_lines]
         if self.strata:
             lines.append("  by stratum:")
+            # one line: a stratum's line names it through _shown, and its measures' lines are indented under it
             lines += [f"    {line}" for line in self.stratum_lines]
         if self.intent_text is not None:
             lines.append(f"  {self.intent_text}")  # one line: intent_text rejoins the intent's words by single spaces
-        lines += [f"  {line}" for line in self.dimension_lines]
+        lines += [f"  {one_line(line)}" for line in self.dimension_lines]
         if self.self_judging_warning is not None:
             lines.append(f"  {self.self_judging_warning}")
         if self.model_identity_warning is not None:
             lines.append(f"  {self.model_identity_warning}")
         if self.request_settings_warning is not None:
             lines.append(f"  {self.request_settings_warning}")
-        lines += [f"  {line}" for line in self.spend_lines]
+        lines += [f"  {one_line(line)}" for line in self.spend_lines]
         if self.total_spend_text is not None:
             lines.append(f"  {self.total_spend_text}")  # one line: the total is dollars and call counts
-        lines += [f"  {line}" for line in self.goal_check_lines]
+        # a goal check refused names the grammar's reason, which can run over lines
+        lines += [f"  {one_line(line)}" for line in self.goal_check_lines]
         if (omitted := self.uncarried_text) is not None:
             lines.append(f"  {omitted}")
         lines += [f"  error: {one_line(error)}" for error in self.errors]
@@ -1233,8 +1237,9 @@ def _left_out(measure: RunMeasureSummary) -> str:
 
 
 def _shown(label: str) -> str:
-    """A label as printed: as written, or quoted when whitespace at its ends would otherwise be invisible."""
-    return repr(label) if label != label.strip() else label
+    """A label as printed: as written, or quoted when whitespace at its ends would otherwise be invisible, or when
+    it holds a line break, which would put the rest of it at the margin as the next line."""
+    return repr(label) if label != label.strip() or len(label.splitlines()) > 1 else label
 
 
 def _proportion(

@@ -181,6 +181,7 @@ async def _list_variables(tool_context: ToolContextManager) -> str:
     for item in saved:
         value = str(item.get("content") or "")
         kind = (item.get("metadata") or {}).get("value_type", "string")
+        # one line: ``_preview`` is a repr, which writes a line break as \\n
         lines.append(f"- {item['key']} ({kind}, {len(value):,} chars): {_preview(value)}")
     return "\n".join(lines)
 

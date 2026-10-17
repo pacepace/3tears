@@ -56,6 +56,10 @@ def test_the_scan_reaches_the_packages() -> None:
         'items.append(f"- [memory:{mem_id}] {text}")',
         'lines.append(f"{position}. {candidate.title}")',
         'listing = "\\n".join(f"- {name}: {description}" for name, description in rows)',
+        'lines.append(f"- {when}: {value}")',
+        'lines.append(f"  {shown[key]}")',
+        'lines = ["  " + line for line in body.split("\\n\\n")]',
+        'out = [f"  {line}" for line in rows]',
     ],
 )
 def test_the_check_finds_a_text_indented_at_its_first_line_only(line: str) -> None:
@@ -75,6 +79,10 @@ def test_the_check_finds_a_text_indented_at_its_first_line_only(line: str) -> No
         'lines.append(f"  {note}")  # one line: a note here is a single-line label',
         'lines.append(f"{excerpt}")',
         'text = one_line(f"{facts}. {snippet}")',
+        'lines.append(f"  {arg_name}: {value!r}")',
+        'lines.append(f"- {when} {link.kind.value}: ok")',
+        'body_lines = ["  " + line if line.strip() else "" for line in body.splitlines()]',
+        'for line in text.splitlines():\n    out.append(f"  {line}")',
     ],
 )
 def test_the_check_leaves_what_is_one_line_or_marked(line: str) -> None:

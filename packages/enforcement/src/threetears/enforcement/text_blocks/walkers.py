@@ -21,13 +21,16 @@ from pathlib import Path
 
 from threetears.enforcement.common import iter_python_files, parse_python_file
 
-__all__ = ["FREE_TEXT", "MARKER", "unbroken_text", "unbroken_text_in"]
+__all__ = ["FREE_TEXT", "FREE_TEXT_WORDS", "MARKER", "unbroken_text", "unbroken_text_in"]
 
 #: A name that says its value is text someone wrote, and so can hold line breaks.
 FREE_TEXT = re.compile(
     r"(?i)(excerpt|snippet|summary|content|text|body|description|desc|preview|reason|error|note|message|detail|"
     r"prose|answer|reply|said|words|output|title|label|headline|gist|plan|step|quote)"
 )
+
+#: A name that is free text only as a whole word: ``shown`` and ``value`` are, ``deadline`` is no ``line``.
+FREE_TEXT_WORDS = re.compile(r"(?i)(?:^|_)(value|shown|what|cut|said|line)(?:_|$)")
 
 #: The comment that says a matched value is one line by what it is.
 MARKER = "# one line:"
@@ -63,7 +66,8 @@ def _what(value: ast.expr) -> list[str]:
     safe names nothing.
     """
     if isinstance(value, ast.Attribute):
-        return [value.attr]
+        # ``x.value`` is what ``x`` is: ``kind.value`` is an enum's name, not a text
+        return _what(value.value) if value.attr == "value" else [value.attr]
     if isinstance(value, ast.Name):
         return [value.id]
     if isinstance(value, ast.Subscript):
@@ -87,7 +91,9 @@ def _what(value: ast.expr) -> list[str]:
 
 def _free(value: ast.expr) -> bool:
     """Whether an interpolated expression is free text that did not pass a call that makes it safe."""
-    return any(FREE_TEXT.search(name) and not _AN_ID.search(name) for name in _what(value))
+    return any(
+        (FREE_TEXT.search(name) or FREE_TEXT_WORDS.search(name)) and not _AN_ID.search(name) for name in _what(value)
+    )
 
 
 def _after_indent(node: ast.JoinedStr) -> list[ast.FormattedValue]:
@@ -98,7 +104,8 @@ def _after_indent(node: ast.JoinedStr) -> list[ast.FormattedValue]:
         if isinstance(part, ast.Constant) and isinstance(part.value, str):
             text += part.value
         elif isinstance(part, ast.FormattedValue):
-            if _INDENTED_LINE.search(text):
+            # ``{x!r}`` is a repr, which writes a line break as \\n: one line whatever x holds
+            if _INDENTED_LINE.search(text) and part.conversion != ord("r"):
                 found.append(part)
             # a digit: ``f"{n}. {title}"`` is a numbered item, its number interpolated
             text += "0"
@@ -140,6 +147,24 @@ def _unbroken_lines(tree: ast.Module, lines: list[str]) -> list[int]:
             current = parents.get(current)
         return True
 
+    def _one_of_its_lines(value: ast.expr) -> bool:
+        # ``"  " + line for line in body.splitlines()`` indents every line: the name a loop over
+        # ``splitlines()`` binds is one line of the text, whatever it is called
+        if not isinstance(value, ast.Name):
+            return False
+        current: ast.AST | None = parents.get(value)
+        while current is not None:
+            loops: list[tuple[ast.expr, ast.expr]] = []
+            if isinstance(current, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+                loops = [(gen.target, gen.iter) for gen in current.generators]
+            elif isinstance(current, (ast.For, ast.AsyncFor)):
+                loops = [(current.target, current.iter)]
+            for target, source in loops:
+                if isinstance(target, ast.Name) and target.id == value.id:
+                    return _call_name(source) == "splitlines"
+            current = parents.get(current)
+        return False
+
     def _marked(line: int) -> bool:
         return any(MARKER in lines[n - 1] for n in (line, line - 1) if 0 < n <= len(lines))
 
@@ -154,7 +179,7 @@ def _unbroken_lines(tree: ast.Module, lines: list[str]) -> list[int]:
             left = node.left
             if isinstance(left, ast.Constant) and isinstance(left.value, str) and _INDENTED_LINE.search(left.value):
                 values = [node.right]
-        flagged = [value for value in values if _free(value)]
+        flagged = [value for value in values if _free(value) and not _one_of_its_lines(value)]
         if flagged and _read_as_a_list(node) and not _marked(node.lineno):
             hits.add(node.lineno)
     return sorted(hits)

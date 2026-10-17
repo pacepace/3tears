@@ -370,17 +370,18 @@ class Result:
         for arm, summary in self.arms.items():
             label = "" if len(self.arms) == 1 else f"{arm}{' (control)' if arm == self.control else ''}: "
             lines.append(f"{label}{summary.results_text}")
-            lines += [f"  {line}" for line in (summary.stopped_text,) if line is not None]
-            lines += [f"  {line}" for line in self._measure_texts(summary, arm)]
+            # an operator's reason for a cancel, a predicted label, a refused check's reason: each can run over lines
+            lines += [f"  {one_line(line)}" for line in (summary.stopped_text,) if line is not None]
+            lines += [f"  {one_line(line)}" for line in self._measure_texts(summary, arm)]
             if summary.confusion:
                 lines.append("  per label:")
-                lines += [f"    {line}" for line in summary.label_lines]
-            lines += [f"  {line}" for line in summary.dimension_lines]
-            lines += [f"  {line}" for line in summary.goal_check_lines]
+                lines += [f"    {one_line(line)}" for line in summary.label_lines]
+            lines += [f"  {one_line(line)}" for line in summary.dimension_lines]
+            lines += [f"  {one_line(line)}" for line in summary.goal_check_lines]
             # What it cost, priced or not, and the warnings no quiet print drops.
             for line in (summary.total_spend_text, summary.self_judging_warning, summary.model_identity_warning):
                 if line is not None:
-                    lines.append(f"  {line}")
+                    lines.append(f"  {one_line(line)}")
             lines += [f"  error: {one_line(error)}" for error in summary.errors]
             lines += [f"  excluded: {cause}" for cause in _exclusion_causes(summary)]
         if not one_arm:
