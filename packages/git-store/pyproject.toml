@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-git-store"
-version = "0.70.0"
+version = "0.71.0"
 description = "A git working tree as a durable store: rows as files, every change set one commit, one writer per repository"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,10 +22,10 @@ classifiers = [
 ]
 # needs the `git` program on PATH; no pygit2.
 dependencies = [
-    "3tears>=0.70.0,<0.71.0",
+    "3tears>=0.71.0,<0.72.0",
     # [client]: the writer lease, forwarding and the advanced broadcast use the NATS client at runtime.
-    "3tears-nats[client]>=0.70.0,<0.71.0",
-    "3tears-observe>=0.70.0,<0.71.0",
+    "3tears-nats[client]>=0.71.0,<0.72.0",
+    "3tears-observe>=0.71.0,<0.72.0",
     "pydantic>=2",
 ]
 
