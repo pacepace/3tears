@@ -23,6 +23,17 @@ from threetears.channels.protocol import (
 # ---------------------------------------------------------------------------
 
 
+def _slack_app_mock() -> MagicMock:
+    """a Slack app stand-in whose ``client.users_info`` is awaitable, as Slack's is.
+
+    the adapter awaits ``users_info`` to resolve the sender; a bare ``MagicMock`` is not
+    awaitable, so the lookup would fail into the adapter's contained fallback.
+    """
+    app = MagicMock()
+    app.client.users_info = AsyncMock(return_value={})
+    return app
+
+
 class _MockRouter:
     """mock router that records calls and returns configurable responses."""
 
@@ -160,7 +171,7 @@ class TestSlackAdapterConstructor:
         """SlackAdapter registers a handler for message events on the app."""
         from threetears.channels.slack import SlackAdapter
 
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
         router = _MockRouter()
         SlackAdapter(
@@ -187,7 +198,7 @@ class TestSlackAdapterLifecycle:
         """start() creates AsyncSocketModeHandler with app and app_token."""
         from threetears.channels.slack import SlackAdapter
 
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
         mock_handler = AsyncMock()
         mock_handler_cls.return_value = mock_handler
@@ -266,7 +277,7 @@ class TestSlackAdapterBotFiltering:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -293,7 +304,7 @@ class TestSlackAdapterBotFiltering:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -329,7 +340,7 @@ class TestSlackAdapterReplayGuard:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app_cls.return_value = MagicMock()
+        mock_app_cls.return_value = _slack_app_mock()
         adapter = SlackAdapter(
             bot_token="xoxb-test-token",
             app_token="xapp-test-token",
@@ -353,7 +364,7 @@ class TestSlackAdapterReplayGuard:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app_cls.return_value = MagicMock()
+        mock_app_cls.return_value = _slack_app_mock()
         adapter = SlackAdapter(
             bot_token="xoxb-test-token",
             app_token="xapp-test-token",
@@ -387,7 +398,7 @@ class TestSlackAdapterReplayGuard:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter(response=ChannelResponse(content="reply"))
-        mock_app_cls.return_value = MagicMock()
+        mock_app_cls.return_value = _slack_app_mock()
         mock_handler = MagicMock()
         mock_handler.start_async = AsyncMock()
         mock_handler_cls.return_value = mock_handler
@@ -424,7 +435,7 @@ class TestSlackAdapterReplayGuard:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter(response=ChannelResponse(content="reply"))
-        mock_app_cls.return_value = MagicMock()
+        mock_app_cls.return_value = _slack_app_mock()
         mock_handler = MagicMock()
         mock_handler.start_async = AsyncMock()
         mock_handler_cls.return_value = mock_handler
@@ -460,7 +471,7 @@ class TestSlackAdapterReplayGuard:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter(response=ChannelResponse(content="reply"))
-        mock_app_cls.return_value = MagicMock()
+        mock_app_cls.return_value = _slack_app_mock()
         adapter = SlackAdapter(
             bot_token="xoxb-test-token",
             app_token="xapp-test-token",
@@ -495,7 +506,7 @@ class TestSlackAdapterInboundNormalization:
 
         response = ChannelResponse(content="reply text")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -530,7 +541,7 @@ class TestSlackAdapterInboundNormalization:
 
         response = ChannelResponse(content="reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -562,7 +573,7 @@ class TestSlackAdapterInboundNormalization:
 
         response = ChannelResponse(content="reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -593,7 +604,7 @@ class TestSlackAdapterInboundNormalization:
 
         response = ChannelResponse(content="reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -625,7 +636,7 @@ class TestSlackAdapterInboundNormalization:
 
         response = ChannelResponse(content="reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -655,7 +666,7 @@ class TestSlackAdapterInboundNormalization:
 
         response = ChannelResponse(content="got it")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -703,7 +714,7 @@ class TestSlackAdapterInboundNormalization:
 
         response = ChannelResponse(content="reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -734,7 +745,7 @@ class TestSlackAdapterInboundNormalization:
 
         response = ChannelResponse(content="reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -778,7 +789,7 @@ class TestSlackAdapterThreading:
 
         response = ChannelResponse(content="threaded reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -809,7 +820,7 @@ class TestSlackAdapterThreading:
 
         response = ChannelResponse(content="new thread reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -840,7 +851,7 @@ class TestSlackAdapterThreading:
 
         response = ChannelResponse(content="dm reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -880,7 +891,7 @@ class TestSlackAdapterResponseRouting:
 
         response = ChannelResponse(content="ack")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -915,7 +926,7 @@ class TestSlackAdapterResponseRouting:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter(response=None)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -951,7 +962,7 @@ class TestSlackAdapterResponseRouting:
             attachments=[attachment],
         )
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_client = AsyncMock()
         # ``_resolve_user_locale`` calls
         # ``await self._app.client.users_info(...)`` then reads
@@ -1036,7 +1047,7 @@ class TestSlackAdapterRichFormatting:
             format_hints={"format": "rich"},
         )
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -1075,7 +1086,7 @@ class TestSlackAdapterRichFormatting:
 
         response = ChannelResponse(content="plain reply")
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -1112,7 +1123,7 @@ class TestSlackAdapterRichFormatting:
             format_hints={"format": "rich"},
         )
         router = _MockRouter(response=response)
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(
@@ -1153,7 +1164,7 @@ class TestSlackPostMessage:
         """post_message renders markdown into blocks and threads the reply."""
         from threetears.channels.slack import SlackAdapter
 
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client.chat_postMessage = AsyncMock()
         mock_app_cls.return_value = mock_app
 
@@ -1185,7 +1196,7 @@ class TestSlackPostMessage:
         """post_message without thread_ts posts at top level (no thread key)."""
         from threetears.channels.slack import SlackAdapter
 
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client.chat_postMessage = AsyncMock()
         mock_app_cls.return_value = mock_app
 
@@ -1274,7 +1285,7 @@ class TestSlackSenderIdentity:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(
@@ -1303,7 +1314,7 @@ class TestSlackSenderIdentity:
         """
         from threetears.channels.slack import SlackAdapter
 
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(profile={"display_name": "alice", "email": "alice@acme.example"}),
@@ -1321,7 +1332,7 @@ class TestSlackSenderIdentity:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(profile={"display_name": "alice", "email": "alice@acme.example"}),
@@ -1351,7 +1362,7 @@ class TestSlackSenderIdentity:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(profile={"display_name": "alice", "real_name": "Alice Doe"}),
@@ -1379,7 +1390,7 @@ class TestSlackSenderIdentity:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(
@@ -1403,7 +1414,7 @@ class TestSlackSenderIdentity:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(profile={"real_name": "Alice Doe"}),
@@ -1423,7 +1434,7 @@ class TestSlackSenderIdentity:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(
@@ -1451,7 +1462,7 @@ class TestSlackSenderIdentity:
         from threetears.channels.slack import SlackAdapter
 
         router = _MockRouter()
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(side_effect=RuntimeError("slack is down"))
         mock_app_cls.return_value = mock_app
@@ -1485,7 +1496,7 @@ class TestSlackProfileCacheBound:
         """
         from threetears.channels.slack import SlackAdapter
 
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(profile={"display_name": "someone"}),
@@ -1525,7 +1536,7 @@ class TestSlackProfileCacheBound:
         """past the TTL the profile is looked up again rather than served stale."""
         from threetears.channels.slack import SlackAdapter
 
-        mock_app = MagicMock()
+        mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
         mock_app.client.users_info = AsyncMock(
             return_value=_users_info_response(profile={"display_name": "alice", "email": "alice@acme.example"}),
