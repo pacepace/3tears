@@ -1509,6 +1509,11 @@ A stored case whose `name` is empty and whose content matches a corpus case (its
 as its id is derived) is given the corpus case's name on a boot, and reported under `SeedOutcome.named`. It is
 fill-only: a name a stored case already holds is never overwritten, and only `name` is written, so the case keeps its
 id, `content_hash` and `seed_digest` and its history.
+A fill that does not land is reported, never dropped, and the case stays nameless until a later boot fills it.
+`SeedOutcome.name_fill_contended` lists a case whose write lost to another writer of it between the seed's read and
+its write: nothing was undone and nothing needs doing, since the next boot reads it again. `SeedOutcome.name_fill_failed`
+maps a case to the reason your store refused the write, also logged at WARNING: that is your store's failure to look
+into, as for any refused seed write.
 
 **A host that validates its cases moves onto `template_cases` with its check.** A classifier bank whose every case
 carries a label and an input moves its cases into `template_cases/*.json` (`host_payload` is `{"label": ..., "text":

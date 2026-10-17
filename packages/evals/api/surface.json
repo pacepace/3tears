@@ -4253,7 +4253,7 @@
     },
     "threetears.evals.run.SeedOutcome": {
       "kind": "dataclass",
-      "signature": "SeedOutcome(created: dict[str, int] = dict(), skipped: dict[str, int] = dict(), failed: dict[str, int] = dict(), created_keys: dict[str, list[str]] = dict(), conflicted: dict[str, list[str]] = dict(), deleted: dict[str, list[str]] = dict(), needs_reset: dict[str, list[str]] = dict(), archived: dict[str, list[str]] = dict(), named: dict[str, list[str]] = dict())",
+      "signature": "SeedOutcome(created: dict[str, int] = dict(), skipped: dict[str, int] = dict(), failed: dict[str, int] = dict(), created_keys: dict[str, list[str]] = dict(), conflicted: dict[str, list[str]] = dict(), deleted: dict[str, list[str]] = dict(), needs_reset: dict[str, list[str]] = dict(), archived: dict[str, list[str]] = dict(), named: dict[str, list[str]] = dict(), name_fill_failed: dict[str, dict[str, str]] = dict(), name_fill_contended: dict[str, list[str]] = dict())",
       "tier": "stable"
     },
     "threetears.evals.run.SeedTemplateCase": {

@@ -487,6 +487,14 @@ class SeedOutcome:
     #: Natural keys of stored cases whose EMPTY ``name`` the seed filled from the corpus case of the same content, per
     #: doc type (``template_case``). Fill-only: a stored non-empty name is never overwritten.
     named: dict[str, list[str]] = field(default_factory=dict)
+    #: Natural keys of stored nameless cases whose name fill the store refused (``StorageError``), each with the
+    #: store's reason, per doc type (``template_case``). The case stays nameless, the refusal is logged at WARNING, and
+    #: the next boot tries again; until one lands, the case is called by its id.
+    name_fill_failed: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Natural keys of stored nameless cases whose conditional name fill lost to another writer (``ConflictError``: the
+    #: case was written between the seed's read and its write), per doc type (``template_case``). Nothing was undone and
+    #: nothing is wrong: the next boot reads the case again and fills its name if it is still empty.
+    name_fill_contended: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def total_created(self) -> int:
@@ -529,6 +537,16 @@ class SeedOutcome:
         return sum(len(keys) for keys in self.named.values())
 
     @property
+    def total_name_fill_failed(self) -> int:
+        """Stored nameless cases whose name fill the store refused."""
+        return sum(len(keys) for keys in self.name_fill_failed.values())
+
+    @property
+    def total_name_fill_contended(self) -> int:
+        """Stored nameless cases whose name fill lost to another writer."""
+        return sum(len(keys) for keys in self.name_fill_contended.values())
+
+    @property
     def nothing_to_do(self) -> bool:
         """True when the pass neither wrote, skipped, failed nor withheld anything.
 
@@ -546,6 +564,8 @@ class SeedOutcome:
             or self.total_needs_reset
             or self.total_archived
             or self.total_named
+            or self.total_name_fill_failed
+            or self.total_name_fill_contended
         )
 
     def summary(self) -> str:
@@ -569,6 +589,8 @@ class SeedOutcome:
             | set(self.needs_reset)
             | set(self.archived)
             | set(self.named)
+            | set(self.name_fill_failed)
+            | set(self.name_fill_contended)
         ):
             part = f"{doc_type}: {self.created.get(doc_type, 0)} created"
             if keys := self.created_keys.get(doc_type):
@@ -589,6 +611,14 @@ class SeedOutcome:
                 part += f", {len(archived)} not written, its template is archived ({', '.join(archived)})"
             if named := self.named.get(doc_type):
                 part += f", {len(named)} nameless, named from the corpus ({', '.join(named)})"
+            if fill_failed := self.name_fill_failed.get(doc_type):
+                reasons = ", ".join(f"{key}: {reason}" for key, reason in fill_failed.items())
+                part += f", {len(fill_failed)} NAMELESS, NAMING REFUSED BY STORAGE ({reasons})"
+            if contended := self.name_fill_contended.get(doc_type):
+                part += (
+                    f", {len(contended)} nameless, naming lost to another writer, retried next boot "
+                    f"({', '.join(contended)})"
+                )
             parts.append(part)
         return "; ".join(parts)
 
@@ -685,7 +715,10 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
     A template's own cases (``corpus.template_cases``) are written into its current revision after the templates,
     each reported under ``template_case`` keyed ``<template>/<name>``: created, already present (its content is
     stored on the revision), withheld under ``needs_reset`` (the revision held cases when the pass began), withheld
-    under ``conflicted`` (the store's template of that name is of the judge kind), or failed.
+    under ``conflicted`` (the store's template of that name is of the judge kind), or failed. A stored nameless case of
+    a corpus case's content is given its name, reported under ``named``, or under ``name_fill_failed`` (the store
+    refused the write, with its reason) or ``name_fill_contended`` (another writer wrote the case first); either leaves
+    it nameless for the next boot to fill.
 
     Authored judge cases (``corpus.judge_cases``) are built through ``author_judge_case`` with
     the templates, before anything is written, and frozen into their judge templates after the
@@ -882,6 +915,8 @@ def _seed_template_cases(
     already present (the revision holds its content), withheld (``needs_reset``, or ``conflicted`` for a stored judge
     template of that name), absent (``archived``: the template's every revision is archived, so an operator retired
     it, and nothing is written into any revision of it), or failed (the store refused it, or its template, written by this seed, is not stored).
+    Before that, a stored nameless case of its content is named after it (:func:`_fill_empty_name`), recorded under
+    ``named``, ``name_fill_failed`` or ``name_fill_contended``.
 
     **A case joins only an empty revision**, as a judge case joins only an empty battery and for the same reason: a
     template's live cases are what a launch of it runs, so a case added to a revision already holding cases would
@@ -893,6 +928,8 @@ def _seed_template_cases(
     conflicted: list[str] = []
     archived: list[str] = []
     named: list[str] = []
+    fill_failed: dict[str, str] = {}
+    fill_contended: list[str] = []
     skipped = failed = 0
     held: dict[str, set[str]] = {}
     for case in cases:
@@ -911,7 +948,13 @@ def _seed_template_cases(
             # The store is master, and its template of that name is a judge's, whose cases are judge cases.
             conflicted.append(key)
             continue
-        named.extend(_fill_empty_name(storage, scope_id, template, case))
+        match _fill_empty_name(storage, scope_id, template, case):
+            case _NameFilled():
+                named.append(key)
+            case _NameFillRefused(reason=reason):
+                fill_failed[key] = reason
+            case _NameFillContended():
+                fill_contended.append(key)
         if template.id not in held:
             # Read once per revision, before this pass writes into it: what it held when the boot began.
             held[template.id] = {
@@ -941,10 +984,33 @@ def _seed_template_cases(
         outcome.archived["template_case"] = archived
     if named:
         outcome.named["template_case"] = named
+    if fill_failed:
+        outcome.name_fill_failed["template_case"] = fill_failed
+    if fill_contended:
+        outcome.name_fill_contended["template_case"] = fill_contended
 
 
-def _fill_empty_name(storage: EvalStorage, scope_id: str, template: EvalTemplate, case: SeedTemplateCase) -> list[str]:
-    """Name the stored, live, nameless cases of ``template`` whose content is ``case``'s, after it; the keys filled.
+@dataclass(frozen=True)
+class _NameFilled:
+    """A stored nameless case was given the corpus case's name."""
+
+
+@dataclass(frozen=True)
+class _NameFillRefused:
+    """The store refused the name fill, for ``reason`` (its error's message)."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class _NameFillContended:
+    """The conditional name fill lost to another writer of the case."""
+
+
+def _fill_empty_name(
+    storage: EvalStorage, scope_id: str, template: EvalTemplate, case: SeedTemplateCase
+) -> _NameFilled | _NameFillRefused | _NameFillContended | None:
+    """Name the stored, live, nameless case of ``template`` whose content is ``case``'s, after it; what came of it.
 
     Fill-only: a stored case holding any name keeps it, and a name another live case of the revision already carries
     is not given twice. Content is compared as the case's id and ``content_hash`` are derived (stratum left out), so
@@ -959,12 +1025,14 @@ def _fill_empty_name(storage: EvalStorage, scope_id: str, template: EvalTemplate
     :ptype template: EvalTemplate
     :param case: The corpus case.
     :ptype case: SeedTemplateCase
-    :return: ``<template>/<name>`` for each case named (a ``StorageError`` or a lost conflict skips that case).
-    :rtype: list[str]
+    :return: Whether a case was named, the store refused the write (logged at WARNING with its reason), or the write
+        lost to another writer (logged at INFO: the next boot reads the case again); ``None`` when no stored case is
+        nameless with ``case``'s content, or its name is already carried.
+    :rtype: _NameFilled | _NameFillRefused | _NameFillContended | None
     """
     stored = [c for c in storage.query_test_cases(scope_id, template_id=template.id) if not c.archived]
     if any(c.name == case.name for c in stored):
-        return []
+        return None
     content = template_case_content_digest(case)
     for candidate in stored:
         if candidate.name or template_case_content_digest(candidate) != content:
@@ -974,10 +1042,30 @@ def _fill_empty_name(storage: EvalStorage, scope_id: str, template: EvalTemplate
             continue
         try:
             storage.save_test_case(current.model_copy(update={"name": case.name}), if_match=etag)
-        except StorageError, ConflictError:
-            continue
-        return [f"{case.template}/{case.name}"]
-    return []
+        except ConflictError as lost:
+            # NOSILENT: logged and recorded under name_fill_contended, which the summary names; the next boot retries.
+            log.info(
+                "eval.seed template_case=%s/%s scope=%s case=%s name fill lost to another writer: %s",
+                case.template,
+                case.name,
+                scope_id,
+                candidate.id,
+                lost,
+            )
+            return _NameFillContended()
+        except StorageError as refused:
+            # NOSILENT: logged and recorded under name_fill_failed, with the store's reason; the next boot retries.
+            log.warning(
+                "eval.seed template_case=%s/%s scope=%s case=%s name fill refused by storage: %s",
+                case.template,
+                case.name,
+                scope_id,
+                candidate.id,
+                refused,
+            )
+            return _NameFillRefused(reason=refused.message)
+        return _NameFilled()
+    return None
 
 
 def _seed_judge_cases(
