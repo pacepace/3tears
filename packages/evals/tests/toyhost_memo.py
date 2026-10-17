@@ -81,6 +81,8 @@ class FixturedClient:
         """
         self.completion = FixturedCompletion(content=body)
         self.calls: list[dict[str, str]] = []
+        #: The response format each call sent, in the order of :attr:`calls`.
+        self.response_formats: list[Any] = []
         self.closed = 0
         #: What :meth:`price_ceiling` answers for every call; ``None`` is a client that cannot price.
         self.ceiling_usd: float | None = FIXTURED_CALL_CEILING_USD
@@ -102,6 +104,7 @@ class FixturedClient:
     ) -> FixturedCompletion:
         """Record the call and hand back the prepared completion."""
         self.calls.append({"system": system, "user": user})
+        self.response_formats.append(response_format)
         return self.completion
 
     async def aclose(self) -> None:

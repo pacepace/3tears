@@ -9,11 +9,9 @@ file and replays them offline through :class:`~threetears.evals.testing.Recorded
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import string
 import time
-import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -24,6 +22,7 @@ import httpx
 from pydantic import BaseModel
 
 from threetears.evals.kernel import beside_eval_file, note_spend, strict_response_format
+from threetears.evals.kernel.capped_completion import prompt_token_bound
 from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.negotiation import (
     ANTHROPIC_MIN_THINKING_BUDGET,
@@ -64,9 +63,6 @@ DEFAULT_MAX_TOKENS: Final = 8192
 #: How long one request may take, in seconds, on a client the model opens itself, unless ``timeout=`` says
 #: otherwise. Nothing is retried.
 _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
-
-#: The tokens a price ceiling allows for a prompt's framing beyond its text (role markers, a schema's re-encoding).
-_FRAMING_TOKENS: Final = 2048
 
 #: What a catalogue-priced cost's source gains when a cache read or write was priced at a rate the catalogue row does
 #: not list for it: the plain prompt rate, or the dearer of two write rates the reply does not split between.
@@ -203,26 +199,6 @@ def _asked(
         reasoning_effort=effort if isinstance(effort, str) else None,
         reasoning_max_tokens=effort if isinstance(effort, int) else None,
     )
-
-
-def _text_bytes(text: str) -> int:
-    """The most tokens a tokenizer can read ``text`` as: one per UTF-8 byte, as written or after NFKC normalisation,
-    whichever is more (a normalising tokenizer can expand a compatibility character: ``U+FDFA`` is 3 bytes, 33 after).
-    """
-    return max(
-        len(text.encode("utf-8", errors="surrogatepass")),
-        len(unicodedata.normalize("NFKC", text).encode("utf-8", errors="surrogatepass")),
-    )
-
-
-def _prompt_bound(system: str, user: str, response_format: Mapping[str, Any] | None) -> int:  # Any: a JSON directive
-    """A bound on the prompt tokens a call sends: no token is shorter than a byte, so one per byte of each text (and
-    of the directive, written out as JSON either way), and an allowance for the framing around them."""
-    bound = _text_bytes(system) + _text_bytes(user) + _FRAMING_TOKENS
-    if response_format is not None:
-        written = json.dumps(response_format, ensure_ascii=False, default=str)
-        bound += max(_text_bytes(written), len(json.dumps(response_format, default=str)))
-    return bound
 
 
 class _Live:
@@ -453,7 +429,7 @@ class _Live:
             return None
         ceiling, why = self._catalogue.ceiling(
             matched,
-            prompt_tokens=_prompt_bound(system, user, response_format),
+            prompt_tokens=prompt_token_bound(system, user, response_format),
             output_tokens=self._asked.max_tokens,
         )
         if ceiling is None:
