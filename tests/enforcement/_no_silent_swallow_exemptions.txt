@@ -1,0 +1,9 @@
+# no-silent-swallow exemptions.
+#
+# for a handler that must absorb what the gate refuses, and cannot be written any other way. every
+# entry is `path:qualname#N:symbol` -- the scope enclosing the handler and the ordinal among
+# same-scope, same-symbol handlers, not a line number, so an edit above it does not stop it matching
+# -- preceded by a `# rationale:` line saying why the failure is not lost.
+
+# rationale: holds the caller's cancellation until a stopped run has ended, and its only caller re-raises it at once, so a lease is never released while the run may still be writing
+packages/core/src/threetears/core/coordination/coalesced_run.py:_until_ended#0:CancelledError

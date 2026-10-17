@@ -73,7 +73,11 @@ _UNCONTAINED_PENDING = (
     "packages/search",
 )
 
-_CONFIG = NoSilentSwallowConfig(repo_root=_REPO_ROOT, uncontained_pending=_UNCONTAINED_PENDING)
+_CONFIG = NoSilentSwallowConfig(
+    repo_root=_REPO_ROOT,
+    exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_no_silent_swallow_exemptions.txt",
+    uncontained_pending=_UNCONTAINED_PENDING,
+)
 
 
 def test_no_handler_swallows_without_saying_why() -> None:

@@ -172,3 +172,28 @@ class TestPendingList:
         repo = _repo(tmp_path, {"old": _CLEAN})
         with pytest.raises(pytest.fail.Exception, match="packages/gone is not a directory"):
             _run(repo, ("packages/gone",))
+
+
+class TestScopeKeyedExemption:
+    _HOLDS = (
+        "import asyncio\n\nasync def holds(tasks):\n    held = False\n    while tasks:\n"
+        "        try:\n            await asyncio.wait(tasks)\n        except asyncio.CancelledError:\n"
+        "            held = True\n    return held\n"
+    )
+
+    def _run(self, tmp_path: Path, entry: str) -> None:
+        repo = _repo(tmp_path, {"pkg": self._HOLDS})
+        ledger = repo / "exemptions.txt"
+        ledger.write_text(
+            f"# rationale: holds the cancellation until every task ends, and the caller re-raises it\n{entry}\n"
+        )
+        run_no_silent_swallow_enforcement(
+            NoSilentSwallowConfig(repo_root=repo, src_roots=(repo / "packages/pkg/src",), exemptions_path=ledger)
+        )
+
+    def test_an_entry_naming_the_handlers_scope_exempts_it(self, tmp_path: Path) -> None:
+        self._run(tmp_path, "packages/pkg/src/pkg/mod.py:holds#0:CancelledError")
+
+    def test_an_entry_naming_another_scope_does_not(self, tmp_path: Path) -> None:
+        with pytest.raises(pytest.fail.Exception, match=r"no_silent_swallow\.cancel"):
+            self._run(tmp_path, "packages/pkg/src/pkg/mod.py:elsewhere#0:CancelledError")

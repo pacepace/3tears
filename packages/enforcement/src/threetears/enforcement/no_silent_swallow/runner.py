@@ -35,6 +35,7 @@ from threetears.enforcement.no_silent_swallow.config import (
     NoSilentSwallowConfig,
 )
 from threetears.enforcement.no_silent_swallow.uncontained import find_uncontained
+from threetears.enforcement.underscore_access.ledger import MODULE_SCOPE, enclosing_scopes
 from threetears.enforcement.no_silent_swallow.walkers import (
     find_silent_swallows,
 )
@@ -93,7 +94,7 @@ def run_no_silent_swallow_enforcement(
     violations.extend(_uncontained_outside_pending(config, src_roots))
 
     exemptions = _load_exemptions(config.exemptions_path)
-    filtered = apply_exemptions(violations, exemptions, config.repo_root)
+    filtered = apply_exemptions(violations, exemptions, config.repo_root, scope_of=_scope_of)
 
     mode = resolve_mode(config.mode_env_var, default=MODE_STRICT)
 
@@ -187,4 +188,20 @@ def _load_exemptions(path: Path | None) -> list[Exemption]:
     """
     if path is None:
         return []
-    return parse_exemptions_with_rationale(path)
+    return parse_exemptions_with_rationale(path, allow_scope_keys=True)
+
+
+def _scope_of(path: Path, line: int) -> str:
+    """resolve a handler's line to the qualname of the function or class enclosing it.
+
+    an exemption names a handler by its scope (``path:qualname#N:symbol``), not its line, so an
+    edit above it does not silently stop the entry matching.
+
+    :param path: absolute path of the file the handler is in
+    :ptype path: Path
+    :param line: 1-based line of the handler
+    :ptype line: int
+    :return: enclosing qualname, or ``"<module>"`` at module level
+    :rtype: str
+    """
+    return enclosing_scopes(path).get(line, MODULE_SCOPE)
