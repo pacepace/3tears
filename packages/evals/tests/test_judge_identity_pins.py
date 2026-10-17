@@ -65,13 +65,23 @@ JUDGE_IDENTITIES: dict[str, str] = {
 }
 
 #: The final release the table below was taken at: the ``since`` of ``MIGRATIONS.toml``'s ``unreleased`` section.
-RELEASED_AT = "v0.69.0"
+RELEASED_AT = "v0.70.0"
 
 #: Every judge fingerprint as :data:`RELEASED_AT` shipped it, the baseline a wording change is announced against.
-#: v0.69.0 shipped no 3tears-evals, so it shipped no judge and no fingerprint can have moved since it. A copy for
-#: the reader: what a wording change is measured from is read from the release's tree
+#: A copy for the reader: what a wording change is measured from is read from the release's tree
 #: (:func:`released_judge_identities`), and this table is held to it.
-RELEASED_JUDGE_IDENTITIES: dict[str, str] = {}
+RELEASED_JUDGE_IDENTITIES: dict[str, str] = {
+    "builtin:transcript-axis": "fdfa47da36a8",
+    "builtin:outcome-axis": "576896bef534",
+    "builtin:ordinal:transcript": "61371c63c7dd",
+    "builtin:pass_fail:transcript": "6a15a72a00e0",
+    "builtin:ordinal:document": "24be20140704",
+    "builtin:pass_fail:document": "c2362452be2f",
+    "suffix:ordinal:transcript": "244c6e35eec0",
+    "suffix:pass_fail:transcript": "77f5d3e70b47",
+    "suffix:ordinal:document": "31a65e926680",
+    "suffix:pass_fail:document": "469f6f5d4bdb",
+}
 
 #: This file, as a path inside the repository: where a released tree's pins are read.
 PINS_PATH = "packages/evals/tests/test_judge_identity_pins.py"
