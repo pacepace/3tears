@@ -153,7 +153,8 @@ cell, and your log filter reads it with `current_cell_identity()` (in `threetear
 creates inherits it. Work you start for a cell in a context that does not inherit it, such as a detached job started
 in a fresh context or a thread of your own, reads `None` until you bind it: read the identity where the cell hands the
 work off and wrap the work in `with bind_cell_identity(identity):`, which restores the previous value on exit,
-including on cancel.
+including on cancel. Enter and leave the block in one task, and never hold it across an async generator's `yield`:
+a block left from another context cannot restore its value and raises.
 
 An app that starts runs builds a `LaunchHost` (in `threetears.evals.run`) around its `EvalHost`: the
 launch settings (its registry of launchable kinds is the `kinds` of the `EvalHost`'s template checks, above), a job timeout, `world_placements` (required exactly

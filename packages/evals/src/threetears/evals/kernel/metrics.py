@@ -896,9 +896,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
         merit_axis="cost",
         higher_is_better=False,
         unit="usd",
-        formula="sum of cost_usd over the candidate, inner_agent and external roles",
+        formula=(
+            "sum of cost_usd over the candidate, inner_agent and external roles; for a judge-kind result, "
+            "over the judge role"
+        ),
         description=(
-            "Observed dollars belonging to the production roles — measurement-only roles excluded. This is "
+            "Observed dollars belonging to the production roles — measurement-only roles excluded. In a judge "
+            "campaign the judge under test is the subject, metered under the judge role alone, so there that "
+            "role is the production role. This is "
             "the spent subset, NOT the counterfactual 'what running this candidate for real would cost': the "
             "two coincide only when the run substituted nothing, and a swept model understates while a "
             "memory-stripped candidate that does background work where production would recall overstates. "

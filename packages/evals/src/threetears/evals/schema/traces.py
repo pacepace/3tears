@@ -109,7 +109,9 @@ def bind_cell_identity(identity: CellIdentity) -> Iterator[None]:
     The one binder: the engine binds each cell through it, and a host binds through it where a cell's work crosses
     a task boundary of the host's own that does not carry the context, such as a detached job started in a fresh
     context, so the host's work and the engine's read one identity. The previous value is restored on exit,
-    including when the block is cancelled or raises.
+    including when the block is cancelled or raises. Enter and leave the block in one task, and do not hold it
+    across an async generator's ``yield``: a block left from another context cannot restore and raises
+    ``ValueError``.
 
     :param identity: The cell the block's work belongs to.
     :ptype identity: CellIdentity
