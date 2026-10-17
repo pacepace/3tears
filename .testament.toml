@@ -1,0 +1,24 @@
+# testament (https://github.com/brookstalley/testament) runs the unit suite on a pool of runners.
+# ./scripts/test.sh hands off to it when `testament` is on PATH; without it, nothing here is read.
+# The command and selection mirror test.sh's whole-suite run, minus `-n 4 --dist loadgroup`:
+# testament distributes the tests itself.
+manifest_version = 2
+name = "3tears"
+executor = "container"
+command = ["uv", "run", "--frozen", "pytest", "-m", "not integration"]
+default_selection = ["packages/", "tests/"]
+env_inputs = ["uv.lock", ".python-version"]
+batch_timeout_s = 1800
+collect_timeout_s = 900
+
+[env]
+UV_CACHE_DIR = "/tr/cache/uv"
+
+[image]
+dockerfile = "docker/testament.Dockerfile"
+inputs = ["docker/testament.Dockerfile"]
+
+[setup]
+timeout_s = 1800
+# CI's install (`uv sync --extra vision`), frozen to the lockfile
+steps = [["uv", "sync", "--frozen", "--extra", "vision", "--quiet"]]

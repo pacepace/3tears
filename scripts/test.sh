@@ -23,6 +23,17 @@ fi
 
 EXTRA_ARGS=("$@")
 
+# Where testament is installed (see .testament.toml), it runs the tests on its runners instead,
+# outside CI and unless TESTAMENT=off. It distributes the tests itself, so no `-n 4`, and its
+# manifest command carries `-m "not integration"`, so a package run there skips integration tests.
+if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ]; then
+    echo "test.sh: via testament (integration tests run only locally; TESTAMENT=off for the old path)" >&2
+    if [ -n "$PACKAGE" ]; then
+        exec testament run -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    fi
+    exec testament run -- packages/ tests/ ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+fi
+
 if [ -n "$PACKAGE" ]; then
     uv run pytest "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 else
