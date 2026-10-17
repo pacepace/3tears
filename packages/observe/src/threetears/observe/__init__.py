@@ -21,7 +21,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 
 from threetears.observe.background import cancel_and_wait, spawn_background
 from threetears.observe.build_once import BuildOnce
-from threetears.observe.containment import contain, contained
+from threetears.observe.containment import ContainedLevel, contain, contained
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.observe.periodic import PeriodicTask, TickResult
 from threetears.observe.health import HealthCheck, HealthServer, HealthTier
@@ -45,6 +45,7 @@ from threetears.observe.tracing import set_span_attribute, traced
 __all__ = [
     "ANONYMIZED_MARKER",
     "BuildOnce",
+    "ContainedLevel",
     "ContextFormatter",
     "HealthCheck",
     "HealthServer",

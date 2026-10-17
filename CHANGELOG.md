@@ -9,10 +9,10 @@ packages (bumped in lock-step).
 ### Swallowed exceptions: a broad handler re-raises or is contained, and a contained bug fails its test
 
 - **New in `3tears-observe`: `contain`, `contained` and `cancel_and_wait`.** `contain(exc, *, log, what, extra=None,
-  level=logging.WARNING)` is the one way a broad handler absorbs a failure: it logs `what` verbatim at WARNING or
-  above with the traceback, adds `contained_site` (`module:Qualified.name` of the catching function) and `exc_type` to
-  the record's `extra_data`, and counts `contained_errors_total{site, exc_type}`. A level below WARNING raises
-  `ValueError`. `with contained(what, *, log, extra=None):` does the same for a block whose failure falls through, and
+  level="warning")` is the one way a broad handler absorbs a failure: it logs `what` verbatim with the traceback at
+  `level` -- `"warning"`, `"error"` or `"critical"` (`ContainedLevel`), named so a caller needs no stdlib `logging`
+  import, and nothing below WARNING -- adds `contained_site` (`module:Qualified.name` of the catching function) and
+  `exc_type` to the record's `extra_data`, and counts `contained_errors_total{site, exc_type}`. `with contained(what, *, log, extra=None):` does the same for a block whose failure falls through, and
   absorbs `Exception` only, so a cancellation still reaches the task. `await cancel_and_wait(task)` cancels a task
   and waits for it, raising the caller's own cancellation and the task's own failure, where the hand-written
   `except CancelledError: pass` swallowed both.

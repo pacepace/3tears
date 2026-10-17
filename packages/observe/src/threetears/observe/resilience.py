@@ -9,7 +9,6 @@ unavailability of their dependencies.
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
@@ -88,9 +87,7 @@ async def retry_with_backoff(
             break
         except Exception as exc:
             if max_attempts is not None and attempt >= max_attempts:
-                contain(
-                    exc, log=_logger, what=f"{name} failed after {max_attempts} attempts: {exc}", level=logging.ERROR
-                )
+                contain(exc, log=_logger, what=f"{name} failed after {max_attempts} attempts: {exc}", level="error")
                 break
             if max_attempts is None:
                 _logger.warning(

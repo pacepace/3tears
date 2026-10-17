@@ -91,13 +91,13 @@ class TestContain:
             try:
                 raise TimeoutError("gave up")
             except TimeoutError as exc:
-                contain(exc, log=_log, what="retries exhausted", level=logging.ERROR)
+                contain(exc, log=_log, what="retries exhausted", level="error")
         (record,) = [r for r in caplog.records if r.getMessage() == "retries exhausted"]
         assert record.levelno == logging.ERROR
 
-    def test_refuses_a_level_below_warning(self) -> None:
-        with pytest.raises(ValueError, match="WARNING or above"):
-            contain(RuntimeError("quiet"), log=_log, what="whispered", level=logging.DEBUG)
+    def test_refuses_a_level_it_does_not_name(self) -> None:
+        with pytest.raises(ValueError, match="warning, error or critical"):
+            contain(RuntimeError("quiet"), log=_log, what="whispered", level="debug")  # type: ignore[arg-type]
 
 
 class TestContained:

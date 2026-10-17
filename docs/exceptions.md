@@ -30,7 +30,7 @@ except Exception as exc:
     contain(exc, log=log, what="grant cache refresh failed", extra={"epoch": epoch})
 ```
 
-- `contain(exc, *, log, what, extra=None, level=logging.WARNING)` logs `what` verbatim, at WARNING or above, with the
+- `contain(exc, *, log, what, extra=None, level="warning")` logs `what` verbatim, at `"warning"`, `"error"` or `"critical"`, with the
   traceback, adds `contained_site` and `exc_type` to the record's `extra_data`, and counts
   `contained_errors_total{site, exc_type}`. `site` is the catching function, `module:Qualified.name`. It does not
   change control flow.
@@ -69,7 +69,7 @@ The conversion changes no behaviour. Each handler keeps its control flow and its
 changes.
 
 1. For each `except Exception as exc:` that doesn't re-raise, replace its log call with `contain(exc, log=<the same
-   logger>, what=<the same message>, extra=<the same extra_data fields>)`. Pass `level=logging.ERROR` where it logged
+   logger>, what=<the same message>, extra=<the same extra_data fields>)`. Pass `level="error"` where it logged
    at `error`, `exception` or `critical`. Where it logged nothing, write a message that says what failed. Bind
    `as exc` if the handler doesn't. Leave the body's returns, assignments and `continue`s exactly as they are.
 2. `with suppress(Exception):` becomes `with contained("<what failed>", log=log):`.
