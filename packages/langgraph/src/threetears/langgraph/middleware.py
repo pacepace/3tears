@@ -27,7 +27,7 @@ from threetears.langgraph.caching import (
     detect_capabilities,
     extract_cache_usage,
 )
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["PromptCachingMiddleware"]
 
@@ -91,10 +91,11 @@ def _stamp_cache_usage(response: ModelResponse) -> None:
         else:
             try:
                 message.usage_metadata = {"cache_usage": usage}  # type: ignore[assignment]
-            except Exception:  # noqa: BLE001 - exotic response shapes may refuse the assignment
-                log.debug(
-                    "response message %s does not accept usage_metadata assignment",
-                    type(message).__name__,
+            except Exception as exc:  # noqa: BLE001 - exotic response shapes may refuse the assignment
+                contain(
+                    exc,
+                    log=log,
+                    what=f"response message {type(message).__name__} does not accept usage_metadata assignment",
                 )
 
 

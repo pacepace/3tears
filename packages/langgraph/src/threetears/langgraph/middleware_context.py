@@ -36,7 +36,7 @@ from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResp
 from langchain_core.messages import SystemMessage
 from langgraph.config import get_config
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["ContextMergeMiddleware", "ConversationContextProvider"]
 
@@ -136,10 +136,11 @@ def _merge_request_context(request: ModelRequest) -> ModelRequest:
     except (
         Exception
     ) as exc:  # prawduct:allow prawduct/broad-except -- context render is best-effort; a fault must not fail the turn
-        log.warning(
-            "conversation-context merge failed; proceeding without it",
-            extra={"extra_data": {"error": str(exc)}},
-            exc_info=True,
+        contain(
+            exc,
+            log=log,
+            what="conversation-context merge failed; proceeding without it",
+            extra={"error": str(exc)},
         )
         return request
     if not context_text:
