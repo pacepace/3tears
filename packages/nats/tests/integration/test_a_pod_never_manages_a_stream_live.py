@@ -23,17 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import time
-from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
-from pathlib import Path
 from uuid import UUID
 
-import nats
-import nats.errors
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -50,6 +45,9 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .nats_support import running_nats
+from .refusals import Violations, refused, watching_client_log
+
 pytestmark = pytest.mark.integration
 
 _NS = "nomgmt"
@@ -64,9 +62,6 @@ _WAIT = 10.0
 _CHECKPOINTS = "checkpoints"
 _NONCES = "entry_challenge_nonces"
 _NEVER_DECLARED = "survey-quota-cells"
-
-#: what a refused JetStream call surfaces as in nats-py: an unanswered request.
-_REFUSED = (nats.errors.TimeoutError, nats.errors.NoRespondersError)
 
 
 def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
@@ -120,31 +115,7 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
-async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_path: Path) -> None:
+async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream() -> None:
     """bind, read, write, watch and list inside; every stream-management verb refused, nothing copied."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -170,7 +141,7 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_pat
     never_declared = coordination_bucket_name(scope, _NEVER_DECLARED, ns=_NS)
     victim = coordination_bucket_name(victim_scope, _CHECKPOINTS, ns=_NS)
 
-    with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
+    with running_nats(_server_config(pub_allow, sub_allow)) as uri:
         hub = await NatsClient.connect(
             nats_url=uri,
             nats_subject_namespace=_NS,
@@ -238,7 +209,8 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_pat
             # === REFUSED: every stream-management verb, on every stream =============================
             raw = pod.raw
             copy_victim = {"sources": [{"name": f"KV_{victim}"}], "subjects": [], "storage": "memory"}
-            for subject, body in (
+            violations = Violations()
+            probes = (
                 (f"$JS.API.STREAM.CREATE.KV_{never_declared}", {"name": f"KV_{never_declared}", **copy_victim}),
                 (f"$JS.API.STREAM.UPDATE.KV_{own}", {"name": f"KV_{own}", **copy_victim}),
                 (f"$JS.API.STREAM.CREATE.{_NS}-exfil", {"name": f"{_NS}-exfil", **copy_victim}),
@@ -248,9 +220,12 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_pat
                 (f"$JS.API.STREAM.PURGE.KV_{own}", {}),
                 (f"$JS.API.STREAM.SNAPSHOT.KV_{own}", {"deliver_subject": f"{permissions.inbox_prefix}.snap"}),
                 (f"$JS.API.CONSUMER.CREATE.KV_{own}", {"stream_name": f"KV_{own}", "config": {}}),
-            ):
-                with pytest.raises(_REFUSED):
-                    await raw.request(subject, json.dumps(body).encode(), timeout=2)
+            )
+            with watching_client_log(violations):
+                for subject, body in probes:
+                    await refused(
+                        violations, raw.request(subject, json.dumps(body).encode(), timeout=5), naming=subject
+                    )
 
             # === nothing was copied, and the pod's own bucket was not reshaped =====================
             own_info = await admin_js.stream_info(f"KV_{own}")

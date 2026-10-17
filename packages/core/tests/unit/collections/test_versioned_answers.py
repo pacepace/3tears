@@ -223,20 +223,24 @@ class TestRetirement:
         bucket = await _bucket(nats)
         original = bucket.update
         failures = [1]
+        failed = asyncio.Event()
 
         async def fails_once(*args: Any, **kwargs: Any) -> Any:
             if failures and "_index.versions" in str(kwargs.get("key")):
                 failures.pop()
+                failed.set()
                 raise KvError("broker unreachable")
             return await original(*args, **kwargs)
 
         bucket.update = fails_once  # type: ignore[method-assign]
         answers.current_version("v2", 2)
-        await asyncio.sleep(0.01)
+        # the failed retirement finishes in the same step that raises, so once the waiter wakes it
+        # is over; a fixed sleep instead lost the race on a loaded machine, and the retry below
+        # then landed while the first attempt was still running and was ignored as a duplicate
+        await asyncio.wait_for(failed.wait(), timeout=2.0)
         assert len(_entry_keys(bucket, "v1")) == 1  # the first retirement failed
         answers.current_version("v2", 2)  # the next call tries again
-        await asyncio.sleep(0.01)
-        assert _entry_keys(bucket, "v1") == []
+        assert await _eventually(lambda: _entry_keys(bucket, "v1") == [])
 
 
 class TestNoAnswerOutlivesItsIndex:

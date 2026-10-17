@@ -29,7 +29,6 @@ import time
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 
@@ -87,11 +86,9 @@ def _config(name: str) -> str:
 
 
 @contextlib.contextmanager
-def _cluster(tmp_path: Path) -> Iterator[tuple[_Node, _Node]]:
+def _cluster() -> Iterator[tuple[_Node, _Node]]:
     """two routed nats-servers on one docker network.
 
-    :param tmp_path: a directory for the configurations
-    :ptype tmp_path: Path
     :return: the two nodes, yielded
     :rtype: Iterator[tuple[_Node, _Node]]
     """
@@ -103,16 +100,7 @@ def _cluster(tmp_path: Path) -> Iterator[tuple[_Node, _Node]]:
         containers = []
         try:
             for name in ("node-a", "node-b"):
-                conf_dir = tmp_path / name
-                conf_dir.mkdir()
-                (conf_dir / "nats.conf").write_text(_config(name))
-                container = (
-                    nats_server(_IMAGE)
-                    .with_network(network)
-                    .with_network_aliases(name)
-                    .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-                    .with_command(["-c", "/etc/nats/nats.conf"])
-                )
+                container = nats_server(_IMAGE, config=_config(name)).with_network(network).with_network_aliases(name)
                 container.start()
                 containers.append(container)
                 nodes.append(_Node(name=name, uri=nats_server_uri(container), container=container))
@@ -180,11 +168,11 @@ async def _namespace() -> AsyncIterator[None]:
         set_default_namespace(previous)
 
 
-async def test_a_lame_duck_server_hands_its_clients_over_without_losing_anything(tmp_path: Path) -> None:
+async def test_a_lame_duck_server_hands_its_clients_over_without_losing_anything() -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    with _cluster(tmp_path) as (first, second):
+    with _cluster() as (first, second):
         async with _namespace():
             # a pod that knows both nodes, as a pod given the cluster's URLs does. nats-py shuffles
             # its pool, so the node it lands on is the one shut down, and the other serves.
@@ -273,12 +261,12 @@ async def test_a_lame_duck_server_hands_its_clients_over_without_losing_anything
             await service.shutdown(drain_timeout=timedelta(seconds=2))
 
 
-async def test_a_pinned_run_arrives_in_order_across_a_handover_onto_another_node(tmp_path: Path) -> None:
+async def test_a_pinned_run_arrives_in_order_across_a_handover_onto_another_node() -> None:
     """a stream split over two nodes' routes can reorder; a pinned run stays on its first connection."""
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    with _cluster(tmp_path) as (node_a, node_b):
+    with _cluster() as (node_a, node_b):
         async with _namespace():
             reader = await _connect(node_b.uri, "pin-reader")
             received: list[int] = []

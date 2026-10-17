@@ -83,3 +83,38 @@ def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "aibots")
     yield
     reset_default_namespace()
+
+
+def _package_of(nodeid: str) -> str:
+    """the workspace package a test belongs to, from its rootdir-relative node id.
+
+    ``packages/core/tests/...`` is ``packages/core``, ``packages/agent/memory/tests/...`` is
+    ``packages/agent/memory``, and the repo-level ``tests/...`` is ``tests``.
+
+    :param nodeid: the test's node id
+    :ptype nodeid: str
+    :return: the package's directory, relative to the repo root
+    :rtype: str
+    """
+    parts = nodeid.split("::", 1)[0].split("/")
+    if parts[0] == "packages" and len(parts) > 2:
+        return "/".join(parts[:3] if parts[1] == "agent" else parts[:2])
+    return parts[0]
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """put every test of one package on one xdist worker, in its usual order.
+
+    under ``--dist loadgroup`` a package's tests run in one process exactly as they do serially, so
+    a test meets no neighbour from its own package it would not meet in a serial run, and two tests
+    of one package never hold a shared resource at once. packages share nothing at runtime, so
+    splitting the suite at that boundary is the conservative cut. it is also faster than spreading
+    single tests, because each worker imports fewer packages. without xdist the marker is inert.
+
+    :param items: the collected tests
+    :ptype items: list[pytest.Item]
+    :return: nothing
+    :rtype: None
+    """
+    for item in items:
+        item.add_marker(pytest.mark.xdist_group(_package_of(item.nodeid)))

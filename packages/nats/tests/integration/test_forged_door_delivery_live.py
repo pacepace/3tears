@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import time
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
@@ -136,9 +135,7 @@ def _receiver_accepts(body_bytes: bytes) -> bool:
     return True
 
 
-async def test_a_forged_l3_request_put_on_the_door_by_a_real_pod_is_refused_the_genuine_one_verifies(
-    tmp_path: Path,
-) -> None:
+async def test_a_forged_l3_request_put_on_the_door_by_a_real_pod_is_refused_the_genuine_one_verifies() -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
     genuine, forged = await _door_bodies()
@@ -163,7 +160,7 @@ async def test_a_forged_l3_request_put_on_the_door_by_a_real_pod_is_refused_the_
     door_subject = f"{_NS}.l3.query"
     assert door_subject in pub_allow, "the l3 door is published by the pod; this case is the direct-publish forgery"
 
-    with nats_with_auth(server_config(pub_allow, sub_allow), tmp_path) as uri:
+    with nats_with_auth(server_config(pub_allow, sub_allow)) as uri:
         async with admin_client(uri, _NS) as receiver:
             received = await watch(receiver, [door_subject])  # watch BEFORE publishing
             pod: NatsClient | None = None

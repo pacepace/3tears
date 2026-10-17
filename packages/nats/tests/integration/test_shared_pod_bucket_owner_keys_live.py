@@ -22,18 +22,10 @@ Gated on docker: a checkout without docker skips cleanly.
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
-from typing import Any
 from uuid import UUID
 
-import nats
-import nats.errors
-import nats.js.errors
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -46,6 +38,9 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .nats_support import running_nats
+from .refusals import Violations, connect, refused, refused_request
+
 pytestmark = pytest.mark.integration
 
 _NS = "sharedlive"
@@ -54,9 +49,6 @@ _OTHER_AGENT = UUID("019470a8-b5c3-7def-8123-0000000000bb")
 _POD = "01947100-0000-7000-8000-0000000000aa"
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
-
-#: what a refused JetStream call surfaces as in nats-py: an unanswered request.
-_REFUSED = (nats.errors.TimeoutError, nats.errors.NoRespondersError)
 
 
 def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
@@ -110,66 +102,7 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
-@contextlib.asynccontextmanager
-async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str, errors: list[str]) -> AsyncIterator[Any]:
-    """connect a raw nats client, routing async permission-violation errors into ``errors``.
-
-    :param uri: the server URI
-    :ptype uri: str
-    :param user: the user to connect as
-    :ptype user: str
-    :param password: that user's password
-    :ptype password: str
-    :param inbox_prefix: the inbox prefix the user's subscribe grant covers
-    :ptype inbox_prefix: str
-    :param errors: collects every asynchronous error the client reports
-    :ptype errors: list[str]
-    :return: the connected client, yielded
-    :rtype: AsyncIterator[Any]
-    """
-
-    async def _err_cb(exc: Exception) -> None:
-        errors.append(str(exc))
-
-    nc = await nats.connect(
-        uri,
-        user=user,
-        password=password,
-        inbox_prefix=inbox_prefix.encode(),
-        error_cb=_err_cb,
-        max_reconnect_attempts=0,
-    )
-    try:
-        yield nc
-    finally:
-        await nc.close()
-
-
-async def test_an_agent_pod_reaches_only_its_own_keys_in_the_shared_pod_buckets(tmp_path: Path) -> None:
+async def test_an_agent_pod_reaches_only_its_own_keys_in_the_shared_pod_buckets() -> None:
     """both halves against a real broker: its own keys work, every other owner's are refused."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -189,11 +122,8 @@ async def test_an_agent_pod_reaches_only_its_own_keys_in_the_shared_pod_buckets(
     checkpoints = f"{_NS}-checkpoints"
     epochs = f"{_NS}-epochs"
 
-    with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
-        admin_errors: list[str] = []
-        async with _connect(
-            uri, user="admin", password=_ADMIN_PW, inbox_prefix="_INBOX", errors=admin_errors
-        ) as admin_nc:
+    with running_nats(_server_config(pub_allow, sub_allow)) as uri:
+        async with connect(uri, user="admin", password=_ADMIN_PW, violations=Violations()) as admin_nc:
             admin_js = admin_nc.jetstream()
             # the hub declares every shared pod bucket WITH allow_direct: the owner-keyed grant
             # carries only the subject-carried read.
@@ -207,9 +137,9 @@ async def test_an_agent_pod_reaches_only_its_own_keys_in_the_shared_pod_buckets(
             await admin_checkpoints.put("customer/thread-1", b"another agent's conversation")
             await admin_epochs.put("sharedlive.mcp.rbac.epoch", b"7")
 
-            errors: list[str] = []
-            async with _connect(
-                uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix, errors=errors
+            violations = Violations()
+            async with connect(
+                uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix, violations=violations
             ) as nc:
                 js = nc.jetstream(timeout=2)
                 await js.account_info()
@@ -246,22 +176,26 @@ async def test_an_agent_pod_reaches_only_its_own_keys_in_the_shared_pod_buckets(
                 # === SUCCEEDS: a read of the epoch bucket ========================================
                 epoch_kv = await js.key_value(epochs)
                 assert (await epoch_kv.get("sharedlive.mcp.rbac.epoch")).value == b"7"
-                assert not [e for e in errors if "permissions violation" in e.lower()], errors
+                assert not violations.errors, violations.errors
 
                 # === REFUSED: another agent's key, and an unscoped key, on every route ===========
                 for key in (f"{theirs}.digest-1", "digest-1"):
-                    with pytest.raises(_REFUSED):
-                        await kv.get(key)
-                    with pytest.raises(_REFUSED):
-                        await kv.put(key, b"overwritten")
-                    with pytest.raises(_REFUSED):
-                        await kv.delete(key)
-                with pytest.raises(_REFUSED):
-                    await limits.delete(f"{theirs}.memory.last_extract.c1")
+                    named = f"$kv.{nonces}.{key}"
+                    await refused(violations, kv.get(key), naming=f"$js.api.direct.get.kv_{nonces}.{named}")
+                    await refused(violations, kv.put(key, b"overwritten"), naming=named)
+                    await refused(violations, kv.delete(key), naming=named)
+                await refused(
+                    violations,
+                    limits.delete(f"{theirs}.memory.last_extract.c1"),
+                    naming=f"$kv.{ratelimits}.{theirs}.memory.last_extract.c1",
+                )
 
                 # === REFUSED: the body-carried read, and a listing of the whole bucket ===========
-                with pytest.raises(_REFUSED):
-                    await js.get_msg(f"KV_{nonces}", subject=f"$KV.{nonces}.{theirs}.digest-1")
+                await refused(
+                    violations,
+                    js.get_msg(f"KV_{nonces}", subject=f"$KV.{nonces}.{theirs}.digest-1"),
+                    naming=f"$js.api.stream.msg.get.kv_{nonces}",
+                )
                 for request_subject, body in (
                     (
                         f"$JS.API.CONSUMER.CREATE.KV_{nonces}.kl2.$KV.{nonces}.>",
@@ -277,28 +211,22 @@ async def test_an_agent_pod_reaches_only_its_own_keys_in_the_shared_pod_buckets(
                     (f"$JS.API.CONSUMER.CREATE.KV_{nonces}", {"stream_name": f"KV_{nonces}", "config": {}}),
                     (f"$JS.API.STREAM.PURGE.KV_{nonces}", {}),
                 ):
-                    with pytest.raises(_REFUSED):
-                        await nc.request(request_subject, json.dumps(body).encode(), timeout=2)
+                    await refused_request(violations, nc, request_subject, json.dumps(body).encode())
 
                 # === REFUSED: the retired shared checkpoint bucket, at the bind ===================
-                with pytest.raises(_REFUSED):
-                    await js.key_value(checkpoints)
-                with pytest.raises(_REFUSED):
-                    await js.get_msg(f"KV_{checkpoints}", subject=f"$KV.{checkpoints}.customer/thread-1")
+                await refused(violations, js.key_value(checkpoints), naming=f"$js.api.stream.info.kv_{checkpoints}")
+                await refused(
+                    violations,
+                    js.get_msg(f"KV_{checkpoints}", subject=f"$KV.{checkpoints}.customer/thread-1"),
+                    naming=f"$js.api.stream.msg.get.kv_{checkpoints}",
+                )
 
                 # === REFUSED: any write to the epoch bucket ======================================
-                with pytest.raises(_REFUSED):
-                    await epoch_kv.put("sharedlive.mcp.rbac.epoch", b"8")
-
-                await asyncio.sleep(0.4)  # let the async -ERR frames land in the error callback
-                violations = [e for e in errors if "permissions violation" in e.lower()]
-                for needle in (
-                    f"$kv.{nonces}.{theirs}.digest-1".lower(),
-                    f"$kv.{nonces}.digest-1".lower(),
-                    f"$js.api.stream.info.kv_{checkpoints}".lower(),
-                    f"$kv.{epochs}.sharedlive.mcp.rbac.epoch".lower(),
-                ):
-                    assert any(needle in e.lower() for e in violations), (needle, violations)
+                await refused(
+                    violations,
+                    epoch_kv.put("sharedlive.mcp.rbac.epoch", b"8"),
+                    naming=f"$kv.{epochs}.sharedlive.mcp.rbac.epoch",
+                )
 
                 # the pod's own keys still work after the refusals
                 assert (await kv.get(own)).value == b"3"

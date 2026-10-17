@@ -15,10 +15,7 @@ Gated on docker: a checkout without docker skips cleanly.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-from collections.abc import Iterator
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 
@@ -41,6 +38,8 @@ from threetears.nats import (
     generate_account_seed,
 )
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -91,33 +90,7 @@ class _ChangingGrant(GrantPolicy):
         )
 
 
-@contextlib.contextmanager
-def _nats(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a nats-server with ``config_text``; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        nats_server(_IMAGE)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield nats_server_uri(container)
-    finally:
-        container.stop()
-
-
-async def test_a_changed_grant_reaches_the_live_connection_without_losing_a_request(tmp_path: Path) -> None:
+async def test_a_changed_grant_reaches_the_live_connection_without_losing_a_request() -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
 
@@ -131,7 +104,7 @@ async def test_a_changed_grant_reaches_the_live_connection_without_losing_a_requ
         "}\n"
     )
     previous_ns = get_default_namespace()
-    with _nats(config, tmp_path) as uri:
+    with running_nats(config, image=_IMAGE) as uri:
         admin = await NatsClient.connect(
             nats_url=uri,
             nats_subject_namespace=_NS,

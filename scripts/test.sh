@@ -31,5 +31,9 @@ else
     # (agent-memory -> agent/memory, etc.) means hard-coded per-
     # package paths drift; pointing at ``packages/`` lets pytest's
     # rootdir + collection rules pick up every package's tests.
-    uv run pytest packages/ tests/ -m "not integration" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    #
+    # four workers, one package per worker (the root conftest marks each test with its package's
+    # xdist group). a single-package run above stays serial. pass `-n 0` to run serially, e.g.
+    # under a debugger.
+    uv run pytest packages/ tests/ -m "not integration" -n 4 --dist loadgroup ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 fi

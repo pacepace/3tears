@@ -1,4 +1,5 @@
-"""OpenRouter at the wire: a structured ask keeps the model's routing, and the served provider is read.
+"""OpenRouter at the wire: a structured ask keeps the model's routing, the served provider is read, and
+a reasoning budget is sent.
 
 Every test drives the real ``openrouter`` SDK over an ``httpx.MockTransport``: the request body is
 the one the SDK serialised, and the response is parsed by the SDK's own ``ChatResult`` /
@@ -220,6 +221,48 @@ class TestTheServedProviderIsRead:
         [line] = [r for r in caplog.records if r.getMessage() == "LLM call completed"]
         assert line.extra_data["served_provider"] == _SERVED_BY  # type: ignore[attr-defined]
         assert line.levelno == logging.INFO
+
+
+class TestAReasoningBudgetIsSent:
+    """The SDK's typed ``ChatRequestReasoning`` declared only ``effort`` and ``summary`` and dropped every
+    other key without a word, so a token budget (``max_tokens``), a switch (``enabled``) or a hidden
+    trace (``exclude``) went out as ``"reasoning": {}`` -- a request that did not say what its
+    caller asked."""
+
+    @pytest.mark.parametrize("how", _PATHS)
+    async def test_a_budget_set_on_the_model_reaches_the_body(self, how: str) -> None:
+        wire = _Wire()
+        await _ask(_model(wire, reasoning={"max_tokens": 8192}), how)
+        [body] = wire.bodies
+        assert body["reasoning"] == {"max_tokens": 8192}
+
+    @pytest.mark.parametrize("how", _PATHS)
+    async def test_a_budget_bound_per_call_reaches_the_body(self, how: str) -> None:
+        wire = _Wire()
+        await _ask(_model(wire).bind(reasoning={"max_tokens": 2048, "exclude": True}), how)
+        [body] = wire.bodies
+        assert body["reasoning"] == {"max_tokens": 2048, "exclude": True}
+
+    async def test_reasoning_switched_off_says_so(self) -> None:
+        wire = _Wire()
+        await _ask(_model(wire, reasoning={"enabled": False}), "ainvoke")
+        [body] = wire.bodies
+        assert body["reasoning"] == {"enabled": False}
+
+    async def test_an_effort_word_still_goes_alone(self) -> None:
+        """a key a caller did not set is not sent, as ``null`` or otherwise."""
+        wire = _Wire()
+        await _ask(_model(wire, reasoning={"effort": "minimal"}), "ainvoke")
+        [body] = wire.bodies
+        assert body["reasoning"] == {"effort": "minimal"}
+
+    async def test_a_structured_ask_keeps_its_budget(self) -> None:
+        wire = _Wire()
+        model = _model(wire, reasoning={"max_tokens": 8192})
+        await _ask(model.bind(**structured_output_kwargs("openrouter", _SCHEMA)), "ainvoke")
+        [body] = wire.bodies
+        assert body["reasoning"] == {"max_tokens": 8192}
+        assert body["response_format"]["type"] == "json_schema"
 
 
 class TestDeclaringTheFieldIsSafe:
