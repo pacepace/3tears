@@ -288,3 +288,16 @@ class TestTheRunSummaryServesItsLines:
 def test_an_unpriced_amount_reads_unpriced_never_zero() -> None:
     assert dollars_text(None) == UNPRICED == "unpriced"
     assert dollars_text(0) == "$0"
+
+
+def test_text_that_can_run_over_lines_stays_on_its_own_line_of_the_summary() -> None:
+    """A predicted label is whatever the candidate answered, and an operator's cancel reason is their own words:
+    each line of either printed at the margin read as the next line of the summary."""
+    summary = _summary(
+        stopped_because="cancelled:\nthe judge was wrong",
+        confusion=[ConfusionCount(expected="yes", predicted="yes\nno", count=1)],
+    )
+    rendered = summary.render().splitlines()
+    assert "  stopped: cancelled: the judge was wrong" in rendered
+    assert "    yes → 'yes\\nno': 1" in rendered
+    assert all(line.startswith(" ") for line in rendered[1:]), rendered

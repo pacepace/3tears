@@ -260,7 +260,7 @@ def _paragraphs(text: str) -> list[str]:
         if out:
             out.append("")
         if all(line[:2] in ("- ", "* ") for line in lines):
-            out += [f"- {_inert(line[2:])}" for line in lines]
+            out += [f"- {_inert(line[2:])}" for line in lines]  # one line: each is a line of paragraph.splitlines()
         else:
             out.append(_inert(" ".join(lines)))
     return out
