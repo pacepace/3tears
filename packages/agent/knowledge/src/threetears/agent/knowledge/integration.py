@@ -47,7 +47,7 @@ from threetears.knowledge import (
     merge_entry_views,
 )
 from threetears.nats import Subjects
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DraftView",
@@ -312,22 +312,14 @@ class KnowledgeIntegration:
                     await self.entry_collection.list_own_drafts(user_id, customer_scope=customer_scope),
                 )
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- draft listing is best-effort; an entry-backend fault must not hide the concept drafts or crash the tool
-                log.warning(
-                    "entry drafts list failed (soft-fail): %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
+                contain(exc, log=log, what=f"entry drafts list failed (soft-fail): {type(exc).__name__}: {exc}")
         if self.concept_collection is not None:
             try:
                 drafts.extend(
                     await self.concept_collection.list_own_drafts(user_id, customer_scope=customer_scope),
                 )
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- draft listing is best-effort; a concept-backend fault must not hide the entry drafts or crash the tool
-                log.warning(
-                    "concept drafts list failed (soft-fail): %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
+                contain(exc, log=log, what=f"concept drafts list failed (soft-fail): {type(exc).__name__}: {exc}")
         return drafts
 
 
