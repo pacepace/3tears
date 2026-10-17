@@ -248,10 +248,9 @@ def table_named_by_class(cls: type) -> str | None:
     if isinstance(prop, property) and prop.fget is not None:
         try:
             answer: Any = prop.fget(cls)
-        # prawduct:allow prawduct/broad-except -- a getter that needs an instance names its table per instance
-        except Exception as exc:  # noqa: BLE001
-            # NOSILENT: a getter that raises for the class standing in for an instance is the answer
-            contain(exc, log=log, what="table_name getter raised for the class; no class-level table name")
+        except AttributeError, TypeError:
+            # NOSILENT: the class standing in for an instance has no instance attributes, and that is the answer: a
+            # getter that needs an instance names its table per instance. Anything else it raises is a bug, and propagates.
             return None
         return answer if isinstance(answer, str) else None
     return None
