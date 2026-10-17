@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 from uuid import UUID
 
+from threetears.observe.text_block import one_line, under
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_READ,
     MemoryAuthorizerDependencies,
@@ -304,7 +305,7 @@ def _format_memory_context(
             text, detailed = _get_display_text(mem, detail_threshold)
             marker = " (in full)" if detailed else ""
             mem_id = str(mem["memory_id"])
-            items.append(f"- [memory:{mem_id}]{_written(mem, tz)} {text}{marker}")
+            items.extend(under(f"{text}{marker}", "  ", first=f"- [memory:{mem_id}]{_written(mem, tz)} "))
         fenced.append((len(lines), items))
         lines.append("")
 
@@ -318,7 +319,7 @@ def _format_memory_context(
             marker = " (in full)" if detailed else ""
             # the media id, which the media tools take; the content row's id opens nothing
             shown_id = str(mc.get("media_id") or mc["content_id"])
-            items.append(f"- [media:{shown_id}] {text}{marker}")
+            items.extend(under(f"{text}{marker}", "  ", first=f"- [media:{shown_id}] "))
         fenced.append((len(lines), items))
         lines.append("")
 
@@ -389,13 +390,13 @@ def _format_memory_context(
                 if parent_summary:
                     if len(parent_summary) > _MAX_CHUNK_SUMMARY_CHARS:
                         parent_summary = parent_summary[: _MAX_CHUNK_SUMMARY_CHARS - 3] + "..."
-                    parent_anchor = f' (from [memory:{parent_id_str}]: "{parent_summary}")'
+                    parent_anchor = f' (from [memory:{parent_id_str}]: "{one_line(parent_summary)}")'
                 else:
                     parent_anchor = f" (from [memory:{parent_id_str}])"
             # How to read the whole passage is said once, in the footer: it
             # is the block's own instruction, and a line inside the fence is
             # material the agent is told not to take instructions from.
-            items.append(f"- [chunk:{chunk_id}{location}]{parent_anchor} {headline}")
+            items.extend(under(headline, "  ", first=f"- [chunk:{chunk_id}{location}]{parent_anchor} "))
         fenced.append((len(lines), items))
         lines.append("")
 

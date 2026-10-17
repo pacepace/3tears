@@ -4,6 +4,7 @@ enforcement: a function that reads rows from L3 never puts them into L2 uncondit
 A row read from L3 is only as new as the moment its query ran. A writer whose ``save_entity``
 commits and puts its row into L2 after that moment holds a NEWER value, and an unconditional put
 from the read lands the older row over it -- every reader on every replica is then served the older
+
 value until the next write or the entry's lifetime. Even a create-if-absent is not enough: the
 save's broadcast makes each peer in its scope delete the key it just wrote, so the read can find it
 empty and recreate the older row.
@@ -27,6 +28,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+
+from threetears.enforcement.common import parse_python_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
@@ -121,7 +124,7 @@ def _scan() -> tuple[list[str], int, int]:
     readers = 0
     putters = 0
     for path in _source_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = parse_python_path(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue

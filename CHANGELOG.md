@@ -6,6 +6,81 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.70.0 -- 2026-10-16
+
+### Text a model reads stays under the item it belongs to
+
+A list line that put a many-line text after an indent or a list marker indented its first line
+only; the rest sat at the margin, where nothing said which item it belonged to. A web search
+snippet, a memory's content, a document passage, a tool's description, a skill's notes: each could
+read as the next item's. (Found in metallm, 2026-10-16: an agent gave one note's size and tag to the
+note above it, reading a scratch search whose excerpts had this shape.)
+
+**Added (observe):** `threetears.observe.text_block.under(text, indent, *, first=None) -> list[str]`
+(every line indented, blank lines dropped, its own indentation kept relative; an empty text under
+a heading is the heading alone, so an item with no text still shows its id) and `one_line(text)`
+(its lines joined by one space, spacing inside a line kept). In observe so search, held to the leaf
+floor (SR-L7), uses it as any package does.
+
+**Added (enforcement):** `threetears.enforcement.text_blocks.unbroken_text(source)` and
+`unbroken_text_in(roots)`: the lines that put free text after an indent or a list marker without
+`under`, `one_line` or `untrusted_fence`, or a `# one line: <why>` comment. Enforced for every
+package by `tests/enforcement/test_text_sits_under_its_heading.py`; a consumer runs it over its own
+tree.
+
+**Changed:** web search results (title, snippet, footnotes), memory listings (`memory_search`,
+`memory_recall`, `chunk_recall`, the context block, the dream's consolidation prompt, extraction
+candidates), intention and todo listings, skill catalog, introspect and history, tool search lines,
+the tool router's descriptions, the context manager's variables and previews, workflow plans and
+steps, wake refusal notes and datasource column descriptions now keep each text under its item. A
+text of one line reads exactly as before. `skill_introspect` shows a skill's body exactly as stored,
+every line indented and its blank lines kept, so a body read, edited and written back with
+`skill_update` keeps its paragraphs. A whitespace-only web search filter detail or notice, schema
+column description or wake refusal detail no longer leaves a dangling `: `, ` -- `, `()` or bare `- `.
+
+**Fixed (tests):** the hook-installer tests run git with the test repository's config only; a
+machine whose global `core.hooksPath` is a directory they may not write failed all of them.
+
+### The enforcement gates parse each file once per run
+
+- `threetears.enforcement.common.parse_python_path(path)` parses a file as
+  `ast.parse(path.read_text(encoding="utf-8"))` would, and raises what it would, but caches the
+  result by path while the file's `mtime_ns`, size and inode are unchanged. `parse_python_file`
+  is its error-absorbing form and shares the cache. **A cached tree is shared by every caller:
+  read it, never mutate it.** `clear_parse_cache()` releases the cache, which holds every tree a
+  whole repository scan produced (hundreds of megabytes). One limit: a same-size rewrite inside
+  one tick of the filesystem's timestamp clock keeps the stamp, so a caller that rewrites a file
+  and re-parses it at once changes its size or clears the cache first.
+- The shared walkers that parsed files by hand now go through the cache. Most `src/` files were
+  parsed about 60 times per `tests/enforcement` run; that suite went from about 135 s to 82 s on
+  a macOS checkout, and `ast.parse` calls from 84,418 to 11,462. `tests/enforcement/conftest.py`
+  clears the cache once the run leaves that directory.
+- `scan_private_bindings` resolves each module name against each search root once per scan,
+  not once per import: 1,045,907 `stat` calls on this repo became about 48,600. A `stat` that
+  misses costs about 120 us on a Docker Desktop bind mount, where that scan's setup had taken
+  461 s.
+- `threetears.enforcement.common.nodes_by_type(path, node_type)` returns every node of one type in
+  a file's tree, in `ast.walk` order, from an index built once per file beside the parse cache and
+  released with it by `clear_parse_cache()`. `underscore_access` reads it instead of walking each
+  file's whole tree once per shape, and its shape F skips the scope walk for a file with no
+  reflective call it could flag. Every shape reports exactly what it did. Here, with the parse cache
+  warm, shape F went from 7.8 s to 1.0 s under a profiler; unprofiled, shape D went from 0.5 s to
+  0.03 s and shape I from 1.3 s to 0.25 s.
+
+### One model's rate limit no longer stops its provider's other models
+
+A 429 counted against the provider's circuit breaker, so one OpenRouter model's rate limit opened
+the breaker for every model on OpenRouter (metallm dev e2e, 2026-10-15: 26 OpenRouter 429s, then three models refused). A rate limit belongs to
+one model's route.
+
+**Added (models):** `errors.is_rate_limit(exc)` (a `ModelRateLimitError`, any error with HTTP 429,
+OpenRouter's mid-stream `(code: 429)`); `CircuitBreakerRegistry.get(..., model=)` and
+`model_status()`; `CircuitBreaker.make_callback(rate_limit=)`; `CircuitOpenError.model_name`.
+
+**Changed (models):** `create_chat_model` gives each model its own breaker for its rate limits; any
+other failure still counts against the provider's. `status()` reports the provider's own breakers
+only. A caller passing its own `breaker=` keeps the old behaviour.
+
 ## v0.69.0 -- 2026-10-15
 
 ### The collection keys purge door takes proofs; develop's purge and export requests read tolerantly

@@ -175,7 +175,13 @@ def _build_callbacks(
     effective_breaker = (
         breaker if breaker is not None else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key)
     )
-    callbacks.append(effective_breaker.make_callback())
+    # a rate limit is one model's: it counts against this model's own breaker, not its provider's
+    rate_limit = (
+        None
+        if breaker is not None
+        else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key, model=model_id)
+    )
+    callbacks.append(effective_breaker.make_callback(rate_limit=rate_limit))
 
     if extra_callbacks:
         callbacks.extend(extra_callbacks)

@@ -29,6 +29,7 @@ from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
+from threetears.observe.text_block import one_line, under
 from uuid_utils import uuid7
 
 from threetears.agent.memory.revisions import is_permanent, retract, supersede, write_once
@@ -1102,11 +1103,13 @@ class MemoryExtractor:
         nonce = mint_nonce()
         sections = []
         for i, c in enumerate(candidates):
-            section = f"Candidate {i}:\n  Type: {c['type']}\n  Content: {c['content']}"
+            section = "\n".join(
+                [f"Candidate {i}:", f"  Type: {c['type']}", *under(str(c["content"]), "    ", first="  Content: ")]
+            )
             if c["similar_memories"]:
                 existing = "\n".join(
                     f"    - ID: {m['memory_id']} | [{m['type_memory']}] "
-                    f"{m['content']} (similarity: {m['similarity']:.0%})"
+                    f"{one_line(str(m['content']))} (similarity: {m['similarity']:.0%})"
                     for m in c["similar_memories"]
                 )
                 section += f"\n  Existing similar memories:\n{untrusted_fence(nonce, existing)}"

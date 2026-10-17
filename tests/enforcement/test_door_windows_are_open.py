@@ -14,6 +14,7 @@ import importlib
 from datetime import UTC, datetime
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
 from threetears.core.security.door_proof import DoorWindow, expired_windows
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -28,7 +29,7 @@ def _declared_windows() -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     for src in sorted(_REPO_ROOT.glob("packages/**/src")):
         for path in sorted(src.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_python_path(path)
             for node in tree.body:
                 target: ast.expr | None = None
                 value: ast.expr | None = None

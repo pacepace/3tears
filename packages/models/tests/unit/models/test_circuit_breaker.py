@@ -439,7 +439,7 @@ class TestACredentialBreakerSaysItIsOne:
             self._tripped(registry, credential=self._KEY)
 
         [opened] = [r for r in caplog.records if "opening" in r.getMessage()]
-        assert opened.__dict__["extra_data"] == {"provider": "anthropic", "credential_scoped": True}
+        assert opened.__dict__["extra_data"] == {"provider": "anthropic", "credential_scoped": True, "model": None}
         assert "one credential on anthropic" in opened.getMessage()
         assert self._KEY not in opened.getMessage()
 
