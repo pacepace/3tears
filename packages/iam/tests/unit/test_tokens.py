@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 from datetime import UTC, datetime, timedelta
 
@@ -159,10 +160,14 @@ def test_dpop_binding_survives_the_round_trip(ed_signer: Ed25519Signer, ed_verif
 def test_tampered_token_is_rejected(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
     token = mint_session_token(_claims(), signer=ed_signer)
     header, payload, signature = token.split(".")
+    # Flip a bit in R, the signature's first byte. Overwriting the base64url tail is not always a change: the last
+    # characters can encode only zero bits, since S < 2**253 keeps the final byte's top bits clear.
+    raw = bytearray(base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4)))
+    raw[0] ^= 0x01
+    tampered = base64.urlsafe_b64encode(bytes(raw)).rstrip(b"=").decode()
+    assert tampered != signature
     with pytest.raises(TokenError):
-        verify_session_token(
-            f"{header}.{payload}.{signature[:-4]}AAAA", verifier=ed_verifier, expected_type=TokenType.ACCESS
-        )
+        verify_session_token(f"{header}.{payload}.{tampered}", verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
 
 def test_expired_token_is_rejected(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
