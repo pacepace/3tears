@@ -139,8 +139,9 @@ ALLOWED: dict[tuple[str, str], str] = {
     ),
     ("threetears/evals/schema/traces.py", "_CURRENT_CELL"): (
         "a ContextVar, so its value is per task, never per process: the run loop sets it around one cell's work, in "
-        "that cell's own task, and resets it on leaving; it holds that cell's identity, never a host, and a second "
-        "host in the same process cannot observe another task's value"
+        "that cell's own task, and a host where it carries that work into a context of its own, and each resets it "
+        "on leaving; it holds that cell's identity, never a host, and a second host in the same process cannot "
+        "observe another task's value"
     ),
     ("threetears/evals/kernel/runner_spend.py", "_SPEND"): (
         "a ContextVar, so its value is per task, never per process: the callable kind sets it around one runner "

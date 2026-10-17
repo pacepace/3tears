@@ -560,8 +560,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.StopReason",
         "threetears.evals.kernel.host.CompletionRole",
         "threetears.evals.schema.TraceSink",
-        # What a host's log filter reads to stamp a record with the cell that wrote it.
+        # What a host's log filter reads to stamp a record with the cell that wrote it, and the binder a host puts
+        # that identity back with where a cell's work crosses a task boundary of its own (a fresh context).
         "threetears.evals.schema.current_cell_identity",
+        "threetears.evals.schema.bind_cell_identity",
         # The registries a profile holds: the host's vocabulary of levers, measures, bars and world.
         "threetears.evals.kernel.host.SHARED_CORE",
         "threetears.evals.kernel.host.Sweepable",
@@ -1194,7 +1196,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 524  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time.
+DECLARED_CEILING = 525  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:

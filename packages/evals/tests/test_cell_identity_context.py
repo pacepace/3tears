@@ -2,12 +2,14 @@
 
 ``current_cell_identity`` is bound by the run loop around a whole cell, so a host's logging filter can stamp a
 record with the cell that wrote it. These drive the real runner over the toy host at width 2 with a judge whose
-calls interleave, and read what each call and each log record saw.
+calls interleave, and read what each call and each log record saw. ``bind_cell_identity`` is the same binder,
+public, so a host carries the identity across a task boundary of its own (#824).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
@@ -23,9 +25,8 @@ from packages.evals.tests.off_loop import off_loop
 from threetears.evals.run import RunnerOptions, execute_run
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
-from threetears.evals.schema import CellIdentity, current_cell_identity
+from threetears.evals.schema import CellIdentity, bind_cell_identity, current_cell_identity
 from threetears.evals.schema.models import DEFAULT_JUDGE_TEMPERATURE, JudgedArtifact
-from threetears.evals.schema.traces import bind_cell_identity
 
 
 class _SeeingJudge:
@@ -142,23 +143,71 @@ async def test_a_log_record_written_in_a_cell_reads_that_cells_identity_and_one_
 
 
 async def test_the_identity_is_reset_when_a_cell_is_cancelled_or_raises() -> None:
+    outer = CellIdentity(run_id="r", test_case_id="t0", subject_id="s", cell_id="c0")
     cell = CellIdentity(run_id="r", test_case_id="t", subject_id="s", cell_id="c")
 
-    with pytest.raises(RuntimeError):
-        with bind_cell_identity(cell):
-            assert current_cell_identity() is cell
-            raise RuntimeError("boom")
+    with bind_cell_identity(outer):
+        with pytest.raises(RuntimeError):
+            with bind_cell_identity(cell):
+                assert current_cell_identity() is cell
+                raise RuntimeError("boom")
+        assert current_cell_identity() is outer, "the previous binding is restored, not cleared"
     assert current_cell_identity() is None
 
+    after_cancel: list[CellIdentity | None] = []
+
     async def _bound() -> None:
-        with bind_cell_identity(cell):
-            await asyncio.sleep(10)
+        try:
+            with bind_cell_identity(cell):
+                await asyncio.sleep(10)
+        finally:
+            # Read in the cancelled task's own context, where the binding was made.
+            after_cancel.append(current_cell_identity())
 
     task = asyncio.ensure_future(_bound())
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert after_cancel == [None], "a cancelled block unbinds in its own task"
+    assert current_cell_identity() is None
+
+
+class _DetachingJudge(_SeeingJudge):
+    """A host's judge that hands work to a detached job started in a fresh context, as a host's own job runner would.
+
+    The job reads the identity once unbound, then under the host's binding of the identity the cell handed it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.jobs: list[asyncio.Task[tuple[CellIdentity, CellIdentity | None, CellIdentity | None]]] = []
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        handed_off = current_cell_identity()
+        assert handed_off is not None
+
+        async def _job() -> tuple[CellIdentity, CellIdentity | None, CellIdentity | None]:
+            unbound = current_cell_identity()
+            with bind_cell_identity(handed_off):
+                await asyncio.sleep(0.01)
+                bound = current_cell_identity()
+            return handed_off, unbound, bound
+
+        self.jobs.append(asyncio.get_running_loop().create_task(_job(), context=contextvars.Context()))
+        return await super().generate(system=system, user=user, response_format=response_format)
+
+
+async def test_a_job_started_in_a_fresh_context_reads_the_cells_identity_under_the_hosts_binding() -> None:
+    judge = _DetachingJudge()
+    await _run_matrix(judge)
+    results = await asyncio.gather(*judge.jobs)
+
+    assert results, "the judge started a job for every call"
+    for handed_off, unbound, bound in results:
+        assert unbound is None, "a fresh context does not carry the cell, which is why the host binds it"
+        assert bound is handed_off, "under the host's binding the job reads the identity the engine bound"
+    assert len({handed_off.cell_id for handed_off, _, _ in results}) >= 2, "each job read its own cell"
     assert current_cell_identity() is None
 
 

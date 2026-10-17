@@ -148,6 +148,13 @@ pass it to every entrypoint. It holds:
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
+**Which cell a log line belongs to.** The engine binds each cell's `CellIdentity` around everything it does for the
+cell, and your log filter reads it with `current_cell_identity()` (in `threetears.evals.schema`); a task the cell
+creates inherits it. Work you start for a cell in a context that does not inherit it, such as a detached job started
+in a fresh context or a thread of your own, reads `None` until you bind it: read the identity where the cell hands the
+work off and wrap the work in `with bind_cell_identity(identity):`, which restores the previous value on exit,
+including on cancel.
+
 An app that starts runs builds a `LaunchHost` (in `threetears.evals.run`) around its `EvalHost`: the
 launch settings (its registry of launchable kinds is the `kinds` of the `EvalHost`'s template checks, above), a job timeout, `world_placements` (required exactly
 when the profile declares a world: what each assembled run did with every dimension) and a `launch_pricer`

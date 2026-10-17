@@ -59,7 +59,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-__all__ = ["CellIdentity", "CellTrace", "TraceSink", "current_cell_identity"]
+__all__ = ["CellIdentity", "CellTrace", "TraceSink", "bind_cell_identity", "current_cell_identity"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,18 +103,20 @@ def current_cell_identity() -> CellIdentity | None:
 
 
 @contextmanager
-def bind_cell_identity(cell: CellIdentity) -> Iterator[None]:
-    """Make ``cell`` the answer of :func:`current_cell_identity` for the extent of the block.
+def bind_cell_identity(identity: CellIdentity) -> Iterator[None]:
+    """Make ``identity`` the answer of :func:`current_cell_identity` for the extent of the block.
 
-    Engine-internal: it is not in ``__all__``. The previous value is restored on exit, including when the block
-    is cancelled or raises.
+    The one binder: the engine binds each cell through it, and a host binds through it where a cell's work crosses
+    a task boundary of the host's own that does not carry the context, such as a detached job started in a fresh
+    context, so the host's work and the engine's read one identity. The previous value is restored on exit,
+    including when the block is cancelled or raises.
 
-    :param cell: The cell the block's work belongs to.
-    :ptype cell: CellIdentity
+    :param identity: The cell the block's work belongs to.
+    :ptype identity: CellIdentity
     :yield: Nothing.
     :rtype: Iterator[None]
     """
-    token = _CURRENT_CELL.set(cell)
+    token = _CURRENT_CELL.set(identity)
     try:
         yield
     finally:
