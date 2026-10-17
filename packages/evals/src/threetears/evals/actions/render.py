@@ -30,6 +30,7 @@ from pydantic import BaseModel, ValidationError
 from threetears.evals.schema import GoalStateOutcome
 from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
+from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import (
     JobsStarted,
     JobStatus,
@@ -93,7 +94,7 @@ def render_help_index(tool: MountedTool) -> str:
         lines.append(f"## {workflow}")
         for action in actions:
             job = ", starts a job" if action.long_running else ""
-            lines.append(f"- {action.name} ({action.permission}{job}): {action.summary}")
+            lines.append(f"- {action.name} ({action.permission}{job}): {one_line(action.summary)}")
         lines.append("")
     lines.append("For one action's parameters and an example: action='help', topic='<action>'.")
     return "\n".join(lines)
@@ -430,7 +431,7 @@ def _record_lines(detail: ResultDetail) -> list[str]:
             lines.append(f"refused calls ({len(refused)} the kind recorded as refused, never among the calls above):")
             lines += [
                 f"- {refusal.tool}.{refusal.action} {_compact(refusal.params)} after {refusal.position} call(s): "
-                f"{refusal.reason}"
+                f"{one_line(refusal.reason)}"
                 for refusal in refused
             ]
     if record.end_state is not None:

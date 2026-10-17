@@ -112,6 +112,7 @@ from threetears.evals.kernel.host.bars import DEFAULT_PASS_THRESHOLD
 from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
+from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.kernel.remedies import FIND_RUN
 
@@ -527,17 +528,20 @@ class CaseResult(BaseModel):
         if grades:
             lines.append(f"  grades: {', '.join(grades)}")
         lines.extend(
-            f"  judged {grade.dimension}: {grade.score} — {' '.join(grade.reasoning.split())}" for grade in self.judged
+            # one line: the reasoning's words, rejoined by single spaces, hold no line break
+            f"  judged {grade.dimension}: {grade.score} — {' '.join(grade.reasoning.split())}"
+            for grade in self.judged
         )
         lines.extend(
+            # one line: the reason's words, rejoined by single spaces, hold no line break
             f"  judged {dimension}: could not tell — {' '.join(reason.split())}"
             for dimension, reason in self.judge_cannot_tell.items()
         )
         lines.extend(
             f"  goal check {check}: {'passed' if passed else 'failed'}" for check, passed in self.goal_checks.items()
         )
-        lines.extend(f"  error: {error}" for error in self.errors)
-        lines.extend(f"  missed: {reason}" for reason in self.missed_because)
+        lines.extend(f"  error: {one_line(error)}" for error in self.errors)
+        lines.extend(f"  missed: {one_line(reason)}" for reason in self.missed_because)
         return "\n".join(lines)
 
 
@@ -984,6 +988,7 @@ class EvalSummary(BaseModel):
             if stratum.too_few:
                 said += f" — {TOO_FEW_CASES} (fewer than {STRATUM_MIN_CASES})"
             lines.append(said)
+            # one line: a measure's line is its declared name and its figures (_measure_line)
             lines += [f"  {self._measure_line(measure).text}" for measure in stratum.measures]
         return lines
 
@@ -1098,8 +1103,9 @@ class EvalSummary(BaseModel):
         :return: The text, without a trailing newline.
         :rtype: str
         """
-        lines = [self.headline, f"  {self.results_text}"]
+        lines = [self.headline, f"  {self.results_text}"]  # one line: the results line is counts
         lines += [f"  {line}" for line in (self.stopped_text, self.spend_cap_text) if line is not None]
+        # one line: a measure's line is its declared name and its figures (_measure_line)
         lines += [f"  {measure.text}" for measure in self.measure_lines if measure.state != "not_carried"]
         if self.confusion:
             lines.append("  confusion (expected → predicted):")
@@ -1110,7 +1116,7 @@ class EvalSummary(BaseModel):
             lines.append("  by stratum:")
             lines += [f"    {line}" for line in self.stratum_lines]
         if self.intent_text is not None:
-            lines.append(f"  {self.intent_text}")
+            lines.append(f"  {self.intent_text}")  # one line: intent_text rejoins the intent's words by single spaces
         lines += [f"  {line}" for line in self.dimension_lines]
         if self.self_judging_warning is not None:
             lines.append(f"  {self.self_judging_warning}")
@@ -1120,11 +1126,11 @@ class EvalSummary(BaseModel):
             lines.append(f"  {self.request_settings_warning}")
         lines += [f"  {line}" for line in self.spend_lines]
         if self.total_spend_text is not None:
-            lines.append(f"  {self.total_spend_text}")
+            lines.append(f"  {self.total_spend_text}")  # one line: the total is dollars and call counts
         lines += [f"  {line}" for line in self.goal_check_lines]
         if (omitted := self.uncarried_text) is not None:
             lines.append(f"  {omitted}")
-        lines += [f"  error: {error}" for error in self.errors]
+        lines += [f"  error: {one_line(error)}" for error in self.errors]
         return "\n".join(lines)
 
     @property

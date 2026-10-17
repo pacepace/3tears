@@ -73,6 +73,7 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale, utc_now_iso
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
+from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
@@ -380,7 +381,7 @@ class Result:
             for line in (summary.total_spend_text, summary.self_judging_warning, summary.model_identity_warning):
                 if line is not None:
                     lines.append(f"  {line}")
-            lines += [f"  error: {error}" for error in summary.errors]
+            lines += [f"  error: {one_line(error)}" for error in summary.errors]
             lines += [f"  excluded: {cause}" for cause in _exclusion_causes(summary)]
         if not one_arm:
             lines += self.calibration_lines()

@@ -194,7 +194,7 @@ def _trial(block: TrialBlock) -> list[str]:
             score = "could not tell" if entry.score is None else f"{entry.score} ({entry.scale})"
             asked = f" Asked: {_code(entry.criterion)}." if entry.criterion else ""
             said = f" {_code(entry.reason)}" if entry.reason.strip() else ""
-            lines.append(f"- {_code(entry.dim)}: {score}.{asked}{said}")
+            lines.append(f"- {_code(entry.dim)}: {score}.{asked}{said}")  # one line: asked and said are code spans
         lines.append("")
     if block.error_words:
         lines += ["Recorded error:", "", *_fenced(block.error_words), ""]
