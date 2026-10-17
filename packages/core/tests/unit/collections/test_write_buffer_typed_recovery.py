@@ -76,12 +76,56 @@ class _TypedRows(SchemaBackedCollection[_Entity]):
         return _Entity
 
 
+class _Transaction:
+    """the ``async with conn.transaction()`` an asyncpg connection hands out."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _Conn:
+    """an asyncpg-shaped connection recording each ``execute`` into its pool's ``args``."""
+
+    def __init__(self, args: list[tuple[Any, ...]]) -> None:
+        self._args = args
+
+    def transaction(self) -> _Transaction:
+        return _Transaction()
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        self._args.append(args)
+        return "INSERT 0 1"
+
+
+class _Acquired:
+    """the ``async with pool.acquire() as conn`` an asyncpg pool hands out."""
+
+    def __init__(self, conn: _Conn) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _Conn:
+        return self._conn
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
 class _RecordingPool:
-    """an asyncpg-shaped pool recording each ``execute``; it has no ``transaction``, so the flush
-    takes the per-entity path."""
+    """an asyncpg-shaped pool recording every ``execute`` its connections run.
+
+    the registry wraps a pool in ``SqlL3Backend``, whose ``transaction()`` is ``acquire()`` plus
+    ``conn.transaction()``, so the flush commits its batch on an acquired connection; a pool without
+    ``acquire`` sent the batch down a failure the flush swallowed before falling back.
+    """
 
     def __init__(self) -> None:
         self.args: list[tuple[Any, ...]] = []
+
+    def acquire(self) -> _Acquired:
+        return _Acquired(_Conn(self.args))
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.args.append(args)

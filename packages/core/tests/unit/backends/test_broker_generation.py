@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table
+from threetears.core.backends.protocol import DurableStore
 from threetears.nats import Subject
 
 from threetears.core.backends import BrokerGenerationSource
@@ -62,6 +63,15 @@ from threetears.core.testing.kv import FakeNatsClient
 
 _TABLE = "group_members"
 _TX_ID = "019d9a00-0000-7000-8000-000000000000"
+
+
+class _NoL3(DurableStore):
+    """a durable L3 with no ``transaction()``: it satisfies ``DurableStore``, so the registry does not wrap it as SQL.
+
+    this test is not about L3. a bare ``object()`` here was wrapped in ``SqlL3Backend``, whose ``transaction()``
+    calls ``.acquire()``; the flush took its atomic-batch path, failed, and fell back to per-entity writes through
+    a broad ``except``. this goes to the per-entity writes directly, which is what the test means.
+    """
 
 
 class _Broker:
@@ -425,7 +435,7 @@ def _pod(
     l1 = SQLiteBackend(db_name=f"broker_generation_{uuid.uuid4().hex[:8]}")
     l1.initialize(metadata)
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=object(), kv_key_scope="pod")  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=_NoL3(), kv_key_scope="pod")  # type: ignore[arg-type]
     registry.set_generation_source(source if source is not None else BrokerGenerationSource())
     return cls(registry, broker.proxy())
 
@@ -462,6 +472,10 @@ class TestASwitchedOnCollectionOnAPod:
 
 
 class TestTheBrokerKnowsASwitchedOnTableFromItsClass:
+    @pytest.mark.expect_contained(
+        AttributeError,
+        why="a class naming its table per instance (_PerInstance) raises on the class; that is the answer, contained",
+    )
     def test_switched_on_and_absence_caching_classes_name_their_tables_and_others_do_not(self) -> None:
         columns = [SchemaColumn("id", STRING_TYPE)]
 
@@ -541,7 +555,7 @@ class TestASourceThatCannotReadLeavesAbsenceCachingOff:
     @staticmethod
     def _guard(source: BrokerGenerationSource | None) -> Exception | RevocationGuard:
         registry = CollectionRegistry()
-        registry.configure(l2_client=FakeNatsClient(), l3_pool=object(), kv_key_scope="pod")  # type: ignore[arg-type]
+        registry.configure(l2_client=FakeNatsClient(), l3_pool=_NoL3(), kv_key_scope="pod")  # type: ignore[arg-type]
         if source is not None:
             registry.set_generation_source(source)
         assert (registry.readable_generation_source is not None) == (source is not None and source.reads_generations)
