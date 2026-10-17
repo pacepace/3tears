@@ -155,6 +155,17 @@ async def test_a_rule_settled_on_every_clause_leaves_its_question_no_answer_line
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
+async def test_a_keep_on_both_clauses_says_the_drop_exceeds_the_margin_then_the_cost() -> None:
+    _, bundle = await _compare(0.003301, shown=True)
+    report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
+    (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    assert verdict == (
+        "Keep production: deepseek-v4-flash's drop exceeds the margin, passing 30 of 60 trials to "
+        "deepseek-v4.1-flash's 60, and deepseek-v4-flash cost more per reply."
+    )
+    assert lint_prose(verdict) == []
+
+
 async def test_a_clause_left_open_is_the_one_answer_line() -> None:
     # The candidate costs less per reply, which a cost with no spread cannot show; its pass rate settles keep.
     comparison, bundle = await _compare(0.0029, shown=True)

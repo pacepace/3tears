@@ -28,7 +28,7 @@ observed:
 - **Neither: ``unsettled``**, with the reason in plain words. That includes a drop past the margin on the point
   estimate alone, whose interval reaches back within it: its reason says the point estimate is past and gives the
   interval, so it never reads as a measured regression. A rate both arms pass on every trial, or on none, cannot
-  separate them, and its reason says so with the counts.
+  separate them, and its reason says so with the counts, on any number of cases.
 - **A rate clause.** ``keep`` when one rate it reads is shown to break it, ``switch`` when every one is shown to hold
   it, otherwise ``unsettled``. Through ``0.70`` an observed drop past the margin settled ``keep`` on any number of
   cases.
@@ -83,7 +83,7 @@ PROSE_RULE_LINE = "This question's rule was written as prose, which is no longer
 
 def keep_is_the_default(control: str) -> str:
     """What the page's Decision section says once, under the clauses: what an unsettled rule means for the reader,
-    and why a clause can read keep or unsettled beside a contrast the contrasts table calls not separated.
+    and why a clause can read unsettled beside a contrast the contrasts table calls not separated, or, on cost, keep.
 
     :param control: The control, by the name the page gives it.
     :ptype control: str
@@ -330,7 +330,8 @@ def evaluate_rule(rule: DecisionRule, readings: RuleReadings, *, control: str, c
 
 
 def _clause(clause: DecisionClause, readings: RuleReadings, control: str, candidate: str) -> ClauseVerdict:
-    """One clause's verdict: keep on what the run observed, switch only on an interval over enough cases."""
+    """One clause's verdict: a rate clause settles either way only on an interval over enough cases, a cost clause
+    keeps on a cost observed no lower and switches only on an interval over enough cases."""
     statement = clause_statement(clause, candidate=candidate, readings=readings)
     if isinstance(clause, CostLower):
         outcome, reason = _cost_clause(readings, control, candidate)
@@ -403,12 +404,12 @@ def _rate_verdict(
     )
     past = f"{drop} is past {points} points on the point estimate alone"
     unshown = f"{drop} is not shown to stay within {points} points"
-    if not floored:
-        return RateVerdict(rate, "unsettled", f"{past if rate.point_drop() > margin else unshown} ({floor})")
     if rate.degenerate():
         return RateVerdict(
             rate, "unsettled", f"{rate.name} cannot separate the arms ({_both(rate, control, candidate)})"
         )
+    if not floored:
+        return RateVerdict(rate, "unsettled", f"{past if rate.point_drop() > margin else unshown} ({floor})")
     missing = (
         "this bundle predates the interval a switch needs"
         if readings.predates_bounded

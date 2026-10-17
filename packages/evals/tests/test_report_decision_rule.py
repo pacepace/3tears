@@ -240,16 +240,16 @@ async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled:
     ).items()
 
 
-async def test_a_kept_clause_beside_a_contrast_not_separated_says_why_once_under_the_clauses(
+async def test_a_clause_beside_a_contrast_not_separated_says_why_once_under_the_clauses(
     g2_ruled: tuple[Result, Report],
 ) -> None:
-    """Prod, .30: a 10-point clause read keep while the contrasts read the same pass rate as not separated.
+    """A clause can read unsettled beside a contrast the contrasts table reads as not separated, and says why once.
 
     Keep is the default, so an unsettled rule keeps the control for now, and a clause reads the bounded interval a
     switch reads, which can be wider than the t interval the contrasts table prints. The page says so once, under the
     clauses, and each reading's row carries its own outcome, its reason saying the counts and the margin in words,
-    naming the arms. Since #845 a clause reads keep only where that interval is wholly past the margin, so keep beside
-    a contrast not separated is the bounded interval's verdict, never a point estimate's.
+    naming the arms. A rate clause reads keep only where that interval is wholly past the margin (#845): in prod a
+    10-point clause read keep on a point estimate while the contrasts read the same pass rate as not separated.
     """
     _, report = g2_ruled
     # What unsettled means for the reader, the control by its label.
@@ -393,11 +393,20 @@ async def test_seven_cases_with_the_bounded_interval_too_wide_are_unsettled_and_
 
 
 async def test_four_cases_are_unsettled_on_the_case_floor() -> None:
-    bundle, control, candidate = await _ruled([3] * 4, [3] * 4)
+    # One trial in twelve lost on the candidate: an 8.3-point drop, inside the margin on its point estimate.
+    bundle, control, candidate = await _ruled([3] * 4, [3, 3, 3, 2])
     assert _rate_clause(bundle, control, candidate) == (
         "unsettled",
         "cheaper candidate's drop is not shown to stay within 10 points (4 cases are too few for the interval that "
         "would show it, which is estimated only from 5 independent cases)",
+    )
+
+
+async def test_a_rate_both_arms_pass_on_every_trial_says_it_cannot_separate_them_under_the_floor_too() -> None:
+    bundle, control, candidate = await _ruled([3] * 4, [3] * 4)
+    assert _rate_clause(bundle, control, candidate) == (
+        "unsettled",
+        "the pass rate cannot separate the arms (both 12 of 12)",
     )
 
 
@@ -558,6 +567,34 @@ async def _rate_only_page(control_passes: Sequence[int], candidate_passes: Seque
     return build_code_only_report(bundle, assembled_at="2026-10-17T12:00:00+00:00", campaign_name="ruled")
 
 
+def test_a_drop_shown_past_the_margin_keeps_only_if_the_lost_trials_could_not_bring_it_within() -> None:
+    """A keep needs the drop past the margin with every lost trial given its best outcome, as well as on the interval.
+
+    Control 60 of 60; the candidate passed 35 of the 40 trials it kept and lost 20. The interval puts the drop at 20
+    points at least, but had every lost trial passed, the candidate would be at 55 of 60, an 8.3-point drop.
+    """
+    on = {"control": "v1", "candidate": "v2"}
+    lost = RuleReadings(
+        rates=(RateReading("the pass rate", 60, 60, 35, 40, 0, 20, interval=(-0.5, -0.2)),),
+        control_cases=20,
+        candidate_cases=20,
+    )
+    (clause,) = evaluate_rule(_RATE_ONLY, lost, **on).clauses
+    assert (clause.outcome, clause.reason) == (
+        "unsettled",
+        "v2's drop is past 10 points on the point estimate alone (the lost trials could still bring it within)",
+    )
+    # With fewer lost, the drop at best (33.3 points) is past the margin, and nearer zero than the interval's (40):
+    # the keep states the smaller.
+    fewer = replace(lost, rates=(RateReading("the pass rate", 60, 60, 30, 50, 0, 10, interval=(-0.6, -0.4)),))
+    (kept,) = evaluate_rule(_RATE_ONLY, fewer, **on).clauses
+    assert (kept.outcome, kept.reason) == (
+        "keep",
+        "v2 passed 30 of 50 to v1's 60 of 60, a drop that exceeds the margin of 10 points on its whole interval (at "
+        "least 33.3)",
+    )
+
+
 def test_an_arrival_shaped_drop_past_the_margin_on_its_point_estimate_alone_reads_unsettled() -> None:
     """Discodon's arrival campaign (2026-10-17): 6 of 21 trials to 12, a 28.6-point drop, its interval -92.7 to 35.5
     points. It headlined Keep, which reads as a measured regression its own contrasts called not separated."""
@@ -588,6 +625,9 @@ async def test_an_arrival_shaped_page_headlines_unsettled_with_the_interval() ->
         "not on its interval (from a gain of "
     ), line
     assert "Keep" not in line
+    # The page's own term of art, defined in its glossary.
+    assert "point estimate" in report.terms
+    assert "- **point estimate**: " in report_markdown(report)
 
 
 async def test_a_drop_whose_whole_interval_is_past_the_margin_keeps_and_one_reaching_back_within_it_does_not() -> None:
@@ -611,6 +651,7 @@ async def test_a_drop_whose_whole_interval_is_past_the_margin_keeps_and_one_reac
     ), line
     assert lint_prose(line) == []
     assert "exceeds" not in report_markdown(unshown)
+    assert "point estimate" in unshown.terms and "point estimate" not in shown.terms
 
 
 def on_time(case: Mapping[str, Any], answer: Any) -> bool:
@@ -724,6 +765,15 @@ async def test_a_clause_naming_one_reading_reads_that_rate_alone() -> None:
     assert clause.rate is not None and clause.rate.measure == "match"
     assert [read.rate.measure for read in clause.rates] == ["match"]
     assert clause.statement == "no Label matched rate drops by more than 10 points"
+    # The verdict line names the reading once, as the counts' reading.
+    line = rule_sentence(
+        evaluate_rule(scoped, readings, **_ARMS), bundle=bundle, control="production", candidate="candidate"
+    )
+    assert (
+        line
+        == "Keep production: candidate's drop exceeds the margin, passing Label matched on 30 of 60 to production's 60."
+    )
+    assert lint_prose(line) == []
     # A name the arms do not carry is said, and left unsettled, never read as every rate.
     (absent,) = evaluate_rule(
         DecisionRule(clauses=(RateDrop(max_points=10, reading="tone"),)), readings, **_ARMS
@@ -1003,7 +1053,13 @@ async def test_a_pass_fail_scorer_is_a_reading_the_rule_declares_and_reads() -> 
     assert alone.outcome == "unsettled" and [read.rate for read in alone.rates] == [scored]
     every = evaluate_rule(DecisionRule(clauses=(RateDrop(max_points=10),)), readings, **_ARMS).clauses[0]
     assert isinstance(every.clause, RateDrop) and scored in readings.read_by(every.clause)
-    assert scored in [read.rate for read in every.rates]
+    # Every pass/fail rate, the overall pass rate and the scorer's, is past the margin on its point estimate alone.
+    assert every.outcome == "unsettled"
+    assert [(read.rate, read.outcome) for read in every.rates] == [
+        (readings.rates[0], "unsettled"),
+        (scored, "unsettled"),
+    ]
+    assert all("on the point estimate alone, not on its interval" in read.reason for read in every.rates)
     # The declaration offers exactly the checks the page reads, wherever the run measured them.
     offered = [name for name in decision_readings(None, profile) if name in bundle.measure_catalog]
     assert offered == [rate.measure for rate in readings.rates if rate.measure is not None] == ["exact_match"]

@@ -845,6 +845,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     cost = _cost_ruler(bundle)
     others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
     rows: list[dict[str, CellValue]] = []
+    pointed = False
     for key in others:
         readings = rule_readings(bundle, control, key, question_id=asked.id)
         verdict = evaluate_rule(rule, readings, control=arm(control), candidate=arm(key))
@@ -860,6 +861,8 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                     )
                 ]
             else:
+                # A reading past the margin on its point estimate alone says so: the glossary defines the term.
+                pointed = pointed or any("point estimate" in read.reason for read in clause.rates)
                 # Each rate its own outcome, so a row's outcome is about the reading on that row and no other.
                 shown = [
                     (
@@ -907,7 +910,12 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             order="clause by clause, each arm against the control",
             total_rows=len(rows),
         ),
-        DisclosureBlock(section="decision", source="rule", text=keep_is_the_default(arm(control))),
+        DisclosureBlock(
+            section="decision",
+            source="rule",
+            text=keep_is_the_default(arm(control)),
+            term="point estimate" if pointed else None,
+        ),
     ]
 
 
