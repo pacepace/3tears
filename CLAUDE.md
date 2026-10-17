@@ -152,6 +152,8 @@ uv sync                    # install all packages in dev mode
 
 Extra args pass through: `./scripts/test.sh core -v -x`
 
+Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run.
+
 `test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 
 - **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`, and account for every skip.** CI has no Docker, so nothing but you ever runs it, and a skip reads exactly like a pass. When reporting, give the pass count AND each remaining skip with its reason.
