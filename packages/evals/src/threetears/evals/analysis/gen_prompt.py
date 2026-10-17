@@ -30,10 +30,11 @@ Whether an analysis follows this guidance is measured by evaluating the report w
 (``analysis_reporter_v1``), and no rule here exists to satisfy a validator. The report's first screen — its verdict
 and the count of every trial — is code's, so the writer authors findings and recommendations only: each
 recommendation names the findings it rests on, and the generator checks those links structurally, refuses an adopted
-recommendation in an exploratory campaign, and looks at the words once — whether a finding's title in a common null
-phrasing cites no null the bundle established (:mod:`threetears.evals.analysis.null_claims`). Rule 9 states that as a
-rule for the reader and names none of the phrases: a prompt coaching toward a check's words teaches the writer to
-reword the claim, not to drop it.
+recommendation in an exploratory campaign, and looks at the words twice — whether a finding's title in a common null
+phrasing cites no null the bundle established (:mod:`threetears.evals.analysis.null_claims`), and whether it names an
+arm its finding cites no reading of (:mod:`threetears.evals.analysis.arm_mentions`). Rule 9 states both as rules for
+the reader and names none of the phrases: a prompt coaching toward a check's words teaches the writer to reword the
+claim, not to drop it.
 
 **It is budgeted:** at most 24,500 characters and 13 rules (:data:`PROMPT_CHAR_BUDGET`,
 :data:`PROMPT_RULE_BUDGET`), and the budget only falls; ``tests/test_gen_prompt_budget.py`` fails the
@@ -120,7 +121,7 @@ RULES — what separates a real analysis from a plausible one.
    - Be clear, not hedged: the tier carries the doubt; give only the caveat that changes what the reader does.
    - Say size in words ("much faster", "too close to call"); exact figures are the tables'.
    A finding's title makes one claim, one a single reading could confirm or refute: a result and its guardrail, or a result and its cause, are two claims; the decision (for a cause, the finding's body) is where they meet. A qualifier setting the claim's scope, condition or size is part of the one claim.
-   A title claims no more than its evidence: an unresolved contrast is never "no change" (rule 4), and a shift between two bad states is not progress. Name in `trials` the trials a finding is drawn from, so a reader can open the failure it names. A finding resting only on readings `reading_scope` lists is exploratory: its title says so. Where `reading_scope.disclosure` is set every finding is.
+   A title claims no more than its evidence: it names only arms whose readings it cites, an unresolved contrast is never "no change" (rule 4), and a shift between two bad states is not progress. Name in `trials` the trials a finding is drawn from, so a reader can open the failure it names. A finding resting only on readings `reading_scope` lists is exploratory: its title says so. Where `reading_scope.disclosure` is set every finding is.
    A finding's body may be technical, but still conclusion first, in at most two short paragraphs: the ranked measure for the arms compared, with rule 2's delivery rate. Say in English what bundle fields mean, never their names.
 
 10. A CAVEAT QUALIFIES THE FINDING IT HANGS ON, AND ITS ORDER IS A PRIORITY. Put first what someone acting on it must know, then what they should know; drop texture. Supporting evidence and mechanism belong in the body, not a caveat. A qualification that changes the diagnosis is not a caveat: it is the finding, and the first claim is withdrawn. Hang each caveat on the finding whose recommendation it would change.

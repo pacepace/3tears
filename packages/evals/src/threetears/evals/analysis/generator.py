@@ -46,11 +46,13 @@ each other by position, which the stored model checks. Confidence is a tier, nev
 Every refusal below reads a structured field of the generator's output — a cell or reading it
 names, a caveat kind, a question it answers, a position it links — against the bundle. The model's prose is the
 interpretive layer, and whether it is accurate, insightful and relevant is measured by evaluating the reporter as a
-candidate, not by code here. One check also reads a few words: :func:`_reject_unestablished_nulls` refuses a
+candidate, not by code here. Two checks also read a few words. :func:`_reject_unestablished_nulls` refuses a
 finding title in a common null phrasing ("does not change", "no difference") when the finding cites no null the
 bundle established. The join is structural; only "does this title say arms are alike" is read off the words, by a
 curated phrase list (:mod:`threetears.evals.analysis.null_claims`), so a reworded null passes it and nothing is
-parsed.
+parsed. :func:`_reject_arms_outside_the_evidence` refuses a finding title naming an arm none of the finding's
+readings or trials is taken at; only "which arms does this title name" is read off the words, by the names the
+bundle gives each arm (:mod:`threetears.evals.analysis.arm_mentions`).
 
 **A recommendation is pinned, and an exploratory campaign adopts nothing.** Every recommendation names the findings
 it rests on, a finding names only trials the bundle holds, and in a campaign that declared no question before its
@@ -81,6 +83,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from threetears.evals.analysis.arm_mentions import arm_mentions, arm_vocabulary
 from threetears.evals.analysis.arms import arm_names, contradicted_arms, writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -790,13 +793,14 @@ def _assemble_and_validate(
     written. What else code fills — every number an evidence reading resolves to — sits beside it on
     ``resolutions``, and the bundle it was written over is stored with it. Every check here reads a structured field
     or a reference's grammar; the null-claim check on a finding's title also matches a short phrase list
-    (:func:`_reject_unestablished_nulls`).
+    (:func:`_reject_unestablished_nulls`), and the arm check matches the names the bundle gives each arm
+    (:func:`_reject_arms_outside_the_evidence`).
 
     :raises GenerationError: The provider cut the call short (not repaired).
     :raises SoundnessRefusal: The output does not match the contract, a position, reading or trial points nowhere,
         the question answers do not match the declaration, a recommendation rests on no finding, one adopts
         anything in an exploratory campaign or an arm no reading separated from the control, or a finding's
-        title states a null it established nowhere (repaired once).
+        title states a null it established nowhere or names an arm it cites nothing of (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
@@ -831,12 +835,13 @@ def _resolved_analysis(
     :rtype: tuple[EvalAnalysis, list[EvalInsight]]
     :raises SoundnessRefusal: A cell, reading or position points nowhere, one arm is both adopted and
         rejected, a decision adopts an arm no reading separated from the control, or a finding's title
-        states a null it established nowhere (repaired once).
+        states a null it established nowhere or names an arm it cites nothing of (repaired once).
     """
     document = _with_cell_refs(document, surface)
     _reject_contradicted_arms(document, bundle)
     _reject_unseparated_adoptions(document, bundle)
     _reject_unestablished_nulls(document, bundle)
+    _reject_arms_outside_the_evidence(document, bundle)
     document = render_prose_figures(document, surface, bundle.measure_catalog)
     resolutions = [
         _resolution_of(finding, surface, where=f"findings[{index}]") for index, finding in enumerate(document.findings)
@@ -1162,6 +1167,54 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
         "likely true (for example, too close to call on this evidence) and what would settle it; a reworded null is "
         f"the same claim.{offered}"
     )
+
+
+def _reject_arms_outside_the_evidence(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
+    """Refuse a finding title naming an arm none of that finding's readings or trials is taken at.
+
+    The reader is shown a finding's title over the readings it cites, so a title naming an arm the finding cites
+    nothing of states a result the reader cannot see: a production memo (2026-10) titled a finding "GPT-6 Luna Pro
+    and Ling 3.1 Flash quadrupled evaluation cost" over readings at two other arms, and Ling's cost was shown nowhere.
+
+    **Structural, with one question read off the words.** The arms a finding cites are the variants of its evidence
+    rows' cells and the arms of the trials it names. Which arms its title names is read off the words by the names the
+    bundle gives each arm (:func:`~threetears.evals.analysis.arm_mentions.arm_vocabulary`), which miss a name the
+    writer shortened rather than refuse a sound title; the reporter eval measures the rest. A title is checked against
+    its own finding only.
+
+    Runs after cells are translated from aliases, so it joins on full refs; the refusal names the arm's cells by them,
+    and the repair round renders them back into the writer's aliases.
+
+    :raises SoundnessRefusal: A finding's title names an arm that none of its evidence rows or trials is taken at.
+    """
+    vocabulary = arm_vocabulary(bundle.variant_index)
+    if not vocabulary:
+        return
+    arm_of_trial = {trial.trial_id: trial.arm for trial in bundle.trials}
+    cells_of: dict[str, list[str]] = {}
+    for cell in bundle.cell_measures:
+        cells_of.setdefault(cell.variant_key, []).append(cell_ref(cell.variant_key, cell.apparatus_class_id))
+    names = arm_names(bundle.variant_index)
+    stray: list[str] = []
+    for position, finding in enumerate(document.findings):
+        cited = {variant for row in finding.evidence if (variant := variant_of_cell_ref(row.cell)) is not None} | {
+            arm_of_trial[trial] for trial in finding.trials if trial in arm_of_trial
+        }
+        for mention in arm_mentions(finding.title, vocabulary):
+            if mention.name.variants & cited:
+                continue
+            arms = "; ".join(
+                f"{names.get(variant, variant)} at cell(s) {', '.join(cells_of.get(variant, [])) or 'none'}"
+                for variant in sorted(mention.name.variants, key=lambda key: names.get(key, key))
+            )
+            stray.append(f'findings[{position}].title names "{mention.written}" (the arm {arms})')
+    if stray:
+        raise SoundnessRefusal(
+            f"{'; '.join(stray)}, but none of that finding's evidence rows or trials is taken at that arm, so the "
+            "reader is shown nothing of it. A title claims no more than its evidence (rule 9): cite that arm's "
+            "reading in the finding's evidence, or, if what the title says of it is a second claim, give that claim "
+            "a finding of its own"
+        )
 
 
 def _cited(finding: AuthoredFinding) -> set[tuple[str, str, str]]:
