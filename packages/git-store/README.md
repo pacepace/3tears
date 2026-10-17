@@ -42,4 +42,11 @@ What it guarantees:
 Many repositories at once (one per entity, one shared, or several): `GitRepos` opens them on first
 use; `RoutedGitStore` is one store over them, routing each row by its key.
 
+Two things to get right when wiring it:
+
+- **Bind before you open.** `bind_collections(repo, ...)` (or `on_rows_changed`) before
+  `await repo.open()`: opening reports the commits made while no store was running.
+- **Give new rows a `date_updated` key** (`None` is enough; the save stamps it). A row saved
+  without one has no version, so later saves of it cannot be compare-and-swapped.
+
 Needs the `git` program. No pygit2.
