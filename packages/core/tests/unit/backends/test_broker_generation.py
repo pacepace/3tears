@@ -472,10 +472,6 @@ class TestASwitchedOnCollectionOnAPod:
 
 
 class TestTheBrokerKnowsASwitchedOnTableFromItsClass:
-    @pytest.mark.expect_contained(
-        AttributeError,
-        why="a class naming its table per instance (_PerInstance) raises on the class; that is the answer, contained",
-    )
     def test_switched_on_and_absence_caching_classes_name_their_tables_and_others_do_not(self) -> None:
         columns = [SchemaColumn("id", STRING_TYPE)]
 
