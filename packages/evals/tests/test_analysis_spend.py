@@ -34,8 +34,7 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import service as service_module
-from threetears.evals.analysis.service import INPUT_TOKENS_BOUND_BASIS
-from threetears.evals.kernel.capped_completion import prompt_token_bound
+from threetears.evals.analysis.service import APPROX_INPUT_TOKENS_BASIS, CHARS_PER_TOKEN
 from threetears.evals.schema import JobLease, JobRefusal
 from threetears.evals.ops import (
     ANALYSIS_PREPARATION_BUDGET_S,
@@ -145,15 +144,13 @@ async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_len
     assert "purpose analysis:" in outcome.text and f"campaign {fixture.campaign.id}" in outcome.text
 
 
-async def test_the_logged_input_size_bounds_every_byte_of_the_exact_first_request_sent(
+async def test_the_logged_input_size_is_a_ballpark_over_the_exact_first_request_sent(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The size a generation discloses before its first call cannot run low (#827): it is the bound the cap prices,
-    over the system prompt, user message and response schema actually sent, and the line says so.
+    """The size a generation discloses before its first call counts what it actually sends (#827): the system prompt,
+    user message and response schema, at two characters a token, and the line says so.
 
-    The bundle is JSON throughout (ids, numbers, punctuation), the text a ``chars/4`` estimate undercounted by half.
-    No token of a byte-level tokenizer is shorter than a byte, so a figure at or above the request's UTF-8 bytes is at
-    or above any such tokenizer's count of it.
+    The old figure was ``chars/4`` over a differently rendered bundle, half or less of what a JSON-heavy call bills.
     """
     fixture = off_loop(ops_fixture)
     with caplog.at_level(logging.INFO, logger="threetears.evals"):
@@ -164,12 +161,11 @@ async def test_the_logged_input_size_bounds_every_byte_of_the_exact_first_reques
     sent, response_format = writer.calls[0], writer.response_formats[0]
     assert sent["user"].startswith("CONTEXT BUNDLE (JSON):") and response_format is not None
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("eval.generate_analysis campaign=")]
-    logged = int(line.split("input_tokens_bound=")[1].split(" ", 1)[0])
+    logged = int(line.split("approx_input_tokens=")[1].split(" ", 1)[0])
 
-    sent_bytes = sum(len(text.encode("utf-8")) for text in (sent["system"], sent["user"], json.dumps(response_format)))
-    assert logged >= sent_bytes
-    assert logged == prompt_token_bound(sent["system"], sent["user"], response_format), "the figure the cap prices"
-    assert f"({INPUT_TOKENS_BOUND_BASIS})" in line and "approx_" not in line
+    sent_chars = len(sent["system"]) + len(sent["user"]) + len(json.dumps(response_format))
+    assert logged == sent_chars // CHARS_PER_TOKEN
+    assert f"({APPROX_INPUT_TOKENS_BASIS})" in line
 
 
 async def test_with_enforcement_off_a_generation_is_still_ledgered_under_no_cap() -> None:
