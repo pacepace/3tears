@@ -29,6 +29,7 @@ without coupling it to any specific storage / DB / observability stack.
 from __future__ import annotations
 
 import inspect
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -41,7 +42,7 @@ from threetears.agent.tools.protocols import (
     ImageGenerationBackend,
 )
 from threetears.agent.tools.utils import tool_error, tool_no_change
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "GENERATION_SOURCE_LABEL",
@@ -395,6 +396,7 @@ def create_image_generation_tool(
             try:
                 loaded = await _load_source(source_media_id, use_attached_image)
             except Exception as exc:
+                contain(exc, log=_log, what="img2img source load failed")
                 return tool_error(_TOOL, "img2img source load", str(exc))
             if isinstance(loaded, str):
                 return tool_no_change(_TOOL, loaded)
@@ -415,14 +417,15 @@ def create_image_generation_tool(
                 **options,
             )
         except Exception as exc:
-            _log.error(
-                "image_generation backend failed",
+            contain(
+                exc,
+                log=_log,
+                what="image_generation backend failed",
                 extra={
-                    "extra_data": {
-                        "model": selected_model,
-                        "error": str(exc),
-                    }
+                    "model": selected_model,
+                    "error": str(exc),
                 },
+                level=logging.ERROR,
             )
             return tool_error(_TOOL, "generate", str(exc))
 
@@ -456,14 +459,15 @@ def create_image_generation_tool(
                 style=style,
             )
         except Exception as exc:
-            _log.error(
-                "image_generation persistence failed",
+            contain(
+                exc,
+                log=_log,
+                what="image_generation persistence failed",
                 extra={
-                    "extra_data": {
-                        "model": selected_model,
-                        "error": str(exc),
-                    }
+                    "model": selected_model,
+                    "error": str(exc),
                 },
+                level=logging.ERROR,
             )
             return tool_error(_TOOL, "save", str(exc))
 

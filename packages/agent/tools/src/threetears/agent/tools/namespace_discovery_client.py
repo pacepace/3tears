@@ -48,7 +48,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from threetears.core.security.delegated_token import NAMESPACE_DISCOVER_DOOR
 from threetears.core.security.door_request import NAMESPACE_DISCOVER_OP, DoorCredential, ProvenDoorRequest
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 from threetears.agent.tools.config import get_namespace_discovery_request_timeout
 
@@ -368,6 +368,7 @@ class NamespaceDiscoveryClient:
         try:
             response = NamespaceDiscoveryResponse.model_validate_json(body)
         except Exception as exc:
+            contain(exc, log=log, what="namespace.discover reply did not parse as a discovery response")
             parse_error = exc
             response = None
         result: list[NamespaceDiscoverySummary]
@@ -390,9 +391,11 @@ class NamespaceDiscoveryClient:
                 # Only enriching the message; the failure is raised either way. Logged so a
                 # generic "discovery returned success=false" is traceable to an unparseable body
                 # rather than read as all the detail the server sent.
-                log.debug(
-                    "could not parse the discovery error envelope; using default error text",
-                    extra={"extra_data": {"error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="could not parse the discovery error envelope; using default error text",
+                    extra={"error": str(exc)},
                 )
             raise DiscoveryClientError(
                 f"namespace.discover failed: {error_code}: {error_message}",

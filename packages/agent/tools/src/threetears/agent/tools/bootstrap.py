@@ -48,7 +48,6 @@ is refused as a :class:`ToolPodConfigError`.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import signal
 from collections.abc import Awaitable, Callable, Sequence
@@ -67,7 +66,9 @@ from threetears.observe import (
     HealthCheck,
     HealthServer,
     HealthTier,
+    cancel_and_wait,
     configure_logging,
+    contain,
     get_logger,
     spawn_background,
 )
@@ -700,10 +701,7 @@ class ToolServerBootstrap:
             await self._await_serve(serve_task)
         finally:
             if owner_watch is not None:
-                owner_watch.cancel()
-                # NOSILENT: the only thing suppressed is the cancellation sent on the line above.
-                with contextlib.suppress(asyncio.CancelledError):
-                    await owner_watch
+                await cancel_and_wait(owner_watch)
             await self._bounded_teardown(health_server)
             log.info(
                 f"{self._service_name} stopped",
@@ -779,9 +777,11 @@ class ToolServerBootstrap:
             try:
                 await health_server.stop()
             except Exception as exc:
-                log.warning(
-                    "health server stop failed",
-                    extra={"extra_data": {"error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="health server stop failed",
+                    extra={"error": str(exc)},
                 )
 
     async def shutdown_server(self, server: "ToolServer", *, reason: str) -> None:
@@ -817,6 +817,7 @@ class ToolServerBootstrap:
             await asyncio.wait_for(server.shutdown(), timeout=timeout)
         except Exception as exc:  # noqa: BLE001 -- recorded and raised by run_async; logged once here
             failure = exc
+            contain(exc, log=log, what=f"{self._service_name} server shutdown failed or overran its bound")
         serve_task = self._serve_task
         if failure is None and serve_task is not None:
             done, _pending = await asyncio.wait({serve_task}, timeout=timeout)
@@ -937,13 +938,13 @@ class ToolServerBootstrap:
         try:
             await health_server.start()
         except Exception as exc:
-            log.warning(
-                "health server failed to start; tool pod will run without /healthz",
+            contain(
+                exc,
+                log=log,
+                what="health server failed to start; tool pod will run without /healthz",
                 extra={
-                    "extra_data": {
-                        "service": self._service_name,
-                        "error": str(exc),
-                    }
+                    "service": self._service_name,
+                    "error": str(exc),
                 },
             )
             return None

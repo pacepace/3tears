@@ -23,6 +23,7 @@ the background-task spawn is
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
@@ -36,7 +37,7 @@ from threetears.agent.tools.server import (
     refusals_in_reply,
 )
 from threetears.nats import TokenCallback
-from threetears.observe import get_logger, spawn_background, traced
+from threetears.observe import cancel_and_wait, contain, get_logger, spawn_background, traced
 
 __all__ = ["BuiltSpec", "DynamicToolPod"]
 
@@ -358,12 +359,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             self._tool_server = None
 
         if self._serve_task is not None:
-            self._serve_task.cancel()
-            try:
-                await self._serve_task
-            # NOSILENT: consuming CancelledError from our own .cancel() above; task-level outcome is logged by spawn_background done-callback
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_wait(self._serve_task)
             self._serve_task = None
 
         for resource in self._resources.values():
@@ -577,12 +573,15 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             return
         try:
             await self.close_resource(resource)
-        except Exception:  # prawduct:allow prawduct/broad-except -- a resource's close may raise anything; the spec is already forgotten and the caller must proceed
-            log.exception(
-                "dynamic tool pod could not close a forgotten spec's resource; it may still hold "
-                "connections until the process ends: key=%s pod_id=%s",
-                key,
-                self._pod_id,
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a resource's close may raise anything; the spec is already forgotten and the caller must proceed
+            contain(
+                exc,
+                log=log,
+                what=(
+                    "dynamic tool pod could not close a forgotten spec's resource; it may still hold "
+                    f"connections until the process ends: key={key} pod_id={self._pod_id}"
+                ),
+                level=logging.ERROR,
             )
 
     def _register_built(self, built: BuiltSpec) -> None:

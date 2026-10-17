@@ -23,6 +23,8 @@ Config keys (passed via the tool registry ``config`` dict):
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from uuid import UUID
@@ -46,7 +48,7 @@ from threetears.agent.tools.protocols import (
 )
 from threetears.agent.tools.text_window import find_in_text, window_text
 from threetears.langgraph.fence import explained_fence, mint_nonce
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DESCRIBE_PROMPT",
@@ -655,13 +657,16 @@ class AnalyzeMediaTool(TearsTool):
         if self._on_analysis:
             try:
                 await self._on_analysis(mid_str, content_type, text)
-            except Exception:
+            except Exception as exc:
                 # The analysis itself succeeded; only the caller's notification failed, so this
                 # does not fail the tool. But whatever the callback was meant to do -- persist,
                 # index, notify -- did not happen, and the traceback is the only diagnosis.
-                _log.exception(
-                    "analysis callback failed; the result was produced but not delivered",
-                    extra={"extra_data": {"media_id": mid_str, "content_type": content_type}},
+                contain(
+                    exc,
+                    log=_log,
+                    what="analysis callback failed; the result was produced but not delivered",
+                    extra={"media_id": mid_str, "content_type": content_type},
+                    level=logging.ERROR,
                 )
 
     async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None]:
@@ -827,14 +832,15 @@ class AnalyzeMediaTool(TearsTool):
         try:
             result_text = await text_provider.answer(doc_prompt)
         except Exception as exc:
-            _log.error(
-                "Document analysis failed",
+            contain(
+                exc,
+                log=_log,
+                what="Document analysis failed",
                 extra={
-                    "extra_data": {
-                        "analyzer": acfg.name,
-                        "error": str(exc),
-                    }
+                    "analyzer": acfg.name,
+                    "error": str(exc),
                 },
+                level=logging.ERROR,
             )
             return _tool_error("document analysis", str(exc))
 
@@ -852,13 +858,13 @@ class AnalyzeMediaTool(TearsTool):
                     metadata={"model_name": acfg.name},
                 )
             except Exception as exc:
-                _log.warning(
-                    "Failed to persist document description",
+                contain(
+                    exc,
+                    log=_log,
+                    what="Failed to persist document description",
                     extra={
-                        "extra_data": {
-                            "media_id": mid_str,
-                            "error": str(exc),
-                        }
+                        "media_id": mid_str,
+                        "error": str(exc),
                     },
                 )
 
@@ -947,14 +953,15 @@ class AnalyzeMediaTool(TearsTool):
                     mime_type,
                 )
             except Exception as exc:
-                _log.error(
-                    "Transcription failed",
+                contain(
+                    exc,
+                    log=_log,
+                    what="Transcription failed",
                     extra={
-                        "extra_data": {
-                            "media_id": mid_str,
-                            "error": str(exc),
-                        }
+                        "media_id": mid_str,
+                        "error": str(exc),
                     },
+                    level=logging.ERROR,
                 )
                 return _tool_error("transcription", str(exc))
 
@@ -969,13 +976,13 @@ class AnalyzeMediaTool(TearsTool):
                         metadata={"model_name": acfg.name},
                     )
                 except Exception as exc:
-                    _log.warning(
-                        "Failed to persist transcript",
+                    contain(
+                        exc,
+                        log=_log,
+                        what="Failed to persist transcript",
                         extra={
-                            "extra_data": {
-                                "media_id": mid_str,
-                                "error": str(exc),
-                            }
+                            "media_id": mid_str,
+                            "error": str(exc),
                         },
                     )
 
@@ -1103,14 +1110,15 @@ class AnalyzeMediaTool(TearsTool):
                     results.append(r)
                 result_text = "\n\n---\n\n".join(results)
         except Exception as exc:
-            _log.error(
-                "Vision model invocation failed",
+            contain(
+                exc,
+                log=_log,
+                what="Vision model invocation failed",
                 extra={
-                    "extra_data": {
-                        "analyzer": analyzer_name,
-                        "error": str(exc),
-                    }
+                    "analyzer": analyzer_name,
+                    "error": str(exc),
                 },
+                level=logging.ERROR,
             )
             return _tool_error("vision model invocation", str(exc))
 
@@ -1149,9 +1157,12 @@ class AnalyzeMediaTool(TearsTool):
         try:
             result_text = await vision.analyze_ref(object_ids, prompt)
         except Exception as exc:
-            _log.error(
-                "Reference vision invocation failed",
-                extra={"extra_data": {"analyzer": analyzer_name, "error": str(exc)}},
+            contain(
+                exc,
+                log=_log,
+                what="Reference vision invocation failed",
+                extra={"analyzer": analyzer_name, "error": str(exc)},
+                level=logging.ERROR,
             )
             return _tool_error("vision model invocation", str(exc))
         return await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
@@ -1193,10 +1204,7 @@ class AnalyzeMediaTool(TearsTool):
                     metadata={"model_name": analyzer_name},
                 )
             except Exception as exc:
-                _log.warning(
-                    "Failed to persist description",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
+                contain(exc, log=_log, what="Failed to persist description", extra={"error": str(exc)})
 
             await self._fire_callback(media_ids[0], "description", result_text)
 

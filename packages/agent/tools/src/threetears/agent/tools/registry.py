@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "ToolFactory",
@@ -74,8 +74,5 @@ class ToolRegistry:
                 t = factory(cfg.get("config", {}), cfg["description"])
                 tools.append(t)
             except Exception as exc:
-                log.warning(
-                    "Failed to create tool",
-                    extra={"extra_data": {"tool_type": tool_type, "error": str(exc)}},
-                )
+                contain(exc, log=log, what="Failed to create tool", extra={"tool_type": tool_type, "error": str(exc)})
         return tools

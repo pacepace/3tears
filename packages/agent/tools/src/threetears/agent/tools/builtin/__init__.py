@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable
 from importlib.util import find_spec
 from typing import TYPE_CHECKING
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "STANDARD_BUILTIN_FACTORIES",
@@ -194,7 +194,9 @@ def register_builtins(registry: ToolRegistry) -> None:
                 extra={"extra_data": {"tool_type": tool_type, "error": str(exc)}},
             )
         except Exception as exc:
-            log.warning(
-                "Skipping built-in tool (registration error)",
-                extra={"extra_data": {"tool_type": tool_type, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="Skipping built-in tool (registration error)",
+                extra={"tool_type": tool_type, "error": str(exc)},
             )
