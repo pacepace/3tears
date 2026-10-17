@@ -149,7 +149,8 @@ def test_a_quantity_with_a_short_unit_off_the_model_axis_names_no_arm() -> None:
 
 def test_a_quantity_with_a_longer_unit_names_its_arm_only_written_as_one_token() -> None:
     wide, _narrow = arms = [
-        _entry(model="acme/gpt-6", chunk=chunk, top_k=top_k) for chunk, top_k in (("1024tok", "8chunks"), ("256tok", "4chunks"))
+        _entry(model="acme/gpt-6", chunk=chunk, top_k=top_k)
+        for chunk, top_k in (("1024tok", "8chunks"), ("256tok", "4chunks"))
     ]
     assert _named("The 1024tok chunk is the slower one", arms) == [("1024tok", _arm(wide))]
     assert _named("A 1024 tok chunk is slower", arms) == []
