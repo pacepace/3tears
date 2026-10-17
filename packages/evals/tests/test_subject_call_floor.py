@@ -66,7 +66,7 @@ from threetears.evals.schema import (
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_judge_config
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import (
     TOYHOST_LAUNCH_SETTINGS,
     plan_toyhost_arm,
@@ -173,11 +173,20 @@ class _Subject:
                 request.judge_config_ids,
                 judged_artifact=judged_artifact,
             )
+            world = eval_host.profile.world
+            assert world is not None, "the toy host declares a world"
+            # the kind a cell runs: the toy extractor, over the registry this host's cells bind their world to
+            kind = ToyExtractorKind(
+                client=_client,
+                world=world,
+                judged=judged_artifact is JudgedArtifact.DOCUMENT,
+                goal_checks=tuple(request.template.goal_state_checks),
+            )
             return await launch_run(
                 self.host,
                 request,
                 KindWiring(
-                    kind_factory=lambda _cell: None,  # type: ignore[arg-type,return-value]
+                    kind_factory=lambda _cell: kind,
                     subject=TOYHOST_SUBJECT,
                     test_cases=toyhost_test_cases(request.template),
                     judge=judge,
