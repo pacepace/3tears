@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import ast
+import os
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
+from threetears.enforcement.common import ast_helpers
 from threetears.enforcement.common.ast_helpers import (
     argument_spellings,
     callee_names,
+    clear_parse_cache,
     dotted,
     is_logger_call,
     is_private_name,
     is_suppress_call,
     iter_python_files,
+    nodes_by_type,
     parse_python_file,
+    parse_python_path,
     receiver,
     relative_posix_path,
 )
@@ -90,6 +97,136 @@ class TestParsePythonFile:
         tree = parse_python_file(path)
         assert tree is not None
         assert tree.body == []
+
+
+class TestParsePythonFileCache:
+    """every gate parses every file; an unchanged file is parsed once for all of them."""
+
+    def test_an_unchanged_file_is_parsed_once(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        assert parse_python_file(path) is parse_python_file(path)
+
+    def test_a_rewritten_file_is_parsed_again(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        first = parse_python_file(path)
+        path.write_text("def rewritten():\n    return 2\n")
+        second = parse_python_file(path)
+        assert first is not None and second is not None
+        assert isinstance(second.body[0], ast.FunctionDef)
+        assert second.body[0].name == "rewritten"
+
+    def test_a_rewrite_that_keeps_size_and_mtime_is_still_seen(self, tmp_path: Path) -> None:
+        # a same-size rewrite inside one mtime tick: the replaced file is a new inode
+        path = _touch(tmp_path / "mod.py", "a = 1\n")
+        first = parse_python_file(path)
+        stat = path.stat()
+        replacement = _touch(tmp_path / "replacement.py", "b = 2\n")
+        os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        replacement.replace(path)
+        second = parse_python_file(path)
+        assert first is not None and second is not None
+        target = second.body[0]
+        assert isinstance(target, ast.Assign) and isinstance(target.targets[0], ast.Name)
+        assert target.targets[0].id == "b"
+
+    def test_a_cached_failure_is_reported_on_every_call(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        notes: list[str] = []
+        monkeypatch.setattr(ast_helpers, "note_unscanned", lambda target, reason: notes.append(reason))
+        path = _touch(tmp_path / "bad.py", "def f(:\n")
+        assert parse_python_file(path) is None
+        assert parse_python_file(path) is None
+        assert len(notes) == 2
+        assert notes[0] == notes[1]
+        assert notes[0].startswith("syntax error at line")
+
+    def test_a_file_that_becomes_valid_parses(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "def f(:\n")
+        assert parse_python_file(path) is None
+        path.write_text("def f():\n    return 1\n")
+        assert parse_python_file(path) is not None
+
+    def test_clearing_releases_the_cached_tree(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        first = parse_python_file(path)
+        clear_parse_cache()
+        assert parse_python_file(path) is not first
+
+    def test_a_missing_file_still_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            parse_python_file(tmp_path / "absent.py")
+
+
+class TestParsePythonPath:
+    """the raising form: what ``ast.parse(path.read_text(encoding="utf-8"))`` raises, every time."""
+
+    def test_a_syntax_error_names_the_file_on_every_call(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "bad.py", "x = 1\ndef f(:\n")
+        for _ in range(2):
+            with pytest.raises(SyntaxError) as raised:
+                parse_python_path(path)
+            assert raised.value.filename == str(path)
+            assert raised.value.lineno == 2
+
+    def test_each_caller_gets_its_own_error(self, tmp_path: Path) -> None:
+        """a cached failure raised as one shared object would carry one caller's traceback to the next."""
+        path = _touch(tmp_path / "bad.py", "def f(:\n")
+        raised: list[SyntaxError] = []
+        for _ in range(2):
+            with pytest.raises(SyntaxError) as caught:
+                parse_python_path(path)
+            raised.append(caught.value)
+        assert raised[0] is not raised[1]
+        assert raised[0].args == raised[1].args
+
+    def test_invalid_utf8_raises_on_every_call(self, tmp_path: Path) -> None:
+        path = tmp_path / "binary.py"
+        path.write_bytes(b"\xff\xfe\xff")
+        for _ in range(2):
+            with pytest.raises(UnicodeDecodeError):
+                parse_python_path(path)
+
+    def test_shares_its_cache_with_parse_python_file(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        assert parse_python_path(path) is parse_python_file(path)
+
+
+class TestNodesByType:
+    """a gate that keeps one node type reads it from a per-file index, walked once."""
+
+    _SOURCE = "class A:\n    class B: ...\n\ndef f():\n    class C: ...\nclass D(A): ...\nx[0]\n"
+
+    def test_the_nodes_and_their_order_are_the_filtered_walk(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", self._SOURCE)
+        walked = [n for n in ast.walk(parse_python_path(path)) if isinstance(n, ast.ClassDef)]
+        assert list(nodes_by_type(path, ast.ClassDef)) == walked
+        assert [n.name for n in walked] == ["A", "D", "B", "C"]
+
+    def test_the_nodes_are_the_shared_trees(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", self._SOURCE)
+        assert nodes_by_type(path, ast.ClassDef)[0] is parse_python_path(path).body[0]
+
+    def test_a_type_the_file_does_not_hold_is_empty(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        assert nodes_by_type(path, ast.ClassDef) == ()
+
+    def test_a_rewritten_file_is_indexed_again(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "class A: ...\n")
+        assert [n.name for n in nodes_by_type(path, ast.ClassDef)] == ["A"]
+        path.write_text("class First: ...\nclass Second: ...\n")
+        assert [n.name for n in nodes_by_type(path, ast.ClassDef)] == ["First", "Second"]
+
+    def test_clearing_the_parse_cache_releases_the_index(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "class A: ...\n")
+        first = nodes_by_type(path, ast.ClassDef)[0]
+        clear_parse_cache()
+        again = nodes_by_type(path, ast.ClassDef)[0]
+        assert again is not first
+        assert again is parse_python_path(path).body[0]
+
+    def test_a_file_that_does_not_parse_raises_as_parse_python_path_does(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "bad.py", "def f(:\n")
+        with pytest.raises(SyntaxError):
+            nodes_by_type(path, ast.ClassDef)
 
 
 class TestRelativePosixPath:

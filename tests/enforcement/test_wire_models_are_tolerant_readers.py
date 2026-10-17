@@ -16,6 +16,7 @@ import ast
 import importlib
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
 from threetears.core.wire import TolerantWireModel
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -57,7 +58,7 @@ def _tolerant_subclasses_in_source() -> set[str]:
     for root in _SOURCE_ROOTS:
         for path in sorted(root.rglob("*.py")):
             module = ".".join(path.relative_to(root).with_suffix("").parts)
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_python_path(path)
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
                     names = {

@@ -41,6 +41,9 @@ from pathlib import Path
 
 import pytest
 
+from threetears.enforcement.common import parse_python_path
+
+
 # repo root: this file lives at tests/enforcement/, two levels down.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -123,7 +126,7 @@ def test_docker_backed_tests_declare_the_integration_marker() -> None:
     """a test requesting a docker-rooted fixture must be marked integration."""
     offenders: list[str] = []
     for path in _test_files():
-        tree = ast.parse(path.read_text())
+        tree = parse_python_path(path)
         if _requests_docker_fixture(tree) and not _declares_integration_marker(tree):
             offenders.append(str(path.relative_to(_REPO_ROOT)))
     if offenders:

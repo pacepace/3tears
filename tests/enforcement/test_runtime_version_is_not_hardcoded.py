@@ -40,6 +40,9 @@ from pathlib import Path
 
 import pytest
 
+from threetears.enforcement.common import parse_python_path
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*", "packages/agent/*")
 
@@ -143,7 +146,7 @@ def test_runtime_version_is_read_from_metadata(init_path: Path) -> None:
     :return: nothing
     :rtype: None
     """
-    tree = ast.parse(init_path.read_text(encoding="utf-8"))
+    tree = parse_python_path(init_path)
     offending = _hardcoded_version_lines(tree)
     relative = init_path.relative_to(_REPO_ROOT)
     assert not offending, (

@@ -51,6 +51,7 @@ from threetears.enforcement.common import (
     Violation,
     is_private_name,
     iter_python_files,
+    nodes_by_type,
     parse_python_file,
 )
 
@@ -193,9 +194,7 @@ def shape_a_violations(
             tree = parse_python_file(importer)
             if tree is None:
                 continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ImportFrom):
-                    continue
+            for node in nodes_by_type(importer, ast.ImportFrom):
                 module = node.module
                 if module is None:
                     continue
@@ -432,9 +431,7 @@ def _collect_class_private_attrs(
             tree = parse_python_file(file)
             if tree is None:
                 continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
-                    continue
+            for node in nodes_by_type(file, ast.ClassDef):
                 entries = result.setdefault(node.name, {})
                 for item in node.body:
                     _record_class_private(item, entries, file)
@@ -517,9 +514,7 @@ def shape_d_violations(
             tree = parse_python_file(file)
             if tree is None:
                 continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
-                    continue
+            for node in nodes_by_type(file, ast.ClassDef):
                 base_names = _base_names_textual(node)
                 if not base_names:
                     continue
@@ -746,7 +741,8 @@ def _reflective_private_violations(tree: ast.Module, file: Path) -> list[Violati
     bindings_cache: dict[int, dict[str, set[str]]] = {}
     owned_markers: set[str] = set()
     candidates: list[tuple[ast.Call, str, str]] = []
-    for call, scopes in _reflective_private_calls(tree):
+    calls = _reflective_private_calls(tree) if _may_reflect_privately(file) else []
+    for call, scopes in calls:
         accessor = call.func.id if isinstance(call.func, ast.Name) else ""
         name = _private_name_argument(call, scopes)
         receiver = call.args[0]
@@ -757,7 +753,7 @@ def _reflective_private_violations(tree: ast.Module, file: Path) -> list[Violati
                 owned_markers.add(name)
             continue
         candidates.append((call, accessor, name))
-    violations: list[Violation] = _namespace_subscript_violations(tree, file)
+    violations: list[Violation] = _namespace_subscript_violations(file)
     for call, accessor, name in candidates:
         if name in owned_markers:
             continue
@@ -777,6 +773,34 @@ def _reflective_private_violations(tree: ast.Module, file: Path) -> list[Violati
             )
         )
     return violations
+
+
+def _may_reflect_privately(file: Path) -> bool:
+    """whether *file* holds a call :func:`_private_name_argument` could name a private for.
+
+    a necessary condition of every call :func:`_reflective_private_calls` keeps -- a reflective
+    builtin by name, two or more arguments, the second a private string literal or a bare name --
+    so a file without one has no reflective private call, and its scope walk is skipped.
+
+    :param file: the module, parsed through the shared cache
+    :ptype file: Path
+    :return: ``True`` when such a call is present
+    :rtype: bool
+    """
+    return any(
+        isinstance(call.func, ast.Name)
+        and call.func.id in _REFLECTIVE_ACCESSORS
+        and len(call.args) >= 2
+        and (
+            isinstance(call.args[1], ast.Name)
+            or (
+                isinstance(call.args[1], ast.Constant)
+                and isinstance(call.args[1].value, str)
+                and is_private_name(call.args[1].value)
+            )
+        )
+        for call in nodes_by_type(file, ast.Call)
+    )
 
 
 def _reflective_private_calls(tree: ast.Module) -> list[tuple[ast.Call, tuple[_ScopeNode, ...]]]:
@@ -897,7 +921,7 @@ def _strings_in(expr: ast.expr) -> list[str]:
     return []
 
 
-def _namespace_subscript_violations(tree: ast.Module, file: Path) -> list[Violation]:
+def _namespace_subscript_violations(file: Path) -> list[Violation]:
     """a private name read out of another object's namespace by subscript: ``vars(x)["_y"]`` or
     ``x.__dict__["_y"]`` -- the getattr of shape F, spelled as a dictionary lookup.
 
@@ -909,10 +933,9 @@ def _namespace_subscript_violations(tree: ast.Module, file: Path) -> list[Violat
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for node in ast.walk(tree):
+    for node in nodes_by_type(file, ast.Subscript):
         if not (
-            isinstance(node, ast.Subscript)
-            and isinstance(node.slice, ast.Constant)
+            isinstance(node.slice, ast.Constant)
             and isinstance(node.slice.value, str)
             and is_private_name(node.slice.value)
         ):
@@ -1072,11 +1095,10 @@ def _collect_class_private_state(
             tree = parse_python_file(file)
             if tree is None:
                 continue
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    entries = result.setdefault(node.name, {})
-                    for name, line in _class_state(node):
-                        entries.setdefault(name, (file, line))
+            for node in nodes_by_type(file, ast.ClassDef):
+                entries = result.setdefault(node.name, {})
+                for name, line in _class_state(node):
+                    entries.setdefault(name, (file, line))
     return result
 
 
@@ -1187,7 +1209,7 @@ def shape_i_violations(
         for file in iter_python_files(root):
             tree = parse_python_file(file)
             if tree is not None:
-                scanned.extend((n, file) for n in ast.walk(tree) if isinstance(n, ast.ClassDef))
+                scanned.extend((n, file) for n in nodes_by_type(file, ast.ClassDef))
     # a test class's ancestors run through test-defined classes too (a harness over a harness)
     test_bases = {cls.name: _base_names_generic(cls) for cls, _ in scanned}
     test_declares = {cls.name: _class_defines(cls) for cls, _ in scanned}
@@ -1212,9 +1234,8 @@ def _collect_class_bases(src_roots: tuple[Path, ...]) -> dict[str, list[str]]:
             tree = parse_python_file(file)
             if tree is None:
                 continue
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    result.setdefault(node.name, []).extend(_base_names_generic(node))
+            for node in nodes_by_type(file, ast.ClassDef):
+                result.setdefault(node.name, []).extend(_base_names_generic(node))
     return result
 
 

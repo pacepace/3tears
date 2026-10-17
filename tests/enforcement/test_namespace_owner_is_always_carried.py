@@ -23,6 +23,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
+
 #: the value type whose construction this walker polices, under either
 #: the plain name or the ``AclNamespace`` alias every consumer imports it
 #: as.
@@ -80,7 +83,7 @@ def test_every_namespace_construction_names_its_owner() -> None:
     violations: list[str] = []
     for path in _sources():
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_python_path(path)
         except SyntaxError:  # pragma: no cover - a broken file fails elsewhere
             continue
         for lineno in _offending_calls(tree):

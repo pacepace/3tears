@@ -33,6 +33,8 @@ from uuid import UUID
 import pytest
 from uuid_utils import uuid7
 
+from threetears.enforcement.common import parse_python_path
+
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _PACKAGES_ROOT = _REPO_ROOT / "packages"
@@ -90,7 +92,7 @@ class TestUUIDv7Enforcement:
     @pytest.mark.parametrize("src_file", _ENTITY_SOURCE_FILES, ids=_ENTITY_SOURCE_IDS)
     def test_no_uuid4_imports(self, src_file: Path) -> None:
         """No production source under packages/*/src/ imports stdlib uuid4."""
-        tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
+        tree = parse_python_path(src_file)
         hits = _imports_uuid4(tree)
         if hits:
             relpath = src_file.relative_to(_REPO_ROOT)
@@ -104,7 +106,7 @@ class TestUUIDv7Enforcement:
     @pytest.mark.parametrize("src_file", _ENTITY_SOURCE_FILES, ids=_ENTITY_SOURCE_IDS)
     def test_no_uuid4_call_sites(self, src_file: Path) -> None:
         """No production source under packages/*/src/ calls uuid4()."""
-        tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
+        tree = parse_python_path(src_file)
         hits = _calls_uuid4(tree)
         if hits:
             relpath = src_file.relative_to(_REPO_ROOT)

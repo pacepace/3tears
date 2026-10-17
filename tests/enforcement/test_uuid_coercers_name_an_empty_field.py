@@ -20,6 +20,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_GLOBS = ("packages/*/src", "packages/agent/*/src")
 _COERCER = "_as_uuid"
@@ -83,7 +86,7 @@ def test_every_uuid_coercer_names_an_empty_field() -> None:
     offenders: list[str] = []
     seen = 0
     for path in _source_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_python_path(path)
         for func in _coercers(tree):
             seen += 1
             if not _guards_none(func):

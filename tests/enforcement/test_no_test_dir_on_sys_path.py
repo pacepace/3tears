@@ -25,6 +25,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SEPARATE_DEPLOYABLES = (Path("packages/scrape/sidecar"),)
 _PATH_MUTATORS = frozenset({"insert", "append", "extend"})
@@ -79,7 +82,7 @@ def test_no_test_tree_puts_a_directory_on_sys_path() -> None:
     offenders = [
         f"{path}:{node.lineno}"
         for path in sources
-        for node in ast.walk(ast.parse((_REPO_ROOT / path).read_text(), filename=str(path)))
+        for node in ast.walk(parse_python_path(_REPO_ROOT / path))
         if _mutates_sys_path(node)
     ]
 

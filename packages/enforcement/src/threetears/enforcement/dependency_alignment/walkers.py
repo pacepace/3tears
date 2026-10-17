@@ -24,7 +24,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from threetears.enforcement.common import Violation, note_unscanned
+from threetears.enforcement.common import Violation, note_unscanned, parse_python_path
 
 from threetears.enforcement.dependency_alignment.config import DependencyAlignmentConfig
 
@@ -211,7 +211,7 @@ def _load_package(pkg_root: Path) -> PackageInfo | None:
     if src.is_dir():
         for py in sorted(src.rglob("*.py")):
             try:
-                tree = ast.parse(py.read_text())
+                tree = parse_python_path(py)
             except SyntaxError as exc:
                 # Its imports never reach the dependency graph, so a dependency this module alone
                 # requires reads as undeclared-and-unused rather than as a gap in the scan.
@@ -245,7 +245,7 @@ def contract_purity_violations(config: DependencyAlignmentConfig) -> list[Violat
         if not src.is_dir():
             continue
         for py in sorted(src.rglob("*.py")):
-            tree = ast.parse(py.read_text())
+            tree = parse_python_path(py)
             top: list[tuple[str, Path, int]] = []
             shielded: set[str] = set()
             _collect_all_imports(tree, py, top, shielded)

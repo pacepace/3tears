@@ -77,6 +77,7 @@ from langchain_core.embeddings import Embeddings
 from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.types import MemoryType
 from threetears.core.utils.local_time import parse_date_bound, render_local_time, resolve_zone
+from threetears.observe.text_block import one_line, under
 from threetears.observe import get_logger
 
 __all__ = [
@@ -397,7 +398,7 @@ def _memory_line(row: dict[str, Any], zone: tzinfo | None, *, quote: int | None 
     :ptype zone: tzinfo | None
     :param quote: cut the text to this many characters, marked; ``None`` shows it whole
     :ptype quote: int | None
-    :return: the line, without a leading dash
+    :return: the line, without a leading dash; a text of many lines continues indented under it
     :rtype: str
     """
     mid = str(row["memory_id"])
@@ -412,7 +413,9 @@ def _memory_line(row: dict[str, Any], zone: tzinfo | None, *, quote: int | None 
     content = str(row.get("content") or "")
     if quote is not None:
         content = _cut(content, quote, f"memory_recall reads [memory:{mid}] whole")
-    return f"{line}{_mark_text(marks_of(row), zone)}{content}"
+    head = f"{line}{_mark_text(marks_of(row), zone)}"
+    # a caller puts its list marker before the first line; the rest of the text sits under it
+    return "\n".join(under(content, "  ", first=head))
 
 
 def _quoted(row: dict[str, Any]) -> str:
@@ -424,7 +427,9 @@ def _quoted(row: dict[str, Any]) -> str:
     :rtype: str
     """
     mid = str(row["memory_id"])
-    return f'"{_cut(str(row.get("content") or ""), _QUOTE_CHARS, f"memory_recall reads [memory:{mid}] whole")}"'
+    return (
+        f'"{one_line(_cut(str(row.get("content") or ""), _QUOTE_CHARS, f"memory_recall reads [memory:{mid}] whole"))}"'
+    )
 
 
 def _extract_title(metadata_json: Any) -> str | None:
@@ -684,7 +689,13 @@ async def _search_by_ids(
             kind_tag = f" [{kind}]" if kind else ""
             # The media id, which every media tool takes; the content row's own id
             # opened nothing but this lookup ("Media not found or access denied").
-            parts.append(f"- [media:{media_id if media_id is not None else cid}] [{label}]{kind_tag}{stamp} {content}")
+            parts.extend(
+                under(
+                    content,
+                    "  ",
+                    first=f"- [media:{media_id if media_id is not None else cid}] [{one_line(str(label))}]{kind_tag}{stamp} ",
+                )
+            )
             if ledger_callback:
                 await ledger_callback(cid, "media", label or content)
 
@@ -701,7 +712,7 @@ async def _search_by_ids(
             )
             when = _fmt_dt(row.get("date_created"), zone)
             stamp = f" [{when}]" if when else ""
-            parts.append(f"- [chunk:{ckid}] [from {location}]{stamp} {row['content']}")
+            parts.extend(under(str(row["content"]), "  ", first=f"- [chunk:{ckid}] [from {location}]{stamp} "))
             if ledger_callback:
                 await ledger_callback(ckid, "chunk", title or row["content"])
 
@@ -1082,10 +1093,10 @@ async def load_memory_search_tool(
                 # text reader, an image edit's source), not the content row's id.
                 tag = f"[media:{mr.get('media_id') or mr['content_id']}]"
                 if mr.get("media_category") == "image":
-                    parts.append(f"- {tag} {mr['content']}{ts_suffix}")
+                    parts.extend(under(f"{mr['content']}{ts_suffix}", "  ", first=f"- {tag} "))
                 else:
                     label = mr.get("title") or mr.get("media_category", "media")
-                    parts.append(f"- {tag} [{label}] {mr['content']}{ts_suffix}")
+                    parts.extend(under(f"{mr['content']}{ts_suffix}", "  ", first=f"- {tag} [{one_line(str(label))}] "))
             sections.append(parts)
 
         if doc_chunks:
@@ -1098,7 +1109,7 @@ async def load_memory_search_tool(
                 tag = f"[chunk:{c['chunk_id']}]"
                 when = _fmt_dt(c.get("date_created"), zone)
                 stamp = f" [{when}]" if when else ""
-                parts.append(f"- {tag} [from {location}]{stamp} {c['content']}")
+                parts.extend(under(str(c["content"]), "  ", first=f"- {tag} [from {location}]{stamp} "))
             sections.append(parts)
 
         if ledger_callback:
@@ -1430,7 +1441,8 @@ async def load_memory_recall_tool(
             preview = _cut(
                 str(ch.get("content") or ""), _PASSAGE_PREVIEW_CHARS, f"chunk_recall reads [chunk:{cid}] whole"
             )
-            lines.append(f"  [chunk:{cid}] ({place})\n  {preview}")
+            lines.append(f"  [chunk:{cid}] ({place})")
+            lines.extend(under(preview, "    "))
         return "\n".join(lines)
 
     memory_recall.description = (
@@ -3033,7 +3045,8 @@ async def load_chunk_search_tool(
             when = _fmt_dt(row_of.get(chunk_id, {}).get("date_created"), zone)
             if when:
                 facts.append(f"written {when}")
-            lines.append(f"[chunk:{chunk_id}] ({', '.join(facts)})\n{preview}")
+            # one block per hit: the hits are parted by a blank line, a hit's own lines are not
+            lines.append("\n".join([f"[chunk:{chunk_id}] ({', '.join(facts)})", *under(preview, "  ")]))
             if ledger_callback is not None:
                 try:
                     await ledger_callback(chunk_id, "chunk", content[:80])
