@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Swallowed exceptions: a broad handler re-raises or is contained, and a contained bug fails its test
+
+- **New in `3tears-observe`: `contain`, `contained` and `cancel_and_wait`.** `contain(exc, *, log, what, extra=None,
+  level=logging.WARNING)` is the one way a broad handler absorbs a failure: it logs `what` verbatim at WARNING or
+  above with the traceback, adds `contained_site` (`module:Qualified.name` of the catching function) and `exc_type` to
+  the record's `extra_data`, and counts `contained_errors_total{site, exc_type}`. A level below WARNING raises
+  `ValueError`. `with contained(what, *, log, extra=None):` does the same for a block whose failure falls through, and
+  absorbs `Exception` only, so a cancellation still reaches the task. `await cancel_and_wait(task)` cancels a task
+  and waits for it, raising the caller's own cancellation and the task's own failure, where the hand-written
+  `except CancelledError: pass` swallowed both.
+- **`3tears-observe` contains its own broad handlers.** `HealthServer`, `PeriodicTask`, `retry_with_backoff` and the
+  telemetry flush and shutdown log through `contain`. Each record keeps its message and its fields and gains
+  `contained_site` and `exc_type`. Two health-server teardown records rise from DEBUG to WARNING.
+- **New in `3tears-enforcement`: the no-silent-swallow walker checks broad and cancellation handlers**
+  (`find_uncontained`, categories `no_silent_swallow.broad` and `no_silent_swallow.cancel`). An `except Exception`
+  re-raises on some path or calls `contain`; an `except BaseException` or `except CancelledError` re-raises;
+  `suppress(Exception)` and `suppress(CancelledError)` are refused. A log call or a `# NOSILENT` marker excuses none
+  of these. `try`/`except*` is scanned. `NoSilentSwallowConfig` gains `contain_names` (default `{"contain"}`) and
+  `uncontained_pending`, a list of package directories not yet checked: an entry with nothing left to convert is
+  itself a violation (`no_silent_swallow.pending`), so the list only shrinks. Every package except
+  `packages/observe` starts on 3tears' list.
+- **Under pytest, `contain()` absorbing a `TypeError`, `AttributeError`, `NameError` or `AssertionError` fails the
+  test** (`tests/contain_tripwire.py`, repo-internal). A test that drives one there on purpose marks it
+  `@pytest.mark.expect_contained(<type>, why=...)`.
+- The rule, the decision table and the conversion recipe: `docs/exceptions.md`.
+
 ## v0.70.0 -- 2026-10-16
 
 ### 3tears-evals: an analysis of a large campaign starts inside the host's call budget

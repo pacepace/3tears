@@ -52,7 +52,9 @@ warnings.filterwarnings(
     category=DeprecationWarning,
 )
 
-pytest_plugins = ["threetears.core.testing.fixtures"]
+# ``tests.contain_tripwire`` fails a test whose code under test contained a programming error
+# (see its docstring); ``pytester`` lets its own test run a session with it installed.
+pytest_plugins = ["threetears.core.testing.fixtures", "tests.contain_tripwire", "pytester"]
 
 
 @pytest.fixture(autouse=True)
