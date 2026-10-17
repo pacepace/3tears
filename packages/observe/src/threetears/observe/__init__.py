@@ -19,8 +19,9 @@ try:
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
-from threetears.observe.background import spawn_background
+from threetears.observe.background import cancel_and_wait, spawn_background
 from threetears.observe.build_once import BuildOnce
+from threetears.observe.containment import contain, contained
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.observe.periodic import PeriodicTask, TickResult
 from threetears.observe.health import HealthCheck, HealthServer, HealthTier
@@ -56,6 +57,9 @@ __all__ = [
     "NOISY_LIBRARY_LOGGERS",
     "configure_logging",
     "configure_third_party_logging",
+    "cancel_and_wait",
+    "contain",
+    "contained",
     "counter",
     "gauge",
     "get_context",

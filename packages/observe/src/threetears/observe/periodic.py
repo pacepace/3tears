@@ -30,12 +30,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import sys
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any, cast
 
 from threetears.observe.background import spawn_background
+from threetears.observe.containment import contain
 
 __all__ = ["PeriodicTask", "TickResult"]
 
@@ -172,14 +172,12 @@ class PeriodicTask:
             returned = await self._tick()
         except asyncio.CancelledError:
             raise
-        except (
-            Exception
-        ):  # prawduct:allow prawduct/broad-except -- one bad tick must never end the loop; logged with its traceback
-            error = sys.exc_info()[1]
-            self._logger.warning(
-                self._failure_message,
-                extra={"extra_data": {"task_name": self.name, "error": f"{type(error).__name__}: {error}"}},
-                exc_info=True,
+        except Exception as error:  # prawduct:allow prawduct/broad-except -- one bad tick must never end the loop
+            contain(
+                error,
+                log=self._logger,
+                what=self._failure_message,
+                extra={"task_name": self.name, "error": f"{type(error).__name__}: {error}"},
             )
         else:
             result = _as_delay(returned)

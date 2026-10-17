@@ -9,11 +9,13 @@ unavailability of their dependencies.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from threetears.observe import get_logger
+from threetears.observe.containment import contain
 
 __all__ = ["retry_bounded", "retry_until_done", "retry_with_backoff"]
 
@@ -86,11 +88,8 @@ async def retry_with_backoff(
             break
         except Exception as exc:
             if max_attempts is not None and attempt >= max_attempts:
-                _logger.error(
-                    "%s failed after %d attempts: %s",
-                    name,
-                    max_attempts,
-                    exc,
+                contain(
+                    exc, log=_logger, what=f"{name} failed after {max_attempts} attempts: {exc}", level=logging.ERROR
                 )
                 break
             if max_attempts is None:

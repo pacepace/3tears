@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Protocol
 
+from threetears.observe.containment import contain
 from threetears.observe.logging import get_logger
 
 if TYPE_CHECKING:
@@ -363,10 +364,11 @@ class _BoundedFlush:
             try:
                 completed = bool(signal_flush.flush(timeout_millis=remaining_millis))
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything, and one signal's failure must not stop the others flushing; logged, and reported as not flushed
-                logger.warning(
-                    "telemetry flush failed",
-                    exc_info=True,
-                    extra={"extra_data": {"signal": signal, "error_type": type(exc).__name__}},
+                contain(
+                    exc,
+                    log=logger,
+                    what="telemetry flush failed",
+                    extra={"signal": signal, "error_type": type(exc).__name__},
                 )
                 completed = False
                 raised = True
@@ -552,8 +554,8 @@ def shutdown_telemetry() -> None:
         # may not prevent ``init_telemetry()`` being called again; logged, for the reason above.
         try:
             _log_export.shutdown()
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not prevent init_telemetry() being callable again; logged, not silenced
-            logger.warning("telemetry shutdown: log provider shutdown failed", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not prevent init_telemetry() being callable again; logged, not silenced
+            contain(exc, log=logger, what="telemetry shutdown: log provider shutdown failed")
         _log_export = None
 
     if _tracer_provider is None:
@@ -573,9 +575,11 @@ def shutdown_telemetry() -> None:
     try:
         _tracer_provider.shutdown()
     except Exception as exc:  # noqa: BLE001 -- shutdown continues regardless
-        logger.warning(
-            "OTel provider shutdown failed; exporter resources may not be released",
-            extra={"extra_data": {"error": str(exc)}},
+        contain(
+            exc,
+            log=logger,
+            what="OTel provider shutdown failed; exporter resources may not be released",
+            extra={"error": str(exc)},
         )
 
     # Reset the global provider so new init_telemetry calls work
