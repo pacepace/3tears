@@ -290,6 +290,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # case generation, an analysis attempt) make store calls. A host noun here would be the engine
     # choosing one host's pool, or one host's cancellation rule, for every host.
     "kernel/offload.py",
+    # How the engine sets free text under the list item it belongs to (`under`, `one_line`), the
+    # same rules as threetears.observe.text_block without depending on it. A host noun here would be
+    # one host's layout written into every report and action listing.
+    "kernel/text_block.py",
     # The seeder, not the corpus it ships. It resolves occupancy by each type's natural key and
     # writes through the storage port; the host-specific part is the corpus a host hands it.
     # A host noun appearing HERE would mean the empty-slots-only rule
