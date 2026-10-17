@@ -33,6 +33,9 @@ from threetears.models.claude_cli_pool import (
     ClaudeCliPoolExhausted,
     ClaudeCliSessionError,
     PooledCliSession,
+    _in_another_pid_namespace,
+    _nested_pids,
+    _pid_namespace,
     agent_name,
     kill_process_tree,
     launch_key,
@@ -896,6 +899,58 @@ class TestTheOrphanSweep:
         finally:
             bystander.kill()
             bystander.wait(timeout=5)
+
+    def test_it_leaves_a_cli_in_another_pid_namespace_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A host's sweep sees a container's CLIs, and the owner pid in their marker names nothing
+        there: a dead owner, read from another namespace, is no evidence. Another namespace cannot
+        be made here, so the child's namespace link is read as a different one."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        elsewhere = self._marked_child(f"{self._dead_pid()}:0:in-a-container")
+        monkeypatch.setattr(
+            "threetears.models.claude_cli_pool._pid_namespace",
+            lambda pid: "pid:[4026500000]" if pid == elsewhere.pid else _pid_namespace(pid),
+        )
+        try:
+            sweep_orphaned_claude_clis(grace_seconds=1.0)
+            time.sleep(0.2)
+            assert elsewhere.poll() is None, "the sweep killed a CLI in another pid namespace"
+        finally:
+            elsewhere.kill()
+            elsewhere.wait(timeout=5)
+
+    def test_without_the_namespace_link_a_nested_pid_still_says_elsewhere(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The link needs ptrace access; the ``NSpid`` line does not, and a process with more than
+        one id on it lives in a namespace below this one."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        elsewhere = self._marked_child(f"{self._dead_pid()}:0:in-a-container")
+        monkeypatch.setattr("threetears.models.claude_cli_pool._pid_namespace", lambda pid: None)
+        monkeypatch.setattr(
+            "threetears.models.claude_cli_pool._nested_pids",
+            lambda pid: 2 if pid == elsewhere.pid else _nested_pids(pid),
+        )
+        try:
+            sweep_orphaned_claude_clis(grace_seconds=1.0)
+            time.sleep(0.2)
+            assert elsewhere.poll() is None, "the sweep killed a CLI an NSpid line placed elsewhere"
+        finally:
+            elsewhere.kill()
+            elsewhere.wait(timeout=5)
+
+    def test_this_process_and_its_children_are_in_its_own_namespace(self) -> None:
+        """The real reads, unpatched: what keeps the sweep working where nothing is nested."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        child = subprocess.Popen(["sleep", "60"])
+        try:
+            assert not _in_another_pid_namespace(child.pid)
+            assert _nested_pids(child.pid) is not None
+        finally:
+            child.kill()
+            child.wait(timeout=5)
 
     def test_a_recycled_pid_does_not_make_a_stale_cli_look_owned(self) -> None:
         """A marker naming a LIVE pid with a start time that is not that process's is an orphan: the

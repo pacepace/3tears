@@ -259,6 +259,61 @@ def _process_environ(pid: int) -> dict[str, str]:
     return env
 
 
+def _pid_namespace(pid: int | str) -> str | None:
+    """The pid namespace ``pid`` lives in (``"pid:[4026531836]"``), or ``None`` when it cannot be read.
+
+    :param pid: the process to read, or ``"self"``
+    :ptype pid: int | str
+    :return: the namespace's link text
+    :rtype: str | None
+    """
+    try:
+        return os.readlink(_PROC / str(pid) / "ns" / "pid")
+    except OSError:
+        # NOSILENT: reading another process's namespace link needs ptrace access; None hands the
+        # question to the NSpid line, which any reader may see.
+        return None
+
+
+def _nested_pids(pid: int) -> int | None:
+    """How many pid namespaces, from this one down, give ``pid`` an id (``NSpid``), or ``None``.
+
+    :param pid: the process to read
+    :ptype pid: int
+    :return: the number of ids on the ``NSpid`` line
+    :rtype: int | None
+    """
+    try:
+        for line in (_PROC / str(pid) / "status").read_text().splitlines():
+            if line.startswith("NSpid:"):
+                return len(line.split()) - 1
+    except OSError:
+        # NOSILENT: an exited process has no status; None means "not known to be elsewhere".
+        return None
+    return None
+
+
+def _in_another_pid_namespace(pid: int) -> bool:
+    """Whether ``pid`` lives in a pid namespace other than this process's.
+
+    A marker names its owner by pid and start time as the owner's own namespace numbers them. A
+    sweep on the host sees a container's CLIs in its ``/proc``, reads an owner pid that is dead
+    or another process there, and would kill CLIs whose owner is alive (dev, 2026-10-17: a
+    CLI wrapper recorded 55 SIGTERMs from a sender outside the container, in bursts of 10 to 14
+    CLIs, each killing calls in flight).
+
+    :param pid: the process to check
+    :ptype pid: int
+    :return: ``True`` when it is known to live elsewhere
+    :rtype: bool
+    """
+    own, theirs = _pid_namespace("self"), _pid_namespace(pid)
+    if own is not None and theirs is not None:
+        return own != theirs
+    nested = _nested_pids(pid)
+    return nested is not None and nested > 1
+
+
 def _live_pids() -> list[int]:
     """Every pid currently in ``/proc``, or an empty list where there is none.
 
@@ -422,7 +477,9 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
 
     The mechanism that actually saves a host: a crash, an OOM kill or a container kill skips every
     shutdown hook, and the CLIs it started are reparented to init and keep running. A marked CLI
-    whose owner is still alive belongs to a sibling worker and is left alone.
+    whose owner is still alive belongs to a sibling worker and is left alone, and so is one in
+    another pid namespace, whose marker's owner cannot be judged from here
+    (:func:`_in_another_pid_namespace`).
 
     :param grace_seconds: how long each SIGTERM gets before SIGKILL
     :ptype grace_seconds: float
@@ -440,7 +497,7 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
         if pid == self_pid:
             continue
         marker = _process_environ(pid).get(POOL_MARKER_ENV)
-        if not marker or _owner_is_alive(marker):
+        if not marker or _in_another_pid_namespace(pid) or _owner_is_alive(marker):
             continue
         _logger.warning(
             "Killing an orphaned Claude CLI left by a previous process",
