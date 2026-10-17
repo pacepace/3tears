@@ -66,7 +66,7 @@ def test_a_row_folding_three_cheap_calls_keeps_every_digit() -> None:
     (row,) = ledger.rows()
     assert row.cost_usd == THREE
     assert blended_cost([row], ("candidate",)) == THREE
-    assert production_replicating_cost([row], substituted_deliveries=0) == THREE
+    assert production_replicating_cost([row], substituted_deliveries=0, candidate_kind=None) == THREE
 
 
 def test_a_call_under_half_a_micro_dollar_is_not_stored_as_free() -> None:

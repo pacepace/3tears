@@ -828,8 +828,8 @@ def test_production_cost_is_withheld_when_a_row_names_a_role_this_build_does_not
         )
     )
 
-    assert production_replicating_cost(known, substituted_deliveries=0) == 0.5
-    assert production_replicating_cost(newer.usage, substituted_deliveries=0) is None
+    assert production_replicating_cost(known, substituted_deliveries=0, candidate_kind=None) == 0.5
+    assert production_replicating_cost(newer.usage, substituted_deliveries=0, candidate_kind=None) is None
 
 
 def test_a_caller_s_purpose_filter_takes_only_a_purpose_this_build_knows() -> None:

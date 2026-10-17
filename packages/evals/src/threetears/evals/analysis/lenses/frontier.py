@@ -823,7 +823,14 @@ def _frontier_point(
     priced = [
         (r.test_case_id, c)
         for r, c in (
-            (r, production_replicating_cost(r.usage, substituted_deliveries=count_substituted_deliveries(r)))
+            (
+                r,
+                production_replicating_cost(
+                    r.usage,
+                    substituted_deliveries=count_substituted_deliveries(r),
+                    candidate_kind=r.candidate_kind,
+                ),
+            )
             for r in results
             if delivered_a_turn(r)
         )

@@ -2393,7 +2393,7 @@
     },
     "threetears.evals.kernel.production_replicating_cost": {
       "kind": "function",
-      "signature": "production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int) -> float | None",
+      "signature": "production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int, candidate_kind: str | None) -> float | None",
       "tier": "stable"
     },
     "threetears.evals.kernel.program_cost": {
