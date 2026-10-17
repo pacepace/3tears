@@ -57,7 +57,7 @@ from uuid import uuid7
 
 from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
 from threetears.nats.errors import LockLossReason
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
 
@@ -606,11 +606,12 @@ class HeldLease:
                 )
                 return
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- a renewal can fail for any transport reason; the expiry timer decides whether that has cost us the lease
-                log.log(
-                    self._renew_failure_level,
-                    "KVLease: renewing %s failed; trying again while it is inside its TTL",
-                    self._name,
-                    extra={"extra_data": {**self._log_extra, "error": type(exc).__name__}},
+                contain(
+                    exc,
+                    log=log,
+                    what=f"KVLease: renewing {self._name} failed; trying again while it is inside its TTL",
+                    extra={**self._log_extra, "error": type(exc).__name__},
+                    level=max(self._renew_failure_level, logging.WARNING),
                 )
             else:
                 self._expires_at = started + self._ttl
@@ -707,11 +708,12 @@ class HeldLease:
         """
         try:
             await self._handle.release()
-        except Exception:  # prawduct:allow prawduct/broad-except -- see above: the TTL frees the entry, and a cleanup failure must not replace the caller's outcome
-            log.warning(
-                "KVLease: could not release the lease; it will expire with its TTL",
-                extra={"extra_data": self._log_extra},
-                exc_info=True,
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- see above: the TTL frees the entry, and a cleanup failure must not replace the caller's outcome
+            contain(
+                exc,
+                log=log,
+                what="KVLease: could not release the lease; it will expire with its TTL",
+                extra=self._log_extra,
             )
 
     async def __aenter__(self) -> HeldLease:

@@ -19,12 +19,14 @@ last flush, which is the trade counters accept and revocations do not.
 
 from __future__ import annotations
 
+import logging
+
 from typing import Final
 
 from threetears.core.collections.flush import WriteBuffer, flush_pending
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.observe import PeriodicTask, get_logger
+from threetears.observe import contain, PeriodicTask, get_logger
 
 __all__ = ["PeriodicFlusher"]
 
@@ -151,9 +153,12 @@ class PeriodicFlusher:
                 raise
             return
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- an L3 outage must not end the loop
-            log.error(
-                "coordination write-behind flush failed; retrying on the next interval",
-                extra={"extra_data": {"error": f"{type(exc).__name__}: {exc}", "interval_seconds": self._interval}},
+            contain(
+                exc,
+                log=log,
+                what="coordination write-behind flush failed; retrying on the next interval",
+                extra={"error": f"{type(exc).__name__}: {exc}", "interval_seconds": self._interval},
+                level=logging.ERROR,
             )
             return
         if flushed:

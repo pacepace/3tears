@@ -32,6 +32,7 @@ all KV envelope payloads flow through
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -39,7 +40,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
 
@@ -379,8 +380,13 @@ class TokenBucket:
                     backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security
                     await self._sleep(backoff)
             log.warning("token bucket: exhausted CAS retries refunding %s tokens to %r", tokens, key)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a refund runs while the caller is already unwinding; raising would turn a self-healing throughput dip into a lost error. Logged with its traceback below
-            log.exception("token bucket: could not refund %s tokens to %r; it will refill instead", tokens, key)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a refund runs while the caller is already unwinding; raising would turn a self-healing throughput dip into a lost error. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"token bucket: could not refund {tokens} tokens to {key!r}; it will refill instead",
+                level=logging.ERROR,
+            )
         return -1.0
 
     async def _attempt(self, bucket: "KvBucketLike", key: str, tokens: float) -> TokenClaimResult:

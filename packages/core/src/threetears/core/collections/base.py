@@ -70,7 +70,7 @@ from threetears.core.exceptions import (
     L2ScopeNotConfiguredError,
 )
 from threetears.nats.errors import KvError
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 if TYPE_CHECKING:
     # annotation-only: importing these eagerly would load the NATS client into
@@ -249,8 +249,9 @@ def table_named_by_class(cls: type) -> str | None:
         try:
             answer: Any = prop.fget(cls)
         # prawduct:allow prawduct/broad-except -- a getter that needs an instance names its table per instance
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             # NOSILENT: a getter that raises for the class standing in for an instance is the answer
+            contain(exc, log=log, what="table_name getter raised for the class; no class-level table name")
             return None
         return answer if isinstance(answer, str) else None
     return None
@@ -1125,15 +1126,15 @@ class BaseCollection(ABC, Generic[EntityT]):
             try:
                 stored = await self.fetch_from_store(entity_id)
             except Exception as exc:
-                log.warning(
-                    "reading back a row the database completed failed; nothing caches it and the next read goes to L3",
+                contain(
+                    exc,
+                    log=log,
+                    what="reading back a row the database completed failed; nothing caches it and the next read goes to L3",
                     extra={
-                        "extra_data": {
-                            "entity_id": str(entity_id),  # convert at border: log extra_data field
-                            "table": self.table_name,
-                            "decided_by_store": list(decided),
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
+                        "entity_id": str(entity_id),  # convert at border: log extra_data field
+                        "table": self.table_name,
+                        "decided_by_store": list(decided),
+                        "error": f"{type(exc).__name__}: {exc}",
                     },
                 )
             # BaseException after Exception: a cancellation is not an Exception, and leaves L1

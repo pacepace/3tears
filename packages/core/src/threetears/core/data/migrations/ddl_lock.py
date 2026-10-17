@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -65,7 +66,7 @@ from typing import Final
 
 from threetears.core.data.migrations.errors import DdlLockError, DdlLockReleaseError, DdlLockTimeoutError
 from threetears.core.data.migrations.session import MigrationSession
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DDL_LOCK_NAMESPACE",
@@ -318,12 +319,15 @@ async def _undo_interrupted_attempt(session: MigrationSession, database: str, ke
     try:
         await session.query(_UNLOCK_SQL, DDL_LOCK_NAMESPACE, key)
     except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the cancellation propagating past this is the outcome the caller sees; this only reports, loudly, that the session may keep the lock
-        log.error(
-            "a cancelled attempt at the DDL lock could not be undone database=%s error=%s: %s; the session "
-            "may hold the lock until it ends, so close or terminate the connection",
-            database,
-            type(exc).__name__,
+        contain(
             exc,
+            log=log,
+            what=(
+                f"a cancelled attempt at the DDL lock could not be undone database={database} "
+                f"error={type(exc).__name__}: {exc}; the session may hold the lock until it ends, "
+                "so close or terminate the connection"
+            ),
+            level=logging.ERROR,
         )
 
 

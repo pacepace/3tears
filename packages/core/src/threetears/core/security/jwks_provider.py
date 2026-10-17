@@ -39,7 +39,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from threetears.nats import Subjects
-from threetears.observe import PeriodicTask, get_logger
+from threetears.observe import contain, PeriodicTask, get_logger
 
 from threetears.core.security.door_proof import DoorProofSwitch, process_door_proofs
 from threetears.core.security.jwks_trust import (
@@ -268,9 +268,11 @@ class CachedHubJwksProvider:
             # error), and NONE of them may end the background refresh loop or escape a reactive
             # trigger. CancelledError is a BaseException (not Exception), so cooperative cancellation
             # still propagates and :meth:`stop` cancels cleanly.
-            log.warning(
-                "hub jwks refresh failed; keeping cached keys",
-                extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="hub jwks refresh failed; keeping cached keys",
+                extra={"reason": type(exc).__name__, "detail": str(exc)},
             )
 
     async def refresh_now(self) -> bool:
@@ -317,8 +319,10 @@ class CachedHubJwksProvider:
         try:
             await self.refresh()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a supervisor loop: a Hub re-key only self-heals while it keeps running
-            log.warning(
-                "hub jwks refresh loop iteration failed; loop continues",
-                extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="hub jwks refresh loop iteration failed; loop continues",
+                extra={"reason": type(exc).__name__, "detail": str(exc)},
             )
         return self._next_delay()

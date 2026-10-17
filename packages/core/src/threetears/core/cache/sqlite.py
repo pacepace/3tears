@@ -25,7 +25,7 @@ from threetears.core.cache.base import (
     bulk_columns,
 )
 from threetears.core.sql_fragments import quote_identifier
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "SQLiteBackend",
@@ -551,8 +551,8 @@ class SQLiteBackend:
                 try:
                     conn.close()
                 # NOSILENT: teardown best-effort; a connection that will not close is already gone
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    contain(exc, log=log, what="sqlite L1 backend close: a connection did not close")
             self._pooled_connections = []
         self._local = threading.local()
         if self._anchor_conn is not None:

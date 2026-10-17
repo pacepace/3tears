@@ -94,7 +94,7 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, Protocol, cast, overload
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
 
@@ -468,13 +468,13 @@ class ReplayGuard:
                 # tell -- and the answer is to keep today's conservative behaviour. Logged
                 # with the type and message, because a permanently unreachable anchor is a
                 # silent return to a window an operator was told had gone.
-                log.warning(
-                    "replay anchor unreadable; falling back to the creation-time watermark",
+                contain(
+                    exc,
+                    log=log,
+                    what="replay anchor unreadable; falling back to the creation-time watermark",
                     extra={
-                        "extra_data": {
-                            "bucket": self._bucket_name,
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
+                        "bucket": self._bucket_name,
+                        "error": f"{type(exc).__name__}: {exc}",
                     },
                 )
 
@@ -639,10 +639,14 @@ class ReplayGuard:
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- runs inside the client's reconnect path
                 # a hook must not be what fails a reconnect, and nothing is lost by missing
                 # this touch: the next record recreates the bucket, as it did before the hook.
-                log.warning(
-                    "ReplayGuard could not touch its bucket after a NATS reconnect; the next record "
-                    "recreates it if it was wiped",
-                    extra={"extra_data": {"bucket": self._bucket_name, "error": f"{type(exc).__name__}: {exc}"}},
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        "ReplayGuard could not touch its bucket after a NATS reconnect; the next record "
+                        "recreates it if it was wiped"
+                    ),
+                    extra={"bucket": self._bucket_name, "error": f"{type(exc).__name__}: {exc}"},
                 )
             else:
                 log.info(
