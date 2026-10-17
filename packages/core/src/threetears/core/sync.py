@@ -107,7 +107,8 @@ def run(work: Coroutine[Any, Any, T] | Callable[[], Awaitable[T]], *, timeout: f
     except BaseException:
         future.cancel()
         raise
-    if not done:
-        future.cancel()
+    if not done and future.cancel():
         raise TimeoutError(f"the work did not finish within {timeout}s and was cancelled")
+    # done, or it finished between the wait timing out and the cancel: its result stands, so
+    # nothing it acquired is dropped unreleased
     return future.result()

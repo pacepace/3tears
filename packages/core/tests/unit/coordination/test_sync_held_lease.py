@@ -11,6 +11,7 @@ a two-second TTL) so a loaded runner cannot make a healthy lease read as lost.
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from collections.abc import Iterator
@@ -130,3 +131,15 @@ def test_waiting_for_a_held_key_ends_when_its_holder_lets_go() -> None:
 async def test_inside_a_running_loop_it_is_refused() -> None:
     with pytest.raises(RuntimeError, match="await the work instead"):
         _lease(FakeNatsClient(), "pod-a").hold_sync("job", ttl=_TTL, renew_every=_RENEW)
+
+
+def test_hold_sync_takes_exactly_holds_keywords() -> None:
+    """``hold_sync`` restates ``hold``'s signature and its docs say they match: a keyword added to one is added to both."""
+
+    def shape(method: object) -> list[tuple[str, object, object, object]]:
+        return [
+            (p.name, p.kind, p.default, p.annotation)
+            for p in inspect.signature(method).parameters.values()  # type: ignore[arg-type]
+        ]
+
+    assert shape(KVLease.hold_sync) == shape(KVLease.hold)

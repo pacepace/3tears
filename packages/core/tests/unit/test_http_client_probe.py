@@ -79,7 +79,7 @@ async def test_a_network_failure_is_false_after_one_try_and_logs_nothing_above_d
     exc: Exception, caplog: pytest.LogCaptureFixture
 ) -> None:
     seen: list[httpx.Request] = []
-    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="threetears.core.http_client")  # another test may hold threetears at INFO
     async with _client(_failing(exc, seen)) as client:
         assert await client.probe("/health") is False
     assert len(seen) == 1, "a probe never retries"
