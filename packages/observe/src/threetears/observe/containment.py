@@ -39,10 +39,18 @@ import logging
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from types import FrameType, TracebackType
+from typing import Literal
 
 from threetears.observe.metrics import counter
 
-__all__ = ["contain", "contained"]
+__all__ = ["ContainedLevel", "contain", "contained"]
+
+#: the levels a contained failure is logged at: nothing below WARNING, since a failure logged where
+#: nobody reads it is the silence this exists to end. named rather than numeric so a caller needs no
+#: stdlib ``logging`` import to pick one.
+type ContainedLevel = Literal["warning", "error", "critical"]
+
+_LEVELS: dict[str, int] = {"warning": logging.WARNING, "error": logging.ERROR, "critical": logging.CRITICAL}
 
 _METRIC = "contained_errors_total"
 _METRIC_HELP = "exceptions a boundary absorbed on purpose, by catching function and exception type"
@@ -68,7 +76,7 @@ def _record(
     log: logging.Logger,
     what: str,
     extra: Mapping[str, object] | None,
-    level: int,
+    level: ContainedLevel,
 ) -> None:
     """log ``exc`` with its traceback and count it against ``site``.
 
@@ -82,15 +90,15 @@ def _record(
     :ptype what: str
     :param extra: structured fields for the record's ``extra_data``
     :ptype extra: Mapping[str, object] | None
-    :param level: the record's level, WARNING or above
-    :ptype level: int
-    :raises ValueError: ``level`` is below WARNING
+    :param level: the record's level
+    :ptype level: ContainedLevel
+    :raises ValueError: ``level`` is not one of ``"warning"``, ``"error"``, ``"critical"``
     """
-    if level < logging.WARNING:
-        raise ValueError(f"a contained failure is logged at WARNING or above, not {logging.getLevelName(level)}")
+    if level not in _LEVELS:
+        raise ValueError(f"a contained failure is logged at warning, error or critical, not {level!r}")
     exc_type = type(exc).__name__
     log.log(
-        level,
+        _LEVELS[level],
         what,
         exc_info=exc,
         extra={"extra_data": {**(extra or {}), "contained_site": site, "exc_type": exc_type}},
@@ -106,7 +114,7 @@ def contain(
     log: logging.Logger,
     what: str,
     extra: Mapping[str, object] | None = None,
-    level: int = logging.WARNING,
+    level: ContainedLevel = "warning",
 ) -> None:
     """record ``exc`` as a failure this boundary absorbs on purpose.
 
@@ -123,11 +131,9 @@ def contain(
     :param extra: structured fields for the record's ``extra_data``; ``contained_site`` and
         ``exc_type`` are added to them
     :ptype extra: Mapping[str, object] | None
-    :param level: the record's level; WARNING by default, ERROR where the failure is one an
-        operator acts on. nothing below WARNING: a failure logged where nobody reads it is
-        the silence this exists to end
-    :ptype level: int
-    :raises ValueError: ``level`` is below WARNING
+    :param level: ``"warning"`` by default, ``"error"`` where the failure is one an operator acts on
+    :ptype level: ContainedLevel
+    :raises ValueError: ``level`` is not one of ``"warning"``, ``"error"``, ``"critical"``
     """
     traceback = exc.__traceback__
     if traceback is not None:
@@ -161,7 +167,7 @@ class _Contained:
             return False
         # the traceback handed to __exit__ starts at the frame holding the `with` block
         frame = traceback.tb_frame if traceback is not None else None
-        _record(exc, _site_of(frame), self._log, self._what, self._extra, logging.WARNING)
+        _record(exc, _site_of(frame), self._log, self._what, self._extra, "warning")
         return True
 
 
