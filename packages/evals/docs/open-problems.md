@@ -31,10 +31,11 @@ check's alike, and that interval holds its error rate at every n
 arms pass every trial, it allows a drop of 46 points at 7 cases in a family of one, 63 in a family of ten, and 13
 at 30 cases: no valid interval shows a rare large drop is absent from a few agreeing cases. So at 7 cases a 10-point
 clause settles `switch` only on a sweep (the candidate passes every trial the control fails), and otherwise reads
-`unsettled`, saying how far the interval reaches. `keep` still settles on what the run observed at any count.
-Discodon's G2 re-ask at 7 cases should expect `unsettled` on its rate clause unless the candidate's pass rate drops
-past the margin. Fix, on the host's side: more cases, or a wider margin the decision can live with. The t interval
-would settle sooner, but at the margin it said `switch` up to 14% of the time against the 2.5% it states.
+`unsettled`, saying how far the interval reaches. Since `0.71` (#845) `keep` is held to the same interval: a rate
+clause keeps only where the drop's whole interval is past the margin, so on a handful of cases it too settles only on
+a drop far past it. Discodon's G2 re-ask at 7 cases should expect `unsettled` on its rate clause unless the candidate
+collapses. Fix, on the host's side: more cases, or a wider margin the decision can live with. The t interval would
+settle sooner, but at the margin it said `switch` up to 14% of the time against the 2.5% it states.
 
 ### A guardrail is held only on a declared range (accepted limit)
 

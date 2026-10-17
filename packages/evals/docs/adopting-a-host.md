@@ -1311,7 +1311,9 @@ and v2 costs less per reply. Otherwise stay on v1.`
   at its better end, or a scorer returning a bool (`no tone rate drops by more than 2 points`). A reading the campaign does not measure is refused when the design is declared, listing the ones it does.
 - **`CostLower()`** reads each arm's cost per reply.
 - **The logic is fixed**: switch only if every clause settles switch, keep the moment one settles keep, otherwise
-  unsettled. Keep settles on what the run observed; switch needs every arm at the case floor and an interval
+  unsettled. A rate clause settles either way only over every arm at the case floor, on an interval: keep where a
+  rate's drop is past the margin on its whole interval, switch where every rate's is within it. A drop past the
+  margin on its point estimate alone is unsettled. A cost clause keeps on a cost observed no lower
   ([Reading reports](reading-reports.md)).
 - **A rule written as prose is refused** when the design is declared: a question whose text says `Decision rule:`
   and declares no `decision` names `Question.decision` in the refusal. A question stored that way before rules were
