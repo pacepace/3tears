@@ -31,7 +31,7 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
     if [ -n "$PACKAGE" ]; then
         exec testament run -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
     fi
-    exec testament run -- packages/ tests/ ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    exec testament run -- ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 fi
 
 if [ -n "$PACKAGE" ]; then
