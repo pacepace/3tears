@@ -66,7 +66,7 @@ class _CompletenessRefusingStore(InMemoryRunStore):
     def save_eval_run(self, run: EvalRun, *, if_match: str | None = None) -> None:
         """Refuse a completeness write (or every write); keep anything else."""
         if self.refuse_everything or run.completeness is not None:
-            raise ConflictError(f"run {run.id} moved under the write")
+            raise ConflictError(f"run {run.id} moved under the write", remedy="re-read the run and write again")
         super().save_eval_run(run, if_match=if_match)
 
 
@@ -74,10 +74,6 @@ def _cells(run: EvalRun) -> list[CellSummary]:
     return [CellSummary.from_result(make_eval_result(eval_run_id=run.id, test_case_id="tc-1"), persisted=True)]
 
 
-@pytest.mark.expect_contained(
-    TypeError,
-    why="the refusing store builds ConflictError without its remedy, so its write raises TypeError into the generic write-fault path",
-)
 def test_a_completeness_record_that_is_not_written_says_so_on_the_run() -> None:
     """Before: the run's completeness read unknown, and why was only in the log. Now it is an ``error_details`` entry."""
     storage = _CompletenessRefusingStore()
@@ -113,10 +109,6 @@ def test_a_completeness_record_that_raises_names_the_error_on_the_run(monkeypatc
     )
 
 
-@pytest.mark.expect_contained(
-    TypeError,
-    why="the refusing store builds ConflictError without its remedy, so its write raises TypeError into the generic write-fault path",
-)
 def test_a_completeness_fault_that_cannot_be_written_either_is_logged_with_both_errors(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
