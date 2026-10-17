@@ -830,8 +830,9 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     The rule's own sentence is the first screen's subhead (:func:`_rule_line`), said once: the table's title links up
     to it rather than say it again one screen down. Each clause's row opens with the clause as a sentence naming its arm. The control
     heads its column by name, as does a lone other arm; with several, an ``Arm`` column names each row's and its
-    figures are under ``Value``. A question that wrote its rule as prose and declares none typed gets one line saying
-    so, and nothing is settled.
+    figures are under ``Value``. A rate clause has a row per rate it reads, each with that rate's own outcome and
+    reason, so an outcome never sits beside a reading it is not about. A question that wrote its rule as prose and
+    declares none typed gets one line saying so, and nothing is settled.
     """
     control = _control_key(bundle)
     questions = _preregistered(bundle)
@@ -848,25 +849,30 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
         readings = rule_readings(bundle, control, key, question_id=asked.id)
         verdict = evaluate_rule(rule, readings, control=arm(control), candidate=arm(key))
         for clause in verdict.clauses:
-            shown: list[tuple[str, str | None, str | None]] = []
+            shown: list[tuple[str, str | None, str | None, str]] = []
             if isinstance(clause.clause, CostLower):
                 shown = [
                     (
                         f"cost {_per_reply(bundle)}",
                         _dollars(readings.control_cost, cost),
                         _dollars(readings.candidate_cost, cost),
+                        f"{clause.outcome}: {clause.reason}",
                     )
                 ]
             else:
+                # Each rate its own outcome, so a row's outcome is about the reading on that row and no other.
                 shown = [
                     (
-                        rate.name,
-                        f"{rate.control_passed} of {rate.control_n}",
-                        f"{rate.candidate_passed} of {rate.candidate_n}",
+                        read.rate.name,
+                        f"{read.rate.control_passed} of {read.rate.control_n}",
+                        f"{read.rate.candidate_passed} of {read.rate.candidate_n}",
+                        f"{read.outcome}: {read.reason}",
                     )
-                    for rate in readings.read_by(clause.clause)
+                    for read in clause.rates
                 ]
-            for index, (reading, ours, theirs) in enumerate(shown or [("—", None, None)]):
+            for index, (reading, ours, theirs, outcome) in enumerate(
+                shown or [("—", None, None, f"{clause.outcome}: {clause.reason}")]
+            ):
                 rows.append(
                     {
                         "clause": clause.statement if index == 0 else None,
@@ -874,7 +880,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                         "reading": reading,
                         "control": ours,
                         "candidate": theirs,
-                        "outcome": f"{clause.outcome}: {clause.reason}" if index == 0 else None,
+                        "outcome": outcome,
                     }
                 )
     if not rows:

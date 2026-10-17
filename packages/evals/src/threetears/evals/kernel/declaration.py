@@ -265,8 +265,11 @@ class RateDrop(EvalDocumentModel, CoreShapeModel):
     reads that one alone: a goal-state check by its verbatim text, a pass/fail judged dimension by its name, or a
     pass/fail measure by its key; a name the campaign does not measure is refused when the design is declared
     (:func:`decision_readings`).
-    A switch on it needs every arm at the case floor and the bounded interval within the margin; an observed drop
-    past the margin settles keep on any number of cases.
+    Each rate it reads settles on its own, and only over every arm at the case floor: shown to break the clause where
+    the bounded interval on its drop lies wholly past the margin, shown to hold it where that interval lies within the
+    margin, and unsettled otherwise, a drop past the margin on its point estimate alone included. The clause is keep
+    when one rate breaks it, switch when every rate holds it, and otherwise unsettled. Through 0.70 an observed drop
+    past the margin settled keep on any number of cases.
     """
 
     kind: Literal["rate_drop"] = Field(
@@ -291,8 +294,8 @@ class RateDrop(EvalDocumentModel, CoreShapeModel):
 class CostLower(EvalDocumentModel, CoreShapeModel):
     """A clause of a decision rule: the arm must cost less per reply than the control.
 
-    A cost observed no lower settles keep on any number of cases; switch needs every arm at the case floor and the
-    cost contrast's interval wholly below zero.
+    A cost observed no lower settles keep on any number of cases, since an arm's price per reply is not a sample;
+    switch needs every arm at the case floor and the cost contrast's interval wholly below zero.
     """
 
     kind: Literal["cost_lower"] = Field(

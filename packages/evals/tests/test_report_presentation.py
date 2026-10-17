@@ -93,7 +93,7 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     ]
     assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
-    # The rule settled keep on the counts, so the floor caveat says what is withheld under four cases and why, in
+    # The rule settled keep on the cost, so the floor caveat says what is withheld under four cases and why, in
     # the reader's terms; then the one other fact that changes how the verdict reads, the label its row contradicts.
     # Nothing else is under the scoreboard: the design is on line 2.
     caveat = (
@@ -175,7 +175,7 @@ async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[
         _visible_text(part).replace(verdict, "").replace(asked, "").replace(rule, "")
         for part in report_html(report).split("<h2>")
     ]
-    assert "deepseek-v4-flash passed" in verdict
+    assert "deepseek-v4-flash cost more" in verdict
     for section in sections:
         for model in ("deepseek-v4.1-flash", "deepseek-v4-flash"):
             assert len(re.findall(rf"(?<![\w.-]){re.escape(model)}(?![\w.-])", section)) <= 1, (model, section[:80])
