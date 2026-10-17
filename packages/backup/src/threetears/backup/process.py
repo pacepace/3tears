@@ -32,7 +32,7 @@ import signal
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 
-from threetears.observe import cancel_and_wait, get_logger
+from threetears.observe import cancel_and_wait, contain, get_logger
 
 __all__ = [
     "READ_AHEAD_BYTES",
@@ -264,7 +264,14 @@ async def fill_read_ahead(buffer: ReadAhead, source: AsyncIterator[bytes]) -> No
     try:
         async for chunk in source:
             await buffer.put(chunk)
-    except BaseException as exc:  # noqa: BLE001 -- re-raised to the consumer through the buffer
+    except asyncio.CancelledError as exc:
+        # a consumer still waiting on the buffer sees the stop rather than a clean end, and the
+        # filler itself ends cancelled, as asked
+        await buffer.close(exc)
+        raise
+    except Exception as exc:  # noqa: BLE001 -- re-raised to the consumer through the buffer
+        # not absorbed: the consumer re-raises it from get(); recorded here because this task ends quietly
+        contain(exc, log=log, what="backup source failed mid-stream; the consumer re-raises it")
         await buffer.close(exc)
     else:
         await buffer.close()
