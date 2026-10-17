@@ -10,6 +10,7 @@ self-correct on the next call.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -23,7 +24,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import (
@@ -207,9 +208,11 @@ class WorkspaceDeleteTool(TearsTool):
                         )
                 # NOSILENT: audit failure never taints delete
                 except Exception as audit_exc:
-                    log.exception(
-                        "workspace_delete audit publish swallow caught: %s",
+                    contain(
                         audit_exc,
+                        log=log,
+                        what=f"workspace_delete audit publish swallow caught: {audit_exc}",
+                        level=logging.ERROR,
                     )
 
                 result = ToolResult(
@@ -219,7 +222,7 @@ class WorkspaceDeleteTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            log.exception("workspace_delete failed: %s", exc)
+            contain(exc, log=log, what=f"workspace_delete failed: {exc}", level=logging.ERROR)
             result = ToolResult(
                 success=False,
                 content="",

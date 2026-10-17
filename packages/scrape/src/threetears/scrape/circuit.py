@@ -64,6 +64,7 @@ event-driven wake-up, not the core behaviour.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -71,7 +72,7 @@ from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 from threetears.core.http_client import CircuitBreakerLike
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError, CircuitState
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from .health import ScrapeTargetHealth, ScrapeTargetHealthCollection, clear_robots_block, record_circuit_state
 
@@ -813,11 +814,13 @@ class TargetCircuit:
             )
         try:
             claim = await self._probe_pacer.claim(target_id)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- pacing is a cross-pod refinement; a KV outage must not strand every walled target permanently unprobed, so it degrades to the row-only behaviour. Logged with its traceback below
-            log.exception(
-                "scrape circuit: probe pacer unavailable for target %s; admitting the probe unpaced",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- pacing is a cross-pod refinement; a KV outage must not strand every walled target permanently unprobed, so it degrades to the row-only behaviour. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: probe pacer unavailable for target {target_id}; admitting the probe unpaced",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
             return FetchDecision(
                 permitted=True,
@@ -862,11 +865,13 @@ class TargetCircuit:
             return 0
         try:
             return max(0, await self._blocked_attempts.record_attempt(target_id) - 1)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the fleet count only ever raises the failure count; losing it degrades to the per-row count, never to a missed block. Logged with its traceback below
-            log.exception(
-                "scrape circuit: fleet blocked-attempt count unavailable for target %s; using the row's own count",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the fleet count only ever raises the failure count; losing it degrades to the per-row count, never to a missed block. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: fleet blocked-attempt count unavailable for target {target_id}; using the row's own count",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
             return 0
 
@@ -895,11 +900,13 @@ class TargetCircuit:
             return
         try:
             await self._reprobe_scheduler.schedule_reprobe(target_id=target_id, delay_seconds=delay_seconds)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a scheduler outage must not fail a fetch whose result we already hold; blocked_until still stands, so a poller loses nothing and an event-driven caller loses this wake-up, which the docstring states and log.exception makes detectable
-            log.exception(
-                "scrape circuit: could not book the re-probe for target %s; its backoff window still stands",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a scheduler outage must not fail a fetch whose result we already hold; blocked_until still stands, so a poller loses nothing and an event-driven caller loses this wake-up, which the docstring states and log.exception makes detectable
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not book the re-probe for target {target_id}; its backoff window still stands",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
 
     async def _cancel_reprobe(self, target_id: str) -> None:
@@ -908,11 +915,13 @@ class TargetCircuit:
             return
         try:
             await self._reprobe_scheduler.cancel_reprobe(target_id=target_id)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a failed cancel costs one spurious wake-up against a target that has recovered, which is a wasted poll and not a wrong answer; failing the fetch that just succeeded would be worse. Logged with its traceback below
-            log.exception(
-                "scrape circuit: could not cancel the outstanding re-probe of target %s; it may fire once more",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a failed cancel costs one spurious wake-up against a target that has recovered, which is a wasted poll and not a wrong answer; failing the fetch that just succeeded would be worse. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not cancel the outstanding re-probe of target {target_id}; it may fire once more",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
 
     async def forget_target(self, target_id: str) -> None:
@@ -941,11 +950,13 @@ class TargetCircuit:
         await self._cancel_reprobe(target_id)
         try:
             await self._health.delete(target_id)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- retiring a target is housekeeping; a store outage must not raise into a caller that is tidying up, and the row is harmless until the next attempt. Logged with its traceback below
-            log.exception(
-                "scrape circuit: could not delete the health row for target %s",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- retiring a target is housekeeping; a store outage must not raise into a caller that is tidying up, and the row is harmless until the next attempt. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not delete the health row for target {target_id}",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
 
     async def _read_health(self, target_id: str) -> _HealthRead:
@@ -957,11 +968,13 @@ class TargetCircuit:
         """
         try:
             return _HealthRead(row=await self._health.get(target_id), readable=True)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-circuit behaviour, not fail every poll. Logged with its traceback below
-            log.exception(
-                "scrape circuit: could not read health for target %s; treating its circuit as closed",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-circuit behaviour, not fail every poll. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not read health for target {target_id}; treating its circuit as closed",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
             return _HealthRead(row=None, readable=False)
 
@@ -989,11 +1002,13 @@ class TargetCircuit:
                 # what it used, which is the value worth recording.
                 egress=egress or self._egress_name,
             )
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- same posture as every other health write in this package: a bookkeeping failure must not turn a completed fetch into a failed one. Logged with its traceback below
-            log.exception(
-                "scrape circuit: could not persist the circuit state for target %s",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- same posture as every other health write in this package: a bookkeeping failure must not turn a completed fetch into a failed one. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not persist the circuit state for target {target_id}",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
 
 
@@ -1014,11 +1029,13 @@ async def _clear_robots_block_quietly(health: ScrapeTargetHealthCollection, targ
 
     try:
         await clear_robots_block(health, target_id=target_id)
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a human has already done the work; failing here would report their fix as an error and leave the circuit half-updated. The stale queue entry is visible and self-corrects on the next successful poll. Logged with its traceback below
-        log.exception(
-            "scrape circuit: could not clear the robots block for target %s; it may stay queued",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a human has already done the work; failing here would report their fix as an error and leave the circuit half-updated. The stale queue entry is visible and self-corrects on the next successful poll. Logged with its traceback below
+        contain(
+            exc,
+            log=log,
+            what=f"scrape circuit: could not clear the robots block for target {target_id}; it may stay queued",
+            extra={"target_id": target_id},
+            level=logging.ERROR,
         )
 
 

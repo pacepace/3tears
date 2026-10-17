@@ -20,6 +20,7 @@ surface instead. document + fs tools still gate their writes.
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import hashlib
 from collections.abc import Callable
@@ -35,7 +36,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
@@ -214,7 +215,7 @@ class WorkspaceRefreshTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            log.exception("workspace_refresh failed: %s", exc)
+            contain(exc, log=log, what=f"workspace_refresh failed: {exc}", level=logging.ERROR)
             result = ToolResult(
                 success=False,
                 content="",

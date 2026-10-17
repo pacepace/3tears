@@ -31,6 +31,7 @@ judge -- and the ceiling scales with your schema
 
 from __future__ import annotations
 
+import logging
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -40,7 +41,7 @@ from typing import Any, Literal, Protocol, TypeVar, get_args
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 from threetears.models import LlmPurpose
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from .challenge import DEFAULT_CLASSIFIER_MODEL_ID, PageVerdictKind, classify_failed_page
 from .collections import (
@@ -363,15 +364,17 @@ async def _stamp_fingerprint_if_validated(
         return
     try:
         await record_validated_fetch(health_collection, target_id=target_id, html=html)
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- health is a diagnostic aid and the extraction is already durable; logged with its traceback below, never silenced
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- health is a diagnostic aid and the extraction is already durable; logged with its traceback below, never silenced
         # The extraction is already persisted and correct by the time this runs. Health is
         # a diagnostic aid, so letting its write failure propagate would turn a successful
         # scrape into a failed one for the caller and lose real extracted data over a
         # bookkeeping row. Logged at exception level with the traceback, never silenced.
-        log.exception(
-            "scrape health: fingerprint stamp failed for target %s; extraction is unaffected",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+        contain(
+            exc,
+            log=log,
+            what=f"scrape health: fingerprint stamp failed for target {target_id}; extraction is unaffected",
+            extra={"target_id": target_id},
+            level=logging.ERROR,
         )
 
 
@@ -671,14 +674,16 @@ async def _resolve_failure_verdict(
     fingerprint = content_fingerprint(html)
     try:
         health = await health_collection.get(target_id)
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-health behaviour, not fail every poll; logged with its traceback below
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-health behaviour, not fail every poll; logged with its traceback below
         # Health is a diagnostic aid. A store that cannot be read must degrade this target to
         # the behaviour it had before health existed, not turn every poll into a hard
         # failure. Logged with its traceback, never silenced.
-        log.exception(
-            "scrape health: could not read health for target %s; classifying nothing",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+        contain(
+            exc,
+            log=log,
+            what=f"scrape health: could not read health for target {target_id}; classifying nothing",
+            extra={"target_id": target_id},
+            level=logging.ERROR,
         )
         return None
 
@@ -747,14 +752,16 @@ async def _resolve_failure_verdict(
             kind=verdict.kind,
             evidence=verdict.evidence,
         )
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the verdict is already in hand and routing on it beats discarding it; only the cache is lost, and it is logged with its traceback below
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the verdict is already in hand and routing on it beats discarding it; only the cache is lost, and it is logged with its traceback below
         # The verdict is already in hand and routing on it is strictly better than not. All
         # that is lost is the cache, so the next poll asks again. Same reasoning as the
         # fingerprint stamp: bookkeeping must not cost a real result.
-        log.exception(
-            "scrape health: could not cache the page verdict for target %s; routing on it anyway",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+        contain(
+            exc,
+            log=log,
+            what=f"scrape health: could not cache the page verdict for target {target_id}; routing on it anyway",
+            extra={"target_id": target_id},
+            level=logging.ERROR,
         )
     return _FailureVerdict(kind=verdict.kind, evidence=verdict.evidence, from_cache=False)
 
@@ -988,11 +995,13 @@ async def _withdraw_verdict(
         return
     try:
         await clear_classification(health_collection, target_id=target_id, fingerprint=content_fingerprint(html))
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- runs while a model failure propagates; it must not mask that error, and it is logged with its traceback below
-        log.exception(
-            "scrape health: could not withdraw the page verdict for target %s; the next poll may count a failure",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- runs while a model failure propagates; it must not mask that error, and it is logged with its traceback below
+        contain(
+            exc,
+            log=log,
+            what=f"scrape health: could not withdraw the page verdict for target {target_id}; the next poll may count a failure",
+            extra={"target_id": target_id},
+            level=logging.ERROR,
         )
 
 

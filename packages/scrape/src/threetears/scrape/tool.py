@@ -26,6 +26,7 @@ real config/collections/drivers belongs.
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import hashlib
 import inspect
@@ -34,7 +35,7 @@ from enum import StrEnum
 from typing import Any
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from pydantic import SecretStr
 
@@ -590,15 +591,14 @@ class ScrapeTool(TearsTool):
             # refusal from a `TypeError` inside a driver -- and telling a dead exit apart from
             # genuinely broken targets is the reason `EgressDriver.health()` exists at all. The
             # cause reached only the returned string, which goes to the ToolResult, not the log.
-            log.warning(
-                "scrape tool: render failed",
-                exc_info=True,
+            contain(
+                exc,
+                log=log,
+                what="scrape tool: render failed",
                 extra={
-                    "extra_data": {
-                        "url": url,
-                        "driver_backend": driver_backend,
-                        "error_type": type(exc).__name__,
-                    }
+                    "url": url,
+                    "driver_backend": driver_backend,
+                    "error_type": type(exc).__name__,
                 },
             )
             if self._circuit is not None:
@@ -623,11 +623,13 @@ class ScrapeTool(TearsTool):
             if row is None or row.robots_blocked_at is None:
                 return
             await clear_robots_block(self._health_collection, target_id=target_id)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this is housekeeping after a fetch the caller has already paid for; a health-store failure must not turn a good page into a failed ToolResult, and the stale queue entry is visible and self-corrects. Logged with its traceback below
-            log.exception(
-                "scrape tool: could not clear the robots block for target %s; it may stay queued",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this is housekeeping after a fetch the caller has already paid for; a health-store failure must not turn a good page into a failed ToolResult, and the stale queue entry is visible and self-corrects. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape tool: could not clear the robots block for target {target_id}; it may stay queued",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
 
     async def _read_solved_state(self, target_id: str) -> dict[str, Any] | None:
@@ -642,11 +644,13 @@ class ScrapeTool(TearsTool):
             return None
         try:
             row = await self._health_collection.get(target_id)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a health-store outage must degrade to fetching without a solve, exactly as the circuit degrades to fetching; losing the reuse is a cost, losing the fetch is an outage. Logged with its traceback below
-            log.exception(
-                "scrape tool: could not read the health row for target %s; fetching without a stored solve",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a health-store outage must degrade to fetching without a solve, exactly as the circuit degrades to fetching; losing the reuse is a cost, losing the fetch is an outage. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape tool: could not read the health row for target {target_id}; fetching without a stored solve",
+                extra={"target_id": target_id},
+                level=logging.ERROR,
             )
             return None
         return usable_session_state(row, self._session_state_key)
@@ -777,12 +781,13 @@ class ScrapeTool(TearsTool):
                         await record_robots_block(
                             self._health_collection, target_id=target_id, reason=robots_decision.reason
                         )
-                    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this tool's contract is to return a ToolResult, never to raise; the escalation below is the answer whether or not the queue write lands, and dropping it here loses the queue entry rather than the decision. Logged with its traceback below
-                        log.exception(
-                            "scrape tool: could not record the robots block for %s; it is escalated to "
-                            "the caller but will not appear in list_walled",
-                            target_id,
-                            extra={"extra_data": {"target_id": target_id, "url": url}},
+                    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this tool's contract is to return a ToolResult, never to raise; the escalation below is the answer whether or not the queue write lands, and dropping it here loses the queue entry rather than the decision. Logged with its traceback below
+                        contain(
+                            exc,
+                            log=log,
+                            what=f"scrape tool: could not record the robots block for {target_id}; it is escalated to the caller but will not appear in list_walled",
+                            extra={"target_id": target_id, "url": url},
+                            level=logging.ERROR,
                         )
                 # Recorded and carried to the tail rather than returned from here. The
                 # escalation needs a result shape the `error` sentinel cannot express, which

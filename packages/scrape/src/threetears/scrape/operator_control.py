@@ -43,7 +43,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 from threetears.nats import DEFAULT_FORWARD_TIMEOUT, Subjects, forward, serve_owner
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from .session_state import DEFAULT_SESSION_STATE_TTL, open_session_state, seal_session_state
 
@@ -331,12 +331,13 @@ async def _release_a_session_this_pod_no_longer_owns(claim: SessionClaim, displa
     """
     try:
         await display.close_session()
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the sidecar's own TTL reaper still collects this, and a failure here must not replace the caller's own outcome. Logged with its traceback
-        log.warning(
-            "operator: could not release the display for a session that moved to another pod; "
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the sidecar's own TTL reaper still collects this, and a failure here must not replace the caller's own outcome. Logged with its traceback
+        contain(
+            exc,
+            log=log,
+            what="operator: could not release the display for a session that moved to another pod; "
             "the sidecar's TTL will collect it",
-            exc_info=True,
-            extra={"extra_data": {"session_id": claim.session_id}},
+            extra={"session_id": claim.session_id},
         )
     else:
         log.info(

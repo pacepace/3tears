@@ -15,6 +15,7 @@ the shard-18 AST test flags.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -27,7 +28,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
@@ -212,7 +213,7 @@ class WorkspaceCheckpointTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            log.exception("workspace_checkpoint failed: %s", exc)
+            contain(exc, log=log, what=f"workspace_checkpoint failed: {exc}", level=logging.ERROR)
             result = ToolResult(
                 success=False,
                 content="",

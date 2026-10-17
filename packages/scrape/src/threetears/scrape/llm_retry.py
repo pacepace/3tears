@@ -45,7 +45,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from threetears.models import LlmPurpose, create_chat_model
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "StructuredCallExhaustedError",
@@ -278,13 +278,11 @@ async def bounded_retry_structured_call_or_raise[T: BaseModel](
             # retryable attempt failure; the last one is raised below as the typed exhaustion
             # error's cause, never swallowed. CancelledError is a BaseException and is not caught.
             last_exc = exc
-            log.warning(
-                "%s attempt %d/%d failed: %s",
-                log_label,
-                attempt + 1,
-                attempts,
+            contain(
                 exc,
-                extra={"extra_data": {"model_id": model_id}},
+                log=log,
+                what=f"{log_label} attempt {attempt + 1}/{attempts} failed: {exc}",
+                extra={"model_id": model_id},
             )
             if attempt < attempts - 1:
                 await asyncio.sleep(backoff_seconds * (attempt + 1))

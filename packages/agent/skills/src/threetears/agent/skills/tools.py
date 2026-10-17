@@ -55,7 +55,7 @@ from threetears.agent.skills.rendering import render_skill_body_block
 from threetears.agent.skills.types import PromptMode, SkillKindFilter, SkillOutcome
 from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.observe.text_block import one_line, under
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "ActiveSkillProbe",
@@ -695,10 +695,7 @@ async def _check_tool_acl(
             tool_name=tool_name,
         )
     except Exception as exc:  # pragma: no cover -- registry failure modes
-        log.warning(
-            "skill ACL probe raised",
-            extra={"extra_data": {"tool_name": tool_name, "error": str(exc)}},
-        )
+        contain(exc, log=log, what="skill ACL probe raised", extra={"tool_name": tool_name, "error": str(exc)})
         return f"{label} ACL probe failed for tool {tool_name!r}: {exc}"
     if not permitted:
         return f"{label} entry {tool_name!r} not authorized for this user"
@@ -1205,10 +1202,7 @@ def load_skill_create_tool(
         try:
             await skills_collection.save_entity(entity)
         except Exception as exc:
-            log.warning(
-                "skill_create persist failed",
-                extra={"extra_data": {"name": name, "error": str(exc)}},
-            )
+            contain(exc, log=log, what="skill_create persist failed", extra={"name": name, "error": str(exc)})
             return _tool_error("skill_create", f"persist failed: {exc}")
 
         log.info(
@@ -1289,6 +1283,7 @@ def load_skill_list_tool(
                     actor_agent_id=agent_id,
                 )
             except Exception as exc:
+                contain(exc, log=log, what="skill_list: tool list failed")
                 return _tool_error("skill_list", f"tool list failed: {exc}")
             needle = (query or "").lower().strip() if query else None
             for trow in tool_rows:
@@ -1331,6 +1326,7 @@ def load_skill_list_tool(
                     offset=0,
                 )
             except Exception as exc:
+                contain(exc, log=log, what="skill_list: prose list failed")
                 return _tool_error("skill_list", f"prose list failed: {exc}")
             for entity in rows:
                 prose_entries.append(
@@ -1639,9 +1635,8 @@ def load_skill_update_tool(
         try:
             await skills_collection.save_entity(entity)
         except Exception as exc:
-            log.warning(
-                "skill_update persist failed",
-                extra={"extra_data": {"skill_id": str(parsed), "error": str(exc)}},
+            contain(
+                exc, log=log, what="skill_update persist failed", extra={"skill_id": str(parsed), "error": str(exc)}
             )
             return _tool_error("skill_update", f"persist failed: {exc}")
 
@@ -1710,9 +1705,8 @@ def load_skill_delete_tool(
         try:
             await skills_collection.delete((agent_id, deleted_skill_id))
         except Exception as exc:
-            log.warning(
-                "skill_delete persist failed",
-                extra={"extra_data": {"skill_id": str(parsed), "error": str(exc)}},
+            contain(
+                exc, log=log, what="skill_delete persist failed", extra={"skill_id": str(parsed), "error": str(exc)}
             )
             return _tool_error("skill_delete", f"persist failed: {exc}")
 
@@ -1787,7 +1781,7 @@ def load_skill_invoke_tool(
         try:
             return bindable_tools()
         except Exception as exc:  # the result still carries the steps; it names no tool
-            log.warning("skill_invoke bindable_tools raised", extra={"extra_data": {"error": str(exc)}})
+            contain(exc, log=log, what="skill_invoke bindable_tools raised", extra={"error": str(exc)})
             return None
 
     @tool("skill_invoke", args_schema=SkillInvokeInput)
@@ -1800,10 +1794,7 @@ def load_skill_invoke_tool(
         try:
             active = active_skill_probe()
         except Exception as exc:
-            log.warning(
-                "skill_invoke active_skill_probe raised",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="skill_invoke active_skill_probe raised", extra={"error": str(exc)})
             return _tool_error("skill_invoke", f"state probe failed: {exc}")
         if active is not None:
             return _tool_error(
@@ -1844,10 +1835,7 @@ def load_skill_invoke_tool(
         try:
             conversation_id = conversation_id_resolver()
         except Exception as exc:
-            log.warning(
-                "skill_invoke conversation_id_resolver raised",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="skill_invoke conversation_id_resolver raised", extra={"error": str(exc)})
             return _tool_error(
                 "skill_invoke",
                 f"conversation_id_resolver raised {type(exc).__name__}: {exc}",
@@ -1867,10 +1855,7 @@ def load_skill_invoke_tool(
         try:
             active_skill_setter(entity.skill_id)
         except Exception as exc:
-            log.warning(
-                "skill_invoke active_skill_setter raised",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="skill_invoke active_skill_setter raised", extra={"error": str(exc)})
             return _tool_error(
                 "skill_invoke",
                 f"state setter failed: {exc}",
@@ -1901,13 +1886,13 @@ def load_skill_invoke_tool(
             # treats tool errors as "this skill did NOT activate" and
             # may unset state accordingly. The in-process state will
             # be discarded with the turn regardless.
-            log.warning(
-                "skill_invoke invocation persist failed",
+            contain(
+                exc,
+                log=log,
+                what="skill_invoke invocation persist failed",
                 extra={
-                    "extra_data": {
-                        "skill_id": str(entity.skill_id),
-                        "error": str(exc),
-                    }
+                    "skill_id": str(entity.skill_id),
+                    "error": str(exc),
                 },
             )
             return _tool_error("skill_invoke", f"invocation persist failed: {exc}")
@@ -1981,10 +1966,7 @@ def load_skill_report_outcome_tool(
         try:
             active_skill_id = active_skill_probe()
         except Exception as exc:
-            log.warning(
-                "skill_report_outcome active_skill_probe raised",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="skill_report_outcome active_skill_probe raised", extra={"error": str(exc)})
             return _tool_error("skill_report_outcome", f"state probe failed: {exc}")
         if active_skill_id is None:
             return _tool_error(
@@ -1995,9 +1977,8 @@ def load_skill_report_outcome_tool(
         try:
             conversation_id = conversation_id_resolver()
         except Exception as exc:
-            log.warning(
-                "skill_report_outcome conversation_id_resolver raised",
-                extra={"extra_data": {"error": str(exc)}},
+            contain(
+                exc, log=log, what="skill_report_outcome conversation_id_resolver raised", extra={"error": str(exc)}
             )
             return _tool_error(
                 "skill_report_outcome",
@@ -2244,9 +2225,8 @@ def load_skill_introspect_tool(
                 name=bare_name,
             )
         except Exception as exc:
-            log.warning(
-                "skill_introspect name lookup raised",
-                extra={"extra_data": {"name": bare_name, "error": str(exc)}},
+            contain(
+                exc, log=log, what="skill_introspect name lookup raised", extra={"name": bare_name, "error": str(exc)}
             )
             prose_entity = None
         if prose_entity is not None:
@@ -2259,9 +2239,11 @@ def load_skill_introspect_tool(
                 mcp_name=bare_name,
             )
         except Exception as exc:
-            log.warning(
-                "skill_introspect tool lookup raised",
-                extra={"extra_data": {"mcp_name": bare_name, "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="skill_introspect tool lookup raised",
+                extra={"mcp_name": bare_name, "error": str(exc)},
             )
             tool_payload = None
         if tool_payload is None:

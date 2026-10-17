@@ -16,6 +16,7 @@ deny-first endpoint, matching ``fs_list`` semantics.
 
 from __future__ import annotations
 
+import logging
 import json
 from collections.abc import Callable
 from typing import Any
@@ -29,7 +30,7 @@ from threetears.agent.tools.base_tool import (
 )
 from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
@@ -229,7 +230,7 @@ class WorkspaceHistoryTool(TearsTool):
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            log.exception("workspace_history failed: %s", exc)
+            contain(exc, log=log, what=f"workspace_history failed: {exc}", level=logging.ERROR)
             result = ToolResult(
                 success=False,
                 content="",
