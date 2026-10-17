@@ -121,6 +121,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.bind_cell_identity": {
+      "kind": "function",
+      "signature": "bind_cell_identity(identity: CellIdentity) -> Iterator[None]",
+      "tier": "host-contract"
+    },
     "threetears.evals.schema.BoundCompletionClient": {
       "kind": "protocol",
       "signature": "BoundCompletionClient{__aenter__(self) -> Self; __aexit__(self, exc_type: object, exc: object, tb: object) -> None; aclose(self) -> None; generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult; model_name: str; price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None}",

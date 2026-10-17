@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a host binds the cell identity the engine reads
+
+- **`bind_cell_identity` is exported** (`threetears.evals.schema`, `host-contract`): the context manager the run loop
+  binds each cell's `CellIdentity` with, restoring the previous value on exit, including on cancel. A host whose work
+  for a cell crosses a task boundary that does not carry the context (a detached job started in a fresh context, a
+  thread of its own) binds the identity there, so `current_cell_identity()` and every log line read one identity.
+  A host that kept its own cell-identity `ContextVar` for this drops it.
+
 ### 3tears-evals: a judge case whose criterion the stored template lacks is withheld for a reset, not a refusal of the seed
 
 - The definition seed resolves a judge case's criterion template in the store first, so a template re-worded under the
