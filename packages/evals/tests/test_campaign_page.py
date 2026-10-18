@@ -285,13 +285,45 @@ async def test_a_campaign_of_one_aspect_has_one_row_and_its_fold_holds_the_aspec
     assert html.count("<h1>") == 1
 
 
-async def test_an_aspect_with_no_margin_is_said_never_shown_worse_and_its_row_is_to_settle() -> None:
+async def test_an_aspect_with_no_margin_is_said_never_shown_worse_and_has_no_row_to_settle_against_one() -> None:
     page = await _page("billing", "tone", margins={"billing": None})
     first = _first_screen_markdown(page)
     assert "No margin was declared on billing, so no arm is ever shown worse there." in first
+    (billing,) = page.readings.on_aspect("billing")
+    assert billing.reading == "unclear" and "no margin was declared" in billing.reason
+    # Its row would be a row of dashes under "To show no worse than the margin": it has none to show it within.
+    assert not [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "to_settle"]
+    assert "To show no worse than the margin" not in first
+
+
+async def test_an_unclear_row_with_a_margin_is_still_to_settle_beside_one_without() -> None:
+    def tone_unclear(readings: CampaignReadings) -> CampaignReadings:
+        rows = [
+            row.model_copy(update={"reading": "unclear"}) if row.aspect == "tone" else row for row in readings.readings
+        ]
+        return readings.model_copy(update={"readings": rows})
+
+    page = await _page("billing", "tone", margins={"billing": 70.0, "tone": None}, readings=tone_unclear)
+    assert {row.aspect: (row.reading, row.margin) for row in page.readings.readings} == {
+        "billing": ("unclear", 70.0),
+        "tone": ("unclear", None),
+    }
     settle = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "to_settle")
-    (row,) = settle.rows
-    assert row["aspect"].text == "billing" and "no margin was declared" in row["why"].text
+    assert [row["aspect"].text for row in settle.rows] == ["billing"]
+
+
+async def test_a_margin_late_on_some_aspects_is_one_line_naming_them() -> None:
+    late = "2099-01-01T00:00:00+00:00"
+
+    def tone_late(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        return _late(late)(bundle) if bundle.aspect == "tone" else bundle
+
+    page = await _page("billing", "tone", bundle=tone_late)
+    first = _first_screen_markdown(page)
+    assert "The margin on tone was declared after its first result." in first
+    assert "The question was worded after the first result on tone; its readings keep the time it was asked." in first
+    # Billing's margin and wording came before its first result: nothing is said of it.
+    assert first.count("after its first result") == 1 and first.count("after the first result") == 1
 
 
 async def test_an_aspect_asked_after_its_runs_reads_as_a_lead() -> None:
@@ -409,12 +441,13 @@ async def test_what_was_declared_after_an_aspect_s_first_result_is_said_so() -> 
     late = "2099-01-01T00:00:00+00:00"
     page = await _page("billing", "tone", bundle=_late(late), floors=[floor.model_copy(update={"declared_at": late})])
     first = _first_screen_markdown(page)
-    for aspect in ("billing", "tone"):
-        assert (
-            f"The question was worded after the first result on {aspect}; its readings keep the time it was asked."
-            in first
-        )
-        assert f"The margin on {aspect} was declared after its first result." in first
+    # Late on both aspects, each kind of lateness is one line naming every aspect, never a line per aspect.
+    assert (
+        "The question was worded after the first result on every aspect; their readings keep the time it was asked."
+        in first
+    )
+    assert "The margins on every aspect were declared after their first results." in first
+    assert first.count("after the first result") == 1 and first.count("declared after") == 2
     assert (
         "The floor that no pass rate drops by more than 10 points on billing was declared after its first result."
         in first

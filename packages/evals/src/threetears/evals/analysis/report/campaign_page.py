@@ -3,9 +3,10 @@ one fold per aspect.
 
 Code reports, the writer recommends, a person decides, and the page keeps the three apart. What the first screen
 holds depends on the campaign's kind (:func:`~threetears.evals.analysis.campaign_readings.campaign_kind`). For every
-kind it opens, above the title, with **every bar an arm misses**, then **every broken floor**, one loud line each,
-each followed by the writer's why where the memo recommends that arm over it: a bar or a floor only warns, and this is
-where it warns. Then **the question**, quoted whole as the campaign asks it. Then, for **a change**:
+kind it opens, above the title, with **every bar an arm misses**, then **every broken floor**, then **every guardrail
+an arm is not shown safe on**, one loud line each, a bar or a floor followed by the writer's why where the memo
+recommends that arm over it: each only warns, and this is where it warns. Then **the question**, quoted whole as the
+campaign asks it. Then, for **a change**:
 
 1. **The writer's recommendation**, the arm and how sure, then each reason; with no memo, one line saying no
    recommendation was written.
@@ -14,8 +15,8 @@ where it warns. Then **the question**, quoted whole as the campaign asks it. The
    it, the lines that change how a row reads: the level each interval was read at, an aspect with no margin (never
    shown worse), an aspect whose question came after its first run (its readings are leads), a margin or a floor
    declared after the runs, the test setup a row was read under where the arms ran under several.
-3. **What would settle each unclear row**: the cases that would show the arm within the aspect's margin, if the arms
-   do not differ and if they differ as observed.
+3. **What would settle each unclear row** on an aspect with a margin: the cases that would show the arm within it,
+   if the arms do not differ and if they differ as observed.
 
 For **a choice**: the table of every pair of arms on every aspect and the arm shown ahead, the writer's why for each
 aspect its pick is shown behind on, the frontier's reading of which arm clears a bar cheapest, then the writer's
@@ -112,6 +113,7 @@ def build_campaign_report(
     blocks: list[ReportBlock] = [
         *_bar_warnings(readings, memo, style),
         *_floor_warnings(campaign, readings, memo, style),
+        *_guardrail_warnings(campaign, readings, reports),
     ]
     if campaign.question.strip():
         blocks.append(
@@ -221,6 +223,43 @@ def _bar_warnings(
         )
         if recommendation is not None and status.arm_label == recommendation.arm:
             blocks += answers.pop((status.aspect, status.measure), [])
+    return blocks
+
+
+#: How the first screen leads a guardrail an arm is not shown safe on, by the guardrail's decision, the breached first.
+_GUARDRAIL_LEADS: dict[str, str] = {"breached": "Guardrail breached", "undecided": "Not yet shown safe"}
+
+
+def _guardrail_warnings(
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
+) -> list[ReportBlock]:
+    """One loud line per aspect and decision naming each arm a guardrail leaves not shown safe, after the broken
+    floors: ``Not yet shown safe on classify: v2 on no invented total.`` A guardrail only warns: no line says an arm is
+    not adopted."""
+    labels = readings.arm_labels()
+    blocks: list[ReportBlock] = []
+    for aspect in campaign.aspects:
+        bundle = reports[aspect.label].bundle
+        names = _names(bundle, labels)
+        for decision, lead in _GUARDRAIL_LEADS.items():
+            by_arm: dict[str, list[str]] = {}
+            for check in bundle.guardrails.checks:
+                if check.decision != decision:
+                    continue
+                key = check.contrast.variant_key
+                said = by_arm.setdefault(names[key].label if key in names else short_digest(key), [])
+                if (name := humanize("dimension", check.name)) not in said:
+                    said.append(name)
+            if by_arm:
+                arms = "; ".join(f"{arm} on {', '.join(said)}" for arm, said in sorted(by_arm.items()))
+                blocks.append(
+                    DisclosureBlock(
+                        section="header",
+                        source="guardrails",
+                        text=f"{lead} on {aspect.label}: {arms}.",
+                        term="guardrail",
+                    )
+                )
     return blocks
 
 
@@ -553,37 +592,72 @@ def _after(stamp: str | None, first_result: str | None, what: str) -> bool:
 def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]) -> list[str]:
     """What was declared after the evidence: a question asked after an aspect's first run makes its readings leads
     (the bundle's ``question_declared``, the rule every reading reads); the question's wording, a margin or a floor
-    added later than the aspect's first result (the bundle's ``first_result_at``) reads as declared after it."""
-    lines: list[str] = []
+    added later than the aspect's first result (the bundle's ``first_result_at``) reads as declared after it.
+
+    Each kind of lateness is one line naming the aspects it holds on (``every aspect`` where it holds on all), so a
+    campaign of seven adopted aspects says it once, not seven times; a floor is named with the aspects its clause is
+    late on."""
     if not campaign.question.strip():
         return ["No question was declared, so every reading is a lead."]
+    asked: list[str] = []
+    worded: list[str] = []
+    margins: list[str] = []
+    floors: dict[str, list[str]] = {}
     for aspect in campaign.aspects:
         bundle = reports[aspect.label].bundle
         first_result = bundle.first_result_at
-        if _read_on(readings, aspect.label) and not bundle.question_declared:
+        label = aspect.label
+        if _read_on(readings, label) and not bundle.question_declared:
             # Everything declared with a question asked late is late too: said once, of the question.
-            lines.append(f"The question was asked after the first run on {aspect.label}, so its readings are leads.")
+            asked.append(label)
             continue
         declared = bundle.declared
-        label = aspect.label
         if declared is not None and _after(declared.question_declared_at, first_result, f"the question on {label}"):
-            lines.append(
-                f"The question was worded after the first result on {label}; its readings keep the time it was asked."
-            )
+            worded.append(label)
         if declared is not None and _after(declared.margin_declared_at, first_result, f"the margin on {label}"):
-            lines.append(f"The margin on {label} was declared after its first result.")
+            margins.append(label)
         for floor in campaign.floors:
             if floor.aspect == label and _after(floor.declared_at, first_result, f"floor {floor.key}"):
-                said = floor_statement(floor.clause, candidate="the arm")
-                lines.append(f"The floor that {said} on {label} was declared after its first result.")
+                floors.setdefault(floor_statement(floor.clause, candidate="the arm"), []).append(label)
+    lines: list[str] = []
+    if asked:
+        its = "its readings are" if len(asked) == 1 else "their readings are"
+        lines.append(f"The question was asked after the first run on {_on(asked, campaign)}, so {its} leads.")
+    if worded:
+        its = "its readings keep" if len(worded) == 1 else "their readings keep"
+        lines.append(
+            f"The question was worded after the first result on {_on(worded, campaign)}; {its} the time it was asked."
+        )
+    if margins:
+        lines.append(
+            f"The margin on {margins[0]} was declared after its first result."
+            if len(margins) == 1
+            else f"The margins on {_on(margins, campaign)} were declared after their first results."
+        )
+    for said, labels in floors.items():
+        lines.append(
+            f"The floor that {said} on {labels[0]} was declared after its first result."
+            if len(labels) == 1
+            else f"The floor that {said} on {_on(labels, campaign)} was declared after their first results."
+        )
     return lines
+
+
+def _on(labels: Sequence[str], campaign: EvalCampaign) -> str:
+    """Aspects as a sentence lists them: ``billing``, ``billing and tone``, ``billing, tone and refunds``, or ``every
+    aspect`` where they are all of a campaign's several."""
+    if len(labels) > 1 and len(labels) == len(campaign.aspects):
+        return "every aspect"
+    return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
 def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
     """Each unclear row: why it is unclear, and the cases that would show the arm no worse than the control by more
     than the aspect's margin, if the arms do not differ and if they differ as observed. They would not show it better:
-    the row stays unclear unless its gain clears too, and the note says so."""
-    unclear = [row for row in readings.readings if row.reading == "unclear"]
+    the row stays unclear unless its gain clears too, and the note says so. A row on an aspect that declared no margin
+    has nothing to show it within, and the table above already says no margin was declared there, so it is left out.
+    """
+    unclear = [row for row in readings.readings if row.reading == "unclear" and row.margin is not None]
     if not unclear:
         return []
     columns = [
