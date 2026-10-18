@@ -1,4 +1,4 @@
-"""fixtures for the git-store suites: a layout, opened repositories, and a bare origin, all on real git."""
+"""fixtures for the git backend's unit suite: a layout, opened repositories, and a bare origin, all on real git."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from typing import Any
 
 import pytest
 
-from threetears.git_store import GitRepo, GitRepoConfig, JsonCodec, TableLayout, TemplateLayout
+from packages.core.tests.backends_git.support import bare_origin, character_layout
+from threetears.core.backends.git import GitRepo, GitRepoConfig, TemplateLayout
 
 MakeRepo = Callable[..., Awaitable[GitRepo]]
 
@@ -46,29 +47,13 @@ def git_cli() -> GitCli:
 @pytest.fixture()
 def layout() -> TemplateLayout:
     """a character-shaped layout: keepers per tile, one recipe, notes without a version, numbered rejects."""
-    codec = JsonCodec()
-    return TemplateLayout(
-        [
-            TableLayout("keepers", "{character}/keepers/{batch}/{tile}.json", ("character", "batch", "tile"), codec),
-            TableLayout("recipes", "{character}/recipe.json", ("character",), codec),
-            TableLayout("notes", "{character}/notes.json", ("character",), codec, version_column=None),
-            TableLayout(
-                "rejects",
-                "{character}/rejects/{batch}/{tile}-{n}.json",
-                ("character", "batch", "tile", "n"),
-                codec,
-                pk_types={"n": int},
-            ),
-        ]
-    )
+    return character_layout()
 
 
 @pytest.fixture()
 def origin(tmp_path: Path) -> Path:
     """an empty bare repository to push to."""
-    path = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(path)], check=True)
-    return path
+    return bare_origin(tmp_path)
 
 
 @pytest.fixture()

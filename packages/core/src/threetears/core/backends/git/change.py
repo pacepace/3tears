@@ -24,10 +24,10 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from threetears.git_store.git import Author
+from threetears.core.backends.git.git import Author
 
 if TYPE_CHECKING:
-    from threetears.git_store.repo import GitRepo
+    from threetears.core.backends.git.repo import GitRepo
 
 __all__ = ["Change", "ChangeSet", "CommitResult", "OnConflict", "change_key", "same_version"]
 

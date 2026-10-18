@@ -42,7 +42,6 @@ langchain-openrouter = "2026-09-22T05:00:00Z"
 3tears-media-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-scrape = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-git-store = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 claude-agent-sdk = "2026-09-30T20:00:00Z"
 3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
@@ -68,7 +67,6 @@ members = [
     "3tears-epoch",
     "3tears-evals",
     "3tears-geo",
-    "3tears-git-store",
     "3tears-iam",
     "3tears-langgraph",
     "3tears-mcp",
@@ -756,25 +754,6 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "mapbox-vector-tile", specifier = ">=2.1" },
     { name = "shapely", specifier = ">=2.0" },
-]
-
-[[package]]
-name = "3tears-git-store"
-version = "0.71.0"
-source = { editable = "packages/git-store" }
-dependencies = [
-    { name = "3tears" },
-    { name = "3tears-nats", extra = ["client"] },
-    { name = "3tears-observe" },
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "3tears", editable = "packages/core" },
-    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
-    { name = "3tears-observe", editable = "packages/observe" },
-    { name = "pydantic", specifier = ">=2" },
 ]
 
 [[package]]

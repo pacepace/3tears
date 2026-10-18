@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Final, Generic, Protocol, TypeVar, runtime_che
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.git_store.repo import GitRepo
+    from threetears.core.backends.git.repo import GitRepo
     from threetears.nats.oplog import AppendResult, OpRecord
 
 __all__ = ["OpLogLike", "OpLogTail", "PendingTail", "committed_seq_from"]
@@ -81,11 +81,37 @@ class PendingTail(Protocol):
 class OpLogLike(Protocol):
     """what :class:`OpLogTail` needs of an op-log (:class:`threetears.nats.OpLog` has it)."""
 
-    async def append(self, *, payload: bytes, op_id: str, expected_last_seq: int) -> AppendResult: ...
+    async def append(self, *, payload: bytes, op_id: str, expected_last_seq: int) -> AppendResult:
+        """append one op, only if the log's last sequence is still ``expected_last_seq``.
 
-    def replay(self, from_seq: int) -> AsyncIterator[OpRecord]: ...
+        :param payload: the op's bytes
+        :ptype payload: bytes
+        :param op_id: the op's id, so a retried append is not logged twice
+        :ptype op_id: str
+        :param expected_last_seq: the last sequence the caller read
+        :ptype expected_last_seq: int
+        :return: where the op landed
+        :rtype: AppendResult
+        """
+        ...
 
-    async def last_seq(self) -> int: ...
+    def replay(self, from_seq: int) -> AsyncIterator[OpRecord]:
+        """the ops from ``from_seq`` on, in order.
+
+        :param from_seq: the first sequence wanted
+        :ptype from_seq: int
+        :return: the ops
+        :rtype: AsyncIterator[OpRecord]
+        """
+        ...
+
+    async def last_seq(self) -> int:
+        """the sequence of the log's newest op (0 when empty).
+
+        :return: the sequence
+        :rtype: int
+        """
+        ...
 
 
 def committed_seq_from(message: str, trailer: str = DEFAULT_TRAILER) -> int:

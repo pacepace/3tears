@@ -56,13 +56,15 @@ import 3tears are not scanned (`scope_import_roots`), and a command line goes in
 `threetears.core.tracing` are `threetears.observe`, and the context it described (three contextvars,
 `correlation_id`, `session_id`, `conversation_id`) is one context set with `set_context(**tags)`.
 
-### A git working tree as the durable tier: 3tears-git-store
+### A git working tree as the durable tier: a new core backend, threetears.core.backends.git
 
 scriob keeps its stories in git and reads them through 3tears' cache tiers; samhla is moving its
 characters into git the same way. The parts of scriob's git tier that are not about stories now
-live here, so both build on one copy.
+live here, as an L3 beside `threetears.core.backends.sql` and `nats_proxy`, so both build on one copy.
+Import it by its own path (`threetears.core.backends` does not load it); it needs core's `nats` extra
+(`pip install 3tears[nats]`) and the `git` program.
 
-**Added (new package, git-store):** `threetears.git_store`. A product brings a `RowCodec` (how a row
+**Added (core, a new L3 backend):** `threetears.core.backends.git`. A product brings a `RowCodec` (how a row
 becomes bytes; `JsonCodec` ships) and a `Layout` (where a row's file lives; `TemplateLayout` builds
 one from path templates such as `"{character}/keepers/{batch}/{tile}.json"`, escaping key values
 so a key can never point outside its folder). `GitRepo` owns one working tree: `change()` gathers
@@ -85,7 +87,7 @@ each row cached in L1 only while no write or eviction of the collection overtook
 
 **Added (nats):** `Subjects.git_store_advanced()`, `{ns}.git-store.advanced`.
 
-**Security (git-store): a forwarded change proves it comes from the repository's own deployment.** Every request
+**Security (core, git backend): a forwarded change proves it comes from the repository's own deployment.** Every request
 a process forwards to a repository's writer is sealed in 3tears' service envelope (Ed25519 over exactly the body,
 addressed to that repository's door and handler, alive for at most a minute, a single-use id spent in a shared
 `ReplayGuard`); the writer's door is born requiring it, so an unsigned, foreign, stale or replayed request is refused
@@ -97,15 +99,15 @@ consumer can pass a `CollectionReplayAnchor` as `GitRepo(replay_anchor=...)`), s
 restart doesn't refuse its first requests. The receiver's sender posture is `signed-envelope`; the open allowlist
 row it was added under is gone.
 
-**git-store: files committed through the writer (`GitRepo.commit_files`).** Writes the given bytes (``None``
+**Git backend: files committed through the writer (`GitRepo.commit_files`).** Writes the given bytes (``None``
 removes a file) and commits them as one commit, on the writer: a process on a clone of its own sends them over the
 sealed forward family, since a commit of its own would race the writer's pushes. For files that aren't rows (a
 training log) and for a hand edit made on such a clone. With ``base=`` (the commit the sender read the files at),
 a file the repository changed since then refuses the whole change with the new `FileConflictError`; an uncommitted
 hand edit of one on the writer refuses it with `HandEditPendingError`. Rows among the files are reported like any
-commit's, so every cache drops them. Found adopting git-store in samhla (a pod couldn't commit a training log).
+commit's, so every cache drops them. Found adopting the git backend in samhla (a pod couldn't commit a training log).
 
-**git-store: every pod reads current data.** A process on a clone of its own that isn't the writer now has its
+**Git backend: every pod reads current data.** A process on a clone of its own that isn't the writer now has its
 durable reads (`fetch_one`, `scan`) answered by the writer (a sealed `read` request on the forward family), because
 its own clone lags the writer's until it fetches and a collection would have cached the stale row. So the git tier
 is one current copy from every process's view, as a shared database is, and 3tears' collections (evict on every
@@ -113,7 +115,7 @@ commit, re-read on a miss) show current data on whichever pod serves the request
 itself, and a clone with no writer running read their own files. `GitRepo.read_row` / `read_rows` route the read;
 `read_local` / `scan_local` read this process's tree.
 
-**git-store: saved now, committed later (`PendingTail`, `OpLogTail`, `GitRepo.commit_intent`).** For products that
+**Git backend: saved now, committed later (`PendingTail`, `OpLogTail`, `GitRepo.commit_intent`).** For products that
 save an edit at once but commit only when the user means it (scriob). A tail keeps one folder's saved edits
 (`GitRepo.add_tail`; folders may not overlap, so many stories share one repository); `OpLogTail` keeps them in a
 `threetears.nats.OpLog`, lifted from scriob's coordinator. `OpLogTail.save` appends an op and writes the whole tail
@@ -125,26 +127,26 @@ scriob: a trailer ahead of the log (a reset or fresh log) counts nothing as comm
 the log grows meanwhile. Saved files are the store's own, not hand edits: `status().dirty` and the sweep's warning
 leave them out, a commit that touches the folder takes them along with the trailer, a write over one is refused,
 and the sweep commits a folder idle past `safety_idle`. `GitRepo.pending(scope)` is the lock-held save a product's
-own tail builds on; `GitRepo.on_committed` hears every commit the store makes. Found adopting git-store in scriob.
+own tail builds on; `GitRepo.on_committed` hears every commit the store makes. Found adopting the git backend in scriob.
 
-**git-store: a product's own operations run where the store's commits do.** `GitRepo.forward(name, payload,
+**Git backend: a product's own operations run where the store's commits do.** `GitRepo.forward(name, payload,
 local=...)` runs `local` here when this process is the writer (always without NATS), sends the request to the
 writer otherwise, and when no process is the writer takes the lease once and runs `local` (`NotTheWriterError` when
 it can't), as `commit` does. A forwarded commit that fails on the writer with a git failure or a bad request now
 raises `GitError` / `ValueError` on the sender, not a generic `GitStoreError`. `new_signing_seed()` makes a
 `forward_signing_seed`. Asked for by scriob, whose ~20 operations ride `forward`.
 
-**git-store: pull on request (`GitRepo.pull`).** Takes what someone pushed to origin from outside (a desktop
+**Git backend: pull on request (`GitRepo.pull`).** Takes what someone pushed to origin from outside (a desktop
 editor, a merged PR), on the writer (forwarded from any other process): fetch, fast-forward when only behind,
 report the changed rows so every cache drops them, rebuild pending tails on the new HEAD. A branch that diverged
 raises the new `DivergedError` and changes nothing; one only ahead is pushed. Asked for by scriob (its Pull button).
 
-**git-store: a saved file moves with its edits (`commit_files(..., moves={old: new})`).** The new path gets the
+**Git backend: a saved file moves with its edits (`commit_files(..., moves={old: new})`).** The new path gets the
 old one's bytes as the writer's tree holds them, saved edits of a pending tail included, and the old path is removed,
 in the same commit as the folder's other saved edits and its trailer. scriob's rename (a saved heading edit, then the
 file moved to its new name) stays one commit. A move from a missing file or onto an existing one is refused.
 
-**Fixed (git-store):** a work tree inside another git repository was used as if it were one, so commits landed in
+**Fixed (core, git backend):** a work tree inside another git repository was used as if it were one, so commits landed in
 the outer repository; `open()` now refuses it (`GitStoreError`). A nested repository of its own still works.
 
 ### A self-hosted image server's API, retried as far as it is safe to

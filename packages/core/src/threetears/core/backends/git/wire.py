@@ -7,9 +7,9 @@ one-key object (``{"$datetime": "..."}``); a row's own one-key objects whose key
 are wrapped (``{"$literal": {...}}``) so they can never be read as a tag.
 
 A refusal comes back as data, not as a raised error, so the sender raises the same typed error the
-writer did: :class:`~threetears.git_store.errors.ChangeConflictError` with every conflicted row,
-:class:`~threetears.git_store.errors.HandEditPendingError` with every path,
-:class:`~threetears.git_store.errors.NotTheWriterError`.
+writer did: :class:`~threetears.core.backends.git.errors.ChangeConflictError` with every conflicted row,
+:class:`~threetears.core.backends.git.errors.HandEditPendingError` with every path,
+:class:`~threetears.core.backends.git.errors.NotTheWriterError`.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ from decimal import Decimal
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from threetears.git_store.change import Change, CommitResult, OnConflict
-from threetears.git_store.errors import (
+from threetears.core.backends.git.change import Change, CommitResult, OnConflict
+from threetears.core.backends.git.errors import (
     ChangeConflictError,
     ConflictedRow,
     DivergedError,
@@ -33,7 +33,7 @@ from threetears.git_store.errors import (
     HandEditPendingError,
     NotTheWriterError,
 )
-from threetears.git_store.git import Author, GitError
+from threetears.core.backends.git.git import Author, GitError
 
 __all__ = [
     "ForwardedRequest",

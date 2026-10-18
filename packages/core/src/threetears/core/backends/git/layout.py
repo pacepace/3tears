@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
-from threetears.git_store.codec import RowCodec
+from threetears.core.backends.git.codec import RowCodec
 
 __all__ = ["Layout", "TableLayout", "TemplateLayout", "escape_value", "locate", "same_key", "unescape_value"]
 

@@ -19,7 +19,7 @@ from threetears.core.collections import NO_L2, DurableStoreCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.git_store import (
+from threetears.core.backends.git import (
     Author,
     Change,
     ChangeConflictError,
@@ -34,7 +34,7 @@ from threetears.git_store import (
     RoutedGitStore,
     bind_collections,
 )
-from threetears.git_store.wire import (
+from threetears.core.backends.git.wire import (
     ForwardedRequest,
     decode_reply,
     decode_request,
@@ -203,7 +203,7 @@ async def test_a_hand_commit_drops_the_row_from_the_collections_cache(
 
 def test_nothing_in_the_package_can_force_a_push() -> None:
     """a force push rewrites origin's history; the store must only ever push fast-forwards."""
-    source = Path(__file__).resolve().parents[2] / "src"
+    source = Path(__file__).resolve().parents[2] / "src" / "threetears" / "core" / "backends" / "git"
     offenders = [
         f"{path.name}:{number}"
         for path in sorted(source.rglob("*.py"))

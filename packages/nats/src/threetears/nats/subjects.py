@@ -1605,7 +1605,7 @@ class Subjects:
         one subject for every repository: the message names the repository and branch, and
         each process that keeps its own clone of it fetches and fast-forwards. the message is a
         trigger only -- what changed is read from git, never from the message. consumed by
-        :mod:`threetears.git_store.advanced`.
+        :mod:`threetears.core.backends.git.advanced`.
 
         :return: subject ``{ns}.git-store.advanced``
         :rtype: Subject

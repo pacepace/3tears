@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from threetears.git_store import (
+from threetears.core.backends.git import (
     Author,
     Change,
     FileConflictError,
@@ -277,7 +277,7 @@ async def test_status_lists_hand_edits_and_the_sweep_warns_about_old_ones(
     assert [(item.path, item.status) for item in status.dirty] == [("aria/keepers/V3/1.json", " M")]
     assert status.dirty[0].since is not None
     assert status.is_writer and status.writer is None
-    with caplog.at_level(logging.WARNING, logger="threetears.git_store.repo"):
+    with caplog.at_level(logging.WARNING, logger="threetears.core.backends.git.repo"):
         for _ in range(40):
             if any("git_store.dirty" in record.getMessage() for record in caplog.records):
                 break

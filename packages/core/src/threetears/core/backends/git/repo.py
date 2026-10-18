@@ -1,19 +1,19 @@
 """a git repository as a durable store: its working tree, its one writer, its commits and its origin.
 
 :class:`GitRepo` owns one working tree. Every change to it is a commit made by the repository's
-writer -- the process holding its NATS lease (:mod:`threetears.git_store.writer`); any other process
+writer -- the process holding its NATS lease (:mod:`threetears.core.backends.git.writer`); any other process
 forwards its change set to the writer and gets the commit, or the refusal, back. Without NATS
 (``nats=None``: tests, one-process development) this process is always the writer.
 
 **How a commit happens**, on the writer, under the repository's lock:
 
 1. HEAD is checked against the last commit this store saw. A commit made by hand since is reported
-   first (its rows dropped from every cache by :func:`~threetears.git_store.bind.bind_collections`),
+   first (its rows dropped from every cache by :func:`~threetears.core.backends.git.bind.bind_collections`),
    so the checks below compare against the files as they are now.
 2. Every change's compare-and-swap is checked against its file. One miss refuses the whole set:
-   nothing is written (:class:`~threetears.git_store.errors.ChangeConflictError`).
+   nothing is written (:class:`~threetears.core.backends.git.errors.ChangeConflictError`).
 3. A file someone edited by hand and has not committed is never written over
-   (:class:`~threetears.git_store.errors.HandEditPendingError`).
+   (:class:`~threetears.core.backends.git.errors.HandEditPendingError`).
 4. A journal naming the paths about to change is written into the git directory; each file is
    written with ``atomic_write`` (temporary file, fsync, rename), staged, and committed with
    ``git commit --only <paths>``, so nothing else staged or edited joins the commit. A set that
@@ -28,7 +28,7 @@ reads the one working tree, only the writer changes it, and the writer's cache d
 others over NATS. ``clone="own"``: each process has its own clone; one that is not the writer
 fetches and fast-forwards when the writer announces a push, and every ``watch_interval``.
 
-**Saved, not yet committed.** A folder with a :class:`~threetears.git_store.tail.PendingTail`
+**Saved, not yet committed.** A folder with a :class:`~threetears.core.backends.git.tail.PendingTail`
 (:meth:`GitRepo.add_tail`) holds edits saved before they are committed (scriob's op-log). Its files are
 the store's own work, never a hand edit: they are rebuilt from the tail when this process becomes the
 writer, joined to any commit that touches the folder (with the tail's trailers, so the newest trailer
@@ -53,10 +53,10 @@ from pydantic import SecretStr
 
 from threetears.core.collections import CallerTransaction
 from threetears.core.utils.atomic_write import atomic_write_sync
-from threetears.git_store.envelope import DEFAULT_ISSUER, ForwardEnvelope, GitDirReplayAnchor
-from threetears.git_store.advanced import AdvancedListener, RepoAdvanced, publish_advanced
-from threetears.git_store.change import Change, ChangeSet, CommitResult, same_version
-from threetears.git_store.errors import (
+from threetears.core.backends.git.envelope import DEFAULT_ISSUER, ForwardEnvelope, GitDirReplayAnchor
+from threetears.core.backends.git.advanced import AdvancedListener, RepoAdvanced, publish_advanced
+from threetears.core.backends.git.change import Change, ChangeSet, CommitResult, same_version
+from threetears.core.backends.git.errors import (
     FileConflictError,
     ChangeConflictError,
     ConflictedRow,
@@ -65,10 +65,10 @@ from threetears.git_store.errors import (
     HandEditPendingError,
     NotTheWriterError,
 )
-from threetears.git_store.git import Author, CommitEntry, FileChange, Git, GitError
-from threetears.git_store.layout import Layout, locate
-from threetears.git_store.tail import PendingTail
-from threetears.git_store.wire import (
+from threetears.core.backends.git.git import Author, CommitEntry, FileChange, Git, GitError
+from threetears.core.backends.git.layout import Layout, locate
+from threetears.core.backends.git.tail import PendingTail
+from threetears.core.backends.git.wire import (
     ForwardedRequest,
     decode_read,
     decode_reply,
@@ -80,7 +80,7 @@ from threetears.git_store.wire import (
     encode_result,
     encode_rows,
 )
-from threetears.git_store.writer import COMMIT_HANDLER, READ_HANDLER, WriterRole
+from threetears.core.backends.git.writer import COMMIT_HANDLER, READ_HANDLER, WriterRole
 from threetears.nats.errors import NatsClientError
 from threetears.nats.forward import ForwardedHandlerError, ForwardHandler, NoOwnerError
 from threetears.observe import PeriodicTask, get_logger, retry_bounded
@@ -437,7 +437,7 @@ class GitRepo:
             makes this process always the writer, with no forwarding and no broadcast
         :ptype nats: NatsClient | None
         :param replay_anchor: where the forward seal's replay ledger remembers its first existence; ``None`` keeps
-            it in the repository's git directory (:class:`~threetears.git_store.envelope.GitDirReplayAnchor`)
+            it in the repository's git directory (:class:`~threetears.core.backends.git.envelope.GitDirReplayAnchor`)
         :ptype replay_anchor: ReplayAnchor | None
         :param listener: the process's shared broadcast listener (:class:`GitRepos` passes one);
             ``None`` makes one for this repository when it needs it
@@ -838,7 +838,7 @@ class GitRepo:
     async def pending(self, scope: str | None) -> AsyncIterator[PendingWrite]:
         """save into a tail's folder without committing, on the writer, under the repository's lock.
 
-        :class:`~threetears.git_store.tail.OpLogTail` saves through it. The block writes files and says
+        :class:`~threetears.core.backends.git.tail.OpLogTail` saves through it. The block writes files and says
         which with :meth:`PendingWrite.wrote`; when it ends, their rows are reported (so caches drop them)::
 
             async with repo.pending("stories/one") as save:

@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from threetears.git_store import (
+from threetears.core.backends.git import (
     CommitResult,
     DivergedError,
     GitRepo,
@@ -19,8 +19,14 @@ from threetears.git_store import (
     OpLogTail,
     committed_seq_from,
 )
-from threetears.git_store.git import GitError
-from threetears.git_store.wire import ForwardedRequest, decode_reply, decode_request, encode_failure, encode_request
+from threetears.core.backends.git.git import GitError
+from threetears.core.backends.git.wire import (
+    ForwardedRequest,
+    decode_reply,
+    decode_request,
+    encode_failure,
+    encode_request,
+)
 from threetears.nats.oplog import AppendResult, OpRecord
 
 

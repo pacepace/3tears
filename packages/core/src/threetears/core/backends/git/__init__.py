@@ -8,14 +8,19 @@ A product brings a :class:`RowCodec` (how a row becomes bytes; :class:`JsonCodec
 :class:`RoutedGitStore` keep many repositories at once; :func:`bind_collections` drops rows other
 commits changed from every cache. A :class:`PendingTail` (:class:`OpLogTail`) keeps edits saved before they are
 committed, for products that commit only when the user means it.
+
+An L3 beside :mod:`threetears.core.backends.sql` and :mod:`threetears.core.backends.nats_proxy`, imported
+by its own path (``threetears.core.backends`` does not load it). It needs core's ``nats`` extra at runtime
+(``pip install 3tears[nats]``): the writer lease, forwarding and the advanced broadcast use the NATS
+client. It also needs the ``git`` program on the path; no pygit2.
 """
 
-from threetears.git_store.advanced import AdvancedListener, RepoAdvanced
-from threetears.git_store.bind import bind_collections
-from threetears.git_store.change import Change, ChangeSet, CommitResult
-from threetears.git_store.codec import JsonCodec, RowCodec
-from threetears.git_store.envelope import ForwardRefusedError, new_signing_seed
-from threetears.git_store.errors import (
+from threetears.core.backends.git.advanced import AdvancedListener, RepoAdvanced
+from threetears.core.backends.git.bind import bind_collections
+from threetears.core.backends.git.change import Change, ChangeSet, CommitResult
+from threetears.core.backends.git.codec import JsonCodec, RowCodec
+from threetears.core.backends.git.envelope import ForwardRefusedError, new_signing_seed
+from threetears.core.backends.git.errors import (
     ChangeConflictError,
     ConflictedRow,
     DivergedError,
@@ -24,12 +29,20 @@ from threetears.git_store.errors import (
     HandEditPendingError,
     NotTheWriterError,
 )
-from threetears.git_store.git import Author, CommitEntry, GitError
-from threetears.git_store.layout import Layout, TableLayout, TemplateLayout
-from threetears.git_store.repo import Committed, DirtyFile, GitRepo, GitRepoConfig, PendingWrite, RepoStatus, RowChange
-from threetears.git_store.repos import GitRepos, RoutedGitStore
-from threetears.git_store.store import GitDurableStore
-from threetears.git_store.tail import OpLogLike, OpLogTail, PendingTail, committed_seq_from
+from threetears.core.backends.git.git import Author, CommitEntry, GitError
+from threetears.core.backends.git.layout import Layout, TableLayout, TemplateLayout
+from threetears.core.backends.git.repo import (
+    Committed,
+    DirtyFile,
+    GitRepo,
+    GitRepoConfig,
+    PendingWrite,
+    RepoStatus,
+    RowChange,
+)
+from threetears.core.backends.git.repos import GitRepos, RoutedGitStore
+from threetears.core.backends.git.store import GitDurableStore
+from threetears.core.backends.git.tail import OpLogLike, OpLogTail, PendingTail, committed_seq_from
 
 __all__ = [
     "AdvancedListener",

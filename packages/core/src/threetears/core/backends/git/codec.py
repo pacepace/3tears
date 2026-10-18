@@ -1,6 +1,6 @@
 """how a row becomes a file's bytes and back: the codec half of the plug-in boundary.
 
-A product brings a codec and a layout (:mod:`threetears.git_store.layout`); everything else is shared.
+A product brings a codec and a layout (:mod:`threetears.core.backends.git.layout`); everything else is shared.
 :class:`JsonCodec` ships here. A markdown-with-frontmatter codec (scriob's) is the product's own.
 """
 

@@ -27,7 +27,7 @@ from threetears.nats.forward import ForwardHandler, forward, serve_owner
 from threetears.observe import get_logger, spawn_background
 
 if TYPE_CHECKING:
-    from threetears.git_store.envelope import ForwardEnvelope
+    from threetears.core.backends.git.envelope import ForwardEnvelope
     from threetears.nats import NatsClient
 
 __all__ = ["FORWARD_FAMILY", "WriterRole"]

@@ -16,7 +16,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
-from threetears.git_store import Change, ChangeConflictError, ChangeSet, GitDurableStore, HandEditPendingError
+from threetears.core.backends.git import Change, ChangeConflictError, ChangeSet, GitDurableStore, HandEditPendingError
 
 T0 = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
 

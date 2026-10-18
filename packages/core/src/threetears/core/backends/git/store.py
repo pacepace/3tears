@@ -8,7 +8,7 @@ unchanged. A table is a set of files the repository's layout places; a row is on
 
 - **Reads** come from the working tree, off the event loop. A read handed a change set
   (``conn=cs``) sees the set's own writes first.
-- **Writes are never loose.** With ``conn`` a :class:`~threetears.git_store.change.ChangeSet`, the
+- **Writes are never loose.** With ``conn`` a :class:`~threetears.core.backends.git.change.ChangeSet`, the
   write joins it and lands in its one commit. With no ``conn``, the write is a commit of its own.
 - **Compare-and-swap works**: a write carrying ``cas`` (the ``date_updated`` the writer read) lands
   only while the file still holds that version, and a row deleted since is a miss. A miss returns
@@ -26,11 +26,11 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from threetears.git_store.change import Change, ChangeSet, OnConflict, same_version
-from threetears.git_store.errors import ChangeConflictError, ConflictedRow
-from threetears.git_store.git import CommitEntry
-from threetears.git_store.layout import locate
-from threetears.git_store.repo import GitRepo
+from threetears.core.backends.git.change import Change, ChangeSet, OnConflict, same_version
+from threetears.core.backends.git.errors import ChangeConflictError, ConflictedRow
+from threetears.core.backends.git.git import CommitEntry
+from threetears.core.backends.git.layout import locate
+from threetears.core.backends.git.repo import GitRepo
 
 __all__ = ["GitDurableStore"]
 

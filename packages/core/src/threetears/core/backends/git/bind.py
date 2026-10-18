@@ -15,14 +15,14 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from threetears.core.collections import BaseCollection
-from threetears.git_store.repo import RowChange, RowsChanged
+from threetears.core.backends.git.repo import RowChange, RowsChanged
 
 __all__ = ["RowChangeSource", "bind_collections"]
 
 
 class RowChangeSource(Protocol):
-    """anything that reports changed rows: a :class:`~threetears.git_store.repo.GitRepo`, or
-    :class:`~threetears.git_store.repos.GitRepos` for every repository at once."""
+    """anything that reports changed rows: a :class:`~threetears.core.backends.git.repo.GitRepo`, or
+    :class:`~threetears.core.backends.git.repos.GitRepos` for every repository at once."""
 
     def on_rows_changed(self, callback: RowsChanged) -> Any:
         """call ``callback`` with the rows each commit changes.

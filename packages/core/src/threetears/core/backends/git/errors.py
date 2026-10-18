@@ -122,7 +122,7 @@ class FileConflictError(GitStoreError):
 class DivergedError(GitStoreError):
     """the branch and origin have both moved on; this store never merges or forces, so a person reconciles them.
 
-    Nothing changed. Raised by an explicit :meth:`~threetears.git_store.repo.GitRepo.pull`; on its own the
+    Nothing changed. Raised by an explicit :meth:`~threetears.core.backends.git.repo.GitRepo.pull`; on its own the
     writer only stops pushing (``RepoStatus.push_blocked``).
 
     :ivar head: this repository's commit

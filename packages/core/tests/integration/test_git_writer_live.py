@@ -27,8 +27,9 @@ from urllib.parse import urlsplit
 import pytest
 from pydantic import SecretStr
 
+from packages.core.tests.backends_git.support import bare_origin, character_layout
 from threetears.core.testing.tcp_proxy import StallingTcpProxy
-from threetears.git_store import (
+from threetears.core.backends.git import (
     Change,
     ChangeConflictError,
     GitDurableStore,
@@ -90,6 +91,16 @@ async def eventually(check: Callable[[], Awaitable[bool] | bool], *, within: flo
         if asyncio.get_running_loop().time() > deadline:
             raise AssertionError("the condition never held")
         await asyncio.sleep(0.05)
+
+
+@pytest.fixture()
+def layout() -> TemplateLayout:
+    return character_layout()
+
+
+@pytest.fixture()
+def origin(tmp_path: Path) -> Path:
+    return bare_origin(tmp_path)
 
 
 @pytest.fixture()
@@ -266,7 +277,7 @@ async def test_a_sealed_request_replayed_is_refused_and_the_first_ones_after_a_f
     # the first requests after the ledger's bucket is created used to be refused as possibly replayed (no anchor);
     # the repository's git directory now anchors it, so they pass at once, and a captured request still can't be
     # sent twice
-    from threetears.git_store.writer import COMMIT_HANDLER, FORWARD_FAMILY
+    from threetears.core.backends.git.writer import COMMIT_HANDLER, FORWARD_FAMILY
     from threetears.nats.forward import forward
 
     tree = tmp_path / "shared"
@@ -277,7 +288,7 @@ async def test_a_sealed_request_replayed_is_refused_and_the_first_ones_after_a_f
         assert result.sha == writer.git.head()
 
     # a captured request, sealed with the deployment's seed exactly as a forwarder seals it, sent twice
-    from threetears.git_store.envelope import ForwardEnvelope, GitDirReplayAnchor
+    from threetears.core.backends.git.envelope import ForwardEnvelope, GitDirReplayAnchor
 
     nats = await connect("replayer")
     lease_key = writer.config.lease_key

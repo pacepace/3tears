@@ -16,12 +16,12 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from threetears.git_store.advanced import AdvancedListener
-from threetears.git_store.change import ChangeSet
-from threetears.git_store.git import CommitEntry
-from threetears.git_store.layout import Layout
-from threetears.git_store.repo import GitRepo, GitRepoConfig, RowsChanged
-from threetears.git_store.store import GitDurableStore
+from threetears.core.backends.git.advanced import AdvancedListener
+from threetears.core.backends.git.change import ChangeSet
+from threetears.core.backends.git.git import CommitEntry
+from threetears.core.backends.git.layout import Layout
+from threetears.core.backends.git.repo import GitRepo, GitRepoConfig, RowsChanged
+from threetears.core.backends.git.store import GitDurableStore
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
@@ -145,7 +145,7 @@ class GitRepos:
 class RoutedGitStore:
     """one durable store over many repositories; each row goes to the repository ``route`` names.
 
-    Satisfies the same store protocols as :class:`~threetears.git_store.store.GitDurableStore`. A
+    Satisfies the same store protocols as :class:`~threetears.core.backends.git.store.GitDurableStore`. A
     change set handed as ``conn`` must belong to the row's repository. A scan whose filters do not
     name one repository reads every open one.
 

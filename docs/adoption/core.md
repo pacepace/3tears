@@ -31,6 +31,9 @@ the first few times.
 - **Declarative schema** (`TableDef`, `ColumnDef`, `IndexDef`,
   `ForeignKeyDef`) and the canonical `MigrationRunner` -- package-composing,
   topologically ordered, idempotent, version-tracked.
+- **L3 backends** in `threetears.core.backends`: PostgreSQL (`sql`), the NATS
+  proxy (`nats_proxy`), and a git working tree (`git`, with the `nats` extra;
+  see [the git backend](core-git.md)).
 - **Coordination primitives** (`KVLease`) for cross-pod mutual exclusion;
   `KVLease.hold_sync` holds one across synchronous work.
 - **`threetears.core.sync`** -- `run(work, *, timeout=None)` runs one async call

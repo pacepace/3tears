@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from threetears.core.backends.protocol import BulkDeletingStore, BulkDurableStore, DurableStore
-from threetears.git_store import ChangeConflictError, GitDurableStore
+from threetears.core.backends.git import ChangeConflictError, GitDurableStore
 
 T0 = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
 

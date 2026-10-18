@@ -9,8 +9,8 @@ from uuid import UUID
 
 import pytest
 
-from threetears.git_store import JsonCodec, Layout, RowCodec, TableLayout, TemplateLayout
-from threetears.git_store.layout import escape_value, unescape_value
+from threetears.core.backends.git import JsonCodec, Layout, RowCodec, TableLayout, TemplateLayout
+from threetears.core.backends.git.layout import escape_value, unescape_value
 
 
 class TestJsonCodec:
