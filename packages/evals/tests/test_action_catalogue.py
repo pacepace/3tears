@@ -120,6 +120,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "insight_get": "read",
         "analyses_undescribable": "read",
         "report_read": "read",
+        "campaign_record": "write",
         "bars_propose": "read",
         "reporter_case_freeze": "write",
         "reporter_cases_list": "read",

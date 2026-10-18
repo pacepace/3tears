@@ -67,6 +67,8 @@ from threetears.evals.analysis.report import CampaignReport, Verdict, build_camp
 from threetears.evals.analysis.report.build import analysis_writer
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalCampaign
+from threetears.evals.kernel.campaign_writes import serialized_campaign_write
+from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar, resolve_control_arm
 from threetears.evals.kernel.errors import (
     ConflictError,
     EvalServiceError,
@@ -1672,6 +1674,141 @@ def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[V
 
 
 # ---------------------------------------------------------------------------
+# The person's call — recorded beside code's readings, never in place of them
+# ---------------------------------------------------------------------------
+
+
+def record_campaign_call(
+    host: EvalHost,
+    campaign_id: str,
+    scope_id: str,
+    *,
+    arm: str,
+    called_by: str,
+    reason: str = "",
+    floors_overridden: Sequence[str] = (),
+    bars_overridden: Sequence[OverriddenBar] = (),
+    analysis_id: str | None = None,
+) -> EvalCampaign:
+    """Record a person's call on a campaign: the arm decided, why, and every broken floor and missed bar it overrides.
+
+    Code reports, the writer recommends, a person decides. The call is read against code's readings of the campaign's
+    evidence as it stands now — never against a memo's words — and is refused where it would leave a warning
+    unanswered: an arm with a broken floor is recorded only when ``floors_overridden`` names each such floor by its
+    key, and an arm that misses an absolute bar only when ``bars_overridden`` names each such bar by its aspect and
+    measure; naming one the arm did not break or miss is refused too, so an override always answers a warning the
+    page shows. The arm is matched by its variant key, which is what is recorded: a derived arm's label can shift when
+    a variant joins. A measurement (one arm) has nothing to decide between, so a call on one is refused. A new call
+    replaces the campaign's earlier one; the page dates whichever it holds.
+
+    :param host: The host: where the campaign's runs, results and analyses are read, and its vocabulary.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param arm: The decided arm, by the label the page shows it under or by its variant key; the control's keeps it.
+    :ptype arm: str
+    :param called_by: Who made the call, as the recording surface knows them.
+    :ptype called_by: str
+    :param reason: Why, in the decider's words.
+    :ptype reason: str
+    :param floors_overridden: The key (``Floor.key``) of each broken floor the call overrides.
+    :ptype floors_overridden: Sequence[str]
+    :param bars_overridden: Each missed bar the call overrides, by aspect and measure.
+    :ptype bars_overridden: Sequence[OverriddenBar]
+    :param analysis_id: The analysis whose memo the call was made over; None for code's readings alone.
+    :ptype analysis_id: str | None
+    :return: The campaign as persisted, holding the call.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope, or no analysis ``analysis_id`` in it.
+    :raises ValidationFailedError: The campaign is a measurement; the arm is none of the campaign's; the analysis is
+        another campaign's; a broken floor or missed bar of the arm is not overridden, or an override names one the
+        arm did not break or miss; or a floor or bar is named twice.
+    :raises ConflictError: The campaign changed while its readings were read.
+    """
+    campaign = _load_campaign(host.storage, campaign_id, scope_id)
+    if analysis_id is not None and get_analysis(host.storage, analysis_id, scope_id).campaign_id != campaign_id:
+        raise ValidationFailedError(
+            f"analysis {analysis_id} is not an analysis of campaign {campaign_id}",
+            remedy=f"name one of its analyses (analyses_list) or none; campaign {campaign_id}'s call is made over its own",
+        )
+    bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
+    readings = bundle.readings
+    if readings.kind == "measurement":
+        raise ValidationFailedError(
+            f"campaign {campaign_id} measures one arm, so there is nothing to decide between and no call to record",
+            remedy="read its measures on its page (report_read); gather another arm's runs to make it a choice",
+        )
+    decided = next((each for each in bundle.arms if each.variant_key == arm), None) or next(
+        (each for each in bundle.arms if each.label == arm), None
+    )
+    if decided is None:
+        raise ValidationFailedError(
+            f"campaign {campaign_id} has no arm {arm!r}",
+            remedy=f"name one of its arms by label or variant key: {[each.label for each in bundle.arms]}",
+        )
+    keys = {decided.variant_key, *resolve_control_arm(decided).variant_keys}
+    broken = {status.floor for status in readings.broken_floors() if status.arm in keys}
+    missed = {(status.aspect, status.measure) for status in readings.missed_bars() if status.arm in keys}
+    named_bars = {(bar.aspect, bar.measure) for bar in bars_overridden}
+    unanswered = [
+        *(f"floor {key}" for key in sorted(broken - set(floors_overridden))),
+        *(f"the bar on {measure} on {aspect}" for aspect, measure in sorted(missed - named_bars)),
+    ]
+    if unanswered:
+        raise ValidationFailedError(
+            f"{decided.label} breaks or misses {', '.join(unanswered)}, and the call does not override it",
+            remedy=(
+                "override each by name — floors_overridden takes a floor's key, bars_overridden a bar's aspect and "
+                "measure — with the reason in `reason`, or decide another arm"
+            ),
+        )
+    stray = [
+        *(f"floor {key}" for key in sorted(set(floors_overridden) - broken)),
+        *(f"the bar on {measure} on {aspect}" for aspect, measure in sorted(named_bars - missed)),
+    ]
+    if stray:
+        raise ValidationFailedError(
+            f"the call overrides {', '.join(stray)}, which {decided.label} does not break or miss",
+            remedy="override only the broken floors and missed bars the page warns of for the decided arm",
+        )
+    try:
+        call = CampaignCall(
+            arm=decided.label,
+            variant_key=decided.variant_key,
+            reason=reason,
+            floors_overridden=list(floors_overridden),
+            bars_overridden=list(bars_overridden),
+            analysis_id=analysis_id,
+            called_by=called_by,
+        )
+    except ValueError as invalid:
+        raise ValidationFailedError(str(invalid), remedy="name each floor and each bar once") from invalid
+    return _save_call(host.storage, campaign, call)
+
+
+@serialized_campaign_write
+def _save_call(storage: EvalStorage, read: EvalCampaign, call: CampaignCall) -> EvalCampaign:
+    """Write ``call`` onto the campaign ``read`` was, refusing when it has changed since: the call was read against
+    its readings then.
+
+    :raises ConflictError: The stored campaign's declaration or membership is no longer ``read``'s.
+    :raises NotFoundError: The campaign was deleted meanwhile.
+    """
+    current = _load_campaign(storage, read.id, read.scope_id)
+    unchanged = ("question", "arms", "aspects", "floors")
+    if any(getattr(current, field) != getattr(read, field) for field in unchanged):
+        raise ConflictError(
+            f"campaign {read.id} changed while its readings were read, so the call was read against another campaign",
+            remedy="record the call again; it is read against the campaign as it stands",
+        )
+    storage.save_campaign(current.model_copy(update={"call": call}))
+    log.info("eval.record_campaign_call campaign=%s scope=%s arm=%s", read.id, read.scope_id, call.variant_key)
+    return _load_campaign(storage, read.id, read.scope_id)
+
+
+# ---------------------------------------------------------------------------
 # The insight ledger
 # ---------------------------------------------------------------------------
 
@@ -2263,6 +2400,7 @@ __all__ = [
     "inspect_analysis_bundle",
     "campaign_report",
     "campaign_verdicts",
+    "record_campaign_call",
     "inspect_campaign_bundle",
     "list_analyses",
     "list_analysis_attempts",
