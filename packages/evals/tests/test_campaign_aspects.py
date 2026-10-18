@@ -19,12 +19,14 @@ Driven through the campaign family's functions over the in-memory store, the pat
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.aspects import aspect_view, aspect_views
 from threetears.evals.analysis.bundle.schema import asked_in_time
 from threetears.evals.analysis.campaigns import (
@@ -49,6 +51,8 @@ from packages.evals.tests.factories import (
     minimal_aspect_design,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.ops_support import ops_fixture
+from threetears.evals.schema.models import utc_now_iso
 
 _SCOPE = "uni-1"
 
@@ -293,6 +297,7 @@ def _confirms(campaign: EvalCampaign, label: str) -> bool:
 
 
 def _after_the_runs(stamp: str | None, label: str, campaign: EvalCampaign) -> bool:
+    """Whether ``stamp`` is after the aspect's runs, which here are scored as they are created (``_RAN``)."""
     (template_id,) = {aspect.template_id for aspect in campaign.aspects if aspect.label == label}
     return stamp is not None and stamp > _RAN[str(template_id)]
 
@@ -401,17 +406,95 @@ def test_an_adoption_holding_a_run_in_two_aspects_is_refused_naming_both() -> No
 # --- when the control was named --------------------------------------------------------------------------------------
 
 
-def test_a_control_named_after_the_first_run_turns_the_aspect_s_readings_post_hoc() -> None:
+def _toy_campaign_launched_into(*, control_before_results: bool) -> tuple[EvalCampaign, Any]:
+    """The documented workflow over the toy host: a campaign declared with no runs, its arms' runs added, the
+    control named, and the results landing — the control named before the results, or once they are in."""
+    fixture = ops_fixture()
+    host = fixture.host.eval_host
+    (toy,) = fixture.campaign.aspects
+    assert toy.design is not None
+    declared = create_campaign(
+        host.storage,
+        {
+            "name": "launched into",
+            "subject_id": fixture.campaign.subject_id,
+            "behavior": fixture.campaign.behavior,
+            "question": "Does the wider chunk extract the fields as well?",
+            "aspects": [{"label": toy.label, "margin": 5, "design": toy.design.model_dump(mode="json")}],
+        },
+        scope_id=fixture.campaign.scope_id,
+        created_by="op",
+        profile=host.profile,
+    )
+    corpus = {run_id: host.storage.load_eval_run(run_id, declared.scope_id) for run_id in fixture.campaign.run_ids}
+    fresh = {run_id: f"launched-{run_id}" for run_id in corpus}
+    for run_id, run in corpus.items():
+        assert run is not None
+        host.storage.save_eval_run(run.model_copy(update={"id": fresh[run_id], "created_at": utc_now_iso()}))
+    add_runs_to_campaign(host.storage, declared.id, declared.scope_id, list(fresh.values()))
+
+    def results_land() -> None:
+        for run_id in corpus:
+            for result in host.storage.query_eval_results_by_run(run_id, declared.scope_id):
+                host.storage.save_eval_result(
+                    result.model_copy(
+                        update={"id": f"launched-{result.id}", "eval_run_id": fresh[run_id], "scored_at": utc_now_iso()}
+                    )
+                )
+
+    if not control_before_results:
+        results_land()
+    controlled = set_campaign_control(
+        host.storage, declared.id, declared.scope_id, next(iter(fresh.values())), set_by="op", profile=host.profile
+    )
+    if control_before_results:
+        results_land()
+    return controlled, assemble_context_bundle(controlled, storage=host.storage, profile=host.profile)
+
+
+def test_a_control_named_before_any_result_lands_leaves_the_question_confirmatory() -> None:
+    """Declared with no runs, arms launched, control named, results in: named after the runs began and before
+    anything could be seen, so nothing it was chosen with was evidence."""
+    campaign, bundle = _toy_campaign_launched_into(control_before_results=True)
+
+    assert campaign.control is not None and bundle.design.control_arm is not None
+    assert bundle.question_declared is True
+    assert bundle.declared is not None and bundle.declared.asked_at == campaign.aspects[0].asked_at
+
+
+def test_a_control_named_after_the_first_result_turns_the_aspect_s_readings_post_hoc() -> None:
     """Choosing what is read against once the evidence exists makes the reading post hoc, whatever the question."""
+    campaign, bundle = _toy_campaign_launched_into(control_before_results=False)
+
+    assert campaign.control is not None
+    assert bundle.question_declared is False and bundle.reading_scope.question_post_hoc is True
+    assert bundle.declared is not None and bundle.declared.asked_at == campaign.control.named_at
+    assert campaign.aspects[0].asked_at != campaign.control.named_at, "the stored question keeps its own time"
+
+
+def _declared_before_the_evidence(stamp: str | None, scored_at: Sequence[str]) -> bool:
+    """Whether something dated ``stamp`` was declared before the first of the results scored at ``scored_at``."""
+    return stamp is not None and all(stamp <= scored for scored in scored_at)
+
+
+@pytest.mark.parametrize("results_first", [False, True], ids=["before-the-results", "after-the-results"])
+def test_a_floor_added_at_adoption_reads_as_declared_after_the_evidence_only_once_a_result_is_in(
+    results_first: bool,
+) -> None:
+    """What decides it is the aspect's first result, as for the control: an adopted aspect's runs may have been
+    launched long before a floor is added, and nothing was seen until a result landed."""
     storage, _ = _store()
-    tone = _source(storage, "tone", "tpl-tone", control=None)
-    assert _confirms(tone, "tone")
+    tone = _source(storage, "tone", "tpl-tone")
+    early = [utc_now_iso()] if results_first else []
 
-    controlled = set_campaign_control(storage, tone.id, _SCOPE, "tpl-tone-a", set_by="op", profile=_HOST)
+    adopted = _create(storage, aspects_from=(tone.id,), floors=[{"aspect": "tone", "clause": {"kind": "cost_lower"}}])
+    scored = early or [utc_now_iso()]
 
-    assert controlled.control is not None and _after_the_runs(controlled.control.named_at, "tone", controlled)
-    assert not _confirms(controlled, "tone")
-    assert controlled.aspects[0].asked_at == _ASKED["tpl-tone"], "the question's own time is kept"
+    view = aspect_view(adopted, "tone").declared
+    assert view is not None
+    added = {floor.key: floor.declared_at for floor in view.floors}["tone/cost_lower/*"]
+    assert _declared_before_the_evidence(added, scored) is not results_first
+    assert _confirms(adopted, "tone"), "the adopted aspect keeps its own standing"
 
 
 def test_an_arm_named_at_adoption_is_dated_now_and_one_the_source_already_named_keeps_its_time() -> None:
@@ -425,8 +508,9 @@ def test_an_arm_named_at_adoption_is_dated_now_and_one_the_source_already_named_
         storage, aspects_from=(untold.id,), arms=[{"label": "a", "role": "control", "from_run_ids": ["tpl-tools-a"]}]
     )
 
-    assert kept.control is not None and kept.control.named_at == _ASKED["tpl-tone"] and _confirms(kept, "tone")
-    assert named.control is not None and not _confirms(named, "tools"), "a control chosen after the runs"
+    assert kept.control is not None and kept.control.named_at == _ASKED["tpl-tone"]
+    assert named.control is not None and named.control.named_at is not None
+    assert named.control.named_at > _ASKED["tpl-tools"], "named now, which its bundle reads against the first result"
 
 
 # --- an arm is one contestant stack ----------------------------------------------------------------------------------
