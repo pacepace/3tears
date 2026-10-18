@@ -191,9 +191,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "3tears-nats",
             "sqlalchemy",
             "asyncpg",
-            "aiosqlite",
             "pydantic",
-            "uuid-utils",
             "cryptography",
             "pyjwt",
             "httpx",
@@ -253,7 +251,10 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ("packages/nats", ("3tears-observe", "pydantic")),
-    ("packages/object-store", ("3tears", "3tears-media-contracts", "3tears-observe", "aioboto3")),
+    (
+        "packages/object-store",
+        ("3tears", "3tears-media-contracts", "3tears-observe", "aioboto3", "cryptography", "pydantic"),
+    ),
     (
         "packages/registry",
         (

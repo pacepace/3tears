@@ -30,6 +30,8 @@ dependencies = [
     "3tears-media-contracts>=0.70.0,<0.71.0",
     "3tears-observe>=0.70.0,<0.71.0",
     "aioboto3>=13",
+    "cryptography>=42",  # AES-256-GCM sealing and scrypt key derivation (object_store.encrypted)
+    "pydantic>=2",  # SecretStr for the sealing passphrase (object_store.encrypted)
 ]
 
 [project.urls]

@@ -26,9 +26,7 @@ dependencies = [
     "3tears-nats>=0.70.0,<0.71.0",
     "sqlalchemy",
     "asyncpg>=0.30",  # create_pool(connect=...), the hook a failed pool start closes its connections through
-    "aiosqlite",
     "pydantic",
-    "uuid-utils",  # uuid7 ids (core.collections.registry, core.cache.sqlite/duckdb)
     "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
     "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
     "httpx",  # traced outbound HTTP transport (core.http_client)

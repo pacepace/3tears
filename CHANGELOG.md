@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: two dependencies nothing needed are gone, and object-store declares what it imports
+
+**Changed (core):** `3tears` no longer depends on `aiosqlite`, which nothing in the family imported
+(L1 is stdlib `sqlite3`), or on `uuid-utils`, whose one hard use, the invalidation origin token in
+`collections.registry`, is now stdlib `uuid.uuid7` like the rest of core. The L1 caches still accept
+a `uuid_utils.UUID` value when that package is installed.
+
+**Fixed (object-store):** `3tears-object-store` imports `cryptography` and `pydantic` and now declares
+both. It had received them through `3tears`, so it would have broken the moment core stopped
+supplying them.
+
 ### mcp: an MCP server no longer installs nats, sqlalchemy or the rest of the family
 
 **Changed (mcp):** `3tears-mcp`'s hard dependencies are now `mcp`, `3tears-observe`, httpx, starlette

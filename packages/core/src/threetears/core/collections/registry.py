@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid7
 
 from pydantic import BaseModel, ValidationError
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
@@ -19,7 +20,6 @@ from threetears.core.collections.generation import (
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.exceptions import InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import get_logger
-from uuid_utils import uuid7
 
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
