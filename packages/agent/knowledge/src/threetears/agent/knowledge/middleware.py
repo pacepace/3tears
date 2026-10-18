@@ -43,18 +43,20 @@ Identity comes from the VERIFIED ``call_context`` (the realign handler makes
 node read ``state["user_id"]`` / ``state["customer_id"]``, which the framework no
 longer threads through state.
 
-Best-effort operations soft-fail exactly like the original node: a missing /
-unavailable knowledge backend, an embedding outage, or a SITUATIONAL (relevance-
-retrieved) item's render fault logs a warning naming the error class and degrades
-gracefully -- retrieval soft-fails the whole read to ``([], [])``; a single
-situational item that fails to render is SKIPPED (logged loudly) while the rest of
-the governed block still reaches the agent. Governance does NOT fail open on its own
-HARD rules, though: an INVARIANT (``always_inject``) concept / entry that fails to
-render is a rule the agent MUST always apply, so its render fault raises
-:class:`GovernedKnowledgeRenderError` and the seam FAILS CLOSED -- the turn surfaces
-the error rather than proceeding as if the hard rule did not exist. Dropping the
-entire governed block on one item's fault (the pattern this middleware previously
-carried) is exactly the fail-open a governance layer must not do.
+What degrades without failing the turn is the situational RANKING: an embedding
+outage, or a vector fetch that fails, puts the whole situational pool in stable
+order -- never a partial ranking that sorts the side whose vectors arrived ahead of
+the side whose fetch failed -- and the fallback is contained and warned with its
+cause. A single SITUATIONAL item that fails to render is SKIPPED (logged loudly)
+while the rest of the governed block still reaches the agent. Governance does NOT
+fail open on its own HARD rules: a retrieval fault raises
+:class:`~threetears.agent.knowledge.integration.GovernedKnowledgeUnavailableError`,
+an INVARIANT (``always_inject``) concept / entry that fails to render raises
+:class:`GovernedKnowledgeRenderError`, and any other fault building the block
+propagates -- the seam FAILS CLOSED, because a turn that proceeds with no governed
+block cannot show an always-inject rule was not among what it lost. Dropping the
+entire governed block on a fault (the pattern this middleware previously carried)
+is exactly the fail-open a governance layer must not do.
 
 Async is the real path -- retrieval + embedding are ``async def``. The synchronous
 :meth:`~KnowledgeInjectionMiddleware.wrap_model_call` mirror cannot drive them, so
@@ -78,6 +80,7 @@ from langgraph.types import Command
 from threetears.agent.memory.embedding_utils import embedding_attribution_scope
 from threetears.knowledge import ConceptEffective, EntryEffective, Scope
 from threetears.langgraph import merge_metadata
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_query
 from threetears.observe import contain, get_logger
 
 from threetears.agent.knowledge.integration import (
@@ -301,7 +304,8 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
     exactly one system message). The rendered block + shadow-disclosure ledgers are
     persisted onto ``metadata`` via a returned ``Command`` state update. Opt-in: no
     integration (or no verified identity) on ``config["configurable"]`` -> the seam
-    is a pass-through. Every operation soft-fails to the un-merged request.
+    is a pass-through. Only the situational ranking degrades without failing the
+    turn; a fault reading or building the governed block fails it closed.
     """
 
     name = "KnowledgeInjectionMiddleware"
@@ -341,8 +345,8 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
         ``request.system_message``, runs the call, and returns an
         :class:`ExtendedModelResponse` whose ``Command`` persists the block + shadow
         ledgers onto ``metadata``. Proceeds on the un-merged request (a plain
-        response) when no integration/identity is configured, when nothing is
-        retrieved, or when retrieval / render soft-fails.
+        response) when no integration/identity is configured or when nothing is
+        retrieved. A fault reading or building the block raises (fail closed).
 
         :param request: the model request (carries ``system_message`` + ``messages``
             + ``state``).
@@ -389,9 +393,9 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
                 # the same fail-open, reached from the other side.
                 log.error("governed knowledge injection failed closed: the governed layer could not be read")
                 raise
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- SITUATIONAL knowledge injection is best-effort context enrichment; a fault proceeds on the un-merged request rather than failing the turn
-                contain(exc, log=log, what=f"knowledge injection middleware failed (soft-fail): {type(exc).__name__}")
-                block, metadata = "", {}
+            # any other fault building the block propagates too. it used to be absorbed into
+            # an empty block, and the turn proceeded with NO governed knowledge -- invariants
+            # included -- reading exactly like a turn that had none to apply.
         if not block:
             passthrough: ModelResponse[Any] = await handler(request)
             return passthrough
@@ -444,8 +448,8 @@ async def _build_governed_injection(
 ) -> tuple[str, dict[str, Any]]:
     """Retrieve, rank, trim, and render the governed-knowledge block + ledgers.
 
-    The two retrieves are INDEPENDENT soft-fail calls: a concept backend fault
-    returns ``([], [])`` and never breaks the entry injection or the turn. Splits
+    A fault on either retrieve raises ``GovernedKnowledgeUnavailableError`` (fail
+    closed); only the situational ranking inputs degrade, to stable order. Splits
     invariants from situational across BOTH types, injects all invariants in full +
     the SHARED-budget-trimmed situational tail (concepts + entries ranked + trimmed
     together, similarity-ranked when the turn query embeds), renders the glossary
@@ -517,15 +521,27 @@ async def _build_governed_injection(
         )
     # KNW-92 / KNW-94: embed the turn query + fetch the situational candidates'
     # vectors so the shared trim can rank the SITUATIONAL pool by query<->item
-    # cosine similarity. both steps soft-fail to empty (the stable-order branch).
+    # cosine similarity. both steps degrade to the stable-order branch.
     query_embedding = await _embed_turn_query(integration, messages=messages, user_id=user_id)
-    situational_embeddings = await _fetch_situational_embeddings(
-        integration,
-        situational_concepts=concept_sit,
-        situational_entries=entry_sit,
-        query_embedding=query_embedding,
-        customer_scope=customer_id,
-    )
+    stable_order_cause: str | None = None
+    try:
+        situational_embeddings = await _fetch_situational_embeddings(
+            integration,
+            situational_concepts=concept_sit,
+            situational_entries=entry_sit,
+            query_embedding=query_embedding,
+            customer_scope=customer_id,
+        )
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- vector fetch is ranking input only; a fault puts the whole pool in stable order rather than failing the turn
+        # all or nothing: had one side's vectors arrived, its items would rank ahead of
+        # every item of the side that failed -- a ranking that reads as a real one
+        contain(
+            exc,
+            log=log,
+            what=f"knowledge situational vector fetch failed (soft-fail to stable order): {type(exc).__name__}: {exc}",
+        )
+        situational_embeddings = {}
+        stable_order_cause = f"the situational vector fetch failed ({type(exc).__name__})"
     # ONE shared budget across BOTH situational tails: rank + trim the unified
     # pool, then split kept items back by type for rendering (task-03 Note 5).
     kept_concept_sit, kept_entry_sit = _rank_and_trim_shared(
@@ -534,6 +550,7 @@ async def _build_governed_injection(
         budget=effective_budget,
         query_embedding=query_embedding,
         embeddings=situational_embeddings,
+        stable_order_cause=stable_order_cause,
     )
     _warn_on_situational_starvation(
         situational_entries=len(entry_sit),
@@ -714,6 +731,7 @@ def _rank_and_trim_shared(
     budget: int,
     query_embedding: list[float] | None = None,
     embeddings: dict[UUID, list[float]] | None = None,
+    stable_order_cause: str | None = None,
 ) -> tuple[list[ConceptEffective], list[EntryEffective]]:
     """Rank the SHARED situational tail (concepts + entries) and trim to budget.
 
@@ -752,13 +770,17 @@ def _rank_and_trim_shared(
     :param embeddings: map of situational item id to its stored embedding; an absent
         id is a NULL-embedding item (stable-order fallback)
     :ptype embeddings: dict[UUID, list[float]] | None
+    :param stable_order_cause: why the ranking inputs could not be read, when they
+        could not; every item then takes the stable-order branch and the fallback
+        warning names this cause
+    :ptype stable_order_cause: str | None
     :return: tuple ``(kept_concepts, kept_entries)`` -- each list in the RANKED
         order the trim survived; the renderer injects situational items in THIS
         order and must not re-sort these lists
     :rtype: tuple[list[ConceptEffective], list[EntryEffective]]
     """
     embeddings = embeddings or {}
-    similarity_active = bool(query_embedding)
+    similarity_active = bool(query_embedding) and stable_order_cause is None
     pool: list[_RankedSituational] = []
     # each item is costed by rendering it, so this is the FIRST render of the
     # situational tail and it carries the same per-item isolation as
@@ -866,6 +888,7 @@ def _rank_and_trim_shared(
         similarity_active=similarity_active,
         pool_size=len(pool),
         embedded_count=embedded_count,
+        cause=stable_order_cause,
     )
     if similarity_active and query_embedding is not None:
         _warn_on_embedding_dimension_mismatch(
@@ -907,6 +930,7 @@ def _warn_on_stable_order_fallback(
     similarity_active: bool,
     pool_size: int,
     embedded_count: int,
+    cause: str | None = None,
 ) -> None:
     """Warn once per turn when situational ranking degraded to stable order (SDS-02).
 
@@ -923,12 +947,22 @@ def _warn_on_stable_order_fallback(
     :ptype pool_size: int
     :param embedded_count: how many of those candidates carry a stored vector
     :ptype embedded_count: int
+    :param cause: why the ranking inputs could not be read, when that is the reason;
+        named in place of the two inferred causes
+    :ptype cause: str | None
     :return: nothing; the signal is the log record
     :rtype: None
     """
     if pool_size == 0:
         return
-    if not similarity_active:
+    if cause is not None:
+        log.warning(
+            "knowledge situational ranking fell back to stable order: %s (candidates=%d); "
+            "ranking quality is degraded for this turn",
+            cause,
+            pool_size,
+        )
+    elif not similarity_active:
         log.warning(
             "knowledge situational ranking fell back to stable order: the turn "
             "query did not embed (candidates=%d); ranking quality is degraded "
@@ -1445,14 +1479,16 @@ async def _embed_turn_query(
     messages: Sequence[BaseMessage],
     user_id: UUID,
 ) -> list[float]:
-    """Embed the turn query via the integration's model with the memory soft-fail.
+    """Embed the turn query via the integration's model, for the situational ranking.
 
     Reuses the SAME embedding model the memory system uses (the integration's
     ``embedding_model``): no new transport, no new model (D7). Returns an EMPTY list
     -- the stable-order branch -- when the model is unwired, the query text is empty,
-    or the embedding call fails / soft-fails to ``[]`` (KNW-94). An embedding outage
-    degrades ranking quality, never the turn; the error class is named in a warning,
-    never swallowed silently.
+    or the embedder gives no usable vector (KNW-94). An embedding outage degrades
+    ranking quality, never the turn: it is contained (logged with its traceback and
+    counted on ``contained_errors_total``), and only an
+    :class:`~threetears.langgraph.embeddings.EmbeddingUnavailableError` is -- any other
+    fault here is a bug and propagates.
 
     :param integration: knowledge integration carrying the embedding model
     :ptype integration: KnowledgeIntegration
@@ -1461,7 +1497,7 @@ async def _embed_turn_query(
     :param user_id: the verified turn user, bound as the usage-attribution principal
         for this embedding
     :ptype user_id: UUID
-    :return: the query embedding vector, or ``[]`` on any soft-fail
+    :return: the query embedding vector, or ``[]`` when there is none to rank by
     :rtype: list[float]
     """
     result: list[float] = []
@@ -1474,13 +1510,12 @@ async def _embed_turn_query(
             # embedder. the scope wraps the embed await directly so the contextvar
             # is read within the same coroutine.
             with embedding_attribution_scope(user_id):
-                vector = await model.aembed_query(query_text)
-            result = vector if vector else []
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- query embedding is best-effort ranking input; a fault soft-fails to stable order rather than failing the turn
+                result = await embed_query(model, query_text)
+        except EmbeddingUnavailableError as exc:
             contain(
                 exc,
                 log=log,
-                what=f"knowledge situational query embedding failed (soft-fail to stable order): {type(exc).__name__}: {exc}",
+                what=f"knowledge situational query embedding failed (soft-fail to stable order): {exc}",
             )
             result = []
     return result
@@ -1500,9 +1535,11 @@ async def _fetch_situational_embeddings(
     -- the hot ``list_visible_to_user`` projection stays vector-free; this pulls
     vectors for the small to-be-ranked set via the collections' ``fetch_embeddings``
     (the ``embedding::text`` cast path). Skipped entirely (empty map) when
-    ``query_embedding`` is empty. Each side soft-fails INDEPENDENTLY to an empty
-    contribution so a concept-vector fault never blocks the entry ranking or the
-    turn; a missing vector simply falls the item back to stable-order (KNW-92).
+    ``query_embedding`` is empty. A fault on EITHER side raises, so the caller puts
+    the whole pool in stable order: each side used to soft-fail on its own, and the
+    side whose vectors arrived then ranked ahead of every item of the side that
+    failed. A vector the store simply does not hold falls that one item back to
+    stable order (KNW-92).
 
     :param integration: knowledge integration carrying the collections
     :ptype integration: KnowledgeIntegration
@@ -1518,6 +1555,7 @@ async def _fetch_situational_embeddings(
     :ptype customer_scope: UUID
     :return: map of situational item id to its stored embedding vector
     :rtype: dict[UUID, list[float]]
+    :raises Exception: whatever either collection's ``fetch_embeddings`` raised
     """
     result: dict[UUID, list[float]] = {}
     if not query_embedding:
@@ -1525,25 +1563,11 @@ async def _fetch_situational_embeddings(
     entry_collection = integration.entry_collection
     if entry_collection is not None and situational_entries:
         entry_ids = [e.entry.id for e in situational_entries]
-        try:
-            result.update(await entry_collection.fetch_embeddings(entry_ids, customer_scope=customer_scope))
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- vector fetch is best-effort ranking input; a fault falls the items back to stable order rather than failing the turn
-            contain(
-                exc,
-                log=log,
-                what=f"knowledge situational entry-vector fetch failed (soft-fail to stable order): {type(exc).__name__}: {exc}",
-            )
+        result.update(await entry_collection.fetch_embeddings(entry_ids, customer_scope=customer_scope))
     concept_collection = integration.concept_collection
     if concept_collection is not None and situational_concepts:
         concept_ids = [c.concept.id for c in situational_concepts]
-        try:
-            result.update(await concept_collection.fetch_embeddings(concept_ids, customer_scope=customer_scope))
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- vector fetch is best-effort ranking input; a fault falls the items back to stable order rather than failing the turn
-            contain(
-                exc,
-                log=log,
-                what=f"knowledge situational concept-vector fetch failed (soft-fail to stable order): {type(exc).__name__}: {exc}",
-            )
+        result.update(await concept_collection.fetch_embeddings(concept_ids, customer_scope=customer_scope))
     return result
 
 

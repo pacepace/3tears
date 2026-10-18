@@ -50,6 +50,7 @@ from threetears.nats import Subjects
 from threetears.observe import contain, get_logger
 
 __all__ = [
+    "DraftListIncompleteError",
     "DraftView",
     "KnowledgeIntegration",
     "GovernedKnowledgeUnavailableError",
@@ -83,6 +84,38 @@ class GovernedKnowledgeUnavailableError(RuntimeError):
     A DISABLED layer (no collection wired) is not this: that is a deliberate
     configuration and still returns empty.
     """
+
+
+class DraftListIncompleteError(RuntimeError):
+    """One side of the caller's own drafts (entries or concepts) could not be read.
+
+    Raised by :meth:`KnowledgeIntegration.list_own_drafts` in place of the list it
+    used to answer with the failed side silently left out, which read to the author
+    as "these are all your drafts". The side that WAS read still reaches the caller,
+    on :attr:`drafts`, so a management tool can show it and say what is missing.
+
+    :ivar drafts: the drafts that were read
+    :ivar unread: the sides that could not be read, ``'entry'`` and/or ``'concept'``
+    """
+
+    def __init__(self, drafts: list[DraftView], unread: list[str], causes: list[str]) -> None:
+        """
+        :param drafts: the drafts that were read
+        :ptype drafts: list[DraftView]
+        :param unread: the sides that could not be read
+        :ptype unread: list[str]
+        :param causes: one ``Type: message`` per unread side, in the same order
+        :ptype causes: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(
+            "your "
+            + " and ".join(f"{side} drafts ({cause})" for side, cause in zip(unread, causes, strict=True))
+            + " could not be read"
+        )
+        self.drafts = drafts
+        self.unread = unread
 
 
 #: The three scope-context values (mirrors the hub's ``eval_runs.scope_context``
@@ -294,8 +327,10 @@ class KnowledgeIntegration:
         Unions the entry-collection and concept-collection own-drafts reads (each
         a SELECT over the rbac-read proxy admitted by the broker carve-out).
         Returns the caller's OWN ``status='draft'`` rows only -- drafts are private
-        to their author and never surface in retrieval. Soft-fails each side
-        independently so a concept backend fault never hides the entry drafts.
+        to their author and never surface in retrieval. Each side is read on its
+        own, so a concept backend fault never hides the entry drafts -- and never
+        passes for "no concept drafts" either: a side that fails raises
+        :class:`DraftListIncompleteError`, carrying the side that was read.
 
         :param user_id: authoring user UUID; only this user's drafts are returned
         :ptype user_id: UUID
@@ -304,22 +339,23 @@ class KnowledgeIntegration:
         :ptype customer_scope: UUID
         :return: the caller's own drafts (entries + concepts)
         :rtype: list[DraftView]
+        :raises DraftListIncompleteError: when either side could not be read
         """
         drafts: list[DraftView] = []
-        if self.entry_collection is not None:
+        unread: list[str] = []
+        causes: list[str] = []
+        sides = (("entry", self.entry_collection), ("concept", self.concept_collection))
+        for side, collection in sides:
+            if collection is None:
+                continue
             try:
-                drafts.extend(
-                    await self.entry_collection.list_own_drafts(user_id, customer_scope=customer_scope),
-                )
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- draft listing is best-effort; an entry-backend fault must not hide the concept drafts or crash the tool
-                contain(exc, log=log, what=f"entry drafts list failed (soft-fail): {type(exc).__name__}: {exc}")
-        if self.concept_collection is not None:
-            try:
-                drafts.extend(
-                    await self.concept_collection.list_own_drafts(user_id, customer_scope=customer_scope),
-                )
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- draft listing is best-effort; a concept-backend fault must not hide the entry drafts or crash the tool
-                contain(exc, log=log, what=f"concept drafts list failed (soft-fail): {type(exc).__name__}: {exc}")
+                drafts.extend(await collection.list_own_drafts(user_id, customer_scope=customer_scope))
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- one backend's fault must not hide the other side's drafts; it is raised below, after both are read
+                contain(exc, log=log, what=f"{side} drafts list failed: {type(exc).__name__}: {exc}")
+                unread.append(side)
+                causes.append(f"{type(exc).__name__}: {exc}")
+        if unread:
+            raise DraftListIncompleteError(drafts, unread, causes)
         return drafts
 
 

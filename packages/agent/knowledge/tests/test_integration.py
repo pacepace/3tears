@@ -4,7 +4,7 @@ Covers the pure, non-trivial logic that does not need live infrastructure: the
 eval scope-context clamp (:func:`scope_context_admitted_scopes` and its effect on
 :func:`retrieve_entries` / :func:`retrieve_concepts`), the disabled-collection and
 soft-fail contracts, the draft publish no-op when the NATS client is unwired, and
-the own-drafts union with independent per-side soft-fail.
+the own-drafts union, each side read on its own and a failed side raised.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from threetears.knowledge import ConceptSnapshot, EntrySnapshot, Scope
 from threetears.knowledge import KnowledgeDraftCommand, KnowledgeDraftEvent
 
 from threetears.agent.knowledge.integration import (
+    DraftListIncompleteError,
     DraftView,
     KnowledgeIntegration,
     GovernedKnowledgeUnavailableError,
@@ -241,10 +242,12 @@ class TestListOwnDrafts:
         targets = {d.target for d in drafts}
         assert targets == {"entry", "concept"}
 
-    async def test_concept_fault_does_not_hide_entry_drafts(self) -> None:
+    async def test_a_concept_fault_neither_hides_the_entry_drafts_nor_passes_for_no_concept_drafts(self) -> None:
         integration = KnowledgeIntegration(
             entry_collection=_DraftColl([_draft("entry")]),
             concept_collection=_DraftColl([], raises=True),
         )
-        drafts = await integration.list_own_drafts(uuid7(), customer_scope=uuid7())
-        assert [d.target for d in drafts] == ["entry"]
+        with pytest.raises(DraftListIncompleteError, match=r"concept drafts \(RuntimeError: draft boom\)") as caught:
+            await integration.list_own_drafts(uuid7(), customer_scope=uuid7())
+        assert [d.target for d in caught.value.drafts] == ["entry"]
+        assert caught.value.unread == ["concept"]
