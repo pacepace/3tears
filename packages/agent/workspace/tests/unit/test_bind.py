@@ -22,6 +22,7 @@ the fs_write unit-test style already in the tree.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -422,6 +423,32 @@ async def test_bind_body_deletes_file_emits_delete_journal(
     assert journal_rows[0][1][3] == 4  # prior+1
     assert journal_rows[0][1][6] == "delete"
     assert len(delete_head) == 1
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 directory, so it cannot be made unreadable")
+@pytest.mark.asyncio
+async def test_bind_exit_keeps_the_row_of_a_file_it_cannot_read(tmp_path: Path) -> None:
+    """a directory the body leaves unreadable fails capture-back; its files' L3 rows are not deleted."""
+    content = b"still here"
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[_FakeFile("sub/kept.txt", content, _sha(content), 2)],
+    )
+    unreadable = None
+    try:
+        with pytest.raises(PermissionError):
+            async with await _call_bind(harness) as disk_root:
+                assert (disk_root / "sub" / "kept.txt").read_bytes() == content
+                unreadable = disk_root / "sub"
+                unreadable.chmod(0)
+    finally:
+        if unreadable is not None:
+            unreadable.chmod(0o755)
+
+    executions = harness["pool"].conn.executions
+    assert [e for e in executions if "DELETE FROM workspace_files" in e[0]] == []
+    assert _journal(executions, "sub/kept.txt") == []
+    assert harness["lease"].handles[0].released is True
 
 
 @pytest.mark.asyncio

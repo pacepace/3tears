@@ -12,8 +12,10 @@ so the atomic-write durability contract is exercised for real.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -251,6 +253,69 @@ async def testsnapshot_disk_skips_symlink_that_escapes_root(
     assert result["ok.txt"][0] == b"inside"
     # the escaping symlink was skipped
     assert "escape.txt" not in result
+
+
+_ROOT_READS_EVERYTHING = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root reads a mode-000 directory, so the unreadable directory cannot be made"
+)
+
+
+@pytest.mark.asyncio
+@_ROOT_READS_EVERYTHING
+async def test_a_directory_the_snapshot_cannot_list_fails_it_rather_than_reading_as_empty(tmp_path: Path) -> None:
+    """``rglob`` passed an unreadable directory over, so every file under it read as deleted."""
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    (root / "ok.txt").write_bytes(b"inside")
+    (root / "sub" / "kept.txt").write_bytes(b"still here")
+    (root / "sub").chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            await materialize_module.snapshot_disk(root)
+    finally:
+        (root / "sub").chmod(0o755)
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_path_cannot_be_resolved_fails_the_snapshot_rather_than_reading_as_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """an unresolvable path was skipped like an escaping symlink, and capture-back deletes every file it misses."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "ok.txt").write_bytes(b"inside")
+    (root / "unresolvable.txt").write_bytes(b"still here")
+    real_resolve = Path.resolve
+
+    def _resolve(self: Path, strict: bool = False) -> Path:
+        if self.name == "unresolvable.txt":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", _resolve)
+    with pytest.raises(PermissionError):
+        await materialize_module.snapshot_disk(root)
+
+
+@pytest.mark.asyncio
+async def test_a_directory_removed_from_disk_reads_as_its_files_gone(tmp_path: Path) -> None:
+    """a directory that no longer exists holds no files: only an unreadable one fails the snapshot."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "ok.txt").write_bytes(b"inside")
+    real_walk = Path.walk
+
+    def _walk_with_a_vanished_directory(
+        self: Path, top_down: bool = True, on_error: Any = None, follow_symlinks: bool = False
+    ) -> Any:
+        assert on_error is not None
+        on_error(FileNotFoundError(2, "No such file or directory", str(self / "gone")))
+        return real_walk(self, top_down=top_down, on_error=on_error, follow_symlinks=follow_symlinks)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "walk", _walk_with_a_vanished_directory)
+        result = await materialize_module.snapshot_disk(root)
+    assert set(result) == {"ok.txt"}
 
 
 @pytest.mark.asyncio

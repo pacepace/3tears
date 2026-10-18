@@ -58,14 +58,17 @@ anti-patterns deliberately avoided:
 - automatic deletion of the disk root after bind exit -- never; the
   next bind call benefits from a warm disk state, and explicit cleanup
   is an administrative concern.
-- :func:`os.walk` for disk enumeration -- use :meth:`pathlib.Path.rglob`
-  to match the rest of the codebase.
+- :func:`os.walk` or :meth:`pathlib.Path.rglob` for the capture-back
+  snapshot -- both pass an unreadable directory over silently, and a
+  file the snapshot misses is a file capture-back deletes;
+  :meth:`pathlib.Path.walk` with an ``on_error`` that raises is used.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import stat
 import tempfile
 from collections import deque
 from collections.abc import Callable
@@ -227,13 +230,35 @@ def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _unlisted_directory(exc: OSError) -> None:
+    """``on_error`` for :meth:`Path.walk` in :func:`_snapshot_disk_sync`: a directory that cannot be listed raises.
+
+    a directory that is gone holds no files, so :class:`FileNotFoundError` is passed over; any other
+    error (an unreadable directory, an I/O fault) is raised, because every file under it would
+    otherwise be missing from the snapshot and capture-back would delete its row.
+
+    :param exc: the error :func:`os.scandir` raised for one directory
+    :ptype exc: OSError
+    :return: None, when the directory no longer exists
+    :rtype: None
+    :raises OSError: ``exc``, for any directory that exists but cannot be listed
+    """
+    if not isinstance(exc, FileNotFoundError):
+        raise exc
+
+
 def _snapshot_disk_sync(disk_root: Path) -> dict[str, tuple[bytes, str]]:
     """sync walker: enumerate every file under ``disk_root``, return ``{relpath: (bytes, sha256)}``.
 
-    walks via :meth:`Path.rglob` (not :func:`os.walk`) and filters to
-    regular files. symlinks that resolve OUTSIDE the root are dropped
-    defensively so an attacker who planted a symlink into ``/etc`` cannot
-    exfiltrate its contents via the capture-back path.
+    walks via :meth:`Path.walk` and keeps regular files and the symlinks that resolve to one.
+    symlinks that resolve OUTSIDE the root are dropped defensively so an attacker who planted a
+    symlink into ``/etc`` cannot exfiltrate its contents via the capture-back path.
+
+    a file absent from this snapshot is a file capture-back deletes from L3, so anything the walker
+    cannot read raises rather than reading as absent: a directory it cannot list, an entry it cannot
+    ``lstat``, a path it cannot resolve, a file it cannot read. :meth:`Path.rglob` and
+    :meth:`Path.is_file` both pass such errors over silently, which is why neither decides
+    membership here.
 
     this is the sync, blocking body. async callers must invoke via
     :func:`asyncio.to_thread` so the event loop is not blocked on the
@@ -243,32 +268,37 @@ def _snapshot_disk_sync(disk_root: Path) -> dict[str, tuple[bytes, str]]:
     :ptype disk_root: Path
     :return: mapping from POSIX-style relative path to (content, sha256)
     :rtype: dict[str, tuple[bytes, str]]
+    :raises OSError: when a directory, entry or file under ``disk_root`` cannot be read
     """
     out: dict[str, tuple[bytes, str]] = {}
     resolved_root = disk_root.resolve()
-    for candidate in disk_root.rglob("*"):
-        if not candidate.is_file():
-            continue
-        # reject symlinks (or any entry) whose resolved target escapes
-        # the root. is_file() follows symlinks; .resolve() + parentage
-        # check closes the symlink-escape hole explicitly.
-        try:
+    for directory, _subdirs, names in disk_root.walk(on_error=_unlisted_directory):
+        for name in names:
+            candidate = directory / name
+            mode = candidate.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                # a dangling or looping symlink, or one to a directory, is not a file of this workspace
+                if not candidate.is_file():
+                    continue
+            elif not stat.S_ISREG(mode):
+                continue
+            # a symlink whose target escapes the root is not a file of this workspace: it is left
+            # out, and said. is_file() follows symlinks; .resolve() + parentage closes the hole.
             resolved_candidate = candidate.resolve()
-            resolved_candidate.relative_to(resolved_root)
-        except OSError, ValueError:
-            log.warning(
-                "workspace.snapshot_disk.skip_escape",
-                extra={
-                    "extra_data": {
-                        "candidate": str(candidate),
-                        "disk_root": str(disk_root),
+            if not resolved_candidate.is_relative_to(resolved_root):
+                log.warning(
+                    "workspace.snapshot_disk.skip_escape",
+                    extra={
+                        "extra_data": {
+                            "candidate": str(candidate),
+                            "disk_root": str(disk_root),
+                        },
                     },
-                },
-            )
-            continue
-        rel = candidate.relative_to(disk_root).as_posix()
-        data = candidate.read_bytes()
-        out[rel] = (data, _sha256_bytes(data))
+                )
+                continue
+            rel = candidate.relative_to(disk_root).as_posix()
+            data = candidate.read_bytes()
+            out[rel] = (data, _sha256_bytes(data))
     return out
 
 
