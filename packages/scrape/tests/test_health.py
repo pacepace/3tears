@@ -27,7 +27,7 @@ from threetears.core.testing.kv import FakeNatsClient
 from threetears.models import LlmPurpose
 
 from threetears.scrape.challenge import PageVerdict
-from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection, StoredTimestampUnreadable
 from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
@@ -647,3 +647,26 @@ async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTarg
         "is guarding against a different version than the one this write was based on"
     )
     assert entity.content_fingerprint == content_fingerprint(_PAGE)
+
+
+def test_a_stored_timestamp_that_does_not_parse_is_refused_rather_than_read_as_absent(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """``blocked_until`` read as ``None`` means "no backoff in force": an unreadable one must not lift a block."""
+    entity = health.create({"target_id": "warn_garbled", "blocked_until": "not-a-timestamp"})
+
+    with pytest.raises(StoredTimestampUnreadable, match="not-a-timestamp"):
+        _ = entity.blocked_until
+
+
+def test_a_stored_timestamp_of_the_wrong_type_is_refused(health: ScrapeTargetHealthCollection) -> None:
+    entity = health.create({"target_id": "warn_numeric", "robots_blocked_at": 1721900000})
+
+    with pytest.raises(StoredTimestampUnreadable, match="int"):
+        _ = entity.robots_blocked_at
+
+
+def test_an_absent_stored_timestamp_still_reads_as_none(health: ScrapeTargetHealthCollection) -> None:
+    entity = health.create({"target_id": "warn_absent", "blocked_until": ""})
+
+    assert entity.blocked_until is None

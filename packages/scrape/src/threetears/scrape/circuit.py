@@ -73,6 +73,7 @@ from threetears.core.http_client import CircuitBreakerLike
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError, CircuitState
 from threetears.observe import contain, get_logger
 
+from .collections import StoredTimestampUnreadable
 from .health import ScrapeTargetHealth, ScrapeTargetHealthCollection, clear_robots_block, record_circuit_state
 
 if TYPE_CHECKING:
@@ -389,6 +390,31 @@ class TargetCircuit:
 
         was = _stored_state(health.circuit_state)
 
+        # A window that cannot be read is in force, not absent: read as absent it would lift the
+        # block on the very target it is holding back. A fresh window from now is written over it,
+        # so the target backs off for one window and then recovers on the ordinary schedule,
+        # rather than staying blocked on a value nothing can read.
+        window = self._stored_window(health, moment)
+        if window.unreadable:
+            self._release_in_process_probe(breaker)
+            await self._write(
+                target_id,
+                state=was,
+                failures=health.consecutive_fetch_failures,
+                blocked_until=window.until,
+            )
+            wait = _seconds_until(window.until, moment)
+            return FetchDecision(
+                permitted=False,
+                state=was,
+                retry_after_seconds=wait,
+                is_probe=False,
+                reason=(
+                    "the stored backoff window for this target could not be read, so it is treated as in "
+                    f"force: backing off for {wait:.0f}s"
+                ),
+            )
+
         # A HALF_OPEN row means a probe was admitted and has not reported back. `CircuitBreaker`
         # bounds that with an in-flight flag, but `restore()` cannot carry one across a process
         # boundary, so its HALF_OPEN branch consults no timer and would admit a fresh probe on
@@ -403,7 +429,7 @@ class TargetCircuit:
         # the doubling curve. Deferring to the bucket would swap a decay for a floor, and a
         # constant re-probe cadence is the thing this whole module exists to remove.
         if was is CircuitState.HALF_OPEN:
-            outstanding = _seconds_until(health.blocked_until, moment)
+            outstanding = _seconds_until(window.until, moment)
             if outstanding > 0.0:
                 self._release_in_process_probe(breaker)
                 return FetchDecision(
@@ -583,7 +609,7 @@ class TargetCircuit:
             target_id,
             state=restored.state,
             failures=restored.failure_count,
-            blocked_until=None if closed else health.blocked_until,
+            blocked_until=None if closed else self._stored_window(health, moment).until,
             egress=egress,
         )
         if closed:
@@ -784,7 +810,7 @@ class TargetCircuit:
         can read, query and reason about.
         """
         failures = failure_count if failure_count is not None else (health.consecutive_fetch_failures if health else 0)
-        blocked_until = health.blocked_until if health is not None else None
+        blocked_until = self._stored_window(health, now).until if health is not None else None
         remaining = (blocked_until - now).total_seconds() if blocked_until is not None else 0.0
         return CircuitBreaker.restore(
             target_id,
@@ -958,6 +984,35 @@ class TargetCircuit:
                 level="error",
             )
 
+    def _stored_window(self, health: ScrapeTargetHealth, now: datetime) -> _Window:
+        """The row's ``blocked_until``; one that cannot be read is a fresh window from *now*.
+
+        Fail closed: an unreadable window is read as a backoff in force for this policy's delay
+        at the row's failure count, never as no window at all.
+
+        :param health: the durable row
+        :ptype health: ScrapeTargetHealth
+        :param now: the current time
+        :ptype now: datetime
+        :return: the window, and whether it stands in for one that could not be read
+        :rtype: _Window
+        """
+        try:
+            return _Window(until=health.blocked_until, unreadable=False)
+        except StoredTimestampUnreadable as exc:
+            contain(
+                exc,
+                log=log,
+                what=(
+                    f"scrape circuit: the stored backoff window of target {health.target_id} could not be read; "
+                    "treating it as in force"
+                ),
+                extra={"target_id": health.target_id},
+                level="error",
+            )
+            delay = self._policy.delay_for(health.consecutive_fetch_failures)
+            return _Window(until=now + timedelta(seconds=delay), unreadable=True)
+
     async def _read_health(self, target_id: str) -> _HealthRead:
         """Read the durable row, reporting an unreadable store as distinct from an absent row.
 
@@ -1009,6 +1064,13 @@ class TargetCircuit:
                 extra={"target_id": target_id},
                 level="error",
             )
+
+
+class _Window(NamedTuple):
+    """A row's backoff window, and whether it stands in for a stored one that could not be read."""
+
+    until: datetime | None
+    unreadable: bool
 
 
 class _HealthRead(NamedTuple):

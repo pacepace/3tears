@@ -58,6 +58,7 @@ __all__ = [
     "ScrapeRecipeCollection",
     "ScrapeTarget",
     "ScrapeTargetCollection",
+    "StoredTimestampUnreadable",
     "decode_field_schema",
     "decode_nav_steps",
     "encode_field_schema",
@@ -68,6 +69,22 @@ __all__ = [
 log = get_logger(__name__)
 
 
+class StoredTimestampUnreadable(ValueError):
+    """a stored timestamp column holds something that is not a timestamp.
+
+    raised in place of reading it as absent: an unreadable ``blocked_until`` read as
+    ``None`` is "no backoff in force", which would quietly lift a block, and an
+    unreadable ``robots_blocked_at`` would take a target out of the human queue.
+
+    :param raw: the stored value
+    :ptype raw: object
+    """
+
+    def __init__(self, raw: object) -> None:
+        self.raw = raw
+        super().__init__(f"stored timestamp {raw!r} ({type(raw).__name__}) is not an ISO-8601 timestamp")
+
+
 def _parse_dt(raw: Any) -> datetime | None:
     """Parse a possibly-ISO-string timestamp back into a ``datetime``.
 
@@ -76,17 +93,27 @@ def _parse_dt(raw: Any) -> datetime | None:
     not parse it back on read -- so a value read through L2 arrives as a
     string even though the in-memory L3 fallback keeps it as a native
     ``datetime``.
+
+    ``None`` and the empty string are an absent timestamp. Anything else that is
+    not a timestamp is refused rather than read as absent.
+
+    :param raw: the stored value
+    :ptype raw: Any
+    :return: the timestamp, or ``None`` when none is stored
+    :rtype: datetime | None
+    :raises StoredTimestampUnreadable: the stored value is neither absent, a ``datetime``,
+        nor an ISO-8601 string
     """
-    if isinstance(raw, str) and raw:
-        try:
-            raw = datetime.fromisoformat(raw)
-        except ValueError:  # NOSILENT: malformed timestamp, caller treats as absent
-            raw = None
+    if raw is None or raw == "":
+        return None
     if isinstance(raw, datetime):
-        result = raw
-    else:
-        result = None
-    return result
+        return raw
+    if not isinstance(raw, str):
+        raise StoredTimestampUnreadable(raw)
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise StoredTimestampUnreadable(raw) from exc
 
 
 def _decode_json_field(raw: Any, default: Any) -> Any:

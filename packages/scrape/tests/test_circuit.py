@@ -1259,3 +1259,35 @@ class TestABackoffPolicyThatCouldNotSuppressAnything:
         policy = BackoffPolicy(failure_threshold=2, base_delay_seconds=60.0, max_delay_seconds=480.0)
 
         assert policy.delay_for(2) == 60.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [CircuitState.OPEN, CircuitState.HALF_OPEN])
+async def test_an_unreadable_backoff_window_backs_off_rather_than_lifting_the_block(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy, state: CircuitState
+) -> None:
+    """A ``blocked_until`` that does not parse used to read as no window at all, so the very
+    next poll fetched a target the circuit was holding back. It is now a window in force,
+    rewritten from now, so the target recovers on the ordinary schedule after one window."""
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=state.value,
+        consecutive_fetch_failures=2,
+        blocked_until="not-a-timestamp",  # type: ignore[arg-type]
+    )
+    circuit = TargetCircuit(health, policy=policy)
+
+    decision = await circuit.check(_T, now=_NOW)
+
+    assert not decision.permitted
+    assert decision.state is state
+    assert decision.retry_after_seconds == pytest.approx(60.0)
+    assert "could not be read, so it is treated as in force" in decision.reason
+    row = await health.get(_T)
+    assert row is not None
+    assert row.blocked_until == _NOW + timedelta(seconds=60), "the unreadable window is rewritten from now"
+    assert row.circuit_state == state.value
+
+    later = await circuit.check(_T, now=_NOW + timedelta(seconds=61))
+    assert later.permitted and later.is_probe, "after one window the target is probed as usual"

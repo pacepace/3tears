@@ -221,22 +221,38 @@ class TestParseDocumentBytesToHtmlOcrImages:
         assert f"data:image/png;base64,{base64.b64encode(b'page1-png-bytes').decode('ascii')}" in result.html
         assert result.html.strip().endswith("</html>")  # embedded before the closing tag, still well-formed
 
-    async def test_was_ocr_true_but_image_rendering_fails_still_returns_the_text_html(
+    async def test_was_ocr_true_but_image_rendering_fails_returns_the_text_and_names_the_lost_images(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A rendering failure must never take down an otherwise-usable OCR'd
-        text result -- render_pdf_pages_to_images's own honest-empty-list
-        contract (see its docstring) means zero <img> tags get embedded,
-        not a crash."""
+        text result -- but the images it lost are named on the result, so a
+        vision read can tell "no images" from "a document without pages"."""
         fake_result = DocumentResult(text="Scanned letter text", title=None, page_count=1, word_count=3, was_ocr=True)
         monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
-        monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", lambda data: [])
+        monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", _refuse_to_render)
 
         result = await parse_document_bytes_to_html(b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf")
 
         assert result.was_ocr is True
         assert "Scanned letter text" in result.html
         assert OCR_PAGE_IMAGE_CLASS not in result.html
+        assert result.page_images_fault is not None and "boom" in result.page_images_fault
+
+    async def test_force_images_whose_rendering_fails_is_refused_rather_than_parsed_without_them(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake_result = DocumentResult(
+            text="Born-digital table text", title=None, page_count=1, word_count=3, was_ocr=False
+        )
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", _refuse_to_render)
+
+        with pytest.raises(DocumentDriverError) as caught:
+            await parse_document_bytes_to_html(
+                b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf", force_images=True
+            )
+        assert caught.value.code == "render_failed"
+        assert "boom" in caught.value.message
 
     async def test_force_images_embeds_pages_even_when_was_ocr_is_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Live-found: a born-digital PDF (Nevada's real master WARN table) can
@@ -693,3 +709,8 @@ async def test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver(caplog
         "would let the wrapper's warning stand in for one this driver never emitted"
     )
     assert driver_warnings(caplog, "multi_document"), "the record was emitted and should be findable under its own name"
+
+
+def _refuse_to_render(data: bytes) -> list[bytes]:
+    """``render_pdf_pages_to_images`` as it answers when the pages cannot be rendered."""
+    raise DocumentParseError("parse_failed", "PDF page images could not be rendered: RuntimeError: boom", filename=None)
