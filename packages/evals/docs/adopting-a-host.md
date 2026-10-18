@@ -676,9 +676,9 @@ types the engine stores, and says three things about each:
   judge temperature comparisons, host action jobs) or `derived` (computed from other stored
   documents: analyses, insights, judge profiles).
 - **lifecycle**: `kept` (the evidence core: read from the core baseline on, and deleted by a core baseline reset),
-  `durable` (what people author: templates, rubric dims, judge configs and their tombstones, case sets, test cases
-  and calibration ratings; never wiped by a core baseline, read forever from durable v15, changed only additively
-  or through an upgrader) or `regenerable` (refused after a format change, and made again: an analysis, insight or
+  `durable` (what people author: templates, rubric dims, judge configs and their tombstones, case sets, test cases,
+  calibration ratings and campaigns; never wiped by a core baseline, read forever from durable v15, changed only
+  additively or through an upgrader) or `regenerable` (refused after a format change, and made again: an analysis, insight or
   judge profile is regenerated, a cassette re-captured).
 - **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
   slot, `judge_config_tombstone` a `judge_config`'s).
@@ -687,8 +687,7 @@ types the engine stores, and says three things about each:
 (what people author) are derived from it.
 
 **The evidence core is kept until its baseline moves.** Every release reads it from the core baseline (v15) on.
-The core is what a run produced or binds: runs, results, traces, the out-of-run spend ledger, the campaigns people
-declared and gathered runs into, and the records of how each sweep ended, what each analysis generation spent, and
+The core is what a run produced or binds: runs, results, traces, the out-of-run spend ledger, and the records of how each sweep ended, what each analysis generation spent, and
 which generation holds a campaign's slot (a later build that could not read a slot would block the campaign's
 generations, or start a second beside a live one), and the records of every other job: a launch (the runs it
 started), a second judge's pass (its report), a judge temperature comparison (every answer, stored nowhere else) and
@@ -697,7 +696,7 @@ a host action's job (its result). `CORE_DOC_TYPES` lists them. The core is basel
 and deleted with `reset_core` (below).
 
 **What people author is durable, and no core baseline ever touches it.** Templates, rubric dims, judge configs
-(with their tombstones), case sets, test cases and calibration ratings (`DURABLE_DOC_TYPES`) have a version space
+(with their tombstones), case sets, test cases, calibration ratings and campaigns (`DURABLE_DOC_TYPES`) have a version space
 of their own, forked from core v15 at `.26` (`DURABLE_SCHEMA_VERSION`, `DURABLE_SCHEMA_MINOR`). Its baseline,
 `DURABLE_BASELINE_VERSION`, is 15 forever, and a durable shape changes only additively (a minor) or with an
 upgrader (`DURABLE_UPGRADERS`); a durable major never resets. No durable document needs a core one to be read: a
@@ -705,6 +704,21 @@ rating names the run and result it was given on as provenance, and carries what 
 (`CalibrationRating.rated`), so it still calibrates a judge after the result is gone. Budget storage at about one
 judged transcript per rating. **Back the durable store up like source code**: it is what people wrote, and nothing
 can make it again.
+
+**Campaigns became durable at durable v16 (`0.71.0`)**, when a campaign came to ask one question of one or more
+aspects. The one upgrade step (`upgrade_campaign_v15`, in `DURABLE_UPGRADERS`) reads a stored v15 campaign, core or
+durable, as one aspect labelled with its behavior, its question, control and decision rule as the campaign's
+question, control arm and floors; nothing is rewritten in place. What a host must know before deploying it:
+
+- **No rollback past it.** A build before `0.71.0` refuses every durable document this one writes, templates
+  included, so once it has written, the fleet does not roll back, and during a rolling deploy the older pods refuse
+  what the new ones write. Move every process together.
+- **A routed store relocates first.** Under a `RoutedDocumentStore` that routes by lifecycle, campaigns are now
+  placed with the durable types, so the first start raises `RouteChanged` until you run
+  `RoutedDocumentStore.relocate` (or `reset_core`, which relocates), with the engine stopped.
+- **A core baseline reset keeps campaigns.** `reset_core` and `nuke_all_eval_data(include_durable=False)` no longer
+  delete them, so a campaign can outlive the runs it names: a campaign's view lists those as
+  `unresolved_run_ids`, a lookup that failed rather than a run dropped silently.
 
 **The first public release is the baseline.** It writes core v15.1 (major `CORE_BASELINE_VERSION`, equal to
 `CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 1, which added refused calls to the call ledger and to
@@ -766,10 +780,9 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.1), durable documents (v15.1), regenerable documents
-(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 55), the cell model
-(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions, each at its first
-public release's value. The report has none: it is a page rendered from the bundle, which is the versioned machine
+**Each version space moves on its own.** Core documents (v15.5), durable documents (v16.0), regenerable documents
+(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
+(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
@@ -784,8 +797,8 @@ does not split runs' context: only the results' recorded judges tell the two jud
 An upgrade never recomputes an identity key, so keys from different predicates never silently pool. A kept
 key is stored beside its pre-image and the identity version that computed it, so a read under a later
 `IDENTITY_VERSION` needs no upgrader: a run keeps `variant_levers` beside the keys its results carry, and a
-campaign's declared control keeps `control_levers` and `control_identity_version` beside `control`, recorded when
-the control is addressed from a run (`control_from_run_id`, `set_campaign_control`) and never taken from a caller.
+campaign's arm (`CampaignArm`) keeps `levers` and `identity_version` beside its `variant_key`, recorded when the arm
+is addressed from a run (an arm's `from_run_ids`, `set_campaign_control`) and never taken from a caller.
 Under another version the control matches its stored key, which the cells stamped under its own version keep, and
 the key recomputed from that map, which the arm's new runs carry, so it never goes stale while its old cells are in
 the campaign. Its arm is one set of cells: the new runs' cells where there are any, with the old cells named beside
@@ -892,7 +905,7 @@ once when you adopt the router and again whenever you change the route, with the
 interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
 somewhere other than your `unregistered` store. A release that adds a fact value needs your route to map it: a
 lifecycle route must map `durable` (from `.26`), or it is refused when built. Giving `durable` a store other than
-the one `kept` types were written to moves the eight durable types, so the first start raises `RouteChanged` for
+the one `kept` types were written to moves the nine durable types, so the first start raises `RouteChanged` for
 them until you relocate (or run `RoutedDocumentStore.reset_core`, which relocates).
 
 **Ask whether the stores hold anything before you relocate.** A host's start that adopts tables, rather than
@@ -1286,41 +1299,50 @@ launcher reads every one off `request.apparatus_settings` with no default of its
 the rig as set up (`EvalRun.apparatus_settings`), a component of its measurement context — a launch naming
 a default and one leaving it out are one condition.
 
-## Declaring what a campaign decides
+## Declaring what a campaign asks
 
-A campaign that compares arms to make a decision declares the question it asks and the rule that answers it, before
-its first run. The rule is typed clauses, never words: the engine settles a `DecisionRule`, and reads no rule out of
-a question's text.
+A campaign that compares arms to make a decision asks **one question** of them, measured on one or more
+**aspects**, before its first run (`create_campaign`, or the `campaign_create` action). Each aspect is one template,
+its runs, the margin a candidate may fall below the control by there, and its design. **Code reports, the writer
+recommends, a person decides**: code reads each aspect against the control; the floors only warn; and nothing on the
+page decides for the person reading it.
 
 ```python
-from threetears.evals.kernel import CostLower, DecisionRule, Question, RateDrop
-
-asked = Question(
-    text="Does v2 hold every pass rate within 2 points of v1, at a lower cost per reply?",
-    decision=DecisionRule(clauses=(RateDrop(max_points=2), CostLower())),
-)
+definition = {
+    "name": "support v2", "subject_id": "support", "behavior": "support",
+    "question": "Should v2 replace v1 for support?",
+    "arms": [{"label": "v1", "role": "control", "from_run_ids": [v1_routing_run]}],
+    "aspects": [
+        {"label": "routing", "template_id": "routing", "margin": 5.0, "design": routing_design},
+        {"label": "replies", "template_id": "replies", "margin": 2.0, "design": replies_design},
+    ],
+    "floors": [
+        {"aspect": "replies", "clause": {"kind": "rate_drop", "max_points": 2}},
+        {"aspect": "replies", "clause": {"kind": "cost_lower"}},
+    ],
+}
 ```
 
-It goes on the declared design's `questions`. The page quotes the question whole and opens its Decision section with
-the rule in a sentence it writes, the arms by name: `Switch to v2 only if no pass rate drops by more than 2 points
-and v2 costs less per reply. Otherwise stay on v1.`
-
-- **`RateDrop(max_points=2)`** reads every pass/fail reading the arms share, the overall pass rate included.
-  `RateDrop(max_points=2, reading="tone")` reads one: a goal-state check of the template by its verbatim text, a
-  pass/fail judged dimension by its name, or a check measure by its key: a true/false measure, its passes counted
-  at its better end, or a scorer returning a bool (`no tone rate drops by more than 2 points`). A reading the campaign does not measure is refused when the design is declared, listing the ones it does.
-- **`CostLower()`** reads each arm's cost per reply.
-- **The logic is fixed**: switch only if every clause settles switch, keep the moment one settles keep, otherwise
-  unsettled. A rate clause settles either way only over every arm at the case floor, on an interval: keep where a
-  rate's drop is past the margin on its whole interval, switch where every rate's is within it. A drop past the
-  margin on its point estimate alone is unsettled. A cost clause keeps on a cost observed no lower
-  ([Reading reports](reading-reports.md)). An unsettled rule's page states the independent cases a switch needs,
-  computed from the interval each open clause was read on, with their cost.
-- **A rule written as prose is refused** when the design is declared: a question whose text says `Decision rule:`
-  and declares no `decision` names `Question.decision` in the refusal. A question stored that way before rules were
-  typed still loads; its page says the rule went unread, and its verdict is exploratory.
-- **The rule is part of what was asked**: changing it mints a new question that supersedes the old, as changing the
-  text does.
+- **The arms are variants, addressed from runs.** An arm names one or more runs it ran (`from_run_ids`), and the
+  server reads its variant key and lever map from the first; runs of one arm carrying two keys are refused, naming
+  each. The control comes first. A candidate nobody names is read off the runs, one per other variant.
+- **Each aspect holds its own runs.** A run joins one aspect of a campaign, by its template, or by the aspect
+  `add_runs_to_campaign` (`campaign_runs_add`) names; a run another template ran, or one two aspects could take,
+  is refused naming them.
+- **A floor is a typed clause on one aspect**, never words: `{kind: "rate_drop", max_points, reading?}` (a
+  `RateDrop`: no pass rate drops by more than `max_points`; with `reading`, one goal-state check by its verbatim
+  text, a pass/fail judged dimension by its name, or a check measure by its key) or `{kind: "cost_lower"}` (a
+  `CostLower`: the candidate costs less per reply). A reading the aspect does not measure is refused when the
+  campaign is declared, listing the ones it does. A floor reads `broken`, `held` or `unclear` on its own interval
+  ([Reading reports](reading-reports.md#the-rest-of-the-page)); a broken one is the page's first line. **A floor
+  only warns**: it never blocks, never writes the verdict, and never rewrites what the writer recommends.
+- **The declaration is frozen once any aspect holds a run.** To ask again, create a campaign that adopts the aspects
+  it keeps (`aspects_from`, each a campaign id, or `{campaign_id, label}` to relabel a campaign's one aspect): each
+  keeps its template, runs, design and the time its question was asked, so its readings stay as confirmatory as
+  they were. A `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one that never
+  declared one included. Whatever the new campaign adds is dated now and marked as declared after the runs.
+<!-- slice1: WP-5 -- recording the person's call (campaign_record, CampaignCall, floors_overridden) goes here once
+it lands. -->
 
 ## The engine's prompts: shipped defaults, optional overrides
 
