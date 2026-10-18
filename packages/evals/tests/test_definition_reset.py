@@ -176,7 +176,12 @@ def test_a_campaign_spanning_a_reset_refuses_to_pool_the_two_revisions() -> None
             )
     alone = create_campaign(
         storage,
-        {"name": "four only", "subject_id": "subject-1", "behavior": "b", "aspects": [{"label": "b", "run_ids": ["run-four"]}]},
+        {
+            "name": "four only",
+            "subject_id": "subject-1",
+            "behavior": "b",
+            "aspects": [{"label": "b", "run_ids": ["run-four"]}],
+        },
         scope_id=TOYHOST_SCOPE,
         created_by="t",
         profile=profile,
@@ -220,7 +225,12 @@ def test_two_templates_sharing_a_name_at_revision_one_are_not_two_revisions_and_
     )
     alone = create_campaign(
         storage,
-        {"name": "first only", "subject_id": "subject-1", "behavior": "b", "aspects": [{"label": "b", "run_ids": ["run-first"]}]},
+        {
+            "name": "first only",
+            "subject_id": "subject-1",
+            "behavior": "b",
+            "aspects": [{"label": "b", "run_ids": ["run-first"]}],
+        },
         scope_id=TOYHOST_SCOPE,
         created_by="t",
         profile=profile,

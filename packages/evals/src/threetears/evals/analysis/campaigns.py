@@ -336,7 +336,9 @@ def create_campaign(
         )
     floors = _floors(sources, authored.floors)
     _refuse_floors_on_undeclared_aspects(floors, aspects)
-    added = bool(authored.question or authored.floors or authored.margins or own)
+    added = bool(
+        authored.question or authored.floors or authored.margins or any(aspect.design is not None for aspect in own)
+    )
     question = authored.question or QUESTION_SEPARATOR.join(
         dict.fromkeys(source.question for source in sources if source.question)
     )
@@ -1509,7 +1511,9 @@ def _index_entry(arm: _AddressedArm) -> VariantIndexEntry:
     if arm.levers is not None and compute_variant_key(arm.levers) == arm.key:
         return VariantIndexEntry(variant_key=arm.key, levers=dict(arm.levers))
     return VariantIndexEntry(
-        variant_key=arm.key, levers={}, levels_unavailable="its key was digested by another identity predicate"
+        variant_key=arm.key,
+        levers={},
+        levels_unavailable="its lever map was not recorded, or was digested by another identity predicate",
     )
 
 

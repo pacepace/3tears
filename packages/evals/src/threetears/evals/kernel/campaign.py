@@ -47,7 +47,13 @@ from threetears.evals.schema.job_lease import (
     LostField,
 )
 from threetears.evals.schema.refusal import RefusalField
-from threetears.evals.schema.models import ArmSchedule, CoreSchemaVersion, DurableSchemaVersion, SchemaVersion, utc_now_iso
+from threetears.evals.schema.models import (
+    ArmSchedule,
+    CoreSchemaVersion,
+    DurableSchemaVersion,
+    SchemaVersion,
+    utc_now_iso,
+)
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, DURABLE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.kernel.surface import DecisionSurface
@@ -189,7 +195,7 @@ class EvalCampaign(DurableDocumentModel):
         default="",
         description=(
             "The one question the campaign asks of its arms, in the operator's words: what would make a candidate "
-            "the one to adopt. Empty = it asks none, which only an exploratory campaign does."
+            "the one to adopt. Empty = it asks none: every reading is exploratory, though a design is declared."
         ),
     )
     arms: list[CampaignArm] = Field(
@@ -259,7 +265,9 @@ class EvalCampaign(DurableDocumentModel):
         """
         labels = [aspect.label for aspect in self.aspects]
         if repeated := sorted({label for label in labels if labels.count(label) > 1}):
-            raise ValueError(f"aspect label(s) {', '.join(map(repr, repeated))} name more than one aspect; label each once")
+            raise ValueError(
+                f"aspect label(s) {', '.join(map(repr, repeated))} name more than one aspect; label each once"
+            )
         holder: dict[str, str] = {}
         for aspect in self.aspects:
             for run_id in aspect.run_ids:

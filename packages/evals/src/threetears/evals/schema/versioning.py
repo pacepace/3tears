@@ -491,6 +491,7 @@ DURABLE_SCHEMA_VERSION: int = 16
 DURABLE_SCHEMA_MINOR: int = 0
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
+
 def _campaign_of_aspects(document: dict[str, Any]) -> dict[str, Any]:
     """The v15 → v16 step: a stored v15 campaign as the campaign of one aspect it reads as.
 
