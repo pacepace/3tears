@@ -725,6 +725,14 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
             key: namer.walk(payload[key], label) for key in _DISCLOSURES if payload.get(key) not in (None, "", [], {})
         },
     }
+    unmeasured = {
+        point.model: point.pass_hat_k_unmeasured_reason
+        for subject in aspect.frontier.subjects
+        for point in subject.points
+        if point.pass_hat_k_unmeasured_reason
+    }
+    if unmeasured:
+        view["disclosures"]["pass_k_unmeasured"] = unmeasured
     if aspect.telemetry.measures.absent_scopes:
         view["disclosures"]["absent_scopes"] = list(aspect.telemetry.measures.absent_scopes)
     if aspect.telemetry.measures.unreported_observations:

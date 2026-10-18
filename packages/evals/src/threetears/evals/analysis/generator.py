@@ -817,7 +817,7 @@ def _assemble_and_validate(
     except (ValidationError, OffVocabulary) as refused:
         raise SoundnessRefusal(f"generator output does not match the analysis contract: {refused}") from refused
     _reject_mismatched_aspect_summaries(document, bundle)
-    _reject_unpinned_recommendation(document)
+    _reject_unpinned_recommendation(document, bundle)
     _reject_unknown_trials(document, bundle)
     _reject_unknown_arm(document, bundle)
     _reject_exploratory_adoption(document, bundle)
@@ -975,21 +975,25 @@ def _reject_mismatched_aspect_summaries(document: AuthoredCampaignAnalysis, bund
         )
 
 
-def _reject_unpinned_recommendation(document: AuthoredCampaignAnalysis) -> None:
-    """Refuse a recommendation that rests on no finding, or on one that is not there.
+def _reject_unpinned_recommendation(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
+    """Refuse a recommendation of a candidate that rests on no finding, or any that rests on one that is not there.
 
     A recommendation is the memo's one claim to action, and the report prints the findings it rests on beside it
-    (and the cases their trials show), so one resting on nothing is advice the evidence never reached. A position past
-    the findings is refused here rather than by the stored model, so the refusal can say what to fix.
+    (and the cases their trials show), so a switch resting on nothing is advice the evidence never reached. Keeping
+    the control is what a campaign does when nothing moved it, so it may rest on no finding: an honest memo of a thin
+    campaign need not invent one to hang it on. A position past the findings is refused here rather than by the stored
+    model, so the refusal can say what to fix.
 
-    :raises SoundnessRefusal: ``recommendation.rests_on`` is empty or names a position past the findings.
+    :raises SoundnessRefusal: ``recommendation.rests_on`` names a position past the findings, or is empty on a
+        recommendation of a candidate.
     """
     count = len(document.findings)
     rests_on = document.recommendation.rests_on
-    if not rests_on:
-        complaint = "recommendation.rests_on is empty"
-    elif stray := sorted({position for position in rests_on if not 0 <= position < count}):
+    arm = bundle.arm(document.recommendation.arm)
+    if stray := sorted({position for position in rests_on if not 0 <= position < count}):
         complaint = f"recommendation.rests_on names finding position(s) {stray}"
+    elif not rests_on and arm is not None and arm.role != "control" and bundle.control() is not None:
+        complaint = "recommendation.rests_on is empty, and a switch to a candidate rests on the findings that show it"
     else:
         return
     raise SoundnessRefusal(

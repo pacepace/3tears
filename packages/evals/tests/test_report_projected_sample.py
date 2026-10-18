@@ -35,6 +35,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import ArmScoreboard, MultipleComparisons
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.analysis.report.decision import (
@@ -582,28 +583,13 @@ async def test_a_thirty_case_next_step_and_answer_do_not_survive_the_style_gate_
         "invalidates": [],
         "durable": "",
     }
-    memo = {
-        "findings": [finding],
-        "decisions": [
-            {
-                "proposal": "Switch to candidate.",
-                "disposition": "deferred",
-                "confidence": "low",
-                "cells": [],
-                "rests_on": [0],
-                "revisit_when": "After 30 more cases. When the drop is shown either way.",
-            }
-        ],
-        "questions": [
-            {
-                "question_id": bundle.aspect,
-                "resolution": "unanswerable",
-                "answer": "Too few cases to tell. Thirty more cases would settle it for $0.40.",
-                "rests_on": [],
-            }
-        ],
-        "next": [_next(THIRTY, "At least 30 independent test cases would settle it. It also tells the arms apart.")],
-    }
+    memo = authored_memo(
+        bundle,
+        [finding],
+        means="Too few cases to tell. Thirty more cases would settle it for $0.40.",
+        reasons=["After 30 more cases. When the drop is shown either way."],
+        next=[_next(THIRTY, "At least 30 independent test cases would settle it. It also tells the arms apart.")],
+    )
     report = await _memo(comparison, bundle, memo)
     said = projection_sentence(
         SampleProjection(cases=12, if_none=CasesNeeded("more", NOMINAL[0]), if_observed=CasesNeeded("more", NOMINAL[1]))
@@ -615,8 +601,8 @@ async def test_a_thirty_case_next_step_and_answer_do_not_survive_the_style_gate_
     # The writer's why and facts were about the step it replaced: they go with its title.
     assert not [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step_why"]
     assert not [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "next_step_facts"]
-    (revisit,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "revisit_when"]
-    assert revisit.body == "When the drop is shown either way."
+    (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
+    assert recommendation.body == "When the drop is shown either way."
     page = report_markdown(report).split("## Methods")
     assert "30 cases" not in page[0] and "$0.40" not in page[0] and "Thirty" not in page[0]
     assert "a sample size or cost no code computed" in page[1]
@@ -633,14 +619,7 @@ async def test_with_two_candidates_a_next_step_may_cite_either_arm_s_projected_c
     report = await _memo(
         comparison,
         bundle,
-        {
-            "findings": [],
-            "decisions": [],
-            "questions": [
-                {"question_id": bundle.aspect, "resolution": "unanswerable", "answer": "Too few cases.", "rests_on": []}
-            ],
-            "next": [_next(title)],
-        },
+        authored_memo(bundle, [], means="Too few cases.", next=[_next(title)]),
     )
     (step,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step"]
     assert step.body == title

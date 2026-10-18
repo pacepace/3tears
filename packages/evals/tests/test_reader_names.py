@@ -82,13 +82,11 @@ def test_a_descriptor_stored_before_the_field_reads_with_none_and_is_headed_by_i
 async def test_the_memo_prints_a_declared_question_in_its_words_never_its_id(toy) -> None:
     _, analysis, _ = toy
     memo = render_memo_as_written(analysis)
-    # The answer names the aspect's one question by the aspect's label; the memo prints the question's words.
-    declared = analysis_bundle(analysis).declared
-    assert declared is not None and declared.question
-    (answer,) = analysis.document.questions
-    assert answer.question_id == analysis_bundle(analysis).aspect != declared.question
-    assert f"- {one_line(declared.question)} — answered:" in memo
-    assert f"- {answer.question_id} — answered:" not in memo
+    # The memo answers the campaign's question with its recommendation and prints the question's words above it.
+    question = analysis.design_snapshot.question
+    assert question and question != analysis_bundle(analysis).aspect
+    assert f"Question: {one_line(question)}" in memo
+    assert f"Question: {analysis_bundle(analysis).aspect}" not in memo
 
 
 async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_reader_names(toy) -> None:

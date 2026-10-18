@@ -331,8 +331,8 @@ class TestATwoArmSweepFoldsButIsMarkedUnverified:
 
     def test_the_mark_reaches_the_generator_s_context(self) -> None:
         message = _writer_message(self._sweep())
-        assert '"kind": "unverified_fold"' in message
-        assert f'"dimension": "{_UNVERIFIED_PARAMS}"' in message
+        assert '"kind":"unverified_fold"' in message
+        assert f'"dimension":"{_UNVERIFIED_PARAMS}"' in message
         assert "folded, unverified:" in message
 
     def test_the_mark_reaches_the_code_only_report(self) -> None:

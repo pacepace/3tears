@@ -40,6 +40,7 @@ from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.style import LABEL_CLAIMS, lint_page, lint_prose
 from threetears.evals.kernel.declaration import Floor
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_FLOORS, G2_QUESTION, PRODUCTION, answering, declaring
 from packages.evals.tests.off_loop import off_loop
@@ -117,12 +118,7 @@ async def _memo_page(
     comparison: Result, bundle: AnalysisContextBundle, findings: list[dict[str, Any]], answer: str
 ) -> Report:
     """The page a stored analysis of ``findings`` and one answer to the G2 question renders."""
-    memo = {
-        "findings": findings,
-        "decisions": [],
-        "questions": [{"question_id": bundle.aspect, "resolution": "answered", "answer": answer, "rests_on": [0]}],
-        "next": [],
-    }
+    memo = authored_memo(bundle, findings, means=answer)
     analysis, _ = await generate_analysis(
         campaign_bundle(bundle),
         prompt=PROMPT,

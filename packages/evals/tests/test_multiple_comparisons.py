@@ -238,14 +238,15 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
         message = _writer_message(bundle)
 
         assert "p_raw" not in message
-        assert repr(borderline.p_raw) not in message, "the raw figure must not reach the writer under any key"
-        assert repr(borderline.p_adjusted) in message
+        # The writer's view keeps four significant figures of every figure it shows.
+        assert repr(float(f"{borderline.p_raw:.4g}")) not in message, "the raw figure must not reach the writer"
+        assert repr(float(f"{borderline.p_adjusted:.4g}")) in message
         assert bundle.multiple_comparisons.families[0].comparisons[0].p_raw is not None, (
             "the raw p stays on the bundle for audit; only the writer's view drops it"
         )
 
     def test_the_prompt_tells_the_writer_to_quote_only_the_adjusted_p(self) -> None:
-        assert "`multiple_comparisons`" in EVAL_ANALYSIS_GEN_DEFAULT
+        assert "`contrasts`" in EVAL_ANALYSIS_GEN_DEFAULT
         assert "quote only its `p_adjusted`" in EVAL_ANALYSIS_GEN_DEFAULT
         assert "`family_size`" in EVAL_ANALYSIS_GEN_DEFAULT
 
@@ -370,10 +371,11 @@ class TestWhatAFamilyCovers:
             EVAL_ANALYSIS_GEN_DEFAULT
         )
         assert (
-            "Where the bundle carries no family (`multiple_comparisons.withheld` says why), no comparison between arms is separated"
+            "Where an aspect carries no contrast family (`contrasts_withheld` says why), no comparison between arms is "
+            "separated"
             in (EVAL_ANALYSIS_GEN_DEFAULT)
         )
-        assert "with no question declared, on every merit-axis reading as one campaign-wide family" in (
+        assert "with no question asked, on every merit-axis reading as one family" in (
             EVAL_ANALYSIS_GEN_DEFAULT
         )
 

@@ -9,6 +9,7 @@ matched it, every one labelled as the arm table names it; code's readings carry 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
@@ -17,7 +18,7 @@ from threetears.evals.analysis.campaign_readings import AspectReading, CampaignR
 from threetears.evals.kernel.campaign import CampaignDeclaration
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, Floor, resolve_control_arm
 
-__all__ = ["arms_of", "campaign_bundle", "label_of"]
+__all__ = ["arms_of", "campaign_bundle", "label_of", "memo"]
 
 
 def arms_of(bundles: Sequence[AnalysisContextBundle]) -> list[CampaignArm]:
@@ -133,3 +134,51 @@ def campaign_bundle(
         ),
         aspects=list(bundles),
     )
+
+
+def memo(
+    bundle: CampaignBundle | AnalysisContextBundle,
+    findings: Sequence[dict[str, Any]] = (),
+    *,
+    means: str = "",
+    arm: str | None = None,
+    reasons: Sequence[str] = (),
+    rests_on: Sequence[int] | None = None,
+    next: Sequence[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    """An authored memo over ``bundle``: ``findings``, one recommendation and one summary per aspect.
+
+    :param bundle: The campaign bundle, or one aspect's bundle read as a campaign of it.
+    :ptype bundle: CampaignBundle | AnalysisContextBundle
+    :param findings: The findings, as authored.
+    :ptype findings: Sequence[dict[str, Any]]
+    :param means: What each aspect's summary says it means for the question.
+    :ptype means: str
+    :param arm: The arm recommended, by label; the control (else the first arm) when None.
+    :ptype arm: str | None
+    :param reasons: The recommendation's reasons.
+    :ptype reasons: Sequence[str]
+    :param rests_on: The findings it rests on; the first, where there is one, when None.
+    :ptype rests_on: Sequence[int] | None
+    :param next: The next steps, as authored.
+    :ptype next: Sequence[dict[str, Any]]
+    :return: The payload.
+    :rtype: dict[str, Any]
+    """
+    campaign = bundle if isinstance(bundle, CampaignBundle) else campaign_bundle(bundle)
+    control = campaign.control()
+    chosen = arm if arm is not None else (control.label if control is not None else campaign.arms[0].label)
+    return {
+        "findings": list(findings),
+        "recommendation": {
+            "arm": chosen,
+            "reasons": list(reasons),
+            "confidence": "low",
+            "rests_on": list(rests_on) if rests_on is not None else ([0] if findings else []),
+            "floors_overridden": [],
+        },
+        "aspect_summaries": [
+            {"aspect": label, "what_changed": "", "how_sure": "", "means": means} for label in campaign.labels
+        ],
+        "next": list(next),
+    }

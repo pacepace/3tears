@@ -1212,7 +1212,7 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
         TextBlock(
             section="memo",
             role="recommendation",
-            body=style.prose(" ".join(recommended.reasons)),
+            body=style.prose(" ".join(recommended.reasons), plans=True),
             rests_on=list(recommended.rests_on),
             facts=[Fact(name="Disposition", value=f"recommend {recommended.arm}")],
         ),

@@ -950,7 +950,7 @@ class TestTheStoredShapeMovedTheSchemaVersion:
         # Judged rows and readings carry a required tier, and a repeated score records its first config.
         from threetears.evals.schema import versioning
 
-        assert versioning.REGENERABLE_SCHEMA_VERSION == 11
+        assert versioning.REGENERABLE_SCHEMA_VERSION == 12
         assert "**v9**" in _schema_version_doc(), "the ledger names the baseline"
         assert "**v10**" in _schema_version_doc(), "the ledger names the bump that put sent settings in a judge's key"
         assert RepeatedScore.model_fields["first_judge_config_id"].is_required()
@@ -969,7 +969,7 @@ def _schema_version_doc() -> str:
 
 class TestThePromptPointsAtTheTiers:
     def test_the_generator_is_told_where_the_tiers_are_and_what_each_bears(self) -> None:
-        for name in ("judge_evidence_tiers", "judge_self_agreement", "judge_agreement", "evidence_tier"):
+        for name in ("judge_evidence_tiers", "tier"):
             assert f"`{name}`" in EVAL_ANALYSIS_GEN_DEFAULT
         for tier in typing.get_args(JudgedEvidenceTier):
             assert f"`{tier}`" in EVAL_ANALYSIS_GEN_DEFAULT

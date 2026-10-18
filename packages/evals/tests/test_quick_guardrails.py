@@ -244,14 +244,11 @@ def _adopting_writer() -> Any:
 
     async def generate(*, system: str, user: str, response_format: dict | None = None) -> Any:
         writer.drafts += 1
-        evidence, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
-        tested = next(
-            comparison
-            for family in evidence["multiple_comparisons"]["families"]
-            for comparison in family["comparisons"]
-            if comparison["verdict"] == "improved"
-        )
-        arm, control = tested["contrast"]["cell"], tested["control"]["cell"]
+        view = json.loads(user.split("\n", 1)[1])
+        (aspect,) = view["aspects"]
+        tested = next(comparison for comparison in aspect["contrasts"] if comparison["verdict"] == "improved")
+        arm, control = tested["cell"], tested["control"]
+        label = next(cell["arm"] for cell in aspect["cells"] if cell["cell"] == arm)
         cite = {cell: "{{" + f"{cell}|{tested['name']}|measure|mean" + "}}" for cell in (arm, control)}
         finding = {
             "title": "Correct score by arm",
@@ -264,15 +261,15 @@ def _adopting_writer() -> Any:
             "invalidates": [],
             "durable": "",
         }
-        decision = {
-            "proposal": "Ship the arm that answers more cases correctly.",
-            "disposition": "adopted",
-            "cells": [arm],
+        recommendation = {
+            "arm": label,
+            "reasons": ["Ship the arm that answers more cases correctly."],
             "confidence": "medium",
             "rests_on": [0],
-            "revisit_when": "",
+            "floors_overridden": [],
         }
-        memo = {"findings": [finding], "decisions": [decision], "questions": [], "next": []}
+        summary = {"aspect": aspect["aspect"], "what_changed": "", "how_sure": "", "means": ""}
+        memo = {"findings": [finding], "recommendation": recommendation, "aspect_summaries": [summary], "next": []}
         return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
 
     writer.generate = generate

@@ -50,7 +50,7 @@ async def _run_index(bundle: Any) -> list[Any]:
         bundle_assembled_at=utc_now_iso(),
         profile=toyhost_profile(),
     )
-    return analysis.run_index
+    return analysis.aspects[0].run_index
 
 
 def _reported(entry: Any) -> set[str]:

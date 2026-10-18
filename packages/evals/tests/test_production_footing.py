@@ -232,7 +232,7 @@ class TestEverySurfaceThatShowsTheFigureCarriesIt:
             bundle_assembled_at=utc_now_iso(),
             profile=toyhost_profile(),
         )
-        return [entry.key_metrics for entry in analysis.run_index]
+        return [entry.key_metrics for entry in analysis.aspects[0].run_index]
 
     async def test_the_generators_key_metrics_name_it_beside_the_prod_cost(self) -> None:
         for metrics in await self._key_metrics(self._bundle()):

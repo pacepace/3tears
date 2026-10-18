@@ -19,7 +19,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from threetears.evals.analysis.generator import generate_analysis
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
 from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
@@ -352,8 +354,6 @@ class TestTheGenerationFreezesTheAxis:
         assert _generated(bundle).decision_surface.time_axis == bundle.time_axis
 
     def test_the_writer_sees_the_axis_by_alias(self) -> None:
-        from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-        from packages.evals.tests.campaign_bundle_support import campaign_bundle
 
         message = json.loads(_writer_message(_two_days()).split("\n", 1)[1])
         cells = message["time_axis"]["positions"][0]["cells"]

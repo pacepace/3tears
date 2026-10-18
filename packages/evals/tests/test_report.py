@@ -154,7 +154,7 @@ class TestTheToyReportsContent:
 
         assert table.finding == 0
         # Code's numbers, stated on each measure's one ruler for the report (a latency in s where the surface is).
-        rulers = measure_rulers(analysis.decision_surface)
+        rulers = measure_rulers(analysis.aspects[0].decision_surface)
         stated = [row.value * (rulers[row.measure_id].factor if row.reading == "measure" else 1.0) for row in evidence]
         # One row per arm, one column per reading: the toy's finding reads one measure on each arm.
         assert [row["reading_0"] for row in table.values()] == pytest.approx(stated)
@@ -169,7 +169,7 @@ class TestTheToyReportsContent:
         _, analysis, report = toy
         (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "evidence"]
         evidence = analysis.resolutions[0].evidence
-        surface = analysis.decision_surface
+        surface = analysis.aspects[0].decision_surface
         factor = measure_rulers(surface)[evidence[0].measure_id].factor
 
         # Each arm's cell carries the interval its cell holds on the reading, restated onto the same ruler.
@@ -183,9 +183,10 @@ class TestTheToyReportsContent:
 
     async def test_the_recommendation_rests_on_its_finding(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
-        (decision,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
-        assert decision.rests_on == [0]
-        assert ("Disposition", "deferred") in [(fact.name, fact.value) for fact in decision.facts]
+        (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
+        assert recommendation.rests_on == [0]
+        assert [fact.name for fact in recommendation.facts] == ["Disposition"]
+        assert recommendation.facts[0].value.startswith("recommend ")
 
     async def test_the_memo_is_labelled_as_its_writer_s_and_the_methods_say_how_it_was_generated(
         self, toy: tuple[Any, EvalAnalysis, Report]
@@ -470,11 +471,9 @@ async def test_a_next_step_on_a_lever_no_comparison_exercised_is_not_on_the_page
     held = NextStep(title="evaluate with the research model held fixed", why="it moved", leverage="high", lever=lever)
     document = analysis.document.model_copy(update={"next": [held, *analysis.document.next]})
     unexercised = {"factor": lever, "role": "research", "results": 1, "arms": ["candidate"]}
-    report = build_report(
-        analysis.model_copy(
-            update={"document": document, "bundle": {**analysis.bundle, "unexercised_factors": [unexercised]}}
-        )
-    )
+    (aspect,) = analysis.aspects
+    frozen = aspect.model_copy(update={"bundle": {**aspect.bundle, "unexercised_factors": [unexercised]}})
+    report = build_report(analysis.model_copy(update={"document": document, "aspects": [frozen]}))
     steps = [block.body for block in report.blocks if isinstance(block, TextBlock) and block.role == "next_step"]
     assert steps and not [step for step in steps if "research model" in step]
     markdown = report_markdown(report)

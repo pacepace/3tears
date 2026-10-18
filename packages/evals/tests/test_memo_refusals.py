@@ -180,12 +180,19 @@ class TestACandidateNeedsASeparatedUpside:
 
 
 class TestTheRecommendationIsPinned:
-    async def test_a_recommendation_resting_on_no_finding_is_refused(self) -> None:
+    async def test_a_switch_resting_on_no_finding_is_refused(self) -> None:
         bundle = _bundle()
-        payload = memo_payload(bundle)
+        payload = _recommending(bundle, TOYHOST_WIDE)
         payload["recommendation"]["rests_on"] = []
         with pytest.raises(SoundnessRefusal, match=r"names the findings it rests on.*recommendation\.rests_on is empty"):
             await _generate(bundle, payload)
+
+    async def test_keeping_the_control_may_rest_on_no_finding(self) -> None:
+        bundle = _bundle()
+        payload = _recommending(bundle, TOYHOST_NARROW)
+        payload["recommendation"]["rests_on"] = []
+        analysis = await _generate(bundle, payload)
+        assert analysis.document.recommendation.rests_on == []
 
     async def test_a_recommendation_resting_on_a_finding_that_is_not_there_is_refused(self) -> None:
         bundle = _bundle()

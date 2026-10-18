@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
-from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_context_bundle
+from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_campaign_bundle, assemble_context_bundle
 from threetears.evals.analysis.reporter_kind import REPORTER_CASE_KEY, LabelCriterion, reporter_case_of
 from threetears.evals.schema import EvalResult
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
@@ -87,7 +87,7 @@ def test_a_freeze_without_an_analysis_pins_the_bundle_alone() -> None:
     assert receipt.test_case_id == stored.id and stored.scope_id == TOYHOST_SCOPE
     case = reporter_case_of(stored)
     assert case is not None
-    bundle = assemble_context_bundle(fixture.campaign, storage=eval_host.storage, profile=eval_host.profile)
+    bundle = assemble_campaign_bundle(eval_host, fixture.campaign.id, fixture.campaign.scope_id)
     assert bundle.run_ids, "a bundle resolving no runs is refused, so the fixture must carry some"
     assert receipt.bundle_fingerprint == case.bundle_fingerprint == bundle.fingerprint()
     assert receipt.limits == case.limits
