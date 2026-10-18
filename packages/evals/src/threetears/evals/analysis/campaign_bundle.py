@@ -938,7 +938,8 @@ def _figure(value: float | None) -> float | None:
         return None
     if value == 0:
         return 0.0
-    return float(f"{value:.{_FIGURES}g}")
+    # Rounded as a number, not spelled: the view is JSON, and json writes the float.
+    return round(value, _FIGURES - 1 - math.floor(math.log10(abs(value))))
 
 
 def _figures(values: Sequence[float] | None) -> list[float | None] | None:
