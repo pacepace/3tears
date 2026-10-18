@@ -2571,8 +2571,9 @@ PROJECTION_CASE_CAP: Final = 10_000
 
 #: The most cases a projection of an unpaired rate searches, and the share of its count it bisects to. Each arm's
 #: interval is a betting bound read over every case, so reads over thousands of unpaired cases took over a second a
-#: row, and a page holding a dozen unclear rows half a minute; past 500 cases a plan reads "more than 500", and below
-#: it is counted to within five percent.
+#: row, and a page holding a dozen unclear rows half a minute. A projection searches to 500 cases, or to four times
+#: the cases the run observed where that is more, so it never stops short of the run itself; past its cap a plan
+#: reads "more than" the cap, and below it is counted to within five percent.
 UNPAIRED_PROJECTION_CAP: Final = 500
 UNPAIRED_PROJECTION_RESOLUTION: Final = 0.05
 

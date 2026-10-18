@@ -1875,12 +1875,15 @@ def engine_actions() -> tuple[Action, ...]:
             detail=(
                 "Code reports, the writer recommends, a person decides: this records the decision, beside code's "
                 "readings, never in place of them. The arm is matched by its variant key, which is what is recorded. "
-                "It is read against code's readings of the evidence as it stands, never the memo's words: an arm "
-                "with a broken floor is recorded only when floors_overridden names each such floor's key, and an arm "
-                "that missed an absolute bar only when bars_overridden names each such bar; naming one the arm did "
-                "not break or miss is refused. A measurement (one arm) has nothing to decide, so it is refused. A "
-                "new call replaces the earlier one; the campaign's page states the call, who made it and when, and "
-                "every warning it overrides. call_reason is recorded as the call's reason."
+                "It is read against the readings of the page it will appear on, never the memo's words: with "
+                "analysis_id, that analysis's (it must be the one the campaign's page reports), else the evidence as "
+                "it stands. An arm with a broken floor is recorded only when floors_overridden names each such "
+                "floor's key, and an arm that missed an absolute bar only when bars_overridden names each such bar; "
+                "naming one the arm did not break or miss is refused. A measurement (one arm) has nothing to decide, "
+                "so it is refused. In a choice, an arm shown behind another is never refused: the page warns of each "
+                "such pair beside the call. A new call replaces the earlier one; the campaign's page states the call, "
+                "who made it and when, every warning it overrides, and how many runs joined since. call_reason is "
+                "recorded as the call's reason."
             ),
         ),
         Action(

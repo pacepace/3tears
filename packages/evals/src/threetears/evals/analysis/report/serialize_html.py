@@ -688,14 +688,19 @@ def _trial(block: TrialBlock) -> str:
     )
 
 
+#: The sources of the loud lines that open a page above its title: a missed bar, a broken floor, a guardrail an arm
+#: is not shown safe on.
+_WARNING_SOURCES = frozenset({"bar", "floor", "guardrails"})
+
+
 def _warns(block: ReportBlock) -> bool:
-    """Whether ``block`` opens the page above its title: a broken floor's or a missed bar's warning, or the writer's
-    why for a floor its recommendation is made over, which sits beside the warning it answers."""
+    """Whether ``block`` opens the page above its title: a missed bar's, a broken floor's or a guardrail's warning, or
+    the writer's why for a floor its recommendation is made over, which sits beside the warning it answers."""
     if block.section != "header":
         return False
     if isinstance(block, TextBlock):
         return block.role == "override"
-    return isinstance(block, DisclosureBlock) and block.source in ("floor", "bar")
+    return isinstance(block, DisclosureBlock) and block.source in _WARNING_SOURCES
 
 
 def _disclosure(block: DisclosureBlock) -> str:
@@ -707,7 +712,7 @@ def _disclosure(block: DisclosureBlock) -> str:
         return f'<p class="arms">{text}</p>'
     if block.section == "header" and block.source == "basis":
         return f'<p class="question">{text}</p>'
-    if block.section == "header" and block.source in ("floor", "bar"):
+    if block.section == "header" and block.source in _WARNING_SOURCES:
         # A broken floor, the page's first line: loud, and announced to a screen reader as it loads.
         return f'<p class="floor" role="alert"><strong>{text}</strong></p>'
     if block.source == "verdict":

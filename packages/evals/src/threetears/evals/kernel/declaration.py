@@ -1051,6 +1051,13 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
         default=None,
         description="The analysis whose memo the call was made over; None when it was made on code's readings alone.",
     )
+    run_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The campaign's runs when the call was made, so a page can say how many have joined since. A run curated "
+            "away, or a result scored late on a run already held, is not told apart."
+        ),
+    )
     called_at: str = Field(default_factory=utc_now_iso, description="When the call was recorded (ISO-8601).")
     called_by: str = Field(
         min_length=1,

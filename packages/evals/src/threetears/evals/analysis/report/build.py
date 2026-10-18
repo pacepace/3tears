@@ -200,8 +200,8 @@ _GUARDRAILS_DISCLOSURE = (
     "its error rate at any number of cases; a reading with no declared range is never held, since no test holds "
     "its rate there, and can only be shown breached. A measure's margin is its declared materiality threshold, a "
     "judged dimension's the one its campaign declares; with none, a guardrail is held at zero change. Guardrails "
-    "join no comparison and no composite, so no gain elsewhere offsets one; an arm with a breached guardrail is not "
-    "adopted, and an undecided guardrail is not known to be safe."
+    "join no comparison and no composite, so no gain elsewhere offsets one; a breached guardrail warns, the writer may "
+    "not recommend its arm, and an undecided guardrail is not known to be safe."
 )
 
 

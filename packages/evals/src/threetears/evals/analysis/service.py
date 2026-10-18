@@ -1692,14 +1692,18 @@ def record_campaign_call(
 ) -> EvalCampaign:
     """Record a person's call on a campaign: the arm decided, why, and every broken floor and missed bar it overrides.
 
-    Code reports, the writer recommends, a person decides. The call is read against code's readings of the campaign's
-    evidence as it stands now — never against a memo's words — and is refused where it would leave a warning
-    unanswered: an arm with a broken floor is recorded only when ``floors_overridden`` names each such floor by its
+    Code reports, the writer recommends, a person decides. The call is read against the readings of the page it will
+    appear on — never against a memo's words: with ``analysis_id``, the readings frozen with that analysis, which must
+    be the campaign's report (its newest analysis not archived); without, code's readings of the evidence as it stands
+    now. It is refused where it would leave a warning unanswered: an arm with a broken floor is recorded only when ``floors_overridden`` names each such floor by its
     key, and an arm that misses an absolute bar only when ``bars_overridden`` names each such bar by its aspect and
     measure; naming one the arm did not break or miss is refused too, so an override always answers a warning the
     page shows. The arm is matched by its variant key, which is what is recorded: a derived arm's label can shift when
-    a variant joins. A measurement (one arm) has nothing to decide between, so a call on one is refused. A new call
-    replaces the campaign's earlier one; the page dates whichever it holds.
+    a variant joins. A measurement (one arm) has nothing to decide between, so a call on one is refused. In a choice,
+    an arm shown behind another on some aspect is never refused: the person decides, and the page sets a warning line
+    beside the call for each such pair. A new call replaces the campaign's earlier one; the page dates whichever it
+    holds, and says how many runs have joined since it was made. **Known limit:** only runs added since are counted;
+    a run curated away, or a result scored late on a run the call already read, is not told apart.
 
     :param host: The host: where the campaign's runs, results and analyses are read, and its vocabulary.
     :ptype host: EvalHost
@@ -1717,23 +1721,22 @@ def record_campaign_call(
     :ptype floors_overridden: Sequence[str]
     :param bars_overridden: Each missed bar the call overrides, by aspect and measure.
     :ptype bars_overridden: Sequence[OverriddenBar]
-    :param analysis_id: The analysis whose memo the call was made over; None for code's readings alone.
+    :param analysis_id: The analysis whose memo the call was made over — the campaign's report; None for code's
+        readings alone.
     :ptype analysis_id: str | None
     :return: The campaign as persisted, holding the call.
     :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope, or no analysis ``analysis_id`` in it.
     :raises ValidationFailedError: The campaign is a measurement; the arm is none of the campaign's; the analysis is
-        another campaign's; a broken floor or missed bar of the arm is not overridden, or an override names one the
+        another campaign's, archived, or not the campaign's report; a broken floor or missed bar of the arm is not overridden, or an override names one the
         arm did not break or miss; or a floor or bar is named twice.
     :raises ConflictError: The campaign changed while its readings were read.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
-    if analysis_id is not None and get_analysis(host.storage, analysis_id, scope_id).campaign_id != campaign_id:
-        raise ValidationFailedError(
-            f"analysis {analysis_id} is not an analysis of campaign {campaign_id}",
-            remedy=f"name one of its analyses (analyses_list) or none; campaign {campaign_id}'s call is made over its own",
-        )
-    bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
+    if analysis_id is None:
+        bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
+    else:
+        bundle = _analysed_bundle(_reported_analysis(host.storage, campaign_id, scope_id, analysis_id))
     readings = bundle.readings
     if readings.kind == "measurement":
         raise ValidationFailedError(
@@ -1781,11 +1784,35 @@ def record_campaign_call(
             floors_overridden=list(floors_overridden),
             bars_overridden=list(bars_overridden),
             analysis_id=analysis_id,
+            run_ids=list(campaign.run_ids),
             called_by=called_by,
         )
     except ValueError as invalid:
         raise ValidationFailedError(str(invalid), remedy="name each floor and each bar once") from invalid
     return _save_call(host.storage, campaign, call)
+
+
+def _reported_analysis(storage: AnalysisStore, campaign_id: str, scope_id: str, analysis_id: str) -> EvalAnalysis:
+    """The analysis a call names, refused unless it is the campaign's report: its newest analysis not archived.
+
+    :raises NotFoundError: No analysis with that id in the scope.
+    :raises ValidationFailedError: It is another campaign's, archived, or not the newest of the campaign's live ones.
+    """
+    named = get_analysis(storage, analysis_id, scope_id)
+    remedy = "name the analysis the campaign's page reports (report_read gives its analysis_id), or none"
+    if named.campaign_id != campaign_id:
+        raise ValidationFailedError(
+            f"analysis {analysis_id} is not an analysis of campaign {campaign_id}", remedy=remedy
+        )
+    if named.archived:
+        raise ValidationFailedError(f"analysis {analysis_id} is archived, so no page reports it", remedy=remedy)
+    live = [analysis for analysis in list_analyses(storage, campaign_id, scope_id) if not analysis.archived]
+    if live[0].id != analysis_id:
+        raise ValidationFailedError(
+            f"analysis {analysis_id} is not campaign {campaign_id}'s report: its page reports {live[0].id}",
+            remedy=remedy,
+        )
+    return named
 
 
 @serialized_campaign_write

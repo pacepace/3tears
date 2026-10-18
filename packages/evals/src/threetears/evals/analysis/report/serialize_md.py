@@ -139,14 +139,19 @@ def _glossary_lines(terms: Sequence[str]) -> list[str]:
     return ["", f"## {SECTION_TITLES['glossary']}", "", *(f"- **{term}**: {GLOSSARY[term]}" for term in terms)]
 
 
+#: The sources of the loud lines that open a page above its title: a missed bar, a broken floor, a guardrail an arm
+#: is not shown safe on.
+_WARNING_SOURCES = frozenset({"bar", "floor", "guardrails"})
+
+
 def _warns(block: ReportBlock) -> bool:
-    """Whether ``block`` opens the page above its title: a broken floor's or a missed bar's warning, or the writer's
-    why for a floor its recommendation is made over, which sits beside the warning it answers."""
+    """Whether ``block`` opens the page above its title: a missed bar's, a broken floor's or a guardrail's warning, or
+    the writer's why for a floor its recommendation is made over, which sits beside the warning it answers."""
     if block.section != "header":
         return False
     if isinstance(block, TextBlock):
         return block.role == "override"
-    return isinstance(block, DisclosureBlock) and block.source in ("floor", "bar")
+    return isinstance(block, DisclosureBlock) and block.source in _WARNING_SOURCES
 
 
 #: The failure causes the scoreboard gives a column of their own, as an outcome bar labels them.
@@ -241,7 +246,7 @@ def _text(block: TextBlock) -> list[str]:
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
     """Something code had to say: the verdict and a broken floor's warning in bold, every other line plain."""
-    if block.source == "verdict" or (block.section == "header" and block.source in ("floor", "bar")):
+    if block.source == "verdict" or (block.section == "header" and block.source in _WARNING_SOURCES):
         return [f"**{_one_line(block.text)}**"]
     return [_inert(_one_line(block.text))]
 

@@ -14,8 +14,8 @@ the control. Everything here is the engine's own path, composed:
 - **The campaign declares its design** — one axis per factor, a controlled stimulus, a commissioned apparatus and the
   repeats each arm ran — through :func:`~threetears.evals.analysis.create_campaign`, which gates the declaration
   against the host's vocabulary as it gates any other. One arm is a campaign of one run, its own control.
-- **The control is designated from the control arm's run** through
-  :func:`~threetears.evals.analysis.set_campaign_control`, which reads the variant key that run's observations carry.
+- **The control is named from the control arm's run**, by the arm's own name, as the campaign is created: its variant
+  key is the one that run's observations carry.
 - **The report is the campaign's report**: with no analysis generated, the code-only report, whose contrasts table
   tests every other arm against the control on every reading, Holm-corrected, and says which separated.
 
@@ -55,7 +55,6 @@ from threetears.evals.analysis import (
     get_campaign,
     judge_agreement,
     judge_self_agreement,
-    set_campaign_control,
     variant_key_of_run,
 )
 from threetears.evals.kernel import (
@@ -986,15 +985,14 @@ def declare(
     }
     if arms[control].template_id is not None:
         aspect["template_id"] = arms[control].template_id
+    # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`.
+    control_arm = {"label": control, "role": "control", "from_run_ids": [arms[control].run_id]}
     campaign = create_campaign(
         host.storage,
-        {"name": name, "subject_id": name, "behavior": behavior, "aspects": [aspect]},
+        {"name": name, "subject_id": name, "behavior": behavior, "aspects": [aspect], "arms": [control_arm]},
         scope_id=scope_id,
         created_by=created_by,
         profile=host.profile,
-    )
-    campaign = set_campaign_control(
-        host.storage, campaign.id, scope_id, arms[control].run_id, set_by=created_by, profile=host.profile
     )
     page = campaign_report(host, campaign.id, scope_id)
     (fold,) = page.aspects
