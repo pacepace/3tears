@@ -1,7 +1,7 @@
-"""The types a campaign of aspects is made of hold the rules today's design holds, and a campaign reads as its aspects.
+"""The types a campaign of aspects is made of hold the rules a v15 design held, and a campaign reads as its aspects.
 
-The aspect's design is today's design less what moved to the campaign, validated by the same rules; an arm is a
-variant key kept beside its pre-image, as the design's control is; a floor's key is derived from its aspect and its
+The aspect's design is a stored v15 design less what moved to the campaign; an arm is a variant key kept beside its
+pre-image, as a v15 design's control was; a floor's key is derived from its aspect and its
 clause; and a stored campaign reads, through :func:`aspect_views`, as the one aspect it upgrades to.
 """
 
@@ -24,7 +24,6 @@ from threetears.evals.kernel.declaration import (
     BarOverride,
     CampaignArm,
     CampaignCall,
-    CampaignDesign,
     ControlDeclaration,
     CostLower,
     Floor,
@@ -32,11 +31,11 @@ from threetears.evals.kernel.declaration import (
     RateDrop,
     SweptAxis,
     resolve_control_arm,
-    resolve_declared_control,
 )
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.schema.values import SweepableValue
+from packages.evals.tests.v15_shapes import V15Design
 
 #: The frozen v15 campaign: a design declaring a control and asking no question.
 _FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
@@ -53,7 +52,7 @@ def _axis(axis_id: str, *levels: str) -> SweptAxis:
 
 
 def _design_fields(**overrides: Any) -> dict[str, Any]:
-    """Fields both designs share, as an author writes them: two axes, a bar, a guardrail margin, a star crossing."""
+    """Fields an aspect's design shares with a stored v15 design, as an author writes them: two axes, a bar, a guardrail margin, a star crossing."""
     fields: dict[str, Any] = dict(
         axes=[_axis("model", "glm", "kimi"), _axis("temperature", "0", "1")],
         bars=[BarOverride(measure_id="pass_rate", threshold=0.8, direction="higher_is_better")],
@@ -69,23 +68,20 @@ def _design_fields(**overrides: Any) -> dict[str, Any]:
 
 
 class TestTheAspectDesign:
-    def test_it_accepts_what_the_campaign_design_accepts_less_what_moved(self) -> None:
-        campaign = CampaignDesign(**_design_fields(), control=_KEY, control_levers=_LEVERS)
+    def test_it_accepts_a_stored_v15_design_less_what_moved(self) -> None:
+        campaign = V15Design(**_design_fields(), control=_KEY, control_levers=_LEVERS)
         stored = {key: value for key, value in campaign.model_dump(mode="json").items() if key not in _MOVED}
 
         aspect = AspectDesign.model_validate({**stored, "merit_axes": ["quality"]})
 
         assert aspect.model_dump(mode="json") == {**stored, "merit_axes": ["quality"]}
-        assert aspect.declares_cells() == campaign.declares_cells()
-        for cell in ({"model": "glm", "temperature": "0"}, {"model": "kimi", "temperature": "1"}):
-            identity = aspect.cell_identity(cell)
-            assert identity == campaign.cell_identity(cell)
-            assert aspect.skipped_by_design(identity) == campaign.skipped_by_design(identity)
+        assert aspect.declares_cells()
+        assert not aspect.skipped_by_design(aspect.cell_identity({"model": "glm", "temperature": "0"}))
         assert aspect.skipped_by_design(aspect.cell_identity({"model": "kimi", "temperature": "1"}))
 
     @pytest.mark.parametrize("moved", sorted(_MOVED))
     def test_a_field_that_moved_to_the_campaign_is_refused(self, moved: str) -> None:
-        campaign = CampaignDesign(**_design_fields(), control=_KEY, control_levers=_LEVERS).model_dump(mode="json")
+        campaign = V15Design(**_design_fields(), control=_KEY, control_levers=_LEVERS).model_dump(mode="json")
         stored = {key: value for key, value in campaign.items() if key not in _MOVED}
 
         with pytest.raises(ValidationError, match=moved):
@@ -118,11 +114,7 @@ class TestTheAspectDesign:
             ),
         ],
     )
-    def test_it_refuses_what_the_campaign_design_refuses_in_the_same_words(
-        self, overrides: dict[str, Any], refusal: str
-    ) -> None:
-        with pytest.raises(ValidationError, match=refusal):
-            CampaignDesign(**_design_fields(**overrides))
+    def test_it_refuses_a_repeated_or_dangling_design_entry(self, overrides: dict[str, Any], refusal: str) -> None:
         with pytest.raises(ValidationError, match=refusal):
             AspectDesign(**_design_fields(**overrides))
 
@@ -160,20 +152,30 @@ class TestTheArm:
 
         assert resolve_control_arm(arm).variant_keys == [compute_variant_key(other), _KEY]
 
-    @pytest.mark.parametrize("version", [IDENTITY_VERSION, 1])
-    @pytest.mark.parametrize("levers", [_LEVERS, None])
-    def test_it_resolves_as_the_design_s_control_does(
-        self, version: int, levers: dict[str, SweepableValue] | None
-    ) -> None:
-        arm = CampaignArm(label="control", role="control", variant_key=_KEY, levers=levers, identity_version=version)
-        design = CampaignDesign(
-            **_design_fields(), control=_KEY, control_levers=levers, control_identity_version=version
-        )
+    def test_a_key_under_this_predicate_is_its_one_key(self) -> None:
+        arm = CampaignArm(label="control", role="control", variant_key=_KEY, levers=_LEVERS)
 
-        assert resolve_control_arm(arm) == resolve_declared_control(design)
+        resolved = resolve_control_arm(arm)
+
+        assert (resolved.variant_keys, resolved.identity_version, resolved.source) == (
+            [_KEY],
+            IDENTITY_VERSION,
+            "current",
+        )
+        assert resolved.stale_disclosure is None
+
+    def test_an_earlier_predicate_s_key_without_a_map_is_its_one_key_and_says_so(self) -> None:
+        arm = CampaignArm(label="control", role="control", variant_key=_KEY, identity_version=1)
+
+        resolved = resolve_control_arm(arm)
+
+        assert (resolved.variant_keys, resolved.source) == ([_KEY], "unrekeyable")
+        assert resolved.stale_disclosure is not None and _KEY in resolved.stale_disclosure
 
     def test_no_arm_resolves_as_no_control(self) -> None:
-        assert resolve_control_arm(None) == resolve_declared_control(None)
+        resolved = resolve_control_arm(None)
+
+        assert (resolved.variant_keys, resolved.identity_version, resolved.source) == ([], None, "undeclared")
 
 
 class TestTheFloor:

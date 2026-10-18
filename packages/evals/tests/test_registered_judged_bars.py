@@ -28,7 +28,7 @@ from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, BarRegi
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema import EvalTemplate
 from packages.evals.tests.aspect_support import redeclared
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign, toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign, toyhost_aspect_design
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_BARS, toyhost_profile
@@ -110,7 +110,7 @@ def test_a_declaration_kept_as_data_registers_a_judged_bar() -> None:
 def _gate(
     template: EvalTemplate | None, *declared: BarOverride, profile: HostProfile, behavior: str = BEHAVIOR
 ) -> None:
-    design = toyhost_design().model_copy(update={"bars": list(declared)})
+    design = toyhost_aspect_design(bars=list(declared))
     refuse_an_undeclarable_design(design, behavior=behavior, template=template, profile=profile)
 
 

@@ -20,10 +20,9 @@ import pytest
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, POST_HOC_EXPLORATORY
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
-from threetears.evals.kernel.declaration import Question, preregistered_questions
+from packages.evals.tests.v15_shapes import V15Question
 from threetears.evals.kernel.errors import ConflictError
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign_of_one_aspect, toyhost_design
-from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, ops_fixture
 
 #: A moment after every corpus run was created.
@@ -205,7 +204,7 @@ def test_a_late_question_beside_an_early_one_makes_the_campaign_s_one_question_p
     added after the first run makes the whole question post hoc (until aspects, the early one still confirmed)."""
     fixture = ops_fixture()
     design = toyhost_design()
-    late = Question(id="q-post", text="does the wider chunk cut the error rate?", asked_at=_LATER)
+    late = V15Question(id="q-post", text="does the wider chunk cut the error rate?", asked_at=_LATER)
     both = design.model_copy(update={"questions": [*design.questions, late]})
     (aspect,) = fixture.campaign.aspects
     stored = toyhost_campaign_of_one_aspect(
@@ -224,15 +223,6 @@ def test_a_late_question_beside_an_early_one_makes_the_campaign_s_one_question_p
     bundle = _bundle(fixture)
 
     assert bundle.question_declared is False and bundle.reading_scope.question_post_hoc is True
-
-
-def test_preregistration_with_no_run_reads_every_live_question_and_refuses_an_unordered_stamp() -> None:
-    design = toyhost_design()
-
-    assert preregistered_questions(design, None) == design.live_questions()
-    assert preregistered_questions(design, TOYHOST_INSTANT) == design.live_questions()
-    with pytest.raises(ValueError, match="no offset"):
-        preregistered_questions(design, "2026-03-14T09:30:00")
 
 
 def test_a_design_with_no_question_says_so_as_before() -> None:

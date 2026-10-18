@@ -40,7 +40,6 @@ from threetears.evals.kernel.declaration import (
     Aspect,
     AspectDesign,
     CampaignArm,
-    CampaignDesign,
     ControlDeclaration,
     DecisionClause,
     Floor,
@@ -81,6 +80,7 @@ from threetears.evals.schema.store_port import omit_paths
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.kernel.usage_capture import blended_cost_roles
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.v15_shapes import V15Design
 
 __all__ = [
     "CURRENT_BUNDLE_SHAPE",
@@ -402,8 +402,9 @@ def minimal_declaration(
     control_levers: dict[str, SweepableValue] | None = None,
     control_identity_version: int | None = None,
     axis_id: str | None = None,
-) -> CampaignDesign:
-    """The smallest valid ``CampaignDesign``, optionally carrying a control variant key.
+) -> V15Design:
+    """The smallest valid stored v15 design (:class:`~packages.evals.tests.v15_shapes.V15Design`), optionally carrying a
+    control variant key.
 
     Takes a key VERBATIM. Where the point is a control an observation actually carries, pass the
     key its run resolves (:func:`~threetears.evals.analysis.variant_key_of_run`) -- a hand-written
@@ -421,9 +422,9 @@ def minimal_declaration(
         declares.
     :ptype axis_id: str | None
     :return: The declaration.
-    :rtype: CampaignDesign
+    :rtype: V15Design
     """
-    return CampaignDesign(
+    return V15Design(
         axes=[SweptAxis(axis_id=axis_id or CANDIDATE_MODEL_LEVER, values=[SweepableValue.of("glm", display="GLM")])],
         control=control,
         control_levers=control_levers,
@@ -499,7 +500,7 @@ def make_campaign(**overrides: Any) -> EvalCampaign:
     """Create an ``EvalCampaign`` in the default scope, holding no runs.
 
     A test may still describe a campaign of one aspect by the keywords a campaign took before it held aspects:
-    ``template_id``, ``run_ids`` and ``declared_design`` (a ``CampaignDesign``). They are read as a stored v15
+    ``template_id``, ``run_ids`` and ``declared_design`` (a :class:`~packages.evals.tests.v15_shapes.V15Design`). They are read as a stored v15
     campaign is, through ``upgrade_campaign_v15``, so the campaign built is the one such a campaign upgrades to: one
     aspect labelled with ``behavior``, its control arm, its question and its floors. A test about aspects passes
     ``aspects`` (or uses :func:`make_aspect_campaign`) instead, and never both.
@@ -525,7 +526,7 @@ def make_campaign(**overrides: Any) -> EvalCampaign:
             "behavior": fields["behavior"],
             "template_id": legacy.get("template_id"),
             "run_ids": list(legacy.get("run_ids", [])),
-            "declared_design": design.model_dump(mode="json") if isinstance(design, CampaignDesign) else design,
+            "declared_design": design.model_dump(mode="json") if isinstance(design, V15Design) else design,
         }
     )
     for key in ("question", "arms", "aspects", "floors", "declared_at", "declared_by"):

@@ -2,7 +2,7 @@
 
 One declaration says latency is under test: ``measure_latency=True`` on a launch, on the quick path, and on a
 campaign's design. Declared, the cells run one at a time; not declared, they run concurrently. A campaign
-that asks about latency — a bar on a latency measure, a question on the latency axis, latency in its merit
+that asks about latency — a bar on a latency measure, latency among an aspect's merit axes, latency in its merit
 priority — without declaring it is refused when the design is declared, naming the setting to turn on, and
 the engine never quietly switches a run to serial behind it.
 """
@@ -15,22 +15,20 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.kernel import Question
 from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
 from threetears.evals import Eval
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS
-from packages.evals.tests.factories import minimal_declaration
+from packages.evals.tests.factories import minimal_aspect_design
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.off_loop import off_loop
 
 _PROFILE = toyhost_profile()
 _LATENCY_BAR = BarOverride(measure_id="total_ms", threshold=2000.0, direction="lower_is_better")
-_LATENCY_QUESTION = Question(id="q-fast", text="is it fast enough?", merit_axes=["latency"])
 
 
 def _refuse(**design: Any) -> None:
-    declared = minimal_declaration().model_copy(update=design)
+    declared = minimal_aspect_design(**design)
     refuse_an_undeclarable_design(declared, behavior="b", template=toyhost_template(), profile=_PROFILE)
 
 
@@ -38,7 +36,7 @@ def _refuse(**design: Any) -> None:
     ("design", "named"),
     [
         pytest.param({"bars": [_LATENCY_BAR]}, "the bar on total_ms", id="a-latency-bar"),
-        pytest.param({"questions": [_LATENCY_QUESTION]}, "the question 'is it fast enough?'", id="a-latency-question"),
+        pytest.param({"merit_axes": ["latency"]}, "latency among the aspect's merit axes", id="a-latency-axis"),
         pytest.param({"merit_priority": ["latency", "quality"]}, "latency in merit_priority", id="a-latency-ranking"),
     ],
 )
@@ -53,18 +51,18 @@ def test_a_design_asking_about_latency_without_declaring_it_is_refused_naming_th
 
 
 def test_the_same_design_declaring_latency_under_test_is_accepted() -> None:
-    _refuse(bars=[_LATENCY_BAR], questions=[_LATENCY_QUESTION], merit_priority=["latency"], measure_latency=True)
+    _refuse(bars=[_LATENCY_BAR], merit_axes=["latency"], merit_priority=["latency"], measure_latency=True)
 
 
 def test_a_design_asking_nothing_of_latency_needs_no_declaration() -> None:
-    _refuse(questions=[Question(id="q-good", text="is it right?", merit_axes=["quality"])])
+    _refuse(merit_axes=["quality"])
 
 
 def test_a_stored_design_asking_about_latency_still_loads() -> None:
     """The refusal is the declaration's gate, never a read's: a design stored before the field loads as it was."""
-    stored = minimal_declaration().model_dump(mode="json") | {"bars": [_LATENCY_BAR.model_dump(mode="json")]}
+    stored = minimal_aspect_design().model_dump(mode="json") | {"bars": [_LATENCY_BAR.model_dump(mode="json")]}
 
-    loaded = type(minimal_declaration()).model_validate(stored)
+    loaded = type(minimal_aspect_design()).model_validate(stored)
 
     assert loaded.measure_latency is False and loaded.bars == [_LATENCY_BAR]
 

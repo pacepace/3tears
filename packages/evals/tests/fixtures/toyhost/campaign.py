@@ -16,15 +16,15 @@ from typing import TypedDict
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.kernel import (
+    AspectDesign,
     BarOverride,
-    CampaignDesign,
     ControlDeclaration,
     EvalCampaign,
     EvalInsight,
-    Question,
     SweptAxis,
 )
 from threetears.evals.kernel.host import HostProfile
+from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -36,6 +36,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_batch,
     toyhost_measurements,
 )
+from packages.evals.tests.v15_shapes import V15Design, V15Question
 
 #: The question the campaign exists to answer, by id. Named so the memo's resolution can be
 #: matched against it without a second copy of the string.
@@ -84,15 +85,15 @@ _CONTEXT_TOKENS_IN: dict[int, int] = {TOYHOST_NARROW: 2_400, TOYHOST_WIDE: 7_600
 TOYHOST_COST_BAR_USD = 0.025
 
 
-def toyhost_design() -> CampaignDesign:
+def toyhost_design() -> V15Design:
     """What the toy-host campaign declared before any of it ran.
 
     :return: The declaration: one interval-scaled axis at two levels, one live question, and ``held_fixed``
         recording that the stimulus was never held — documents arrive from live intake, the
         observational shape rather than a commissioned one.
-    :rtype: CampaignDesign
+    :rtype: V15Design
     """
-    return CampaignDesign(
+    return V15Design(
         axes=[
             SweptAxis(
                 axis_id=TOYHOST_AXIS,
@@ -109,7 +110,7 @@ def toyhost_design() -> CampaignDesign:
         # carry — so one unpinned default put eleven wall-clock leaves into
         # every bundle and made two builds of this fixture incomparable.
         questions=[
-            Question(
+            V15Question(
                 id=TOYHOST_QUESTION_ID,
                 text="is the wider chunk worth what it costs to retrieve?",
                 asked_at=TOYHOST_INSTANT,
@@ -127,11 +128,26 @@ def toyhost_design() -> CampaignDesign:
     )
 
 
+def toyhost_aspect_design(**changes: object) -> AspectDesign:
+    """The design of the one aspect the toy-host campaign reads as: :func:`toyhost_design` as its stored read upgrades it.
+
+    :param changes: Fields of the stored design to change first, as a v15 design names them (``bars``, ...).
+    :ptype changes: object
+    :return: The aspect's design.
+    :rtype: AspectDesign
+    """
+    declared = toyhost_design().model_copy(update=changes)
+    upgraded = upgrade_campaign_v15(
+        {"behavior": "extract_invoice_fields", "run_ids": [], "declared_design": declared.model_dump(mode="json")}
+    )
+    return AspectDesign.model_validate(upgraded["aspects"][0]["design"])
+
+
 #: The version a campaign was stored at while it held one design: its stored read upgrades it.
 _ONE_DESIGN_VERSION = 15
 
 
-def toyhost_campaign_of_one_aspect(*, declared_design: CampaignDesign, **fields: object) -> EvalCampaign:
+def toyhost_campaign_of_one_aspect(*, declared_design: V15Design, **fields: object) -> EvalCampaign:
     """A toy-host campaign of one aspect, labelled with its behavior, declared by one design.
 
     The toy host's designs ask their questions, and name their control, as one design does, so the campaign is read
@@ -139,7 +155,7 @@ def toyhost_campaign_of_one_aspect(*, declared_design: CampaignDesign, **fields:
     the control arm, the margin and the floors are the ones every stored campaign of that design reads with.
 
     :param declared_design: The design, its questions and control included.
-    :ptype declared_design: CampaignDesign
+    :ptype declared_design: V15Design
     :param fields: The campaign's other fields, ``template_id`` and ``run_ids`` among them.
     :ptype fields: object
     :return: The campaign.

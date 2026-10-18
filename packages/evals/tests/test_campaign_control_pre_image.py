@@ -33,7 +33,6 @@ import json
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis import (
@@ -52,17 +51,14 @@ from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.kernel import EvalCampaign, IDENTITY_VERSION
 from threetears.evals.kernel.declaration import (
     CampaignArm,
-    CampaignDesign,
     SweptAxis,
     resolve_control_arm,
-    resolve_declared_control,
 )
 from threetears.evals.kernel.identity import compute_variant_key, resolve_variant_identity
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.values import SweepableValue
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.factories import minimal_declaration
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, toyhost_design
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
@@ -343,23 +339,6 @@ def test_a_control_addressed_from_a_run_whose_map_does_not_reproduce_its_key_nam
     assert run_id in bundle.design.control_arm.run_ids
 
 
-def test_a_control_declared_under_this_predicate_is_its_one_key() -> None:
-    levers = {"model": SweepableValue.of("glm", display="GLM")}
-    design = minimal_declaration(control=compute_variant_key(levers), control_levers=levers)
-
-    resolved = resolve_declared_control(design)
-
-    assert (resolved.variant_keys, resolved.identity_version, resolved.source) == (
-        [design.control],
-        IDENTITY_VERSION,
-        "current",
-    )
-    assert resolved.stale_disclosure is None
-    undeclared = resolve_declared_control(None)
-    assert undeclared == resolve_declared_control(minimal_declaration())
-    assert (undeclared.variant_keys, undeclared.source) == ([], "undeclared")
-
-
 # --- Every reading agrees on which arm is the control --------------------------------------------------------------
 
 
@@ -475,54 +454,6 @@ def test_a_control_that_re_keys_carries_no_stale_disclosure() -> None:
 
     assert bundle.design.stale_control_disclosure is None
     assert resolve_control_arm(campaign.control).stale_disclosure is None
-
-
-# --- The declaration holds the three fields together ---------------------------------------------------------------
-
-
-def test_a_typed_control_is_dated_by_the_build_accepting_it_and_a_stated_version_is_kept() -> None:
-    key = "a" * 64
-
-    typed = CampaignDesign.model_validate({**_design(), "control": key})
-    echoed = CampaignDesign.model_validate({**_design(), "control": key, "control_identity_version": _EARLIER})
-
-    assert typed.control_identity_version == IDENTITY_VERSION
-    assert typed.control_levers is None
-    assert echoed.control_identity_version == _EARLIER, "a declaration read back and echoed is not re-dated"
-
-
-@pytest.mark.parametrize(
-    ("fields", "says"),
-    [
-        pytest.param(
-            {"control_levers": {"model": SweepableValue.of("glm", display="GLM").model_dump(mode="json")}},
-            "declares no control",
-            id="levers-without-a-control",
-        ),
-        pytest.param({"control_identity_version": IDENTITY_VERSION}, "declares no control", id="version-without-one"),
-        pytest.param(
-            {
-                "control": "b" * 64,
-                "control_levers": {"model": SweepableValue.of("glm", display="GLM").model_dump(mode="json")},
-            },
-            "does not digest to `control`",
-            id="a-map-that-is-another-arms",
-        ),
-    ],
-)
-def test_a_pre_image_that_is_not_the_controls_is_refused(fields: dict[str, Any], says: str) -> None:
-    with pytest.raises(ValidationError, match=says):
-        CampaignDesign.model_validate({**_design(), **fields})
-
-
-def test_a_map_recorded_under_an_earlier_predicate_is_not_held_to_this_ones_arithmetic() -> None:
-    levers = {"model": SweepableValue.of("glm", display="GLM")}
-
-    design = minimal_declaration(
-        control=_older_predicates_key(levers), control_levers=levers, control_identity_version=_EARLIER
-    )
-
-    assert resolve_declared_control(design).variant_keys == [compute_variant_key(levers), design.control]
 
 
 # --- The pre-image is the server's ---------------------------------------------------------------------------------

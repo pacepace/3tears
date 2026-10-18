@@ -487,7 +487,7 @@ def _campaign_design(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param declared_control: The declared control as the keys that name its arm
-        (:func:`~threetears.evals.kernel.declaration.resolve_declared_control`); ``undeclared`` names none.
+        (:func:`~threetears.evals.kernel.declaration.resolve_control_arm`); ``undeclared`` names none.
     :ptype declared_control: ResolvedControl
     :param results_by_run: Each run's results, keyed by run id — the observation side of
         effective-config resolution, and where a variant key resolves.

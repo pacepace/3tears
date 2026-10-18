@@ -46,10 +46,10 @@ spare, so a new field on a finding must not refuse every corpus a host recorded.
 
 The bundle (``schema_version``), the cell model and the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
 digest. A kept key is stored beside its pre-image and the identity version that computed
-it — a run's ``variant_levers`` beside the keys its results carry, a campaign control's ``control_levers`` and
-``control_identity_version`` beside ``control`` — so no upgrader recomputes it. A read under a later
+it — a run's ``variant_levers`` beside the keys its results carry, a campaign arm's ``levers`` and
+``identity_version`` beside its ``variant_key`` — so no upgrader recomputes it. A read under a later
 ``IDENTITY_VERSION`` names the control's arm by its stored key, which the cells stamped under its own predicate keep,
-and by the key its map re-keys to (``resolve_declared_control``). That follows a change to how a map is DIGESTED
+and by the key its map re-keys to (``resolve_control_arm``). That follows a change to how a map is DIGESTED
 only: a host renaming a lever, a kind or an overlay field, or the engine adding a lever to every map, gives new runs
 a different map, which no recomputation of the stored one reaches, so across such a change the control names only
 the cells stamped before it and the map keeps it described.
@@ -157,7 +157,7 @@ the document, so extending one is a major. Each, and why:
 - ``CassetteMode`` — replay semantics, and identity.
 - ``TemperatureSelection``, ``TemperatureSetting``, ``CompletenessSource``, ``JudgeAttributionSource`` — facts of
   method that a reader trusts or re-derives by.
-- ``DeclaredMeritAxis``, ``GuardrailDirection``, ``CampaignDesign.crossing``, ``ControlDeclaration.stimulus`` — the
+- ``DeclaredMeritAxis``, ``GuardrailDirection``, ``AspectDesign.crossing``, ``ControlDeclaration.stimulus`` — the
   semantics of an analysis design.
 - ``ArmRole`` — which arm of a campaign every other is read against; an arm of a role an older build cannot name
   would be read against nothing, or as the control.

@@ -98,7 +98,7 @@ TOYHOST_DOCUMENTS = (
 
 #: Every wall-clock value in this fixture, pinned to one instant.
 #:
-#: `EvalRun.created_at`, `CampaignDesign.declared_at` and a question's `asked_at`
+#: `EvalRun.created_at`, a v15 design's `declared_at` and a question's `asked_at`
 #: all default to `utc_now_iso`, so a fixture that let them default carried the
 #: clock into the bundle — and `assemble_context_bundle` derives the measurement
 #: windows and the window disclosure from them, which is how ONE unpinned default

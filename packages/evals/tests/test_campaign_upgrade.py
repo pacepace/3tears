@@ -21,18 +21,15 @@ from threetears.evals.schema.campaign_upgrade import QUESTION_SEPARATOR, UPGRADE
 from threetears.evals.kernel.declaration import (
     Aspect,
     CampaignArm,
-    CampaignDesign,
     CostLower,
-    DecisionRule,
     Floor,
-    Question,
     RateDrop,
-    preregistered_questions,
 )
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.schema.versioning import DURABLE_ADDRESSING_FIELDS, CoreVersionRefused, upgrade_durable_document
+from packages.evals.tests.v15_shapes import V15Design, V15Question, V15Rule
 
 #: The frozen v15 campaign, as the release that shipped the corpus wrote it.
 _FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
@@ -51,7 +48,7 @@ def _frozen() -> dict[str, Any]:
 
 
 def _v15(
-    declared_design: CampaignDesign | None = None, *, template_id: str | None = None, run_ids: Sequence[str] = ()
+    declared_design: V15Design | None = None, *, template_id: str | None = None, run_ids: Sequence[str] = ()
 ) -> dict[str, Any]:
     """A stored v15 campaign: the frozen one's fields, holding ``template_id``, ``run_ids`` and this design."""
     stored = _frozen()
@@ -63,7 +60,7 @@ def _v15(
     return stored
 
 
-def _stored(*questions: Question, control: bool = True, **campaign: Any) -> dict[str, Any]:
+def _stored(*questions: V15Question, control: bool = True, **campaign: Any) -> dict[str, Any]:
     """A v15 campaign, its design asking ``questions``, as its stored document."""
     design = minimal_declaration(control=_KEY, control_levers=_LEVERS) if control else minimal_declaration()
     design = design.model_copy(update={"questions": list(questions)})
@@ -140,10 +137,8 @@ class TestTheFrozenCampaign:
 
 class TestARuleBearingCampaign:
     def test_each_clause_of_a_live_rule_is_a_floor_on_the_aspect(self) -> None:
-        rule = DecisionRule(
-            clauses=(RateDrop(max_points=3, reading="cites a source"), RateDrop(max_points=5), CostLower())
-        )
-        upgraded = upgrade_campaign_v15(_stored(Question(text="Switch to the candidate?", decision=rule)))
+        rule = V15Rule(clauses=(RateDrop(max_points=3, reading="cites a source"), RateDrop(max_points=5), CostLower()))
+        upgraded = upgrade_campaign_v15(_stored(V15Question(text="Switch to the candidate?", decision=rule)))
 
         assert [floor.key for floor in _floors(upgraded)] == [
             "conversation/rate_drop/cites a source",
@@ -153,16 +148,18 @@ class TestARuleBearingCampaign:
         assert [floor.clause for floor in _floors(upgraded)] == list(rule.clauses)
 
     def test_the_margin_is_the_floor_that_reads_every_pass_rate(self) -> None:
-        first = DecisionRule(clauses=(RateDrop(max_points=3, reading="cites a source"), RateDrop(max_points=5)))
-        upgraded = upgrade_campaign_v15(_stored(Question(text="Is it as good?", decision=first)))
+        first = V15Rule(clauses=(RateDrop(max_points=3, reading="cites a source"), RateDrop(max_points=5)))
+        upgraded = upgrade_campaign_v15(_stored(V15Question(text="Is it as good?", decision=first)))
 
         assert _aspect(upgraded).margin == 5.0
 
     def test_the_margin_tightens_with_the_floor_it_is_read_off(self) -> None:
-        first = DecisionRule(clauses=(RateDrop(max_points=3, reading="cites a source"), RateDrop(max_points=5)))
-        second = DecisionRule(clauses=(RateDrop(max_points=2),))
+        first = V15Rule(clauses=(RateDrop(max_points=3, reading="cites a source"), RateDrop(max_points=5)))
+        second = V15Rule(clauses=(RateDrop(max_points=2),))
         upgraded = upgrade_campaign_v15(
-            _stored(Question(text="Is it as good?", decision=first), Question(text="And cheaper?", decision=second))
+            _stored(
+                V15Question(text="Is it as good?", decision=first), V15Question(text="And cheaper?", decision=second)
+            )
         )
 
         every_rate = next(floor for floor in _floors(upgraded) if floor.key == "conversation/rate_drop/*")
@@ -170,22 +167,24 @@ class TestARuleBearingCampaign:
         assert _aspect(upgraded).margin == 2.0
 
     def test_two_clauses_on_one_reading_are_the_tighter_floor(self) -> None:
-        first = DecisionRule(clauses=(RateDrop(max_points=5), CostLower()))
-        second = DecisionRule(clauses=(RateDrop(max_points=2), CostLower()))
+        first = V15Rule(clauses=(RateDrop(max_points=5), CostLower()))
+        second = V15Rule(clauses=(RateDrop(max_points=2), CostLower()))
         upgraded = upgrade_campaign_v15(
-            _stored(Question(text="Is it as good?", decision=first), Question(text="And cheaper?", decision=second))
+            _stored(
+                V15Question(text="Is it as good?", decision=first), V15Question(text="And cheaper?", decision=second)
+            )
         )
 
         assert [floor.clause for floor in _floors(upgraded)] == [RateDrop(max_points=2), CostLower()]
 
     def test_a_retired_or_superseded_question_s_rule_is_no_floor(self) -> None:
-        retired = Question(
+        retired = V15Question(
             text="Old?",
-            decision=DecisionRule(clauses=(RateDrop(max_points=1),)),
+            decision=V15Rule(clauses=(RateDrop(max_points=1),)),
             retired_at="2026-10-01T00:00:00+00:00",
         )
-        original = Question(text="First wording?", decision=DecisionRule(clauses=(CostLower(),)))
-        reworded = Question(text="Second wording?", supersedes=original.id)
+        original = V15Question(text="First wording?", decision=V15Rule(clauses=(CostLower(),)))
+        reworded = V15Question(text="Second wording?", supersedes=original.id)
         upgraded = upgrade_campaign_v15(_stored(retired, original, reworded))
 
         assert upgraded["floors"] == []
@@ -195,15 +194,15 @@ class TestARuleBearingCampaign:
 
 class TestAMultiQuestionCampaign:
     def test_its_live_questions_join_into_one(self) -> None:
-        upgraded = upgrade_campaign_v15(_stored(Question(text="Is it kinder?"), Question(text="Is it quicker?")))
+        upgraded = upgrade_campaign_v15(_stored(V15Question(text="Is it kinder?"), V15Question(text="Is it quicker?")))
 
         assert upgraded["question"] == QUESTION_SEPARATOR.join(["Is it kinder?", "Is it quicker?"])
 
     def test_the_aspect_asks_about_the_union_of_their_axes(self) -> None:
         upgraded = upgrade_campaign_v15(
             _stored(
-                Question(text="Is it kinder?", merit_axes=["quality"]),
-                Question(text="Is it cheaper and as kind?", merit_axes=["cost", "quality"]),
+                V15Question(text="Is it kinder?", merit_axes=["quality"]),
+                V15Question(text="Is it cheaper and as kind?", merit_axes=["cost", "quality"]),
             )
         )
 
@@ -213,7 +212,7 @@ class TestAMultiQuestionCampaign:
 
     def test_an_unscoped_question_leaves_the_aspect_unscoped(self) -> None:
         upgraded = upgrade_campaign_v15(
-            _stored(Question(text="Is it kinder?", merit_axes=["quality"]), Question(text="Is it better at all?"))
+            _stored(V15Question(text="Is it kinder?", merit_axes=["quality"]), V15Question(text="Is it better at all?"))
         )
 
         design = _aspect(upgraded).design
@@ -222,8 +221,8 @@ class TestAMultiQuestionCampaign:
 
     def test_it_is_declared_when_its_last_question_was_asked(self) -> None:
         stored = _stored(
-            Question(text="Is it quicker?", asked_at="2026-10-03T00:00:00+00:00"),
-            Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00+00:00"),
+            V15Question(text="Is it quicker?", asked_at="2026-10-03T00:00:00+00:00"),
+            V15Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00+00:00"),
         )
         stored["declared_design"]["declared_at"] = "2026-10-01T00:00:00+00:00"
 
@@ -234,7 +233,7 @@ class TestAMultiQuestionCampaign:
 
     def test_a_design_re_stamped_after_its_questions_leaves_them_pre_registered(self) -> None:
         # Naming the control after runs joined re-stamps the design: its questions were still asked first.
-        stored = _stored(Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00+00:00"))
+        stored = _stored(V15Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00+00:00"))
         stored["declared_design"]["declared_at"] = "2026-10-09T00:00:00+00:00"
 
         upgraded = upgrade_campaign_v15(stored)
@@ -243,7 +242,7 @@ class TestAMultiQuestionCampaign:
         assert _aspect(upgraded).declared_at == "2026-10-09T00:00:00+00:00"
 
     def test_one_asking_nothing_is_declared_when_its_design_was(self) -> None:
-        stored = _stored(Question(text="Old?", retired_at="2026-10-05T00:00:00+00:00"))
+        stored = _stored(V15Question(text="Old?", retired_at="2026-10-05T00:00:00+00:00"))
         stored["declared_design"]["declared_at"] = "2026-10-04T00:00:00+00:00"
 
         upgraded = upgrade_campaign_v15(stored)
@@ -258,22 +257,16 @@ class TestAMultiQuestionCampaign:
         """v15 never validated a question's time, so the step reads it rather than refusing the document: which part
         was asked last cannot be said, so the question is undated, read as asked after the evidence. A refusal
         here would make a stored campaign unreadable, and with it every listing of its scope."""
-        stored = _stored(Question(text="Is it kinder?"), Question(text="Is it quicker?"))
+        stored = _stored(V15Question(text="Is it kinder?"), V15Question(text="Is it quicker?"))
         stored["declared_design"]["questions"][0]["asked_at"] = asked_at
-        design = minimal_declaration().model_copy(
-            update={"questions": [Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00")]}
-        )
-
         upgraded = upgrade_campaign_v15(stored)
         read = EvalCampaign.from_dict({**stored, "schema_version": 15})
 
         assert (upgraded["declared_at"], _aspect(upgraded).asked_at) == (None, None)
         assert read.declared_at is None and read.aspects[0].asked_at is None
-        with pytest.raises(ValueError, match="is stamped"):
-            preregistered_questions(design, "2026-10-09T00:00:00+00:00")
 
     def test_a_question_without_an_id_or_words_is_read_as_having_none(self) -> None:
-        stored = _stored(Question(text="Is it kinder?"))
+        stored = _stored(V15Question(text="Is it kinder?"))
         del stored["declared_design"]["questions"][0]["id"], stored["declared_design"]["questions"][0]["text"]
 
         assert upgrade_campaign_v15(stored)["question"] == ""
@@ -302,7 +295,7 @@ class TestWhatV15NeverValidated:
 
 class TestACampaignWithNoRule:
     def test_it_has_no_margin_and_no_floor(self) -> None:
-        upgraded = upgrade_campaign_v15(_stored(Question(text="Is it kinder?")))
+        upgraded = upgrade_campaign_v15(_stored(V15Question(text="Is it kinder?")))
 
         assert _aspect(upgraded).margin is None
         assert upgraded["floors"] == []
@@ -326,7 +319,7 @@ class TestACampaignWithNoRule:
     [
         pytest.param(_frozen(), id="frozen"),
         pytest.param(
-            _stored(Question(text="Switch?", decision=DecisionRule(clauses=(RateDrop(max_points=5),)))), id="ruled"
+            _stored(V15Question(text="Switch?", decision=V15Rule(clauses=(RateDrop(max_points=5),)))), id="ruled"
         ),
         pytest.param(_v15(run_ids=["run-1"]), id="exploratory"),
     ],

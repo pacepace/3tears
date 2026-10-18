@@ -197,45 +197,6 @@ class AuthoredCampaignAnalysis(_Authored):
         return self.recommendation[0] if self.recommendation else None
 
 
-#: The memo shape before one memo covered a campaign (0.70): decisions and question answers over one aspect. Nothing
-#: in this build writes, sends or reads it — the generator authors :class:`AuthoredCampaignAnalysis` and a stored
-#: analysis holds one. It stays importable only until the release that removes it records the removal in
-#: ``MIGRATIONS.toml``; it is no reader of an older analysis, which is refused on read and regenerated.
-
-
-class Decision(_Authored):
-    """Retired (0.70's memo): a recommendation as a proposal and the verdict on it. Read nowhere in this build."""
-
-    proposal: ModelProse = Field(description="One thing to do, stated positively: what to configure, or change.")
-    disposition: Literal["adopted", "rejected", "deferred"] = Field(
-        description="`adopted` means act on it now; an option that still needs a confirming run is `deferred`."
-    )
-    cells: list[str] = Field(description="The cells whose arm this adopts or rejects; empty when it names no arm.")
-    confidence: Confidence
-    rests_on: list[int] = Field(description="Positions in `findings` this rests on; at least one.")
-    revisit_when: ModelProse = Field(description="What specifically would settle it; empty unless deferred.")
-
-
-class QuestionAnswer(_Authored):
-    """Retired (0.70's memo): where one declared question stood. Read nowhere in this build."""
-
-    question_id: str = Field(description="A live declared question's id; one entry per live question.")
-    resolution: Literal["answered", "partial", "unanswerable"]
-    answer: ModelProse = Field(
-        description="Opens with the answer in one plain sentence; or why it cannot be given and what would give it."
-    )
-    rests_on: list[int] = Field(description="Positions in `findings` this rests on.")
-
-
-class AuthoredAnalysis(_Authored):
-    """Retired (0.70's memo over one aspect): findings, decisions, question answers and next steps. Read nowhere."""
-
-    findings: list[Finding] = Field(description="The findings, in reading order.")
-    decisions: list[Decision]
-    questions: list[QuestionAnswer]
-    next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
-
-
 class MapFieldInSchema(TypeError):
     """An object admits arbitrary keys, which no strict structured-output mode accepts."""
 
@@ -478,20 +439,17 @@ __all__ = [
     "SCHEMA_NAME",
     "SLOT_BUDGET",
     "AspectSummary",
-    "AuthoredAnalysis",
     "AuthoredCampaignAnalysis",
     "BarMissed",
     "BehindOn",
     "Caveat",
     "Confidence",
-    "Decision",
     "EvidenceRef",
     "Finding",
     "FloorOverride",
     "MapFieldInSchema",
     "NextStep",
     "OffVocabulary",
-    "QuestionAnswer",
     "Reading",
     "Recommendation",
     "authored_schema",

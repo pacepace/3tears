@@ -48,7 +48,7 @@ from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclara
 from threetears.evals.kernel.metrics import WITHHELD_PARTITION_INCOMPLETE
 from threetears.evals.schema.models import LatencyMetrics, RunCompleteness, utc_now_iso
 from packages.evals.tests.fixtures.toyhost.campaign import (
-    toyhost_design,
+    toyhost_aspect_design,
     TOYHOST_NARROW,
     TOYHOST_WIDE,
     toyhost_bundle,
@@ -375,10 +375,8 @@ class TestARefusedBarIsQuotedAsDeclared:
     def test_the_threshold_is_echoed_exactly_as_the_author_declared_it(self) -> None:
         profile = toyhost_profile()
         campaign, _storage = toyhost_campaign()
-        design = toyhost_design().model_copy(
-            update={
-                "bars": [BarOverride(measure_id="extraction_vibes", threshold=12345678.5, direction="higher_is_better")]
-            }
+        design = toyhost_aspect_design(
+            bars=[BarOverride(measure_id="extraction_vibes", threshold=12345678.5, direction="higher_is_better")]
         )
         with pytest.raises(ValueError, match=r"extraction_vibes") as raised:
             refuse_an_undeclarable_design(design, behavior=campaign.behavior, template=None, profile=profile)
