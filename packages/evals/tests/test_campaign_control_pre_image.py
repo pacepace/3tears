@@ -408,7 +408,7 @@ async def test_the_adoption_check_and_the_report_name_the_arm_the_realized_desig
     assert bundle.declared is not None and bundle.declared.control is not None
     assert bundle.declared.control.variant_key != expected
     payload = memo_payload(bundle)
-    payload["recommendation"]["arm"] = arm_at(campaign_bundle(bundle), TOYHOST_NARROW)
+    payload["recommendation"][0]["arm"] = arm_at(campaign_bundle(bundle), TOYHOST_NARROW)
     # Every reading unseparated: recommending any arm but the control is refused, so acceptance proves the check
     # exempted the arm the realized design matched — not the declaration's own key, which no cell here carries.
     families = [
@@ -752,7 +752,7 @@ async def test_keeping_the_control_under_the_earlier_predicate_needs_no_separati
     payload = memo_payload(
         bundle.model_copy(update={"run_summaries": [s for s in bundle.run_summaries if s.run_id != rerun]})
     )
-    assert campaign_bundle(bundle).label_of(stored_key) == payload["recommendation"]["arm"], (
+    assert campaign_bundle(bundle).label_of(stored_key) == payload["recommendation"][0]["arm"], (
         "the earlier cells are named as the control is"
     )
     client = FixturedClient(json.dumps(payload))

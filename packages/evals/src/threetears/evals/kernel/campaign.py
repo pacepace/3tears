@@ -942,6 +942,13 @@ class EvalAnalysis(EvalDocumentModel):
     document: AuthoredCampaignAnalysis = Field(
         description="What the generator authored, as written, with each figure reference in its prose rendered by code."
     )
+    recommended_variant_key: str | None = Field(
+        description=(
+            "The variant key of the arm the memo recommends, resolved by code from the recommendation's label when the "
+            "analysis was saved, so a person's call is matched to the arm by its key whatever later relabels it. None "
+            "where the memo recommends nothing (a measurement, or a choice with no clear winner)."
+        )
+    )
     judged_tier_rule: JudgedTierRule = Field(
         default="interval_lower_bound",
         description=(
@@ -1047,7 +1054,14 @@ class EvalAnalysis(EvalDocumentModel):
                     f"{where} names finding position(s) {bad}, and there are {count} findings (0-{count - 1})"
                 )
 
-        in_range("recommendation.rests_on", self.document.recommendation.rests_on)
+        recommended = self.document.recommended()
+        if recommended is not None:
+            in_range("recommendation.rests_on", recommended.rests_on)
+        if (recommended is None) != (self.recommended_variant_key is None):
+            raise ValueError(
+                "recommended_variant_key is the key of the arm the memo recommends: set exactly when the memo makes a "
+                "recommendation"
+            )
         for index, finding in enumerate(findings):
             in_range(f"findings[{index}].invalidates", finding.invalidates)
             if index in finding.invalidates:

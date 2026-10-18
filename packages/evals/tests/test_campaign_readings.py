@@ -10,10 +10,11 @@ at 97.5% and not at 98.3%; on twelve, at every level the step-down reads. A drop
 from __future__ import annotations
 
 import random
+from typing import Literal
 
 import pytest
 
-from threetears.evals.analysis import AnalysisContextBundle, CampaignReadings, campaign_readings
+from threetears.evals.analysis import AnalysisContextBundle, CampaignReadings, campaign_kind, campaign_readings
 from threetears.evals.analysis.report.decision import evaluate_floor, floor_readings, read_floor
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
@@ -22,7 +23,7 @@ from threetears.evals.analysis.stats import (
     holm_adjust,
 )
 from threetears.evals.kernel import RefusedInput
-from threetears.evals.kernel.declaration import Floor, RateDrop
+from threetears.evals.kernel.declaration import CampaignArm, Floor, RateDrop
 
 from packages.evals.tests.campaign_support import (
     CASES,
@@ -396,3 +397,16 @@ async def test_a_floor_status_is_evaluate_floor_s_own() -> None:
     campaign = campaign_of(base, [("billing", 10.0)], floors=[("billing", RateDrop(max_points=10))])
     read = campaign_readings(campaign, {"billing": bundle}, arms=arms_of(base))
     _floors_match(read, bundle, base)
+
+
+def test_a_campaign_s_kind_is_derived_from_its_arms() -> None:
+    def arm(label: str, role: Literal["control", "candidate"], digit: str) -> CampaignArm:
+        return CampaignArm(label=label, role=role, variant_key=digit * 64)
+
+    assert campaign_kind([]) == "measurement"
+    assert campaign_kind([arm("v1", "candidate", "a")]) == "measurement"
+    assert campaign_kind([arm("v1", "control", "a")]) == "measurement"
+    # The same variant named twice is one arm.
+    assert campaign_kind([arm("v1", "candidate", "a"), arm("v1 again", "candidate", "a")]) == "measurement"
+    assert campaign_kind([arm("v1", "candidate", "a"), arm("v2", "candidate", "b")]) == "choice"
+    assert campaign_kind([arm("v1", "control", "a"), arm("v2", "candidate", "b")]) == "change"

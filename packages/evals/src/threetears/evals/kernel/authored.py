@@ -108,26 +108,55 @@ class FloorOverride(_Authored):
     why: ModelProse = Field(description="Why recommending the arm over this broken floor is acceptable here.")
 
 
+class BehindOn(_Authored):
+    """An aspect on which code showed another arm ahead of the one a choice recommends, and why it is picked anyway."""
+
+    aspect: str = Field(description="The aspect's label, spelled as the bundle spells it.")
+    ahead_arm: str = Field(description="The arm code showed ahead there, by its label.")
+    why: ModelProse = Field(description="Why the recommended arm is picked over it all the same.")
+
+
+class BarMissed(_Authored):
+    """An absolute bar the recommended arm missed on one aspect, and why it is recommended all the same."""
+
+    aspect: str = Field(description="The aspect's label, spelled as the bundle spells it.")
+    measure: str = Field(description="The bar's measure, spelled as the bundle spells it.")
+    why: ModelProse = Field(description="Why recommending the arm below this bar is acceptable here.")
+
+
 class Recommendation(_Authored):
     """The one call the writer recommends for a campaign: which arm, why, how sure, and the findings it rests on.
 
-    One per campaign, over every aspect: a person decides, and this is what they decide over. Keeping the control is
-    a recommendation like any other, named by the control's label. A floor the recommended arm broke is warned, never
-    blocked, and the writer must address it: ``floors_overridden`` names each such floor and why the breach is
-    acceptable, and the generator refuses a recommendation that leaves one out.
+    One per campaign, over every aspect: a person decides, and this is what they decide over. Which kind of campaign
+    it is decides what it may say, and is derived from its arms: a **measurement** (one arm) recommends nothing; a
+    **choice** (several arms, no control) picks one, or recommends nothing when no arm stood out (no clear winner);
+    a **change** (a control and its candidates) recommends a candidate or keeps the control, named by the control's
+    label. What code warned of on the recommended arm is never blocked, and the writer must address each:
+    ``floors_overridden`` every floor it broke, ``behind_on`` every aspect another arm was shown ahead of it on (a
+    choice), and ``bars_missed`` every absolute bar it missed. The generator refuses a recommendation that leaves one
+    out. ``rests_on`` names the findings it rests on; keeping a change's control may rest on none, since keeping what is
+    there needs no evidence of its own.
     """
 
     arm: str = Field(
         description=(
-            "The arm to adopt, by its label as the campaign bundle names it; the control's label to keep it. Code "
-            "resolves the label to the arm's variant key when the memo is saved."
+            "The arm recommended, by its label as the campaign bundle names it; the control's label to keep it. Code "
+            "stores the arm's variant key beside the memo (``EvalAnalysis.recommended_variant_key``)."
         )
     )
     reasons: list[ModelProse] = Field(description="Why, one reason each, strongest first.")
     confidence: Confidence
-    rests_on: list[int] = Field(description="Positions in `findings` this rests on; at least one.")
+    rests_on: list[int] = Field(
+        description="Positions in `findings` this rests on; at least one, except when keeping the control."
+    )
     floors_overridden: list[FloorOverride] = Field(
         description="Every floor broken on the recommended arm, each once, with why; empty when it broke none."
+    )
+    behind_on: list[BehindOn] = Field(
+        description="Every aspect a choice's pair readings show another arm ahead of this one, with why; else empty."
+    )
+    bars_missed: list[BarMissed] = Field(
+        description="Every absolute bar the recommended arm missed, each once, with why; empty when it missed none."
     )
 
 
@@ -143,12 +172,29 @@ class AspectSummary(_Authored):
 
 
 class AuthoredCampaignAnalysis(_Authored):
-    """A decision memo over a campaign of aspects: findings across them, one recommendation, a summary per aspect."""
+    """A memo over a campaign of aspects: findings across them, at most one recommendation, a summary per aspect.
+
+    The recommendation is a list of at most one, because the contract holds no nullable slot: empty is a measurement's
+    memo, which recommends nothing, and a choice's that found no clear winner. :meth:`recommended` reads it.
+    """
 
     findings: list[Finding] = Field(description="The findings, across every aspect, in reading order.")
-    recommendation: Recommendation
+    recommendation: list[Recommendation] = Field(
+        max_length=1,
+        description=(
+            "The one recommendation, or none: empty for a measurement, and for a choice with no clear winner."
+        ),
+    )
     aspect_summaries: list[AspectSummary] = Field(description="One per aspect, in the campaign's order.")
     next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
+
+    def recommended(self) -> Recommendation | None:
+        """The memo's one recommendation, or None where it makes none.
+
+        :return: The recommendation.
+        :rtype: Recommendation | None
+        """
+        return self.recommendation[0] if self.recommendation else None
 
 
 #: The memo shape before one memo covered a campaign (0.70): decisions and question answers over one aspect. Nothing
@@ -434,6 +480,8 @@ __all__ = [
     "AspectSummary",
     "AuthoredAnalysis",
     "AuthoredCampaignAnalysis",
+    "BarMissed",
+    "BehindOn",
     "Caveat",
     "Confidence",
     "Decision",

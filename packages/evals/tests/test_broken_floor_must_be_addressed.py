@@ -26,7 +26,16 @@ from packages.evals.tests.aspect_support import with_control
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, arm_at, cell_at, memo_payload
+from packages.evals.tests.toyhost_memo import (
+    MODEL,
+    PROMPT,
+    PROMPT_ID,
+    FixturedClient,
+    FixturedCompletion,
+    arm_at,
+    cell_at,
+    memo_payload,
+)
 from threetears.evals.analysis import CampaignBundle, assemble_context_bundle, generate_analysis
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from threetears.evals.analysis.campaign_readings import FloorState, FloorStatus
@@ -70,8 +79,8 @@ def _key(bundle: CampaignBundle, kind: str = "rate_drop") -> str:
 
 def _recommending_wide(bundle: CampaignBundle, *overridden: dict[str, str]) -> dict[str, Any]:
     payload = memo_payload(bundle)
-    payload["recommendation"]["arm"] = arm_at(bundle, TOYHOST_WIDE)
-    payload["recommendation"]["floors_overridden"] = list(overridden)
+    payload["recommendation"][0]["arm"] = arm_at(bundle, TOYHOST_WIDE)
+    payload["recommendation"][0]["floors_overridden"] = list(overridden)
     return payload
 
 
@@ -106,7 +115,7 @@ class TestABrokenFloorMustBeAddressed:
         key = _key(bundle)
         why = "The accuracy gain is what this campaign is for, and the pass-rate loss is in cases we no longer serve."
         analysis = await _generate(bundle, _recommending_wide(bundle, {"floor": key, "why": why}))
-        (override,) = analysis.document.recommendation.floors_overridden
+        (override,) = analysis.document.recommendation[0].floors_overridden
         assert (override.floor, override.why) == (key, why)
 
     async def test_every_broken_floor_must_be_named_not_just_one(self) -> None:
@@ -128,14 +137,16 @@ class TestABrokenFloorMustBeAddressed:
 
     async def test_a_floor_the_arm_did_not_break_is_refused_in_floors_overridden(self) -> None:
         bundle = _bundle(_key(_bundle()), status="held")
-        with pytest.raises(SoundnessRefusal, match=r"which .* did not break \(the floors it broke: none\)"):
+        with pytest.raises(
+            SoundnessRefusal, match=r"by floor, and code raised no such warning on .* \(it raised: none\)"
+        ):
             await _generate(bundle, _recommending_wide(bundle, {"floor": _key(bundle), "why": "Accuracy matters."}))
 
     async def test_a_floor_broken_on_another_arm_needs_no_word_when_that_arm_is_not_recommended(self) -> None:
         bundle = _bundle(_key(_bundle()))
         payload = memo_payload(bundle)  # recommends the narrow control, which no floor is read on
         analysis = await _generate(bundle, payload)
-        assert analysis.document.recommendation.floors_overridden == []
+        assert analysis.document.recommendation[0].floors_overridden == []
 
 
 class TestTheWriterIsWarned:
@@ -154,3 +165,57 @@ class TestTheWriterIsWarned:
         bundle = _bundle(_key(_bundle()), status="held")
         view = json.loads(build_campaign_user_message(bundle).split("\n", 1)[1])
         assert "floor_warning" not in view
+
+
+class _Drafts(FixturedClient):
+    """Hands back one prepared memo per call, in order: the first draft, then its repair."""
+
+    def __init__(self, *bodies: str) -> None:
+        super().__init__(bodies[0])
+        self.bodies = list(bodies)
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None, tools: Any = None) -> Any:
+        self.completion = FixturedCompletion(content=self.bodies[len(self.calls)])
+        return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
+
+
+class TestTheRepairRoundAddressesTheFloor:
+    async def test_a_recommendation_silent_on_its_broken_floor_is_refused_repaired_and_stored(self) -> None:
+        key = _key(_bundle())
+        bundle = _bundle(key)
+        why = "Accuracy is what this campaign is for, and the trials it loses are in a queue we retire."
+        client = _Drafts(
+            json.dumps(_recommending_wide(bundle)),
+            json.dumps(_recommending_wide(bundle, {"floor": key, "why": why})),
+        )
+        analysis, _ = await generate_analysis(
+            bundle,
+            prompt=PROMPT,
+            model=MODEL,
+            client=client,
+            prompt_id=PROMPT_ID,
+            bundle_assembled_at=utc_now_iso(),
+            profile=toyhost_profile(),
+        )
+        assert len(client.calls) == 2 and analysis.generation.repair_attempts == 1
+        refusal = analysis.generation.repaired_refusal
+        assert refusal is not None and f"broke floor(s) [{key!r}]" in refusal
+        assert refusal in client.calls[1]["user"], "the repair is told which floor it left out"
+        (override,) = analysis.document.recommendation[0].floors_overridden
+        assert override.floor == key
+
+
+class TestAFloorOnAnotherAspect:
+    async def test_a_floor_broken_on_the_second_aspect_must_be_named_too(self) -> None:
+        first = _bundle().aspects[0]
+        second = first.model_copy(update={"aspect": "second"})
+        bare = campaign_bundle(first, second)
+        floor = _floor(bare, "second/rate_drop/*").model_copy(update={"aspect": "second"})
+        bundle = campaign_bundle(first, second, floors=[floor])
+        payload = _recommending_wide(bundle)
+        payload["aspect_summaries"].append({**payload["aspect_summaries"][0], "aspect": "second"})
+        with pytest.raises(SoundnessRefusal, match=re.escape("broke floor(s) ['second/rate_drop/*']")):
+            await _generate(bundle, payload)
+        payload["recommendation"][0]["floors_overridden"] = [{"floor": "second/rate_drop/*", "why": "Accuracy wins."}]
+        analysis = await _generate(bundle, payload)
+        assert [aspect.label for aspect in analysis.aspects] == [first.aspect, "second"]

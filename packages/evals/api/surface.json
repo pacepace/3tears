@@ -1326,6 +1326,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.BarMissed": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.BarName": {
       "kind": "dataclass",
       "signature": "",
@@ -1347,6 +1352,11 @@
       "tier": "stable"
     },
     "threetears.evals.kernel.BarVerdict": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.BehindOn": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -1813,7 +1823,7 @@
     },
     "threetears.evals.kernel.EvalAnalysis": {
       "kind": "model",
-      "signature": "EvalAnalysis(id: str = <lambda>(), doc_type: Literal['eval_analysis'] = 'eval_analysis', schema_version: SchemaVersion = 12, scope_id: str, campaign_id: str, subject_id: str, subject_kind: str, behavior: str, observation_refs: list[str] = list(), model_versions: dict[str, str] = dict(), generation: GenerationProvenance, design_snapshot: CampaignDeclaration, document: AuthoredCampaignAnalysis, judged_tier_rule: JudgedTierRule = 'interval_lower_bound', resolutions: list[FindingResolution] = list(), aspects: list[AspectAnalysis], campaign_bundle: VerbatimJsonObject, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
+      "signature": "EvalAnalysis(id: str = <lambda>(), doc_type: Literal['eval_analysis'] = 'eval_analysis', schema_version: SchemaVersion = 12, scope_id: str, campaign_id: str, subject_id: str, subject_kind: str, behavior: str, observation_refs: list[str] = list(), model_versions: dict[str, str] = dict(), generation: GenerationProvenance, design_snapshot: CampaignDeclaration, document: AuthoredCampaignAnalysis, recommended_variant_key: str | None, judged_tier_rule: JudgedTierRule = 'interval_lower_bound', resolutions: list[FindingResolution] = list(), aspects: list[AspectAnalysis], campaign_bundle: VerbatimJsonObject, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.EvalAnalysisAttempt": {
@@ -4596,6 +4606,16 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.BarState": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.BarStatus": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.BaselineBarProposals": {
       "kind": "dataclass",
       "signature": "",
@@ -4646,6 +4666,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.campaign_kind": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.CAMPAIGN_MESSAGE_CHARS_PER_ASPECT": {
       "kind": "constant (int)",
       "signature": "",
@@ -4683,6 +4708,11 @@
     },
     "threetears.evals.analysis.CampaignBundle": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.CampaignKind": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -5506,6 +5536,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.MeasureReading": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.MeasureSeries": {
       "kind": "model",
       "signature": "",
@@ -5627,6 +5662,11 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.PairingCorrelation": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.PairReading": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"

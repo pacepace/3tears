@@ -53,7 +53,7 @@ class TestTheQuestionIsAnsweredByTheRecommendation:
         self, question: str | None
     ) -> None:
         analysis = await self._generate(question)
-        assert analysis.document.recommendation.arm
+        assert analysis.document.recommendation[0].arm
         assert [summary.aspect for summary in analysis.document.aspect_summaries] == [
             aspect.label for aspect in analysis.aspects
         ]

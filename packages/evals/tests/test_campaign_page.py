@@ -130,13 +130,17 @@ def _memo() -> AuthoredCampaignAnalysis:
     )
     return AuthoredCampaignAnalysis(
         findings=[finding],
-        recommendation=Recommendation(
-            arm=CONTROL_LABEL,
-            reasons=["The billing floor is broken, and billing is where refunds are lost."],
-            confidence="high",
-            rests_on=[0],
-            floors_overridden=[],
-        ),
+        recommendation=[
+            Recommendation(
+                arm=CONTROL_LABEL,
+                reasons=["The billing floor is broken, and billing is where refunds are lost."],
+                confidence="high",
+                rests_on=[0],
+                floors_overridden=[],
+                behind_on=[],
+                bars_missed=[],
+            )
+        ],
         aspect_summaries=[
             AspectSummary(
                 aspect="billing",

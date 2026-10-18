@@ -317,7 +317,13 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   recommendation (an arm, reasons, confidence, the findings it rests on, every broken floor it is made over), a
 #:   short summary per aspect and next steps; ``decisions`` and ``questions`` are gone. Each resolved evidence row
 #:   names its aspect (``EvidenceRow.aspect``), and ``design_snapshot`` is the campaign's declaration
-#:   (``CampaignDeclaration``), always present. A v11 analysis is refused on read and regenerated.
+#:   (``CampaignDeclaration``), always present. The bump refuses every regenerable document but the cassette: a v11
+#:   analysis, insight and judge profile are refused on read. Assembling a campaign's evidence reads the subject's
+#:   insight ledger, so a store holding a v11 insight refuses ``analysis_generate``, ``analysis_estimate`` and a
+#:   code-only ``report_read`` over that subject until it is cleared: the operator step is
+#:   ``EvalStorage.drop_derived(scopes)``, which deletes the analyses, insights and judge profiles of the named scopes
+#:   (each regenerates from the kept core: an analysis and its insights by generating again, a judge profile from its
+#:   judge's results) and leaves cassettes and every kept and durable document in place.
 REGENERABLE_SCHEMA_VERSION: int = 12
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 

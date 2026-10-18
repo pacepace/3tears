@@ -23,13 +23,21 @@
       "trials": []
     }
   ],
-  "recommendation": {
-    "arm": "control",
-    "reasons": ["Nothing separated the arms, so keep what is there."],
-    "confidence": "low",
-    "rests_on": [0],
-    "floors_overridden": []
-  },
+  "recommendation": [
+    {
+      "arm": "control",
+      "reasons": [
+        "Nothing separated the arms, so keep what is there."
+      ],
+      "confidence": "low",
+      "rests_on": [
+        0
+      ],
+      "floors_overridden": [],
+      "behind_on": [],
+      "bars_missed": []
+    }
+  ],
   "aspect_summaries": [
     {
       "aspect": "classify",

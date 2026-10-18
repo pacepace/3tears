@@ -197,7 +197,9 @@ class TestTheToyReportsContent:
         assert isinstance(table, TableBlock) and table.name == "methods"
         rows = {str(row["item"]): str(row["value"]) for row in table.values()}
         assert generation.generator_model in rows["Analysis"] and generation.prompt_id in rows["Analysis"]
-        assert generation.bundle_fingerprint in rows["Bundle"]
+        # The bundle served beside the page is the aspect's, so the page states its fingerprint, not the campaign's.
+        assert analysis.aspects[0].bundle_fingerprint in rows["Bundle"]
+        assert generation.bundle_fingerprint not in rows["Bundle"]
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.
         texts = [block.text for block in notes if isinstance(block, DisclosureBlock)]
         assert any(text.startswith("Model identity unconfirmed:") for text in texts)

@@ -950,18 +950,29 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     sections: list[list[str]] = []
 
     question = analysis.design_snapshot.question
-    recommended = document.recommendation
-    rests = f" Rests on {positions(recommended.rests_on)}." if recommended.rests_on else ""
+    recommended = document.recommended()
     recommendation = ["## Recommendation", ""]
     if question:
         recommendation += [f"Question: {one_line(question)}", ""]
-    recommendation.append(
-        f"- **{one_line(recommended.arm)}** — confidence {_confidence(recommended.confidence)}.{rests}"
-    )
-    for reason in recommended.reasons:
-        recommendation += under(reason, "    ", first="  - ")
-    for override in recommended.floors_overridden:
-        recommendation += under(override.why, "    ", first=f"  - Over the broken floor {override.floor}: ")
+    if recommended is None:
+        recommendation.append("- None: the memo recommends no arm.")
+    else:
+        rests = f" Rests on {positions(recommended.rests_on)}." if recommended.rests_on else ""
+        recommendation.append(
+            f"- **{one_line(recommended.arm)}** — confidence {_confidence(recommended.confidence)}.{rests}"
+        )
+        for reason in recommended.reasons:
+            recommendation += under(reason, "    ", first="  - ")
+        for override in recommended.floors_overridden:
+            recommendation += under(override.why, "    ", first=f"  - Over the broken floor {override.floor}: ")
+        for behind in recommended.behind_on:
+            recommendation += under(
+                behind.why, "    ", first=f"  - Though {behind.ahead_arm} is ahead on {behind.aspect}: "
+            )
+        for missed in recommended.bars_missed:
+            recommendation += under(
+                missed.why, "    ", first=f"  - Below the bar on {missed.measure} ({missed.aspect}): "
+            )
     sections.append(recommendation)
 
     if document.aspect_summaries:
