@@ -322,3 +322,38 @@ async def test_a_repo_of_its_own_inside_another_is_used(make_repo: Any, git_cli:
     git_cli(inner, "init", "-q", "-b", "main")  # nested, but its own root: fine
     repo = await make_repo(work_tree=inner)
     assert repo.git.exists()
+
+
+async def test_a_failed_commit_leaves_no_folder_it_made(make_repo: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = await make_repo()
+    root = repo.config.work_tree
+    await repo.commit_files({"kept.md": b"x\n"}, "first")
+    (root / "empty-before").mkdir()
+
+    def refuse(*_args: Any, **_kwargs: Any) -> str:
+        raise GitStoreError("the commit failed")
+
+    monkeypatch.setattr(repo.git, "commit", refuse)
+    with pytest.raises(GitStoreError, match="the commit failed"):
+        await repo.commit_files({"new/a/x.md": b"x\n", "new/b/y.md": b"y\n"}, "a scaffold")
+    assert not (root / "new").exists()
+    assert (root / "empty-before").is_dir()  # an empty folder that was there already stays
+    assert not repo.git.git_path("git-store/inflight.json").exists()
+
+
+async def test_after_a_crash_the_next_writer_removes_the_folders_the_change_made(make_repo: Any, layout: Any) -> None:
+    repo = await make_repo()
+    root = repo.config.work_tree
+    await repo.commit_files({"kept.md": b"x\n"}, "first")
+    journal = repo.git.git_path("git-store/inflight.json")
+    journal.write_text(json.dumps({"paths": ["new/a/x.md"], "dirs": ["new/a", "new"]}))
+    (root / "new/a").mkdir(parents=True)
+    (root / "new/a/x.md").write_text("half\n")  # the writer died between the write and the commit
+    await repo.aclose()
+
+    again = GitRepo(repo.config, layout, nats=None)
+    await again.open()
+    try:
+        assert not (root / "new").exists() and not journal.exists()
+    finally:
+        await again.aclose()

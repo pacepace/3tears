@@ -775,12 +775,14 @@ class GitRepo:
         journal = self.git.git_path(_JOURNAL)
         if not journal.is_file():
             return []
-        paths = [str(path) for path in json.loads(journal.read_text(encoding="utf-8")).get("paths", [])]
+        recorded = json.loads(journal.read_text(encoding="utf-8"))
+        paths = [str(path) for path in recorded.get("paths", [])]
         self.git.restore(paths)
         for path in paths:
             target = self.config.work_tree / path
             for leftover in target.parent.glob(f"{target.name}.tmp.*"):
                 leftover.unlink(missing_ok=True)
+        self._remove_new_dirs([str(d) for d in recorded.get("dirs", [])])
         journal.unlink(missing_ok=True)
         return paths
 
@@ -1679,7 +1681,37 @@ class GitRepo:
         """
         journal = self.git.git_path(_JOURNAL)
         journal.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_sync(journal, json.dumps({"paths": list(paths)}), mode=0o644)
+        atomic_write_sync(journal, json.dumps({"paths": list(paths), "dirs": self._new_dirs(paths)}), mode=0o644)
+
+    def _new_dirs(self, paths: Sequence[str]) -> list[str]:
+        """the folders writing ``paths`` would create (none of them there now), deepest first. BLOCKING.
+
+        :param paths: the paths about to be written
+        :ptype paths: Sequence[str]
+        :return: the folders, relative to the root
+        :rtype: list[str]
+        """
+        root = self.config.work_tree
+        missing: set[str] = set()
+        for path in paths:
+            for parent in PurePosixPath(path).parents:
+                if parent == PurePosixPath(".") or (root / parent.as_posix()).exists():
+                    break
+                missing.add(parent.as_posix())
+        return sorted(missing, key=lambda d: (-d.count("/"), d))
+
+    def _remove_new_dirs(self, dirs: Sequence[str]) -> None:
+        """remove folders an undone change created, deepest first, each only when it is empty. BLOCKING.
+
+        :param dirs: the folders, relative to the root, deepest first
+        :ptype dirs: Sequence[str]
+        :return: None
+        :rtype: None
+        """
+        for name in dirs:
+            folder = self.config.work_tree / name
+            if folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
 
     def _clear_journal(self) -> None:
         """remove the journal once its change is committed or undone. BLOCKING.
@@ -1713,9 +1745,12 @@ class GitRepo:
         :return: None
         :rtype: None
         """
+        journal = self.git.git_path(_JOURNAL)
         try:
             self.git.restore(paths)
-        except GitError as exc:
+            dirs = json.loads(journal.read_text(encoding="utf-8")).get("dirs", []) if journal.is_file() else []
+            self._remove_new_dirs([str(d) for d in dirs])
+        except (GitError, OSError) as exc:
             # the journal stays, so the next takeover finishes the job
             log.error(
                 "git_store.undo.failed: a failed change could not be put back; the next writer will",
