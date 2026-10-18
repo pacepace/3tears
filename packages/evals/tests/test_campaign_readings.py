@@ -1,4 +1,5 @@
-"""What code reads off a campaign: each candidate against the control on every aspect, Holm across them, and floors.
+"""What code reads off a campaign: each candidate against the control on every aspect, Holm across its aspects, and
+floors.
 
 One real run gives the aspect's shape; each test sets the per-case pass shares its aspects read (``varied``), so the
 evidence behind every reading is exact. Twenty cases, each passed on every repeat or on none, so a share is 0 or 1.
@@ -14,7 +15,12 @@ import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.decision import evaluate_floor, floor_readings, read_floor
-from threetears.evals.analysis.stats import INTERVAL_LEVEL, SIGNIFICANCE_ALPHA, holm_adjust
+from threetears.evals.analysis.stats import (
+    INTERVAL_LEVEL,
+    SIGNIFICANCE_ALPHA,
+    bounded_difference_interval,
+    holm_adjust,
+)
 from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import Floor, RateDrop
 
@@ -88,7 +94,8 @@ async def test_gains_step_down_across_three_aspects_each_at_its_own_holm_level()
     assert [by[label].gain_p_holm for label in ("tone", "speed", "billing")] == pytest.approx(
         holm_adjust([p for p in gains if p is not None])
     )
-    assert all((row.gain_p_holm or 1.0) < SIGNIFICANCE_ALPHA for row in read.readings)
+    # Each p is on its family's grid, so a row shown has an adjusted p of at most α, to rounding.
+    assert all((row.gain_p_holm or 1.0) <= SIGNIFICANCE_ALPHA * (1 + 1e-9) for row in read.readings)
 
 
 async def test_a_gain_alone_shown_is_unclear_once_the_family_must_correct_for_it() -> None:
@@ -169,32 +176,136 @@ def _shares(rng: random.Random, cases: int, shift: float) -> tuple[list[float], 
     return control, candidate
 
 
-async def test_a_one_aspect_floor_and_its_reading_on_the_same_rate_and_margin_never_disagree() -> None:
-    base = await _base()
+#: The run the two-candidate tests vary: a second candidate, v3, beside v2.
+_BASE3: MeasuredAspect | None = None
+
+
+async def _base3() -> MeasuredAspect:
+    """The one real run with two candidates, measured once for the module."""
+    global _BASE3
+    if _BASE3 is None:
+        _BASE3 = await measured_aspect("base3", production=CASES, candidate=CASES, third=CASES)
+    return _BASE3
+
+
+async def test_a_one_aspect_floor_and_each_candidate_s_reading_on_the_same_rate_and_margin_never_disagree() -> None:
+    base = await _base3()
+    assert base.third is not None
     rng = random.Random(846)
     seen = set()
-    for index in range(28):
-        margin = rng.choice([2.0, 5.0, 10.0, 20.0])
-        control, candidate = _shares(rng, CASES, (-3, -2, -1, 0, 1, 2, 3)[index % 7])
-        lost = rng.choice([0, 0, 0, 2, 6])
+    for index in range(14):
+        margin = rng.choice([5.0, 10.0, 20.0])
+        # Below the case floor one time in four and lost trials one time in three. The first two shapes are one
+        # candidate shown worse beside one shown better, paired and then unpaired, so every reading is met both ways
+        # (an unpaired row left unclear projects slowly, so the random ones are paired).
+        cases = 4 if index % 4 == 3 else CASES
+        paired = index != 1
+        control, v2 = _shares(rng, cases, (-3, -2, -1, 0, 1, 2, 3)[index % 7])
+        _, v3 = _shares(rng, cases, (3, 1, -1, -3, 2, 0, -2)[index % 7])
+        if index < 2:
+            control, v2, v3 = [1.0] * 10 + [0.0] * 10, [0.0] * 20, [1.0] * 20
+        lost = rng.choice([0, 0, 2, 6]) if cases == CASES and index > 1 else 0
         campaign = campaign_of(base, [("billing", margin)], floors=[("billing", RateDrop(max_points=margin))])
-        bundle = varied(base.bundle, aspect="billing", control=control, candidate=candidate, lost=lost)
-        read = campaign_readings(campaign, {"billing": bundle}, arms=arms_of(base))
-        (row,) = read.readings
-        (status,) = read.floors
-        # One row: one step, at the floor's own level.
-        assert row.drop_confidence == INTERVAL_LEVEL and row.gain_confidence == INTERVAL_LEVEL
-        readings = floor_readings(bundle, base.control, base.candidate)
-        verdict = read_floor(
-            Floor(aspect="billing", clause=RateDrop(max_points=margin)), readings, control="control", candidate="v2"
+        bundle = varied(
+            base.bundle,
+            aspect="billing",
+            control=control,
+            candidate=v2,
+            also={base.third: v3},
+            lost=lost,
+            paired=paired,
         )
-        pass_rate = next(rate for rate in verdict.rates if rate.rate.measure is None)
-        assert (pass_rate.outcome == "broken") == (row.reading == "worse")
-        if row.reading == "worse":
-            assert status.status == "broken"
-            assert row.drop_interval is not None and status.interval == pytest.approx(row.drop_interval)
-        seen.add(row.reading)
+        read = campaign_readings(campaign, {"billing": bundle}, arms=arms_of(base))
+        assert len(read.readings) == 2 and len(read.floors) == 2
+        for row, status in zip(read.readings, read.floors, strict=True):
+            assert row.arm == status.arm
+            # One aspect: each candidate's family is one row, one step, at the floor's own level.
+            assert row.drop_confidence == INTERVAL_LEVEL and row.gain_confidence == INTERVAL_LEVEL
+            readings = floor_readings(bundle, base.control, row.arm)
+            verdict = read_floor(
+                Floor(aspect="billing", clause=RateDrop(max_points=margin)),
+                readings,
+                control="production",
+                candidate=row.arm_label,
+            )
+            pass_rate = next(rate for rate in verdict.rates if rate.rate.measure is None)
+            assert (pass_rate.outcome == "broken") == (row.reading == "worse")
+            if row.reading == "worse":
+                assert status.status == "broken"
+                assert row.drop_interval is not None and status.interval == pytest.approx(row.drop_interval)
+            seen.add(row.reading)
     assert seen == {"better", "worse", "unclear"}
+
+
+async def test_two_candidates_do_not_share_a_family() -> None:
+    base = await _base3()
+    assert base.third is not None
+    control, gained = _gained(6)
+    for labels in (("billing",), ("billing", "tone")):
+        campaign = campaign_of(base, [(label, 10.0) for label in labels])
+        bundles = {
+            label: varied(base.bundle, aspect=label, control=control, candidate=gained, also={base.third: gained})
+            for label in labels
+        }
+        read = campaign_readings(campaign, bundles, arms=arms_of(base))
+        # Each candidate's family holds its own aspects alone: one aspect reads both at 95%, where six of twenty
+        # clears; one family over both candidates would read them at 97.5%, where it does not.
+        rows = [row for row in read.readings if row.aspect == "billing"]
+        assert {row.arm_label for row in rows} == {"v2", "v3"}
+        if labels == ("billing",):
+            assert [row.reading for row in rows] == ["better", "better"]
+            assert all(row.gain_confidence == pytest.approx(_level(1)) for row in rows)
+        else:
+            assert all(row.gain_confidence == pytest.approx(_level(2)) for row in rows)
+            assert all(row.reading == "unclear" for row in read.readings)
+
+
+async def test_a_holm_adjusted_p_is_at_most_alpha_exactly_where_the_row_is_shown() -> None:
+    base = await _base()
+    rng = random.Random(851)
+    for index in range(10):
+        cases = 4 if index % 3 == 2 else CASES
+        shapes = {label: _shares(rng, cases, rng.choice([-3, -2, 0, 2, 3])) for label in ("tone", "speed", "billing")}
+        margins = {label: rng.choice([None, 10.0, 20.0]) for label in shapes}
+        read = _read(base, shapes, margins=margins, lost={"speed": rng.choice([0, 9])})
+        for row in read.readings:
+            within = SIGNIFICANCE_ALPHA * (1 + 1e-9)
+            assert ((row.gain_p_holm or 1.0) <= within) == (row.reading == "better")
+            assert ((row.drop_p_holm or 1.0) <= within) == (row.reading == "worse")
+
+
+async def test_a_gain_its_lost_trials_could_take_back_has_no_p_below_one() -> None:
+    # The interval on the per-case shares clears zero, but with 45 of the candidate's 60 trials lost and each given its
+    # worst outcome, the candidate could still trail: the gate fails, so the row is unclear and its p is 1.
+    base = await _base()
+    control = [1 / 3] * CASES
+    candidate = [1.0] * 12 + [1 / 3] * 8
+    read = _read(base, {"billing": (control, candidate)}, lost={"billing": 45})
+    (row,) = read.readings
+    assert row.reading == "unclear" and "lost trials" in row.reason
+    assert row.gain_interval is not None and row.gain_interval[0] > 0
+    assert row.gain_p == 1.0 and row.gain_p_holm == 1.0
+
+
+def test_the_bounded_interval_nests_over_the_step_down_s_levels() -> None:
+    # The step-down never relies on it (a row counts as shown only where every looser level shows it too), but on
+    # realistic shares it holds, so that rule changes nothing a reader would see.
+    rng = random.Random(7)
+    for _ in range(60):
+        cases = rng.choice([5, 8, 12, 20, 30])
+        paired = rng.random() < 0.7
+        control, candidate = _shares(rng, cases, rng.choice([-3, -1, 0, 1, 3]))
+        if not paired:
+            candidate = [rng.choice([0.0, 1 / 3, 2 / 3, 1.0]) for _ in range(cases + rng.choice([0, 3]))]
+        wider = None
+        for k in range(1, 6):
+            interval = bounded_difference_interval(
+                control, candidate, paired=paired, value_range=(0.0, 1.0), confidence=_level(k)
+            )
+            assert interval is not None
+            if wider is not None:
+                assert interval[0] <= wider[0] + 1e-12 and interval[1] >= wider[1] - 1e-12
+            wider = interval
 
 
 async def test_a_reading_and_its_interval_never_contradict() -> None:
@@ -205,7 +316,7 @@ async def test_a_reading_and_its_interval_never_contradict() -> None:
             label: _shares(rng, CASES, rng.choice([-3, -1, 0, 1, 3]))
             for label in ("tone", "speed", "billing")[: rng.choice([1, 2, 3])]
         }
-        margins = {label: rng.choice([None, 2.0, 10.0]) for label in shapes}
+        margins = {label: rng.choice([None, 10.0, 20.0]) for label in shapes}
         read = _read(base, shapes, margins=margins)
         for row in read.readings:
             if row.reading == "better":

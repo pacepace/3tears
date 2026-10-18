@@ -1,8 +1,8 @@
 """``grader(fn, guard=...)``: a guardrail, and every arm of a comparison reads held, breached or undecided.
 
 A guardrail is declared with its margin, never assumed, and every grade is higher-is-better, so its direction is
-never stated; it joins no contrast; an arm that breached one is named above the contrasts as not adopted, and the
-analysis writer cannot adopt it. A judged dimension is guarded on the :class:`~threetears.evals.Judge`
+never stated; it joins no contrast; an arm that breached one is named above the contrasts as breached (a warning: code
+picks no arm), and the analysis writer cannot adopt it. A judged dimension is guarded on the :class:`~threetears.evals.Judge`
 (``guard={"dimension": margin}``), its margin declared on the campaign.
 
 Mutations that turn this file red: declaring a guardrail grader on a merit axis, or dropping its margin; reading a
@@ -152,13 +152,13 @@ class TestAScorerGuardrail:
         for outcome in ("held", "breached", "undecided"):
             assert f"| {outcome}: " in markdown
         breach, undecided = _standing(comparison)
-        assert breach == "leaky breached the guardrail No leak score, so it is not adopted."
+        assert breach == "leaky breached the guardrail No leak score."
         assert undecided == "slip is not known to be safe on the guardrail No leak score."
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
         (gain,) = [row for row in comparison.contrasts("correct") if row["arm"] == "leaky"]
-        assert gain["verdict"] == "leaky better than current", "the breached arm gained, and is still not adopted"
+        assert gain["verdict"] == "leaky better than current", "the breached arm gained, and its breach is still named"
 
     async def test_with_every_scorer_a_guardrail_the_breach_is_named_once_above_the_guardrails_table(self) -> None:
         comparison = await _compare(graders=[grader(no_leak, guard=NO_LEAK)])
@@ -168,7 +168,7 @@ class TestAScorerGuardrail:
             i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breached")
         ]
         assert len(named) == 1 and blocks[named[0]].section == "contrasts"
-        assert blocks[named[0]].text.endswith("so it is not adopted.")
+        assert blocks[named[0]].text == "leaky breached the guardrail No leak score."
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "guardrails")
         assert named[0] < table and all(b.section == "contrasts" for b in blocks[named[0] : table + 1])
 

@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from html.parser import HTMLParser
+from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import (
+    AnalysisContextBundle,
+    CampaignReadings,
     CampaignReport,
+    build_code_only_report,
     build_campaign_report,
     campaign_readings,
     campaign_report_html,
@@ -24,7 +29,13 @@ from threetears.evals.analysis import (
     serialize_report,
 )
 from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
-from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock, TextBlock
+from threetears.evals.analysis.report.model import (
+    CAMPAIGN_JSON_SHAPE,
+    CampaignAspectFold,
+    DisclosureBlock,
+    TableBlock,
+    TextBlock,
+)
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
 from threetears.evals.analysis.style import lint_page
 from threetears.evals.kernel.authored import (
@@ -38,6 +49,7 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignCall, RateDrop
 
 from packages.evals.tests.campaign_support import (
+    ASSEMBLED_AT,
     CANDIDATE_LABEL,
     CONTROL_LABEL,
     QUESTION,
@@ -65,9 +77,10 @@ async def _aspect(label: str) -> MeasuredAspect:
 
 
 async def _campaign(
-    *labels: str, margins: dict[str, float | None] | None = None
+    *labels: str, margins: dict[str, float | None] | None = None, **changes: Any
 ) -> tuple[EvalCampaign, list[MeasuredAspect]]:
-    """One campaign holding the fixture aspects named, billing's campaign carrying every one and every floor."""
+    """One campaign holding the fixture aspects named, billing's campaign carrying every one and every floor, with
+    ``changes`` to its fields."""
     measured = [await _aspect(label) for label in labels]
     aspects = [
         aspect.model_copy(update={"margin": (margins or {}).get(aspect.label, aspect.margin)})
@@ -76,7 +89,7 @@ async def _campaign(
     ]
     floors = [floor for one in measured for floor in one.campaign.floors]
     first = measured[0].campaign
-    campaign = first.model_copy(update={"aspects": aspects, "floors": floors, "name": "support queue"})
+    campaign = first.model_copy(update={"aspects": aspects, "floors": floors, "name": "support queue", **changes})
     return campaign, measured
 
 
@@ -85,12 +98,22 @@ async def _page(
     memo: AuthoredCampaignAnalysis | None = None,
     call: CampaignCall | None = None,
     margins: dict[str, float | None] | None = None,
+    bundle: Callable[[AnalysisContextBundle], AnalysisContextBundle] = lambda bundle: bundle,
+    readings: Callable[[CampaignReadings], CampaignReadings] = lambda readings: readings,
+    **changes: Any,
 ) -> CampaignReport:
-    campaign, measured = await _campaign(*labels, margins=margins)
-    bundles = {one.bundle.aspect: one.bundle for one in measured}
-    readings = campaign_readings(campaign, bundles, arms=arms_of(measured[0]))
-    reports = {one.bundle.aspect: one.report for one in measured}
-    return build_campaign_report(campaign, readings, reports, memo, call=call)
+    """The page over the fixture aspects named, each aspect's page built as a host builds it, with its arms named by
+    the campaign's labels; ``bundle`` and ``readings`` change what is read, ``changes`` the campaign."""
+    campaign, measured = await _campaign(*labels, margins=margins, **changes)
+    bundles = {changed.aspect: changed for changed in (bundle(one.bundle) for one in measured)}
+    read = readings(campaign_readings(campaign, bundles, arms=arms_of(measured[0])))
+    reports = {
+        label: build_code_only_report(
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+        )
+        for label, evidence in bundles.items()
+    }
+    return build_campaign_report(campaign, read, reports, memo, call=call)
 
 
 def _memo() -> AuthoredCampaignAnalysis:
@@ -310,9 +333,153 @@ async def test_the_page_passes_the_style_rules_and_its_first_screen_speaks_a_rea
 async def test_json_is_the_readings_and_each_aspect_s_bundle_by_its_fingerprint() -> None:
     page = await _page("billing", "tone")
     document = json.loads(serialize_report(page, "json"))
+    assert (document["kind"], document["shape"]) == ("campaign", CAMPAIGN_JSON_SHAPE)
+    assert document["recommendation"] is None
     assert document["readings"]["aspects"] == ["billing", "tone"]
     assert [aspect["bundle_fingerprint"] for aspect in document["aspects"]] == [
         fold.report.source.bundle_fingerprint for fold in page.aspects
     ]
     assert serialize_report(page, "markdown") == campaign_report_markdown(page)
     assert serialize_report(page, "html") == campaign_report_html(page)
+
+
+async def test_with_a_memo_the_json_carries_the_recommendation() -> None:
+    document = json.loads(serialize_report(await _page("billing", "tone", memo=_memo()), "json"))
+    assert document["recommendation"] == {"arm": CONTROL_LABEL, "confidence": "high"}
+
+
+async def test_a_fold_names_the_arms_as_the_campaign_s_table_does() -> None:
+    page = await _page("billing", "tone")
+    markdown = campaign_report_markdown(page)
+    billing = markdown[markdown.index("## billing") : markdown.index("## tone")]
+    # The run named its arm `candidate`; the campaign calls it v2, and so does every table in the fold.
+    assert f"| {CANDIDATE_LABEL} |" in billing and "| candidate |" not in billing
+    assert f"| ▸ {CONTROL_LABEL} |" in billing
+
+
+async def test_a_fold_leaves_out_the_aspect_s_own_verdict_line() -> None:
+    page = await _page("billing", "tone")
+    for fold in page.aspects:
+        verdict = next(
+            block for block in fold.report.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"
+        )
+        assert verdict not in fold.head
+        assert verdict.text not in campaign_report_markdown(page)
+        assert 'class="verdict"' not in campaign_report_html(page)
+
+
+async def test_a_floor_broken_beside_a_row_not_shown_worse_says_the_two_read_different_intervals() -> None:
+    # A 70-point margin on billing: its 60-point drop is not past it, while the 10-point floor is broken.
+    page = await _page("billing", "tone", margins={"billing": 70.0})
+    (row,) = page.readings.on_aspect("billing")
+    assert row.reading == "unclear"
+    assert (
+        "The floor broken on billing for v2 reads its pass rate at 95% on its own, while its row reads only the pass "
+        "rate, corrected across v2's aspects." in _first_screen_markdown(page)
+    )
+
+
+def _late(stamp: str) -> Callable[[AnalysisContextBundle], AnalysisContextBundle]:
+    """A bundle whose aspect's question was worded, and its margin declared, at ``stamp``."""
+
+    def change(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        assert bundle.declared is not None
+        declared = bundle.declared.model_copy(update={"question_declared_at": stamp, "margin_declared_at": stamp})
+        return bundle.model_copy(update={"declared": declared})
+
+    return change
+
+
+async def test_what_was_declared_after_an_aspect_s_first_result_is_said_so() -> None:
+    billing = await _aspect("billing")
+    assert billing.bundle.first_result_at is not None
+    (floor,) = billing.campaign.floors
+    late = "2099-01-01T00:00:00+00:00"
+    page = await _page("billing", "tone", bundle=_late(late), floors=[floor.model_copy(update={"declared_at": late})])
+    first = _first_screen_markdown(page)
+    for aspect in ("billing", "tone"):
+        assert (
+            f"The question was worded after the first result on {aspect}; its readings keep the time it was asked."
+            in first
+        )
+        assert f"The margin on {aspect} was declared after its first result." in first
+    assert (
+        "The floor that no pass rate drops by more than 10 points on billing was declared after its first result."
+        in first
+    )
+    # Declared before the first result, nothing is said.
+    early = await _page("billing", "tone", bundle=_late("2000-01-01T00:00:00+00:00"))
+    assert "after its first result" not in _first_screen_markdown(early)
+    assert "worded after" not in _first_screen_markdown(early)
+
+
+async def test_an_unclear_row_s_cases_show_it_no_worse_than_the_margin_and_not_better() -> None:
+    page = await _page("billing", "tone", margins={"billing": 70.0})
+    settle = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "to_settle")
+    assert settle.title == "To show no worse than the margin"
+    note = page.blocks[page.blocks.index(settle) + 1]
+    assert isinstance(note, DisclosureBlock)
+    assert "would not show the arm better, so its row stays unclear unless its gain clears too" in note.text
+
+
+async def test_a_code_only_page_refuses_a_fold_that_renders_an_analysis() -> None:
+    page = await _page("billing")
+    (fold,) = page.aspects
+    analysed = CampaignAspectFold(
+        aspect=fold.aspect,
+        shows=fold.shows,
+        report=fold.report.model_copy(
+            update={
+                "basis": "analysis",
+                "source": fold.report.source.model_copy(update={"analysis_id": "analysis-1", "generator_model": "m"}),
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="renders an analysis"):
+        CampaignReport(
+            basis="code_only",
+            title=page.title,
+            campaign_id=page.campaign_id,
+            scope_id=page.scope_id,
+            finding_count=0,
+            blocks=page.blocks,
+            aspects=[analysed],
+            readings=page.readings,
+        )
+
+
+async def test_with_no_question_every_reading_is_a_lead() -> None:
+    first = _first_screen_markdown(await _page("billing", "tone", question=""))
+    assert "No question was declared, so every reading is a lead." in first
+
+
+async def test_many_broken_floors_are_warned_of_one_line_per_arm() -> None:
+    def four(readings: CampaignReadings) -> CampaignReadings:
+        (status,) = readings.floors
+        statuses = [
+            status.model_copy(update={"aspect": aspect, "floor": f"{aspect}/rate_drop/*"})
+            for aspect in ("billing", "tone", "refunds", "returns")
+        ]
+        return readings.model_copy(update={"floors": statuses})
+
+    page = await _page("billing", "tone", readings=four)
+    alerts = [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "floor"]
+    assert [alert.text for alert in alerts] == [
+        "Floors broken for v2: its pass rate on billing; its pass rate on tone; its pass rate on refunds; its pass "
+        "rate on returns."
+    ]
+
+
+async def test_a_fold_s_markdown_heading_is_inert() -> None:
+    def relabel(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        return bundle.model_copy(update={"aspect": "# billing"})
+
+    billing = await _aspect("billing")
+    (aspect,) = billing.campaign.aspects
+    page = await _page(
+        "billing",
+        bundle=relabel,
+        aspects=[aspect.model_copy(update={"label": "# billing"})],
+        floors=[],
+    )
+    assert "\n## \\# billing\n" in campaign_report_markdown(page)
