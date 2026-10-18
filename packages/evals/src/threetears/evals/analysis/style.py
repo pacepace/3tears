@@ -186,8 +186,8 @@ GLOSSARY: dict[str, str] = {
     "bar": "A threshold a reading must clear on its own, without a control.",
     "exploratory": "No question was declared before the run, so the page offers leads, not decisions.",
     "floor status": (
-        "Broken where an interval shows the arm past the floor, or it costs no less; held only where an interval "
-        "shows it within, from 5 cases per arm."
+        "Broken where an interval shows the arm past the floor, or it costs no less; held where one shows it "
+        "within. Both need 5 cases per arm."
     ),
     "point estimate": (
         "A difference as this run measured it, before its interval says how far more cases could move it."
@@ -358,7 +358,7 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
     fenced = False
     folded = 0
     header_row = False
-    for number, line in enumerate(markdown.splitlines()):
+    for line in markdown.splitlines():
         if line.startswith("```"):
             fenced = not fenced
             continue
@@ -376,7 +376,8 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
         header_row = False
         if line.startswith("#"):
             heading = line.lstrip("#").strip()
-            found += lint_prose(heading, header=number > 0)
+            # The page's title, its one level-one heading, is a name: held to no header length.
+            found += lint_prose(heading, header=not line.startswith("# "))
             continue
         if _QUOTED_LINE.match(line):
             continue
