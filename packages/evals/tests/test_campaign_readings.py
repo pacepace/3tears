@@ -21,12 +21,14 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
     holm_adjust,
+    pooled_rate_interval,
 )
 from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import BarOverride, CampaignArm, Floor, RateDrop
 
 from packages.evals.tests.campaign_support import (
     CASES,
+    REPEATS,
     MeasuredAspect,
     MeasuredKind,
     joined,
@@ -98,8 +100,8 @@ async def test_gains_step_down_across_three_aspects_each_at_its_own_holm_level()
     assert [by[label].gain_p_holm for label in ("tone", "speed", "billing")] == pytest.approx(
         holm_adjust([p for p in gains if p is not None])
     )
-    # Each p is on its family's grid, so a row shown has an adjusted p of at most α, to rounding.
-    assert all((row.gain_p_holm or 1.0) <= SIGNIFICANCE_ALPHA * (1 + 1e-9) for row in read.readings)
+    # Each p is on its family's grid, so a row shown has an adjusted p of at most α, exactly, as a host filters it.
+    assert all((row.gain_p_holm or 1.0) <= SIGNIFICANCE_ALPHA for row in read.readings)
 
 
 async def test_a_gain_alone_shown_is_unclear_once_the_family_must_correct_for_it() -> None:
@@ -367,7 +369,9 @@ async def test_a_campaign_with_no_control_reads_no_row_and_no_floor() -> None:
     campaign = campaign_of(base, [("billing", 10.0)], floors=[("billing", RateDrop(max_points=10))])
     campaign = campaign.model_copy(update={"arms": []})
     read = campaign_readings(
-        campaign, {"billing": varied(base.bundle, aspect="billing", control=[1.0] * CASES, candidate=[0.0] * CASES)}
+        campaign,
+        {"billing": varied(base.bundle, aspect="billing", control=[1.0] * CASES, candidate=[0.0] * CASES)},
+        arms=[arm for arm in arms_of(base) if arm.role != "control"],
     )
     assert read.control is None and read.control_label == "" and read.readings == [] and read.floors == []
 
@@ -377,12 +381,14 @@ async def test_a_bundle_for_each_aspect_is_required_and_each_reads_its_own() -> 
     campaign = campaign_of(base, [("billing", 10.0), ("tone", 10.0)])
     billing = varied(base.bundle, aspect="billing", control=[1.0] * CASES, candidate=[1.0] * CASES)
     with pytest.raises(RefusedInput, match="no evidence bundle for aspect"):
-        campaign_readings(campaign, {"billing": billing})
+        campaign_readings(campaign, {"billing": billing}, arms=arms_of(base))
     with pytest.raises(RefusedInput, match="reads aspect billing"):
-        campaign_readings(campaign, {"billing": billing, "tone": billing})
+        campaign_readings(campaign, {"billing": billing, "tone": billing}, arms=arms_of(base))
     with pytest.raises(RefusedInput, match="holds no aspect labelled speed"):
         campaign_readings(
-            campaign, {"billing": billing, "tone": billing.model_copy(update={"aspect": "tone"}), "speed": billing}
+            campaign,
+            {"billing": billing, "tone": billing.model_copy(update={"aspect": "tone"}), "speed": billing},
+            arms=arms_of(base),
         )
 
 
@@ -447,14 +453,15 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
     assert read.kind == "choice" and read.readings == [] and read.floors == [] and read.control is None
     by = {pair.aspect: pair for pair in read.pairs}
     assert (by["tone"].first_label, by["tone"].second_label) == ("alpha", "beta")
-    assert by["tone"].ahead == "alpha" and by["tone"].change == pytest.approx(65.0)
+    assert by["tone"].ahead == by["tone"].first and by["tone"].ahead_label == "alpha"
+    assert by["tone"].change == pytest.approx(65.0)
     assert by["tone"].interval is not None and by["tone"].interval[0] > 0
     assert by["billing"].ahead is None and "no separation" in by["billing"].reason
     assert by["billing"].interval is not None and by["billing"].interval[0] <= 0 <= by["billing"].interval[1]
     # One direction-free family over both aspects' pairs: tone is shown at 97.5%, billing then read at 95%.
     assert by["tone"].confidence == pytest.approx(_level(2))
     assert by["billing"].confidence == pytest.approx(_level(1))
-    assert (by["tone"].p_holm or 1.0) <= SIGNIFICANCE_ALPHA * (1 + 1e-9) < (by["billing"].p_holm or 1.0)
+    assert (by["tone"].p_holm or 1.0) <= SIGNIFICANCE_ALPHA < (by["billing"].p_holm or 1.0)
 
 
 async def test_a_choice_with_nothing_separated_has_no_arm_ahead() -> None:
@@ -475,6 +482,78 @@ async def test_every_kind_reads_each_arm_against_its_bars_as_the_bundle_adjudica
     assert (bar.status, bar.bar, bar.direction, bar.measure) == ("missed", 0.001, "lower_is_better", "cost_usd")
     assert bar.reason.startswith("alpha misses the bar on")
     measures = {reading.measure: reading for reading in measurement.measures}
-    assert measures["passed"].value == pytest.approx(0.75) and measures["passed"].cases == CASES
+    passed = measures["passed"]
+    assert passed.value == pytest.approx(0.75) and passed.cases == CASES
     assert all(reading.arm_label == "alpha" and reading.aspect == "solo" for reading in measurement.measures)
-    assert all(reading.interval is not None for reading in measurement.measures if reading.measure != "passed")
+    # Every measure has its interval, the pass rate's on its count with the cases the independent draws.
+    assert all(reading.interval is not None for reading in measurement.measures)
+    assert passed.interval is not None and passed.interval[0] < 0.75 < passed.interval[1]
+    assert (passed.passed, passed.trials) == (15 * REPEATS, CASES * REPEATS)
+    assert passed.interval == pooled_rate_interval(15 * REPEATS, CASES * REPEATS, cases=CASES)
+    # The pass rate is counted over every rig; every other measure is its cell's, under its rig.
+    (rig,) = {cell.apparatus_class_id for cell in solo.bundle.cells}
+    assert passed.rig is None and all(reading.rig == rig for reading in measurement.measures if reading is not passed)
+
+
+async def test_a_choice_of_three_arms_reads_every_pair_once_in_one_family() -> None:
+    trio = await measured_kind("trio", {"alpha": 19, "beta": 6, "gamma": 12}, control=False)
+    read = campaign_readings(trio.campaign, {"trio": trio.bundle}, arms=trio.arms())
+    assert read.kind == "choice"
+    pairs = {(pair.first_label, pair.second_label): pair for pair in read.pairs}
+    assert list(pairs) == [("alpha", "beta"), ("alpha", "gamma"), ("beta", "gamma")]
+    # One family of three: thirteen cases apart clears at a third of α, seven once it has left, six at α.
+    assert [pair.confidence for pair in pairs.values()] == pytest.approx([_level(3), _level(2), _level(1)])
+    assert [pair.ahead_label for pair in pairs.values()] == ["alpha", "alpha", "gamma"]
+    assert [pair.ahead for pair in pairs.values()] == [trio.keys["alpha"], trio.keys["alpha"], trio.keys["gamma"]]
+    assert all((pair.p_holm or 1.0) <= SIGNIFICANCE_ALPHA for pair in read.pairs)
+    # Each change is the first arm's minus the second's and lies in its own interval.
+    assert [pair.change for pair in pairs.values()] == pytest.approx([65.0, 35.0, -30.0])
+    assert all(pair.interval is not None and pair.interval[0] <= pair.change <= pair.interval[1] for pair in read.pairs)
+
+
+#: A test setup no arm of the fixture ran under.
+_ELSEWHERE = "f" * 64
+
+
+def _apart(bundle: AnalysisContextBundle, key: str) -> AnalysisContextBundle:
+    """``bundle`` with the arm ``key`` moved to a rig no other arm ran under, so no per-case shares pair it."""
+    cells = [
+        cell.model_copy(update={"apparatus_class_id": _ELSEWHERE}) if cell.variant_key == key else cell
+        for cell in bundle.cells
+    ]
+    return bundle.model_copy(update={"cells": cells, "floor_contrasts": []})
+
+
+def _also_elsewhere(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+    """``bundle`` with every arm also run under a second rig, whose shares it does not carry."""
+    extra = [cell.model_copy(update={"apparatus_class_id": _ELSEWHERE}) for cell in bundle.cells]
+    return bundle.model_copy(update={"cells": [*bundle.cells, *extra]})
+
+
+async def test_arms_that_share_no_rig_read_no_interval_and_say_why() -> None:
+    base = await _base()
+    bundle = varied(base.bundle, aspect="billing", control=[1.0] * CASES, candidate=[0.0] * 6 + [1.0] * 14)
+    campaign = campaign_of(base, [("billing", 10.0)])
+    (row,) = campaign_readings(campaign, {"billing": _apart(bundle, base.candidate)}, arms=arms_of(base)).readings
+    assert row.reading == "unclear" and row.gain_interval is None and row.drop_interval is None
+    assert "ran under no test setup in common" in row.reason
+    tone = await _kind("tone")
+    choice = campaign_readings(tone.campaign, {"tone": _apart(tone.bundle, tone.keys["beta"])}, arms=tone.arms())
+    (pair,) = choice.pairs
+    assert pair.interval is None and pair.ahead is None
+    assert "alpha and beta ran under no test setup in common" in pair.reason
+
+
+async def test_a_row_read_under_one_of_several_rigs_names_it_and_its_change_lies_in_its_interval() -> None:
+    base = await _base()
+    bundle = varied(base.bundle, aspect="billing", control=[1.0] * CASES, candidate=[0.0] * 6 + [1.0] * 14)
+    campaign = campaign_of(base, [("billing", 10.0)])
+    alone = campaign_readings(campaign, {"billing": bundle}, arms=arms_of(base)).readings[0]
+    assert alone.rig is None
+    (row,) = campaign_readings(campaign, {"billing": _also_elsewhere(bundle)}, arms=arms_of(base)).readings
+    (contrast,) = [
+        c for c in bundle.floor_contrasts if c.reading == "trial" and c.contrast.variant_key == base.candidate
+    ]
+    assert row.rig == contrast.control.apparatus_class_id
+    for interval in (row.gain_interval, row.drop_interval):
+        assert interval is not None and interval[0] <= row.change <= interval[1]

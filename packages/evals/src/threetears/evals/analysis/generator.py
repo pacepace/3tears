@@ -1273,7 +1273,9 @@ def _reject_unaddressed_warnings(document: AuthoredCampaignAnalysis, bundle: Cam
 def _behind(bundle: CampaignBundle, keys: frozenset[str]) -> dict[str, str]:
     """Each aspect a choice's pair readings show another arm ahead of the arm ``keys`` name, keyed ``aspect/ahead``.
 
-    A pair reading is symmetric: it names the arm shown ahead, if either is. Read off ``CampaignReadings.pairs``.
+    A pair reading is symmetric: it names the arm shown ahead, if either is, by its variant key. Read off
+    ``CampaignReadings.pairs``. A pair whose two arms are both the recommended arm's keys says nothing about it
+    against another arm, so it raises nothing. The writer names the arm ahead by its label, as its view shows it.
 
     :return: ``"<aspect>/<ahead arm's label>" -> code's reason``; empty outside a choice.
     """
@@ -1281,12 +1283,11 @@ def _behind(bundle: CampaignBundle, keys: frozenset[str]) -> dict[str, str]:
     for pair in bundle.readings.pairs:
         if pair.ahead is None or not ({pair.first, pair.second} & keys):
             continue
-        mine = pair.first_label if pair.first in keys else pair.second_label
-        if pair.ahead == mine:
+        if {pair.first, pair.second} <= keys or pair.ahead in keys:
             continue
-        behind.setdefault(
-            f"{pair.aspect}/{pair.ahead}", pair.reason or f"{pair.ahead} is shown ahead of {mine} on {pair.aspect}"
-        )
+        mine = pair.first_label if pair.first in keys else pair.second_label
+        ahead = pair.ahead_label or pair.ahead
+        behind.setdefault(f"{pair.aspect}/{ahead}", pair.reason or f"{ahead} is shown ahead of {mine} on {pair.aspect}")
     return behind
 
 
