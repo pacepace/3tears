@@ -247,7 +247,7 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
     # Every arm's cases showing its floors hold needs, as the To settle table states them, which the memo may cite and
     # may not guess at; with one other arm its floors also settle the readings a finding may not dispute.
     candidates = _candidates(bundle)
-    for key, read in _floor_verdicts(bundle, namer).items():
+    for read in _floor_verdicts(bundle, namer).values():
         if (joined := floors_projection(read, per_case_usd=per_case)) is not None:
             samples += [joined] + [
                 projection
@@ -256,7 +256,6 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
             ]
         if len(candidates) == 1:
             floors, sample = list(read), joined
-        del key
     return MemoStyle(
         bundle=bundle,
         names=names,
@@ -351,7 +350,7 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     """
     bundle = analysis_bundle(analysis)
     names = _arm_names(bundle)
-    return verdict_line(bundle, _namer(names), case_name=_case_namer(bundle), model=_model_namer(names)).text
+    return verdict_line(bundle, _namer(names), case_name=_case_namer(bundle)).text
 
 
 def _page(
@@ -396,11 +395,11 @@ def _page(
     if (not_charted := charts.sentence()) is not None:
         notes.append(_note(not_charted, "charts"))
     name = source.campaign_name or f"Campaign {source.campaign_id}"
-    verdict = verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle), model=_model_namer(names))
+    verdict = verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle))
     blocks: list[ReportBlock] = [
         # A broken floor is the first thing a reader sees: before the question, the arms and the verdict.
         *_floor_warning_blocks(bundle, arm),
-        *_heading_blocks(bundle, names, source, arm),
+        *_heading_blocks(bundle, names, source),
         DisclosureBlock(
             section="header",
             source="verdict",
@@ -488,21 +487,6 @@ def _namer(names: dict[str, ArmName]) -> Callable[[str], str]:
     return name
 
 
-def _model_namer(names: dict[str, ArmName]) -> Callable[[str], str]:
-    """Name an arm by its model, vendor dropped, where it has one, else as every table names it.
-
-    Only the arms line and the verdict sentence name a model: a label like ``cheaper candidate`` beside "costs more" reads
-    as a contradiction, and the model does not.
-    """
-    label = _namer(names)
-
-    def name(variant_key: str) -> str:
-        model = names[variant_key].model if variant_key in names else None
-        return humanize("model", model) if model else label(variant_key)
-
-    return name
-
-
 def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) -> str:
     """The title, a name: the campaign's, with the question it asks where none was declared before the run.
 
@@ -534,14 +518,13 @@ def _capitalized(title: str) -> str:
 
 
 def _heading_blocks(
-    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource, arm: Callable[[str], str]
+    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource
 ) -> list[ReportBlock]:
     """The first screen's lines between the title and the verdict.
 
     With no question declared before the run, the arms line alone (line 2). With one, the question quoted on its own
     line, then the subhead carrying what the question need not: the arms line, each arm with its version.
     """
-    del arm
     arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
     asked = _question_line(bundle)
     if asked is None:

@@ -135,7 +135,9 @@ class TestVerdictOrder:
     def test_a_question_lists_the_bars_on_its_axes_and_the_axes_no_bar_answers(self) -> None:
         # Asked as the corpus question was: before its runs, so it scopes the order.
         bundle = _bundle(
-            question="is it accurate, and what does it cost?", merit_priority=["quality"], merit_axes=["cost", "quality"]
+            question="is it accurate, and what does it cost?",
+            merit_priority=["quality"],
+            merit_axes=["cost", "quality"],
         )
         scope = bundle.verdict_order.question
 
@@ -151,7 +153,10 @@ class TestVerdictOrder:
     def test_a_question_asked_after_the_first_run_scopes_nothing(self) -> None:
         campaign, storage = toyhost_campaign()
         late = redeclared(
-            campaign, question="is it accurate?", asked_at="2099-01-01T00:00:00+00:00", design={"merit_axes": ["quality"]}
+            campaign,
+            question="is it accurate?",
+            asked_at="2099-01-01T00:00:00+00:00",
+            design={"merit_axes": ["quality"]},
         )
         assert assemble_context_bundle(late, storage=storage, profile=toyhost_profile()).verdict_order.question is None
 

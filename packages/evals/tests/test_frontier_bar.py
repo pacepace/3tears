@@ -21,7 +21,7 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.kernel.declaration import BarOverride, CampaignDesign, refuse_an_undeclarable_design
+from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
 from threetears.evals.kernel.host.bars import Bar, BarRegistry
 from threetears.evals.kernel.metrics import FRONTIER_RANKING_MEASURE
 from packages.evals.tests.aspect_support import redeclared

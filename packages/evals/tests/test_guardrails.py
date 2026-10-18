@@ -274,7 +274,9 @@ class TestTheCodeOnlyReportShowsTheGuardrails:
 
 class TestReadingsNoQuestionAskedAboutAreExploratory:
     def test_with_a_question_on_cost_the_judged_capability_dimension_is_exploratory(self):
-        bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"])
+        bundle = two_arm_bundle(
+            _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
+        )
         scope = bundle.reading_scope
         assert scope.questions_declared and scope.disclosure is None
         assert scope.exploratory_dimensions == [CAPABILITY], "a guardrail is never exploratory"
@@ -300,7 +302,9 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         assert said[0].text.startswith("Exploratory: ")
 
     def test_the_code_only_report_names_the_exploratory_readings_where_questions_are_declared(self):
-        bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"])
+        bundle = two_arm_bundle(
+            _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
+        )
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
         # One sentence, then the readings listed once each in a table beside it.

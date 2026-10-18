@@ -37,7 +37,13 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
-from threetears.evals.analysis import TableBlock, assemble_context_bundle, build_report, variant_key_of_run
+from threetears.evals.analysis import (
+    TableBlock,
+    aspect_view,
+    assemble_context_bundle,
+    build_report,
+    variant_key_of_run,
+)
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
 from threetears.evals.analysis.cells import variant_of_cell_ref
@@ -269,7 +275,7 @@ def test_a_control_addressed_under_an_earlier_predicate_names_the_cells_this_bui
     assert bundle.design.control_arm is not None and bundle.design.control_arm.variant_key == arm
     assert run_id in bundle.design.control_arm.run_ids
     assert bundle.design.control_excluded is None
-    assert bundle.declared_design == campaign.declared_design, "the bundle carries the declaration as declared"
+    assert bundle.declared == aspect_view(campaign).declared, "the bundle carries the declaration as declared"
     assert bundle_decision_surface(bundle).control_variant_key == arm
     stored = _stored(fixture, campaign.id).declared_design
     assert stored is not None and stored.control == declared_key, "a read writes nothing back onto the campaign"
@@ -385,7 +391,8 @@ def test_every_bundle_reading_names_the_arm_the_realized_design_matched(cells_st
 
 async def test_the_adoption_check_and_the_report_name_the_arm_the_realized_design_matched() -> None:
     bundle, expected = off_loop(_toy_campaign_with_an_earlier_control, cells_stamped_earlier=False)
-    assert bundle.declared_design is not None and bundle.declared_design.control != expected
+    assert bundle.declared is not None and bundle.declared.control is not None
+    assert bundle.declared.control.variant_key != expected
     payload = memo_payload(bundle)
     payload["decisions"] = [
         {

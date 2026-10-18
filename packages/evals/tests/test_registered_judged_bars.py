@@ -21,7 +21,6 @@ import pytest
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.kernel.declaration import (
     BarOverride,
-    CampaignDesign,
     DesignRefused,
     refuse_an_undeclarable_design,
 )

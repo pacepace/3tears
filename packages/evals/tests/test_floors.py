@@ -127,7 +127,12 @@ async def test_fourteen_cases_failed_breaks_the_rate_floor_on_its_whole_interval
     bundle, control, candidate = await _shape(14)
     rate, cost = _statuses(bundle, control, candidate)
     aspect = bundle.aspect
-    assert (rate.floor, rate.aspect, rate.arm, rate.arm_label) == (f"{aspect}/rate_drop/*", aspect, candidate, "candidate")
+    assert (rate.floor, rate.aspect, rate.arm, rate.arm_label) == (
+        f"{aspect}/rate_drop/*",
+        aspect,
+        candidate,
+        "candidate",
+    )
     assert rate.status == "broken"
     assert rate.interval is not None and rate.interval[1] < -10.0, "the whole interval past the margin, in points"
     assert rate.reading is None, "the trials' own pass rate broke it, which no clause names"
@@ -240,9 +245,7 @@ async def test_a_held_floor_reads_quietly_and_opens_nothing() -> None:
 async def test_no_floor_decides_the_verdict_line() -> None:
     bundle, _, _ = await _shape(14)
     (verdict,) = [
-        block.text
-        for block in _page(bundle).blocks
-        if isinstance(block, DisclosureBlock) and block.source == "verdict"
+        block.text for block in _page(bundle).blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"
     ]
     assert not verdict.startswith(("Keep", "Switch", "Unsettled")), verdict
 

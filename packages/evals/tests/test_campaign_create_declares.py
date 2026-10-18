@@ -188,7 +188,7 @@ def _exploratory_said(report: Report) -> list[DisclosureBlock]:
 async def test_the_bundle_calls_an_undeclared_campaign_exploratory_once(evals: MountedTool) -> None:
     _fixture, _campaign_id, bundle = await _exploratory(evals)
 
-    assert bundle.declared_design is None
+    assert bundle.declared is None
     assert bundle.reading_scope.disclosure == NO_DESIGN_EXPLORATORY
     assert bundle.reading_scope.exploratory_measures == [] and bundle.reading_scope.exploratory_dimensions == [], (
         "said once for the campaign, never on every reading"

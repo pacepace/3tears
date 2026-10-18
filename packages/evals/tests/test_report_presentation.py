@@ -686,7 +686,9 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
     assert "The candidate skipped the queue." in markdown
     # A floor decides nothing, so the memo's answer is printed as written (until floors, a settled rule replaced it).
-    assert "**Unanswerable.** Unanswerable because four cases leave the pass rates statistically unresolved." in markdown
+    assert (
+        "**Unanswerable.** Unanswerable because four cases leave the pass rates statistically unresolved." in markdown
+    )
     assert "See the decision rule above." not in markdown and "Keep production: " not in markdown
     assert not any("“Unanswerable because" in b.text for b in report.blocks if isinstance(b, DisclosureBlock))
     # What code could not fix is kept, counted in the methods table and listed in a fold.

@@ -150,7 +150,11 @@ def _answers(report: Report) -> list[TextBlock]:
 
 
 def _warnings(report: Report) -> list[str]:
-    return [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.section == "header" and b.source == "floor"]
+    return [
+        b.text
+        for b in report.blocks
+        if isinstance(b, DisclosureBlock) and b.section == "header" and b.source == "floor"
+    ]
 
 
 async def test_a_broken_floor_never_replaces_the_memo_s_answer() -> None:

@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, post_hoc_disclosure
+from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, POST_HOC_EXPLORATORY
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
 from threetears.evals.kernel.declaration import Question, preregistered_questions
 from threetears.evals.kernel.errors import ConflictError
@@ -137,23 +137,25 @@ def test_a_question_written_past_the_freeze_after_the_first_run_reads_as_post_ho
     bundle = _bundle(fixture)
 
     assert bundle.question_declared is False and bundle.reading_scope.questions_declared is False
-    assert bundle.post_hoc_questions == ["q-post"] == bundle.reading_scope.post_hoc_questions
-    assert bundle.reading_scope.disclosure == post_hoc_disclosure(["q-post"])
-    assert all(family.question_id is None for family in bundle.multiple_comparisons.families), (
+    assert bundle.reading_scope.question_post_hoc is True
+    assert bundle.reading_scope.disclosure == POST_HOC_EXPLORATORY
+    assert all(family.aspect is None for family in bundle.multiple_comparisons.families), (
         "no confirmatory family is built for a question asked after the evidence"
     )
-    assert bundle.verdict_order.questions == []
+    assert bundle.verdict_order.question is None
 
 
 def test_a_question_declared_before_the_first_run_stays_confirmatory() -> None:
     """The positive control: the corpus question was asked at the instant its runs were created."""
     bundle = _bundle(ops_fixture())
 
-    assert bundle.question_declared is True and bundle.post_hoc_questions == []
+    assert bundle.question_declared is True and bundle.reading_scope.question_post_hoc is False
     assert bundle.reading_scope.disclosure is None
 
 
-def test_a_late_question_beside_an_early_one_is_named_and_the_early_one_still_confirms() -> None:
+def test_a_late_question_beside_an_early_one_makes_the_campaign_s_one_question_post_hoc() -> None:
+    """A campaign asks one question, its live questions' words joined, asked when the last of them was: a question
+    added after the first run makes the whole question post hoc (until aspects, the early one still confirmed)."""
     fixture = ops_fixture()
     design = toyhost_design()
     late = Question(id="q-post", text="does the wider chunk cut the error rate?", asked_at=_LATER)
@@ -162,7 +164,7 @@ def test_a_late_question_beside_an_early_one_is_named_and_the_early_one_still_co
 
     bundle = _bundle(fixture)
 
-    assert bundle.question_declared is True and bundle.post_hoc_questions == ["q-post"]
+    assert bundle.question_declared is False and bundle.reading_scope.question_post_hoc is True
 
 
 def test_preregistration_with_no_run_reads_every_live_question_and_refuses_an_unordered_stamp() -> None:
@@ -183,4 +185,4 @@ def test_a_design_with_no_question_says_so_as_before() -> None:
 
     bundle = _bundle(fixture)
 
-    assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY and bundle.post_hoc_questions == []
+    assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY and not bundle.reading_scope.question_post_hoc

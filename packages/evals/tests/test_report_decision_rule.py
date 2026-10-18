@@ -69,7 +69,11 @@ _ARMS = {"control": "production", "candidate": "cheaper candidate"}
 
 
 def _read(
-    clauses: Sequence[DecisionClause], readings: FloorReadings, *, control: str = "production", candidate: str = "cheaper candidate"
+    clauses: Sequence[DecisionClause],
+    readings: FloorReadings,
+    *,
+    control: str = "production",
+    candidate: str = "cheaper candidate",
 ) -> list[FloorVerdict]:
     """Each clause read as a floor on one aspect, on ``readings``."""
     return [
@@ -173,7 +177,9 @@ def test_a_floor_met_run_with_a_tight_interval_holds() -> None:
     wide = replace(tight, rates=(RateReading("the pass rate", 50, 60, 49, 60, interval=(-0.23, 0.2)),))
     (unclear, _) = _read(G2_FLOORS, wide)
     assert unclear.outcome == "unclear"
-    assert unclear.reason == "cheaper candidate's drop is not shown to stay within 10 points (it could be as much as 23)"
+    assert (
+        unclear.reason == "cheaper candidate's drop is not shown to stay within 10 points (it could be as much as 23)"
+    )
 
 
 def test_a_cost_lower_by_a_point_estimate_only_is_unclear() -> None:
@@ -208,7 +214,11 @@ def _floor_rows(report: Report) -> list[tuple[str, str]]:
 
 def _warnings(report: Report) -> list[str]:
     """The broken floors' warnings the page opens with."""
-    return [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.section == "header" and b.source == "floor"]
+    return [
+        b.text
+        for b in report.blocks
+        if isinstance(b, DisclosureBlock) and b.section == "header" and b.source == "floor"
+    ]
 
 
 async def test_a_broken_cost_floor_opens_the_page_and_the_verdict_decides_nothing(
@@ -819,8 +829,6 @@ def test_a_reading_the_campaign_does_not_measure_is_refused_naming_what_it_does(
 
 def test_a_reading_the_campaign_measures_or_none_is_declared() -> None:
     _declare(_TOY_CHECK, "match", None)
-
-
 
 
 async def test_a_pass_fail_judged_dimension_is_read_as_its_count() -> None:

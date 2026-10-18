@@ -218,7 +218,6 @@ def verdict_line(
     *,
     name: str = "",
     case_name: Callable[[str], str] | None = None,
-    model: Callable[[str], str] | None = None,
 ) -> VerdictLine:
     """The verdict line, by the first rule that fires (the module docstring's order).
 
@@ -230,8 +229,6 @@ def verdict_line(
     :ptype name: str
     :param case_name: Names a case by its id, as the cases table does; its id where None.
     :ptype case_name: Callable[[str], str] | None
-    :param model: Names an arm by its model, where it has one; ``arm`` where None. Read by no rule today.
-    :ptype model: Callable[[str], str] | None
     :return: The rule and its sentences.
     :rtype: VerdictLine
     """
