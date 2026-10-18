@@ -31,6 +31,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime
 from itertools import chain
@@ -301,8 +302,18 @@ def _question(bundle: AnalysisContextBundle) -> str | None:
     return declared.question
 
 
+#: The labels a campaign gives its arms, by variant key, while one of its aspects' pages is built
+#: (:func:`build_code_only_report`'s ``arm_labels``): every name the page gives an arm reads them first, so a fold of
+#: the campaign's page names each arm as the campaign's table does. Empty for every other page.
+_ARM_LABELS: ContextVar[Mapping[str, str] | None] = ContextVar("campaign_arm_labels", default=None)
+
+
 def build_code_only_report(
-    bundle: AnalysisContextBundle, *, assembled_at: str, campaign_name: str | None = None
+    bundle: AnalysisContextBundle,
+    *,
+    assembled_at: str,
+    campaign_name: str | None = None,
+    arm_labels: Mapping[str, str] | None = None,
 ) -> Report:
     """Lay a campaign's evidence out as its page, when no analysis exists to report through.
 
@@ -317,9 +328,22 @@ def build_code_only_report(
     :param campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
         campaign by its id.
     :ptype campaign_name: str | None
+    :param arm_labels: The labels the campaign gives its arms, by variant key
+        (:meth:`~threetears.evals.analysis.campaign_readings.CampaignReadings.arm_labels`), which name those arms
+        everywhere on the page in place of their variants' names; None names every arm by its variant.
+    :ptype arm_labels: Mapping[str, str] | None
     :return: The report, ``basis="code_only"``.
     :rtype: Report
     """
+    token = _ARM_LABELS.set(dict(arm_labels) if arm_labels else None)
+    try:
+        return _code_only_page(bundle, assembled_at=assembled_at, campaign_name=campaign_name)
+    finally:
+        _ARM_LABELS.reset(token)
+
+
+def _code_only_page(bundle: AnalysisContextBundle, *, assembled_at: str, campaign_name: str | None) -> Report:
+    """:func:`build_code_only_report`'s page, under whatever arm labels it set."""
     source = ReportSource(
         campaign_id=bundle.campaign_id,
         campaign_name=campaign_name or None,
@@ -476,6 +500,11 @@ def _arm_names(bundle: AnalysisContextBundle, index: Sequence[VariantIndexEntry]
     displays = arm_names(bundle.variant_index if index is None else index)
     control = _control_key(bundle)
     names = {key: arm_name(display, control=key == control) for key, display in displays.items()}
+    if given := _ARM_LABELS.get():
+        # A campaign's own labels, where its page is being built: the label is the name, the model stays beside it.
+        names = {
+            key: replace(name, label=given[key], given=True) if key in given else name for key, name in names.items()
+        }
     labels = [name.label for name in names.values()]
     return {
         key: name
@@ -1747,7 +1776,7 @@ def _guardrail_standing_blocks(bundle: AnalysisContextBundle, arm: Callable[[str
                 DisclosureBlock(
                     section="contrasts",
                     source="guardrails",
-                    text=f"{arm(variant)} breached the guardrail {', '.join(breached)}, so it is not adopted.",
+                    text=f"{arm(variant)} breached the guardrail {', '.join(breached)}.",
                     term="guardrail",
                 )
             )
