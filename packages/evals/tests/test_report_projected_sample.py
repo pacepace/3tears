@@ -11,6 +11,7 @@ sample size with code's.
 
 from __future__ import annotations
 
+import json
 import math
 from collections import Counter
 from collections.abc import Callable, Coroutine, Mapping, Sequence
@@ -23,11 +24,13 @@ from threetears.evals.analysis import (
     Report,
     assemble_context_bundle,
     build_code_only_report,
+    build_report,
+    generate_analysis,
     get_campaign,
     report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import ArmScoreboard
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock
+from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.analysis.report.decision import (
     RateReading,
     RuleReadings,
@@ -41,6 +44,7 @@ from threetears.evals.analysis.report.decision import (
     rule_projection,
     rule_readings,
 )
+from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.report.verdict import rule_sentence
 from threetears.evals.analysis.stats import cases_to_clear
 from threetears.evals.analysis.style import lint_page, lint_prose
@@ -49,6 +53,7 @@ import pytest
 
 from packages.evals.tests.g2_support import G2_QUESTION
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 #: The character campaign's rule: one 10-point no-worse clause on the pass rate.
 RULE = DecisionRule(clauses=(RateDrop(max_points=10),))
@@ -350,3 +355,95 @@ async def test_a_settled_page_tables_no_projection() -> None:
     assert _verdict_line(report).startswith("Keep production")
     assert _projection_table(report) is None
     assert "A switch needs" not in report_markdown(report)
+
+
+# =============================================================================
+# 4. A next step states no sample size of its own
+# =============================================================================
+
+
+#: The character memo's next step, as Discodon's writer put it.
+THIRTY = "Expand the case suite to 30 cases, which would formally settle question q1 for roughly $0.40."
+
+
+def _style(sample: SampleProjection | None) -> MemoStyle:
+    return MemoStyle(bundle=_priced(12, PER_CASE), names={}, sample=sample, samples=() if sample is None else (sample,))
+
+
+def test_a_next_step_proposing_its_own_sample_size_is_code_s_projection_instead() -> None:
+    projection = project_sample(half_width=29.8, cases=12, margin=10.0, observed=100 / 36, per_case_usd=PER_CASE)
+    style = _style(projection)
+    assert style.sentence(THIRTY, decides=False, step=True) == projection_sentence(projection)
+    assert style.proposed == [THIRTY]
+    assert any("a sample size no code computed" in line and "30 cases" in line for line in decision_disclosures(style))
+    # A step's why loses the sentence proposing a size, and keeps the rest.
+    why = "Run 30 more cases for under $1. It would show whether the drop is real."
+    assert style.prose(why, step=True) == "It would show whether the drop is real."
+    # Every way a size is said is one.
+    for said in (
+        "Add at least 30 independent test cases.",
+        "Run 60 cases for approximately 0.20 USD.",
+        "Grow the suite to 40.",
+        "Run 30-60 more cases.",
+    ):
+        assert style.proposes_sample(said), said
+
+
+def test_a_next_step_citing_the_projection_or_the_run_s_own_cases_stands() -> None:
+    projection = project_sample(half_width=29.8, cases=12, margin=10.0, observed=100 / 36, per_case_usd=PER_CASE)
+    style = _style(projection)
+    for said in (
+        "Write about 107 new cases before the next run.",
+        "Write 107 to 205 new cases, about $2.7 to $5.2.",
+        "Beyond this template's 12 cases, write new ones.",
+        "Rerun case 4 with a longer turn limit.",
+        "Repeat the run at a cost of $0.40.",
+    ):
+        assert not style.proposes_sample(said), said
+        assert style.sentence(said, decides=False, step=True) == said
+    assert style.proposed == []
+    # Off a next step the gate does not read: a finding's title is held to its own rules.
+    assert style.sentence(THIRTY, decides=False) == THIRTY
+
+
+def test_with_no_projection_a_next_step_s_own_sample_size_is_not_printed() -> None:
+    style = _style(None)
+    assert style.sentence(THIRTY, decides=False, step=True) == ""
+    assert style.proposed == [THIRTY]
+
+
+async def test_a_thirty_case_next_step_does_not_survive_the_style_gate_on_the_page() -> None:
+    comparison, bundle = await _ruled()
+    none, observed = _expected(bundle)
+    memo = {
+        "findings": [],
+        "decisions": [],
+        "questions": [
+            {"question_id": "q-g2", "resolution": "unanswerable", "answer": "Too few cases to tell.", "rests_on": []}
+        ],
+        "next": [
+            {
+                "title": THIRTY,
+                "why": "At least 30 independent test cases would settle it. It also tells the arms apart on tone.",
+                "leverage": "high",
+                "lever": "",
+            }
+        ],
+    }
+    analysis, _ = await generate_analysis(
+        bundle,
+        prompt=PROMPT,
+        model=MODEL,
+        client=FixturedClient(json.dumps(memo)),
+        prompt_id=PROMPT_ID,
+        bundle_assembled_at="2026-10-17T12:00:00+00:00",
+        profile=comparison.host.profile,
+    )
+    report = build_report(analysis, campaign_name="character")
+    (step,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step"]
+    assert step.body.startswith(f"A switch needs about {none} independent cases if the arms do not differ, {observed}")
+    (why,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step_why"]
+    assert why.body == "It also tells the arms apart on tone."
+    markdown = report_markdown(report)
+    assert "30 cases" not in markdown.split("## Methods")[0] and "$0.40" not in markdown.split("## Methods")[0]
+    assert "a sample size no code computed" in markdown
