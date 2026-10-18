@@ -65,10 +65,16 @@ from threetears.evals.schema.base import EvalDocumentModel
 
 __all__ = [
     "AspectReading",
+    "BarState",
+    "BarStatus",
+    "CampaignKind",
     "CampaignReadings",
     "FloorState",
     "FloorStatus",
+    "MeasureReading",
+    "PairReading",
     "ShownReading",
+    "campaign_kind",
     "campaign_readings",
 ]
 
@@ -80,6 +86,31 @@ ShownReading = Literal["better", "worse", "unclear"]
 #: Where one floor stands for one candidate. ``broken``: the evidence shows the candidate past the floor. ``held``: it
 #: shows the candidate within it. ``unclear``: neither, the reason saying why.
 FloorState = Literal["broken", "held", "unclear"]
+
+#: What a campaign is, derived from its arms and never declared. ``measurement``: one arm, read on its own against
+#: absolute bars. ``choice``: two or more arms and no control (nothing is shipped), read pair by pair. ``change``: a
+#: control and one or more candidates, each read against the control.
+CampaignKind = Literal["measurement", "choice", "change"]
+
+#: Where one arm stands against one absolute bar. ``met``: its whole interval is on the good side of the bar, less
+#: the measure's margin. ``missed``: on the bad side. ``unclear``: neither, or nothing to read; the reason says which.
+BarState = Literal["met", "missed", "unclear"]
+
+
+def campaign_kind(arms: Sequence[CampaignArm]) -> CampaignKind:
+    """What a campaign is, from its arms (the named and the derived, as
+    :func:`~threetears.evals.analysis.campaigns.campaign_arms` reads them): one arm a measurement, a control with any
+    candidate a change, two or more arms with no control a choice. Arms are counted by variant key.
+
+    :param arms: The campaign's arms.
+    :ptype arms: Sequence[CampaignArm]
+    :return: The kind.
+    :rtype: CampaignKind
+    """
+    keys = {arm.variant_key for arm in arms}
+    if len(keys) <= 1:
+        return "measurement"
+    return "change" if any(arm.role == "control" for arm in arms) else "choice"
 
 
 class AspectReading(EvalDocumentModel):
@@ -207,8 +238,83 @@ class FloorStatus(EvalDocumentModel):
     reason: str = Field(description="Why, in one plain sentence, with the counts it rests on.")
 
 
+class PairReading(EvalDocumentModel):
+    """Two arms of a choice on one aspect: the difference between them, how sure, and which is shown ahead.
+
+    A pair is direction-free: ``first`` and ``second`` are in the campaign's arm order, and nothing about which is
+    first is a claim. Every figure is ``first`` minus ``second`` in points of a 0-100 pass rate.
+    """
+
+    aspect: str = Field(description="The aspect's label.")
+    first: str = Field(description="The first arm's variant key, in the campaign's arm order.")
+    first_label: str = Field(description="What a reader calls the first arm.")
+    second: str = Field(description="The second arm's variant key.")
+    second_label: str = Field(description="What a reader calls the second arm.")
+    change: float = Field(description="The first arm's pass rate minus the second's, in points.")
+    interval: tuple[float, float] | None = Field(
+        description="The difference's two-sided bounded interval in points at `confidence`; None when unbounded."
+    )
+    confidence: float | None = Field(
+        description="The level `interval` is read at, by the step-down over every pair × aspect. None with none."
+    )
+    p: float | None = Field(description="The pair's p on its family's grid, unadjusted. None when untested.")
+    p_holm: float | None = Field(
+        description="`p` Holm-adjusted across every pair × aspect: at most α exactly where an arm is ahead."
+    )
+    ahead: str | None = Field(
+        description=(
+            "The label of the arm shown ahead: the interval excludes zero, every arm at the case floor, and past the "
+            "lost trials. None = no separation. A reading, never a pick."
+        )
+    )
+    reason: str = Field(default="", description="Why, in one plain sentence naming the arms.")
+    confirmatory: bool = Field(
+        default=False, description="Whether the question was asked on this aspect before its first run."
+    )
+    first_cases: int = Field(ge=0, description="The first arm's usable cases.")
+    second_cases: int = Field(ge=0, description="The second arm's usable cases.")
+    first_passed: int = Field(ge=0, description="Trials the first arm passed.")
+    first_trials: int = Field(ge=0, description="Trials the first arm was measured on.")
+    second_passed: int = Field(ge=0, description="Trials the second arm passed.")
+    second_trials: int = Field(ge=0, description="Trials the second arm was measured on.")
+
+
+class BarStatus(EvalDocumentModel):
+    """One arm against one absolute bar on one aspect: met, missed or unclear, as the bundle adjudicated it."""
+
+    aspect: str = Field(description="The aspect's label.")
+    arm: str = Field(description="The arm's variant key.")
+    arm_label: str = Field(description="What a reader calls the arm.")
+    measure: str = Field(description="What the bar is read on, as the bar names it.")
+    bar: float = Field(description="The bar's threshold, in the measure's own units.")
+    direction: Literal["higher_is_better", "lower_is_better"] = Field(description="Which way clearing it runs.")
+    status: BarState = Field(description="`met`, `missed` or `unclear`.")
+    value: float | None = Field(description="The arm's value on the measure; None with no observation.")
+    interval: tuple[float, float] | None = Field(
+        description="The interval the status was read on, in the measure's units; None below two observations."
+    )
+    margin: float | None = Field(description="The measure's declared margin the bar was read with; None with none.")
+    reason: str = Field(default="", description="Why, in one plain sentence naming the arm.")
+
+
+class MeasureReading(EvalDocumentModel):
+    """One arm's value on one measure on one aspect, with its interval: what a measurement reports."""
+
+    aspect: str = Field(description="The aspect's label.")
+    arm: str = Field(description="The arm's variant key.")
+    arm_label: str = Field(description="What a reader calls the arm.")
+    measure: str = Field(description="The measure's key; `passed` for the trials' own pass rate.")
+    name: str = Field(description="The measure as a reader names it.")
+    value: float | None = Field(description="The arm's value: a mean, or a share for a rate. None with none.")
+    interval: tuple[float, float] | None = Field(description="The value's interval; None below two cases.")
+    cases: int = Field(ge=0, description="The independent cases behind the value.")
+    higher_is_better: bool | None = Field(default=None, description="Which way is better; None where undeclared.")
+
+
 class CampaignReadings(EvalDocumentModel):
-    """Everything code reads off a campaign: one row per aspect × candidate, and one status per floor × candidate.
+    """Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status
+    per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's
+    measures; for every kind, each arm against each absolute bar.
 
     Each candidate's rows are corrected across its own aspects (Holm, gains and drops apart, each direction erring at
     most α/2); nothing corrects across candidates, so with several, one is shown by chance more often than α.
@@ -223,6 +329,19 @@ class CampaignReadings(EvalDocumentModel):
     aspects: list[str] = Field(description="The aspects' labels, in the campaign's order.")
     readings: list[AspectReading] = Field(description="One row per aspect × candidate, aspect by aspect.")
     floors: list[FloorStatus] = Field(description="One status per floor × candidate, in the floors' order.")
+    kind: CampaignKind = Field(
+        default="change",
+        description="What the campaign is, from its arms (`campaign_kind`): which of the lists below code fills.",
+    )
+    pairs: list[PairReading] = Field(
+        default_factory=list, description="A choice's pairs, aspect by aspect, each pair once. Empty otherwise."
+    )
+    bars: list[BarStatus] = Field(
+        default_factory=list, description="Every arm against every absolute bar, aspect by aspect, for every kind."
+    )
+    measures: list[MeasureReading] = Field(
+        default_factory=list, description="A measurement's measures, aspect by aspect. Empty otherwise."
+    )
 
     @field_validator("aspects")
     @classmethod
@@ -238,6 +357,14 @@ class CampaignReadings(EvalDocumentModel):
         if duplicates := sorted({label for label in labels if labels.count(label) > 1}):
             raise ValueError(f"aspects names {', '.join(duplicates)} more than once; an aspect's label is unique")
         return labels
+
+    def missed_bars(self) -> list[BarStatus]:
+        """Every bar an arm misses, in order: what the page opens with, as it does a broken floor.
+
+        :return: The missed statuses.
+        :rtype: list[BarStatus]
+        """
+        return [status for status in self.bars if status.status == "missed"]
 
     def broken_floors(self) -> list[FloorStatus]:
         """Every floor a candidate breaks, in order: what the page opens with.

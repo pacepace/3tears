@@ -4596,6 +4596,16 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.BarState": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.BarStatus": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.BaselineBarProposals": {
       "kind": "dataclass",
       "signature": "",
@@ -4646,6 +4656,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.campaign_kind": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.CAMPAIGN_MESSAGE_CHARS_PER_ASPECT": {
       "kind": "constant (int)",
       "signature": "",
@@ -4683,6 +4698,11 @@
     },
     "threetears.evals.analysis.CampaignBundle": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.CampaignKind": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -5506,6 +5526,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.MeasureReading": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.MeasureSeries": {
       "kind": "model",
       "signature": "",
@@ -5627,6 +5652,11 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.PairingCorrelation": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.PairReading": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
