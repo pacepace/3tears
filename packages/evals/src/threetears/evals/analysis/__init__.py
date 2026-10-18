@@ -100,6 +100,14 @@ from threetears.evals.analysis.bundle.schema import (
     BundleInspection,
     GoalCheckProofReading,
 )
+from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
+from threetears.evals.analysis.campaign_readings import (
+    AspectReading,
+    CampaignReadings,
+    FloorState,
+    FloorStatus,
+    ShownReading,
+)
 from threetears.evals.analysis.campaigns import (
     DeclarableAxes,
     add_runs_to_campaign,
@@ -179,6 +187,7 @@ from threetears.evals.analysis.gate import (
     parse_fail_on,
     verdict_token,
 )
+from threetears.evals.analysis.report.decision import CasesNeeded, NeedKind, SampleProjection
 from threetears.evals.analysis.report import (
     MIN_CASES,
     SECTION_TITLES,
@@ -383,6 +392,20 @@ from threetears.evals.analysis.summary import (
 )
 
 __all__ = [
+    # A campaign read one aspect at a time, and the shapes of what code reads off it across aspects.
+    "AspectDeclaration",
+    "AspectReading",
+    "AspectView",
+    "CampaignReadings",
+    "FloorState",
+    "FloorStatus",
+    "ShownReading",
+    "aspect_view",
+    "aspect_views",
+    # The cases an unclear reading would need to settle, which a campaign's readings carry per row.
+    "CasesNeeded",
+    "NeedKind",
+    "SampleProjection",
     "GLOSSARY",
     "HumanizeKind",
     "StyleViolation",

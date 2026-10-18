@@ -1261,6 +1261,26 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.ArmRole": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.Aspect": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.AspectDesign": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.AspectSummary": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.AttemptOutcome": {
       "kind": "literal",
       "signature": "",
@@ -1272,6 +1292,11 @@
       "tier": "provisional"
     },
     "threetears.evals.kernel.AuthoredAnalysis": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.AuthoredCampaignAnalysis": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -1358,6 +1383,16 @@
     },
     "threetears.evals.kernel.CallUsage": {
       "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.CampaignArm": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.CampaignCall": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -1926,6 +1961,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.Floor": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.fold_phase_timings": {
       "kind": "function",
       "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]",
@@ -2466,6 +2506,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.Recommendation": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.Recordable": {
       "kind": "protocol",
       "signature": "Recordable{model_dump(self, *, mode: Literal['json']) -> dict[str, Any]; model_validate(cls, obj: Any) -> Self}",
@@ -2542,6 +2587,11 @@
       "tier": "provisional"
     },
     "threetears.evals.kernel.resolve_context_identity": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.resolve_control_arm": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -4486,6 +4536,31 @@
       "signature": "",
       "tier": "stable"
     },
+    "threetears.evals.analysis.aspect_view": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.aspect_views": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.AspectDeclaration": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.AspectReading": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.AspectView": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.AsRecordedReporterKind": {
       "kind": "class",
       "signature": "",
@@ -4551,6 +4626,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.CampaignReadings": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.CampaignReadStore": {
       "kind": "protocol",
       "signature": "",
@@ -4573,6 +4653,11 @@
     },
     "threetears.evals.analysis.CaseSetIdentity": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.CasesNeeded": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },
@@ -4885,6 +4970,16 @@
       "kind": "function",
       "signature": "first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]",
       "tier": "stable"
+    },
+    "threetears.evals.analysis.FloorState": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.FloorStatus": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.analysis.format_number": {
       "kind": "function",
@@ -5396,6 +5491,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.NeedKind": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.NextExperiment": {
       "kind": "model",
       "signature": "",
@@ -5746,6 +5846,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.SampleProjection": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.scope_out_of_run_spend": {
       "kind": "function",
       "signature": "",
@@ -5828,6 +5933,11 @@
     },
     "threetears.evals.analysis.ShortCell": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.ShownReading": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
