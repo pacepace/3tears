@@ -640,21 +640,66 @@ class GitRepo:
             raise RuntimeError("a repository opened without NATS serves no forwarded operations")
         await self._role.serve(name, handler)
 
-    async def forward(self, name: str, payload: bytes) -> bytes:
-        """send a product's own operation to the writer's handler for it.
+    async def forward(
+        self, name: str, payload: bytes, *, local: Callable[[bytes], Awaitable[bytes]] | None = None
+    ) -> bytes:
+        """run a product's own operation on the writer: here when this process is it, else sent to its handler.
+
+        With ``local``, the rule the store's own commits follow: when this process is the writer (always, without
+        NATS) ``local(payload)`` runs here; when no process is, this one tries once to become it and then runs
+        ``local``. Without ``local`` the request is only ever sent.
 
         :param name: the operation's name
         :ptype name: str
         :param payload: the request
         :ptype payload: bytes
+        :param local: the operation, run on this process when it is (or becomes) the writer
+        :ptype local: Callable[[bytes], Awaitable[bytes]] | None
         :return: the reply
         :rtype: bytes
-        :raises RuntimeError: without NATS
-        :raises NoOwnerError: when no writer serves it now
+        :raises RuntimeError: without NATS and without ``local``
+        :raises NoOwnerError: without ``local``, when no writer serves it now
+        :raises NotTheWriterError: with ``local``, when no process is the writer and this one could not become it
+        :raises ForwardedHandlerError: when the writer's handler raised
         """
+        if local is not None:
+            if self.is_writer:
+                return await local(payload)
+            assert self._role is not None  # is_writer is True without a role
+            try:
+                return await self._role.forward(name, payload)
+            except NoOwnerError:
+                await self._become_writer()
+                return await local(payload)
+            except NatsClientError as exc:
+                raise NotTheWriterError(
+                    f"the writer of {self.config.lease_key} could not be reached ({type(exc).__name__}: {exc}); "
+                    f"{name} did not run here"
+                ) from exc
         if self._role is None:
             raise RuntimeError("a repository opened without NATS forwards nothing")
         return await self._role.forward(name, payload)
+
+    async def _become_writer(self) -> None:
+        """take the lease when no process holds it (it runs the takeover), or say why not.
+
+        :return: None
+        :rtype: None
+        :raises NotTheWriterError: when the lease could not be taken
+        """
+        assert self._role is not None
+        try:
+            claimed = await self._role.claim()
+        except NatsClientError as exc:
+            raise NotTheWriterError(
+                f"no process serves {self.config.lease_key} and this one could not take the lease "
+                f"({type(exc).__name__}: {exc}); nothing was committed"
+            ) from exc
+        if not claimed:
+            raise NotTheWriterError(
+                f"no process is the writer of {self.config.lease_key} and this one could not become it; "
+                f"nothing was committed"
+            )
 
     async def _takeover(self) -> None:
         """make this process's working tree the repository's current state, on becoming the writer.
@@ -1184,18 +1229,7 @@ class GitRepo:
                 f"nothing was committed by this process"
             ) from exc
         if reply is None:
-            try:
-                claimed = await self._role.claim()
-            except NatsClientError as exc:
-                raise NotTheWriterError(
-                    f"no process serves {self.config.lease_key} and this one could not take the lease "
-                    f"({type(exc).__name__}: {exc}); nothing was committed"
-                ) from exc
-            if not claimed:
-                raise NotTheWriterError(
-                    f"no process is the writer of {self.config.lease_key} and this one could not become it; "
-                    f"nothing was committed"
-                )
+            await self._become_writer()
             return await local()
         return decode_reply(reply)
 
@@ -1363,7 +1397,7 @@ class GitRepo:
                 result = await self._commit_intent_local(request.scope, request.message, request.author, idle)
             else:
                 result = await self._push_now()
-        except (GitStoreError, ChangeConflictError) as exc:
+        except (GitStoreError, ChangeConflictError, GitError, ValueError) as exc:
             return encode_failure(exc)
         return encode_result(result)
 

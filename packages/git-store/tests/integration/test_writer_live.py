@@ -42,6 +42,7 @@ from threetears.git_store import (
     RowChange,
     TemplateLayout,
     committed_seq_from,
+    new_signing_seed,
 )
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.oplog import OpLog
@@ -57,7 +58,7 @@ FAST = {
     "watch_interval": timedelta(milliseconds=200),
     "forward_timeout": timedelta(seconds=10),
     # the deployment's forward seal (envelope.py): the same in every process of the test's deployment
-    "forward_signing_seed": SecretStr(base64.b64encode(os.urandom(32)).decode()),
+    "forward_signing_seed": new_signing_seed(),
 }
 
 
@@ -404,3 +405,36 @@ async def test_saved_edits_survive_the_writer_and_the_next_one_commits_them(
     result = await b.commit_intent("stories/one", "edit")
     assert result.sha is not None and result.pushed and origin_head(origin) == result.sha
     assert committed_seq_from(b.git.last_commit()[2]) == 2  # type: ignore[index]
+
+
+async def test_a_products_own_operation_runs_on_the_writer_or_here_when_nobody_is(
+    tmp_path: Path, connect: Any, opened: Any
+) -> None:
+    # scriob's own operations (apply_op, rename) ride forward(): with ``local``, a pod that finds no writer becomes it
+    tree = tmp_path / "shared"
+    ran: list[str] = []
+
+    def runner(who: str) -> Callable[[bytes], Awaitable[bytes]]:
+        async def run(payload: bytes) -> bytes:
+            ran.append(who)
+            return b"done by " + who.encode() + b": " + payload
+
+        return run
+
+    cli = await opened(await connect("cli"), work_tree=tree, seek_writer=False)
+    assert not cli.is_writer
+    assert await cli.forward("apply_op", b"x", local=runner("cli")) == b"done by cli: x"  # nobody was: cli became it
+    assert cli.is_writer and ran == ["cli"]
+    await cli.aclose()
+
+    writer = await opened(await connect("worker"), work_tree=tree)
+    await writer.serve("apply_op", runner("worker"))
+    other = await opened(await connect("other"), work_tree=tree, seek_writer=False)
+    assert writer.is_writer and not other.is_writer
+    assert await other.forward("apply_op", b"y", local=runner("other")) == b"done by worker: y"  # forwarded
+    assert not other.is_writer
+
+    # the writer serves no "rename": nobody answers, and the lease is held, so this pod can't take over
+    with pytest.raises(NotTheWriterError):
+        await other.forward("rename", b"z", local=runner("other"))
+    assert ran == ["cli", "worker"]

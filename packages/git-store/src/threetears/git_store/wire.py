@@ -32,7 +32,7 @@ from threetears.git_store.errors import (
     HandEditPendingError,
     NotTheWriterError,
 )
-from threetears.git_store.git import Author
+from threetears.git_store.git import Author, GitError
 
 __all__ = [
     "ForwardedRequest",
@@ -241,11 +241,11 @@ def encode_result(result: CommitResult) -> bytes:
     )
 
 
-def encode_failure(error: GitStoreError | ChangeConflictError) -> bytes:
-    """the wire bytes of a refusal the sender raises as the same type.
+def encode_failure(error: GitStoreError | ChangeConflictError | GitError | ValueError) -> bytes:
+    """the wire bytes of a refusal or failure the sender raises as the same type.
 
     :param error: the refusal
-    :ptype error: GitStoreError | ChangeConflictError
+    :ptype error: GitStoreError | ChangeConflictError | GitError | ValueError
     :return: UTF-8 JSON
     :rtype: bytes
     """
@@ -264,6 +264,10 @@ def encode_failure(error: GitStoreError | ChangeConflictError) -> bytes:
         detail = {"type": "file_conflict", "paths": list(error.paths)}
     elif isinstance(error, NotTheWriterError):
         detail = {"type": "not_writer", "message": str(error)}
+    elif isinstance(error, GitError):
+        detail = {"type": "git", "args": list(error.git_args), "returncode": error.returncode, "stderr": error.stderr}
+    elif isinstance(error, ValueError):
+        detail = {"type": "invalid", "message": str(error)}
     else:
         detail = {"type": "refused", "message": str(error)}
     return json.dumps({"ok": False, "error": detail}).encode("utf-8")
@@ -280,6 +284,8 @@ def decode_reply(data: bytes) -> CommitResult:
     :raises HandEditPendingError: when uncommitted hand edits were in the way
     :raises FileConflictError: when files sent to be committed changed since their base
     :raises NotTheWriterError: when the process that answered was no longer the writer
+    :raises GitError: when git failed on the writer
+    :raises ValueError: when the writer found the request invalid (a path outside the tree, a bad trailer)
     :raises GitStoreError: for any other refusal
     """
     body = json.loads(data.decode("utf-8"))
@@ -304,6 +310,10 @@ def decode_reply(data: bytes) -> CommitResult:
         raise FileConflictError([str(path) for path in error["paths"]])
     if kind == "not_writer":
         raise NotTheWriterError(str(error["message"]))
+    if kind == "git":
+        raise GitError([str(arg) for arg in error["args"]], int(error["returncode"]), str(error["stderr"]))
+    if kind == "invalid":
+        raise ValueError(str(error["message"]))
     raise GitStoreError(str(error.get("message", "the writer refused the change")))
 
 

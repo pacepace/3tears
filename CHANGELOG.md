@@ -127,6 +127,13 @@ leave them out, a commit that touches the folder takes them along with the trail
 and the sweep commits a folder idle past `safety_idle`. `GitRepo.pending(scope)` is the lock-held save a product's
 own tail builds on; `GitRepo.on_committed` hears every commit the store makes. Found adopting git-store in scriob.
 
+**git-store: a product's own operations run where the store's commits do.** `GitRepo.forward(name, payload,
+local=...)` runs `local` here when this process is the writer (always without NATS), sends the request to the
+writer otherwise, and when no process is the writer takes the lease once and runs `local` (`NotTheWriterError` when
+it can't), as `commit` does. A forwarded commit that fails on the writer with a git failure or a bad request now
+raises `GitError` / `ValueError` on the sender, not a generic `GitStoreError`. `new_signing_seed()` makes a
+`forward_signing_seed`. Asked for by scriob, whose ~20 operations ride `forward`.
+
 **Fixed (git-store):** a work tree inside another git repository was used as if it were one, so commits landed in
 the outer repository; `open()` now refuses it (`GitStoreError`). A nested repository of its own still works.
 

@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+from pydantic import SecretStr
+
 from threetears.core.coordination import ReplayAnchor, ReplayGuard
 from threetears.core.security import (
     SERVICE_ENVELOPE_LEEWAY,
@@ -34,14 +36,23 @@ from threetears.core.security import (
 )
 
 if TYPE_CHECKING:
-    from pydantic import SecretStr
-
     from threetears.nats import NatsClient
 
-__all__ = ["DEFAULT_ISSUER", "ForwardEnvelope", "ForwardRefusedError", "GitDirReplayAnchor"]
+__all__ = ["DEFAULT_ISSUER", "ForwardEnvelope", "ForwardRefusedError", "GitDirReplayAnchor", "new_signing_seed"]
 
 #: the sending service a writer takes forwarded requests from, unless the configuration names another
 DEFAULT_ISSUER: Final[str] = "git-store"
+
+
+def new_signing_seed() -> SecretStr:
+    """a fresh forward signing seed: 32 random bytes, base64, the form ``forward_signing_seed`` takes.
+
+    One per deployment (every process of it shares the seed); a test makes one per test.
+
+    :return: the seed
+    :rtype: SecretStr
+    """
+    return SecretStr(base64.b64encode(os.urandom(32)).decode("ascii"))
 
 
 class ForwardRefusedError(PermissionError):

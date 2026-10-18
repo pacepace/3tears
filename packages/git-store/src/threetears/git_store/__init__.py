@@ -14,7 +14,7 @@ from threetears.git_store.advanced import AdvancedListener, RepoAdvanced
 from threetears.git_store.bind import bind_collections
 from threetears.git_store.change import Change, ChangeSet, CommitResult
 from threetears.git_store.codec import JsonCodec, RowCodec
-from threetears.git_store.envelope import ForwardRefusedError
+from threetears.git_store.envelope import ForwardRefusedError, new_signing_seed
 from threetears.git_store.errors import (
     ChangeConflictError,
     ConflictedRow,
@@ -66,4 +66,5 @@ __all__ = [
     "TemplateLayout",
     "bind_collections",
     "committed_seq_from",
+    "new_signing_seed",
 ]

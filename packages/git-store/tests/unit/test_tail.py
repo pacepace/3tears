@@ -18,7 +18,8 @@ from threetears.git_store import (
     OpLogTail,
     committed_seq_from,
 )
-from threetears.git_store.wire import ForwardedRequest, decode_request, encode_request
+from threetears.git_store.git import GitError
+from threetears.git_store.wire import ForwardedRequest, decode_reply, decode_request, encode_failure, encode_request
 from threetears.nats.oplog import AppendResult, OpRecord
 
 
@@ -340,3 +341,20 @@ def test_commit_intent_crosses_the_wire() -> None:
 def test_the_last_trailer_counts() -> None:
     assert committed_seq_from("edit\n\nOp-Seq: 3\nOp-Seq: 7\n") == 7
     assert committed_seq_from("edit\n") == 0
+
+
+async def test_without_nats_a_products_operation_runs_here(make_repo: Any) -> None:
+    repo = await make_repo()
+
+    async def run(payload: bytes) -> bytes:
+        return payload.upper()
+
+    assert await repo.forward("apply_op", b"x", local=run) == b"X"
+
+
+def test_git_and_value_failures_keep_their_type_across_the_wire() -> None:
+    with pytest.raises(GitError) as failed:
+        decode_reply(encode_failure(GitError(["commit", "-q"], 128, "fatal: index.lock exists")))
+    assert failed.value.returncode == 128 and failed.value.git_args == ("commit", "-q") and failed.value.index_locked
+    with pytest.raises(ValueError, match="not a path inside"):
+        decode_reply(encode_failure(ValueError("'../x' is not a path inside the working tree")))
