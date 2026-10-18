@@ -148,7 +148,8 @@ class EvalCampaign(DurableDocumentModel):
 
     **The arms are variants, not runs** (:class:`~threetears.evals.kernel.declaration.CampaignArm`): each is a
     variant key beside its pre-image, addressed from a run and named by a label, so curating a run out never takes
-    an arm with it. At most one is the control, and it comes first. A campaign that names no candidate arm reads
+    an arm with it — the control was once ``control_run_id``, a run on the campaign that archiving it destroyed. At
+    most one arm is the control, and it comes first. A campaign that names no candidate arm reads
     each other variant among its runs as one (:func:`~threetears.evals.analysis.campaigns.campaign_arms`).
 
     **Floors only warn** (:class:`~threetears.evals.kernel.declaration.Floor`): each is a typed clause on one aspect,
