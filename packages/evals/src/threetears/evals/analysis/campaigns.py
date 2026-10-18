@@ -1551,9 +1551,9 @@ def _with_control(
 ) -> list[CampaignArm]:
     """``arms`` with the control addressed from a member run first, named now, or with no control.
 
-    When it is named is recorded on the arm (``named_at``): a control named after an aspect's first run was chosen
-    once the evidence existed, so that aspect's comparisons read as post hoc
-    (:func:`~threetears.evals.analysis.aspects.aspect_view` dates the aspect's question no earlier than it).
+    When it is named is recorded on the arm (``named_at``): a control named after an aspect's first result was
+    chosen once the evidence existed, so that aspect's comparisons read as post hoc (its bundle dates the aspect's
+    question no earlier than the naming); one named after the arms launched and before a result landed was not.
 
     :raises ValidationFailedError: The run is not a member of the campaign.
     """

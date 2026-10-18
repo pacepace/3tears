@@ -16,7 +16,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor, aware_instant
+from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -38,24 +38,24 @@ class AspectDeclaration(EvalDocumentModel):
     asked_at: str | None = Field(
         description=(
             "When this aspect was asked its question in full (ISO-8601), which a reading confirms only if it predates "
-            "the aspect's first run: the aspect's own time (an adopted aspect keeps its source's), or, when later, the "
-            "time its control was named, since a control chosen once the evidence existed makes what is read against "
-            "it post hoc. Never a time a later edit of the design re-stamps. None when no time is recorded, read as "
-            "asked after the evidence."
+            "the aspect's first run: the aspect's own time (an adopted aspect keeps its source's). A bundle dates it "
+            "no earlier than the control's `named_at` where the control was named after the aspect's first result, "
+            "since a control chosen once the evidence existed makes what is read against it post hoc. Never a time a "
+            "later edit of the design re-stamps. None when no time is recorded, read as asked after the evidence."
         )
     )
     question_declared_at: str | None = Field(
         description=(
             "When the campaign's question was worded as `question` reads (ISO-8601): later than `asked_at` when an "
-            "adoption added or joined the words, which the page says were declared after the runs while this "
-            "aspect's readings keep `asked_at`. None when unrecorded."
+            "adoption added or joined the words, which the page says were declared after the evidence where that is "
+            "later than the aspect's first result, while this aspect's readings keep `asked_at`. None when unrecorded."
         )
     )
     margin_declared_at: str | None = Field(
         description=(
             "When `margin` was declared (ISO-8601): `asked_at`, or the later time a margin was added at adoption, "
-            "which the page says was declared after the runs where that is later than the first. None with no margin "
-            "or no recorded time."
+            "which the page says was declared after the evidence where that is later than the aspect's first result. "
+            "None with no margin or no recorded time."
         )
     )
     design: AspectDesign = Field(
@@ -77,7 +77,8 @@ class AspectDeclaration(EvalDocumentModel):
     floors: list[Floor] = Field(
         description=(
             "The floors on this aspect, in declaration order. Empty = none. A floor added at adoption carries its own "
-            "`declared_at`; one with none was declared with the aspect's question (`asked_at`)."
+            "`declared_at`, declared after the evidence where that is later than the aspect's first result; one with "
+            "none was declared with the aspect's question (`asked_at`)."
         )
     )
     declared_at: str | None = Field(description="When this aspect's design was declared (ISO-8601).")
@@ -143,17 +144,6 @@ def aspect_view(campaign: EvalCampaign, aspect: str | None = None) -> AspectView
     return found
 
 
-def _latest(asked_at: str | None, named_at: str | None) -> str | None:
-    """``asked_at``, or ``named_at`` where that is later; None when ``asked_at`` is, or either cannot be ordered."""
-    if asked_at is None or named_at is None:
-        return asked_at
-    try:
-        later = aware_instant(named_at, "the control") > aware_instant(asked_at, "the question")
-    except ValueError:
-        return None
-    return named_at if later else asked_at
-
-
 def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
     """One aspect's view over the campaign it belongs to."""
     declared = (
@@ -161,7 +151,7 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
         if aspect.design is None
         else AspectDeclaration(
             question=campaign.question,
-            asked_at=_latest(aspect.asked_at, campaign.control.named_at if campaign.control is not None else None),
+            asked_at=aspect.asked_at,
             question_declared_at=campaign.declared_at,
             margin_declared_at=(aspect.margin_declared_at or aspect.asked_at) if aspect.margin is not None else None,
             design=aspect.design,
