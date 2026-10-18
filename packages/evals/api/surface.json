@@ -4756,6 +4756,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.CellAddress": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.CellCoordinate": {
       "kind": "model",
       "signature": "",
@@ -6203,6 +6208,11 @@
     },
     "threetears.evals.analysis.UnrepeatedScore": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.UnresolvableReference": {
+      "kind": "exception",
       "signature": "",
       "tier": "provisional"
     },

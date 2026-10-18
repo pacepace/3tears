@@ -395,7 +395,7 @@ def _only_aspect(analysis: EvalAnalysis) -> AspectAnalysis:
         raise RefusedInput(
             f"analysis {analysis.id} covers {len(analysis.aspects)} aspects "
             f"({', '.join(aspect.label for aspect in analysis.aspects)}), and this page lays out one",
-            remedy="read the campaign's page, which lays out every aspect (campaign_report)",
+            remedy="read the campaign's page, which lays out every aspect (report_read with the campaign_id)",
         )
     return analysis.aspects[0]
 
