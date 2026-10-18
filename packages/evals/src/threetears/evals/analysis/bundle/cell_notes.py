@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.contention import contended_latency_sentence
 from threetears.evals.analysis.cells import Cell
-from threetears.evals.kernel.declaration import CampaignDesign
+from threetears.evals.kernel.declaration import AspectDesign
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.kernel.surface import (
@@ -31,7 +31,7 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
     from threetears.evals.schema.models import EvalRun
 
 
-def _short_cells(cells: list[Cell], design: CampaignDesign | None) -> list[ShortCell]:
+def _short_cells(cells: list[Cell], design: AspectDesign | None) -> list[ShortCell]:
     """Name every cell holding fewer repetitions than the declaration intended.
 
     A cell is counted by its least-repeated case, since that case is the cell's weakest replication
@@ -40,7 +40,7 @@ def _short_cells(cells: list[Cell], design: CampaignDesign | None) -> list[Short
     :param cells: The pooled cells, in coordinate order.
     :ptype cells: list[Cell]
     :param design: The campaign's declaration, or None.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :return: One entry per short cell, in coordinate order. Empty when nothing was declared — an unstated
         intention cannot be fallen short of — or when every cell met it. A cell with no case count
         has no repetitions to compare and is not listed: its own facts already say its cases were
@@ -171,13 +171,13 @@ def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | Non
     return failed, all_failed_sentence(len(failed), len(cells))
 
 
-def _held_fixed_reading(runs: list[EvalRun], design: CampaignDesign | None) -> HeldFixedReading:
+def _held_fixed_reading(runs: list[EvalRun], design: AspectDesign | None) -> HeldFixedReading:
     """Compare what the campaign declared held fixed with the provenance every resolved run recorded.
 
     :param runs: The resolved member runs.
     :ptype runs: list[EvalRun]
     :param design: The campaign's declaration, or None.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :return: The reading. Its disclosure is composed from the branches actually taken: a declared apparatus
         the runs contradict, a mix of provenances nobody declared, and an uncontrolled stimulus each
         add their own sentence, and none of them adds one that did not happen.

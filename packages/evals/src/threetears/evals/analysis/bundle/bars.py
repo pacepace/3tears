@@ -26,11 +26,11 @@ from threetears.evals.analysis.stats import (
     observed_mean_interval,
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, BarVerdict
+from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.kernel.declaration import (
+    AspectDesign,
     BarName,
-    CampaignDesign,
     UnreadableBarName,
-    preregistered_questions,
     resolve_bar_name,
 )
 from threetears.evals.kernel.host.profile import HostProfile
@@ -46,6 +46,7 @@ from threetears.evals.analysis.bundle.schema import (
     MeritTier,
     QuestionScope,
     VerdictOrder,
+    question_axes,
 )
 from threetears.evals.analysis.bundle.measures import _measure_collection
 from threetears.evals.analysis.bundle.cell_reads import (
@@ -69,7 +70,7 @@ _FRONTIER_BAR_WITHHELD = (
 
 
 def _frontier_bar(
-    behavior: str, design: CampaignDesign | None, *, profile: HostProfile
+    behavior: str, design: AspectDesign | None, *, profile: HostProfile
 ) -> tuple[float | None, str | None]:
     """The bar the frontier is given, or why it is given none.
 
@@ -89,7 +90,7 @@ def _frontier_bar(
     :param behavior: The campaign's behavior, the scope a registered bar is keyed under.
     :ptype behavior: str
     :param design: The campaign's declaration.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :param profile: The host whose registered bars apply.
     :ptype profile: HostProfile
     :return: ``(bar, None)`` when the frontier takes a bar, else ``(None, reason)``: the withheld sentence followed
@@ -135,7 +136,7 @@ _BarState = Literal["adjudicated", "names_no_stored_measure", "not_numeric"]
 
 
 def _applicable_bars(
-    behavior: str, design: CampaignDesign | None, *, profile: HostProfile
+    behavior: str, design: AspectDesign | None, *, profile: HostProfile
 ) -> list[tuple[str, float, bool, Literal["declared", "registered"]]]:
     """The bars this campaign is held to: its own, then each registered incumbent it did not override.
 
@@ -147,7 +148,7 @@ def _applicable_bars(
     :param behavior: The campaign's behavior, the scope a registered bar is keyed under.
     :ptype behavior: str
     :param design: The campaign's declaration.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: ``(measure_id, threshold, higher_is_better, source)`` per bar, declared first, then registered,
@@ -243,7 +244,7 @@ def _judged_bar_tier(
 
 def _bar_adjudications(
     behavior: str,
-    design: CampaignDesign | None,
+    design: AspectDesign | None,
     results_by_cell: dict[_CellKey, list[EvalResult]],
     records: list[ScoreRecord],
     *,
@@ -267,7 +268,7 @@ def _bar_adjudications(
     :param behavior: The campaign's behavior.
     :ptype behavior: str
     :param design: The campaign's declaration.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :param results_by_cell: Each cell's results.
     :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
     :param records: The assembly's score projection rows, where a judged dimension's name survives.
@@ -383,9 +384,13 @@ def _bar_adjudications(
 
 
 def _verdict_order(
-    adjudications: list[BarAdjudication], design: CampaignDesign | None, *, first_run_at: str | None
+    adjudications: list[BarAdjudication],
+    aspect: str,
+    declared: AspectDeclaration | None,
+    *,
+    first_run_at: str | None,
 ) -> VerdictOrder:
-    """Order the adjudicated bars by the campaign's declared merit priority, and scope them per question.
+    """Order the adjudicated bars by the aspect's declared merit priority, and scope them to its question.
 
     Only an ``adjudicated`` bar ranks: a bar with no verdict gives nothing to read in any order. A bar
     keeps its ``bar_adjudications`` position within its axis, so the priority reorders axes and never
@@ -393,16 +398,18 @@ def _verdict_order(
 
     :param adjudications: The bundle's bar adjudications, in their own order.
     :ptype adjudications: list[BarAdjudication]
-    :param design: The campaign's declaration, or None.
-    :ptype design: CampaignDesign | None
+    :param aspect: The aspect's label, which the question's scope names.
+    :ptype aspect: str
+    :param declared: What the campaign declared, as the aspect reads it, or None.
+    :ptype declared: AspectDeclaration | None
     :param first_run_at: The earliest member run's ``created_at``: only a question asked by then is scoped
-        (:func:`~threetears.evals.kernel.declaration.preregistered_questions`).
+        (:func:`~threetears.evals.analysis.bundle.schema.asked_in_time`).
     :ptype first_run_at: str | None
     :return: The order. With no declaration or an empty priority, every adjudicated bar is unranked and no
         tier exists — the analysis must not invent a preference the campaign never stated.
     :rtype: VerdictOrder
     """
-    priority = list(design.merit_priority) if design is not None else []
+    priority = list(declared.design.merit_priority) if declared is not None else []
     by_axis: dict[MeritAxis | None, list[str]] = defaultdict(list)
     for bar in adjudications:
         if bar.state == "adjudicated":
@@ -413,25 +420,21 @@ def _verdict_order(
         for bar in adjudications
         if bar.state == "adjudicated" and (bar.merit_axis is None or bar.merit_axis not in ranked)
     ]
-    questions = []
-    for question in preregistered_questions(design, first_run_at) if design is not None else []:
-        if not question.merit_axes:
-            continue
+    question = None
+    if asked := question_axes(declared, first_run_at):
         # Each axis once: the declaration refuses a repeat, so the reader takes the list as it is.
-        axes = sorted(question.merit_axes, key=lambda axis: priority.index(axis) if axis in ranked else len(priority))
-        questions.append(
-            QuestionScope(
-                question_id=question.id,
-                merit_axes=axes,
-                bar_measure_ids=[measure for axis in axes for measure in by_axis.get(axis, [])],
-                unbarred_axes=[axis for axis in axes if not by_axis.get(axis)],
-            )
+        axes = sorted(asked, key=lambda axis: priority.index(axis) if axis in ranked else len(priority))
+        question = QuestionScope(
+            aspect=aspect,
+            merit_axes=axes,
+            bar_measure_ids=[measure for axis in axes for measure in by_axis.get(axis, [])],
+            unbarred_axes=[axis for axis in axes if not by_axis.get(axis)],
         )
     return VerdictOrder(
         merit_priority=priority,
         tiers=[MeritTier(axis=axis, bar_measure_ids=by_axis.get(axis, [])) for axis in priority],
         unranked_bar_measure_ids=unranked,
-        questions=questions,
+        question=question,
     )
 
 

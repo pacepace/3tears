@@ -21,9 +21,10 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.kernel.declaration import BarOverride, CampaignDesign, refuse_an_undeclarable_design
+from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
 from threetears.evals.kernel.host.bars import Bar, BarRegistry
 from threetears.evals.kernel.metrics import FRONTIER_RANKING_MEASURE
+from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_BARS, toyhost_profile
@@ -36,13 +37,9 @@ _BAR = 0.5
 def _bundle(*bars: BarOverride, registered: tuple[Bar, ...] = TOYHOST_BARS) -> AnalysisContextBundle:
     """The toy campaign's bundle with ``bars`` as its declared bars, under the host's ``registered`` ones."""
     campaign, storage = toyhost_campaign()
-    assert campaign.declared_design is not None
-    # model_construct: the bundle validates the design itself, which is what refuses two bars on one measure.
-    design = CampaignDesign.model_construct(**{**dict(campaign.declared_design), "bars": list(bars)})
     profile = replace(toyhost_profile(), bars=BarRegistry(registered))
-    return assemble_context_bundle(
-        campaign.model_copy(update={"declared_design": design}), storage=storage, profile=profile
-    )
+    # Declared again, the design is validated, which is what refuses two bars on one measure.
+    return assemble_context_bundle(redeclared(campaign, design={"bars": list(bars)}), storage=storage, profile=profile)
 
 
 def _on_pass_hat_k(threshold: float = _BAR) -> BarOverride:

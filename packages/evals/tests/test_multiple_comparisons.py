@@ -40,12 +40,18 @@ from threetears.evals.analysis.stats import (
     pairing_correlation,
     separation_p,
 )
-from threetears.evals.kernel import EvalCampaign, Question
+from threetears.evals.kernel import CampaignArm
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.schema.models import LatencyMetrics
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MeritAxis
-from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_aspect_campaign,
+    make_eval_result,
+    make_eval_run,
+    minimal_aspect_design,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.simulation_support import ClusteredDesign, draw_paired_arms
@@ -137,31 +143,21 @@ def _bundle(
             for case in range(cases if unpaired is None or model == CONTROL else unpaired)
             if model == CONTROL or contrast_cases is None or case in contrast_cases
         ]
-    declaration = minimal_declaration(control=fixture_variant_key(control) if control else None)
-    if questions:
-        declaration = declaration.model_copy(
-            update={
-                # Asked before the runs, as a campaign that confirms anything asks: a question declared after its
-                # first run builds no family (``preregistered_questions``).
-                "questions": [
-                    Question(
-                        id="q-better",
-                        text="is the contrast better?",
-                        merit_axes=merit_axes or ["quality"],
-                        asked_at=min(run.created_at for run in runs),
-                    )
-                ]
-            }
-        )
-    campaign = EvalCampaign(
+    # Asked before the runs, as a campaign that confirms anything asks: a question asked after its first run builds
+    # no family (``asked_in_time``).
+    campaign = make_aspect_campaign(
+        label="b",
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=(merit_axes or ["quality"]) if questions else None),
+        question="is the contrast better?" if questions else "",
+        asked_at=min(run.created_at for run in runs) if questions else None,
+        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(control))
+        if control
+        else None,
         scope_id=runs[0].scope_id,
         name="family of comparisons",
         subject_id=runs[0].subject_snapshot.subject_id,
         subject_kind="s",
-        behavior="b",
-        run_ids=[run.id for run in runs],
-        declared_design=declaration,
-        created_by="test:fixture",
     )
     return assemble_context_bundle(
         campaign, storage=ToyhostStorage(runs, results), profile=profile if profile is not None else toyhost_profile()
@@ -345,8 +341,8 @@ class TestWhatAFamilyCovers:
 
         family = _family(bundle)
         assert bundle.multiple_comparisons.withheld is None
-        assert (family.question_id, family.merit_axes, family.family_size) == (None, [], 10)
-        assert family.disclosure.startswith("This campaign declares no live question, so every comparison")
+        assert (family.aspect, family.merit_axes, family.family_size) == (None, [], 10)
+        assert family.disclosure.startswith("This campaign asked no question before its first run, so every comparison")
 
     def test_a_chance_difference_in_a_campaign_with_no_question_does_not_separate(self) -> None:
         """The Done-when case, with no question declared: raw p ≈ 0.026 separates alone and not among ten."""

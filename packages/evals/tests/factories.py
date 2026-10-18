@@ -528,6 +528,7 @@ def make_aspect_campaign(
     control: CampaignArm | None = None,
     margin: float | None = None,
     floors: Sequence[DecisionClause] = (),
+    asked_at: str | None = None,
     **overrides: Any,
 ) -> EvalCampaign:
     """A stored campaign of ONE aspect, built from what the aspect declares, whatever shape the campaign is stored in.
@@ -562,6 +563,9 @@ def make_aspect_campaign(
     :ptype margin: float | None
     :param floors: The clauses of the floors on the aspect, in order.
     :ptype floors: Sequence[DecisionClause]
+    :param asked_at: When the question was asked (ISO-8601), which a reading confirms only if it predates the first
+        run; None asks it now. Only with a ``question``.
+    :ptype asked_at: str | None
     :param overrides: Any other campaign field but ``behavior``, ``template_id``, ``run_ids`` and ``declared_design``.
     :ptype overrides: Any
     :return: The campaign.
@@ -588,6 +592,8 @@ def make_aspect_campaign(
             f"every pass rate, which here gives {derived}; pass margin={derived}, or a RateDrop(max_points={margin}) "
             "floor naming no reading (a campaign of aspects stores the two apart)"
         )
+    if asked_at is not None and not question:
+        raise ValueError("asked_at dates a question; pass the question")
     if not question and floors:
         raise ValueError("a stored campaign keeps floors on a question; pass the question")
     if (aspect_design.merit_axes is None) != (not question):
@@ -601,6 +607,7 @@ def make_aspect_campaign(
                 text=question,
                 decision=DecisionRule(clauses=tuple(floors)) if floors else None,
                 merit_axes=list(aspect_design.merit_axes or []),
+                **({"asked_at": asked_at} if asked_at is not None else {}),
             )
         ]
         if question
@@ -628,6 +635,7 @@ def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
         campaign_id="campaign-1",
         subject_id="subject-1",
         behavior="conversation",
+        aspect="conversation",
         scope_id="uni-1",
         comparison=ComparisonSetsResult(),
         frontier=FrontierResult(),

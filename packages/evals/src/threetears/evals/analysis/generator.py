@@ -858,7 +858,7 @@ def _resolved_analysis(
             model_versions=bundle.model_versions,
             scope_id=bundle.scope_id,
             generation=generation,
-            design_snapshot=bundle.declared_design,
+            design_snapshot=None,  # a bundle reads one aspect now; no CampaignDesign snapshot is taken from it
             document=document,
             resolutions=resolutions,
             judged_tier_rule=JUDGED_TIER_RULE,
@@ -927,8 +927,8 @@ def _reject_mismatched_question_answers(document: AuthoredAnalysis, bundle: Anal
 
     :raises SoundnessRefusal: The answers are not one per live declared question.
     """
-    live = bundle.declared_design.live_questions() if bundle.declared_design else []
-    declared = {question.id for question in live}
+    live = [bundle.aspect] if bundle.declared is not None and bundle.declared.question else []
+    declared = set(live)  # the aspect's one question, answered by the aspect's label
     answered = [answer.question_id for answer in document.questions]
     if duplicates := sorted({qid for qid in answered if answered.count(qid) > 1}):
         raise SoundnessRefusal(f"question(s) {duplicates} are answered more than once; one answer per question")

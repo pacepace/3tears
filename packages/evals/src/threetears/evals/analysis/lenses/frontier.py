@@ -1443,7 +1443,7 @@ def compute_frontier(
         cost tie, held against nothing.
     :ptype earlier_control: EarlierControl | None
     :param guardrail_margins: The margin each boundary dimension is held to, by dimension name
-        (``CampaignDesign.guardrail_margins``); a dimension absent is held at zero change.
+        (``AspectDesign.guardrail_margins``); a dimension absent is held at zero change.
     :ptype guardrail_margins: Mapping[str, float] | None
     :param tiers: The evidence tiers of the judges behind the results' scores
         (:func:`~threetears.evals.analysis.judge_profiles.judges_tiers`), which a verdict made on a judged pass^k

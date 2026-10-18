@@ -11,21 +11,22 @@ contributes through these steps, in order:
 3. **Measured numbers.** A sentence restating a number the bundle measured (a count ``6 of 12``, a cost, a rate) is
    dropped from a body, the finding's table carrying it; a one-sentence title that does so is replaced by the
    table's own row in words, so a measured fact is stated by code, flatly.
-4. **Decisions.** Where a declared decision rule settled, a sentence whose decision word (``keep``, ``switch``,
-   ``unanswerable``, ``no difference``) disagrees with it is replaced by the verdict line's own sentence, and the
-   replacement is disclosed in the methods.
-5. **Sample sizes.** Where the memo says what to run next (a next step's title and ``why``, a question's answer, a
+4. **Sample sizes.** Where the memo says what to run next (a next step's title and ``why``, a question's answer, a
    deferred decision's ``revisit_when``), it states no sample size or cost of its own (``Expand the suite to 30 cases
-   for $0.40``): the cases a switch needs are code's (:func:`~threetears.evals.analysis.report.decision.rule_projection`),
+   for $0.40``): the cases showing the floors hold needs are code's
+   (:func:`~threetears.evals.analysis.report.decision.floors_projection`),
    and a writer's guess at them understated them by 4-15x (#846). A sentence there that proposes more cases (a count,
    ``thirty``, ``double``, ``3x``, ``a 50-case suite``, ``k to 10``, beside a word for getting more: add, run, expand,
    more, new, another, settle) at a count the projections do not state, or that names a cost they do not price, is
    replaced by code's sentence on the projected sample, once, and otherwise dropped; each is disclosed in the methods.
    A count the run itself reaches (``the 3 cases the candidate missed``) is a measured fact, not a proposal.
-6. **Settled differences.** Where a clause the rule settled reads a finding's reading, a finding's sentence saying
-   the evidence cannot confirm, establish or show the difference (:data:`_HEDGES`, a narrow set) disputes the rule:
+5. **Settled differences.** Where a floor read broken or held reads a finding's reading, a finding's sentence saying
+   the evidence cannot confirm, establish or show the difference (:data:`_HEDGES`, a narrow set) disputes the floor:
    it is replaced by code's sentence on that reading, which states the counts and, under the case floor, that only
    whether the gap would hold on more cases is not estimated. That replacement is disclosed in the methods too.
+
+**No floor decides the memo's decision words.** A floor only warns, so a memo recommending an arm a floor warns
+against is printed as written; the page's first line is the warning.
 
 What is left breaking a rule (a long sentence, too many numbers) is kept as written and listed, sentence by sentence,
 in the methods: ``style: N violations``.
@@ -38,20 +39,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.report.decision import RuleVerdict, SampleProjection, projection_sentence
+from threetears.evals.analysis.report.decision import FloorVerdict, SampleProjection, projection_sentence
 from threetears.evals.analysis.style import ArmName, StyleViolation, fix_prose, humanize, lint_prose, sentences
 from threetears.evals.kernel.metrics import goal_check_of
 
-#: A decision word a memo sentence may assert, and the rule outcomes it agrees with.
-_DECISION_WORDS: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
-    (re.compile(r"\bunanswerable\b|\bcannot (?:be )?(?:answer|decide)", re.I), frozenset({"unsettled"})),
-    (re.compile(r"\bno (?:measurable |real )?difference\b|\bdid not separate\b", re.I), frozenset({"unsettled"})),
-    (re.compile(r"\bswitch(?:ing)? to\b|\badopt\b|\breplace\b", re.I), frozenset({"switch"})),
-    (re.compile(r"\bkeep\b|\bstay with\b", re.I), frozenset({"keep", "unsettled"})),
-)
-
 #: A sentence saying the evidence cannot confirm, establish or show a difference: what a settled clause has already
-#: decided. Narrow on purpose: a verb of proof under a negation, or a statistical non-result, nothing looser.
+#: settled. Narrow on purpose: a verb of proof under a negation, or a statistical non-result, nothing looser.
 _HEDGES = re.compile(
     r"\b(?:cannot|can ?not|can't|could not|couldn't|unable to|(?:too few|not enough|insufficient)\b[^.;:]*?\bto)"
     r"\s+(?:statistically\s+|reliably\s+|formally\s+|yet\s+)?(?:confirm|establish|show|prove|demonstrate)\b"
@@ -124,13 +117,10 @@ class MemoStyle:
     bundle: AnalysisContextBundle
     names: dict[str, ArmName]
     question: str | None = None
-    rule: RuleVerdict | None = None
-    rule_sentence: str | None = None
-    rule_question: str | None = None
+    floors: tuple[FloorVerdict, ...] = ()
     sample: SampleProjection | None = None
     samples: tuple[SampleProjection, ...] = ()
     violations: list[StyleViolation] = field(default_factory=list)
-    replaced: list[str] = field(default_factory=list)
     hedged: list[str] = field(default_factory=list)
     proposed: list[str] = field(default_factory=list)
     dropped: int = 0
@@ -282,27 +272,11 @@ class MemoStyle:
             text = pattern.sub(label, text)
         return text
 
-    def _decides_otherwise(self, text: str) -> bool:
-        """Whether ``text`` asserts a decision the settled rule contradicts."""
-        if self.rule is None or self.rule.outcome == "unsettled":
-            return False
-        return any(pattern.search(text) and self.rule.outcome not in agrees for pattern, agrees in _DECISION_WORDS)
-
-    def contradicts(self, text: str) -> bool:
-        """Whether ``text`` asserts a decision the settled rule contradicts; one that does is recorded for the
-        methods, as a replaced sentence is."""
-        named = self.names_arms(" ".join(text.split()))
-        if self._decides_otherwise(named):
-            self.replaced.append(named)
-            return True
-        return False
-
     def sentence(
         self,
         text: str,
         *,
         fallback: str | None = None,
-        decides: bool = True,
         settled: str | None = None,
         plans: bool = False,
     ) -> str:
@@ -312,10 +286,7 @@ class MemoStyle:
         :ptype text: str
         :param fallback: What code says instead when the sentence restates a measured number: the finding's table row.
         :ptype fallback: str | None
-        :param decides: Whether the sentence asserts a decision (an answer, a title, an adopted proposal), so a settled
-            rule it contradicts replaces it; a deferred proposal or a next step asserts none.
-        :ptype decides: bool
-        :param settled: Code's sentence on a reading a clause the rule settled, which replaces a sentence disputing that
+        :param settled: Code's sentence on a reading a floor read broken or held, which replaces a sentence disputing that
             difference (:data:`_HEDGES`); None where no settled clause reads it.
         :ptype settled: str | None
         :param plans: Whether it says what to run next (a next step's title, a question's answer), so it states no
@@ -328,9 +299,6 @@ class MemoStyle:
         named = self.names_arms(" ".join(text.split()))
         if plans and not (named := self._planned(named)):
             return ""
-        if decides and self._decides_otherwise(named) and self.rule_sentence is not None:
-            self.replaced.append(named)
-            return self.rule_sentence
         if settled is not None and _HEDGES.search(named):
             self.hedged.append(named)
             return settled
@@ -351,8 +319,8 @@ class MemoStyle:
 
         :param text: What the memo wrote.
         :ptype text: str
-        :param settled: Code's sentence on a reading a clause the rule settled, which replaces a sentence disputing that
-            difference; None where no settled clause reads it.
+        :param settled: Code's sentence on a reading a floor read broken or held, which replaces a sentence disputing that
+            difference; None where no such floor reads it.
         :ptype settled: str | None
         :param said: What the finding already printed: a disputing sentence is dropped, not replaced, where that holds
             code's sentence already.
@@ -367,9 +335,6 @@ class MemoStyle:
         for part in sentences(self.names_arms(text)):
             if plans and self.proposes_sample(part):
                 self.proposed.append(part)
-                continue
-            if self._decides_otherwise(part) and self.rule_sentence is not None:
-                self.replaced.append(part)
                 continue
             if settled is not None and _HEDGES.search(part):
                 self.hedged.append(part)
@@ -402,13 +367,8 @@ def row_words(reading: str, values: Iterable[tuple[str, str]]) -> str:
 def decision_disclosures(style: MemoStyle) -> Sequence[str]:
     """The methods' lines on what the memo said that the page did not print as written."""
     lines = [
-        f"The memo said “{said}”, which the decision rule's settled outcome contradicts; the verdict line's sentence "
-        "replaced it."
-        for said in style.replaced
-    ]
-    lines += [
-        f"The memo said “{said}”, which disputes a difference a clause of the decision rule settled; code's "
-        "sentence on that reading replaced it."
+        f"The memo said “{said}”, which disputes a difference a floor read either way; code's sentence on that "
+        "reading replaced it."
         for said in style.hedged
     ]
     lines += [

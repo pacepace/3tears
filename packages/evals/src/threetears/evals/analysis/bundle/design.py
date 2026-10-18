@@ -16,7 +16,7 @@ from threetears.evals.analysis.cells import Observation
 from threetears.evals.analysis.reporting import lever_level
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.analysis.arms import short_digest
-from threetears.evals.kernel.declaration import CampaignDesign, ResolvedControl
+from threetears.evals.kernel.declaration import AspectDesign, ResolvedControl
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.surface import EarlierControl
 from threetears.evals.schema.hashing import canonical_json
@@ -469,7 +469,7 @@ def _campaign_design(
     cells under this build's predicate, with the cells under the earlier one named beside it
     (``earlier_control``) — kept out of every contrast, never pooled into the control's numbers, and
     disclosed. Pooling them would put two predicates' keys into one number; contrasting them would compare
-    the control with itself under another digest. A lens that matched ``declared_design.control`` itself
+    the control with itself under another digest. A lens that matched ``declared.control`` itself
     would disagree with this one the moment the predicate moved — the defect this signature exists to make
     unexpressible.
 
@@ -998,7 +998,7 @@ def _name_arms(
     return named
 
 
-def _declared_level_names(index: list[VariantIndexEntry], declared: CampaignDesign | None) -> list[VariantIndexEntry]:
+def _declared_level_names(index: list[VariantIndexEntry], declared: AspectDesign | None) -> list[VariantIndexEntry]:
     """Name each arm's levels by what the campaign declared them as, where it declared them.
 
     A host displays a level by what it can see of it, and for a long text — a prompt in a prompt sweep — that is a
@@ -1016,7 +1016,7 @@ def _declared_level_names(index: list[VariantIndexEntry], declared: CampaignDesi
     :param index: The variant index, its arms already named by :func:`_name_arms`.
     :ptype index: list[VariantIndexEntry]
     :param declared: The campaign's declaration, or None when it declared nothing.
-    :ptype declared: CampaignDesign | None
+    :ptype declared: AspectDesign | None
     :return: The index, each declared level displayed by its declared name; entries no declaration names unchanged.
     :rtype: list[VariantIndexEntry]
     """

@@ -21,13 +21,13 @@ import pytest
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.kernel.declaration import (
     BarOverride,
-    CampaignDesign,
     DesignRefused,
     refuse_an_undeclarable_design,
 )
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, BarRegistry, load_bar_registry
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema import EvalTemplate
+from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
@@ -152,10 +152,8 @@ def test_a_campaign_bar_on_the_dimension_is_ratcheted_against_the_registered_one
 
 def test_the_bundle_adjudicates_a_registered_judged_bar_with_the_judges_tier() -> None:
     campaign, storage = toyhost_campaign()
-    assert campaign.declared_design is not None
-    design = CampaignDesign.model_construct(**{**dict(campaign.declared_design), "bars": []})
     bundle = assemble_context_bundle(
-        campaign.model_copy(update={"declared_design": design}),
+        redeclared(campaign, design={"bars": []}),
         storage=storage,
         profile=_profile(_judged(TOYHOST_JUDGED_DIMENSION)),
     )

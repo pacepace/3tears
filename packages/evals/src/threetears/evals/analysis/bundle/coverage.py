@@ -19,7 +19,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.analysis.stats import clustered_standard_error
 from threetears.evals.kernel.declaration import (
-    CampaignDesign,
+    AspectDesign,
     SweptAxis,
 )
 from threetears.evals.schema.hashing import canonical_digest
@@ -186,7 +186,7 @@ def _reportable_levers(
     resolved: set[str],
     records: list[ScoreRecord],
     effective_by_run: dict[str, dict[str, EffectiveLever]],
-    declared_design: CampaignDesign | None,
+    declared_design: AspectDesign | None,
     engaged: set[str],
 ) -> set[str]:
     """Which levers earn a coverage row: the ones that MOVED, plus the ones the campaign declared.
@@ -234,7 +234,7 @@ def _reportable_levers(
     :param effective_by_run: Each run's resolved levers, keyed by run id.
     :ptype effective_by_run: dict[str, dict[str, EffectiveLever]]
     :param declared_design: What the campaign SET OUT to sweep, or None when it declared nothing.
-    :ptype declared_design: CampaignDesign | None
+    :ptype declared_design: AspectDesign | None
     :param engaged: Levers the launch named or observation recovered, across every run.
     :ptype engaged: set[str]
     :return: The levers to build rows for.
@@ -282,7 +282,7 @@ def _run_axis_identities(
 
 
 def _declared_crossing(
-    design: CampaignDesign | None,
+    design: AspectDesign | None,
     runs: list[EvalRun],
     results_by_run: dict[str, list[EvalResult]],
     *,
@@ -292,12 +292,12 @@ def _declared_crossing(
 
     A cell is one declared level of every declared axis. A run sits at a cell when each axis's level joins to
     that cell's level (:func:`_run_axis_identities`). An unrun cell the design left out on purpose
-    (:meth:`~threetears.evals.kernel.declaration.CampaignDesign.skipped_by_design`) is ``skipped_by_design``
+    (:meth:`~threetears.evals.kernel.declaration.AspectDesign.skipped_by_design`) is ``skipped_by_design``
     and is never a gap; an unrun cell it meant to run is ``not_run``, unless some run's level on an axis cannot
     be established, when it may be sitting there and the cell is ``undetermined``.
 
     :param design: The campaign's declaration.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results.
@@ -421,7 +421,7 @@ def _coverage_map(
     apparatus_levels: dict[str, dict[str, str | None]],
     design: RealizedDesign,
     results_by_run: dict[str, list[EvalResult]],
-    declared_design: CampaignDesign | None,
+    declared_design: AspectDesign | None,
     *,
     folds: _SurfaceFolds,
     observations: _MechanismObservations,
@@ -481,7 +481,7 @@ def _coverage_map(
     :ptype results_by_run: dict[str, list[EvalResult]]
     :param declared_design: What the campaign SET OUT to sweep. A declared axis earns a row even
         when nothing resolved it — see :func:`_reportable_levers`.
-    :ptype declared_design: CampaignDesign | None
+    :ptype declared_design: AspectDesign | None
     :param folds: The campaign's :class:`_SurfaceFolds`. A resolved surface earns no row of its own
         where its movement across its cohort is its swept members' movement — the member rows
         already report that change, and a second row levelled by content hash would count one
