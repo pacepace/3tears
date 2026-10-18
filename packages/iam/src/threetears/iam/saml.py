@@ -246,14 +246,17 @@ def _first(attributes: Mapping[str, Any], key: str) -> Any:
 def _parse_xml(payload: bytes, *, context: str) -> Any:
     """Defused-parse ``payload``, returning ``None`` when it is malformed or hostile.
 
-    Caught: the parser's own ``ParseError`` (malformed XML) and defusedxml's refusals
-    (entities, external references, DTDs). Anything else is not a property of the input
-    and propagates.
+    Caught: the parser's own ``ParseError`` (malformed XML), defusedxml's refusals
+    (entities, external references, DTDs), ``LookupError`` (an XML declaration naming an
+    encoding Python does not have, which expat raises before parsing anything) and
+    ``ValueError`` (the remaining input-shaped refusals, which defusedxml's own errors
+    subclass). Anything else is not a property of the input and propagates.
 
     Logged WITHOUT the payload and without a traceback. This runs on externally-reachable
     input, and both carry it: a defusedxml refusal names the entity and its system id (the
     ``file:///...`` an XXE probe asked for), so a traceback put attacker-chosen XML into the
-    log. What is logged is the failure's type and, for a parse error, its line and column.
+    log -- as does a ``LookupError``, whose message is the encoding name the payload chose.
+    What is logged is the failure's type and, for a parse error, its line and column.
 
     :param payload: the XML bytes
     :ptype payload: bytes
@@ -264,7 +267,7 @@ def _parse_xml(payload: bytes, *, context: str) -> Any:
     """
     try:
         return DefusedElementTree.fromstring(payload)
-    except (ParseError, DefusedXmlException) as exc:
+    except (ParseError, DefusedXmlException, LookupError, ValueError) as exc:
         position = getattr(exc, "position", None)
         log.warning(
             "saml: %s did not parse (%s%s); denied",

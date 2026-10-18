@@ -104,8 +104,9 @@ _MARKER = "PAYLOAD-MARKER-7f3a"
     [
         f'<!DOCTYPE foo [<!ENTITY {_MARKER.replace("-", "")} SYSTEM "file:///etc/{_MARKER}">]><a>&{_MARKER.replace("-", "")};</a>',
         f"<EntityDescriptor entityID='{_MARKER}'><unclosed>",
+        f'<?xml version="1.0" encoding="x-{_MARKER}"?><a/>',
     ],
-    ids=["xxe-refused", "malformed"],
+    ids=["xxe-refused", "malformed", "unknown-encoding"],
 )
 def test_a_parse_failure_is_logged_without_the_payload(payload: str, caplog: pytest.LogCaptureFixture) -> None:
     """contain() logged the traceback, and a defusedxml refusal's message names the entity and
@@ -119,6 +120,13 @@ def test_a_parse_failure_is_logged_without_the_payload(payload: str, caplog: pyt
         assert _MARKER not in rendered
         assert _MARKER.replace("-", "") not in rendered
         assert record.exc_info is None
+
+
+def test_an_unknown_declared_encoding_denies_instead_of_escaping() -> None:
+    """expat raises LookupError for it, which escaped the narrowed catch as a 500 on pre-auth input."""
+    payload = '<?xml version="1.0" encoding="x-nope"?><a/>'
+    assert peek_entity_id(payload) is None
+    assert peek_in_response_to(base64.b64encode(payload.encode()).decode()) is None
 
 
 def test_an_unexpected_parser_failure_is_not_read_as_malformed_input(monkeypatch: pytest.MonkeyPatch) -> None:
