@@ -42,6 +42,7 @@ from threetears.evals import Eval, Judge, Result, grader
 from threetears.evals.quick import as_host
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.one_call import callable_host
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
 
@@ -226,7 +227,7 @@ class TestABreachedArmIsNeverRecommended:
         adopting = _adopting_writer()
         with pytest.raises(SoundnessRefusal, match="breached the guardrail no_leak"):
             await generate_analysis(
-                bundle,
+                campaign_bundle(bundle),
                 prompt=EVAL_ANALYSIS_GEN_DEFAULT,
                 model="offline-writer",
                 client=adopting,
@@ -243,14 +244,11 @@ def _adopting_writer() -> Any:
 
     async def generate(*, system: str, user: str, response_format: dict | None = None) -> Any:
         writer.drafts += 1
-        evidence, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
-        tested = next(
-            comparison
-            for family in evidence["multiple_comparisons"]["families"]
-            for comparison in family["comparisons"]
-            if comparison["verdict"] == "improved"
-        )
-        arm, control = tested["contrast"]["cell"], tested["control"]["cell"]
+        view, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
+        (aspect,) = view["aspects"]
+        tested = next(comparison for comparison in aspect["contrasts"] if comparison["verdict"] == "improved")
+        arm, control = tested["cell"], tested["control"]
+        label = next(cell["arm"] for cell in aspect["cells"] if cell["cell"] == arm)
         cite = {cell: "{{" + f"{cell}|{tested['name']}|measure|mean" + "}}" for cell in (arm, control)}
         finding = {
             "title": "Correct score by arm",
@@ -263,15 +261,15 @@ def _adopting_writer() -> Any:
             "invalidates": [],
             "durable": "",
         }
-        decision = {
-            "proposal": "Ship the arm that answers more cases correctly.",
-            "disposition": "adopted",
-            "cells": [arm],
+        recommendation = {
+            "arm": label,
+            "reasons": ["Ship the arm that answers more cases correctly."],
             "confidence": "medium",
             "rests_on": [0],
-            "revisit_when": "",
+            "floors_overridden": [],
         }
-        memo = {"findings": [finding], "decisions": [decision], "questions": [], "next": []}
+        summary = {"aspect": aspect["aspect"], "what_changed": "", "how_sure": "", "means": ""}
+        memo = {"findings": [finding], "recommendation": recommendation, "aspect_summaries": [summary], "next": []}
         return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
 
     writer.generate = generate

@@ -25,9 +25,11 @@ from typing import Any
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TelemetryRollup
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
-from threetears.evals.kernel.authored import AuthoredAnalysis
+from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Recommendation
 from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.kernel.campaign import (
+    AspectAnalysis,
+    CampaignDeclaration,
     EvalAnalysis,
     EvalAnalysisAttempt,
     EvalCampaign,
@@ -85,11 +87,13 @@ __all__ = [
     "DEFAULT_KIND",
     "DEFAULT_SUBJECT",
     "RECORDED_REQUEST_SETTINGS",
+    "analysed_aspect",
     "as_listed",
     "declared",
     "fixture_variant_key",
     "load_listed",
     "empty_bundle",
+    "empty_document",
     "make_analysis",
     "make_analysis_attempt",
     "make_campaign",
@@ -654,8 +658,35 @@ def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
     return AnalysisContextBundle(**fields)
 
 
+def empty_document(**overrides: Any) -> AuthoredCampaignAnalysis:
+    """A memo with nothing in it but a recommendation to keep the control, resting on no finding."""
+    fields: dict[str, Any] = dict(
+        findings=[],
+        recommendation=Recommendation(arm="control", reasons=[], confidence="low", rests_on=[], floors_overridden=[]),
+        aspect_summaries=[],
+        next=[],
+    )
+    fields.update(overrides)
+    return AuthoredCampaignAnalysis(**fields)
+
+
+def analysed_aspect(bundle: AnalysisContextBundle | None = None, **overrides: Any) -> AspectAnalysis:
+    """One aspect of a stored analysis: ``bundle`` frozen (an empty one when None) over an empty surface."""
+    frozen = bundle if bundle is not None else empty_bundle()
+    fields: dict[str, Any] = dict(
+        label=frozen.aspect,
+        bundle=frozen.to_dict(),
+        bundle_fingerprint=frozen.fingerprint(),
+        decision_surface=DecisionSurface(),
+    )
+    fields.update(overrides)
+    return AspectAnalysis(**fields)
+
+
 def make_analysis(**overrides: Any) -> EvalAnalysis:
-    """Create an ``EvalAnalysis`` in the default scope with an empty authored document over an empty bundle."""
+    """Create an ``EvalAnalysis`` in the default scope with an empty memo over one aspect's empty bundle."""
+    campaign_id = overrides.get("campaign_id", "campaign-1")
+    aspect = analysed_aspect(empty_bundle(campaign_id=campaign_id))
     fields: dict[str, Any] = dict(
         scope_id="uni-1",
         campaign_id="campaign-1",
@@ -677,9 +708,15 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
             bundle_schema_version=CURRENT_BUNDLE_SHAPE,
             host_declarations_digest="sha256:declarations",
         ),
-        document=AuthoredAnalysis(findings=[], decisions=[], questions=[], next=[]),
-        decision_surface=DecisionSurface(),
-        bundle=empty_bundle(campaign_id=overrides.get("campaign_id", "campaign-1")).to_dict(),
+        design_snapshot=CampaignDeclaration(
+            question="", declared_at=None, declared_by=None, arms=[], aspects=[Aspect(label="conversation")], floors=[]
+        ),
+        document=empty_document(),
+        aspects=[aspect],
+        campaign_bundle={
+            "schema_version": 1,
+            "aspects": [{"aspect": aspect.label, "fingerprint": aspect.bundle_fingerprint}],
+        },
     )
     fields.update(overrides)
     return EvalAnalysis(**fields)

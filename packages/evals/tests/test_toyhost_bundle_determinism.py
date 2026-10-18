@@ -27,8 +27,13 @@ difference between a five-minute fix and the afternoon the first one took.
 
 from __future__ import annotations
 
+from typing import Any
 
-from threetears.evals.analysis.generator import build_user_message
+
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+
+
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
@@ -91,4 +96,9 @@ def test_the_generated_user_message_is_reproducible() -> None:
     profile = toyhost_profile()
     from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 
-    assert build_user_message(toyhost_bundle(profile=profile)) == build_user_message(toyhost_bundle(profile=profile))
+    assert _writer_message(toyhost_bundle(profile=profile)) == _writer_message(toyhost_bundle(profile=profile))
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

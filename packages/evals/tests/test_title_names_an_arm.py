@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import (
@@ -268,7 +269,7 @@ def _memo(bundle: AnalysisContextBundle, title: str, *, at: tuple[int, ...], tri
 
 async def _generate(bundle: AnalysisContextBundle, client: FixturedClient) -> EvalAnalysis:
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,

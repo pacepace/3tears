@@ -30,7 +30,9 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
-from threetears.evals.analysis.generator import build_user_message, generate_analysis
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from threetears.evals.analysis.generator import generate_analysis
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import DisclosureBlock, Report
 from threetears.evals.schema.models import utc_now_iso
@@ -250,15 +252,14 @@ async def test_the_code_only_report_says_so_once_straight_after_its_opening_line
 async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: MountedTool) -> None:
     fixture, _campaign_id, bundle = await _exploratory(evals)
 
-    message = build_user_message(bundle)
+    message = _writer_message(bundle)
     assert message.count(NO_DESIGN_EXPLORATORY) == 1, "the writer's view carries the line once"
     assert "the design inferred from the runs (`design`" in EVAL_ANALYSIS_GEN_DEFAULT
     assert "never called declared" in EVAL_ANALYSIS_GEN_DEFAULT
 
     memo = memo_payload(bundle)
-    memo["questions"] = []  # the toy memo answers the toy campaign's question; this one declares none
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=FixturedClient(json.dumps(memo)),
@@ -268,7 +269,7 @@ async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: 
     )
     report = build_report(analysis)
 
-    assert analysis.design_snapshot is None
+    assert [aspect.design for aspect in analysis.design_snapshot.aspects] == [None], "it declared nothing"
     (said,) = _exploratory_said(report)
     assert said.text.startswith(_EXPLORATORY_BASIS) and said.source == "verdict"
     assert report.blocks.index(said) == 1 and said.section == "header"
@@ -285,3 +286,8 @@ async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(e
     bundle = off_loop(assemble_context_bundle, stored, storage=eval_host.storage, profile=eval_host.profile)
 
     assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY, "a declared design is not called undeclared"
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

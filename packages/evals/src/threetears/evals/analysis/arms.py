@@ -13,8 +13,6 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from pydantic import Field
 
-from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.kernel.authored import Decision
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER
 from threetears.evals.schema.values import SweepableValue
@@ -411,32 +409,6 @@ def cell_label(
     )
 
 
-def contradicted_arms(decisions: Sequence[Decision]) -> list[tuple[str, int, int]]:
-    """Every arm one decision adopts and another rejects — a memo contradicting itself.
-
-    Structural: read off each decision's disposition and the variants of the cells it names
-    (:func:`~threetears.evals.analysis.cells.variant_of_cell_ref`), never
-    its prose. A cell that names no variant names no arm, and a deferred decision is no verdict.
-
-    :param decisions: The analysis's decisions, in document order.
-    :ptype decisions: Sequence[Decision]
-    :return: ``(variant_key, adopting position, rejecting position)`` per contradicted arm — the first
-        decision of each disposition naming it — in the order the arms are first adopted.
-    :rtype: list[tuple[str, int, int]]
-    """
-    adopted: dict[str, int] = {}
-    rejected: dict[str, int] = {}
-    for position, decision in enumerate(decisions):
-        if decision.disposition not in ("adopted", "rejected"):
-            continue
-        seen = adopted if decision.disposition == "adopted" else rejected
-        for cell in decision.cells:
-            variant = variant_of_cell_ref(cell)
-            if variant is not None:
-                seen.setdefault(variant, position)
-    return [(variant, at, rejected[variant]) for variant, at in adopted.items() if variant in rejected]
-
-
 __all__ = [
     "DIGEST_CHARS",
     "ELISION",
@@ -449,7 +421,6 @@ __all__ = [
     "arm_levers",
     "arm_names",
     "cell_label",
-    "contradicted_arms",
     "distinguishing_axes",
     "elide_level",
     "multi_rig_variants",

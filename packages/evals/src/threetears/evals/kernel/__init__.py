@@ -34,6 +34,7 @@ from threetears.evals.kernel.authored import (
     Decision,
     EvidenceRef,
     Finding,
+    FloorOverride,
     NextStep,
     MapFieldInSchema,
     PORTABLE_STRICT_KEYWORDS,
@@ -43,6 +44,8 @@ from threetears.evals.kernel.authored import (
     strict_response_format,
 )
 from threetears.evals.kernel.campaign import (
+    AspectAnalysis,
+    CampaignDeclaration,
     CONFIDENCE_TIERS,
     AttemptOutcome,
     CampaignView,
@@ -499,13 +502,14 @@ __all__ = [
     "AdmissionRefusedError",
     "AttemptOutcome",
     "AttributionScope",
-    "AuthoredAnalysis",
     # The campaign of aspects: one question, its arms, per aspect the design it is read under, its floors and the
     # call a person records; and the memo shape the writer authors over it. Beside today's campaign and unused by it.
     "ArmRole",
     "Aspect",
     "AspectDesign",
+    "AspectAnalysis",
     "AspectSummary",
+    "AuthoredAnalysis",
     "AuthoredCampaignAnalysis",
     "CampaignArm",
     "CampaignCall",
@@ -525,6 +529,7 @@ __all__ = [
     "BarVerdict",
     "CallUsage",
     "CampaignDesign",
+    "CampaignDeclaration",
     "CampaignView",
     "CampaignWindow",
     "CandidateFailureCause",
@@ -585,6 +590,7 @@ __all__ = [
     "EvidenceTier",
     "ExternalRateTable",
     "Finding",
+    "FloorOverride",
     "FindingResolution",
     "GenerationProvenance",
     "JobStore",

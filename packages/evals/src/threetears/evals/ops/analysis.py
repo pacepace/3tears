@@ -77,7 +77,7 @@ from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, WRITER_REMEDY
 
 if TYPE_CHECKING:
-    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
 
 log = get_logger(__name__)
 
@@ -523,7 +523,7 @@ def _analysis_line(analysis: EvalAnalysis) -> AnalysisLine:
         campaign_id=analysis.campaign_id,
         verdict=analysis_verdict(analysis),
         findings=len(analysis.document.findings),
-        recommendations=len(analysis.document.decisions),
+        recommendations=1,  # one memo per campaign: one recommendation
         generator_model=analysis.generation.generator_model,
         generated_at=analysis.generation.generated_at,
         archived=analysis.archived,
@@ -618,9 +618,10 @@ def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsLi
         for analysis in list_analyses(host.storage, campaign.id, scope_id):
             read += 1
             # `levels_unavailable` set, even to an empty reason, is the admission; None is a describable arm.
-            reasons = [
-                entry.levels_unavailable for entry in analysis.variant_index if entry.levels_unavailable is not None
-            ]
+            index = list(
+                {entry.variant_key: entry for aspect in analysis.aspects for entry in aspect.variant_index}.values()
+            )
+            reasons = [entry.levels_unavailable for entry in index if entry.levels_unavailable is not None]
             if reasons:
                 lines.append(
                     UndescribableArmsLine(
@@ -628,7 +629,7 @@ def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsLi
                         campaign_id=analysis.campaign_id,
                         archived=analysis.archived,
                         undescribable_arms=len(reasons),
-                        arms=len(analysis.variant_index),
+                        arms=len(index),
                         reasons=sorted({reason for reason in reasons if reason}),
                     )
                 )
@@ -817,7 +818,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         await end_unrun(str(refusal), refused_by=refusal)
         raise refusal
 
-    async def assembled(bundle: AnalysisContextBundle, resolved_model: str) -> None:
+    async def assembled(bundle: CampaignBundle, resolved_model: str) -> None:
         # What only the preparation can say goes on the running attempt before the first call is priced, so a price
         # that refuses it leaves an attempt naming its writer and bundle. The ending writes both again, so a write
         # that fails here loses nothing; one that finds the attempt ended stops the generation.

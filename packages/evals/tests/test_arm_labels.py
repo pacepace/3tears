@@ -43,7 +43,7 @@ from threetears.evals.analysis.arms import (
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.report import TableBlock
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import AuthoredAnalysis
+from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from threetears.evals.kernel.host import HostProfile, KindContract
@@ -62,7 +62,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.factories import make_analysis, make_campaign
+from packages.evals.tests.factories import analysed_aspect, make_analysis, make_campaign
 from packages.evals.tests.report_support import toy_campaign_host
 
 #: Three rigs, by their apparatus class ids.
@@ -411,10 +411,18 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
     """An analysis whose recommendation and finding evidence name every cell in ``cells``, over ``index``."""
     refs = [cell_ref(variant, rig) for variant, rig in cells]
     rows = [
-        {"cell_ref": ref, "measure_id": "total_ms", "reading": "measure", "value": 41250.0, "n": 6, "dispersion": "sem"}
+        {
+            "aspect": "conversation",
+            "cell_ref": ref,
+            "measure_id": "total_ms",
+            "reading": "measure",
+            "value": 41250.0,
+            "n": 6,
+            "dispersion": "sem",
+        }
         for ref in refs
     ]
-    document = AuthoredAnalysis.model_validate(
+    document = AuthoredCampaignAnalysis.model_validate(
         {
             "findings": [
                 {
@@ -429,17 +437,14 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
                     "durable": "",
                 }
             ],
-            "decisions": [
-                {
-                    "proposal": "Keep the current assistant prompt.",
-                    "disposition": "deferred",
-                    "cells": refs,
-                    "confidence": "high",
-                    "rests_on": [0],
-                    "revisit_when": "a second assistant is measured",
-                }
-            ],
-            "questions": [],
+            "recommendation": {
+                "arm": "control",
+                "reasons": ["Keep the current assistant prompt."],
+                "confidence": "high",
+                "rests_on": [0],
+                "floors_overridden": [],
+            },
+            "aspect_summaries": [],
             "next": [],
         }
     )
@@ -451,8 +456,7 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
     )
     return make_analysis(
         document=document,
-        decision_surface=surface,
-        variant_index=index,
+        aspects=[analysed_aspect(decision_surface=surface, variant_index=index)],
         resolutions=[FindingResolution.model_validate({"evidence": rows})],
     )
 
@@ -480,21 +484,18 @@ def named(request: pytest.FixtureRequest) -> tuple[Report, list[str]]:
 
 
 class TestAnAnalysisReportNamesArmsByTheRule:
-    def test_the_recommendation_names_each_arm_and_nothing_else(self, named: tuple[Report, list[str]]) -> None:
-        report, names = named
+    def test_the_recommendation_names_its_one_arm_by_its_label(self, named: tuple[Report, list[str]]) -> None:
+        report, _ = named
         (facts,) = [
             block for block in report.blocks if isinstance(block, TableBlock) and block.name == "recommendation_facts"
         ]
         # The facts are one row, a column per fact, so each header links its term.
-        assert [column.header for column in facts.columns] == ["Confidence", "Arms"]
+        assert [column.header for column in facts.columns] == ["Arm", "Confidence"]
         (row,) = facts.values()
-        assert row["arms"] == "; ".join(names)
-        assert "**Deferred:** Keep the current assistant prompt." in report_markdown(report).splitlines()
-        assert f"| high | {'; '.join(names)} |" in report_markdown(report)
-        # A cell of words long enough is classed prose, so the page wraps it at a measure; the words are unchanged.
-        cell = html.escape("; ".join(names))
-        page = report_html(report)
-        assert f"<td>{cell}</td>" in page or f'<td class="prose">{cell}</td>' in page
+        assert row["arm"] == "control"
+        assert "**Recommend control:** Keep the current assistant prompt." in report_markdown(report).splitlines()
+        assert "| control | high |" in report_markdown(report)
+        assert "<td>control</td>" in report_html(report)
 
     def test_the_evidence_names_the_cells_alike(self, named: tuple[Report, list[str]]) -> None:
         report, names = named

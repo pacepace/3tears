@@ -3,8 +3,8 @@
 **The boundary.** This contract types what the document is MADE OF and the
 hooks code acts on, never what it says or how much it says:
 
-- **Typed here:** the unit kinds (finding, decision, question answer, next step); the order of every
-  list, which is the reading order; links between units by POSITION, so a decision that rests on
+- **Typed here:** the unit kinds (finding, the one recommendation, an aspect's summary, next step); the order of
+  every list, which is the reading order; links between units by POSITION, so a recommendation that rests on
   findings ``[0, 2]`` cites the first and third; the readings code turns into numbers (a cell and a
   measure or judged dimension); and a closed vocabulary code branches or renders on.
 - **Not the model's to say:** what a verdict stands on. The evidence tier is read off the readings a
@@ -14,8 +14,9 @@ hooks code acts on, never what it says or how much it says:
   proposal, answer and rationale, in prose with markdown allowed.
 - **Not the model's at all:** the headline, a summary, a chart, an arm's standing, and any count, rate, cost or n.
   The report's first screen — its verdict line and scoreboard — is written by code from the evidence bundle, so the
-  writer authors findings and recommendations (``decisions``) only, each recommendation pinned to the findings it
-  rests on and each finding to the trials it is drawn from (``trials``, by the bundle's trial ids).
+  writer authors findings, one recommendation, a short summary per aspect and next steps only, the recommendation
+  pinned to the findings it rests on and each finding to the trials it is drawn from (``trials``, by the campaign
+  bundle's trial ids). Code reports, the writer recommends, a person decides.
 
 **Sized to what every writer accepts.** A strict schema derived from the stored analysis models was
 refused by every Anthropic writer as a grammar too large, and the limit counts free-text and list
@@ -91,30 +92,6 @@ class Finding(_Authored):
     durable: ModelProse = Field(description="A durable claim about the subject for later analyses; empty when none.")
 
 
-class Decision(_Authored):
-    """A recommendation: a proposal and the verdict on it, pinned to the findings it rests on."""
-
-    proposal: ModelProse = Field(description="One thing to do, stated positively: what to configure, or change.")
-    disposition: Literal["adopted", "rejected", "deferred"] = Field(
-        description="`adopted` means act on it now; an option that still needs a confirming run is `deferred`."
-    )
-    cells: list[str] = Field(description="The cells whose arm this adopts or rejects; empty when it names no arm.")
-    confidence: Confidence
-    rests_on: list[int] = Field(description="Positions in `findings` this rests on; at least one.")
-    revisit_when: ModelProse = Field(description="What specifically would settle it; empty unless deferred.")
-
-
-class QuestionAnswer(_Authored):
-    """Where one declared question stands on this evidence."""
-
-    question_id: str = Field(description="A live declared question's id; one entry per live question.")
-    resolution: Literal["answered", "partial", "unanswerable"]
-    answer: ModelProse = Field(
-        description="Opens with the answer in one plain sentence; or why it cannot be given and what would give it."
-    )
-    rests_on: list[int] = Field(description="Positions in `findings` this rests on.")
-
-
 class NextStep(_Authored):
     """An experiment worth running next."""
 
@@ -124,20 +101,20 @@ class NextStep(_Authored):
     lever: str = Field(description="The lever it would measure; empty when none.")
 
 
-class AuthoredAnalysis(_Authored):
-    """A decision memo over one campaign's evidence."""
+class FloorOverride(_Authored):
+    """A broken floor the recommended arm is recommended over, named by its key, and why breaking it is acceptable."""
 
-    findings: list[Finding] = Field(description="The findings, in reading order.")
-    decisions: list[Decision]
-    questions: list[QuestionAnswer]
-    next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
+    floor: str = Field(description="The broken floor's `floor` key, spelled as the bundle spells it.")
+    why: ModelProse = Field(description="Why recommending the arm over this broken floor is acceptable here.")
 
 
 class Recommendation(_Authored):
     """The one call the writer recommends for a campaign: which arm, why, how sure, and the findings it rests on.
 
     One per campaign, over every aspect: a person decides, and this is what they decide over. Keeping the control is
-    a recommendation like any other, named by the control's label.
+    a recommendation like any other, named by the control's label. A floor the recommended arm broke is warned, never
+    blocked, and the writer must address it: ``floors_overridden`` names each such floor and why the breach is
+    acceptable, and the generator refuses a recommendation that leaves one out.
     """
 
     arm: str = Field(
@@ -146,11 +123,12 @@ class Recommendation(_Authored):
             "resolves the label to the arm's variant key when the memo is saved."
         )
     )
-    reasons: list[ModelProse] = Field(
-        description="Why, one reason each, strongest first; every broken floor on the arm addressed by name."
-    )
+    reasons: list[ModelProse] = Field(description="Why, one reason each, strongest first.")
     confidence: Confidence
     rests_on: list[int] = Field(description="Positions in `findings` this rests on; at least one.")
+    floors_overridden: list[FloorOverride] = Field(
+        description="Every floor broken on the recommended arm, each once, with why; empty when it broke none."
+    )
 
 
 class AspectSummary(_Authored):
@@ -170,6 +148,45 @@ class AuthoredCampaignAnalysis(_Authored):
     findings: list[Finding] = Field(description="The findings, across every aspect, in reading order.")
     recommendation: Recommendation
     aspect_summaries: list[AspectSummary] = Field(description="One per aspect, in the campaign's order.")
+    next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
+
+
+#: The memo shape before one memo covered a campaign (0.70): decisions and question answers over one aspect. Nothing
+#: in this build writes, sends or reads it — the generator authors :class:`AuthoredCampaignAnalysis` and a stored
+#: analysis holds one. It stays importable only until the release that removes it records the removal in
+#: ``MIGRATIONS.toml``; it is no reader of an older analysis, which is refused on read and regenerated.
+
+
+class Decision(_Authored):
+    """Retired (0.70's memo): a recommendation as a proposal and the verdict on it. Read nowhere in this build."""
+
+    proposal: ModelProse = Field(description="One thing to do, stated positively: what to configure, or change.")
+    disposition: Literal["adopted", "rejected", "deferred"] = Field(
+        description="`adopted` means act on it now; an option that still needs a confirming run is `deferred`."
+    )
+    cells: list[str] = Field(description="The cells whose arm this adopts or rejects; empty when it names no arm.")
+    confidence: Confidence
+    rests_on: list[int] = Field(description="Positions in `findings` this rests on; at least one.")
+    revisit_when: ModelProse = Field(description="What specifically would settle it; empty unless deferred.")
+
+
+class QuestionAnswer(_Authored):
+    """Retired (0.70's memo): where one declared question stood. Read nowhere in this build."""
+
+    question_id: str = Field(description="A live declared question's id; one entry per live question.")
+    resolution: Literal["answered", "partial", "unanswerable"]
+    answer: ModelProse = Field(
+        description="Opens with the answer in one plain sentence; or why it cannot be given and what would give it."
+    )
+    rests_on: list[int] = Field(description="Positions in `findings` this rests on.")
+
+
+class AuthoredAnalysis(_Authored):
+    """Retired (0.70's memo over one aspect): findings, decisions, question answers and next steps. Read nowhere."""
+
+    findings: list[Finding] = Field(description="The findings, in reading order.")
+    decisions: list[Decision]
+    questions: list[QuestionAnswer]
     next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
 
 
@@ -371,7 +388,7 @@ def authored_schema(caveat_kinds: Iterable[str]) -> dict[str, Any]:
     :return: The schema, as sent.
     :rtype: dict[str, Any]
     """
-    schema = strict_schema(AuthoredAnalysis.model_json_schema())
+    schema = strict_schema(AuthoredCampaignAnalysis.model_json_schema())
     schema["$defs"]["Caveat"]["properties"]["kind"] = {"type": "string", "enum": sorted(set(caveat_kinds))}
     return schema
 
@@ -388,7 +405,7 @@ def response_format(caveat_kinds: Iterable[str]) -> dict[str, Any]:
     return {"type": "json_schema", "json_schema": {"name": SCHEMA_NAME, "strict": True, "schema": schema}}
 
 
-def validate_authored(payload: Any, caveat_kinds: Iterable[str]) -> AuthoredAnalysis:
+def validate_authored(payload: Any, caveat_kinds: Iterable[str]) -> AuthoredCampaignAnalysis:
     """Check a returned payload against the schema it was sent: the same models and vocabulary.
 
     :param payload: The parsed JSON object the generator returned.
@@ -396,11 +413,11 @@ def validate_authored(payload: Any, caveat_kinds: Iterable[str]) -> AuthoredAnal
     :param caveat_kinds: The caveat kinds that were on offer.
     :ptype caveat_kinds: Iterable[str]
     :return: The validated payload.
-    :rtype: AuthoredAnalysis
+    :rtype: AuthoredCampaignAnalysis
     :raises pydantic.ValidationError: The payload does not match the models.
     :raises OffVocabulary: A caveat kind that was not on offer.
     """
-    document = AuthoredAnalysis.model_validate(payload)
+    document = AuthoredCampaignAnalysis.model_validate(payload)
     kinds = set(caveat_kinds)
     for position, finding in enumerate(document.findings):
         for index, caveat in enumerate(finding.caveats):
@@ -422,6 +439,7 @@ __all__ = [
     "Decision",
     "EvidenceRef",
     "Finding",
+    "FloorOverride",
     "MapFieldInSchema",
     "NextStep",
     "OffVocabulary",

@@ -101,6 +101,11 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
+from threetears.evals.analysis.campaign_bundle import (
+    CAMPAIGN_MESSAGE_CHARS_PER_ASPECT,
+    CampaignBundle,
+    build_campaign_user_message,
+)
 from threetears.evals.analysis.campaign_readings import (
     AspectReading,
     CampaignReadings,
@@ -237,6 +242,7 @@ from threetears.evals.analysis.service import (
     BudgetedGenerator,
     PreparedGeneration,
     analysis_report,
+    assemble_campaign_bundle,
     campaign_report,
     campaign_verdicts,
     describe_insight_id_filters,
@@ -315,7 +321,8 @@ from threetears.evals.analysis.cells import (
     RefusedMerge,
     SubjectKeyInstability,
 )
-from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
+from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
+from threetears.evals.analysis.references import CellAddress
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
 from threetears.evals.analysis.reporter_bank import (
@@ -411,6 +418,12 @@ __all__ = [
     "aspect_view",
     "aspect_views",
     "campaign_readings",
+    # What the writer of a campaign's one memo reads: every aspect's evidence, the floors and code's readings.
+    "CAMPAIGN_MESSAGE_CHARS_PER_ASPECT",
+    "CampaignBundle",
+    "CellAddress",
+    "assemble_campaign_bundle",
+    "build_campaign_user_message",
     # A campaign's page over its aspects, and its two forms a person reads.
     "CampaignAspectFold",
     "CampaignReport",
@@ -663,6 +676,7 @@ __all__ = [
     "SubjectFrontier",
     "SubjectKeyInstability",
     "TelemetryRollup",
+    "UnresolvableReference",
     "TokenRollup",
     "FrontierBoundaryCheck",
     "UnpairedRating",

@@ -40,7 +40,8 @@ module makes; it reads the one the width was computed at.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
+from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -158,7 +159,37 @@ def cell_of_alias(surface: DecisionSurface, alias: str) -> str:
     return ref
 
 
-def in_writer_terms(text: str, surface: DecisionSurface) -> str:
+class CellAddress(NamedTuple):
+    """Where a campaign's cell alias points: the aspect whose surface holds the cell, and the cell's ``cell_ref`` there.
+
+    One arm under one rig is the same ``cell_ref`` in every aspect it ran in, so a campaign's cell is addressed by
+    both: the alias the writer names it by resolves to the pair, never to the ref alone.
+    """
+
+    aspect: str
+    cell_ref: str
+
+
+def campaign_cell_aliases(aspects: Sequence[tuple[str, Iterable[CellFacts]]]) -> dict[str, CellAddress]:
+    """Mint the aliases a writer names a campaign's cells by: ``c1`` … ``cN``, unique across every aspect.
+
+    Each aspect's cells are numbered as :func:`cell_aliases` numbers them, in the order given, and the aspects follow
+    one another in the campaign's order, so a campaign of one aspect names its cells exactly as that aspect's bundle
+    does. The one mint for a campaign: its writer's view and its resolver both read it.
+
+    :param aspects: ``(label, cells)`` per aspect, in the campaign's order; each aspect's cells in its bundle's order.
+    :ptype aspects: Sequence[tuple[str, Iterable[CellFacts]]]
+    :return: ``alias -> (aspect, cell_ref)``, in minted order.
+    :rtype: dict[str, CellAddress]
+    """
+    addresses: dict[str, CellAddress] = {}
+    for label, cells in aspects:
+        for ref in cell_aliases(cells).values():
+            addresses[f"{CELL_ALIAS_PREFIX}{len(addresses) + 1}"] = CellAddress(label, ref)
+    return addresses
+
+
+def in_writer_terms(text: str, aliases: Mapping[str, CellAddress]) -> str:
     """Name every cell in a refusal the way the writer names it — by alias, never by its full ``cell_ref``.
 
     Everything below the alias seam speaks full refs, so a refusal raised there (a measure a real cell
@@ -168,15 +199,21 @@ def in_writer_terms(text: str, surface: DecisionSurface) -> str:
     the provenance of the analysis that round produced — and nowhere else: the tally and the attempt
     record keep the full refs, since an alias is meaningful only against the bundle it was minted from.
 
+    A ref that is a cell in several aspects is named by each of its aliases (``c2 or c5``): the text does not say
+    which aspect it meant, and naming one would point the writer at the wrong cell half the time.
+
     :param text: The refusal as the resolver worded it.
     :ptype text: str
-    :param surface: The surface the aliases were minted from.
-    :ptype surface: DecisionSurface
-    :return: The text with each full ``cell_ref`` replaced by its alias.
+    :param aliases: The campaign's aliases (:func:`campaign_cell_aliases`).
+    :ptype aliases: Mapping[str, CellAddress]
+    :return: The text with each full ``cell_ref`` replaced by its alias, or aliases.
     :rtype: str
     """
-    for alias, ref in cell_aliases(surface.cells).items():
-        text = text.replace(ref, alias)
+    named: dict[str, list[str]] = {}
+    for alias, address in aliases.items():
+        named.setdefault(address.cell_ref, []).append(alias)
+    for ref, said in named.items():
+        text = text.replace(ref, " or ".join(said))
     return text
 
 
@@ -457,8 +494,10 @@ def restated_dispersion(reading: ResolvedReading, factor: float, *, unit: str = 
 
 __all__ = [
     "CELL_ALIAS_PREFIX",
+    "CellAddress",
     "ReadingRef",
     "ResolvedReading",
+    "campaign_cell_aliases",
     "cell_aliases",
     "cell_index",
     "cell_of_alias",

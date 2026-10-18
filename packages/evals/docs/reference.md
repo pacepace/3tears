@@ -215,7 +215,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`REASONING_EFFORTS`** · *host contract* · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
 - **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
-  <br>`= 11`
+  <br>`= 12`
 - **`RESERVED_DIM_IDS`** · *host contract* · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
 - **`ROLE_MODEL_ORIGINS`** · *host contract* · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
 - **`SIMULATOR_PURPOSES`** · *host contract* · constant (tuple) · The values of `SimulatorPurpose` this build knows, in the order its readers list them.
@@ -593,23 +593,23 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
   <br>`dollars_text(amount: float | None) -> str`
 - **`first_request`** · function · The exact first request a generation sends: system prompt, user message and the contract.
-  <br>`first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]`
+  <br>`first_request(bundle: CampaignBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]`
 - **`format_number`** · *host contract* · function · Spell a number for a reader, the same way on every analysis surface.
   <br>`format_number(value: float | None, *, prefix: str = '') -> str`
 - **`format_signed`** · *host contract* · function · Spell a change, carrying its sign — the direction is half of what a delta says.
   <br>`format_signed(value: float | None) -> str`
-- **`freeze_reporter_case`** · function · Freeze a campaign's analysis bundle into a reporter case of `template_id`.
+- **`freeze_reporter_case`** · function · Freeze a campaign's bundle into a reporter case of `template_id`.
   <br>`freeze_reporter_case(host: EvalHost, *, template_id: str, campaign_id: str, scope_id: str, analysis_id: str | None = None, labels: Sequence[Any] = (), supersedes: Sequence[str] = (), load_template: Callable[[str], EvalTemplate]) -> EvalTestCase`
 - **`frontier`** · function · Rank each subject's variants on quality x cost x latency, cheapest above bar.
   <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]`
 - **`gate_verdicts`** · function · Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
   <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
-- **`generate_analysis`** · *host contract* · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
-  <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
+- **`generate_analysis`** · *host contract* · async function · Generate one campaign's analysis from its campaign bundle, in one LLM call or two.
+  <br>`generate_analysis(bundle: CampaignBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`humanize`** · *host contract* · function · An identifier as a reader is shown it after its first mention.
   <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
-- **`inspect_campaign_bundle`** · *host contract* · function · Assemble a campaign's context bundle and return it, without generating.
-  <br>`inspect_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> BundleInspection`
+- **`inspect_campaign_bundle`** · *host contract* · function · Assemble one aspect's context bundle of a campaign and return it, without generating.
+  <br>`inspect_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str, *, aspect: str | None = None) -> BundleInspection`
 - **`inter_judge_agreement`** · function · Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
   <br>`inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement`
 - **`judge_agreement`** · function · Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.

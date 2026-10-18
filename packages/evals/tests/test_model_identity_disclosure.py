@@ -275,13 +275,23 @@ class TestTheAnalysisReport:
         frozen = analysis_bundle(analysis)
         said = frozen.model_copy(update={"model_identity_disclosure": sentence})
 
-        report = build_report(analysis.model_copy(update={"bundle": said.to_dict()}))
+        (aspect,) = analysis.aspects
+        report = build_report(
+            analysis.model_copy(update={"aspects": [aspect.model_copy(update={"bundle": said.to_dict()})]})
+        )
 
         (block,) = [block for block in report.blocks if isinstance(block, DisclosureBlock) and block.text == sentence]
         assert (block.section, block.source) == ("methods", "measurement")
         assert report_markdown(report).count(_HEADLINE) == 1
         unsaid = frozen.model_copy(update={"model_identity_disclosure": None})
-        assert _said(build_report(analysis.model_copy(update={"bundle": unsaid.to_dict()}))) == []
+        assert (
+            _said(
+                build_report(
+                    analysis.model_copy(update={"aspects": [aspect.model_copy(update={"bundle": unsaid.to_dict()})]})
+                )
+            )
+            == []
+        )
 
     async def test_reading_an_analysis_reads_the_disclosure_off_its_runs_results(self) -> None:
         host, analysis, report = await toy_report()

@@ -1,11 +1,10 @@
-"""An adopted arm is one the statistics separated from the control in its favour.
+"""A recommended candidate is one the statistics separated from the control in its favour.
 
-An ``adopted`` recommendation says to act on the arm it names now, so it claims that arm beat the
-control. ``multiple_comparisons`` is where the bundle says whether it did, and a decision that
-adopts an arm no reading separated is refused, repairably: the model gets one round to defer it
-or keep the control. A trade-off is still a decision a reader may take — better on one reading
-and worse on another, or cheaper and not separated on quality — so one ``improved`` verdict
-licenses the adoption.
+Recommending a candidate says to switch to it, so it claims that arm beat the control. Code's reading of each aspect
+and the aspect's ``multiple_comparisons`` are where the bundle says whether it did, and a recommendation of a candidate
+nothing separated is refused, repairably: the model gets one round to keep the control. A trade-off is still a
+recommendation a reader may take — better on one reading and worse on another, or cheaper and not separated on quality
+— so one ``improved`` verdict licenses it.
 
 Driven through :func:`~threetears.evals.analysis.generator.generate_analysis` over the toy host's
 campaign. Where the toy campaign declares its narrow width the control, the bundle assembles a
@@ -29,12 +28,14 @@ from packages.evals.tests.toyhost_memo import (
     PROMPT_ID,
     FixturedClient,
     FixturedCompletion,
-    alias_at,
+    arm_at,
     cell_at,
     memo_payload,
 )
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import generate_analysis
@@ -98,25 +99,17 @@ def _with_verdicts(
     )
 
 
-def _memo(bundle: AnalysisContextBundle, *, disposition: str, cells: list[str]) -> str:
-    """The toy memo with its one decision replaced."""
+def _memo(bundle: CampaignBundle, level: int) -> str:
+    """The toy memo recommending the arm at ``level``."""
     payload = memo_payload(bundle)
-    payload["decisions"] = [
-        {
-            "proposal": "Use this chunk width in the extraction pipeline.",
-            "disposition": disposition,
-            "cells": cells,
-            "confidence": "medium",
-            "rests_on": [0],
-            "revisit_when": "a run with more documents per width" if disposition == "deferred" else "",
-        }
-    ]
+    payload["recommendation"]["arm"] = arm_at(bundle, level)
     return json.dumps(payload)
 
 
-async def _generate(bundle: AnalysisContextBundle, client: FixturedClient) -> EvalAnalysis:
+async def _generate(bundle: AnalysisContextBundle | CampaignBundle, client: FixturedClient) -> EvalAnalysis:
+    campaign = bundle if isinstance(bundle, CampaignBundle) else campaign_bundle(bundle)
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign,
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -127,22 +120,13 @@ async def _generate(bundle: AnalysisContextBundle, client: FixturedClient) -> Ev
     return analysis
 
 
-async def _adopt(bundle: AnalysisContextBundle, level: int, *, disposition: str = "adopted") -> EvalAnalysis:
-    """Generate over a memo whose one decision names the arm at ``level``, in one call or the refusal."""
-    client = FixturedClient(_memo(bundle, disposition=disposition, cells=[alias_at(bundle, level)]))
-    analysis = await _generate(bundle, client)
-    assert len(client.calls) == 1, "an adoption the statistics support is accepted first time"
+async def _adopt(bundle: AnalysisContextBundle, level: int) -> EvalAnalysis:
+    """Generate over a memo recommending the arm at ``level``, in one call or the refusal."""
+    campaign = campaign_bundle(bundle)
+    client = FixturedClient(_memo(campaign, level))
+    analysis = await _generate(campaign, client)
+    assert len(client.calls) == 1, "a recommendation the statistics support is accepted first time"
     return analysis
-
-
-def _stands(analysis: EvalAnalysis, bundle: AnalysisContextBundle, level: int) -> list[str]:
-    """Every disposition the stored memo gives the arm at ``level``, in recommendation order."""
-    variant = variant_of_cell_ref(cell_at(bundle, level))
-    return [
-        decision.disposition
-        for decision in analysis.document.decisions
-        if any(variant_of_cell_ref(cell) == variant for cell in decision.cells)
-    ]
 
 
 class TestAnAdoptionTheStatisticsSupportIsAccepted:
@@ -154,29 +138,19 @@ class TestAnAdoptionTheStatisticsSupportIsAccepted:
 
         analysis = await _adopt(bundle, TOYHOST_WIDE)
 
-        assert _stands(analysis, bundle, TOYHOST_WIDE) == ["adopted"]
+        assert analysis.document.recommendation.arm == arm_at(campaign_bundle(bundle), TOYHOST_WIDE)
 
     async def test_an_arm_separated_only_on_cost_is_adopted(self):
         """Cheaper, and not separated on quality: a trade-off a reader may take."""
         bundle = _with_verdicts(
             _toy_bundle(control=True), {"production_replicating_cost": "improved"}, otherwise="not_separated"
         )
-        assert _stands(await _adopt(bundle, TOYHOST_WIDE), bundle, TOYHOST_WIDE) == ["adopted"]
+        analysis = await _adopt(bundle, TOYHOST_WIDE)
+        assert analysis.document.recommendation.arm == arm_at(campaign_bundle(bundle), TOYHOST_WIDE)
 
     async def test_adopting_the_control_needs_no_separation(self):
         bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="not_separated")
         await _adopt(bundle, TOYHOST_NARROW)
-
-    @pytest.mark.parametrize("disposition", ["deferred", "rejected"])
-    async def test_a_deferred_or_rejected_decision_is_not_checked(self, disposition: str):
-        bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="not_separated")
-        await _adopt(bundle, TOYHOST_WIDE, disposition=disposition)
-
-    async def test_an_adopted_decision_naming_no_cell_is_not_checked(self):
-        bundle = _toy_bundle(control=False)
-        client = FixturedClient(_memo(bundle, disposition="adopted", cells=[]))
-        await _generate(bundle, client)
-        assert len(client.calls) == 1
 
 
 class TestAnAdoptionNoReadingSeparatedIsRefused:
@@ -185,9 +159,9 @@ class TestAnAdoptionNoReadingSeparatedIsRefused:
         with pytest.raises(SoundnessRefusal) as refused:
             await _adopt(bundle, TOYHOST_WIDE)
         message = str(refused.value)
-        assert "decisions[0] adopts the arm at cell" in message
+        assert f"the recommendation names {arm_at(campaign_bundle(bundle), TOYHOST_WIDE)!r}, but" in message
         assert "no reading separated it from the control" in message
-        assert "mark it `deferred` with what would settle it in `revisit_when`, or adopt the control" in message
+        assert f"recommend the control, {arm_at(campaign_bundle(bundle), TOYHOST_NARROW)!r}," in message
 
     async def test_an_arm_separated_only_by_regressing_is_refused(self):
         """Its only separation is evidence against it: there is no upside a trade-off could buy."""
@@ -197,94 +171,31 @@ class TestAnAdoptionNoReadingSeparatedIsRefused:
         with pytest.raises(SoundnessRefusal, match=r"only by being worse \(production_replicating_cost regressed\)"):
             await _adopt(bundle, TOYHOST_WIDE)
 
-    async def test_the_repair_round_defers_it_and_the_analysis_is_stored(self):
-        bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="not_separated")
-        wide = alias_at(bundle, TOYHOST_WIDE)
-        client = _MemoSequence(
-            _memo(bundle, disposition="adopted", cells=[wide]), _memo(bundle, disposition="deferred", cells=[wide])
-        )
+    async def test_the_repair_round_keeps_the_control_and_the_analysis_is_stored(self):
+        bundle = campaign_bundle(_with_verdicts(_toy_bundle(control=True), {}, otherwise="not_separated"))
+        client = _MemoSequence(_memo(bundle, TOYHOST_WIDE), _memo(bundle, TOYHOST_NARROW))
 
         analysis = await _generate(bundle, client)
 
         assert len(client.calls) == 2
         refusal = analysis.generation.repaired_refusal
         assert analysis.generation.repair_attempts == 1 and refusal is not None
-        assert f"decisions[0] adopts the arm at cell {wide} " in refusal, "the writer is told in its own aliases"
+        assert f"the recommendation names {arm_at(bundle, TOYHOST_WIDE)!r}" in refusal
         assert refusal in client.calls[1]["user"]
-        assert analysis.document.decisions[0].disposition == "deferred"
-        assert _stands(analysis, bundle, TOYHOST_WIDE) == ["deferred"]
-
-
-def _contradicting_memo(bundle: AnalysisContextBundle, cells: list[str], *, then_reject: bool = True) -> str:
-    """The toy memo deciding twice: adopt ``cells``, then reject them (or, without ``then_reject``, defer them)."""
-    payload = memo_payload(bundle)
-    adopt = {
-        "proposal": "Use this chunk width in the extraction pipeline.",
-        "disposition": "adopted",
-        "cells": cells,
-        "confidence": "medium",
-        "rests_on": [0],
-        "revisit_when": "",
-    }
-    second = {
-        "proposal": "Keep this chunk width out of the extraction pipeline.",
-        "disposition": "rejected" if then_reject else "deferred",
-        "cells": cells,
-        "confidence": "medium",
-        "rests_on": [0],
-        "revisit_when": "" if then_reject else "a run with more documents per width",
-    }
-    payload["decisions"] = [adopt, second]
-    return json.dumps(payload)
-
-
-class TestAnArmAdoptedAndRejectedIsRefused:
-    """One arm under two verdicts is a structural defect in the memo (#669), refused through the repair round."""
-
-    async def test_the_refusal_names_both_decision_positions(self):
-        """The wide width improves on accuracy, so the adoption alone would stand: the contradiction is what is refused."""
-        bundle = _toy_bundle(control=True)
-        with pytest.raises(SoundnessRefusal) as refused:
-            await _generate(bundle, FixturedClient(_contradicting_memo(bundle, [alias_at(bundle, TOYHOST_WIDE)])))
-        message = str(refused.value)
-        assert "decisions[0] adopts the arm at cell" in message
-        assert "and decisions[1] rejects it" in message
-        assert "one arm takes one verdict" in message
-
-    async def test_it_is_read_off_the_arm_not_the_cell_list(self):
-        """Adopting the control while rejecting it is as contradictory as any other arm, needing no separation."""
-        bundle = _toy_bundle(control=True)
-        narrow = alias_at(bundle, TOYHOST_NARROW)
-        with pytest.raises(SoundnessRefusal, match=r"decisions\[0\] adopts .* and decisions\[1\] rejects it"):
-            await _generate(bundle, FixturedClient(_contradicting_memo(bundle, [narrow])))
-
-    async def test_the_repair_round_settles_it_and_the_arm_keeps_one_verdict(self):
-        bundle = _toy_bundle(control=True)
-        wide = alias_at(bundle, TOYHOST_WIDE)
-        client = _MemoSequence(
-            _contradicting_memo(bundle, [wide]), _contradicting_memo(bundle, [wide], then_reject=False)
-        )
-
-        analysis = await _generate(bundle, client)
-
-        assert len(client.calls) == 2
-        refusal = analysis.generation.repaired_refusal
-        assert refusal is not None and f"decisions[0] adopts the arm at cell {wide} " in refusal
-        assert _stands(analysis, bundle, TOYHOST_WIDE) == ["adopted", "deferred"]
+        assert analysis.document.recommendation.arm == arm_at(bundle, TOYHOST_NARROW)
 
 
 class TestAnArmNoTestCouldReachHasNoSeparationToAdoptOn:
     """No family, no comparison naming the arm, or only untested ones: nothing separated it, so it is refused."""
 
-    async def test_a_bundle_with_no_control_withholds_every_family_and_refuses_the_adoption(self):
+    async def test_a_campaign_naming_no_control_compared_nothing_and_its_recommendation_is_not_refused(self):
+        """With no control there is no arm to keep and no switch from one: nothing could be tested either way."""
         bundle = _toy_bundle(control=False)
         assert bundle.multiple_comparisons.withheld is not None
-        with pytest.raises(SoundnessRefusal) as refused:
-            await _adopt(bundle, TOYHOST_NARROW)
-        message = str(refused.value)
-        assert "the bundle tested no comparison against a control" in message
-        assert "no test was possible" in message
-        assert "adopt the control" not in message, "there is no control to offer"
+        campaign = campaign_bundle(bundle)
+        assert campaign.control() is None
+        analysis = await _adopt(bundle, TOYHOST_NARROW)
+        assert analysis.document.recommendation.arm == arm_at(campaign, TOYHOST_NARROW)
 
     async def test_an_arm_whose_every_comparison_is_untested_is_refused_with_why(self):
         bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="untested")
@@ -344,13 +255,13 @@ class TestAGuardrailOnTheAdoptedArm:
             await _adopt(bundle, TOYHOST_WIDE)
         message = str(refused.value)
         assert "breached the guardrail boundary.correct" in message
-        assert "mark it `rejected`, or adopt the control" in message
+        assert "no gain elsewhere pays for a guardrail; recommend the control" in message
 
     async def test_an_undecided_guardrail_lets_the_adoption_stand_and_the_report_states_it(self):
         bundle = _with_guardrail(_toy_bundle(control=True), "undecided")
         analysis = await _adopt(bundle, TOYHOST_WIDE)
 
-        assert analysis.decision_surface.guardrails == bundle.guardrails, "frozen with the analysis"
+        assert analysis.aspects[0].decision_surface.guardrails == bundle.guardrails, "frozen with the analysis"
         report = build_report(analysis)
         assert any(
             isinstance(b, DisclosureBlock) and "not known to be safe" in b.text and "boundary.correct" in b.text
@@ -363,8 +274,8 @@ class TestAGuardrailOnTheAdoptedArm:
         held = bundle.guardrails.checks[0].model_copy(update={"interval": (-0.1, 0.4), "decision": "held"})
         bundle = bundle.model_copy(update={"guardrails": bundle.guardrails.model_copy(update={"checks": [held]})})
         report = build_report(await _adopt(bundle, TOYHOST_WIDE))
-        (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
-        assert "Guardrails" not in {fact.name for fact in recommendation.facts}
+        (facts,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "recommendation_facts"]
+        assert "Guardrails" not in {column.header for column in facts.columns}
         assert not any(
             isinstance(b, DisclosureBlock) and "boundary.correct" in b.text and "undecided" in b.text
             for b in report.blocks
@@ -394,13 +305,13 @@ class TestAFindingNoQuestionAskedAboutIsExploratory:
     async def test_a_question_on_quality_leaves_the_latency_finding_exploratory(self):
         bundle = _toy_bundle_asking(["quality"])
         assert "total_ms" in bundle.reading_scope.exploratory_measures
-        analysis = await _generate(bundle, FixturedClient(json.dumps(memo_payload(bundle))))
+        analysis = await _generate(bundle, FixturedClient(json.dumps(memo_payload(campaign_bundle(bundle)))))
         scope = _finding_scope(analysis)
         assert scope is not None and scope.startswith("exploratory")
 
     async def test_a_question_on_latency_asks_about_it_and_no_label_is_added(self):
         bundle = _toy_bundle_asking(["latency"])
-        analysis = await _generate(bundle, FixturedClient(json.dumps(memo_payload(bundle))))
+        analysis = await _generate(bundle, FixturedClient(json.dumps(memo_payload(campaign_bundle(bundle)))))
         assert _finding_scope(analysis) is None
         report = build_report(analysis)
         assert not [b for b in report.blocks if getattr(b, "source", None) == "scope"], "said only with no question"

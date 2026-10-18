@@ -13,7 +13,7 @@ import json
 from typing import Any
 
 from threetears.evals.actions import Caller
-from threetears.evals.analysis import assemble_context_bundle
+from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.kernel import DEFAULT_JOB_LEASE_S, EvalCampaign, EvalStorage
 from threetears.evals.kernel.host import EvalHost, HostProfile
 from threetears.evals.ops import AnalysisGeneration, JobsStarted, JobStatus, OpsHost, await_job, job_poll
@@ -80,9 +80,7 @@ class MemoWriter(FixturedClient):
         if self.first_output is not None and not self.calls:
             self.completion.content = self.first_output
             return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
-        bundle = off_loop(
-            assemble_context_bundle, self._campaign, storage=self._host.storage, profile=self._host.profile
-        )
+        bundle = off_loop(assemble_campaign_bundle, self._host, self._campaign.id, self._campaign.scope_id)
         self.completion.content = json.dumps(memo_payload(bundle))
         return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
 
