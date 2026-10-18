@@ -27,13 +27,15 @@ import base64
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+from xml.etree.ElementTree import ParseError
 
 import httpx
 
 from threetears.iam.oidc import coerce_email_verified
-from threetears.observe import contain, get_logger
+from threetears.observe import get_logger
 
 try:
+    from defusedxml import DefusedXmlException
     from defusedxml import ElementTree as DefusedElementTree
 except ImportError as _exc:  # pragma: no cover - exercised by installing without the extra
     raise ImportError(
@@ -242,14 +244,33 @@ def _first(attributes: Mapping[str, Any], key: str) -> Any:
 
 
 def _parse_xml(payload: bytes, *, context: str) -> Any:
-    """Defused-parse ``payload``, returning ``None`` on anything malformed.
+    """Defused-parse ``payload``, returning ``None`` when it is malformed or hostile.
 
-    Broad by intent: this runs on externally-reachable input, and the correct answer to
-    every parse failure is the same generic denial. Narrowing it would only mean an
-    unanticipated parser error escapes as a 500 instead.
+    Caught: the parser's own ``ParseError`` (malformed XML) and defusedxml's refusals
+    (entities, external references, DTDs). Anything else is not a property of the input
+    and propagates.
+
+    Logged WITHOUT the payload and without a traceback. This runs on externally-reachable
+    input, and both carry it: a defusedxml refusal names the entity and its system id (the
+    ``file:///...`` an XXE probe asked for), so a traceback put attacker-chosen XML into the
+    log. What is logged is the failure's type and, for a parse error, its line and column.
+
+    :param payload: the XML bytes
+    :ptype payload: bytes
+    :param context: what the document is, for the log line
+    :ptype context: str
+    :return: the parsed root element, or ``None``
+    :rtype: Any
     """
     try:
         return DefusedElementTree.fromstring(payload)
-    except Exception as exc:
-        contain(exc, log=log, what=f"saml: failed to parse {context}")
+    except (ParseError, DefusedXmlException) as exc:
+        position = getattr(exc, "position", None)
+        log.warning(
+            "saml: %s did not parse (%s%s); denied",
+            context,
+            type(exc).__name__,
+            f" at line {position[0]}, column {position[1]}" if position else "",
+            extra={"extra_data": {"context": context, "error_type": type(exc).__name__, "position": position}},
+        )
         return None

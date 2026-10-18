@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
+import threetears.iam.saml as saml_module
 from threetears.iam.saml import (
     AuthnResponseLike,
     SamlError,
@@ -90,6 +92,44 @@ def test_peek_entity_id_fails_closed_on_hostile_or_malformed_xml(payload: str) -
     # Never raises, never expands an entity, never reads a file: a misconfigured or hostile
     # metadata URL is a denial, not a crash and not a file disclosure.
     assert peek_entity_id(payload) in (None, "")
+
+
+#: Text that appears only inside the hostile payloads below, so finding it in a log record means
+#: the record carried the payload.
+_MARKER = "PAYLOAD-MARKER-7f3a"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        f'<!DOCTYPE foo [<!ENTITY {_MARKER.replace("-", "")} SYSTEM "file:///etc/{_MARKER}">]><a>&{_MARKER.replace("-", "")};</a>',
+        f"<EntityDescriptor entityID='{_MARKER}'><unclosed>",
+    ],
+    ids=["xxe-refused", "malformed"],
+)
+def test_a_parse_failure_is_logged_without_the_payload(payload: str, caplog: pytest.LogCaptureFixture) -> None:
+    """contain() logged the traceback, and a defusedxml refusal's message names the entity and
+    the file the payload asked for: attacker-chosen XML in the operator's log."""
+    with caplog.at_level(logging.DEBUG, logger="threetears.iam.saml"):
+        assert peek_entity_id(payload) is None
+    assert caplog.records, "the parse failure was not logged at all"
+    formatter = logging.Formatter("%(message)s %(exc_text)s")
+    for record in caplog.records:
+        rendered = formatter.format(record) + repr(record.__dict__)
+        assert _MARKER not in rendered
+        assert _MARKER.replace("-", "") not in rendered
+        assert record.exc_info is None
+
+
+def test_an_unexpected_parser_failure_is_not_read_as_malformed_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """only the parser's own error types are the input's fault; anything else propagates."""
+
+    def _broken(_payload: bytes) -> Any:
+        raise RuntimeError("parser bug")
+
+    monkeypatch.setattr(saml_module.DefusedElementTree, "fromstring", _broken)
+    with pytest.raises(RuntimeError, match="parser bug"):
+        peek_entity_id(_METADATA)
 
 
 def test_peek_in_response_to_reads_the_attribute() -> None:
