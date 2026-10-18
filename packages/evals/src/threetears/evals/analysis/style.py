@@ -187,7 +187,7 @@ GLOSSARY: dict[str, str] = {
     "exploratory": "No question was declared before the run, so the page offers leads, not decisions.",
     "floor status": (
         "Broken where an interval shows the arm past the floor, or it costs no less; held where one shows it "
-        "within. Both need 5 cases per arm."
+        "within, from 5 cases per arm."
     ),
     "point estimate": (
         "A difference as this run measured it, before its interval says how far more cases could move it."
