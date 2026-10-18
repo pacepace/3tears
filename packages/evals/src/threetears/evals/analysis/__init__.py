@@ -107,6 +107,7 @@ from threetears.evals.analysis.campaign_readings import (
     FloorState,
     FloorStatus,
     ShownReading,
+    campaign_readings,
 )
 from threetears.evals.analysis.campaigns import (
     DeclarableAxes,
@@ -404,6 +405,7 @@ __all__ = [
     "ShownReading",
     "aspect_view",
     "aspect_views",
+    "campaign_readings",
     # The cases an unclear reading would need to settle, which a campaign's readings carry per row.
     "CasesNeeded",
     "NeedKind",
