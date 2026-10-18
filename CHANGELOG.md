@@ -107,7 +107,7 @@ packages (bumped in lock-step).
   no `reading` reads every pass/fail rate the arms share, and its one outcome used to sit on the pass rate's row
   whichever rate decided it: a readiness memo's row read "the pass rate, 0 of 18 to 0 of 18" beside an outcome
   quoting a goal check's 12 of 18 to 14.
-- Under the case floor no rate floor is broken, so only a cost floor can be.
+- Under the case floor no floor is broken, rate or cost.
 ### 3tears-evals: a launch's arms take their cells in turn, case by case, so a provider's bad minute lands on every arm alike
 
 - **`run_launch` no longer co-loads its arms** (#841). A declared two-arm comparison launched with one call started
