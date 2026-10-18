@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
-from threetears.models.providers.image.http_retry import RetryPolicy
+from threetears.models.providers.image.transport import RetryPolicy
 from threetears.models.providers.image.swarmui import SwarmUIClient, SwarmUIError
 
 BASE = "http://swarm:7801"

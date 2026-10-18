@@ -150,8 +150,13 @@ class GitDurableStore:
 
     # ------------------------------------------------------------------ writes
 
-    def _precheck(self, change: Change) -> ConflictedRow | None:
-        """the early answer to a write joining a change set: would it apply to the files as they are? BLOCKING.
+    async def _precheck(self, change: Change) -> ConflictedRow | None:
+        """the early answer to a write: would it apply to the current row?
+
+        The row is read where reads go (:meth:`GitRepo.read_row`): on a clone of its own that isn't the writer, from
+        the writer, so a write based on a row the writer just changed is checked against that row, not against this
+        clone's older copy (which refused every compare-and-swap save of a row the writer had changed until the clone
+        pulled; with ``push="never"``, for good).
 
         :param change: the write
         :ptype change: Change
@@ -159,7 +164,7 @@ class GitDurableStore:
             ``on_conflict="ignore"`` means "skip it"
         :rtype: ConflictedRow | None
         """
-        stored = self.repo.read_local(change.table, change.pk)
+        stored = await self.repo.read_row(change.table, change.pk)
         if change.cas is not None:
             column = self.repo.layout.version_column(change.table)
             if stored is None:
@@ -228,7 +233,7 @@ class GitDurableStore:
         if change_set is not None and change_set.pending(table, key) is not None:
             change_set.add(change)  # a second write of a row the set already checked
             return 1
-        conflict = await asyncio.to_thread(self._precheck, change)
+        conflict = await self._precheck(change)
         if conflict is not None:
             if conflict.reason == "exists" and policy == "raise":
                 raise ChangeConflictError([conflict])

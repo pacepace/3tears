@@ -338,6 +338,15 @@ async def test_a_pod_on_its_own_clone_reads_what_the_writer_just_committed_befor
     rows = await GitDurableStore(other).scan("keepers", {"character": "aria"})
     assert [r["score"] for r in rows if r["tile"] == "7"] == [2]
 
+    # and a save based on what it read is checked against the writer's row, not this clone's older copy (which used
+    # to refuse every compare-and-swap save of a row the writer had changed, for good with push="never")
+    saved = await GitDurableStore(other).upsert(
+        "keepers", keeper("7", score=3, date_updated=T0 + timedelta(minutes=2)), cas=seen["date_updated"]
+    )
+    assert saved == 1
+    stored = await GitDurableStore(writer).fetch_one("keepers", key("7"))
+    assert stored is not None and stored["score"] == 3
+
 
 async def test_a_pod_on_its_own_clone_commits_plain_files_through_the_writer(
     tmp_path: Path, origin: Path, connect: Any, opened: Any
@@ -479,3 +488,53 @@ async def test_a_pull_from_a_pod_that_is_not_the_writer_runs_on_the_writer(
     result = await other.pull()  # forwarded: the writer fetches and fast-forwards
     assert result.paths == ("b.md",)
     assert (tmp_path / "a/b.md").read_text() == "b\n"
+
+
+async def test_the_writer_checks_what_it_is_sent_and_runs_only_operations_it_has(
+    tmp_path: Path, connect: Any, opened: Any
+) -> None:
+    # a sender with the deployment's seal but an older or buggy build: its paths are checked again where files are
+    # touched, and every operation the wire names has a handler on the writer (an unknown one used to run a push)
+    from typing import get_args
+
+    from threetears.core.backends.git.envelope import ForwardEnvelope, GitDirReplayAnchor
+    from threetears.core.backends.git.wire import ForwardedRequest, Operation, decode_reply, encode_request
+    from threetears.core.backends.git.writer import COMMIT_HANDLER, FORWARD_FAMILY
+    from threetears.nats.forward import forward
+
+    tree = tmp_path / "shared"
+    writer = await opened(await connect("worker"), work_tree=tree)
+    nats = await connect("sender")
+    lease_key = writer.config.lease_key
+    sealer = ForwardEnvelope(
+        nats,
+        seed=FAST["forward_signing_seed"],
+        audience=lease_key,
+        bucket="unused-by-a-sender",
+        anchor=GitDirReplayAnchor(tmp_path / "sender-anchor"),
+    )
+
+    async def send(request: ForwardedRequest) -> bytes:
+        return await forward(
+            nats,
+            f"{lease_key}#{COMMIT_HANDLER}",
+            sealer.seal(COMMIT_HANDLER, encode_request(request)),
+            timeout=timedelta(seconds=10),
+            family=FORWARD_FAMILY,
+        )
+
+    outside = tmp_path / "outside.txt"
+    for request in (
+        ForwardedRequest(op="commit_files", files={"../outside.txt": b"x"}, message="m\n"),
+        ForwardedRequest(op="commit_files", files={}, moves={"../../etc/hostname": "stolen.txt"}, message="m\n"),
+        ForwardedRequest(op="commit_paths", paths=(".git/config",), message="m\n"),
+    ):
+        with pytest.raises(ValueError, match="not a path inside the working tree"):
+            decode_reply(await send(request))
+    assert not outside.exists() and writer.git.head() is None
+
+    for op in get_args(Operation):  # each one reaches a handler of its own: none is refused as unknown
+        try:
+            decode_reply(await send(ForwardedRequest(op=op, message="m\n", files={} if op == "commit_files" else None)))
+        except GitStoreError as exc:
+            assert "does not run" not in str(exc), op

@@ -1,6 +1,6 @@
 # 3tears Core
 
-Three-tier caching library for Python applications. Provides collections (L1 SQLite -> L2 NATS KV -> L3 PostgreSQL) with subscript access, entity proxy objects, and configurable flush strategies.
+Three-tier caching library for Python applications. Provides collections (L1 SQLite -> L2 NATS KV -> L3 PostgreSQL, or a git working tree) with subscript access, entity proxy objects, and configurable flush strategies.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ L1 (SQLite, in-process, sync)  ->  L2 (NATS KV, shared, async)  ->  L3 (PostgreS
 
 - **L1**: In-memory SQLite via WAL mode. Sync access. Used by entity attribute reads and writes.
 - **L2**: NATS KV shared cache. Async. Cross-pod consistency for multi-instance deployments.
-- **L3**: PostgreSQL (or PostGIS, YugabyteDB, etc.). Async. Source of truth.
+- **L3**: PostgreSQL (or PostGIS, YugabyteDB, etc.), or a git working tree (`threetears.core.backends.git`: rows as files, every change set one commit). Async. Source of truth.
 
 Reads promote up the stack (L3 miss -> L2 miss -> L1 hit on next access). Writes flow down (L1 -> L2 -> L3, with optional deferred flush).
 

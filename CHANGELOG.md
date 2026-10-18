@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.71.0 -- 2026-10-17
-
 ### core: synchronous callers get a supported bridge and a synchronous lease; TracedHttpClient gets a quiet probe
 
 **Added (core): `threetears.core.sync.run(work, *, timeout=None)`.** Runs one async call to the end from
@@ -145,6 +143,26 @@ raises the new `DivergedError` and changes nothing; one only ahead is pushed. As
 old one's bytes as the writer's tree holds them, saved edits of a pending tail included, and the old path is removed,
 in the same commit as the folder's other saved edits and its trailer. scriob's rename (a saved heading edit, then the
 file moved to its new name) stays one commit. A move from a missing file or onto an existing one is refused.
+
+**Changed (models):** `ComfyUIClient` and `SwarmUIClient` no longer hold their own httpx client. Both reach their
+server through one transport module, `threetears.models.providers.image.transport` (`ImageServerTransport`), which
+replaces `http_retry`; `RetryPolicy` is still exported from `threetears.models.providers.image`. 3tears-models may not
+depend on core, so core's `TracedHttpClient` is out of reach; this module is the one sanctioned place in models to open
+a socket, and it carries the same duties: a timeout a call can override, the same safe retry rule (reads repeat on
+connect, timeout or 5xx; a graph, picture or upload repeats only when it never left), a log line for every attempt and
+an error log when one fails for good, requests limited to the configured server's origin with redirects not followed
+(LAN addresses are allowed on purpose), and bodies read under a cap (`max_response_bytes`, 256 MiB by default; a larger
+body raises `ResponseTooLargeError`). The no-bespoke-reuse guard now also catches a client built inside
+`enter_async_context(...)` and a field typed `httpx.AsyncClient | None`, `Optional[...]` or `Union[...]`, the shapes
+that let the two clients slip past it.
+
+**Fixed (git backend), found by the release review:** a save from a pod on its own clone that isn't the writer is
+checked against the writer's row, where its reads come from, not against its own clone's older copy (every
+compare-and-swap save of a row the writer had changed was refused until the clone pulled; with `push="never"`, for
+good). `commit_files(moves=)` removes a moved file that was saved but never committed instead of leaving it beside
+its copy. A commit whose caller is cancelled now finishes before the repository's lock is let go (the lock used to be
+released while the write went on, so a second commit could overwrite its journal). The writer checks a forwarded
+request's paths itself, and refuses an operation it has no handler for instead of running a push.
 
 **Fixed (core, git backend):** a work tree inside another git repository was used as if it were one, so commits landed in
 the outer repository; `open()` now refuses it (`GitStoreError`). A nested repository of its own still works.

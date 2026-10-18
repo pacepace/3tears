@@ -1045,7 +1045,7 @@ class GitRepo:
                     lambda: self.git.commit(dirty, full, author=author or committer, committer=committer)
                 )
 
-            sha = await asyncio.shield(stage_and_commit())
+            sha = await self._uninterrupted(stage_and_commit())
             marked.clear()
             changes = await asyncio.to_thread(self.git.changed, head_before, sha)
             await self._reported(sha, await asyncio.to_thread(self._rows_of, changes, head_before, sha, True))
@@ -1455,27 +1455,46 @@ class GitRepo:
         :return: the reply
         :rtype: bytes
         """
-        request = decode_request(payload)
         try:
+            request = decode_request(payload)
             self._require_writer()
-            if request.op == "commit":
-                result = await self._commit_local(list(request.changes), request.message, request.author, request.date)
-            elif request.op == "commit_paths":
-                result = await self._commit_paths_local(request.paths, request.message, request.author)
-            elif request.op == "commit_files":
-                result = await self._commit_files_local(
-                    dict(request.files or {}), request.message, request.author, request.base, dict(request.moves or {})
-                )
-            elif request.op == "pull":
-                result = await self._pull_local()
-            elif request.op == "commit_intent":
-                idle = None if request.idle is None else timedelta(seconds=request.idle)
-                result = await self._commit_intent_local(request.scope, request.message, request.author, idle)
-            else:
-                result = await self._push_now()
+            # the writer is where files are touched: a forwarded path is checked here as well as by its sender (an
+            # older or buggy sender must not write outside the tree, or read a host file into a pushed commit)
+            if request.paths is not None:
+                _checked_paths(request.paths)
+            _checked_paths([*(request.files or {}), *(request.moves or {}), *(request.moves or {}).values()])
+            if request.scope is not None:
+                _scope_key(request.scope)
+            handler = self._forwarded_handlers().get(request.op)
+            if handler is None:  # fail closed: an operation the writer doesn't run is refused, never run as another
+                raise GitStoreError(f"the writer of {self.config.lease_key} does not run {request.op!r}")
+            result = await handler(request)
         except (GitStoreError, ChangeConflictError, GitError, ValueError) as exc:
             return encode_failure(exc)
         return encode_result(result)
+
+    def _forwarded_handlers(self) -> dict[str, Callable[[ForwardedRequest], Awaitable[CommitResult]]]:
+        """each forwarded operation's handler, on the writer; every :data:`~.wire.Operation` has one (a test holds
+        the two together).
+
+        :return: operation -> handler
+        :rtype: dict[str, Callable[[ForwardedRequest], Awaitable[CommitResult]]]
+        """
+
+        def intent(r: ForwardedRequest) -> Awaitable[CommitResult]:
+            idle = None if r.idle is None else timedelta(seconds=r.idle)
+            return self._commit_intent_local(r.scope, r.message, r.author, idle)
+
+        return {
+            "commit": lambda r: self._commit_local(list(r.changes), r.message, r.author, r.date),
+            "commit_paths": lambda r: self._commit_paths_local(r.paths, r.message, r.author),
+            "commit_files": lambda r: self._commit_files_local(
+                dict(r.files or {}), r.message, r.author, r.base, dict(r.moves or {})
+            ),
+            "commit_intent": intent,
+            "pull": lambda _r: self._pull_local(),
+            "push": lambda _r: self._push_now(),
+        }
 
     async def _retrying(self, call: Callable[[], _T]) -> _T:
         """run a blocking git call off the loop, retrying while another git process holds the index.
@@ -1531,7 +1550,7 @@ class GitRepo:
                 return CommitResult(sha=None)
             # once files start changing the sequence runs to its end even if the caller is
             # cancelled: a commit abandoned halfway leaves files written and nothing committed
-            sha, taken = await asyncio.shield(
+            sha, taken = await self._uninterrupted(
                 self._write_and_commit(plan, message, author or self.config.committer, date)
             )
             rows = [RowChange(table, pk, deleted, True, sha) for table, pk, deleted in plan.rows]
@@ -1634,7 +1653,12 @@ class GitRepo:
             removed = [path for path in paths if plan.writes[path] is None]
             written += [path for path in taken if (root / path).exists()]
             removed += [path for path in taken if not (root / path).exists()]
-            everything = sorted({*paths, *taken})
+            # a removal of a file git never knew (a moved file saved but never committed) is done on disk by _apply;
+            # there is nothing to stage or commit for it
+            known = await asyncio.to_thread(self._known_to_git, removed)
+            untracked = {path for path in removed if path not in known}
+            removed = [path for path in removed if path in known]
+            everything = sorted({*paths, *taken} - untracked)
             await self._retrying(lambda: self.git.stage(written, removed))
             self._require_writer()
             sha = await self._retrying(
@@ -1649,6 +1673,46 @@ class GitRepo:
         for scope in scopes:
             self._pending[scope].clear()
         return sha, taken
+
+    async def _uninterrupted(self, work: Awaitable[_T]) -> _T:
+        """run ``work`` to its end even when the caller is cancelled, and only then let the cancel through.
+
+        Called under the repository's lock: once files start changing, a commit abandoned halfway would leave files
+        written and nothing committed, and a bare ``asyncio.shield`` let the cancel out of the ``async with`` at once,
+        releasing the lock while the shielded write went on, so the next commit could run over the same index and
+        overwrite its journal.
+
+        :param work: the write-and-commit
+        :ptype work: Awaitable[_T]
+        :return: its result
+        :rtype: _T
+        """
+        task = asyncio.ensure_future(work)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.wait({task})
+                except asyncio.CancelledError:
+                    # NOSILENT: cancelled again while the commit finishes; the cancel is re-raised once it has
+                    continue
+            if not task.cancelled():
+                task.exception()  # read, so a failure under a cancel isn't reported as never retrieved
+            raise
+
+    def _known_to_git(self, paths: Sequence[str]) -> set[str]:
+        """which of ``paths`` HEAD or the index holds. BLOCKING.
+
+        :param paths: the paths
+        :ptype paths: Sequence[str]
+        :return: the ones git knows
+        :rtype: set[str]
+        """
+        if not paths:
+            return set()
+        staged = self.git.run("ls-files", "-z", "--", *paths, raw=True)
+        return self.git.in_head(paths) | {name.decode("utf-8") for name in staged.split(b"\0") if name}
 
     def _refuse_dirty(self, dirty: Sequence[tuple[str, str]]) -> None:
         """refuse to write over files that differ from HEAD: saved edits not yet committed, or hand edits.
@@ -1797,7 +1861,7 @@ class GitRepo:
                     lambda: self.git.commit(targets, full, author=author or committer, committer=committer)
                 )
 
-            sha = await asyncio.shield(stage_and_commit())
+            sha = await self._uninterrupted(stage_and_commit())
             for scope in scopes:
                 self._pending[scope].clear()
             changes = await asyncio.to_thread(self.git.changed, head_before, sha)
@@ -1876,12 +1940,14 @@ class GitRepo:
 
             def differing() -> dict[str, bytes | None]:
                 current = {path: None if head_before is None else self.git.show(head_before, path) for path in files}
-                return {path: data for path, data in files.items() if current[path] != data}
+                # a moved file's source is always removed, also one HEAD never had (saved in a tail, not yet committed:
+                # scriob's create-then-rename), whose removal "equals" HEAD and would otherwise be dropped as no change
+                return {path: data for path, data in files.items() if current[path] != data or path in (moves or {})}
 
             writes = await asyncio.to_thread(differing)
             if not writes:
                 return CommitResult(sha=None)
-            sha, taken = await asyncio.shield(
+            sha, taken = await self._uninterrupted(
                 self._write_and_commit(
                     _Plan(writes=writes), message, author or self.config.committer, None, moving=set(moves or {})
                 )

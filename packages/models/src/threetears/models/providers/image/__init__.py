@@ -13,7 +13,7 @@ from threetears.models.providers.image.a1111 import A1111ImageProvider
 from threetears.models.providers.image.comfyui import ComfyUIClient, ComfyUIError, ComfyUIImageProvider
 from threetears.models.providers.image.huggingface import HuggingFaceImageProvider
 from threetears.models.providers.image.modelslab import ModelsLabImageProvider
-from threetears.models.providers.image.http_retry import RetryPolicy
+from threetears.models.providers.image.transport import ResponseTooLargeError, RetryPolicy
 from threetears.models.providers.image.openai import OpenAIImageProvider
 from threetears.models.providers.image.swarmui import SwarmUIClient, SwarmUIError
 
@@ -25,6 +25,7 @@ __all__ = [
     "HuggingFaceImageProvider",
     "ModelsLabImageProvider",
     "OpenAIImageProvider",
+    "ResponseTooLargeError",
     "RetryPolicy",
     "SwarmUIClient",
     "SwarmUIError",

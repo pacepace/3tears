@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 from uuid import UUID
 
 from threetears.core.backends.git.change import Change, CommitResult, OnConflict
@@ -201,7 +201,7 @@ def decode_request(data: bytes) -> ForwardedRequest:
     """
     body = json.loads(data.decode("utf-8"))
     op = body["op"]
-    if op not in ("commit", "commit_paths", "commit_files", "commit_intent", "pull", "push"):
+    if op not in get_args(Operation):
         raise ValueError(f"a git-store writer does not run {op!r}")
     changes = tuple(
         Change(

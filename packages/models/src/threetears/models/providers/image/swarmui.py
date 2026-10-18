@@ -18,16 +18,14 @@ be reached or answers 5xx; a picture is sent again only when the request never l
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import Awaitable, Callable, Mapping
 from types import TracebackType
 from typing import Any
 
 import httpx
 
-from threetears.models.providers.image import http_retry
 from threetears.models.providers.image.comfyui import ComfyUIClient
-from threetears.models.providers.image.http_retry import RetryPolicy
+from threetears.models.providers.image.transport import DEFAULT_MAX_RESPONSE_BYTES, ImageServerTransport, RetryPolicy
 from threetears.observe import get_logger
 
 __all__ = ["SwarmUIClient", "SwarmUIError"]
@@ -91,6 +89,9 @@ class SwarmUIClient:
     :ptype transport: httpx.AsyncBaseTransport | None
     :param sleep: how the backend waits are taken; ``None`` is ``asyncio.sleep``
     :ptype sleep: Callable[[float], Awaitable[None]] | None
+    :param max_response_bytes: the largest answer read; a larger one raises
+        :class:`~threetears.models.providers.image.transport.ResponseTooLargeError`
+    :ptype max_response_bytes: int
     """
 
     def __init__(
@@ -104,6 +105,7 @@ class SwarmUIClient:
         backend_wait_seconds: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
     ) -> None:
         """capture the settings; the connection opens on ``async with``.
 
@@ -123,20 +125,28 @@ class SwarmUIClient:
         :ptype transport: httpx.AsyncBaseTransport | None
         :param sleep: how a backend wait is taken, or ``None``
         :ptype sleep: Callable[[float], Awaitable[None]] | None
+        :param max_response_bytes: the largest answer read
+        :ptype max_response_bytes: int
         :return: nothing
         :rtype: None
+        :raises ValueError: when ``base_url`` isn't an http(s) address with a host
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.generate_timeout = generate_timeout
-        self._retry = retry or RetryPolicy()
         self._backend_waits = backend_waits
         self._backend_wait_seconds = backend_wait_seconds
         self._transport = transport
         self._sleep = sleep
         self._session: str | None = None
-        self._stack: contextlib.AsyncExitStack | None = None
-        self._http: httpx.AsyncClient | None = None
+        self._server = ImageServerTransport(
+            self.base_url,
+            name="SwarmUIClient",
+            timeout=timeout,
+            retry=retry,
+            max_response_bytes=max_response_bytes,
+            transport=transport,
+        )
 
     async def __aenter__(self) -> SwarmUIClient:
         """open the connection.
@@ -144,9 +154,7 @@ class SwarmUIClient:
         :return: self
         :rtype: SwarmUIClient
         """
-        stack = contextlib.AsyncExitStack()
-        self._http = await stack.enter_async_context(httpx.AsyncClient(timeout=self.timeout, transport=self._transport))
-        self._stack = stack
+        await self._server.__aenter__()
         return self
 
     async def __aexit__(
@@ -163,9 +171,7 @@ class SwarmUIClient:
         :return: nothing
         :rtype: None
         """
-        stack, self._stack, self._http = self._stack, None, None
-        if stack is not None:
-            await stack.aclose()
+        await self._server.__aexit__(exc_type, exc, tb)
 
     # --- the API -------------------------------------------------------------------------------
 
@@ -186,14 +192,10 @@ class SwarmUIClient:
         :rtype: dict[str, Any]
         :raises RuntimeError: when used outside ``async with``
         :raises SwarmUIError: when SwarmUI refuses (an ``error`` in the reply, or a non-2xx status)
+        :raises ResponseTooLargeError: when the answer is larger than ``max_response_bytes``
         """
-        if self._http is None:
-            raise RuntimeError("SwarmUIClient is used inside `async with` only")
-        kwargs: dict[str, Any] = {"json": dict(payload)}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        response = await http_retry.send(
-            self._http, "POST", f"{self.base_url}/API/{name}", repeatable=repeatable, policy=self._retry, **kwargs
+        response = await self._server.request(
+            "POST", f"/API/{name}", repeatable=repeatable, timeout=timeout, json=dict(payload)
         )
         if response.status_code >= 400:
             raise SwarmUIError(

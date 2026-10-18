@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from threetears.models.providers.image.comfyui import ComfyUIClient, ComfyUIError
-from threetears.models.providers.image.http_retry import RetryPolicy
+from threetears.models.providers.image.transport import RetryPolicy
 
 BASE = "http://comfy:8188"
 GRAPH = {"1": {"class_type": "SaveImage", "inputs": {}}}

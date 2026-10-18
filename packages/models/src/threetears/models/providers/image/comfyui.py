@@ -14,7 +14,6 @@ with ComfyUI's own messages.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import copy
 import json
 import secrets
@@ -26,9 +25,8 @@ from typing import Any
 import httpx
 
 from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
-from threetears.models.providers.image import http_retry
-from threetears.models.providers.image.http_retry import RetryPolicy
 from threetears.models.providers.image.options import dimensions_for, result_metadata
+from threetears.models.providers.image.transport import DEFAULT_MAX_RESPONSE_BYTES, ImageServerTransport, RetryPolicy
 
 __all__ = [
     "ComfyUIClient",
@@ -85,6 +83,9 @@ class ComfyUIClient:
     :ptype sleep: Callable[[float], Awaitable[None]] | None
     :param clock: a monotonic clock for waits; ``None`` is ``time.monotonic``
     :ptype clock: Callable[[], float] | None
+    :param max_response_bytes: the largest answer read (a picture from ``view``); a larger one
+        raises :class:`~threetears.models.providers.image.transport.ResponseTooLargeError`
+    :ptype max_response_bytes: int
     """
 
     def __init__(
@@ -98,6 +99,7 @@ class ComfyUIClient:
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
         clock: Callable[[], float] | None = None,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
     ) -> None:
         """capture the settings; the connection opens on ``async with``.
 
@@ -117,19 +119,26 @@ class ComfyUIClient:
         :ptype sleep: Callable[[float], Awaitable[None]] | None
         :param clock: a monotonic clock, or ``None``
         :ptype clock: Callable[[], float] | None
+        :param max_response_bytes: the largest answer read
+        :ptype max_response_bytes: int
         :return: nothing
         :rtype: None
+        :raises ValueError: when ``base_url`` isn't an http(s) address with a host
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.poll_interval = poll_interval
         self.client_id = client_id
-        self._retry = retry or RetryPolicy()
-        self._transport = transport
         self._sleep = sleep
         self._clock = clock or time.monotonic
-        self._stack: contextlib.AsyncExitStack | None = None
-        self._http: httpx.AsyncClient | None = None
+        self._server = ImageServerTransport(
+            self.base_url,
+            name="ComfyUIClient",
+            timeout=timeout,
+            retry=retry,
+            max_response_bytes=max_response_bytes,
+            transport=transport,
+        )
 
     async def __aenter__(self) -> ComfyUIClient:
         """open the connection.
@@ -137,9 +146,7 @@ class ComfyUIClient:
         :return: self
         :rtype: ComfyUIClient
         """
-        stack = contextlib.AsyncExitStack()
-        self._http = await stack.enter_async_context(httpx.AsyncClient(timeout=self.timeout, transport=self._transport))
-        self._stack = stack
+        await self._server.__aenter__()
         return self
 
     async def __aexit__(
@@ -156,16 +163,14 @@ class ComfyUIClient:
         :return: nothing
         :rtype: None
         """
-        stack, self._stack, self._http = self._stack, None, None
-        if stack is not None:
-            await stack.aclose()
+        await self._server.__aexit__(exc_type, exc, tb)
 
     # --- requests ------------------------------------------------------------------------------
 
     async def _send(
         self, method: str, path: str, *, repeatable: bool, timeout: float | None = None, **kwargs: Any
     ) -> httpx.Response:
-        """one request, sent again as far as is safe (``http_retry.send``); a 4xx or 5xx raises.
+        """one request through the transport, sent again as far as is safe; a 4xx or 5xx raises.
 
         :param method: ``GET`` or ``POST``
         :ptype method: str
@@ -175,21 +180,16 @@ class ComfyUIClient:
         :ptype repeatable: bool
         :param timeout: this request's timeout in seconds; ``None`` is the client's
         :ptype timeout: float | None
-        :param kwargs: what httpx's ``get``/``post`` take (``json``, ``params``, ``files``)
+        :param kwargs: the body or query (``json``, ``params``, ``files``)
         :ptype kwargs: Any
         :return: the answer (2xx or 3xx)
         :rtype: httpx.Response
         :raises RuntimeError: when used outside ``async with``
         :raises ComfyUIError: when the server refuses (4xx), or fails (5xx) past what may be retried
+        :raises ResponseTooLargeError: when the answer is larger than ``max_response_bytes``
         :raises httpx.TransportError: when the server can't be reached past the attempts
         """
-        if self._http is None:
-            raise RuntimeError("ComfyUIClient is used inside `async with` only")
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        response = await http_retry.send(
-            self._http, method, f"{self.base_url}{path}", repeatable=repeatable, policy=self._retry, **kwargs
-        )
+        response = await self._server.request(method, path, repeatable=repeatable, timeout=timeout, **kwargs)
         if response.status_code >= 400:
             raise ComfyUIError(
                 f"ComfyUI {method} {path} answered {response.status_code}: {_text(response)}",

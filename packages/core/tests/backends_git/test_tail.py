@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Sequence
 from datetime import timedelta
 from pathlib import Path
@@ -510,3 +511,40 @@ async def test_a_second_desync_after_the_heal_is_found_again(make_repo: Any, git
 def test_moves_cross_the_wire() -> None:
     request = ForwardedRequest(op="commit_files", files={}, moves={"a.md": "b.md"}, message="rename\n")
     assert decode_request(encode_request(request)).moves == {"a.md": "b.md"}
+
+
+async def test_a_file_saved_but_never_committed_moves_and_leaves_nothing_behind(make_repo: Any, git_cli: Any) -> None:
+    # scriob's create-then-rename: the entry exists only as saved edits when it is renamed
+    repo = await seeded(make_repo, git_cli)
+    root = repo.config.work_tree
+    one = tail(MemoryLog())
+    await repo.add_tail(one)
+    await one.save(repo, payload=op("stories/one/james.md", set="# james\n"), op_id="create")
+    assert repo.git.show("HEAD", "stories/one/james.md") is None  # never committed
+
+    result = await repo.commit_files({}, "rename", moves={"stories/one/james.md": "stories/one/jimmy.md"})
+    assert result.sha is not None
+    assert not (root / "stories/one/james.md").exists()
+    assert repo.git.show("HEAD", "stories/one/jimmy.md") == b"# james\n"
+    assert repo.git.show("HEAD", "stories/one/james.md") is None
+    assert repo.git.dirty() == []
+
+
+async def test_a_cancelled_commit_finishes_before_the_cancel_gets_out(make_repo: Any) -> None:
+    repo = await make_repo()
+    real = repo.git.commit
+
+    def slow(*args: Any, **kwargs: Any) -> str:
+        time.sleep(0.4)
+        return real(*args, **kwargs)
+
+    repo.git.commit = slow  # type: ignore[method-assign]
+    task = asyncio.create_task(repo.commit_files({"a.md": b"a\n"}, "slow"))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # the commit ran to its end before the cancel was let out, so nothing was left half written
+    assert repo.git.show("HEAD", "a.md") == b"a\n"
+    assert repo.git.dirty() == []
+    assert not repo.git.git_path("git-store/inflight.json").exists()
