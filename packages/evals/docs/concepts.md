@@ -281,6 +281,17 @@ under concurrency (`execution_mode`
 bar, a question or a ranking on it) without declaring it is refused. Each run records both
 (`measure_latency`, `cell_concurrency`).
 
+#### Arm schedule (`arm_schedule`)
+How the arms of one launch share time and provider capacity, on `run_launch`, `sweep_launch` and `start_run`.
+Running every arm side by side at its own width (`concurrent`) loads one provider with every arm at once, and a
+provider rationing one arm's calls shrinks that arm's sample and not the other's: the comparison reads host capacity
+as a difference between arms. Running them one after another (`sequential`) puts a provider's bad minute on whichever
+arm was running. So by default the arms are `interleaved`: every arm runs at once, their cells taken in turn, case by
+case, under one width shared by the launch, and every arm plays its cases in one order, so a bad minute lands on every
+arm alike and pairing the arms by case also pairs them in time. Latency under test runs the arms `sequential`, the
+only schedule it takes. Each run records the schedule it ran under (`arm_schedule`), and a campaign whose arms were
+run one after another or side by side says so beside its readings. It is a disclosure, never part of a run's identity.
+
 #### k (repeats)
 How many times each case is played in a run (`k_runs`, `Eval(k=...)`, CLI `--k`; default 3). LLM
 answers vary, so one play per case under-reports that variance. *Example:* 40 tickets, `k=3`, 120 trials.

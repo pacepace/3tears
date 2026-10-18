@@ -375,8 +375,9 @@ class SweepLaunchParams(SweepSettings):
 
     arms: list[dict[str, Any]] = Field(
         min_length=1,
-        description="The arms, launched in this order: each {model, label?, overlays?, apparatus_settings?, "
-        "judge_model?, simulator_model?} — its own model and what it sets differently from its siblings.",
+        description="The arms, in the order they launch and take their turns: each {model, label?, overlays?, "
+        "apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its "
+        "siblings.",
     )
 
 
@@ -1491,7 +1492,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="sweep_launch",
-            summary="Launch arms that differ beyond the model, one after another, into one campaign, as one job.",
+            summary="Launch arms that differ beyond the model into one campaign, as one job.",
             workflow=RUN,
             permission="spend",
             params=SweepLaunchParams,
@@ -1510,12 +1511,14 @@ def engine_actions() -> tuple[Action, ...]:
             },
             long_running=True,
             detail=(
-                "Every arm is refused up front if its launch would be. Arms run one at a time unless "
-                "max_concurrent_arms is raised, each run joining the campaign as it is created. job_poll on the "
-                "sweep's job counts the arms launched and finished; one job_cancel stops the arm in flight and "
-                "launches none after. An arm refused at its launch, or whose run ends failed, ends the sweep "
-                "failed. The judge and simulator are the sweep's unless an arm names its own: where the sweep "
-                "names none, the first arm's resolved ones hold for the rest."
+                "Every arm is refused up front if its launch would be. arm_schedule says how the arms share time: "
+                "interleaved (the default) prepares every arm and starts them as one launch whose cases are taken in "
+                "turn, case by case; sequential launches one arm after another; concurrent launches every arm at once, "
+                "each at its own width. Each run joins the campaign as it is created. job_poll on the sweep's job "
+                "counts the arms launched and finished; one job_cancel stops the arms in flight and launches none "
+                "after. An arm refused at its launch, or whose run ends failed, ends the sweep failed; launched in "
+                "order, no arm is launched after it. The judge and simulator are the sweep's unless an arm names its "
+                "own: where the sweep names none, the role's default is resolved once for every arm."
             ),
         ),
         Action(
@@ -1576,7 +1579,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "written by variation_model, whose calls run before the runs start, are priced against the host's "
                 "out-of-run cap and are outside every run's cost cap. job_poll on the launch's job names its runs "
                 "once they start (run_ids) and counts them finished; the job ends when every run has, and one "
-                "job_cancel stops them all."
+                "job_cancel stops them all. Several models are interleaved by default (arm_schedule): every arm runs "
+                "at once, their cases taken in turn under one width, so a provider's bad minute lands on every arm "
+                "alike; each run records the schedule it ran under."
             ),
         ),
         Action(

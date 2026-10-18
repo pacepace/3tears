@@ -749,6 +749,8 @@ def _three_arm_sweep() -> SweepArguments:
         campaign_behavior="extraction accuracy",
         k_runs=1,
         arms=[SweepArm(model=RUN_MODELS[0], label=style, overlays={"prompt_style": style}) for style in STYLES],
+        # Arm after arm: what these read is the fence checked before each further arm is launched.
+        arm_schedule="sequential",
     )
 
 

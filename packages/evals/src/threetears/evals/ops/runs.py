@@ -17,6 +17,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema.models import (
     DEFAULT_LAUNCH_K_RUNS,
     NON_TERMINAL_RUN_STATUSES,
+    ArmSchedule,
     CaseSet,
     CaseSetRef,
     EvalRun,
@@ -25,6 +26,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import AdmittedJob, JobsStarted, start_job
 from threetears.evals.analysis.summary import EvalSummary, summarize_run
+from threetears.evals.run.arm_schedule import resolve_arm_schedule
 from threetears.evals.run.authoring import list_judge_configs, list_templates
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.curation import delete_run, delete_unreadable_run, set_run_archived
@@ -218,6 +220,16 @@ class LaunchArguments(EvalBaseModel):
             "Declare latency under test: each run executes its cases one at a time, with no other run beside it. "
             "False runs several cases at once — far faster — and the latency then recorded is marked read under "
             "concurrency and never compared."
+        ),
+    )
+    arm_schedule: ArmSchedule | None = Field(
+        default=None,
+        description=(
+            "How the arms share time and provider capacity. interleaved (the default): every arm at once, their "
+            "cases taken in turn case by case under one width shared by the launch, so a provider's bad minute lands "
+            "on every arm alike. sequential: one arm after another. concurrent: every arm side by side at its own "
+            "width, the fastest, loading the providers with every arm at once, so one arm can take a provider's "
+            "rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run."
         ),
     )
 
@@ -542,6 +554,7 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         cell_timeout_s=arguments.cell_timeout_s,
         case_set=arguments.case_set,
         measure_latency=arguments.measure_latency,
+        arm_schedule=arguments.arm_schedule,
     )
     work = launch_job_work(
         host.launch,
@@ -552,6 +565,7 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         k_runs=arguments.k_runs,
         n_variations=arguments.n_variations,
         scope_id=scope_id,
+        arm_schedule=resolve_arm_schedule(arguments.arm_schedule, measure_latency=arguments.measure_latency),
     )
     label = ", ".join(arguments.models) or "the kind's default model"
     return await start_job(host, AdmittedJob(work=work, kind="launch", target_id=arguments.template_id, label=label))

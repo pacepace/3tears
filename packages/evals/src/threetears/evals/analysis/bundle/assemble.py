@@ -266,11 +266,12 @@ class CampaignReadStore(Protocol):
 
 
 def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
-    """Say how the campaign's runs were started, when they were not all started as one launch.
+    """Say how the campaign's runs were started, when they were not all started as one launch taking turns.
 
     :param runs: The resolved member runs.
     :ptype runs: Collection[EvalRun]
-    :return: The sentence, or None when every run shares one launch group or there are fewer than two.
+    :return: The sentence, or None when every run shares one launch group whose arms were interleaved (or record no
+        schedule, stored before runs recorded one), or there are fewer than two.
     :rtype: str | None
     """
     if len(runs) < 2:
@@ -278,7 +279,7 @@ def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
     groups = {run.launch_group_id for run in runs if run.launch_group_id is not None}
     alone = sum(1 for run in runs if run.launch_group_id is None)
     if alone == 0 and len(groups) == 1:
-        return None
+        return _schedule_disclosure(runs)
     parts = []
     if groups:
         parts.append(f"{len(groups)} separate launch{'es' if len(groups) != 1 else ''}")
@@ -289,6 +290,31 @@ def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
         "starts were measured side by side only where their windows happen to overlap: a difference between "
         "them can come from when they ran as well as from their settings."
     )
+
+
+def _schedule_disclosure(runs: Collection[EvalRun]) -> str | None:
+    """Say how one launch's arms shared time, when they did not take their turns case by case.
+
+    :param runs: The member runs, every one of one launch.
+    :ptype runs: Collection[EvalRun]
+    :return: The sentence for arms run one after another or side by side, or None.
+    :rtype: str | None
+    """
+    schedules = {run.arm_schedule for run in runs}
+    if "concurrent" in schedules:
+        return (
+            f"These {len(runs)} runs were launched together with their arms side by side, each at its own width, so "
+            "they loaded their providers at once: a provider rationing one arm's calls more than another's shrinks "
+            "that arm's sample, and a difference between them in failures, exclusions or latency can come from the "
+            "host's capacity as well as from their settings."
+        )
+    if "sequential" in schedules:
+        return (
+            f"These {len(runs)} runs were launched together but ran one arm after another, so each arm met its "
+            "providers at another time: a difference between them can come from when they ran as well as from their "
+            "settings."
+        )
+    return None
 
 
 def assemble_context_bundle(

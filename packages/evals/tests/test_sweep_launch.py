@@ -1,7 +1,7 @@
-"""A sweep: arms that differ beyond the model, launched by one call, one after another, into one campaign (#632).
+"""A sweep: arms that differ beyond the model, launched by one call into one campaign (#632, #841).
 
-A toy host launches three arms differing in overlays with one call, watches them run one at a time, cancels
-part-way, and finds the finished runs already members of the campaign.
+A toy host launches three arms differing in overlays with one call: by default as one interleaved launch, and asked
+to, one at a time, where it cancels part-way and finds the finished runs already members of the campaign.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ async def _watch(host: OpsHost, job_id: str, until: Any, executing: list[int]) -
 async def test_a_three_arm_sweep_runs_its_arms_one_at_a_time_into_its_campaign() -> None:
     host, storage = off_loop(_host, latency_s=0.02)
 
-    started = await sweep_launch(host, _sweep(), TOYHOST_SCOPE, created_by="agent:test")
+    started = await sweep_launch(host, _sweep(arm_schedule="sequential"), TOYHOST_SCOPE, created_by="agent:test")
     (job,) = started.jobs
     assert job.kind == "sweep" and job.job_id.startswith("sweep:")
     executing: list[int] = []
@@ -82,11 +82,28 @@ async def test_a_three_arm_sweep_runs_its_arms_one_at_a_time_into_its_campaign()
     runs = off_loop(storage.load_eval_runs, campaign.run_ids, TOYHOST_SCOPE)
     assert [run.overlays["prompt_style"] for run in runs] == list(STYLES), "each arm ran its own overlays"
     assert {run.status for run in runs} == {"completed"}
+    assert {run.arm_schedule for run in runs} == {"sequential"}, "each arm's run says its arms ran one after another"
+
+
+async def test_a_sweep_by_default_runs_its_arms_as_one_interleaved_launch() -> None:
+    host, storage = off_loop(_host, latency_s=0.0)
+
+    (job,) = (await sweep_launch(host, _sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    done = await _watch(host, job.job_id, lambda status: status.done, [])
+
+    assert (done.state, done.progress["arms_finished"]) == ("completed", 3)
+    campaign = off_loop(storage.load_campaign, job.target_id, TOYHOST_SCOPE)
+    assert campaign is not None
+    runs = off_loop(storage.load_eval_runs, campaign.run_ids, TOYHOST_SCOPE)
+    assert [run.overlays["prompt_style"] for run in runs] == list(STYLES)
+    assert len({run.launch_group_id for run in runs}) == 1, "every arm started in one launch"
+    assert {run.arm_schedule for run in runs} == {"interleaved"}
+    assert len({run.judge_model for run in runs}) == 1, "the launch resolved one judge for every arm"
 
 
 async def test_cancelling_part_way_stops_the_arm_in_flight_and_keeps_the_finished_ones_as_members() -> None:
     host, storage = off_loop(_host, latency_s=0.05)
-    (job,) = (await sweep_launch(host, _sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    (job,) = (await sweep_launch(host, _sweep(arm_schedule="sequential"), TOYHOST_SCOPE, created_by="agent:test")).jobs
     executing: list[int] = []
 
     second_running = await _watch(
@@ -112,9 +129,9 @@ async def test_cancelling_part_way_stops_the_arm_in_flight_and_keeps_the_finishe
         await job_cancel(host, job.job_id, TOYHOST_SCOPE)
 
 
-async def test_raising_the_concurrency_runs_arms_side_by_side() -> None:
+async def test_a_concurrent_sweep_runs_arms_side_by_side() -> None:
     host, _storage = off_loop(_host, latency_s=0.05)
-    (job,) = (await sweep_launch(host, _sweep(max_concurrent_arms=3), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    (job,) = (await sweep_launch(host, _sweep(arm_schedule="concurrent"), TOYHOST_SCOPE, created_by="agent:test")).jobs
     executing: list[int] = []
     done = await _watch(host, job.job_id, lambda status: status.done, executing)
     assert done.state == "completed"
@@ -132,6 +149,15 @@ async def test_an_arm_its_launch_would_refuse_refuses_the_sweep_before_anything_
     assert (
         off_loop(storage.list_campaigns, TOYHOST_SCOPE) == [] and off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     )
+
+
+async def test_latency_under_test_refuses_arms_run_at_once_before_anything_is_created() -> None:
+    host, storage = off_loop(_host, latency_s=0.0)
+    with pytest.raises(ValidationFailedError, match="one after another"):
+        await sweep_launch(
+            host, _sweep(measure_latency=True, arm_schedule="interleaved"), TOYHOST_SCOPE, created_by="agent:test"
+        )
+    assert off_loop(storage.list_campaigns, TOYHOST_SCOPE) == []
 
 
 def test_two_arms_that_are_one_condition_are_refused() -> None:
@@ -170,7 +196,8 @@ async def test_an_arm_whose_run_fails_ends_the_sweep_launching_nothing_after_it(
         SweepArm(model=RUN_MODELS[0], label="fine"),
     ]
     # A cap the sweep names, so the unpriceable arm is admitted under it rather than refused up front.
-    (job,) = (await sweep_launch(host, _sweep(arms=arms, max_cost_usd=1.0), TOYHOST_SCOPE, created_by="t")).jobs
+    sweep = _sweep(arms=arms, max_cost_usd=1.0, arm_schedule="sequential")
+    (job,) = (await sweep_launch(host, sweep, TOYHOST_SCOPE, created_by="t")).jobs
     done = await _watch(host, job.job_id, lambda status: status.done, [])
 
     assert done.state == "failed"

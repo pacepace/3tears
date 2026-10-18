@@ -138,6 +138,8 @@ the document, so extending one is a major. Each, and why:
 
 - ``EvalRunStatus``, ``JobOutcome`` (and ``SweepOutcome``), ``AttemptOutcome`` — lease settling, the boot reclaim and
   every terminal test branch on them; a state misread strands a job or resurrects one.
+- ``ArmSchedule`` — whether a comparison's arms were co-loaded on their providers; a reader that cannot say which
+  cannot say whether a difference between arms can be the host's capacity.
 - ``CellTermination`` — decides whether a cell is excluded from every figure.
 - ``ConversationStopCause`` — its members are split into a conversation ending on its own terms and a rig fault,
   which excludes the cell.
@@ -271,7 +273,13 @@ CORE_SCHEMA_VERSION: int = 15
 #:   cell, so ``metered_calls_refused`` (run and cell) is non-zero only for a host that declared no metered tools;
 #:   a value stored before this minor keeps the meaning it was written under.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 4
+#: - **v15.5** — a comparison's arms record how they shared time: ``EvalRun.arm_schedule``, ``EvalLaunch.arm_schedule``
+#:   and ``EvalSweep.arm_schedule`` (an ``ArmSchedule``: ``interleaved``, ``sequential`` or ``concurrent``; default
+#:   None: stored before the field existed, or a run its host assembled without a launch). A disclosure only: it is in
+#:   no identity, context key or cell, so no stored key moves, and None reads as "not recorded", never as one of the
+#:   three. ``EvalSweep.max_concurrent_arms`` keeps its meaning (how many arms ran at once).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 5
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

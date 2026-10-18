@@ -50,6 +50,7 @@ charge, and, when the cut struck the judge phase, the evidence and every score t
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import random
 import time
@@ -223,6 +224,13 @@ class RunnerOptions:
     # generator rather than an integer seed so a caller cannot accidentally share
     # one stream between the shuffle and some future use.
     cell_order_rng: random.Random | None = None
+    # What the cell order is derived from when it must be shared with other runs: ``None`` — every run launched on its
+    # own, and every caller building its own options — derives it from the run's id. An interleaved launch
+    # (:data:`~threetears.evals.schema.models.ArmSchedule`) sets its launch group's id on every arm's run, so every
+    # arm plays the cases it shares with its siblings in one order and the same case runs on every arm at once
+    # (:func:`cell_execution_order`). Recorded by construction, as the run's own id is: the run carries
+    # ``launch_group_id`` and ``arm_schedule``.
+    cell_order_seed: str | None = None
     # The candidate kinds this run wires, keyed by the name a template carries, each as the
     # factory that builds the kind for one cell (:class:`KindFactory`), with the collaborators the
     # launch bound for this run. Every kind arrives this way: the runner has no way to build a
@@ -3336,6 +3344,7 @@ def cell_execution_order(
     test_cases: list[EvalTestCase],
     *,
     rng: random.Random | None = None,
+    seed: str | None = None,
 ) -> list[tuple[int, EvalTestCase]]:
     """The order a run's cells are executed in — the full matrix, shuffled.
 
@@ -3369,13 +3378,34 @@ def cell_execution_order(
     :ptype run: EvalRun
     :param test_cases: The resolved cases, one per matrix column.
     :ptype test_cases: list[EvalTestCase]
-    :param rng: Generator to shuffle with. ``None`` derives one from ``run.id``.
+    **An order shared across runs.** The arms of an interleaved launch run their cells in turn, case by case, so a
+    provider's bad minute lands on every arm alike; for that turn to pair the arms by case it must also pair them
+    in time, which needs every arm to play its cases in one order. ``seed`` (the launch group's id) gives that
+    order: each cell is placed by a digest of the seed, its repeat and its case's id, so two runs sharing cells
+    play them in the same relative order whatever order their case lists came in, and a run's cells another run
+    does not have fall in among them.
+
+    :param run: The run whose matrix is being ordered; supplies ``k_runs`` and the id the
+        order is derived from.
+    :ptype run: EvalRun
+    :param test_cases: The resolved cases, one per matrix column.
+    :ptype test_cases: list[EvalTestCase]
+    :param rng: Generator to shuffle with. ``None`` derives the order from ``seed``, or from ``run.id``.
     :ptype rng: random.Random | None
+    :param seed: What to derive an order shared with other runs from; ignored beside ``rng``.
+    :ptype seed: str | None
     :return: Every ``(k_iteration, test_case)`` cell exactly once, in the order the run will
         execute them. Every cell is at the run's one candidate model.
     :rtype: list[tuple[int, EvalTestCase]]
     """
     cells = [(k, tc) for k in range(1, run.k_runs + 1) for tc in test_cases]
+    if rng is None and seed is not None:
+        # A digest rather than a shuffle: a shuffle's permutation depends on the list's length and order, so two
+        # arms' lists that differed in either would not line up case for case.
+        def place(cell: tuple[int, EvalTestCase]) -> bytes:
+            return hashlib.sha256(f"{seed}\x00{cell[0]}\x00{cell[1].id}".encode()).digest()
+
+        return sorted(cells, key=place)
     # ``random.Random(str)`` seeds off a hash of the string that does not depend on
     # PYTHONHASHSEED, so the same run id gives the same order in every process.
     (rng or random.Random(run.id)).shuffle(cells)
@@ -3551,7 +3581,7 @@ async def execute_run(
     # matrix aligned with the coordinate being compared. See
     # :func:`cell_execution_order` for the order's derivation and why its seed is
     # not a measurement condition. Cells START in this order however many run at once.
-    order = cell_execution_order(run, test_cases, rng=options.cell_order_rng)
+    order = cell_execution_order(run, test_cases, rng=options.cell_order_rng, seed=options.cell_order_seed)
     # The run's width, narrowed to its own matrix: a run of one cell is serial whatever was asked, and
     # its cells say so (``execution_mode`` reads the width off these options).
     width = min(options.max_concurrent_cells, max(len(order), 1))

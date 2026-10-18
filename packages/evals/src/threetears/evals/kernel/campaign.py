@@ -41,7 +41,7 @@ from threetears.evals.schema.job_lease import (
     LostField,
 )
 from threetears.evals.schema.refusal import RefusalField
-from threetears.evals.schema.models import CoreSchemaVersion, SchemaVersion, utc_now_iso
+from threetears.evals.schema.models import ArmSchedule, CoreSchemaVersion, SchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.kernel.surface import DecisionSurface
@@ -1111,6 +1111,11 @@ class EvalSweep(CoreDocumentModel):
     subject_id: str = Field(min_length=1)
     arms: list[SweepArmRecord] = Field(min_length=1, description="Every arm, in launch order.")
     max_concurrent_arms: int = Field(ge=1, description="How many arms run at once; 1 runs them one after another.")
+    arm_schedule: ArmSchedule | None = Field(
+        default=None,
+        description="How the sweep's arms shared time (`ArmSchedule`), as each arm's run records it too; None for a "
+        "sweep stored before the field existed.",
+    )
     outcome: SweepOutcome = "running"
     detail: str | None = Field(default=None, description="Why it ended other than completed.")
     created_at: str = Field(default_factory=utc_now_iso)
