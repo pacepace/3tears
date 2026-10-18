@@ -258,7 +258,7 @@ class GuardrailMargin(EvalDocumentModel, CoreShapeModel):
 
 
 class RateDrop(EvalDocumentModel, CoreShapeModel):
-    """A clause of a decision rule: no pass rate may drop by more than ``max_points`` against the control.
+    """A clause of a floor: no pass rate may drop by more than ``max_points`` against the control.
 
     ``reading`` None reads every pass/fail reading the arms share: the overall pass rate and each check's. A name
     reads that one alone: a goal-state check by its verbatim text, a pass/fail judged dimension by its name, or a
@@ -291,7 +291,7 @@ class RateDrop(EvalDocumentModel, CoreShapeModel):
 
 
 class CostLower(EvalDocumentModel, CoreShapeModel):
-    """A clause of a decision rule: the arm must cost less per reply than the control.
+    """A clause of a floor: the arm must cost less per reply than the control.
 
     A cost observed no lower settles keep on any number of cases, since an arm's price per reply is not a sample;
     switch needs every arm at the case floor and the cost contrast's interval wholly below zero.
@@ -302,7 +302,7 @@ class CostLower(EvalDocumentModel, CoreShapeModel):
     )
 
 
-#: One clause of a decision rule, read back by its ``kind``.
+#: One clause of a floor, read back by its ``kind``.
 DecisionClause = Annotated[RateDrop | CostLower, Field(discriminator="kind")]
 
 

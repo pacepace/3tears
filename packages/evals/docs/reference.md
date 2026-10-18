@@ -281,7 +281,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ConflictError`** · *host contract* · exception · State conflict (status 409).
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
 - **`CostCapReached`** · *host contract* · exception · Deprecated: the engine no longer raises it, because no ceiling is asked inside a cell.
-- **`CostLower`** · *host contract* · model · A clause of a decision rule: the arm must cost less per reply than the control.
+- **`CostLower`** · *host contract* · model · A clause of a floor: the arm must cost less per reply than the control.
 - **`DefinitionStore`** · *host contract* · protocol · What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.
 - **`DeliveryRecorder`** · protocol · Captures one asynchronous tool's background work for one cell.
 - **`DeliveryReplay`** · protocol · Serves one asynchronous tool's recorded work for one cell.
@@ -307,7 +307,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`PlannedCall`** · dataclass · One call an out-of-run unit of work means to make: the prompt pair and the directive it sends.
 - **`PromptDrift`** · dataclass · How one stored prompt reads against the package's shipped default.
 - **`ProviderRefusedError`** · *host contract* · exception · A paid provider call made on the caller's behalf raised (status 502).
-- **`RateDrop`** · *host contract* · model · A clause of a decision rule: no pass rate may drop by more than `max_points` against the control.
+- **`RateDrop`** · *host contract* · model · A clause of a floor: no pass rate may drop by more than `max_points` against the control.
 - **`Recordable`** · protocol · The two members the cassette layer uses on whatever it records: an action result or a delivered payload.
 - **`ReplayedDelivery`** · dataclass · One recorded piece of background work, served in place of running it.
 - **`ResultStore`** · *host contract* · protocol · The cells a run recorded: each `EvalResult` and the `EvalTrace` beside it.
@@ -1146,7 +1146,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `order` | `str` | required | The order the rows are in, in words. |
 | `total_rows` | `int` | required | How many rows the table has; more than are shown when it is truncated. |
 | `details` | `bool` | `False` | Whether the table is drill-down: HTML folds it in a `<details>`, closed. |
-| `title_ref` | `str \| None` | `None` | An anchor on the page the title links to, where the table reads a sentence said there (`rule`: the subhead stating the decision rule); None for none. |
+| `title_ref` | `str \| None` | `None` | An anchor on the page the title links to, where the table reads a sentence said there; None for none. |
 
 #### `ChartBlock`
 

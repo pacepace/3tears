@@ -543,7 +543,7 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
 
     **A claim of no worse by more than a margin reads the bounded interval** (``bounded_interval``), the bounded
     test's on the declared range at the same level, valid at every n; the t interval is not. Read for non-inferiority
-    on a pass rate's coarse per-case shares at the margin, it let a decision rule's ``switch`` through up to 12% of
+    on a pass rate's coarse per-case shares at the margin, it let a ``switch`` on a rate through up to 12% of
     the time against the 2.5% it states (``docs/measuring-soundly.md``), the failure a guardrail's ``held`` was moved
     off it for. A reading with no declared range has none.
 

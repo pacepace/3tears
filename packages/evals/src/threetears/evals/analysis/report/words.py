@@ -198,7 +198,7 @@ def reading_heading(surface: DecisionSurface, name: str, reading: str = "measure
     """A reading as the page heads it, in a column, a row or a chart's title.
 
     A goal check by its expression, verbatim as code (:func:`~threetears.evals.analysis.style.measure_name`); how
-    each trial ended (a ``trial`` reading) as the decision rule names it, "the pass rate"; any other reading by the
+    each trial ended (a ``trial`` reading) as a floor names it, "the pass rate"; any other reading by the
     surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
 
     :param surface: The decision surface the reading is on.

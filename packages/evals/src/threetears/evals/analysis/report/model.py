@@ -1,10 +1,9 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the question declared before the run quoted and the subhead under it, the arms line and the
-rule's sentence, the verdict line, the
-scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
-qualification is a step down, in the sections), the decision rule clause by clause where one is declared, what it
+campaign's name —, the question declared before the run quoted and the subhead under it, the arms line, the
+verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
+qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
 cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
 table), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
@@ -57,7 +56,7 @@ CellValue = str | int | float | bool | None
 ReportBasis = Literal["analysis", "code_only"]
 
 #: Where a block sits, in reading order. ``header`` is the first screen's title, arms and verdict lines, and
-#: ``scoreboard`` the rest of the first screen; ``decision`` is a declared decision rule read clause by clause;
+#: ``scoreboard`` the rest of the first screen; ``decision`` is the floors section: each declared floor read clause by clause;
 #: ``memo`` and ``contrasts`` are what it means; ``cases`` and ``trials`` the cases and their drill-down;
 #: ``not_tested`` what the campaign could not speak to; ``methods`` how everything was measured; ``glossary`` every
 #: term of art the page used.
@@ -472,8 +471,8 @@ class TableBlock(_Block):
     title_ref: str | None = Field(
         default=None,
         description=(
-            "An anchor on the page the title links to, where the table reads a sentence said there "
-            "(`rule`: the subhead stating the decision rule); None for none."
+            "An anchor on the page the title links to, where the table reads a sentence said there; "
+            "None for none."
         ),
     )
 

@@ -1675,7 +1675,7 @@ class FamilyComparison(EvalDocumentModel):
             "The bounded test's interval on `delta` on the reading's declared range, at the family's `interval_level`: "
             "valid for every distribution on the range at every n, where `interval` (a t interval wherever the values "
             "have spread) is not. A claim that the contrast is no worse than the control by more than a margin, such "
-            "as a decision rule's `switch` on a rate, reads this one. None when no test ran, when the reading declares "
+            "as a floor on a rate, reads this one. None when no test ran, when the reading declares "
             "no range, and in a bundle before shape 55."
         ),
     )
@@ -1683,7 +1683,7 @@ class FamilyComparison(EvalDocumentModel):
         default=None,
         description=(
             "The control's and the contrast's per-case values the bounded test read, aligned case by case when "
-            "`test` is `paired`: carried wherever `bounded_interval` is, so a decision rule's projection can compute "
+            "`test` is `paired`: carried wherever `bounded_interval` is, so a floor's projection can compute "
             "that interval again at more cases. Left out of what the writer is shown. None where `bounded_interval` "
             "is None, and in a bundle before shape 58."
         ),
