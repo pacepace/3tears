@@ -456,7 +456,11 @@ def _text(block: TextBlock) -> str:
         )
         return f'<p data-role="recommendation">{lead}{body}{sure}</p>'
     if block.role == "override":
-        over = f"The memo recommends {_escape(facts['Arm'])} over it" if "Arm" in facts else "The memo's why"
+        over = (
+            f"The memo recommends {_escape(facts['Arm'])} over {_escape(facts.get('Over', 'it'))}"
+            if "Arm" in facts
+            else "The memo's why"
+        )
         return f'<p class="override" data-role="override"><strong>{over}:</strong> {body}</p>'
     if block.role in SUMMARY_LEADS:
         return f'<p data-role="{block.role}"><strong>{SUMMARY_LEADS[block.role]}</strong> {body}</p>'

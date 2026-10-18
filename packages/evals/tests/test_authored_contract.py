@@ -33,13 +33,17 @@ def _payload(**overrides: Any) -> dict[str, Any]:
     }
     base = {
         "findings": [finding],
-        "recommendation": {
-            "arm": "fast",
-            "reasons": ["Three rounds halve the tail."],
-            "confidence": "medium",
-            "rests_on": [0],
-            "floors_overridden": [],
-        },
+        "recommendation": [
+            {
+                "arm": "fast",
+                "reasons": ["Three rounds halve the tail."],
+                "confidence": "medium",
+                "rests_on": [0],
+                "floors_overridden": [],
+                "behind_on": [],
+                "bars_missed": [],
+            }
+        ],
         "aspect_summaries": [
             {"aspect": "lookup", "what_changed": "The tail halved.", "how_sure": "Sure.", "means": "Switch."}
         ],

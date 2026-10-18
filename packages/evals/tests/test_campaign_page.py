@@ -41,6 +41,8 @@ from threetears.evals.analysis.style import lint_page
 from threetears.evals.kernel.authored import (
     AspectSummary,
     AuthoredCampaignAnalysis,
+    BarMissed,
+    BehindOn,
     Finding,
     FloorOverride,
     NextStep,
@@ -134,13 +136,17 @@ def _memo() -> AuthoredCampaignAnalysis:
     )
     return AuthoredCampaignAnalysis(
         findings=[finding],
-        recommendation=Recommendation(
-            arm=CONTROL_LABEL,
-            reasons=["The billing floor is broken, and billing is where refunds are lost."],
-            confidence="high",
-            rests_on=[0],
-            floors_overridden=[],
-        ),
+        recommendation=[
+            Recommendation(
+                arm=CONTROL_LABEL,
+                reasons=["The billing floor is broken, and billing is where refunds are lost."],
+                confidence="high",
+                rests_on=[0],
+                floors_overridden=[],
+                behind_on=[],
+                bars_missed=[],
+            )
+        ],
         aspect_summaries=[
             AspectSummary(
                 aspect="billing",
@@ -535,8 +541,10 @@ async def _kind_page(
 
 def _choice_memo(arm: str = "beta") -> AuthoredCampaignAnalysis:
     memo = _memo()
-    recommendation = memo.recommendation.model_copy(update={"arm": arm, "reasons": ["beta costs a quarter as much."]})
-    return memo.model_copy(update={"recommendation": recommendation, "aspect_summaries": []})
+    recommended = memo.recommended()
+    assert recommended is not None
+    recommendation = recommended.model_copy(update={"arm": arm, "reasons": ["beta costs a quarter as much."]})
+    return memo.model_copy(update={"recommendation": [recommendation], "aspect_summaries": []})
 
 
 async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_another() -> None:
@@ -587,8 +595,10 @@ async def test_a_missed_bar_warns_first_on_a_choice_too() -> None:
 async def test_the_writer_s_why_for_an_overridden_floor_sits_beside_its_warning() -> None:
     memo = _memo()
     over = FloorOverride(floor="billing/rate_drop/*", why="Billing refunds are rare this quarter.")
-    recommendation = memo.recommendation.model_copy(update={"arm": CANDIDATE_LABEL, "floors_overridden": [over]})
-    page = await _page("billing", "tone", memo=memo.model_copy(update={"recommendation": recommendation}))
+    recommended = memo.recommended()
+    assert recommended is not None
+    recommendation = recommended.model_copy(update={"arm": CANDIDATE_LABEL, "floors_overridden": [over]})
+    page = await _page("billing", "tone", memo=memo.model_copy(update={"recommendation": [recommendation]}))
     first = _first_screen_markdown(page)
     warning = first.index("**Floor broken on billing")
     why = first.index("**The memo recommends v2 over it:** Billing refunds are rare this quarter.")
@@ -628,3 +638,29 @@ async def test_a_margin_and_floors_stored_without_a_control_are_said_unread_on_b
     (fold,) = page.aspects
     decision = [block for block in fold.report.blocks if block.section == "decision"]
     assert [block.text for block in decision if isinstance(block, DisclosureBlock)] == [_UNREAD]
+
+
+async def test_a_choice_s_why_for_an_arm_shown_behind_sits_beside_the_pairs() -> None:
+    memo = _choice_memo("beta")
+    recommended = memo.recommended()
+    assert recommended is not None
+    behind = BehindOn(aspect="tone", ahead_arm="alpha", why="Tone matters less than cost here.")
+    recommendation = recommended.model_copy(update={"behind_on": [behind]})
+    page = await _kind_page("tone", "billing", memo=memo.model_copy(update={"recommendation": [recommendation]}))
+    first = _first_screen_markdown(page)
+    pairs = first.index("**By aspect, pair by pair**")
+    why = first.index("**The memo recommends beta over alpha, ahead on tone:** Tone matters less than cost here.")
+    assert pairs < why < first.index("**Recommended:** beta")
+
+
+async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:
+    memo = _choice_memo("alpha")
+    recommended = memo.recommended()
+    assert recommended is not None
+    missed = BarMissed(aspect="tone", measure="cost_usd", why="A cent a reply is affordable at this volume.")
+    recommendation = recommended.model_copy(update={"bars_missed": [missed]})
+    page = await _kind_page("tone", memo=memo.model_copy(update={"recommendation": [recommendation]}))
+    first = _first_screen_markdown(page)
+    warning = first.index("**Bar missed on tone: alpha")
+    why = first.index("**The memo recommends alpha over it:** A cent a reply is affordable at this volume.")
+    assert warning < why < first.index("# support queue")

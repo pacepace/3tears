@@ -54,7 +54,7 @@ from threetears.evals.analysis.report.model import (
     interval_text,
     table_row,
 )
-from threetears.evals.analysis.report.words import CONFIDENCE_WORDS
+from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, NO_RECOMMENDATION_WORDS
 from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, measure_name, sentences
 from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -103,19 +103,23 @@ def build_campaign_report(
     reports = _checked_reports(campaign, readings, aspect_reports)
     style = _CampaignStyle.over(campaign, readings, reports)
     kind = readings.kind
-    blocks: list[ReportBlock] = [*_bar_warnings(readings), *_floor_warnings(campaign, readings, memo, style)]
+    blocks: list[ReportBlock] = [
+        *_bar_warnings(readings, memo, style),
+        *_floor_warnings(campaign, readings, memo, style),
+    ]
     if campaign.question.strip():
         blocks.append(
             DisclosureBlock(section="header", source="basis", text=f'"{" ".join(campaign.question.split())}"')
         )
     if kind == "change":
-        blocks += _recommendation_blocks(memo, style)
+        blocks += _recommendation_blocks(memo, style, kind)
         blocks += _table_blocks(campaign, readings, reports)
         blocks += _settle_blocks(readings)
     elif kind == "choice":
         blocks += _pair_blocks(campaign, readings, reports)
+        blocks += _behind_on(memo, style)
         blocks += _frontier_blocks(campaign, readings, reports)
-        blocks += _recommendation_blocks(memo, style)
+        blocks += _recommendation_blocks(memo, style, kind)
     else:
         blocks += _measure_blocks(campaign, readings, reports)
     blocks += _bar_blocks(readings, reports)
@@ -144,7 +148,7 @@ def build_campaign_report(
         aspects=folds,
         readings=readings,
         call=call,
-        recommendation=memo.recommendation if memo is not None and kind != "measurement" else None,
+        recommendation=memo.recommended() if memo is not None and kind != "measurement" else None,
     )
 
 
@@ -189,11 +193,49 @@ def _floor_words(floor: Floor | None, status: FloorStatus) -> str:
     return f"{floor_statement(floor.clause, candidate=status.arm_label)} on {status.aspect}"
 
 
-def _bar_warnings(readings: CampaignReadings) -> list[ReportBlock]:
-    """One loud line per bar an arm misses, the page's first, as loud as a broken floor, for every kind."""
+def _bar_warnings(
+    readings: CampaignReadings, memo: AuthoredCampaignAnalysis | None = None, style: _CampaignStyle | None = None
+) -> list[ReportBlock]:
+    """One loud line per bar an arm misses, the page's first, as loud as a broken floor, for every kind; each followed
+    at once by the writer's why where the memo recommends that arm below that bar (``bars_missed``)."""
+    recommendation = memo.recommended() if memo is not None else None
+    answers: dict[tuple[str, str], list[ReportBlock]] = {}
+    if recommendation is not None and style is not None:
+        for missed in recommendation.bars_missed:
+            if why := style.prose(missed.why).strip():
+                answers.setdefault((missed.aspect, missed.measure), []).append(
+                    TextBlock(
+                        section="header", role="override", body=why, facts=[Fact(name="Arm", value=recommendation.arm)]
+                    )
+                )
+    blocks: list[ReportBlock] = []
+    for status in readings.missed_bars():
+        blocks.append(
+            DisclosureBlock(section="header", source="bar", text=f"Bar missed on {status.aspect}: {status.reason}.")
+        )
+        if recommendation is not None and status.arm_label == recommendation.arm:
+            blocks += answers.pop((status.aspect, status.measure), [])
+    return blocks
+
+
+def _behind_on(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
+    """The writer's why for each aspect a choice's recommended arm is shown behind on, set beside the pairs: what the
+    recommendation answers there (``behind_on``), styled."""
+    recommendation = memo.recommended() if memo is not None else None
+    if recommendation is None:
+        return []
     return [
-        DisclosureBlock(section="header", source="bar", text=f"Bar missed on {status.aspect}: {status.reason}.")
-        for status in readings.missed_bars()
+        TextBlock(
+            section="scoreboard",
+            role="override",
+            body=why,
+            facts=[
+                Fact(name="Arm", value=recommendation.arm),
+                Fact(name="Over", value=f"{behind.ahead_arm}, ahead on {behind.aspect}"),
+            ],
+        )
+        for behind in recommendation.behind_on
+        if (why := style.prose(behind.why).strip())
     ]
 
 
@@ -239,11 +281,12 @@ def _floor_warnings(
 
 def _overrides(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle | None) -> dict[str, list[ReportBlock]]:
     """The writer's why for each broken floor its recommendation is made over, by the floor's key, styled."""
-    if memo is None or style is None:
+    recommendation = memo.recommended() if memo is not None else None
+    if recommendation is None or style is None:
         return {}
     found: dict[str, list[ReportBlock]] = {}
-    arm = memo.recommendation.arm
-    for override in memo.recommendation.floors_overridden:
+    arm = recommendation.arm
+    for override in recommendation.floors_overridden:
         if why := style.prose(override.why).strip():
             found.setdefault(override.floor, []).append(
                 TextBlock(section="header", role="override", body=why, facts=[Fact(name="Arm", value=arm)])
@@ -287,12 +330,16 @@ def _points(value: float) -> str:
     return format_number(round(value, 1))
 
 
-def _recommendation_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
+def _recommendation_blocks(
+    memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle, kind: str
+) -> list[ReportBlock]:
     """The writer's recommendation, the arm and how sure, then each reason in its words, styled; one line with no
-    memo."""
+    memo, and one by the campaign's kind where the memo recommends nothing."""
     if memo is None:
         return [DisclosureBlock(section="header", source="memo", text=NO_RECOMMENDATION)]
-    recommendation = memo.recommendation
+    recommendation = memo.recommended()
+    if recommendation is None:
+        return [DisclosureBlock(section="header", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
     reasons = [style.prose(reason, plans=True) for reason in recommendation.reasons]
     return [
         TextBlock(

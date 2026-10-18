@@ -62,6 +62,7 @@ from threetears.evals.kernel.remedies import (
 )
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES, DURABLE_DOC_TYPES
+from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
     NON_TERMINAL_RUN_STATUSES,
@@ -2590,6 +2591,36 @@ class EvalStorage:
             if dropped:
                 log.warning("drop_all_analyses: dropped %d eval_analysis docs from scope=%s", dropped, scope_id)
         return deleted
+
+    def drop_derived(self, scopes: Iterable[str]) -> dict[str, int]:
+        """Delete every derived document in the scopes named — analyses, insights, judge profiles — and nothing else.
+
+        The operator step for a regenerable bump (:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`):
+        a document written under the old version is refused on read, and assembling a campaign's evidence reads the
+        subject's insight ledger, so one old insight refuses every generation, estimate and code-only report over the
+        subject until it is gone. Every derived type regenerates from the kept core — an analysis by generating it
+        again, an insight with the analysis that mints it, a judge profile from its judge's results — so dropping them
+        loses nothing that is not rebuilt. Cassettes, which are regenerable records rather than derived ones, are left
+        in place: a corpus is re-captured only when the cassette's own format moves. It iterates ids and deletes raw,
+        like :meth:`drop_all_analyses`, because the documents it exists to remove are the ones no current model can
+        read.
+
+        Callers must gate this behind explicit operator confirmation — the action is unrecoverable.
+
+        :param scopes: The scopes whose derived documents to drop.
+        :ptype scopes: Iterable[str]
+        :return: ``{doc_type: count_deleted}`` for each derived type, summed over the scopes.
+        :rtype: dict[str, int]
+        """
+        derived = sorted(doc_type for doc_type, facts in DOC_TYPE_FACTS.items() if facts.origin == "derived")
+        counts: dict[str, int] = dict.fromkeys(derived, 0)
+        for scope_id in scopes:
+            for doc_type in derived:
+                dropped = self._delete_every(doc_type, scope_id)
+                counts[doc_type] += dropped
+                if dropped:
+                    log.warning("drop_derived: dropped %d %s docs from scope=%s", dropped, doc_type, scope_id)
+        return counts
 
     def _delete_every(self, doc_type: str, scope_id: str) -> int:
         """Delete every document of one type in one scope, by id, without reading any of them."""

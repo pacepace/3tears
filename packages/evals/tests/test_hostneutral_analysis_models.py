@@ -83,7 +83,15 @@ def _surface() -> DecisionSurface:
 
 
 def _recommendation(reason: str = "model-b is faster.", *, confidence: Any = "high") -> Recommendation:
-    return Recommendation(arm="model-b", reasons=[reason], confidence=confidence, rests_on=[0], floors_overridden=[])
+    return Recommendation(
+        arm="model-b",
+        reasons=[reason],
+        confidence=confidence,
+        rests_on=[0],
+        floors_overridden=[],
+        behind_on=[],
+        bars_missed=[],
+    )
 
 
 def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None = None, **fields: Any) -> EvalAnalysis:
@@ -100,7 +108,7 @@ def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None
     )
     document = AuthoredCampaignAnalysis(
         findings=[finding],
-        recommendation=recommendation or _recommendation(),
+        recommendation=[recommendation or _recommendation()],
         aspect_summaries=[],
         next=[],
     )
@@ -131,6 +139,7 @@ def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None
         ),
         document=document,
         resolutions=[FindingResolution()],
+        recommended_variant_key="variant-of-model-b",
         aspects=[aspect],
         campaign_bundle={
             "schema_version": 1,
@@ -153,7 +162,7 @@ class TestConfidenceIsATier:
     def test_every_tier_is_accepted(self, tier: str) -> None:
         analysis = _analysis(confidence=tier, recommendation=_recommendation(confidence=tier))
         assert analysis.document.findings[0].confidence == tier
-        assert analysis.document.recommendation.confidence == tier
+        assert analysis.document.recommendation[0].confidence == tier
 
     def test_the_tiers_are_the_four_named_ones_in_order(self) -> None:
         assert CONFIDENCE_TIERS == ("very_high", "high", "medium", "low")
@@ -212,4 +221,4 @@ class TestARecommendationsWordingIsNotRefused:
     )
     def test_a_reason_that_opens_with_a_negation_is_stored_as_written(self, reason: str) -> None:
         analysis = _analysis(recommendation=_recommendation(reason))
-        assert analysis.document.recommendation.reasons == [reason]
+        assert analysis.document.recommendation[0].reasons == [reason]

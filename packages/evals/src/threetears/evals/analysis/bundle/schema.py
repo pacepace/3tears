@@ -3241,9 +3241,10 @@ class BundleInspection(EvalDocumentModel):
     **Which is why the fingerprint is compared rather than assumed.** A bundle
     re-assembled today is not automatically the bundle a generation ran over
     months ago: a member run can have been archived, or results deleted, since.
-    Addressed by analysis id, this therefore carries the recorded
-    ``generation.bundle_fingerprint`` beside the freshly computed one and states
-    whether they agree. A ``False`` is itself the finding, not a failure of the read.
+    Addressed by analysis id, this therefore carries the fingerprint the analysis
+    recorded for this aspect's bundle (``AspectAnalysis.bundle_fingerprint``; the
+    generation's own ``bundle_fingerprint`` is the whole campaign bundle's) beside
+    the freshly computed one and states whether they agree. A ``False`` is itself the finding, not a failure of the read.
 
     **An insight minted after the generation is NOT one of those moves.** The re-assembly
     reads prior insights as of the instant the generation's bundle was assembled
@@ -3281,8 +3282,9 @@ class BundleInspection(EvalDocumentModel):
     recorded_fingerprint: str | None = Field(
         default=None,
         description=(
-            "The addressed analysis's stored generation.bundle_fingerprint — what the paid call actually "
-            "ran over. None when addressed by campaign, since no generation is being spoken about."
+            "The fingerprint the addressed analysis stored for this aspect's bundle (`AspectAnalysis.bundle_fingerprint`) "
+            "— what the paid call read of this aspect; the generation's own `bundle_fingerprint` is the whole campaign "
+            "bundle's. None when addressed by campaign, since no generation is being spoken about."
         ),
     )
     reproduces_generation: bool | None = Field(

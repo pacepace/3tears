@@ -117,6 +117,7 @@ from threetears.evals.analysis.report.verdict import (
 from threetears.evals.analysis.report.words import (
     BAR_DECISION_WORDS,
     CONFIDENCE_WORDS,
+    NO_RECOMMENDATION_WORDS,
     comparison_words,
     evidence_rows,
     guardrail_words,
@@ -233,7 +234,8 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
         behavior=analysis.behavior,
         generated_at=generation.generated_at,
         generator_model=generation.generator_model,
-        bundle_fingerprint=generation.bundle_fingerprint,
+        # This aspect's bundle, as it is frozen and served beside the page; the generation's is the campaign bundle's.
+        bundle_fingerprint=_only_aspect(analysis).bundle_fingerprint,
     )
     return _page(
         bundle,
@@ -388,7 +390,11 @@ def _only_aspect(analysis: EvalAnalysis) -> AspectAnalysis:
         raise RefusedInput(
             f"analysis {analysis.id} covers {len(analysis.aspects)} aspects "
             f"({', '.join(aspect.label for aspect in analysis.aspects)}), and this page lays out one",
-            remedy="read the campaign's page, which lays out every aspect (report_read with the campaign_id)",
+            remedy=(
+                "read each aspect's evidence with threetears.evals.analysis.inspect_analysis_bundle (naming its "
+                "aspect) and the memo with threetears.evals.analysis.get_analysis; the campaign's page, which lays out "
+                "every aspect, is read through report_read once that serves a campaign of several aspects"
+            ),
         )
     return analysis.aspects[0]
 
@@ -1232,9 +1238,14 @@ def _recommendation_blocks(
     over and the cases its findings show are code's facts beside them. A recommendation of a candidate over an
     undecided guardrail is never read as shown safe: the standing says so.
     """
-    recommended = analysis.document.recommendation
     listed = analysis.campaign_bundle.get("arms")
     arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
+    recommended = analysis.document.recommended()
+    if recommended is None:
+        from threetears.evals.analysis.campaign_readings import campaign_kind  # that module reads this package
+
+        kind = campaign_kind(arms)
+        return [DisclosureBlock(section="memo", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
     chosen = next((arm for arm in arms if arm.label == recommended.arm), None)
     # The arm as this page names it everywhere else; the writer's label where the page holds no cell of it.
     page_names = _arm_names(bundle)
@@ -1254,6 +1265,26 @@ def _recommendation_blocks(
                 name="Floors overridden",
                 value="; ".join(
                     f"{override.floor}: {style.prose(override.why)}" for override in recommended.floors_overridden
+                ),
+            )
+        )
+    if recommended.behind_on:
+        facts.append(
+            Fact(
+                name="Picked though behind",
+                value="; ".join(
+                    f"{behind.aspect}, behind {behind.ahead_arm}: {' '.join(behind.why.split())}"
+                    for behind in recommended.behind_on
+                ),
+            )
+        )
+    if recommended.bars_missed:
+        facts.append(
+            Fact(
+                name="Bars missed",
+                value="; ".join(
+                    f"{missed.aspect}, {missed.measure}: {' '.join(missed.why.split())}"
+                    for missed in recommended.bars_missed
                 ),
             )
         )

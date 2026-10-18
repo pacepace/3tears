@@ -662,7 +662,17 @@ def empty_document(**overrides: Any) -> AuthoredCampaignAnalysis:
     """A memo with nothing in it but a recommendation to keep the control, resting on no finding."""
     fields: dict[str, Any] = dict(
         findings=[],
-        recommendation=Recommendation(arm="control", reasons=[], confidence="low", rests_on=[], floors_overridden=[]),
+        recommendation=[
+            Recommendation(
+                arm="control",
+                reasons=[],
+                confidence="low",
+                rests_on=[],
+                floors_overridden=[],
+                behind_on=[],
+                bars_missed=[],
+            )
+        ],
         aspect_summaries=[],
         next=[],
     )
@@ -712,6 +722,7 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
             question="", declared_at=None, declared_by=None, arms=[], aspects=[Aspect(label="conversation")], floors=[]
         ),
         document=empty_document(),
+        recommended_variant_key=None,
         aspects=[aspect],
         campaign_bundle={
             "schema_version": 1,
@@ -719,6 +730,10 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
         },
     )
     fields.update(overrides)
+    if "recommended_variant_key" not in overrides:
+        # The variant the memo's arm resolves to, as code stores it: set exactly when the memo recommends an arm.
+        recommended = fields["document"].recommended()
+        fields["recommended_variant_key"] = None if recommended is None else f"variant-of-{recommended.arm}"
     return EvalAnalysis(**fields)
 
 

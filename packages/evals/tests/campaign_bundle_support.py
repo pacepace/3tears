@@ -14,7 +14,14 @@ from typing import Any
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, FloorStatus
+from threetears.evals.analysis.campaign_readings import (
+    AspectReading,
+    BarStatus,
+    CampaignReadings,
+    FloorStatus,
+    PairReading,
+    campaign_kind,
+)
 from threetears.evals.kernel.campaign import CampaignDeclaration
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, Floor, resolve_control_arm
 
@@ -81,6 +88,8 @@ def campaign_bundle(
     arms: Sequence[CampaignArm] | None = None,
     floors: Sequence[FloorStatus] = (),
     readings: Sequence[AspectReading] = (),
+    pairs: Sequence[PairReading] = (),
+    bars: Sequence[BarStatus] = (),
     question: str = "",
 ) -> CampaignBundle:
     """A campaign bundle over ``bundles``, one aspect each, in order.
@@ -93,6 +102,10 @@ def campaign_bundle(
     :ptype floors: Sequence[FloorStatus]
     :param readings: Code's aspect readings.
     :ptype readings: Sequence[AspectReading]
+    :param pairs: Code's pair readings (a choice).
+    :ptype pairs: Sequence[PairReading]
+    :param bars: Code's bar statuses.
+    :ptype bars: Sequence[BarStatus]
     :param question: The campaign's question.
     :ptype question: str
     :return: The campaign bundle.
@@ -131,6 +144,9 @@ def campaign_bundle(
             aspects=[bundle.aspect for bundle in bundles],
             readings=list(readings),
             floors=list(floors),
+            kind=campaign_kind(held),
+            pairs=list(pairs),
+            bars=list(bars),
         ),
         aspects=list(bundles),
     )
@@ -170,13 +186,17 @@ def memo(
     chosen = arm if arm is not None else (control.label if control is not None else campaign.arms[0].label)
     return {
         "findings": list(findings),
-        "recommendation": {
-            "arm": chosen,
-            "reasons": list(reasons),
-            "confidence": "low",
-            "rests_on": list(rests_on) if rests_on is not None else ([0] if findings else []),
-            "floors_overridden": [],
-        },
+        "recommendation": [
+            {
+                "arm": chosen,
+                "reasons": list(reasons),
+                "confidence": "low",
+                "rests_on": list(rests_on) if rests_on is not None else ([0] if findings else []),
+                "floors_overridden": [],
+                "behind_on": [],
+                "bars_missed": [],
+            }
+        ],
         "aspect_summaries": [
             {"aspect": label, "what_changed": "", "how_sure": "", "means": means} for label in campaign.labels
         ],

@@ -267,9 +267,11 @@ def _adopting_writer() -> Any:
             "confidence": "medium",
             "rests_on": [0],
             "floors_overridden": [],
+            "behind_on": [],
+            "bars_missed": [],
         }
         summary = {"aspect": aspect["aspect"], "what_changed": "", "how_sure": "", "means": ""}
-        memo = {"findings": [finding], "recommendation": recommendation, "aspect_summaries": [summary], "next": []}
+        memo = {"findings": [finding], "recommendation": [recommendation], "aspect_summaries": [summary], "next": []}
         return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
 
     writer.generate = generate

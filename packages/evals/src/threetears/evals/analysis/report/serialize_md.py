@@ -220,7 +220,9 @@ def _text(block: TextBlock) -> list[str]:
         sure = f" ({facts['Confidence']} confidence)" if "Confidence" in facts else ""
         return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}{sure}" if disposition else _inert(body + sure)]
     if block.role == "override":
-        over = f"The memo recommends {facts['Arm']} over it" if "Arm" in facts else "The memo's why"
+        over = (
+            f"The memo recommends {facts['Arm']} over {facts.get('Over', 'it')}" if "Arm" in facts else "The memo's why"
+        )
         return [f"**{over}:** {body}"]
     if block.role in SUMMARY_LEADS:
         return [f"**{SUMMARY_LEADS[block.role]}** {body}"]

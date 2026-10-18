@@ -34,8 +34,10 @@ async def test_the_writer_s_summary_of_the_aspect_is_laid_out_in_full() -> None:
 async def test_a_why_for_an_overridden_floor_goes_through_the_style_pass() -> None:
     _, analysis, _ = await toy_report()
     over = FloorOverride(floor="toy/rate_drop/*", why="The memo rests on tone. Refunds are rare this quarter.")
-    recommendation = analysis.document.recommendation.model_copy(update={"floors_overridden": [over]})
-    markdown = report_markdown(build_report(_with_document(analysis, recommendation=recommendation)))
+    recommended = analysis.document.recommended()
+    assert recommended is not None
+    recommendation = recommended.model_copy(update={"floors_overridden": [over]})
+    markdown = report_markdown(build_report(_with_document(analysis, recommendation=[recommendation])))
     # A sentence carrying a banned phrase is dropped; the rest is printed as written.
     assert "toy/rate_drop/*: Refunds are rare this quarter." in markdown
     assert "rests on tone" not in markdown

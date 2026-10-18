@@ -158,7 +158,9 @@ class TestEachAspectIsHeldToItsBudget:
         assert len(view["trials"]) == len(whole["trials"])
         assert view["contrasts"] == whole["contrasts"] and view["cells"] == whole["cells"]
         # Excerpts went, the last trial's first, and nothing else.
-        assert view["trials"][-1]["excerpt"] == "" and all(trial["excerpt"] for trial in view["trials"][:-1])
+        excerpts = [bool(trial["excerpt"]) for trial in view["trials"]]
+        kept = excerpts.index(False)
+        assert not excerpts[-1] and excerpts == [True] * kept + [False] * (len(excerpts) - kept)
         said = view["trimmed"].split("(")[0]
         assert "excerpts" in said and "trials," not in said and "contrasts" not in said
         assert "The page shows all of them" in view["trimmed"]
