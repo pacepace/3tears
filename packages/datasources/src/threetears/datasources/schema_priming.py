@@ -123,40 +123,33 @@ class SchemaPrimingIntegration:
             )
             self._resolved_ids = []
             return self._resolved_ids
-        try:
-            # cache-bypass: one-time name->id resolution over the proxy; the
-            # per-turn read is the by-pk digest get, not this scan. the
-            # visibility scope MUST match the live datasource access model,
-            # NOT a bare `customer_id IS NULL` (which would leak RESTRICTED
-            # shared datasources: both 'public' AND 'restricted' carry
-            # customer_id NULL, but a restricted one is shared only with
-            # customers granted via datasource_customers). admit:
-            # the agent's OWN customer rows, PUBLIC shared rows, and
-            # RESTRICTED shared rows explicitly granted to this customer.
-            rows = await pool.fetch(
-                "SELECT id FROM datasources "
-                "WHERE name = ANY($2) AND status = 'active' AND ("
-                "  customer_id = $1"
-                "  OR visibility = 'public'"
-                "  OR id IN ("
-                "       SELECT datasource_id FROM datasource_customers"
-                "        WHERE customer_id = $1"
-                "  )"
-                ")",
-                self.customer_id,
-                self.datasource_names,
-            )
-        except Exception:
-            # a TRANSIENT fault (proxy not ready, NATS hiccup) must NOT
-            # memoize: _resolved_ids stays None so the next call retries, and
-            # the pod never bricks for its lifetime. it is RAISED, not answered
-            # as []: an empty list is the answer "this agent has no datasource",
-            # and a resolution that failed has not established that.
-            log.warning(
-                "schema-priming datasource resolution failed; nothing memoized, the next call retries",
-                exc_info=True,
-            )
-            raise
+        # a TRANSIENT fault (proxy not ready, NATS hiccup) propagates: _resolved_ids
+        # stays None so the next call retries, and the pod never bricks for its
+        # lifetime. it is not answered as []: an empty list is the answer "this agent
+        # has no datasource", and a resolution that failed has not established that.
+        # the caller records it; logging it here too would report one fault twice.
+        # cache-bypass: one-time name->id resolution over the proxy; the
+        # per-turn read is the by-pk digest get, not this scan. the
+        # visibility scope MUST match the live datasource access model,
+        # NOT a bare `customer_id IS NULL` (which would leak RESTRICTED
+        # shared datasources: both 'public' AND 'restricted' carry
+        # customer_id NULL, but a restricted one is shared only with
+        # customers granted via datasource_customers). admit:
+        # the agent's OWN customer rows, PUBLIC shared rows, and
+        # RESTRICTED shared rows explicitly granted to this customer.
+        rows = await pool.fetch(
+            "SELECT id FROM datasources "
+            "WHERE name = ANY($2) AND status = 'active' AND ("
+            "  customer_id = $1"
+            "  OR visibility = 'public'"
+            "  OR id IN ("
+            "       SELECT datasource_id FROM datasource_customers"
+            "        WHERE customer_id = $1"
+            "  )"
+            ")",
+            self.customer_id,
+            self.datasource_names,
+        )
         resolved = [row["id"] for row in rows]
         # only memoize a NON-EMPTY result. a successful zero-row query means
         # the declared datasource does not resolve YET (not created/applied,
