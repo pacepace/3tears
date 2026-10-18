@@ -107,6 +107,7 @@ from threetears.evals.analysis.campaign_readings import (
     FloorState,
     FloorStatus,
     ShownReading,
+    campaign_readings,
 )
 from threetears.evals.analysis.campaigns import (
     DeclarableAxes,
@@ -191,6 +192,8 @@ from threetears.evals.analysis.report.decision import CasesNeeded, NeedKind, Sam
 from threetears.evals.analysis.report import (
     MIN_CASES,
     SECTION_TITLES,
+    CampaignAspectFold,
+    CampaignReport,
     CellValue,
     ChartBlock,
     ChartKind,
@@ -221,8 +224,11 @@ from threetears.evals.analysis.report import (
     ReportBasis,
     analysis_bundle,
     analysis_verdict,
+    build_campaign_report,
     build_code_only_report,
     build_report,
+    campaign_report_html,
+    campaign_report_markdown,
     report_html,
     report_markdown,
 )
@@ -404,6 +410,13 @@ __all__ = [
     "ShownReading",
     "aspect_view",
     "aspect_views",
+    "campaign_readings",
+    # A campaign's page over its aspects, and its two forms a person reads.
+    "CampaignAspectFold",
+    "CampaignReport",
+    "build_campaign_report",
+    "campaign_report_html",
+    "campaign_report_markdown",
     # The cases an unclear reading would need to settle, which a campaign's readings carry per row.
     "CasesNeeded",
     "NeedKind",

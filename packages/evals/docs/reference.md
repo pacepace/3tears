@@ -640,8 +640,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`reporter_cell_timeout_s(*, judge_dims: int, judge_concurrency: int, generator_max_tokens: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`reporter_kind_contract`** · function · The reporter's contract, also seating apparatus dimensions of the host's own that its runs record.
   <br>`reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract`
-- **`serialize_report`** · function · A report in one of its three forms.
-  <br>`serialize_report(report: Report, format: ReportFormat) -> str`
+- **`serialize_report`** · function · A report in one of its three forms: an aspect's page, or a campaign's.
+  <br>`serialize_report(report: Report | CampaignReport, format: ReportFormat) -> str`
 - **`tier_sentence`** · function · One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
   <br>`tier_sentence(tier: JudgeEvidenceTier) -> str`
 

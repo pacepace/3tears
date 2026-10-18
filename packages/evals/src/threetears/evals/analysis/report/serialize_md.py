@@ -30,6 +30,7 @@ from collections.abc import Iterable, Sequence
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
     SECTION_TITLES,
+    CampaignReport,
     ChartBlock,
     DisclosureBlock,
     Report,
@@ -43,6 +44,9 @@ from threetears.evals.analysis.style import GLOSSARY
 
 #: How an answer's resolution leads it.
 RESOLUTION_WORDS = {"answered": "Answered", "partial": "Partly answered", "unanswerable": "Unanswerable"}
+
+#: How the writer's summary of an aspect leads each of its three parts, on a campaign's page.
+SUMMARY_LEADS: dict[str, str] = {"what_changed": "What changed:", "how_sure": "How sure:", "means": "What it means:"}
 
 
 def report_markdown(report: Report) -> str:
@@ -66,19 +70,73 @@ def report_markdown(report: Report) -> str:
         # Line 2 (the arms, or a declared question) is directly under the title: every other block is set off by a
         # blank line.
         lines += [*([] if index == 0 else [""]), *_block(block)]
+    lines += _section_lines(report, depth=2)
+    lines += _glossary_lines(report.terms)
+    return "\n".join(lines) + "\n"
+
+
+def campaign_report_markdown(report: CampaignReport) -> str:
+    """Render a campaign's page as Markdown, in the page's order: every broken floor, the title, the first screen, the
+    memo's findings, then each aspect under its own heading with what code read there, its writer's summary and its
+    own page in one ``<details>`` (its title, question and broken floors left out, its headings a level down, its
+    trials' ids prefixed with the aspect's), then the one glossary.
+
+    :param report: The campaign's page.
+    :ptype report: CampaignReport
+    :return: The Markdown text, ending in a newline.
+    :rtype: str
+    """
+    warnings = [block for block in report.blocks if _warns(block)]
+    lines = [line for block in warnings for line in (*_block(block), "")]
+    lines.append(f"# {_one_line(report.title)}")
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _warns(block)]
+    for index, block in enumerate(head):
+        lines += [*([] if index == 0 else [""]), *_block(block)]
+    if memo := [block for block in report.blocks if block.section not in FIRST_SCREEN]:
+        lines += ["", f"## {SECTION_TITLES['memo']}", *_folded(memo)]
+    for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
+        prefix = f"a-{slug}-"
+        lines += ["", f"## {fold.aspect}", "", f"{_inert(_one_line(fold.shows))}.", ""]
+        lines += [f"<details><summary>{html.escape(_one_line(fold.aspect), quote=False)} in full</summary>"]
+        lines += _folded(fold.summary, prefix=prefix)
+        aspect = fold.report
+        own = [
+            block
+            for block in aspect.blocks
+            if block.section in FIRST_SCREEN
+            and not _repeats_scoreboard(block)
+            and not (
+                isinstance(block, DisclosureBlock) and block.section == "header" and block.source in ("floor", "basis")
+            )
+        ]
+        for block in own:
+            lines += ["", *_block(block, prefix=prefix)]
+        lines += _section_lines(aspect, depth=3, prefix=prefix)
+        lines += ["", "</details>"]
+    lines += _glossary_lines(report.terms)
+    return "\n".join(lines) + "\n"
+
+
+def _section_lines(report: Report, *, depth: int, prefix: str = "") -> list[str]:
+    """Each section after the first screen under a heading of ``depth``, its trials' ids prefixed with ``prefix``."""
     titles = report.section_titles
+    lines: list[str] = []
     for section in SECTION_TITLES:
         if section in FIRST_SCREEN or section == "glossary":
             continue
         blocks = [block for block in report.blocks if block.section == section and not _repeats_scoreboard(block)]
         if not blocks:
             continue
-        lines += ["", f"## {titles[section]}"]
-        lines += _folded(blocks)
-    if report.terms:
-        lines += ["", f"## {titles['glossary']}", ""]
-        lines += [f"- **{term}**: {GLOSSARY[term]}" for term in report.terms]
-    return "\n".join(lines) + "\n"
+        lines += ["", f"{'#' * depth} {titles[section]}"]
+        lines += _folded(blocks, prefix=prefix)
+    return lines
+
+
+def _glossary_lines(terms: Sequence[str]) -> list[str]:
+    """The glossary defining ``terms``; nothing when the page links none."""
+    if not terms:
+        return []
+    return ["", f"## {SECTION_TITLES['glossary']}", "", *(f"- **{term}**: {GLOSSARY[term]}" for term in terms)]
 
 
 def _warns(block: ReportBlock) -> bool:
@@ -105,8 +163,9 @@ def _repeats_scoreboard(block: ReportBlock) -> bool:
     return len(other) <= 1 and len(lost) <= 1
 
 
-def _folded(blocks: Sequence[ReportBlock]) -> list[str]:
-    """A section's blocks, each consecutive run naming one fold inside one ``<details>``."""
+def _folded(blocks: Sequence[ReportBlock], *, prefix: str = "") -> list[str]:
+    """A section's blocks, each consecutive run naming one fold inside one ``<details>``; a trial's id prefixed with
+    ``prefix``."""
     lines: list[str] = []
     open_fold: str | None = None
     for block in blocks:
@@ -116,14 +175,14 @@ def _folded(blocks: Sequence[ReportBlock]) -> list[str]:
             if block.fold is not None:
                 lines += ["", f"<details><summary>{block.fold}</summary>"]
             open_fold = block.fold
-        lines += ["", *_block(block)]
+        lines += ["", *_block(block, prefix=prefix)]
     if open_fold is not None:
         lines += ["", "</details>"]
     return lines
 
 
-def _block(block: ReportBlock) -> list[str]:
-    """One block's lines."""
+def _block(block: ReportBlock, *, prefix: str = "") -> list[str]:
+    """One block's lines; a trial's id prefixed with ``prefix``."""
     if isinstance(block, TextBlock):
         return _text(block)
     if isinstance(block, TableBlock):
@@ -137,7 +196,7 @@ def _block(block: ReportBlock) -> list[str]:
         headers, rows = block.values_table()
         return [f"**{block.title}**", "", *markdown_table(headers, rows)]
     if isinstance(block, TrialBlock):
-        return _trial(block)
+        return _trial(block, prefix=prefix)
     return _disclosure(block)
 
 
@@ -153,7 +212,12 @@ def _text(block: TextBlock) -> list[str]:
         return [f"**{lead}.** {body}" if lead else _inert(body)]
     if block.role == "recommendation":
         disposition = facts.get("Disposition", "")
-        return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}" if disposition else _inert(body)]
+        sure = f" ({facts['Confidence']} confidence)" if "Confidence" in facts else ""
+        return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}{sure}" if disposition else _inert(body + sure)]
+    if block.role in SUMMARY_LEADS:
+        return [f"**{SUMMARY_LEADS[block.role]}** {body}"]
+    if block.role == "reason":
+        return [f"- {_inert(body)}"]
     if block.role == "next_step":
         return [f"**Next:** {body}"]
     if block.role == "revisit_when":
@@ -177,12 +241,12 @@ def trial_summary(block: TrialBlock) -> str:
     return f"{block.trial_id} · {block.case_label} · {block.arm} · {block.state}"
 
 
-def _trial(block: TrialBlock) -> list[str]:
+def _trial(block: TrialBlock, *, prefix: str = "") -> list[str]:
     """One trial's record, open when the block says so: what it asked, what the judge saw and said, what failed,
     and where it is stored."""
     opened = " open" if block.open else ""
     summary = html.escape(_one_line(trial_summary(block)), quote=False)
-    lines = [f'<details id="{html.escape(block.trial_id)}"{opened}><summary>{summary}</summary>', ""]
+    lines = [f'<details id="{html.escape(prefix + block.trial_id)}"{opened}><summary>{summary}</summary>', ""]
     if block.cause_words:
         lines += [*_quoted("Why:", block.cause_words), ""]
     if block.first_input:
@@ -317,6 +381,8 @@ def _one_line(text: str) -> str:
 
 __all__ = [
     "RESOLUTION_WORDS",
+    "SUMMARY_LEADS",
+    "campaign_report_markdown",
     "markdown_table",
     "report_markdown",
     "trial_summary",
