@@ -40,6 +40,7 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
+from threetears.core.exceptions import L2WriteRefusedError
 from threetears.observe import get_logger
 
 from threetears.channels.presence.entities import (
@@ -85,14 +86,8 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
     #: datetime columns the L2 codec must rehydrate to aware-UTC.
     datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
 
-    @property
-    def l2_is_the_store(self) -> bool:
-        """L2 is where presence lives: no L3 stands behind it, so a write L2 refused raises.
-
-        :return: ``True``
-        :rtype: bool
-        """
-        return True
+    #: L2 is where presence lives: no L3 stands behind it, so an L2 failure raises.
+    l2_is_the_store: bool = True
 
     def __init__(
         self,
@@ -139,6 +134,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :ptype entity_id: Any
         :return: hydrated entity, or ``None`` on miss
         :rtype: Any
+        :raises KvError: when L2, this collection's store, could not be read: an outage is not a miss
         """
         row: dict[str, Any] | None = self.get_row_sync(entity_id)
         if row is None:
@@ -167,18 +163,26 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :ptype conn: Any
         :return: nothing
         :rtype: None
-        :raises KvError: when a KV bucket is configured and L2 refused the row; this pod's L1 copy
-            is dropped, no invalidation is published, and the entity keeps its unsaved edits
+        :raises L2WriteRefusedError: when a KV bucket is configured and L2 refused the row; this
+            pod's L1 copy is dropped, no invalidation is published, and the entity keeps its
+            unsaved edits and still reads them
         """
         del conn  # never threaded through the L1+L2-only path
-        data = entity.to_dict()
+        working = entity.to_dict()
+        data = dict(working)
         now = datetime.now(UTC)
         if entity.is_new:
             data.setdefault("date_created", now)
         data["date_updated"] = now
         if self._l1 is not None:
             self._l1.upsert(self.table_name, data, self.primary_key_columns)
-        await self._save_to_l2(entity.id, data)
+        try:
+            await self._save_to_l2(entity.id, data)
+        except L2WriteRefusedError:
+            # L1 has dropped the row (no store holds it): the handle keeps what it was saving, as
+            # BaseCollection._withdraw_unstored does, so it still reads and a retry writes it
+            entity.hold_row(working)
+            raise
         await self._publish_invalidation(entity.id)
         entity.mark_clean()
         entity.original_date_updated = data.get("date_updated")
@@ -193,8 +197,8 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :ptype entity_id: Any
         :return: ``True`` — deletes are idempotent
         :rtype: bool
-        :raises KvError: when a KV bucket is configured and L2 refused the delete; the row is
-            still there for every other replica
+        :raises L2WriteRefusedError: when a KV bucket is configured and L2 refused the delete; the
+            row is still there for every other replica
         """
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)

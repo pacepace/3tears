@@ -18,6 +18,7 @@ from threetears.channels.presence.collection import (
 )
 
 from threetears.channels.presence.room_state import RoomState
+from threetears.core.exceptions import L2WriteRefusedError
 from threetears.nats.errors import KvError
 
 from .conftest import InMemoryNatsBus, make_pod
@@ -366,10 +367,11 @@ class TestAPresenceWriteL2RefusedRaises:
         (await bus.kv_bucket(name="collections")).become_unreachable(KvError("broker unreachable"))
 
         entity = collection.connections.create(_connection_row())
-        with pytest.raises(KvError, match="was not saved"):
+        with pytest.raises(L2WriteRefusedError, match="was not saved"):
             await collection.connections.save_entity(entity)
 
         assert collection.connections.get_row_sync("conn-1") is None
+        assert entity.to_dict()["connection_id"] == "conn-1", "the handle keeps the row it was saving"
 
     async def test_a_delete_l2_refused_raises_and_the_row_is_still_there(self, bus: InMemoryNatsBus) -> None:
         collection, _ = make_pod(bus)

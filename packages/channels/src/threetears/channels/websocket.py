@@ -659,7 +659,15 @@ class WebSocketHandler:
                 connection.joined_rooms.clear()
                 if self._room_fanout is not None:
                     for room_id in rooms_to_leave:
-                        await self._room_fanout.leave_room(room_id, connection_id)
+                        try:
+                            await self._room_fanout.leave_room(room_id, connection_id)
+                        except Exception as exc:  # prawduct:allow prawduct/broad-except -- disconnect cleanup: one room that cannot be left must not keep this connection in every room after it, nor skip the unregister below; the sweeper evicts what is left
+                            contain(
+                                exc,
+                                log=log,
+                                what="leaving a room on disconnect failed; the presence sweeper evicts the member",
+                                extra={"connection_id": connection_id, "room_id": room_id},
+                            )
             if self._room_state is not None:
                 await self._room_state.unregister(connection_id, websocket)
 
