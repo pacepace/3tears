@@ -13,6 +13,7 @@ standalone ``pip install`` of one package ImportErrors in a consumer.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 from threetears.enforcement.dependency_alignment import (
@@ -67,12 +68,237 @@ _DEPENDENCY_FLOORS = (
     ),
 )
 
+#: why every package below is pinned at the dependencies it had, rather than at an argued floor.
+_AS_FOUND_RATIONALE = (
+    "owner ruling 2026-10-17: every package's hard dependencies are pinned, so a new one arrives as a "
+    "visible edit to tests/enforcement/test_dependency_alignment.py instead of one line in a pyproject. "
+    "This floor was recorded as found that day and has not been argued. Before adding to it, ask whether "
+    "the new dependency serves the package's core path or belongs behind an extra (family-convergence.md "
+    "section 3, principle 7); arguing the floor moves the entry into _DEPENDENCY_FLOORS with its own rationale"
+)
+
+#: the packages with hard dependencies and no argued floor yet, pinned at what they declared on
+#: 2026-10-17. An entry leaves this list when its floor is argued and moves to ``_DEPENDENCY_FLOORS``.
+_RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("packages/agent/acl", ("3tears", "3tears-observe", "pydantic")),
+    ("packages/agent/audit", ("3tears", "3tears-nats", "3tears-observe", "pydantic")),
+    (
+        "packages/agent/identity",
+        (
+            "3tears",
+            "3tears-agent-acl",
+            "3tears-langgraph",
+            "3tears-observe",
+            "langchain-core",
+            "pydantic",
+            "uuid-utils",
+        ),
+    ),
+    (
+        "packages/agent/intention",
+        (
+            "3tears",
+            "3tears-agent-acl",
+            "3tears-langgraph",
+            "3tears-observe",
+            "pgvector",
+            "langchain-core",
+            "pydantic",
+            "uuid-utils",
+        ),
+    ),
+    (
+        "packages/agent/knowledge",
+        (
+            "3tears",
+            "3tears-agent-acl",
+            "3tears-agent-memory",
+            "3tears-langgraph",
+            "3tears-nats",
+            "3tears-observe",
+            "pgvector",
+            "langchain-core",
+        ),
+    ),
+    (
+        "packages/agent/memory",
+        (
+            "3tears",
+            "3tears-agent-acl",
+            "3tears-langgraph",
+            "3tears-nats",
+            "3tears-observe",
+            "pgvector",
+            "uuid-utils",
+            "langchain-core",
+        ),
+    ),
+    ("packages/agent/skills", ("3tears", "3tears-observe", "langchain-core", "pydantic", "uuid-utils")),
+    (
+        "packages/agent/tools",
+        (
+            "3tears",
+            "3tears-agent-audit",
+            "3tears-agent-memory",
+            "3tears-epoch",
+            "3tears-langgraph",
+            "3tears-media-contracts",
+            "3tears-nats",
+            "3tears-observe",
+            "3tears-search",
+            "3tears-tool-schema",
+            "langchain-core",
+            "httpx",
+            "prometheus-client",
+        ),
+    ),
+    (
+        "packages/agent/wake",
+        (
+            "3tears",
+            "3tears-agent-skills",
+            "3tears-observe",
+            "3tears-scheduled-jobs",
+            "uuid-utils",
+            "apscheduler",
+            "langchain-core",
+            "pydantic",
+            "jinja2",
+        ),
+    ),
+    (
+        "packages/agent/workspace",
+        (
+            "3tears",
+            "3tears-agent-acl",
+            "3tears-agent-audit",
+            "3tears-agent-tools",
+            "3tears-nats",
+            "3tears-observe",
+            "pydantic",
+            "ruamel.yaml",
+            "jsonpath-ng",
+            "watchfiles",
+        ),
+    ),
+    ("packages/backup", ("3tears", "3tears-media-contracts", "3tears-object-store", "3tears-observe")),
+    ("packages/channels", ("3tears", "3tears-agent-acl", "3tears-nats", "3tears-observe")),
+    ("packages/conversations", ("3tears", "3tears-agent-acl", "3tears-langgraph", "3tears-observe")),
+    (
+        "packages/core",
+        (
+            "3tears-observe",
+            "3tears-nats",
+            "sqlalchemy",
+            "asyncpg",
+            "aiosqlite",
+            "pydantic",
+            "uuid-utils",
+            "cryptography",
+            "pyjwt",
+            "httpx",
+            "pyyaml",
+        ),
+    ),
+    ("packages/datasources", ("3tears", "3tears-nats", "3tears-observe", "pydantic", "asyncpg", "pyyaml")),
+    ("packages/enforcement", ("3tears", "3tears-observe")),
+    ("packages/epoch", ("3tears", "3tears-nats", "3tears-observe", "pydantic", "uuid-utils")),
+    ("packages/geo", ("3tears", "3tears-observe", "3tears-media-contracts", "shapely", "mapbox-vector-tile")),
+    (
+        "packages/iam",
+        (
+            "3tears",
+            "3tears-observe",
+            "3tears-agent-acl",
+            "3tears-nats",
+            "argon2-cffi",
+            "bcrypt",
+            "pyjwt",
+            "cryptography",
+            "httpx",
+            "pyotp",
+            "joserfc",
+            "pydantic",
+        ),
+    ),
+    (
+        "packages/langgraph",
+        (
+            "3tears",
+            "3tears-media-contracts",
+            "3tears-observe",
+            "langchain",
+            "langchain-core",
+            "langgraph",
+            "langgraph-checkpoint",
+            "asyncpg",
+            "uuid-utils",
+        ),
+    ),
+    (
+        "packages/models",
+        (
+            "3tears-media-contracts",
+            "3tears-observe",
+            "3tears-tool-schema",
+            "pydantic",
+            "langchain-core",
+            "anthropic",
+            "jsonschema",
+            "langchain-anthropic",
+            "langchain-openai",
+            "langchain-openrouter",
+            "openrouter",
+            "uuid-utils",
+        ),
+    ),
+    ("packages/nats", ("3tears-observe", "pydantic")),
+    ("packages/object-store", ("3tears", "3tears-media-contracts", "3tears-observe", "aioboto3")),
+    (
+        "packages/registry",
+        (
+            "3tears",
+            "3tears-agent-acl",
+            "3tears-agent-tools",
+            "3tears-epoch",
+            "3tears-nats",
+            "3tears-observe",
+            "nats-py",
+            "prometheus-client",
+        ),
+    ),
+    ("packages/scheduled-jobs", ("3tears", "3tears-nats", "3tears-observe", "uuid-utils", "apscheduler")),
+    (
+        "packages/scrape",
+        (
+            "3tears",
+            "3tears-agent-tools",
+            "3tears-models",
+            "3tears-observe",
+            "3tears-search",
+            "httpx",
+            "langchain-core",
+            "pydantic",
+            "pyyaml",
+            "uuid-utils",
+            "beautifulsoup4",
+            "camoufox",
+            "playwright",
+        ),
+    ),
+)
+
+_ALL_FLOORS = _DEPENDENCY_FLOORS + tuple(
+    DependencyFloor(package=package, allowed=allowed, rationale=_AS_FOUND_RATIONALE)
+    for package, allowed in _RECORDED_AS_FOUND
+)
+
 _CONFIG = DependencyAlignmentConfig(
     repo_root=_REPO_ROOT,
     package_globs=("packages/*", "packages/agent/*"),
     exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_dependency_alignment_exemptions.txt",
     contract_packages=("packages/media-contracts", "packages/tool-schema"),
-    dependency_floors=_DEPENDENCY_FLOORS,
+    dependency_floors=_ALL_FLOORS,
 )
 
 
@@ -95,6 +321,30 @@ class TestDependencyAlignment:
         """guard the guard: a pin over a path that holds nothing passes vacuously,
         so the pinned directories are asserted to exist as packages here rather
         than only inside the walker's own report."""
-        for floor in _DEPENDENCY_FLOORS:
+        for floor in _ALL_FLOORS:
             assert (_REPO_ROOT / floor.package / "pyproject.toml").is_file(), floor.package
             assert floor.allowed, f"{floor.package} pins an empty floor"
+        pinned = [floor.package for floor in _ALL_FLOORS]
+        assert len(pinned) == len(set(pinned)), f"a package is pinned twice: {sorted(pinned)}"
+
+    def test_every_package_with_hard_dependencies_has_a_floor(self) -> None:
+        """a package without a floor can take a new hard dependency in one unreviewed pyproject line.
+
+        a package that declares no hard dependencies needs no entry: adding its first one leaves it
+        with dependencies and no floor, which this test then refuses.
+        """
+        pinned = {floor.package for floor in _ALL_FLOORS} | set(_CONFIG.contract_packages)
+        packages: list[str] = []
+        unpinned: list[str] = []
+        for pattern in _CONFIG.package_globs:
+            for pyproject in sorted(_REPO_ROOT.glob(f"{pattern}/pyproject.toml")):
+                package = pyproject.parent.relative_to(_REPO_ROOT).as_posix()
+                packages.append(package)
+                declared = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"].get("dependencies") or []
+                if declared and package not in pinned:
+                    unpinned.append(package)
+        assert len(packages) > 20, f"only {len(packages)} packages found; the workspace layout changed"
+        assert not unpinned, (
+            f"packages with hard dependencies and no floor: {unpinned}. Argue a floor in _DEPENDENCY_FLOORS, "
+            "or, failing that, record the package in _RECORDED_AS_FOUND."
+        )
