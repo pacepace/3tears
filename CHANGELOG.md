@@ -8,6 +8,22 @@ packages (bumped in lock-step).
 
 ## v0.71.0 -- 2026-10-17
 
+### 3tears-evals: a judge campaign's report no longer labels the subject's own spend measuring spend
+
+- **In a judge-kind campaign the spend measures read as the arm's own spend** (#830). The judge under test is the
+  subject and the only role billed, so `cost_usd` is the same dollars as `production_replicating_cost`, and the
+  report showed them as both "Production cost" and "Measuring spend, all roles". There `cost_usd`, `program_cost`,
+  `total_cost_usd` and `mean_cost_usd` read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per
+  result`, and a title built from them no longer ends `, measuring spend`. Every other kind keeps the label.
+
+### 3tears-evals: a finding title naming a model is checked against that arm's readings whatever qualifier its display carries
+
+- **An arm's display is matched with its trailing parenthetical dropped, as well as whole** (#831). A real display
+  such as `deepseek-v4.1-flash (production)` is written "deepseek-v4.1-flash" in a title, so the arm-mention check
+  never saw the title name it and production-labelled arms went unchecked. A title naming such an arm it cites
+  nothing of is now refused; one citing it is admitted. Where one model carries two labels (`m (production)`, `m
+  (tuned)`), or another arm shows the same name unqualified, the dropped form names no arm: it would name two.
+
 ### 3tears-evals: a decision rule's rate clause reads keep only on a drop shown past its margin
 
 - **A `RateDrop` rate has three states, and only one reads as a regression** (#845). Shown to break: every arm at

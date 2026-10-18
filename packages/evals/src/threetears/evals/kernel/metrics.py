@@ -148,6 +148,8 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "DELIVERED_AXES",
     "MEASURING_SPEND_MEASURES",
     "measure_title",
+    "SUBJECT_SPEND_READER_NAMES",
+    "subject_spend_descriptor",
     "reader_name_defects",
     "reads_turns",
     "summary_population",
@@ -280,6 +282,30 @@ _BLENDED_SPEND = "cost_usd"
 #: the cost axis's measure (see ``docs/cost-and-budgets.md``).
 MEASURING_SPEND_MEASURES: frozenset[str] = frozenset({_BLENDED_SPEND, "program_cost"})
 
+#: What a judge-kind campaign calls the spend measures :data:`MEASURING_SPEND_MEASURES` and the totals over them name.
+#: There the judge under test is the subject and the only role billed, so these dollars are the arm's own
+#: production spend, the same dollars ``production_replicating_cost`` reads, and "measuring spend" would put a
+#: second label on one figure (#830).
+SUBJECT_SPEND_READER_NAMES: dict[str, str] = {
+    _BLENDED_SPEND: "Spend, all roles",
+    "program_cost": "Program spend",
+    "total_cost_usd": "Total spend",
+    "mean_cost_usd": "Mean spend per result",
+}
+
+
+def subject_spend_descriptor(descriptor: MetricDescriptor) -> MetricDescriptor:
+    """A spend measure's descriptor as a judge-kind campaign reads it: the subject's own spend, not measuring spend.
+
+    :param descriptor: A measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :return: The descriptor under its :data:`SUBJECT_SPEND_READER_NAMES` name where it has one; ``descriptor`` itself
+        for any other measure.
+    :rtype: MetricDescriptor
+    """
+    renamed = SUBJECT_SPEND_READER_NAMES.get(descriptor.name)
+    return descriptor if renamed is None else descriptor.model_copy(update={"reader_name": renamed})
+
 
 def measure_title(name: str, reader_name: str | None = None) -> str:
     """A measure as a chart or column heads it: by its reader-facing name, and a measuring-spend measure says it is one.
@@ -298,7 +324,11 @@ def measure_title(name: str, reader_name: str | None = None) -> str:
     :rtype: str
     """
     title = reader_name or name
-    if name in MEASURING_SPEND_MEASURES and "measuring spend" not in title.casefold():
+    if (
+        name in MEASURING_SPEND_MEASURES
+        and "measuring spend" not in title.casefold()
+        and reader_name not in SUBJECT_SPEND_READER_NAMES.values()
+    ):
         return f"{title}, measuring spend"
     return title
 

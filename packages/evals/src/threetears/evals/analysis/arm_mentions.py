@@ -10,7 +10,10 @@ arms a finding cites is structure: the cells of its evidence rows and the arms o
 this title name" is read off the words, and only by the names the bundle itself gives each arm
 (:func:`arm_vocabulary`): the display of each level that tells it apart (:func:`~threetears.evals.analysis.arms.distinguishing_axes`),
 and for a provider-qualified level (``acme/ling-3.1-flash``) the part after its last ``/`` too, since that is the
-model's own name. Nothing invents an alias: a writer shortening ``gpt-6-luna-pro`` to "Luna Pro" names nothing here,
+model's own name. A display's trailing parenthetical qualifier is not part of the name a title writes
+(``deepseek-v4.1-flash (production)`` is written "deepseek-v4.1-flash"), so the display with it dropped is a name too,
+where exactly one display yields it and no level carries it whole: two arms of one model told apart by their labels
+(``m (production)``, ``m (tuned)``) share the stripped name, which then names neither. Nothing invents an alias: a writer shortening ``gpt-6-luna-pro`` to "Luna Pro" names nothing here,
 and the reporter eval's judge measures the rest.
 
 **How a name matches.** Case-insensitively, as a run of the name's words in order (letters and digits split apart,
@@ -119,6 +122,10 @@ def _forms(display: str) -> list[str]:
     return [whole] if not tail or tail == whole else [whole, tail]
 
 
+#: A trailing parenthetical qualifier: ``(production)`` closing a display.
+_QUALIFIER = re.compile(r"\s*\([^()]*\)\s*$")
+
+
 def _pattern(words: tuple[str, ...], *, unspaced_unit: bool) -> re.Pattern[str]:
     joins = [_JOIN] * (len(words) - 1)
     if unspaced_unit:
@@ -140,6 +147,11 @@ def arm_vocabulary(entries: Sequence[VariantIndexEntry]) -> list[ArmName]:
     spelled: dict[tuple[str, ...], str] = {}
     unspaced_unit: dict[tuple[str, ...], bool] = {}
     carriers: dict[tuple[str, ...], set[str]] = {}
+    # The names a display offers with its qualifier dropped: the displays that yield each, and the arms carrying them.
+    stripped_spelled: dict[tuple[str, ...], str] = {}
+    stripped_unspaced: dict[tuple[str, ...], bool] = {}
+    stripped_displays: dict[tuple[str, ...], set[str]] = {}
+    stripped_carriers: dict[tuple[str, ...], set[str]] = {}
     for entry in entries:
         if entry.levels_unavailable is not None:
             continue
@@ -153,6 +165,22 @@ def arm_vocabulary(entries: Sequence[VariantIndexEntry]) -> list[ArmName]:
                 spelled.setdefault(words, form)
                 unspaced_unit.setdefault(words, _is_quantity(axis, form))
                 carriers.setdefault(words, set()).add(entry.variant_key)
+            unqualified = _QUALIFIER.sub("", level.display)
+            if unqualified == level.display:
+                continue
+            for form in _forms(unqualified):
+                words = tuple(word.lower() for word in _WORDS.findall(form))
+                if not words or not _reads_as_a_name(axis, form):
+                    continue
+                stripped_spelled.setdefault(words, form)
+                stripped_unspaced.setdefault(words, _is_quantity(axis, form))
+                stripped_displays.setdefault(words, set()).add(" ".join(level.display.split()))
+                stripped_carriers.setdefault(words, set()).add(entry.variant_key)
+    for words, displays in stripped_displays.items():
+        if len(displays) == 1 and words not in spelled:
+            spelled[words] = stripped_spelled[words]
+            unspaced_unit[words] = stripped_unspaced[words]
+            carriers[words] = stripped_carriers[words]
     return [
         ArmName(spelled[words], frozenset(carriers[words]), _pattern(words, unspaced_unit=unspaced_unit[words]))
         for words in spelled
