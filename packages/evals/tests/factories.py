@@ -26,7 +26,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Telem
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel.authored import AuthoredAnalysis
-from threetears.evals.kernel.campaign_upgrade import upgrade_campaign_v15
+from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
     EvalAnalysisAttempt,

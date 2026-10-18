@@ -221,6 +221,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final
 
+from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 
 #: The oldest core major this build reads: always :data:`CORE_SCHEMA_VERSION`, since the core ships no upgrader and a
@@ -503,22 +504,6 @@ DURABLE_SCHEMA_MINOR: int = 0
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
-def _campaign_of_aspects(document: dict[str, Any]) -> dict[str, Any]:
-    """The v15 → v16 step: a stored v15 campaign as the campaign of one aspect it reads as.
-
-    :func:`~threetears.evals.kernel.campaign_upgrade.upgrade_campaign_v15`, imported when a step first runs rather
-    than when this module loads, since the kernel imports this module.
-
-    :param document: The stored v15 campaign.
-    :ptype document: dict[str, Any]
-    :return: The campaign at the v16 shape.
-    :rtype: dict[str, Any]
-    """
-    from threetears.evals.kernel.campaign_upgrade import upgrade_campaign_v15
-
-    return upgrade_campaign_v15(document)
-
-
 #: The registered durable steps, oldest first: ``[s.from_version for s in DURABLE_UPGRADERS]`` is
 #: ``range(DURABLE_BASELINE_VERSION, DURABLE_SCHEMA_VERSION)``. A constant, so no import registers a step.
 DURABLE_UPGRADERS: tuple[CoreUpgrader, ...] = (
@@ -526,7 +511,7 @@ DURABLE_UPGRADERS: tuple[CoreUpgrader, ...] = (
         from_version=15,
         doc_types=frozenset({"eval_campaign"}),
         reason="a campaign asks one question of one or more aspects; a v15 campaign reads as one aspect",
-        upgrade=_campaign_of_aspects,
+        upgrade=upgrade_campaign_v15,
     ),
 )
 

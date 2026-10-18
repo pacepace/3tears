@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
-from threetears.evals.kernel.declaration import aware_instant
 
-__all__ = ["QUESTION_SEPARATOR", "UPGRADED_CONTROL_LABEL", "upgrade_campaign_v15"]
+__all__ = ["QUESTION_SEPARATOR", "UPGRADED_CONTROL_LABEL", "aware_instant", "upgrade_campaign_v15"]
 
 #: The label a v15 campaign's declared control carries as an arm. A v15 design names its control by key alone.
 UPGRADED_CONTROL_LABEL = "control"
@@ -181,3 +181,27 @@ def _last_asked(live: Sequence[Mapping[str, Any]]) -> str | None:
         except ValueError:
             return None
     return max(asked)[1]
+
+
+def aware_instant(stamp: str, what: str) -> datetime:
+    """``stamp`` as an aware instant, refused by name when it is not one: the one reading of a declaration's times.
+
+    Here, in the schema package, so the stored read's step and the kernel's pre-registration read share it without
+    the schema importing the kernel.
+
+    :param stamp: The stored time.
+    :ptype stamp: str
+    :param what: What carries it, as the refusal names it.
+    :ptype what: str
+    :return: The instant.
+    :rtype: datetime
+    :raises ValueError: ``stamp`` is not an ISO-8601 time, or carries no offset, so which of two came first cannot be
+        said.
+    """
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError as unreadable:
+        raise ValueError(f"{what} is stamped {stamp!r}, which is not an ISO-8601 time") from unreadable
+    if instant.tzinfo is None:
+        raise ValueError(f"{what} is stamped {stamp!r}, with no offset, so it cannot be ordered against another time")
+    return instant

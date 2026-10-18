@@ -36,12 +36,12 @@ from __future__ import annotations
 import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from functools import cache
 from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, TypeAdapter, computed_field, field_validator, model_validator
 
+from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
@@ -1259,6 +1259,10 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
         return _skipped_by_design(self.axes, self.skipped_cells, self.crossing, cell)
 
 
+#: A margin as an aspect declares one: points of a 0-100 pass rate, strictly between the ends and finite.
+Margin = Annotated[float, Field(gt=0.0, lt=100.0, allow_inf_nan=False)]
+
+
 #: What an arm is to its campaign: the ``control`` every other arm is read against, or a ``candidate`` for it.
 ArmRole = Literal["control", "candidate"]
 
@@ -2394,29 +2398,9 @@ def preregistered_questions(design: CampaignDesign, first_run_at: str | None) ->
     return [question for question in live if aware_instant(question.asked_at, f"question {question.id}") <= first]
 
 
-def aware_instant(stamp: str, what: str) -> datetime:
-    """``stamp`` as an aware instant, refused by name when it is not one: the one reading of a declaration's times.
-
-    :param stamp: The stored time.
-    :ptype stamp: str
-    :param what: What carries it, as the refusal names it.
-    :ptype what: str
-    :return: The instant.
-    :rtype: datetime
-    :raises ValueError: ``stamp`` is not an ISO-8601 time, or carries no offset, so which of two came first cannot be
-        said.
-    """
-    try:
-        instant = datetime.fromisoformat(stamp)
-    except ValueError as unreadable:
-        raise ValueError(f"{what} is stamped {stamp!r}, which is not an ISO-8601 time") from unreadable
-    if instant.tzinfo is None:
-        raise ValueError(f"{what} is stamped {stamp!r}, with no offset, so it cannot be ordered against another time")
-    return instant
-
-
 __all__ = [
     "NO_TEMPLATE_REMEDY",
+    "Margin",
     "ArmRole",
     "Aspect",
     "AspectDesign",

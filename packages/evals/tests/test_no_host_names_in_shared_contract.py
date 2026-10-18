@@ -186,10 +186,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "__main__.py",
     # The stored analysis shapes, which are kernel rather than analysis (the stored campaign,
     # analysis and insight models, the campaign declaration, the decision surface, the authored
-    # document shape, and the analysis measures, and the step a stored campaign is upgraded by). `kernel/` is split,
-    # so each is listed.
+    # document shape, and the analysis measures). `kernel/` is split, so each is listed.
     "kernel/campaign.py",
-    "kernel/campaign_upgrade.py",
+    # The step a stored campaign is upgraded by, in the schema package with the version chain that registers it.
+    "schema/campaign_upgrade.py",
     "kernel/declaration.py",
     "kernel/surface.py",
     "kernel/authored.py",

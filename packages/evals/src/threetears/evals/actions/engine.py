@@ -142,7 +142,7 @@ from threetears.evals.ops import (
     runs_bisected_text,
     runs_compared_text,
 )
-from threetears.evals.analysis.campaigns import Margin
+from threetears.evals.kernel.declaration import Margin
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list

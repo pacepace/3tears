@@ -69,6 +69,7 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.versioning import (
     CASSETTE_SCHEMA_VERSION,
     CORE_SCHEMA_VERSION,
+    DURABLE_BASELINE_VERSION,
     DURABLE_SCHEMA_VERSION,
     REGENERABLE_SCHEMA_VERSION,
 )
@@ -1544,7 +1545,8 @@ class CalibrationRating(DurableDocumentModel):
 
         A rating stored at durable v15.0 (by ``.25``, or by a build that did not know the field) carries neither
         ``rated`` nor ``rated_withheld``; it is read with ``rated_withheld`` set to
-        :data:`RATING_WRITTEN_BEFORE_CONTENT`. A rating at v15.1 or later that carries neither is refused as drift.
+        :data:`RATING_WRITTEN_BEFORE_CONTENT`. A rating at v15.1 or later that carries neither is refused as drift,
+        a later major's first minor (v16.0) included: only v15.0 predates the field.
 
         :param data: The stored document, as the store returned it.
         :ptype data: dict[str, Any]
@@ -1556,6 +1558,7 @@ class CalibrationRating(DurableDocumentModel):
             isinstance(data, Mapping)
             and "rated" not in data
             and "rated_withheld" not in data
+            and data.get("schema_version") == DURABLE_BASELINE_VERSION
             and data.get("schema_minor", 0) == 0
         ):
             data = {**data, "rated_withheld": RATING_WRITTEN_BEFORE_CONTENT}
