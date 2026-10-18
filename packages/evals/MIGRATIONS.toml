@@ -58,7 +58,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.71.0"
 since = "v0.70.1"
 summary = """
 No public name of 3tears-evals has moved or been removed since 0.70.1. The family moves to 0.71.0 for new public API

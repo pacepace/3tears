@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.71.0 -- 2026-10-18
+
 ### Testing: the dead-Redshift-connection test kills what it means to
 
 The TLS thread-state test could kill nothing: the fake warehouse records a connection only after its own side of the
