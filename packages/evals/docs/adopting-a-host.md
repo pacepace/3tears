@@ -1388,7 +1388,9 @@ The call is read against code's readings of the evidence as it stands, never the
 A floor's key is `<aspect>/<kind>/<reading>`, `*` for every reading (`billing/rate_drop/*`, `billing/cost_lower/*`);
 the action takes a bar as `<aspect>/<measure>` (`tone/cost_usd`) and the reason as `call_reason`. The arm is named by
 its label or its variant key and recorded by key, since a derived arm's label can shift when a variant joins. A new
-call replaces the earlier one, and the page's last line states whichever the campaign holds.
+call replaces the earlier one, and the page's last line states whichever the campaign holds, with how many runs
+joined since it was made. In a choice, an arm shown behind another on some aspect is never refused: the page warns
+beside the call.
 
 
 ## The engine's prompts: shipped defaults, optional overrides
