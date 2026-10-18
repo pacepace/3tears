@@ -31,7 +31,6 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime
 from itertools import chain
@@ -313,12 +312,6 @@ def _question(bundle: AnalysisContextBundle) -> str | None:
     return declared.question
 
 
-#: The labels a campaign gives its arms, by variant key, while one of its aspects' pages is built
-#: (:func:`build_code_only_report`'s ``arm_labels``): every name the page gives an arm reads them first, so a fold of
-#: the campaign's page names each arm as the campaign's table does. Empty for every other page.
-_ARM_LABELS: ContextVar[Mapping[str, str] | None] = ContextVar("campaign_arm_labels", default=None)
-
-
 def build_code_only_report(
     bundle: AnalysisContextBundle,
     *,
@@ -346,15 +339,6 @@ def build_code_only_report(
     :return: The report, ``basis="code_only"``.
     :rtype: Report
     """
-    token = _ARM_LABELS.set(dict(arm_labels) if arm_labels else None)
-    try:
-        return _code_only_page(bundle, assembled_at=assembled_at, campaign_name=campaign_name)
-    finally:
-        _ARM_LABELS.reset(token)
-
-
-def _code_only_page(bundle: AnalysisContextBundle, *, assembled_at: str, campaign_name: str | None) -> Report:
-    """:func:`build_code_only_report`'s page, under whatever arm labels it set."""
     source = ReportSource(
         campaign_id=bundle.campaign_id,
         campaign_name=campaign_name or None,
@@ -364,7 +348,15 @@ def _code_only_page(bundle: AnalysisContextBundle, *, assembled_at: str, campaig
         bundle_fingerprint=bundle.fingerprint(),
     )
     memo = _question_blocks(bundle)
-    return _page(bundle, basis="code_only", source=source, memo=lambda *_: memo, finding_count=0, writer=None)
+    return _page(
+        bundle,
+        basis="code_only",
+        source=source,
+        memo=lambda *_: memo,
+        finding_count=0,
+        writer=None,
+        arm_labels=arm_labels,
+    )
 
 
 def analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle:
@@ -422,21 +414,25 @@ def _page(
     finding_count: int,
     writer: str | None,
     style: MemoStyle | None = None,
+    arm_labels: Mapping[str, str] | None = None,
 ) -> Report:
     """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
+
+    ``arm_labels`` are a campaign's own labels for its arms, by variant key, which name those arms everywhere on the
+    page in place of their variants' names.
 
     The memo and the contrasts are laid out before the scoreboard, though they print after it: each chart they leave
     out is counted on the way, for the scoreboard's one line about what was not charted.
     """
     surface = bundle_decision_surface(bundle)
     rulers = report_rulers(surface, bundle.measure_catalog)
-    names = _arm_names(bundle)
+    names = _arm_names(bundle, labels=arm_labels)
     arm = _namer(names)
     cell_name = _cell_namer(surface, names)
     charts = _ChartLedger(bundle, arm)
     guardrails_read = guardrail_verdicts(surface, bundle.guardrails, cell_name, rulers)
     bars_read = bar_verdicts(surface, cell_name)
-    contrasts_read = contrast_verdicts(bundle, surface)
+    contrasts_read = contrast_verdicts(bundle, surface, arm_labels=arm_labels)
     written = memo(charts, names)
     # What the memo says with the methods (its coverage map) or with what was not tested (a finding standing on
     # no reading) is laid out after what code says there, never before it.
@@ -518,24 +514,29 @@ def _control_key(bundle: AnalysisContextBundle) -> str | None:
     return control if any(board.variant_key == control for board in bundle.scoreboard) else None
 
 
-def _arm_names(bundle: AnalysisContextBundle, index: Sequence[VariantIndexEntry] | None = None) -> dict[str, ArmName]:
+def _arm_names(
+    bundle: AnalysisContextBundle,
+    index: Sequence[VariantIndexEntry] | None = None,
+    *,
+    labels: Mapping[str, str] | None = None,
+) -> dict[str, ArmName]:
     """Every arm's name, given label first; an arm whose label another shares is told apart by its digest.
 
     ``index`` names the arms of another variant index (a stored analysis's own) by the same rule; the bundle's when
-    None.
+    None. ``labels`` are a campaign's own labels for its arms, by variant key, which replace their variants' labels.
     """
     displays = arm_names(bundle.variant_index if index is None else index)
     control = _control_key(bundle)
     names = {key: arm_name(display, control=key == control) for key, display in displays.items()}
-    if given := _ARM_LABELS.get():
+    if labels:
         # A campaign's own labels, where its page is being built: the label is the name, the model stays beside it.
         names = {
-            key: replace(name, label=given[key], given=True) if key in given else name for key, name in names.items()
+            key: replace(name, label=labels[key], given=True) if key in labels else name for key, name in names.items()
         }
-    labels = [name.label for name in names.values()]
+    taken = [name.label for name in names.values()]
     return {
         key: name
-        if labels.count(name.label) == 1
+        if taken.count(name.label) == 1
         else ArmName(label=f"{name.label} ({short_digest(key)})", model=name.model, control=name.control)
         for key, name in names.items()
     }
@@ -2005,13 +2006,16 @@ def _contrast_reason(comparison: FamilyComparison) -> tuple[VerdictReason, str |
     return "not_inside_margin", None
 
 
-def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -> list[Verdict]:
+def contrast_verdicts(
+    bundle: AnalysisContextBundle, surface: DecisionSurface, *, arm_labels: Mapping[str, str] | None = None
+) -> list[Verdict]:
     """Each contrast the bundle tested against the control as a typed verdict, in the contrasts table's row order.
 
     A contrast with fewer than :data:`MIN_CASES` cases on either side is printed ``not tested (n=N)``: its typed
-    outcome is the test's, and the words state no difference, as a rate on so few cases states none.
+    outcome is the test's, and the words state no difference, as a rate on so few cases states none. ``arm_labels``
+    name the arms as :func:`build_code_only_report` does.
     """
-    arm = _cell_namer(surface, _arm_names(bundle))
+    arm = _cell_namer(surface, _arm_names(bundle, labels=arm_labels))
     rulers = report_rulers(surface, bundle.measure_catalog)
     verdicts = []
     for family in bundle.multiple_comparisons.families:
