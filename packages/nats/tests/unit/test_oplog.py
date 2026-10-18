@@ -350,14 +350,70 @@ async def test_replay_surfaces_transport_error_never_silently_truncates() -> Non
     assert js.psub.unsubscribed is True
 
 
-async def test_replay_timeout_is_a_clean_tail_not_an_error() -> None:
-    """A fetch TimeoutError (drained tail) ends replay cleanly -- it is the normal terminator."""
+class _ShortTailJetStream(_ReplayJetStream):
+    """fake JS whose replay consumer delivers ops 1 and 2 of a five-op stream, then times out."""
+
+    def __init__(self, *, last_seq: int) -> None:
+        super().__init__(last_seq=last_seq, fetch_error=TimeoutError("unused"))
+        self.publish_error: BaseException | None = None
+
+    async def pull_subscribe_bind(self, *, consumer: str, stream: str) -> Any:
+        self.bound.append((consumer, stream))
+        self.psub = _ScriptedPullSub(
+            [
+                _fetched(1, b"op one", consumer=consumer, stream=stream),
+                _fetched(2, b"op two", consumer=consumer, stream=stream),
+            ]
+        )
+        return self.psub
+
+    async def publish(
+        self, subject: str, payload: bytes, *, headers: dict[str, str], stream: str, timeout: float
+    ) -> Any:
+        assert self.publish_error is not None
+        raise self.publish_error
+
+
+async def test_a_replay_that_times_out_short_of_the_head_raises_rather_than_ending_clean() -> None:
+    """a fetch timeout before ``last_seq`` arrives ended the iteration, and a short replay read as complete.
+
+    the ops delivered before the timeout are still yielded; the iteration then raises instead of ending.
+    """
+    js = _ShortTailJetStream(last_seq=5)
+    oplog = _make_oplog(js)  # type: ignore[arg-type]
+
+    replayed: list[OpRecord] = []
+    with pytest.raises(OpLogError, match="short of the stream head") as exc_info:
+        async for record in oplog.replay(from_seq=1):
+            replayed.append(record)
+
+    assert [r.seq for r in replayed] == [1, 2]
+    assert "last_yielded_seq=2 last_seq=5" in str(exc_info.value)
+    assert js.psub.unsubscribed is True
+
+
+async def test_a_replay_that_delivers_nothing_before_timing_out_raises() -> None:
+    """a stream whose head is 5 and a replay that reads none of it is not an empty replay."""
     js = _ReplayJetStream(last_seq=5, fetch_error=TimeoutError("nats: timeout"))
     oplog = _make_oplog(js)  # type: ignore[arg-type]
 
-    records = [r async for r in oplog.replay(from_seq=1)]
-    assert records == []  # nothing delivered before the tail timeout; no error raised
+    with pytest.raises(OpLogError, match="short of the stream head"):
+        _ = [r async for r in oplog.replay(from_seq=1)]
     assert js.psub.unsubscribed is True
+
+
+async def test_a_cas_retry_whose_op_id_scan_ends_short_is_not_reported_as_a_fence() -> None:
+    """append scans the log for its op_id on a wrong-last-sequence error; a scan that stopped short
+    reported "not logged", so a retry of an op the log already holds was raised as a genuine fence."""
+    from nats.js.errors import APIError
+
+    js = _ShortTailJetStream(last_seq=5)
+    js.publish_error = APIError(code=400, err_code=10071, description="wrong last sequence: 5")
+    oplog = _make_oplog(js)  # type: ignore[arg-type]
+
+    with pytest.raises(OpLogError, match="short of the stream head") as exc_info:
+        await oplog.append(payload=b"x", op_id="op-5", expected_last_seq=2)
+    assert not isinstance(exc_info.value, OpLogSequenceConflict)
 
 
 # ----------------------------------------------------------------------
