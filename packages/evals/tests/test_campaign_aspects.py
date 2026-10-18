@@ -734,18 +734,18 @@ def test_every_unnamed_variant_among_the_runs_is_read_as_a_candidate_and_never_s
 
     assert (control.label, control.role, control.variant_key) == ("a", "control", _key("a"))
     assert (candidate.role, candidate.variant_key, candidate.levers) == ("candidate", _key("b"), _levers("b"))
-    assert candidate.label == "model=B", "labelled by the lever on which the variants differ"
+    assert candidate.label == "B", "labelled by the lever on which the variants differ, as the page reads it"
     assert [arm.label for arm in campaign.arms] == ["a"], "a derived arm is never stored"
 
 
 def test_a_derived_label_a_named_arm_already_has_is_told_apart() -> None:
     storage, _ = _store()
-    campaign = _two_aspects(storage, arms=[{"label": "model=B", "role": "control", "from_run_ids": ["tpl-tone-a"]}])
+    campaign = _two_aspects(storage, arms=[{"label": "B", "role": "control", "from_run_ids": ["tpl-tone-a"]}])
     campaign = add_runs_to_campaign(storage, campaign.id, _SCOPE, ["tpl-tone-b"])
 
     _control, candidate = campaign_arms(storage, campaign, profile=_HOST)
 
-    assert candidate.label == "model=B (2)"
+    assert candidate.label == "B (2)"
 
 
 # --- three kinds: a margin and a floor need a control ----------------------------------------------------------------

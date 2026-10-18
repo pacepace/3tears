@@ -118,6 +118,9 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     assert re.fullmatch(r"\*\*emails: \d+/\d+ cases passed; \d+ misses: .+\*\*", lines[verdict])
     arm = lines[verdict - 2]
     assert " · " in arm
+    # The campaign's first screen names the one arm as the eval does, never `control`.
+    measures = [line for line in lines[: lines.index("## classify")] if line.startswith("| classify |")]
+    assert measures and all(line.startswith("| classify | triage |") for line in measures)
     assert lint_page(page, names={arm.split(" · ")[0]}) == []
 
 
