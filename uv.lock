@@ -140,11 +140,8 @@ dependencies = [
     { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "asyncpg" },
-    { name = "cryptography" },
-    { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-core" },
-    { name = "pyjwt", extra = ["crypto"] },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
 ]
@@ -153,11 +150,18 @@ dependencies = [
 duckdb = [
     { name = "duckdb" },
 ]
+http = [
+    { name = "httpx" },
+]
 nats = [
     { name = "3tears-nats", extra = ["client"] },
 ]
 pgvector = [
     { name = "pgvector" },
+]
+security = [
+    { name = "cryptography" },
+    { name = "pyjwt", extra = ["crypto"] },
 ]
 snapshot = [
     { name = "duckdb" },
@@ -186,25 +190,25 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "boto3", marker = "extra == 'testing'" },
-    { name = "cryptography", specifier = ">=42" },
+    { name = "cryptography", marker = "extra == 'security'", specifier = ">=42" },
     { name = "docker", marker = "extra == 'testing'", specifier = ">=7.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
     { name = "duckdb", marker = "extra == 'snapshot'", specifier = ">=1.0" },
-    { name = "httpx" },
+    { name = "httpx", marker = "extra == 'http'" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'socks'" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20,<2" },
     { name = "pgvector", marker = "extra == 'pgvector'" },
     { name = "pyarrow", marker = "extra == 'snapshot'", specifier = ">=17" },
     { name = "pydantic" },
     { name = "pydantic-core" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
+    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'security'", specifier = ">=2.8" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy" },
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
     { name = "uuid-utils", marker = "extra == 'uuid-utils'" },
 ]
-provides-extras = ["nats", "tracing", "socks", "duckdb", "snapshot", "testing", "pgvector", "uuid-utils"]
+provides-extras = ["security", "http", "nats", "tracing", "socks", "duckdb", "snapshot", "testing", "pgvector", "uuid-utils"]
 
 [[package]]
 name = "3tears-agent-acl"
@@ -239,7 +243,7 @@ name = "3tears-agent-audit"
 version = "0.70.1"
 source = { editable = "packages/agent/audit" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["security"] },
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "pydantic" },
@@ -247,7 +251,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -403,7 +407,7 @@ name = "3tears-agent-tools"
 version = "0.70.1"
 source = { editable = "packages/agent/tools" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["http", "security"] },
     { name = "3tears-agent-audit" },
     { name = "3tears-agent-memory" },
     { name = "3tears-epoch" },
@@ -465,7 +469,7 @@ xlsx = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security", "http"], editable = "packages/core" },
     { name = "3tears-agent-audit", editable = "packages/agent/audit" },
     { name = "3tears-agent-memory", editable = "packages/agent/memory" },
     { name = "3tears-epoch", editable = "packages/epoch" },
@@ -670,7 +674,7 @@ name = "3tears-datasources"
 version = "0.70.1"
 source = { editable = "packages/datasources" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["security"] },
     { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "asyncpg" },
@@ -703,7 +707,7 @@ tracing = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "asyncpg", specifier = ">=0.30" },
@@ -814,7 +818,7 @@ name = "3tears-iam"
 version = "0.70.1"
 source = { editable = "packages/iam" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["security"] },
     { name = "3tears-agent-acl" },
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
@@ -839,7 +843,7 @@ webauthn = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
@@ -1097,7 +1101,7 @@ name = "3tears-registry"
 version = "0.70.1"
 source = { editable = "packages/registry" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["security"] },
     { name = "3tears-agent-acl" },
     { name = "3tears-agent-tools" },
     { name = "3tears-epoch" },
@@ -1111,7 +1115,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-agent-tools", editable = "packages/agent/tools" },
     { name = "3tears-epoch", editable = "packages/epoch" },
@@ -1158,7 +1162,7 @@ name = "3tears-scrape"
 version = "0.70.1"
 source = { editable = "packages/scrape" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["http", "security"] },
     { name = "3tears-agent-tools", extra = ["document", "fetch"] },
     { name = "3tears-models" },
     { name = "3tears-observe" },
@@ -1186,7 +1190,7 @@ reprobe = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security", "http"], editable = "packages/core" },
     { name = "3tears-agent-tools", extras = ["document", "fetch"], editable = "packages/agent/tools" },
     { name = "3tears-models", editable = "packages/models" },
     { name = "3tears-nats", marker = "extra == 'hitl'", editable = "packages/nats" },

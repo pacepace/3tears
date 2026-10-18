@@ -27,7 +27,7 @@ dependencies = [
     # ReplayGuard/RevocationGuard/WindowedCounter (coordination), and
     # seal/open_secret (encryption) for TOTP seed material at rest. Forking
     # any of those would give the platform two answers to the same question.
-    "3tears>=0.70.0,<0.71.0",
+    "3tears[security]>=0.70.0,<0.71.0",
     "3tears-observe>=0.70.0,<0.71.0",
     # the sensitive-action taxonomy. agent-acl's ImpersonationCategory and
     # identity-core's SensitiveActionCategory declared the same six strings

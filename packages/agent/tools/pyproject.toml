@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.70.0,<0.71.0",
+    "3tears[security,http]>=0.70.0,<0.71.0",
     "3tears-agent-audit>=0.70.0,<0.71.0",
     "3tears-agent-memory>=0.70.0,<0.71.0",
     # a tool pod reads the epoch bucket: its generation source's reader, and following a table

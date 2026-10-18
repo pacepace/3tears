@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: signing and HTTP are extras, so most of the family stops installing them
+
+**Changed (core):** `cryptography` and `pyjwt[crypto]` move to a new `3tears[security]` extra, and
+`httpx` to `3tears[http]`. The base keeps what the tiers need: `3tears-observe`, `3tears-nats`,
+sqlalchemy, asyncpg, pydantic and pyyaml. `threetears.core.security`, `threetears.core.backends`
+and `threetears.core.utils` now resolve their names lazily, like `threetears.core` itself.
+Importing the sandbox, a secret reference, `atomic_write` or the L1 cache therefore no longer loads
+the signed-token stack beside it. Before, `cache.sqlite` reached `backends.nats_proxy` through
+`backends/__init__.py`, which loaded asyncpg, cryptography and jwt. Reaching a name that needs an
+extra without it raises `ImportError` naming the extra.
+
+The family packages that use core's signing declare `3tears[security]`: agent-audit, agent-tools,
+datasources, iam, registry and scrape. agent-tools and scrape also declare `3tears[http]`. Each was
+found by importing every one of its modules with the extras refused to core, and by a static pass
+over deferred imports.
+
+**Breaking:** an app that uses `threetears.core.security`'s tokens, proofs, envelopes or sealing,
+`NatsProxyL3Backend`, or `threetears.core.http_client`, and depends on a bare `3tears`, must add the
+extra. This ships in a minor release.
+
 ### every package declares what it imports, checked per package
 
 **Changed (packaging):** 3tears now runs its own declared-imports gate

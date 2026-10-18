@@ -45,7 +45,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.70.0,<0.71.0",
+    "3tears[security,http]>=0.70.0,<0.71.0",
     # [document]: drivers/document.py's DocumentDriver reuses parse_document to
     # feed PDF/DOCX/XLSX/CSV targets through the same AI eval loop HTML-page
     # targets already use.

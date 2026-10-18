@@ -26,7 +26,7 @@ classifiers = [
 # depends on 3tears core via a compatible-release range; the whole
 # monorepo bumps in lockstep so any 0.9.x core satisfies this.
 dependencies = [
-    "3tears>=0.70.0,<0.71.0",
+    "3tears[security]>=0.70.0,<0.71.0",
     # the query client publishes on the subject grammar and the typed request
     # form. no ``[client]`` extra: the grammar, the error types and the client
     # protocol import without nats-py, and every process that CALLS the client

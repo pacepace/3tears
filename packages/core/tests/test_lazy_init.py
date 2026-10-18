@@ -9,10 +9,13 @@ docs/separate-concerns-decisions.md), plus the import-cost win: a bare
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 import threetears.core as core
 
@@ -129,3 +132,38 @@ class TestImportCost:
         assert result.returncode == 0, f"probe failed:\n{result.stderr}"
         loaded = json.loads(result.stdout.strip())
         assert loaded == [], f"bare core import loaded heavy modules: {loaded}"
+
+
+#: the subpackages that resolve their names lazily, so one light module in each does not load the
+#: extras-backed modules beside it (``security`` and ``backends.nats_proxy`` need ``3tears[security]``)
+_LAZY_SUBPACKAGES = ("threetears.core.backends", "threetears.core.security", "threetears.core.utils")
+
+
+@pytest.mark.parametrize("package_name", _LAZY_SUBPACKAGES)
+class TestLazySubpackageConsistency:
+    """the same three-way agreement, for each lazy subpackage."""
+
+    def test_all_and_lazy_are_the_same_set(self, package_name: str) -> None:
+        package = importlib.import_module(package_name)
+        lazy, declared = _declared_lazy_names(Path(package.__file__ or "")), set(package.__all__)
+        assert lazy == declared, (
+            f"reachable but undeclared: {sorted(lazy - declared)}; declared but unreachable: {sorted(declared - lazy)}"
+        )
+
+    def test_type_checking_block_matches_lazy(self, package_name: str) -> None:
+        init_path = Path(importlib.import_module(package_name).__file__ or "")
+        assert _type_checking_names(init_path) == _declared_lazy_names(init_path)
+
+    def test_every_public_name_resolves(self, package_name: str) -> None:
+        package = importlib.import_module(package_name)
+        for name in package.__all__:
+            assert getattr(package, name) is not None
+
+    def test_unknown_attribute_raises(self, package_name: str) -> None:
+        package = importlib.import_module(package_name)
+        with pytest.raises(AttributeError, match="definitely_not_an_attribute"):
+            getattr(package, "definitely_not_an_attribute")
+
+    def test_dir_includes_lazy_names(self, package_name: str) -> None:
+        package = importlib.import_module(package_name)
+        assert set(package.__all__) <= set(dir(package))
