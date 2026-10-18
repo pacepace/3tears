@@ -19,6 +19,21 @@ a wrapper in front of the CLI recorded 55 SIGTERMs from outside the container in
 each killing calls in flight (exit 143). The protection holds once every host-side process runs this
 version.
 
+### Testing: each package runs on one worker, as documented; the live prompt-switch test stops failing on an empty quote
+
+**Fixed (testing):** the root `conftest.py` put every test in its package's xdist group after pytest-xdist had
+already read the groups, so since v0.70.0 a package's tests were spread over all four workers. The hook now runs
+first (`tryfirst`). The orphan-sweep tests showed it: one worker's sweep killed the child another worker's test was
+holding.
+
+**Fixed (testing):** the live test that a pooled CLI switches between system prompts flagged any reply that said
+"secret word". Its system prompt gives the model one, so the model sometimes added "I can't share my secret word"
+beside an empty `<q></q>` (2 of 5 live runs on 0.70.1). The phrase now counts only inside the quote; the previous
+call's question counts anywhere in the reply.
+
+**Fixed (evals):** the judge-pin baseline rolls forward to v0.70.0, the first release that shipped 3tears-evals,
+and `MIGRATIONS.toml` has a 0.70.1 section.
+
 ## v0.70.0 -- 2026-10-16
 
 ### models: a subscription reply says why it stopped and who served it; an OpenRouter reasoning budget reaches the wire
