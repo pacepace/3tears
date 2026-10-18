@@ -8,7 +8,7 @@ judge, through the ordinary run path.
 - **A case** is one campaign's analysis bundle, FROZEN into the case's ``host_payload``. Bundles
   are re-assembled on demand everywhere else, and the schema moves, so without the freeze a case
   would silently change under every candidate scored on it. The bundle already carries the
-  campaign's declaration (``declared_design``: its questions and bars).
+  campaign's declaration as the aspect reads it (``declared``: its question and bars).
 - **A candidate** is a (prompt preset, generator model) pair — :class:`ReporterKind` — or the
   memo the campaign actually got — :class:`AsRecordedReporterKind` — so calibrating the rubric
   against a reviewer's read of a stored memo goes through the same path and judge as every later
@@ -937,12 +937,13 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
 
     if document.questions:
         questions = ["## Declared questions", ""]
+        declared = AnalysisContextBundle.from_dict(dict(analysis.bundle)).declared
         for answer in document.questions:
             rests = f" (rests on {positions(answer.rests_on)})" if answer.rests_on else ""
             asked = (
                 analysis.design_snapshot.question_words(answer.question_id)
                 if analysis.design_snapshot is not None
-                else answer.question_id
+                else (declared.question if declared is not None and declared.question else answer.question_id)
             )
             questions.append(f"- {one_line(asked)} — {answer.resolution}: {one_line(answer.answer)}{rests}")
         sections.append(questions)

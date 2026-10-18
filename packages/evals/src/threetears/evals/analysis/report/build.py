@@ -8,12 +8,14 @@ MCP action — adds, drops or reorders a block.
 
 The page, screen by screen:
 
-1. **The first screen.** The title (the campaign's name, and what it compares where no question was declared); the
-   declared question quoted on its own line, and under it the subhead: the arms line (each arm named in full once by
-   the version that answered it, the control marked, the date) and the rule's sentence; the verdict line
+1. **The first screen.** A broken floor first, one loud line each, the first thing a reader sees; the title (the
+   campaign's name, and what it compares where no question was declared); the declared question quoted on its own
+   line, and under it the arms line (each arm named in full once by the version that answered it, the control marked,
+   the date); the verdict line
    (:func:`~threetears.evals.analysis.report.verdict.verdict_line`), result first; the scoreboard, a bare table of
    counts and the cost per reply, and its outcome bar; then the caveats, in normal weight.
-2. **Decision.** A declared decision rule, clause by clause, settled or not (:mod:`.decision`).
+2. **Decision.** The aspect's floors, each read on each candidate: broken, held or unclear (:mod:`.decision`), and
+   for an unclear one the cases that would show it holds.
 3. **What it means.** Each finding as one sentence its writer wrote and a table code built from the readings it
    chose, everything else in a closed ``Evidence`` fold; the recommendations and next steps. Then the contrasts that
    can resolve (one line when none can), the guardrails, and the readings by stratum and label.
@@ -62,7 +64,6 @@ from threetears.evals.analysis.report.figures import (
     surface_order_sentence,
 )
 from threetears.evals.analysis.report.model import (
-    RULE_ANCHOR,
     CellValue,
     ChartBlock,
     SECTION_TITLES,
@@ -85,22 +86,19 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.decision import (
-    PROSE_RULE_LINE,
-    ClauseVerdict,
+    FloorVerdict,
     RateReading,
-    RuleVerdict,
     SampleProjection,
     case_cost_usd,
-    clause_projection,
-    evaluate_rule,
-    keep_is_the_default,
+    floor_projection,
+    floor_readings,
+    floor_warning,
+    floors_projection,
     projected_cell,
     projection_note,
-    prose_ruled,
-    rule_projection,
-    rule_readings,
-    rule_statement,
-    ruled_question,
+    read_floor,
+    settles,
+    settles_cost,
 )
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
@@ -109,7 +107,6 @@ from threetears.evals.analysis.report.verdict import (
     arm_exclusions,
     cause_short,
     caveat_lines,
-    rule_sentence,
     fail_words,
     loss_words,
     verdict_line,
@@ -152,17 +149,11 @@ from threetears.evals.kernel.campaign import (
     ReadingKind,
     VariantIndexEntry,
 )
-from threetears.evals.kernel.declaration import (
-    JUDGED_MERIT_AXIS,
-    CampaignDesign,
-    CostLower,
-    Question,
-    exploratory_reading,
-    preregistered_questions,
-)
+from threetears.evals.kernel.declaration import JUDGED_MERIT_AXIS, CostLower, axis_in_question_scope
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.kernel.metrics import (
     METRIC_DESCRIPTORS,
+    MeritAxis,
     goal_check_of,
     RUN_MARGIN_MEASURES,
     ClassifierStatistic,
@@ -181,9 +172,6 @@ from threetears.evals.kernel.surface import (
     earlier_control_mark,
 )
 from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR, ClientRequestSettings
-
-#: An answer the settled decision rule replaced, pointing at the rule rather than repeating the verdict line.
-_RULE_ANSWERS = "See the decision rule above."
 
 #: What the methods say of a report no analysis was written for.
 NO_ANALYSIS = "none written; the analysis_generate action writes one from this same evidence"
@@ -248,42 +236,67 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
 
 
 def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoStyle:
-    """The style pass a stored memo's words go through, with the declared question and the rule's outcome to hold
+    """The style pass a stored memo's words go through, with the declared question and the floors' readings to hold
     them to."""
     names = {**_arm_names(bundle), **_arm_names(bundle, analysis.variant_index)}
-    questions = _preregistered(bundle)
-    control = _control_key(bundle)
-    candidates = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
-    ruled = ruled_question(questions)
-    verdict = sentence = sample = None
+    namer = _namer(names)
+    per_case = case_cost_usd(bundle)
+    floors: list[FloorVerdict] = []
+    sample = None
     samples: list[SampleProjection] = []
-    if ruled is not None and ruled.decision is not None and control is not None:
-        namer = _namer(names)
-        per_case = case_cost_usd(bundle)
-        # Every arm's cases a switch needs, as the To switch table states them, which the memo may cite and may not
-        # guess at; with one other arm its rule's sentence also stands in for a sentence that guesses.
-        for key in candidates:
-            readings = rule_readings(bundle, control, key, question_id=ruled.id)
-            read = evaluate_rule(ruled.decision, readings, control=namer(control), candidate=namer(key))
-            if (switch := rule_projection(read, per_case_usd=per_case)) is not None:
-                samples += [switch] + [
-                    projection
-                    for clause in read.clauses
-                    if (projection := clause_projection(clause, readings, per_case_usd=per_case)) is not None
-                ]
-            if len(candidates) == 1:
-                verdict, sample = read, switch
-                sentence = rule_sentence(read, control=namer(control), candidate=namer(key), bundle=bundle)
+    # Every arm's cases showing its floors hold needs, as the To settle table states them, which the memo may cite and
+    # may not guess at; with one other arm its floors also settle the readings a finding may not dispute.
+    candidates = _candidates(bundle)
+    for key, read in _floor_verdicts(bundle, namer).items():
+        if (joined := floors_projection(read, per_case_usd=per_case)) is not None:
+            samples += [joined] + [
+                projection
+                for verdict in read
+                if (projection := floor_projection(verdict, per_case_usd=per_case)) is not None
+            ]
+        if len(candidates) == 1:
+            floors, sample = list(read), joined
+        del key
     return MemoStyle(
         bundle=bundle,
         names=names,
-        question=questions[0].text if questions else None,
-        rule=verdict,
-        rule_sentence=sentence,
-        rule_question=ruled.id if ruled is not None and verdict is not None else None,
+        question=_question(bundle),
+        floors=tuple(floors),
         sample=sample,
         samples=tuple(samples),
     )
+
+
+def _candidates(bundle: AnalysisContextBundle) -> list[str]:
+    """Every arm on the scoreboard but the control, by variant key, in the scoreboard's order; empty with no control."""
+    control = _control_key(bundle)
+    if control is None:
+        return []
+    return [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
+
+
+def _floor_verdicts(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> dict[str, tuple[FloorVerdict, ...]]:
+    """The aspect's floors read on each candidate against the control, each arm by ``arm``'s name, by the candidate's
+    variant key; empty where the aspect declares no floor or no control ran."""
+    declared = bundle.declared
+    control = _control_key(bundle)
+    if declared is None or not declared.floors or control is None:
+        return {}
+    read: dict[str, tuple[FloorVerdict, ...]] = {}
+    for key in _candidates(bundle):
+        readings = floor_readings(bundle, control, key)
+        read[key] = tuple(
+            read_floor(floor, readings, control=arm(control), candidate=arm(key)) for floor in declared.floors
+        )
+    return read
+
+
+def _question(bundle: AnalysisContextBundle) -> str | None:
+    """The question the campaign asked before the aspect's first run, in its words; None where none was."""
+    declared = bundle.declared
+    if declared is None or not bundle.question_declared:
+        return None
+    return declared.question
 
 
 def build_code_only_report(
@@ -385,6 +398,8 @@ def _page(
     name = source.campaign_name or f"Campaign {source.campaign_id}"
     verdict = verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle), model=_model_namer(names))
     blocks: list[ReportBlock] = [
+        # A broken floor is the first thing a reader sees: before the question, the arms and the verdict.
+        *_floor_warning_blocks(bundle, arm),
         *_heading_blocks(bundle, names, source, arm),
         DisclosureBlock(
             section="header",
@@ -496,7 +511,7 @@ def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) 
     """
     if name.rstrip().endswith("?"):
         return _capitalized(name)
-    if _preregistered(bundle):
+    if _question(bundle) is not None:
         return name
     control = _control_key(bundle)
     others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != control]
@@ -524,31 +539,37 @@ def _heading_blocks(
     """The first screen's lines between the title and the verdict.
 
     With no question declared before the run, the arms line alone (line 2). With one, the question quoted on its own
-    line, then the subhead carrying what the question need not: the arms line, each arm with its version, and the
-    typed rule's sentence (:func:`_rule_line`), anchored so the Decision section links up to it.
+    line, then the subhead carrying what the question need not: the arms line, each arm with its version.
     """
+    del arm
     arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
     asked = _question_line(bundle)
     if asked is None:
         return [arms]
-    rule = _rule_line(bundle, arm)
+    return [DisclosureBlock(section="header", source="basis", text=asked), arms]
+
+
+def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+    """One loud line per floor a candidate breaks, the page's first: the floor, its aspect, the candidate and the
+    interval it broke on (:func:`~.decision.floor_warning`). A floor held or unclear says nothing here: the Decision
+    section reads it quietly."""
     return [
-        DisclosureBlock(section="header", source="basis", text=asked),
-        arms,
-        *([DisclosureBlock(section="header", source="rule", text=rule)] if rule is not None else []),
+        DisclosureBlock(section="header", source="floor", text=floor_warning(verdict, candidate=arm(key)))
+        for key, read in _floor_verdicts(bundle, arm).items()
+        for verdict in read
+        if verdict.outcome == "broken"
     ]
 
 
 def _question_line(bundle: AnalysisContextBundle) -> str | None:
     """Under the title: the question declared before the run, quoted whole and alone on its line — the contract the
     verdict reads, never paraphrased, its first plain word capitalized as a sentence starts; None where none was
-    declared. The first question where several were. The arms' versions and the rule are the subhead's
-    (:func:`_heading_blocks`), so a question need not carry them.
+    declared. The arms' versions are the subhead's (:func:`_heading_blocks`), so a question need not carry them.
     """
-    questions = _preregistered(bundle)
-    if not questions:
+    question = _question(bundle)
+    if question is None:
         return None
-    return f'"{_capitalized(" ".join(questions[0].text.split()))}"'
+    return f'"{_capitalized(" ".join(question.split()))}"'
 
 
 def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource) -> str:
@@ -819,101 +840,72 @@ def _design_words(bundle: AnalysisContextBundle) -> str:
     return f"{case_words} · {repeat_words}"
 
 
-def _rule_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
-    """The declared decision rule in the one sentence code writes from its clauses, the arms by name, for the first
-    screen's subhead: ``Switch to v2 only if … Otherwise stay on v1.``; None where no typed rule was declared or no
-    arm ran beside the control.
-
-    The rule is typed (``Question.decision``), so its sentence is code's (:func:`~.decision.rule_statement`), never
-    the operator's words parsed.
-    """
-    control = _control_key(bundle)
-    asked = ruled_question(_preregistered(bundle))
-    if asked is None or asked.decision is None or control is None:
-        return None
-    others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
-    if not others:
-        return None
-    return rule_statement(
-        asked.decision,
-        control=arm(control),
-        candidates=[arm(key) for key in others],
-        readings=rule_readings(bundle, control, others[0], question_id=asked.id),
-    )
-
-
 def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
-    """A declared decision rule clause by clause, on each arm against the control, as a table, never prose.
+    """The aspect's floors, each on each candidate against the control, as a table, never prose.
 
-    The rule's own sentence is the first screen's subhead (:func:`_rule_line`), said once: the table's title links up
-    to it rather than say it again one screen down. Each clause's row opens with the clause as a sentence naming its arm. The control
-    heads its column by name, as does a lone other arm; with several, an ``Arm`` column names each row's and its
-    figures are under ``Value``. A rate clause has a row per rate it reads, each with that rate's own outcome and
-    reason, so an outcome never sits beside a reading it is not about. A question that wrote its rule as prose and
-    declares none typed gets one line saying so, and nothing is settled.
+    Each floor's row opens with the floor as a sentence naming its arm. The control heads its column by name, as does
+    a lone other arm; with several, an ``Arm`` column names each row's and its figures are under ``Value``. A rate
+    floor has a row per rate it reads, each with that rate's own status and reason, so a status never sits beside a
+    reading it is not about. A broken floor is also the page's first line (:func:`_floor_warning_blocks`); here it
+    reads as plainly as a held one.
 
-    Where the rule is unsettled, a ``To switch`` table follows: for each clause left unsettled, what a switch needs
-    if the arms do not differ and if they differ as observed, each count with its cost
-    (:func:`~threetears.evals.analysis.report.decision.clause_projection`), then one line saying how each count was
-    found and that it is about, what repeats do, and, where a switch needs more cases than the run used on every
-    side, that it does. A settled clause, or a settled rule, projects nothing.
+    Where a floor is unclear, a ``To settle`` table follows: for each unclear floor, what showing it holds needs if the
+    arms do not differ and if they differ as observed, each count with its cost
+    (:func:`~threetears.evals.analysis.report.decision.floor_projection`), then one line saying how each count was
+    found and that it is about, what repeats do, and, where holding needs more cases than the run used on every side,
+    that it does. A floor broken or held projects nothing.
     """
     control = _control_key(bundle)
-    questions = _preregistered(bundle)
-    if prose_ruled(questions):
-        return [DisclosureBlock(section="decision", source="basis", text=PROSE_RULE_LINE)]
-    asked = ruled_question(questions)
-    if asked is None or asked.decision is None or control is None:
+    read = _floor_verdicts(bundle, arm)
+    if control is None or not read:
         return []
-    rule = asked.decision
     cost = _cost_ruler(bundle)
-    others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
+    others = list(read)
     rows: list[dict[str, CellValue]] = []
-    projected: list[tuple[ClauseVerdict, str, SampleProjection]] = []
-    switches: list[SampleProjection] = []
+    projected: list[tuple[FloorVerdict, str, SampleProjection]] = []
+    joined: list[SampleProjection] = []
     pointed = False
     per_case = case_cost_usd(bundle)
-    for key in others:
-        readings = rule_readings(bundle, control, key, question_id=asked.id)
-        verdict = evaluate_rule(rule, readings, control=arm(control), candidate=arm(key))
-        if (switch := rule_projection(verdict, per_case_usd=per_case)) is not None:
-            # Only an unsettled rule projects, and only the clauses it left unsettled: a switch is what more cases buy.
-            switches.append(switch)
+    for key, verdicts in read.items():
+        if (together := floors_projection(verdicts, per_case_usd=per_case)) is not None:
+            # Only an unclear floor projects: holding is what more cases can show.
+            joined.append(together)
             projected += [
-                (clause, arm(key), projection)
-                for clause in verdict.clauses
-                if (projection := clause_projection(clause, readings, per_case_usd=per_case)) is not None
+                (verdict, arm(key), projection)
+                for verdict in verdicts
+                if (projection := floor_projection(verdict, per_case_usd=per_case)) is not None
             ]
-        for clause in verdict.clauses:
+        for verdict in verdicts:
             shown: list[tuple[str, str | None, str | None, str]] = []
-            if isinstance(clause.clause, CostLower):
+            readings = verdict.readings
+            if isinstance(verdict.floor.clause, CostLower):
                 shown = [
                     (
                         f"cost {_per_reply(bundle)}",
-                        _dollars(readings.control_cost, cost),
-                        _dollars(readings.candidate_cost, cost),
-                        f"{clause.outcome}: {clause.reason}",
+                        _dollars(readings.control_cost if readings else None, cost),
+                        _dollars(readings.candidate_cost if readings else None, cost),
+                        f"{verdict.outcome}: {verdict.reason}",
                     )
                 ]
             else:
                 # A reading past the margin on its point estimate alone says so: the glossary defines the term.
-                pointed = pointed or any("point estimate" in read.reason for read in clause.rates)
-                # Each rate its own outcome, so a row's outcome is about the reading on that row and no other.
+                pointed = pointed or any("point estimate" in rate.reason for rate in verdict.rates)
+                # Each rate its own status, so a row's status is about the reading on that row and no other.
                 shown = [
                     (
-                        read.rate.name,
-                        f"{read.rate.control_passed} of {read.rate.control_n}",
-                        f"{read.rate.candidate_passed} of {read.rate.candidate_n}",
-                        f"{read.outcome}: {read.reason}",
+                        rate.rate.name,
+                        f"{rate.rate.control_passed} of {rate.rate.control_n}",
+                        f"{rate.rate.candidate_passed} of {rate.rate.candidate_n}",
+                        f"{rate.outcome}: {rate.reason}",
                     )
-                    for read in clause.rates
+                    for rate in verdict.rates
                 ]
             for index, (reading, ours, theirs, outcome) in enumerate(
-                shown or [("—", None, None, f"{clause.outcome}: {clause.reason}")]
+                shown or [("—", None, None, f"{verdict.outcome}: {verdict.reason}")]
             ):
                 rows.append(
                     {
-                        "clause": clause.statement if index == 0 else None,
+                        "floor": verdict.statement if index == 0 else None,
                         "arm": arm(key),
                         "reading": reading,
                         "control": ours,
@@ -921,83 +913,89 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                         "outcome": outcome,
                     }
                 )
-    if not rows:
-        return []
     # A lone other arm heads its own column by name; several share a "Value" column, each row naming its arm.
     single = len(others) == 1
     columns = [
-        TableColumn(key="clause", header="Clause", term="clause"),
+        TableColumn(key="floor", header="Floor", term="floor"),
         *([] if single else [TableColumn(key="arm", header="Arm")]),
         TableColumn(key="reading", header="Reading", term="reading"),
         TableColumn(key="control", header=arm(control)),
         TableColumn(key="candidate", header=arm(others[0]) if single else "Value"),
-        TableColumn(key="outcome", header="Outcome", term="settled"),
+        TableColumn(key="outcome", header="Status", term="floor status"),
     ]
     return [
         TableBlock(
             section="decision",
             name="decision",
-            title="Clauses",
-            # The rule's sentence is the first screen's subhead, said once on the page: the table's title links to it.
-            title_ref=RULE_ANCHOR,
+            title=f"Floors on {bundle.aspect}",
             columns=columns,
             rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
-            order="clause by clause, each arm against the control",
+            order="floor by floor, each arm against the control",
             total_rows=len(rows),
         ),
         DisclosureBlock(
             section="decision",
-            source="rule",
-            text=keep_is_the_default(arm(control)),
+            source="floor",
+            text=FLOORS_WARN_ONLY,
             term="point estimate" if pointed else None,
         ),
-        *_projection_blocks(bundle, projected, switches, single=single),
+        *_projection_blocks(bundle, projected, joined, single=single),
     ]
+
+
+#: What the Decision section says once, under the floors: a floor warns and decides nothing, and which interval it
+#: reads, so a floor unclear beside a contrast that is not separated reads as the two rulers it is.
+FLOORS_WARN_ONLY = (
+    "A floor warns and never decides: a broken one opens the page. A floor reads its own interval, uncorrected, which "
+    "can differ from the contrasts table's."
+)
 
 
 def _projection_blocks(
     bundle: AnalysisContextBundle,
-    projected: Sequence[tuple[ClauseVerdict, str, SampleProjection]],
-    switches: Sequence[SampleProjection],
+    projected: Sequence[tuple[FloorVerdict, str, SampleProjection]],
+    joined: Sequence[SampleProjection],
     *,
     single: bool,
 ) -> list[ReportBlock]:
-    """The ``To switch`` table, one row per unsettled clause and arm, and the line under it, which reads each arm's
-    rule projection (``switches``); empty with none. A cost clause's no-difference cell is blank: it has no margin,
-    and the line says so once."""
+    """The ``To settle`` table, one row per unclear floor and arm, and the line under it, which reads each arm's
+    projection over its floors (``joined``); empty with none. A cost floor's no-difference cell is blank: it has no
+    margin, and the line says so once."""
     if not projected:
         return []
     columns = [
-        TableColumn(key="clause", header="Clause", term="clause"),
+        TableColumn(key="floor", header="Floor", term="floor"),
         *([] if single else [TableColumn(key="arm", header="Arm")]),
         TableColumn(key="none", header="If no difference"),
         TableColumn(key="observed", header="If as observed"),
     ]
     rows: list[dict[str, CellValue]] = [
         {
-            "clause": clause.statement,
+            "floor": verdict.statement,
             "arm": name,
-            "none": None if isinstance(clause.clause, CostLower) else projected_cell(projection, projection.if_none),
+            "none": None
+            if isinstance(verdict.floor.clause, CostLower)
+            else projected_cell(projection, projection.if_none),
             "observed": projected_cell(projection, projection.if_observed),
         }
-        for clause, name, projection in projected
+        for verdict, name, projection in projected
     ]
     run_cases = max((board.cases for board in bundle.scoreboard), default=0)
-    costed = any(isinstance(clause.clause, CostLower) for clause, *_ in projected)
+    costed = any(isinstance(verdict.floor.clause, CostLower) for verdict, *_ in projected)
     return [
         TableBlock(
             section="decision",
             name="projection",
-            title="To switch",
+            title="To settle",
             columns=columns,
             rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
-            order="clause by clause, each arm against the control",
+            order="floor by floor, each arm against the control",
             total_rows=len(rows),
         ),
         DisclosureBlock(
             section="decision",
-            source="rule",
-            text=projection_note(switches, run_cases=run_cases, cost_clause=costed),
+            source="floor",
+            text=projection_note(joined, run_cases=run_cases, cost_clause=costed),
         ),
     ]
 
@@ -1067,9 +1065,7 @@ def _memo_blocks(
 
     A finding is one sentence its writer wrote and a table code built from the readings the writer chose; everything
     else it carries sits in a closed ``Evidence`` fold. Every word the memo contributes passes ``style`` first
-    (:mod:`~threetears.evals.analysis.report.memo_style`). Where the declared rule settled, its question gets no answer
-    from the memo: the verdict line and the decision table have answered it, so the page prints nothing more, or one
-    line naming each clause still open. A finding is cited by its headline, never by a number.
+    (:mod:`~threetears.evals.analysis.report.memo_style`). A finding is cited by its headline, never by a number.
 
     Findings are evidence: one that names no reading (its resolution's tier is ``none``) is not a finding, so it is
     not laid out here but noted in one line with what was not tested (``The analysis also noted: …``). The coverage
@@ -1078,42 +1074,22 @@ def _memo_blocks(
     document = analysis.document
     # The analysis's own variant index names the cells its memo cites, by the page's rule.
     arm = _ref_namer(analysis.decision_surface, {**names, **_arm_names(bundle, analysis.variant_index)})
-    questions = _preregistered(bundle)
+    axes = _question_axes(bundle)
     blocks: list[ReportBlock] = []
     for answer in document.questions:
-        if style.rule is not None and style.rule.outcome != "unsettled" and answer.question_id == style.rule_question:
-            # Still disclosed in the methods when it contradicted the rule, though never printed.
-            style.contradicts(answer.answer)
-            if (still_open := _still_open(style.rule)) is not None:
-                blocks.append(
-                    TextBlock(
-                        section="memo",
-                        role="answer",
-                        body=still_open,
-                        rests_on=list(answer.rests_on),
-                        facts=[Fact(name="Resolution", value="partial")],
-                    )
-                )
-            continue
-        replaced = len(style.replaced)
         proposed = len(style.proposed)
         body = style.sentence(answer.answer, plans=True)
         if not body and len(style.proposed) > proposed:
             # Every sentence of it proposed a sample size code did not compute, and none was projected: the methods
             # list what it said.
             continue
-        # An answer the rule's settled outcome replaced is code's answer now, not the memo's resolution: the verdict
-        # line says it already, so the answer points at the rule rather than saying it twice.
-        resolved = answer.resolution
-        if len(style.replaced) > replaced:
-            resolved, body = "answered", _RULE_ANSWERS
         blocks.append(
             TextBlock(
                 section="memo",
                 role="answer",
                 body=body,
                 rests_on=list(answer.rests_on),
-                facts=[Fact(name="Resolution", value=resolved)],
+                facts=[Fact(name="Resolution", value=answer.resolution)],
             )
         )
     resolutions: list[FindingResolution | None] = (
@@ -1123,14 +1099,14 @@ def _memo_blocks(
     noted: list[ReportBlock] = []
     for position, (finding, resolution) in enumerate(zip(document.findings, resolutions, strict=True)):
         if resolution is not None and resolution.evidence_tier == "none":
-            if (title := style.sentence(finding.title, decides=False)).strip():
+            if (title := style.sentence(finding.title)).strip():
                 noted.append(
                     DisclosureBlock(
                         section="not_tested", source="memo", text=f"The analysis also noted: {title.rstrip('.')}."
                     )
                 )
             continue
-        exploratory = not questions or _rests_on_exploratory(resolution, analysis.decision_surface, questions)
+        exploratory = axes is None or _rests_on_exploratory(resolution, analysis.decision_surface, axes)
         found = _finding_blocks(
             analysis,
             position,
@@ -1163,7 +1139,7 @@ def _memo_blocks(
             TextBlock(
                 section="memo",
                 role="recommendation",
-                body=style.sentence(decision.proposal, decides=decision.disposition == "adopted"),
+                body=style.sentence(decision.proposal),
                 rests_on=list(decision.rests_on),
                 facts=[Fact(name="Disposition", value=decision.disposition)],
             )
@@ -1181,7 +1157,7 @@ def _memo_blocks(
     kept: list[NextStep] = []
     for step in exercised:
         proposed = len(style.proposed)
-        title = style.sentence(step.title, decides=False, plans=True)
+        title = style.sentence(step.title, plans=True)
         if len(style.proposed) > proposed:
             # A step whose title proposed a sample size code did not compute says code's projection instead, once,
             # with none of the writer's facts or why, which were about the step it replaced; with no projection, or
@@ -1204,14 +1180,6 @@ def _memo_blocks(
         blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
     blocks.extend(_coverage_blocks(analysis, kept, steps))
     return [*blocks, *noted]
-
-
-def _still_open(rule: RuleVerdict) -> str | None:
-    """Each clause of a settled rule the run left open, in one line; None when the decision table settled them all."""
-    still = [verdict.statement for verdict in rule.clauses if verdict.outcome == "unsettled"]
-    if not still:
-        return None
-    return "Still open: " + ", and ".join(f"whether {clause}" for clause in still) + "."
 
 
 def _cited(headlines: Sequence[str], cited: Sequence[int]) -> str:
@@ -1369,7 +1337,7 @@ def _finding_blocks(
     """One finding: its one sentence, the table code built from its readings, their charts, then a closed fold.
 
     A title restating a number the bundle measured is replaced by the table's own row in words: a measured fact is
-    stated by code, flatly. Where a clause the declared rule settled reads the finding's one reading, that row is
+    stated by code, flatly. Where a floor read broken or held reads the finding's one reading, that row is
     :func:`_settled_sentence`, which also replaces any of the finding's sentences disputing the settled difference.
     """
     facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[finding.confidence])]
@@ -1485,16 +1453,16 @@ def _settled_sentence(
     values: Sequence[tuple[str, str]],
     style: MemoStyle,
 ) -> str | None:
-    """A finding's one reading, which a clause of the declared rule settled, as code says it: the two values plainly,
+    """A finding's one reading, which a floor read broken or held, as code says it: the two values plainly,
     candidate first, then under the case floor one sentence of what is not estimated and why.
 
     ``Cheaper candidate passed 6 of 12 on `call_count("inventory.place_order") >= 2` to production's 11. Whether that
     gap holds on more cases is not estimated below 5 independent cases.`` The gap is measured and stated; what the
-    floor withholds is its interval. None where no settled clause reads the finding's one reading on the control and
-    the candidate.
+    floor withholds is its interval. None where no floor read either way reads the finding's one reading on the control
+    and the candidate.
     """
-    rule = style.rule
-    if rule is None or bundle is None or resolution is None or len(values) != 2:
+    floors = style.floors
+    if not floors or bundle is None or resolution is None or len(values) != 2:
         return None
     control = _control_key(bundle)
     label = _namer(names)
@@ -1504,9 +1472,9 @@ def _settled_sentence(
     (measure,) = measures
     (ours,) = [value for arm, value in values if arm == label(control)]
     ((candidate, theirs),) = [(arm, value) for arm, value in values if arm != label(control)]
-    if measure == "production_replicating_cost" and rule.settles_cost():
+    if measure == "production_replicating_cost" and settles_cost(floors):
         said = f"{candidate} cost {theirs} {_per_reply(bundle)} to {label(control)}'s {ours}"
-    elif (rate := _rate_of(bundle, rule, measure, control, candidate, label)) is not None and rule.settles(rate):
+    elif (rate := _rate_of(bundle, style, measure, control, candidate, label)) is not None and settles(floors, rate):
         said = (
             f"{candidate} passed {rate.candidate_passed} of {rate.candidate_n} on {rate.name} to {label(control)}'s "
             f"{rate.control_passed}" + ("" if rate.control_n == rate.candidate_n else f" of {rate.control_n}")
@@ -1514,7 +1482,8 @@ def _settled_sentence(
     else:
         return None
     said = said[:1].upper() + said[1:]
-    fewest = rule.readings.fewest_cases() if rule.readings is not None else None
+    readings = floors[0].readings
+    fewest = readings.fewest_cases() if readings is not None else None
     if fewest is None or fewest >= MIN_CASES:
         return f"{said}."
     return f"{said}. Whether that gap holds on more cases is not estimated below {MIN_CASES} independent cases."
@@ -1522,16 +1491,17 @@ def _settled_sentence(
 
 def _rate_of(
     bundle: AnalysisContextBundle,
-    rule: RuleVerdict,
+    style: MemoStyle,
     measure: str,
     control: str,
     candidate: str,
     label: Callable[[str], str],
 ) -> RateReading | None:
-    """``measure``'s pass rate on the control and the arm named ``candidate``: the rule's own reading where it read
+    """``measure``'s pass rate on the control and the arm named ``candidate``: the floors' own reading where they read
     one, else a goal check's held count on each arm's one cell (its rate times its observations, as the finding's
-    table counts it), with the trials each arm lost as the rule counts them. None where neither is there."""
-    rates = rule.readings.rates if rule.readings is not None else ()
+    table counts it), with the trials each arm lost as the floors count them. None where neither is there."""
+    readings = style.floors[0].readings if style.floors else None
+    rates = readings.rates if readings is not None else ()
     if (read := next((rate for rate in rates if rate.measure == measure), None)) is not None:
         return read
     keys = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
@@ -1632,19 +1602,19 @@ def _with_interval(
     return TableCell(value=cell.value, unit=cell.unit, low=interval[0] * factor, high=interval[1] * factor)
 
 
-def _preregistered(bundle: AnalysisContextBundle) -> list[Question]:
-    """The live questions declared before the campaign's first run — the ones a finding can answer."""
-    design = bundle.declared_design
-    if design is None or not bundle.question_declared:
-        return []
-    # The one rule the families and the reading scope were read by, against the instant the design froze.
-    return preregistered_questions(design, bundle.design_frozen_at)
+def _question_axes(bundle: AnalysisContextBundle) -> list[MeritAxis] | None:
+    """The merit axes the question asked before the aspect's first run names, ``[]`` for every axis; None where none
+    was asked in time, so every finding is a lead."""
+    declared = bundle.declared
+    if declared is None or not bundle.question_declared:
+        return None
+    return list(declared.design.merit_axes or [])
 
 
 def _rests_on_exploratory(
-    resolution: FindingResolution | None, surface: DecisionSurface, questions: Sequence[Question]
+    resolution: FindingResolution | None, surface: DecisionSurface, axes: Sequence[MeritAxis]
 ) -> bool:
-    """Whether a finding's every reading lies outside the declared questions — none of them asked about it.
+    """Whether a finding's every reading lies outside the declared question's axes — it did not ask about any of them.
 
     A finding citing no reading (a point about coverage or the test setup) is not labelled; a guardrail reading is
     never exploratory, since it is held because it was declared one.
@@ -1656,54 +1626,21 @@ def _rests_on_exploratory(
             dimension = surface.dimensions.get(row.measure_id)
             if dimension is not None and dimension.axis == "boundary":
                 return False
-            if not exploratory_reading(JUDGED_MERIT_AXIS, questions):
+            if axis_in_question_scope(JUDGED_MERIT_AXIS, axes):
                 return False
         else:
             measure = surface.measures.get(row.measure_id)
             if measure is not None and measure.guardrail:
                 return False
-            if not exploratory_reading(measure.merit_axis if measure is not None else None, questions):
+            if axis_in_question_scope(measure.merit_axis if measure is not None else None, axes):
                 return False
     return True
 
 
-def _question_words(design: CampaignDesign | None, question_id: str) -> str:
-    """A declared question in the words it was asked, or its id where the design holds none."""
-    return design.question_words(question_id) if design is not None else question_id
-
-
 def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
-    """On a code-only report: every declared question where there are several (the first screen quotes only the
-    first), and the unasked readings."""
-    design = bundle.declared_design
+    """On a code-only report: the readings the declared question did not ask about."""
     scope = bundle.reading_scope
     blocks: list[ReportBlock] = []
-    if design is not None and len(design.questions) > 1:
-        rows: list[dict[str, CellValue]] = [
-            {
-                "question": f"Q{index}",
-                "asks": question.text,
-                "status": "retired" if question.retired_at else "live",
-                "answer": "unanswered: no analysis",
-            }
-            for index, question in enumerate(design.questions, start=1)
-        ]
-        blocks.append(
-            TableBlock(
-                section="memo",
-                name="questions",
-                title="Declared questions",
-                columns=[
-                    TableColumn(key="question", header="Question"),
-                    TableColumn(key="asks", header="Asks"),
-                    TableColumn(key="status", header="Status"),
-                    TableColumn(key="answer", header="Answer"),
-                ],
-                rows=[table_row(row) for row in rows],
-                order="as the campaign declared them",
-                total_rows=len(rows),
-            )
-        )
     catalog = bundle.measure_catalog
     exploratory = [
         *(
@@ -2029,7 +1966,7 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
                     variant_key=comparison.contrast.variant_key,
                     apparatus_class_id=comparison.contrast.apparatus_class_id,
                     control=control,
-                    question_id=family.question_id,
+                    aspect=family.aspect,
                     delta=comparison.delta,
                     interval=comparison.interval,
                     interval_level=family.interval_level if comparison.interval is not None else None,
@@ -2097,7 +2034,6 @@ def _comparison_blocks(
     shown: list[dict[str, TableCell]] = []
     statistics: list[dict[str, TableCell]] = []
     under: list[int] = []
-    questions = {question.id: index for index, question in enumerate(_preregistered(bundle), start=1)}
     # The level every shown interval holds at: one, and the header says it; more, and each cell says its own.
     levels = {
         family.interval_level
@@ -2148,11 +2084,7 @@ def _comparison_blocks(
             )
             statistics.append(
                 {
-                    "question": TableCell(
-                        value=f"Q{questions[family.question_id]}"
-                        if family.question_id in questions
-                        else "campaign-wide"
-                    ),
+                    "question": TableCell(value="Q1" if family.aspect is not None else "campaign-wide"),
                     "reading": TableCell(value=heading),
                     "contrast": TableCell(value=verdict.arm),
                     "control_mean": _figure(comparison.control.mean, ruler),
@@ -2282,8 +2214,8 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
             rows.append(
                 {
                     "question": (
-                        _question_words(bundle.declared_design, family.question_id)
-                        if family.question_id is not None
+                        bundle.declared.question
+                        if family.aspect is not None and bundle.declared is not None
                         else "(campaign-wide)"
                     ),
                     "reading": ruler.scaled(verdict.heading),
