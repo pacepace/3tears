@@ -537,9 +537,12 @@ def make_aspect_campaign(
     aspect is that campaign read through its upgrade, which bounds what this can build:
 
     - ``label`` is the campaign's ``behavior``, which the one aspect is labelled with.
-    - ``margin`` is derived, never stored: None reads the ``max_points`` of the first ``RateDrop`` in ``floors``
-      that names no reading, as an upgraded aspect's is; a number must equal that, or no floor yields it.
-    - ``floors`` and the merit axes need a ``question``: the stored shape keeps a rule and its axes on one.
+    - ``margin`` is derived, never stored: an upgraded aspect's is the ``max_points`` of its floor reading every pass
+      rate. So ``margin`` must equal that floor's, and be None exactly when ``floors`` has no ``RateDrop`` naming no
+      reading; anything else is refused rather than built as some other margin.
+    - ``floors`` name each kind and reading once: the stored shape would merge two into one floor.
+    - ``floors`` need a ``question``, and the design's ``merit_axes`` are the question's: None exactly when there is
+      no question, a list (empty for an unscoped question) when there is one.
     - ``design`` None is an exploratory aspect, which declares no question, control or floor.
     - ``control`` is the control arm labelled ``UPGRADED_CONTROL_LABEL``: the stored shape names a control by key.
 
@@ -573,22 +576,31 @@ def make_aspect_campaign(
         return make_campaign(**fields, **overrides)
     if not isinstance(aspect_design, AspectDesign):
         raise TypeError(f"design is an AspectDesign or None, not {type(aspect_design).__name__}")
+    readings = [(clause.kind, clause.reading if isinstance(clause, RateDrop) else None) for clause in floors]
+    if len(set(readings)) != len(readings):
+        raise ValueError("floors name one kind and reading twice, which a stored campaign merges into one floor")
     derived = next(
         (clause.max_points for clause in floors if isinstance(clause, RateDrop) and clause.reading is None), None
     )
-    if margin is not None and margin != derived:
+    if margin != derived:
         raise ValueError(
-            f"a stored campaign's aspect reads its margin off its first floor that reads every pass rate ({derived}); "
-            f"pass RateDrop(max_points={margin}) first in floors"
+            f"margin={margin} cannot be built: a stored campaign's aspect reads its margin off its floor that reads "
+            f"every pass rate, which here gives {derived}; pass margin={derived}, or a RateDrop(max_points={margin}) "
+            "floor naming no reading (a campaign of aspects stores the two apart)"
         )
-    if not question and (floors or aspect_design.merit_axes):
-        raise ValueError("a stored campaign keeps floors and merit axes on a question; pass the question")
+    if not question and floors:
+        raise ValueError("a stored campaign keeps floors on a question; pass the question")
+    if (aspect_design.merit_axes is None) != (not question):
+        raise ValueError(
+            "a design's merit_axes are its question's: None with no question, a list with one (empty for an unscoped "
+            f"question); this one has {aspect_design.merit_axes!r} and question={question!r}"
+        )
     questions = (
         [
             Question(
                 text=question,
                 decision=DecisionRule(clauses=tuple(floors)) if floors else None,
-                merit_axes=list(aspect_design.merit_axes),
+                merit_axes=list(aspect_design.merit_axes or []),
             )
         ]
         if question
