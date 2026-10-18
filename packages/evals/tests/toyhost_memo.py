@@ -22,7 +22,6 @@ from typing import Any
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_AXIS,
     TOYHOST_NARROW,
-    TOYHOST_QUESTION_ID,
     TOYHOST_WIDE,
 )
 from threetears.evals.analysis.cells import cell_ref
@@ -199,7 +198,8 @@ def memo_payload(bundle: Any) -> dict[str, Any]:
         ],
         "questions": [
             {
-                "question_id": TOYHOST_QUESTION_ID,
+                # The aspect's one question is answered by the aspect's label (bundle shape 59).
+                "question_id": bundle.aspect,
                 "resolution": "answered",
                 "answer": "both widths were measured over the same documents and the wider one is slower by a wide margin",
                 "rests_on": [0],

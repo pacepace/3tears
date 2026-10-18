@@ -36,7 +36,13 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
-from threetears.evals.analysis import TableBlock, assemble_context_bundle, build_report, variant_key_of_run
+from threetears.evals.analysis import (
+    TableBlock,
+    aspect_view,
+    assemble_context_bundle,
+    build_report,
+    variant_key_of_run,
+)
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.cells import variant_of_cell_ref
@@ -287,9 +293,7 @@ def test_a_control_addressed_under_an_earlier_predicate_names_the_cells_this_bui
     assert bundle.design.control_arm is not None and bundle.design.control_arm.variant_key == arm
     assert run_id in bundle.design.control_arm.run_ids
     assert bundle.design.control_excluded is None
-    assert bundle.declared is not None and bundle.declared.control == campaign.control, (
-        "the bundle carries the declaration as declared"
-    )
+    assert bundle.declared == aspect_view(campaign).declared, "the bundle carries the declaration as declared"
     assert bundle_decision_surface(bundle).control_variant_key == arm
     stored = _stored(fixture, campaign.id).control
     assert stored is not None and stored.variant_key == declared_key, "a read writes nothing back onto the campaign"

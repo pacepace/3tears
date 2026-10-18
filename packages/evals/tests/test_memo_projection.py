@@ -22,7 +22,6 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.kernel.authored import AuthoredAnalysis, Finding, QuestionAnswer
 from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance
-from threetears.evals.kernel.declaration import Question
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.surface import DecisionSurface
 from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, empty_bundle
@@ -89,32 +88,25 @@ def _analysis(document: AuthoredAnalysis | None = None) -> EvalAnalysis:
 
 
 class TestEachLiveQuestionIsAnsweredExactlyOnce:
-    """'Exactly when', as a check rather than a convention — one answer per live question.
+    """'Exactly when', as a check rather than a convention — one answer to the aspect's question, keyed by its label.
 
     Driven through :func:`~threetears.evals.analysis.generator.generate_analysis` over the toy host's
-    campaign, its declaration's questions replaced per case: the check is the one a finished
-    generation runs, and a refusal is the one it raises after its one repair. The toy memo's
-    finding, decision and next step are kept, so a case differs from a clean generation only in its
-    question answers.
+    campaign, its declared question replaced per case: the check is the one a finished generation runs, and a
+    refusal is the one it raises after its one repair. A bundle reads one aspect, and the campaign asks one
+    question, so the one answer names the aspect's label. The toy memo's finding, decision and next step are kept,
+    so a case differs from a clean generation only in its question answers.
     """
 
     @staticmethod
-    async def _reject(questions: list[QuestionAnswer], questions_declared: list[Question] | None) -> None:
-        """Generate over the toy campaign declaring ``questions_declared`` (``None``: no declaration at all)."""
+    async def _reject(questions: list[QuestionAnswer], question: str | None) -> str:
+        """Generate over the toy campaign asking ``question`` (``None``: no declaration at all); the aspect's label."""
         profile = toyhost_profile()
         bundle = toyhost_bundle(profile=profile)
-        assert bundle.declared_design is not None, (
-            "the toy campaign declares a design; this check replaces its questions"
-        )
-        design = (
-            None
-            if questions_declared is None
-            else bundle.declared_design.model_copy(update={"questions": questions_declared})
-        )
-        bundle = bundle.model_copy(update={"declared_design": design})
+        assert bundle.declared is not None, "the toy campaign declares a design; this check replaces its question"
+        declared = None if question is None else bundle.declared.model_copy(update={"question": question})
+        bundle = bundle.model_copy(update={"declared": declared})
         payload = memo_payload(bundle)
         payload["questions"] = [answer.model_dump(mode="json") for answer in questions]
-        profile = toyhost_profile()
         await generate_analysis(
             bundle,
             prompt=PROMPT,
@@ -124,48 +116,42 @@ class TestEachLiveQuestionIsAnsweredExactlyOnce:
             bundle_assembled_at=utc_now_iso(),
             profile=profile,
         )
+        return bundle.aspect
 
-    async def test_one_answer_per_live_question_passes(self):
-        declared = [Question(id="q-1", text="Which model?"), Question(id="q-2", text="At what cost?")]
-        await self._reject([_answer("q-2", "partial"), _answer("q-1")], declared)
+    @staticmethod
+    def _aspect() -> str:
+        return toyhost_bundle(profile=toyhost_profile()).aspect
+
+    async def test_one_answer_to_the_question_passes(self):
+        await self._reject([_answer(self._aspect(), "partial")], "Which model?")
 
     async def test_a_declared_question_with_no_answer_is_refused(self):
-        declared = [Question(id="q-1", text="Which model?")]
-        with pytest.raises(SoundnessRefusal, match=r"live declared question\(s\) \['q-1'\] have no answer"):
-            await self._reject([], declared)
+        aspect = self._aspect()
+        with pytest.raises(SoundnessRefusal, match=rf"live declared question\(s\) \['{aspect}'\] have no answer"):
+            await self._reject([], "Which model?")
 
     async def test_an_answer_with_no_declared_question_is_refused(self):
         with pytest.raises(SoundnessRefusal, match="it declares none, so `questions` is empty"):
-            await self._reject([_answer()], [])
+            await self._reject([_answer(self._aspect())], "")
 
     async def test_a_passive_campaign_answers_nothing(self):
-        await self._reject([], [])
+        await self._reject([], "")
 
     async def test_a_campaign_with_no_declaration_at_all_is_passive_here(self):
         """No declaration is no declared question, which is the same obligation as declaring none."""
         await self._reject([], None)
         with pytest.raises(SoundnessRefusal, match="does not declare as live"):
-            await self._reject([_answer()], None)
+            await self._reject([_answer(self._aspect())], None)
 
     async def test_a_question_answered_twice_is_refused(self):
-        declared = [Question(id="q-1", text="Which model?")]
-        with pytest.raises(SoundnessRefusal, match=r"question\(s\) \['q-1'\] are answered more than once"):
-            await self._reject([_answer(), _answer(resolution="partial")], declared)
+        aspect = self._aspect()
+        with pytest.raises(SoundnessRefusal, match=rf"question\(s\) \['{aspect}'\] are answered more than once"):
+            await self._reject([_answer(aspect), _answer(aspect, resolution="partial")], "Which model?")
 
-    async def test_an_answer_naming_an_undeclared_question_is_refused_and_names_the_live_ones(self):
-        declared = [Question(id="q-1", text="Which model?")]
-        with pytest.raises(SoundnessRefusal, match=r"answers \['q-ghost'\].*the live questions are \['q-1'\]"):
-            await self._reject([_answer(), _answer("q-ghost")], declared)
-
-    async def test_a_retired_question_stops_requiring_an_answer(self):
-        declared = [Question(id="q-1", text="Which model?", retired_at="2026-08-01T00:00:00+00:00")]
-        await self._reject([], declared)
-
-    async def test_a_retired_question_may_not_be_answered_either(self):
-        """Retired is not live, so an answer to it has nothing to attach to."""
-        declared = [Question(id="q-1", text="Which model?", retired_at="2026-08-01T00:00:00+00:00")]
-        with pytest.raises(SoundnessRefusal, match="does not declare as live"):
-            await self._reject([_answer()], declared)
+    async def test_an_answer_naming_another_question_is_refused_and_names_the_aspect(self):
+        aspect = self._aspect()
+        with pytest.raises(SoundnessRefusal, match=rf"answers \['q-ghost'\].*the live questions are \['{aspect}'\]"):
+            await self._reject([_answer(aspect), _answer("q-ghost")], "Which model?")
 
 
 class TestTheDocumentIsTheOnlyCarrier:

@@ -20,7 +20,7 @@ from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.schema.models import EvalResult
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
-    from threetears.evals.kernel.declaration import CampaignDesign
+    from threetears.evals.kernel.declaration import AspectDesign
     from threetears.evals.schema.models import EvalRun
 
 
@@ -142,9 +142,9 @@ def _exercised(
     }
 
 
-def _declared_axes(declared_design: CampaignDesign | None) -> frozenset[str]:
+def _declared_axes(declared: AspectDesign | None) -> frozenset[str]:
     """The levers a campaign declared as axes: each a level by declaration, whatever its calls."""
-    return frozenset(axis.axis_id for axis in declared_design.axes) if declared_design is not None else frozenset()
+    return frozenset(axis.axis_id for axis in declared.axes) if declared is not None else frozenset()
 
 
 def _arm_of_run(runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]]) -> dict[str, str]:

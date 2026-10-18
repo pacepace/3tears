@@ -15,6 +15,7 @@ import pytest
 
 from threetears.evals.analysis import (
     TableBlock,
+    analysis_bundle,
     assemble_context_bundle,
     build_code_only_report,
     render_memo_as_written,
@@ -24,12 +25,12 @@ from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.declaration import SweptAxis
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
+from threetears.evals.kernel.text_block import one_line
 from threetears.evals.schema.values import IntervalScale, SweepableValue
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_AXIS,
     TOYHOST_NARROW,
-    TOYHOST_QUESTION_ID,
     TOYHOST_WIDE,
     toyhost_campaign,
 )
@@ -80,10 +81,13 @@ def test_a_descriptor_stored_before_the_field_reads_with_none_and_is_headed_by_i
 async def test_the_memo_prints_a_declared_question_in_its_words_never_its_id(toy) -> None:
     _, analysis, _ = toy
     memo = render_memo_as_written(analysis)
-    asked = analysis.design_snapshot.question_words(TOYHOST_QUESTION_ID)
-    assert asked != TOYHOST_QUESTION_ID
-    assert f"- {asked} — answered:" in memo
-    assert TOYHOST_QUESTION_ID not in memo
+    # The answer names the aspect's one question by the aspect's label; the memo prints the question's words.
+    declared = analysis_bundle(analysis).declared
+    assert declared is not None and declared.question
+    (answer,) = analysis.document.questions
+    assert answer.question_id == analysis_bundle(analysis).aspect != declared.question
+    assert f"- {one_line(declared.question)} — answered:" in memo
+    assert f"- {answer.question_id} — answered:" not in memo
 
 
 async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_reader_names(toy) -> None:

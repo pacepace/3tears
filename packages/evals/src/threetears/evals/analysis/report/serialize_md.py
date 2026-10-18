@@ -1,7 +1,8 @@
 """The report as Markdown — the form an agent reads and a pull request quotes, with the page's values and order.
 
-Every block the page draws is printed here, in the page's order: the title on line 1, then the declared question quoted
-whole where there is one and under it the subhead (the arms, the rule's sentence), else the arms on line 2; the
+Every block the page draws is printed here, in the page's order: the title on line 1 (below any broken floor), then the declared question quoted
+whole where there is one and under it the subhead (the arms), else the arms on line 2; a broken floor's warning
+opens the page above the title, in bold; the
 verdict, the scoreboard; a chart is its title and the table of the values
 it draws, so a reader of Markdown can check every
 number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. An
@@ -52,8 +53,15 @@ def report_markdown(report: Report) -> str:
     :return: The Markdown text, ending in a newline.
     :rtype: str
     """
-    lines = [f"# {_one_line(report.title)}"]
-    head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _repeats_scoreboard(block)]
+    # A broken floor's warning is the page's first line, above the title: the first thing a reader sees.
+    warnings = [block for block in report.blocks if _warns(block)]
+    lines = [line for block in warnings for line in (*_block(block), "")]
+    lines.append(f"# {_one_line(report.title)}")
+    head = [
+        block
+        for block in report.blocks
+        if block.section in FIRST_SCREEN and not _repeats_scoreboard(block) and not _warns(block)
+    ]
     for index, block in enumerate(head):
         # Line 2 (the arms, or a declared question) is directly under the title: every other block is set off by a
         # blank line.
@@ -71,6 +79,11 @@ def report_markdown(report: Report) -> str:
         lines += ["", f"## {titles['glossary']}", ""]
         lines += [f"- **{term}**: {GLOSSARY[term]}" for term in report.terms]
     return "\n".join(lines) + "\n"
+
+
+def _warns(block: ReportBlock) -> bool:
+    """Whether ``block`` is a broken floor's warning, which opens the page above its title."""
+    return isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "floor"
 
 
 #: The failure causes the scoreboard gives a column of their own, as an outcome bar labels them.
@@ -153,8 +166,8 @@ def _text(block: TextBlock) -> list[str]:
 
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
-    """Something code had to say: the verdict in bold, every other line plain."""
-    if block.source == "verdict":
+    """Something code had to say: the verdict and a broken floor's warning in bold, every other line plain."""
+    if block.source == "verdict" or (block.section == "header" and block.source == "floor"):
         return [f"**{_one_line(block.text)}**"]
     return [_inert(_one_line(block.text))]
 

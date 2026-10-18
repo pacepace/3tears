@@ -7,13 +7,13 @@ is ``<details>``; moving between the screens is ``#`` anchors. The outcome bar i
 cell carrying an interval draws it as a small glyph beside its number, on one scale for the column, so a screen
 reader and a page with styles off lose nothing: every figure a glyph draws is in the row's text.
 
-**The first screen is the page's ``<header>``**: the title (the campaign's name); the declared question quoted whole
-on its own line where there is one, then the subhead (the arms line, and the rule's sentence where one was declared);
+**The first screen is the page's ``<header>``**: a broken floor's warning first, above everything, loud; the title
+(the campaign's name); the declared question quoted whole on its own line where there is one, then the arms line;
 the arms line alone (line 2) where none was; the verdict line, the scoreboard with its outcome bar, and the one
 caveat in normal weight that changes how the verdict is read. Everything a reader needs to decide whether to read on
 is there, written by code. Every term of art links to the glossary at the foot of the page.
 
-**Depth on demand, with the least ink.** The result, the decision rule, what it means and the contrasts are open;
+**Depth on demand, with the least ink.** The result, the floors, what it means and the contrasts are open;
 the cases, the trials, what was not tested, the methods and the glossary each sit in a closed ``<details>`` whose
 summary is the section heading, so a reader opens what they came for. The stylesheet draws hairlines, not boxes:
 hierarchy is type size, weight and spacing, a thin rule in a hue is the only tint (the verdict line's kind, a failed
@@ -31,7 +31,6 @@ from collections.abc import Sequence
 
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
-    RULE_ANCHOR,
     SECTION_TITLES,
     ChartBlock,
     DisclosureBlock,
@@ -81,6 +80,8 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; padding: 0 
 header { padding: 0 0 16px; }
 .question { font-size: 1.125rem; line-height: 1.4; margin: 0 0 8px; max-width: 75ch; }
 .arms { margin: 0 0 4px; color: var(--muted); }
+.floor { font-size: 1.125rem; line-height: 1.4; margin: 0 0 12px; padding: 2px 0 2px 14px; max-width: 75ch;
+  border-left: 3px solid var(--tone-failed); }
 .verdict { font-size: 1.125rem; line-height: 1.4; margin: 16px 0 24px; padding: 2px 0 2px 14px;
   border-left: 3px solid var(--rule-strong); }
 .verdict[data-tone="decided"] { border-left-color: var(--tone-decided); }
@@ -199,8 +200,10 @@ def report_html(report: Report) -> str:
         "<body>",
         f'<article data-basis="{_escape(report.basis)}">',
         "<header>",
+        # A broken floor's warning is the page's first line, above the title: the first thing a reader sees.
+        *(_block(block, index) for index, block in enumerate(head) if _warns(block)),
         f"<h1>{_escape(_one_line(report.title))}</h1>",
-        *(_block(block, index) for index, block in enumerate(head)),
+        *(_block(block, index) for index, block in enumerate(head) if not _warns(block)),
         "</header>",
     ]
     titles = report.section_titles
@@ -530,6 +533,11 @@ def _trial(block: TrialBlock) -> str:
     )
 
 
+def _warns(block: ReportBlock) -> bool:
+    """Whether ``block`` is a broken floor's warning, which opens the page above its title."""
+    return isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "floor"
+
+
 def _disclosure(block: DisclosureBlock) -> str:
     """Something code had to say: the first screen's lines as lines, every other one set apart from the author's."""
     text = _code(block.text)
@@ -539,9 +547,9 @@ def _disclosure(block: DisclosureBlock) -> str:
         return f'<p class="arms">{text}</p>'
     if block.section == "header" and block.source == "basis":
         return f'<p class="question">{text}</p>'
-    if block.section == "header" and block.source == "rule":
-        # The subhead's second line, which the Decision section's table links up to.
-        return f'<p class="arms" id="{RULE_ANCHOR}">{text}</p>'
+    if block.section == "header" and block.source == "floor":
+        # A broken floor, the page's first line: loud, and announced to a screen reader as it loads.
+        return f'<p class="floor" role="alert"><strong>{text}</strong></p>'
     if block.source == "verdict":
         tone = f' data-tone="{_escape(block.tone)}"' if block.tone is not None else ""
         return f'<p class="verdict"{tone}><strong>{text}</strong></p>'

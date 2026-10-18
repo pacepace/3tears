@@ -28,6 +28,7 @@ from threetears.evals.analysis import (
     NO_ANALYSIS,
     SECTION_TITLES,
     AnalysisContextBundle,
+    aspect_view,
     ChartBlock,
     DisclosureBlock,
     IntervalRow,
@@ -497,7 +498,9 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     comparisons, statistics = tables["comparisons"], tables["comparison_statistics"]
     assert statistics.details and len(statistics.rows) == len(comparisons.rows)
     # The page names the question by its number; a program reads it in the words it was asked, never its id.
-    asked = next(q.text for q in campaign.declared_design.questions if q.id == "q-chunk-width")
+    declared = aspect_view(campaign).declared
+    assert declared is not None
+    asked = declared.question
     assert comparisons.rows and {row["question"] for row in statistics.values()} == {"Q1"}
     assert {row["question"] for row in contrast_rows(report.bundle)} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}

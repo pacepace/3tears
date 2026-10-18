@@ -80,9 +80,6 @@ SECTION_TITLES: dict[str, str] = {
 #: The sections the first screen is made of.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
 
-#: The anchor of the first screen's subhead stating a declared decision rule, which the Decision section links up to.
-RULE_ANCHOR = "rule"
-
 #: What a text block's author wrote it as.
 TextRole = Literal[
     "answer",
@@ -99,11 +96,10 @@ TextRole = Literal[
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
 #: scoreboard that changes how the verdict is read, in normal weight: the case floor, an arm's label that its own row
-#: contradicts. ``basis``: the question declared before the run, quoted whole under the title, and in the Decision
-#: section the line saying a rule written as prose is not read. ``rule``: on the first
-#: screen, the subhead's decision rule in the sentence code writes, under the arms line; in the Decision section, the
-#: line under the clauses table saying keep is the default, so an unsettled rule keeps the control for now, and which
-#: interval a clause reads. ``verdict``: the verdict line. ``design``, ``charts`` and
+#: contradicts. ``basis``: the question declared before the run, quoted whole under the title. ``floor``: on the first
+#: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
+#: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
+#: verdict line. ``design``, ``charts`` and
 #: ``cost``: how the run was laid out, what was not charted and where a cost is a floor, in the methods. ``memo``: who wrote the memo,
 #: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
@@ -116,7 +112,7 @@ DisclosureSource = Literal[
     "arms",
     "caveat",
     "basis",
-    "rule",
+    "floor",
     "verdict",
     "design",
     "charts",
@@ -213,9 +209,12 @@ class Verdict(EvalDocumentModel):
     control: str | None = Field(
         default=None, description="The control, as the report names it; None for a bar, read on one cell."
     )
-    question_id: str | None = Field(
+    aspect: str | None = Field(
         default=None,
-        description="The declared question whose family tested a contrast; None campaign-wide, and for a bar or guardrail.",
+        description=(
+            "The aspect whose question's family tested a contrast; None for the exploratory family, and for a bar or "
+            "guardrail."
+        ),
     )
     delta: float | None = Field(default=None, description="Arm mean minus control mean; None for a bar.")
     interval: tuple[float, float] | None = Field(
@@ -633,7 +632,7 @@ class TrialBlock(_Block):
 
 
 #: What kind of verdict the first screen's line is, for a page that sets each kind apart: ``decided`` (a declared
-#: rule or question settled it), ``open`` (too few cases, or no question was declared, so the line offers leads),
+#: question settled it), ``open`` (too few cases, or no question was declared, so the line offers leads),
 #: ``failed`` (the test setup failed, so there is no verdict) and ``summary`` (one arm: a count, nothing to decide).
 _VerdictTone = Literal["decided", "open", "failed", "summary"]
 
@@ -642,7 +641,6 @@ _VerdictTone = Literal["decided", "open", "failed", "summary"]
 _VERDICT_TONES: dict[str, _VerdictTone] = {
     "setup": "failed",
     "one_arm": "summary",
-    "rule": "decided",
     "declared": "decided",
     "too_small": "open",
     "exploratory": "open",
@@ -852,7 +850,6 @@ class Report(EvalDocumentModel):
 __all__ = [
     "FINDING_ROLES",
     "FIRST_SCREEN",
-    "RULE_ANCHOR",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",
