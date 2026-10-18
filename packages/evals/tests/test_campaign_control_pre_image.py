@@ -87,7 +87,7 @@ def _design(**changes: Any) -> dict[str, Any]:
 
 def _aspects(fixture: OpsFixture, *, runs: bool = True) -> list[dict[str, Any]]:
     """The toy campaign's one aspect as an author declares it, holding its runs or none."""
-    aspect: dict[str, Any] = {"label": fixture.campaign.behavior, "margin": 5, "design": _design()}
+    aspect: dict[str, Any] = {"label": fixture.campaign.behavior, "design": _design()}
     if runs:
         aspect["run_ids"] = list(fixture.campaign.run_ids)
     return [aspect]

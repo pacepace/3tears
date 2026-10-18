@@ -55,7 +55,6 @@ def _definition(run_ids: list[str], **extra: object) -> dict[str, object]:
             {
                 "label": "extraction",
                 "run_ids": run_ids,
-                "margin": 5,
                 "design": design.model_dump(mode="json", exclude=moved),
                 **extra,
             }

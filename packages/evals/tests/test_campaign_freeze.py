@@ -50,7 +50,6 @@ def _aspects(fixture: OpsFixture, *, runs: bool = False) -> list[dict[str, Any]]
     assert aspect.design is not None
     declared: dict[str, Any] = {
         "label": aspect.label,
-        "margin": 5,
         "design": aspect.design.model_dump(mode="json"),
     }
     if runs:
