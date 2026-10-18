@@ -345,10 +345,10 @@ class CallProxy:
         :param limit_guard: pre-call spend gate; REQUIRED. every tool dispatch is
             gated through the limit guard after the pop check and before catalog
             routing -- no silent-bypass path, same discipline as ``authorizer``. the
-            money path FAILS OPEN (Fork-2): the proxy denies only on a returned
-            :class:`LimitDecision(allowed=False)`; a guard that RAISES or is
-            unreachable makes the proxy SERVE the call (and log loudly) so a
-            billing-infra outage never bricks tool traffic. dev/test callers pass
+            money path FAILS CLOSED: a returned :class:`LimitDecision(allowed=False)`
+            denies with its code, and a guard that RAISES or is unreachable refuses
+            the call with ``TOOL_AUTHORIZATION_UNAVAILABLE`` (retryable), never
+            serving it with no spend limit checked. dev/test callers pass
             :class:`AllowAllLimitGuard` / :class:`DenyAllLimitGuard`; production wires
             the counter-backed ``KvCallLimitGuard`` (gu-task-15a)
         :ptype limit_guard: LimitGuard
@@ -1041,10 +1041,11 @@ class CallProxy:
                 )
 
         # pre-call spend gate (gu-task-06): AFTER pop / BEFORE the authorizer + catalog routing, so a
-        # spend-denied call never consumes a catalog lookup. FAIL-OPEN (Fork-2): a guard that RAISES
-        # or is unreachable SERVES the call (loud WARNING) -- a billing-infra outage must not brick
-        # tool traffic. this inverts the fail-CLOSED identity/pop/authorizer gates ON PURPOSE. only a
-        # returned LimitDecision(allowed=False) hard-denies.
+        # spend-denied call never consumes a catalog lookup. FAIL-CLOSED, like the identity/pop/
+        # authorizer gates: a guard that RAISES or is unreachable REFUSES the call with a retryable
+        # reply. it used to serve the call (Fork-2), which ran every call during a billing-store
+        # outage with no spend limit at all -- a customer at its cap kept spending, and nothing on
+        # the reply said the limit had not been checked (#838).
         try:
             limit_decision = await self._limit_guard.check(
                 agent_id_log,
@@ -1053,18 +1054,36 @@ class CallProxy:
                 request.tool_name,
                 request.tool_version,
             )
-        except Exception as exc:  # noqa: BLE001 -- fail-open per Fork-2: a guard outage must never deny
+        except Exception as exc:  # noqa: BLE001 -- fail closed WITH a reply; never a dropped call
             contain(
                 exc,
                 log=log,
-                what="limit guard unreachable; serving fail-open",
+                what="tool call refused: the spend-limit guard could not be reached, so the call is denied "
+                "rather than served with no spend limit",
                 extra={
                     "agent_id": agent_id_log,
                     "customer_id": customer_id_log,
                     "tool_name": request.tool_name,
                     "correlation_id": correlation_id_log,
+                    "error_type": type(exc).__name__,
                 },
+                level="error",
             )
+            # the authorizer's unavailable code, because it is the same condition to the caller: a
+            # pre-call gate could not decide, so nothing ran, and the same call can succeed shortly.
+            # the platform already renders it as a retryable 503.
+            response = ProxyCallResponse(
+                success=False,
+                content="",
+                error=(
+                    f"tool call {request.tool_name} refused: the spend limit could not be checked "
+                    f"({type(exc).__name__}); nothing ran, retry"
+                ),
+                error_code="TOOL_AUTHORIZATION_UNAVAILABLE",
+                context=request.context,
+            )
+            await self._answer(msg, response, delivery_subject)
+            return
         else:
             if not limit_decision.allowed:
                 response = ProxyCallResponse(
@@ -1861,32 +1880,41 @@ class CallProxy:
             )
         return result
 
-    def _hub_publishes_delegation_key(self) -> bool:
-        """whether the hub JWKS publishes this registry's delegated-token key, so a pod can verify it.
+    def _withholds_agent_token(self) -> bool:
+        """whether a declaring pod is sent the delegation in place of the agent's token.
 
         A pod sent the delegation in place of the agent's token verifies it against the hub JWKS; a
         registry whose key the hub does not publish yet (the seed rolled out before the hub's pin)
         keeps sending the agent's token beside it, so no call fails for the order the two roll in.
+        That exception is granted only on a JWKS that was READ and lacks the key.
 
-        :return: whether the hub publishes it
+        A JWKS that cannot be read withholds the token. Keeping it there handed the agent's own
+        credential to a pod that declared it does not need one, on nothing more than a failed
+        read. Withheld, the worst case is a call the pod refuses because it cannot verify the
+        delegation: a visible failure, where the other way was a silent credential exposure.
+
+        :return: whether the agent's token and user assertion are withheld
         :rtype: bool
         """
-        published = False
+        withheld = False
         if self._delegated_signer is not None and self._jwks_provider is not None:
             try:
-                published = self._delegated_signer.kid in _published_kids(self._jwks_provider())
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a provider failure keeps the agent's token on the call, the safe side; logged
+                withheld = self._delegated_signer.kid in _published_kids(self._jwks_provider())
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- an unreadable JWKS withholds the agent's token, the closed side; logged with its traceback below
+                withheld = True
                 if not self._jwks_unreadable_logged:
                     self._jwks_unreadable_logged = True
                     contain(
                         exc,
                         log=log,
-                        what="hub JWKS unreadable; the agent's token stays on calls to declaring pods until it is",
+                        what="hub JWKS unreadable; declaring pods are sent the delegation without the agent's "
+                        "token, and a pod that cannot verify it will refuse the call",
                         extra={"detail": str(exc)},
+                        level="error",
                     )
             else:
                 self._jwks_unreadable_logged = False
-        return published
+        return withheld
 
     def _with_delegation(
         self, request: ProxyCallRequest, pod_id: str, principal: VerifiedPrincipal, effective_timeout: float
@@ -1929,7 +1957,7 @@ class CallProxy:
                 conversation_id=str(context.conversation_id) if context.conversation_id is not None else None,
             )
             forwarded: dict[str, str | None] = {"delegated_token": token}
-            if endpoint is not None and endpoint.proves_delegation and self._hub_publishes_delegation_key():
+            if endpoint is not None and endpoint.proves_delegation and self._withholds_agent_token():
                 forwarded |= {"identity_token": None, "user_identity_token": None}
             result = request.model_copy(update={"context": context.model_copy(update=forwarded)})
         return result

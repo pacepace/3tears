@@ -6,9 +6,10 @@ shape (required constructor arg, async method, allow-all/deny-all doubles) but r
 a typed :class:`LimitDecision` verdict rather than a bool so the dispatcher can set the
 right ``error_code``.
 
-the money path FAILS OPEN (Fork-2): a guard that RAISES serves the call (loud warn);
-only a returned ``LimitDecision(allowed=False)`` hard-denies. contrast the fail-CLOSED
-identity/pop/authorizer gates.
+the money path FAILS CLOSED, like the identity/pop/authorizer gates: a returned
+``LimitDecision(allowed=False)`` denies with its code, and a guard that RAISES refuses the
+call with a retryable ``TOOL_AUTHORIZATION_UNAVAILABLE`` reply instead of serving it with
+no spend limit checked.
 
 this module also covers the second injected seam: the ``EndpointUsageEmitter`` slot,
 invoked post-call fire-and-forget where both the inbound request args and the outbound
@@ -70,7 +71,7 @@ class _DenyLimitGuard:
 
 
 class _RaisingLimitGuard:
-    """guard whose ``check`` raises -- exercises the fail-open dispatch branch."""
+    """guard whose ``check`` raises -- exercises the fail-closed outage branch."""
 
     async def check(
         self,
@@ -221,11 +222,12 @@ async def test_deny_verdict_rejects_without_forwarding(code: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# fail-open path -- a raising guard SERVES the call (Fork-2)
+# outage path -- a raising guard REFUSES the call, it does not serve it unlimited
 # ---------------------------------------------------------------------------
 
 
-async def test_raising_guard_serves_fail_open(caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_raising_guard_refuses_the_call_with_a_retryable_reply(caplog: pytest.LogCaptureFixture) -> None:
+    """it used to serve the call, so a guard outage ran every call with no spend limit at all."""
     catalog = ToolCatalog()
     await catalog.register(_make_entry())
     proxy = make_proxy(catalog, namespace="test", limit_guard=_RaisingLimitGuard())
@@ -236,13 +238,16 @@ async def test_raising_guard_serves_fail_open(caplog: pytest.LogCaptureFixture) 
     with caplog.at_level(logging.WARNING):
         await _dispatch(proxy, request)
 
-    # a guard exception must NOT surface as a deny: the call is forwarded + served.
-    assert len(nc.request_raw_calls) == 1
+    assert nc.request_raw_calls == [], "the tool pod was called with no spend limit checked"
     assert len(nc.published) == 1
     response = nc.published[0]
-    assert response.success is True
-    assert response.error_code is None
-    assert any("fail-open" in rec.message for rec in caplog.records)
+    assert response.success is False
+    assert response.error_code == "TOOL_AUTHORIZATION_UNAVAILABLE"
+    assert "spend limit could not be checked" in (response.error or "")
+    assert any(
+        "spend-limit guard could not be reached" in rec.message and rec.levelno == logging.ERROR
+        for rec in caplog.records
+    )
 
 
 # ---------------------------------------------------------------------------

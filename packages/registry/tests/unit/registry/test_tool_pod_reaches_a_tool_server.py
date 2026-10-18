@@ -538,10 +538,14 @@ class TestTheForwardedCallCarriesADelegatedToken:
         assert context.conversation_id == conversation
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_hub_jwks_keeps_the_token_on_the_call_and_says_so_once(
+    async def test_an_unreadable_hub_jwks_withholds_the_token_from_a_declaring_pod_and_says_so_once(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """the registry cannot tell whether the hub publishes its key, so it strips nothing."""
+        """the registry cannot tell whether the hub publishes its key, so it does not hand over the token.
+
+        it used to keep the agent's token on the call, giving a pod that declared it needs none the
+        agent's own credential on the strength of a failed read.
+        """
 
         def _flaky_hub(jwks: dict[str, Any]) -> Callable[[], dict[str, Any]]:
             # a hub that fails every third fetch: a forwarded call reads the key set twice to verify
@@ -565,7 +569,8 @@ class TestTheForwardedCallCarriesADelegatedToken:
         for forwarded in hop.forwarded:
             assert forwarded.context is not None
             assert forwarded.context.delegated_token
-            assert forwarded.context.identity_token
-        assert all(context.identity_token for context in tool.contexts)
+            assert forwarded.context.identity_token is None
+            assert forwarded.context.user_identity_token is None
+        assert not any(context.identity_token for context in tool.contexts)
         assert len(tool.contexts) == 2
         assert sum("hub JWKS unreadable" in record.getMessage() for record in caplog.records) == 1
