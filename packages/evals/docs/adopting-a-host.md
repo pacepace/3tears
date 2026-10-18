@@ -775,13 +775,28 @@ termination, a scale, a provenance, …) is closed: a new value is a major. `sch
 their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a document written under another version is
 refused: make it again over the kept runs (generate the analysis, profile the judge). After a bump,
 `analyses_undescribable` (operation and action) lists the scope's analyses holding an arm this build can no longer
-describe. A cassette is not touched by that bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
+describe.
+
+**Before deploying a regenerable bump, drop the derived documents once.** Assembling a campaign's evidence reads its
+subject's insights, so one insight from before the bump refuses every generation, estimate and code-only report over
+that subject until it is gone; the refusal names this step. With the engine stopped:
+
+```python
+dropped = storage.drop_derived(["support"])          # analyses, insights and judge profiles of these scopes
+for profile in dropped.judge_profiles:                # the one kind that does not come back by itself
+    judge_profiles_record(host, JudgeProfilesRecord(judge_run_ids=profile.run_ids), profile.scope_id)
+```
+
+`drop_derived` deletes nothing else: runs, results, cassettes and every durable document stay. Analyses come back by
+generating them again and insights with the analyses that mint them; a judge profile only by recording it again, and
+until then a campaign that took its judges' tier from it reads its own evidence's tier. `0.71.0` is such a bump
+(regenerable v12: one memo per campaign). A cassette is not touched by that bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
 when the cassette itself changes, because re-capturing a corpus calls your third-party tools again. A cassette
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v15.5), durable documents (v16.0), regenerable documents
-(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
+(v12), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
 (`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
@@ -1326,7 +1341,7 @@ definition = {
   at creation, over runs its aspects already hold; or `set_campaign_control` once the control's run has joined), and
   the server reads its variant key and lever map from the first; runs of one arm carrying two keys are refused,
   naming each. The control comes first. A candidate nobody names is read off the runs, one per other variant. A
-  control named after an aspect's first run makes that aspect's comparisons post hoc.
+  control named after an aspect's first result makes that aspect's comparisons post hoc.
 - **Each aspect holds its own runs.** A run joins one aspect of a campaign, by its template, or by the aspect
   `add_runs_to_campaign` (`campaign_runs_add`) names; a run another template ran, or one two aspects could take,
   is refused naming them.
@@ -1342,8 +1357,39 @@ definition = {
   keeps its template, runs, design and the time its question was asked, so its readings stay as confirmatory as
   they were. A `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one that never
   declared one included. Whatever the new campaign adds is dated now and marked as declared after the runs.
-<!-- slice1: WP-5 -- recording the person's call (campaign_record, CampaignCall, floors_overridden) goes here once
-it lands. -->
+### Recording the call
+
+**Code reports, the writer recommends, a person decides, and the decision is recorded.** `campaign_record` (the
+operation, and the `campaign_record` action, which needs write permission) stores the person's call on the campaign
+(`CampaignCall`): the arm, why, who and when, the analysis it was made over if any, and each warning it overrides.
+
+```python
+from threetears.evals.kernel import OverriddenBar
+from threetears.evals.ops import campaign_record
+
+campaign_record(
+    host, campaign_id, scope_id,
+    arm="careful", called_by="brooks", reason="Tone matters more this quarter.",
+    floors_overridden=["billing/rate_drop/*"],                         # each broken floor, by its key
+    bars_overridden=[OverriddenBar(aspect="tone", measure="cost_usd")],  # each missed bar, by aspect and measure
+)
+```
+
+The call is read against code's readings of the evidence as it stands, never the memo's words, and is refused:
+
+| When | Why |
+|---|---|
+| the campaign is a measurement | one arm leaves nothing to decide between |
+| the arm is none of the campaign's | the remedy lists the arms |
+| the arm breaks a floor or misses a bar the call does not name | an override always leaves a record of what it overrode |
+| the call names a floor or bar the arm did not break or miss | an override answers a warning the page shows, or none |
+| the analysis is another campaign's, or the campaign changed while it was read | the call is made over this evidence |
+
+A floor's key is `<aspect>/<kind>/<reading>`, `*` for every reading (`billing/rate_drop/*`, `billing/cost_lower/*`);
+the action takes a bar as `<aspect>/<measure>` (`tone/cost_usd`) and the reason as `call_reason`. The arm is named by
+its label or its variant key and recorded by key, since a derived arm's label can shift when a variant joins. A new
+call replaces the earlier one, and the page's last line states whichever the campaign holds.
+
 
 ## The engine's prompts: shipped defaults, optional overrides
 
