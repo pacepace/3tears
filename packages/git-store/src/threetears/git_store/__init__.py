@@ -6,7 +6,8 @@ A product brings a :class:`RowCodec` (how a row becomes bytes; :class:`JsonCodec
 :class:`~threetears.core.backends.DurableStore` a
 :class:`~threetears.core.collections.DurableStoreCollection` runs on; :class:`GitRepos` and
 :class:`RoutedGitStore` keep many repositories at once; :func:`bind_collections` drops rows other
-commits changed from every cache.
+commits changed from every cache. A :class:`PendingTail` (:class:`OpLogTail`) keeps edits saved before they are
+committed, for products that commit only when the user means it.
 """
 
 from threetears.git_store.advanced import AdvancedListener, RepoAdvanced
@@ -24,9 +25,10 @@ from threetears.git_store.errors import (
 )
 from threetears.git_store.git import Author, CommitEntry, GitError
 from threetears.git_store.layout import Layout, TableLayout, TemplateLayout
-from threetears.git_store.repo import DirtyFile, GitRepo, GitRepoConfig, RepoStatus, RowChange
+from threetears.git_store.repo import Committed, DirtyFile, GitRepo, GitRepoConfig, PendingWrite, RepoStatus, RowChange
 from threetears.git_store.repos import GitRepos, RoutedGitStore
 from threetears.git_store.store import GitDurableStore
+from threetears.git_store.tail import OpLogLike, OpLogTail, PendingTail, committed_seq_from
 
 __all__ = [
     "AdvancedListener",
@@ -36,6 +38,7 @@ __all__ = [
     "ChangeSet",
     "CommitEntry",
     "CommitResult",
+    "Committed",
     "ConflictedRow",
     "DirtyFile",
     "FileConflictError",
@@ -50,6 +53,10 @@ __all__ = [
     "JsonCodec",
     "Layout",
     "NotTheWriterError",
+    "OpLogLike",
+    "OpLogTail",
+    "PendingTail",
+    "PendingWrite",
     "RepoAdvanced",
     "RepoStatus",
     "RoutedGitStore",
@@ -58,4 +65,5 @@ __all__ = [
     "TableLayout",
     "TemplateLayout",
     "bind_collections",
+    "committed_seq_from",
 ]

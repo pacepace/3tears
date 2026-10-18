@@ -27,6 +27,14 @@ paths back as HEAD has them. The caller never heard "saved".
 reads the one working tree, only the writer changes it, and the writer's cache drops reach the
 others over NATS. ``clone="own"``: each process has its own clone; one that is not the writer
 fetches and fast-forwards when the writer announces a push, and every ``watch_interval``.
+
+**Saved, not yet committed.** A folder with a :class:`~threetears.git_store.tail.PendingTail`
+(:meth:`GitRepo.add_tail`) holds edits saved before they are committed (scriob's op-log). Its files are
+the store's own work, never a hand edit: they are rebuilt from the tail when this process becomes the
+writer, joined to any commit that touches the folder (with the tail's trailers, so the newest trailer
+always says how far git reaches), committed by :meth:`GitRepo.commit_intent`, and committed by the sweep
+once the folder has had no commit for ``safety_idle``. Taking over, the writer first puts that folder's
+changed files back as HEAD has them (hand edits there included), then replays the tail.
 """
 
 from __future__ import annotations
@@ -58,6 +66,7 @@ from threetears.git_store.errors import (
 )
 from threetears.git_store.git import Author, CommitEntry, FileChange, Git, GitError
 from threetears.git_store.layout import Layout, locate
+from threetears.git_store.tail import PendingTail
 from threetears.git_store.wire import (
     ForwardedRequest,
     decode_read,
@@ -79,7 +88,16 @@ if TYPE_CHECKING:
     from threetears.core.coordination import ReplayAnchor
     from threetears.nats import NatsClient
 
-__all__ = ["DirtyFile", "GitRepo", "GitRepoConfig", "RepoStatus", "RowChange", "RowsChanged"]
+__all__ = [
+    "Committed",
+    "DirtyFile",
+    "GitRepo",
+    "GitRepoConfig",
+    "PendingWrite",
+    "RepoStatus",
+    "RowChange",
+    "RowsChanged",
+]
 
 log = get_logger(__name__)
 
@@ -96,6 +114,8 @@ _JOURNAL: Final[str] = "git-store/inflight.json"
 _SEEN_HEAD: Final[str] = "git-store/seen-head"
 #: the most paths one dirty-file warning names.
 _DIRTY_LOG_LIMIT: Final[int] = 20
+#: the message of the sweep's commit of saved edits left idle.
+_SAFETY_MESSAGE: Final[str] = "safety commit: saved edits idle past the window"
 
 
 @dataclass(frozen=True)
@@ -118,7 +138,8 @@ class GitRepoConfig:
     :ivar push: ``"after_commit"`` pushes each commit at once; ``"interval"`` every ``push_interval``;
         ``"never"`` leaves origin alone
     :ivar push_interval: how often ``push="interval"`` pushes
-    :ivar safety_idle: how long a hand edit may sit uncommitted before the sweep warns about it
+    :ivar safety_idle: how long a hand edit may sit uncommitted before the sweep warns about it, and how long a
+        folder with saved edits (a pending tail) may go without a commit before the sweep commits them
     :ivar sweep_interval: how often the sweep looks
     :ivar committer: who every commit names as committer, and as author when the change names none
     :ivar lease_bucket: the writer lease's bucket name (the NATS client adds its namespace)
@@ -187,8 +208,8 @@ class RowChange:
     :ivar table: the table
     :ivar pk: the row's key
     :ivar deleted: the commit removed the row's file
-    :ivar local: this process made the commit (through this store)
-    :ivar sha: the commit
+    :ivar local: this process made the commit (through this store), or saved the edit
+    :ivar sha: the commit; for an edit saved and not yet committed (a pending tail), the HEAD it sits on
     """
 
     table: str
@@ -200,6 +221,8 @@ class RowChange:
 
 #: a callback told of the rows a commit changed.
 RowsChanged = Callable[[list[RowChange]], Awaitable[None]]
+#: a callback told of every commit this store makes, on the writer.
+Committed = Callable[[CommitResult], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +250,7 @@ class RepoStatus:
     :ivar writer: the writer's holder id, when there is one (``None`` without NATS)
     :ivar ahead: commits origin lacks, as last fetched
     :ivar behind: commits origin has that this clone lacks, as last fetched
-    :ivar dirty: hand edits not yet committed
+    :ivar dirty: hand edits not yet committed (saved edits of a pending tail are not hand edits)
     :ivar push_blocked: why pushing stopped (origin moved in a way this repository cannot
         fast-forward); ``None`` while pushing works. A person decides; :meth:`GitRepo.push` retries
     :ivar last_push_error: the last push failure that was not a refusal (the network), or ``None``
@@ -301,6 +324,91 @@ def _checked_paths(paths: Sequence[str]) -> list[str]:
     return checked
 
 
+def _scope_key(scope: str | None) -> str | None:
+    """a tail's folder, normalized: ``None`` (or ``"."``) for the whole repository.
+
+    :param scope: the folder, relative to the root
+    :ptype scope: str | None
+    :return: the folder, or ``None``
+    :rtype: str | None
+    :raises ValueError: for a folder outside the working tree
+    """
+    if scope is None or scope in ("", "."):
+        return None
+    return _checked_paths([scope])[0]
+
+
+def _covers(scope: str | None, path: str) -> bool:
+    """whether ``path`` is under ``scope``.
+
+    :param scope: the folder; ``None`` for the whole repository
+    :ptype scope: str | None
+    :param path: the path, relative to the root
+    :ptype path: str
+    :return: ``True`` when it is
+    :rtype: bool
+    """
+    return scope is None or path == scope or path.startswith(scope + "/")
+
+
+def _with_trailers(message: str, trailers: Mapping[str, str]) -> str:
+    """a whole commit message with more trailer lines, added to its trailer block when it has one.
+
+    :param message: the whole message
+    :ptype message: str
+    :param trailers: the lines to add
+    :ptype trailers: Mapping[str, str]
+    :return: the message
+    :rtype: str
+    :raises ValueError: for a trailer that cannot be one line
+    """
+    if not trailers:
+        return message
+    for key, value in trailers.items():
+        if not _TRAILER_KEY.fullmatch(key) or "\n" in value:
+            raise ValueError(f"trailer {key!r}: {value!r} cannot be written as one trailer line")
+    text = message.rstrip("\n")
+    lines = "\n".join(f"{key}: {value}" for key, value in trailers.items())
+    paragraphs = text.split("\n\n")
+    last = paragraphs[-1].split("\n")
+    in_block = len(paragraphs) > 1 and all(re.match(r"[A-Za-z0-9][A-Za-z0-9-]*: ", line) for line in last)
+    return f"{text}\n{lines}\n" if in_block else f"{text}\n\n{lines}\n"
+
+
+class PendingWrite:
+    """a save into a pending tail's folder, under the repository's lock (:meth:`GitRepo.pending`)."""
+
+    def __init__(self, scope: str | None, marked: set[str]) -> None:
+        """start the save.
+
+        :param scope: the tail's folder
+        :ptype scope: str | None
+        :param marked: the folder's uncommitted paths, added to as the save writes
+        :ptype marked: set[str]
+        :return: None
+        :rtype: None
+        """
+        self.scope = scope
+        self._marked = marked
+        self.written: list[str] = []
+
+    def wrote(self, paths: Sequence[str]) -> None:
+        """say which files the save wrote: they are the store's, uncommitted, until the next commit takes them.
+
+        :param paths: the paths, relative to the root
+        :ptype paths: Sequence[str]
+        :return: None
+        :rtype: None
+        :raises ValueError: for a path outside the tail's folder
+        """
+        checked = _checked_paths(list(paths))
+        outside = [path for path in checked if not _covers(self.scope, path)]
+        if outside:
+            raise ValueError(f"a save into {self.scope!r} wrote outside it: {', '.join(outside)}")
+        self._marked.update(checked)
+        self.written.extend(checked)
+
+
 class GitRepo:
     """one working tree, its writer, its commits and its origin.
 
@@ -352,6 +460,10 @@ class GitRepo:
         self._last_push_at: datetime | None = None
         self._opened = False
         self._log = {"key": config.key, "branch": config.branch}
+        self._tails: dict[str | None, PendingTail] = {}
+        #: each tail's files written and not yet committed
+        self._pending: dict[str | None, set[str]] = {}
+        self._commit_listeners: list[Committed] = []
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -548,8 +660,9 @@ class GitRepo:
         """make this process's working tree the repository's current state, on becoming the writer.
 
         Recover a change that was being written when its writer stopped (its paths go back to HEAD:
-        its caller never heard "saved"), catch up with origin when this branch is only behind it,
-        report every commit made since the store last looked, and push what origin lacks.
+        its caller never heard "saved"), put each pending tail's folder back as HEAD has it, catch up
+        with origin when this branch is only behind it, report every commit made since the store last
+        looked, rebuild each tail's saved edits on top, and push what origin lacks.
 
         :return: None
         :rtype: None
@@ -561,10 +674,14 @@ class GitRepo:
                     "git_store.recovered: an interrupted change was put back as HEAD has it",
                     extra={"extra_data": {**self._log, "paths": recovered[:_DIRTY_LOG_LIMIT]}},
                 )
+            for scope in list(self._tails):
+                await asyncio.to_thread(self._restore_scope, scope)
             if self.config.remote_url is not None:
                 await self._catch_up_with_origin()
             await self._notice_head()
             await asyncio.to_thread(self._record_head, self._seen_head)
+            for scope in list(self._tails):
+                await self._replay_tail(scope)
             if self.config.push != "never" and self.config.remote_url is not None:
                 ahead, _ = await asyncio.to_thread(self.git.ahead_behind, self.config.branch)
                 if ahead:
@@ -618,6 +735,276 @@ class GitRepo:
                 leftover.unlink(missing_ok=True)
         journal.unlink(missing_ok=True)
         return paths
+
+    # ------------------------------------------------------------------ saved, not yet committed
+
+    async def add_tail(self, tail: PendingTail) -> None:
+        """make ``tail``'s folder hold saved edits not yet committed; on the writer, rebuild them now.
+
+        Rebuilding first puts the folder's changed files back as HEAD has them (a hand edit there too).
+
+        :param tail: the tail
+        :ptype tail: PendingTail
+        :return: None
+        :rtype: None
+        :raises ValueError: when its folder overlaps another tail's
+        """
+        scope = _scope_key(tail.scope)
+        for other in self._tails:
+            if other is None or scope is None or _covers(other, scope) or _covers(scope, other):
+                raise ValueError(f"a pending tail over {scope!r} overlaps the one over {other!r}")
+        self._tails[scope] = tail
+        self._pending[scope] = set()
+        if self._opened and self.is_writer:
+            async with self._lock:
+                await asyncio.to_thread(self._restore_scope, scope)
+                await self._replay_tail(scope)
+
+    def remove_tail(self, scope: str | None) -> PendingTail | None:
+        """stop keeping a folder's saved edits (a story deleted or moved). Its uncommitted files stay as they are.
+
+        :param scope: the folder
+        :ptype scope: str | None
+        :return: the tail, or ``None`` when the folder had none
+        :rtype: PendingTail | None
+        """
+        key = _scope_key(scope)
+        self._pending.pop(key, None)
+        return self._tails.pop(key, None)
+
+    def pending_paths(self, scope: str | None = None) -> set[str]:
+        """the files saved and not yet committed.
+
+        :param scope: one tail's folder; ``None`` for every tail's
+        :ptype scope: str | None
+        :return: the paths
+        :rtype: set[str]
+        """
+        if scope is not None:
+            return set(self._pending.get(_scope_key(scope), ()))
+        return set().union(*self._pending.values()) if self._pending else set()
+
+    @asynccontextmanager
+    async def pending(self, scope: str | None) -> AsyncIterator[PendingWrite]:
+        """save into a tail's folder without committing, on the writer, under the repository's lock.
+
+        :class:`~threetears.git_store.tail.OpLogTail` saves through it. The block writes files and says
+        which with :meth:`PendingWrite.wrote`; when it ends, their rows are reported (so caches drop them)::
+
+            async with repo.pending("stories/one") as save:
+                save.wrote(["stories/one/scenes/a.md"])
+
+        :param scope: the tail's folder
+        :ptype scope: str | None
+        :return: the save, for the block
+        :rtype: AsyncIterator[PendingWrite]
+        :raises GitStoreError: when the folder has no tail
+        :raises NotTheWriterError: when this process isn't the writer
+        """
+        key = _scope_key(scope)
+        if key not in self._tails:
+            raise GitStoreError(f"{self.config.key}: no pending tail keeps {key!r}; add_tail first")
+        async with self._lock:
+            self._require_writer()
+            await self._notice_head()
+            save = PendingWrite(key, self._pending.setdefault(key, set()))
+            yield save
+            if save.written:
+                head = await asyncio.to_thread(self.git.head)
+                rows = await asyncio.to_thread(self._rows_in_tree, sorted(set(save.written)), head or "")
+                await self._tell(rows)
+
+    async def commit_intent(
+        self,
+        scope: str | None,
+        message: str,
+        *,
+        author: Author | None = None,
+        idle: timedelta | None = None,
+    ) -> CommitResult:
+        """commit a tail's saved edits now (the user means it), on the writer.
+
+        The tail is replayed first, so the commit holds every saved edit; it carries the tail's trailers.
+        Edits that net to no change make no commit.
+
+        :param scope: the tail's folder
+        :ptype scope: str | None
+        :param message: the commit message
+        :ptype message: str
+        :param author: who the commit names as author; ``None`` for the committer
+        :ptype author: Author | None
+        :param idle: commit only when the folder's last commit is older than this (a safety commit);
+            ``None`` commits now
+        :ptype idle: timedelta | None
+        :return: the commit; ``sha`` is ``None`` when nothing was committed
+        :rtype: CommitResult
+        :raises GitStoreError: when the folder has no tail
+        :raises NotTheWriterError: when no writer could take it
+        """
+        key = _scope_key(scope)
+        full = _message_with_trailers(message, None)
+        request = ForwardedRequest(
+            op="commit_intent",
+            scope=key,
+            message=full,
+            author=author,
+            idle=None if idle is None else idle.total_seconds(),
+        )
+        return await self._as_writer(request, lambda: self._commit_intent_local(key, full, author, idle))
+
+    def on_committed(self, callback: Committed) -> Callable[[], None]:
+        """be told of every commit this store makes (on the writer, where it is made).
+
+        :param callback: called with each commit's result, after it is pushed
+        :ptype callback: Committed
+        :return: a function that stops the calls
+        :rtype: Callable[[], None]
+        """
+        self._commit_listeners.append(callback)
+
+        def remove() -> None:
+            if callback in self._commit_listeners:
+                self._commit_listeners.remove(callback)
+
+        return remove
+
+    async def _announce(self, result: CommitResult) -> CommitResult:
+        """tell every commit listener of a commit; one that fails is logged. Call outside the lock.
+
+        :param result: the commit
+        :ptype result: CommitResult
+        :return: the same result
+        :rtype: CommitResult
+        """
+        if result.sha is None:
+            return result
+        for callback in list(self._commit_listeners):
+            try:
+                await callback(result)
+            except (
+                Exception
+            ) as exc:  # prawduct:allow prawduct/broad-except -- one listener's failure must not stop the rest
+                log.warning(
+                    "git_store.commit_listener.failed: a commit listener raised",
+                    extra={"extra_data": {**self._log, "error": f"{type(exc).__name__}: {exc}"}},
+                    exc_info=True,
+                )
+        return result
+
+    def _restore_scope(self, scope: str | None) -> None:
+        """put a tail's folder back as HEAD has it: its saved files and every tracked change. BLOCKING.
+
+        :param scope: the folder
+        :ptype scope: str | None
+        :return: None
+        :rtype: None
+        """
+        changed = {path for status, path in self.git.dirty(None if scope is None else [scope]) if status != "??"}
+        paths = sorted(changed | self._pending.get(scope, set()))
+        if paths:
+            self.git.restore(paths)
+            log.info(
+                "git_store.tail.reset: a tail's folder was put back as HEAD has it before its replay",
+                extra={"extra_data": {**self._log, "scope": scope, "paths": paths[:_DIRTY_LOG_LIMIT]}},
+            )
+        self._pending[scope] = set()
+
+    async def _replay_tail(self, scope: str | None) -> set[str]:
+        """rebuild a tail's saved edits and mark its files as the store's. Call under the lock, on the writer.
+
+        :param scope: the folder
+        :ptype scope: str | None
+        :return: the folder's uncommitted paths
+        :rtype: set[str]
+        """
+        save = PendingWrite(scope, self._pending.setdefault(scope, set()))
+        save.wrote(list(await self._tails[scope].replay(self)))
+        if save.written:
+            head = await asyncio.to_thread(self.git.head)
+            await self._tell(await asyncio.to_thread(self._rows_in_tree, sorted(set(save.written)), head or ""))
+        return self._pending[scope]
+
+    async def _flush_tails(self, paths: Sequence[str]) -> tuple[list[str], dict[str, str], list[str | None]]:
+        """the saved edits a commit of ``paths`` takes along: every tail whose folder it touches. Under the lock.
+
+        :param paths: the commit's own paths
+        :ptype paths: Sequence[str]
+        :return: the tails' uncommitted paths, their trailers, and their folders
+        :rtype: tuple[list[str], dict[str, str], list[str | None]]
+        :raises GitStoreError: when two tails would give one commit different values of one trailer
+        """
+        extra: set[str] = set()
+        trailers: dict[str, str] = {}
+        scopes = [scope for scope in self._tails if any(_covers(scope, path) for path in paths)]
+        for scope in scopes:
+            extra |= await self._replay_tail(scope)
+            for key, value in (await self._tails[scope].trailers(self)).items():
+                if trailers.get(key, value) != value:
+                    raise GitStoreError(
+                        f"one commit would carry two {key} trailers ({trailers[key]} and {value}): it touches the "
+                        f"folders of two pending tails; commit them apart"
+                    )
+                trailers[key] = value
+        return sorted(extra - set(paths)), trailers, scopes
+
+    async def _commit_intent_local(
+        self, scope: str | None, message: str, author: Author | None, idle: timedelta | None
+    ) -> CommitResult:
+        """replay a tail and commit what it saved, on the writer.
+
+        :param scope: the folder
+        :ptype scope: str | None
+        :param message: the whole message
+        :ptype message: str
+        :param author: the author
+        :ptype author: Author | None
+        :param idle: commit only when the folder's last commit is older than this
+        :ptype idle: timedelta | None
+        :return: the commit
+        :rtype: CommitResult
+        :raises GitStoreError: when the folder has no tail
+        """
+        async with self._lock:
+            self._require_writer()
+            await self._notice_head()
+            tail = self._tails.get(scope)
+            if tail is None:
+                raise GitStoreError(f"{self.config.key}: no pending tail keeps {scope!r}; nothing was committed")
+            if idle is not None:
+                last = await asyncio.to_thread(self.git.last_commit, scope)
+                if last is not None and datetime.now(UTC) - last[1] <= idle:
+                    return CommitResult(sha=None)
+            marked = await self._replay_tail(scope)
+            dirty = (
+                sorted({path for _, path in await asyncio.to_thread(self.git.dirty, sorted(marked))}) if marked else []
+            )
+            if not dirty:
+                marked.clear()  # the saved edits net to no change: nothing to commit
+                return CommitResult(sha=None)
+            full = _with_trailers(message, await tail.trailers(self))
+            root = self.config.work_tree
+            written = [path for path in dirty if (root / path).exists()]
+            removed = [path for path in dirty if not (root / path).exists()]
+            head_before = await asyncio.to_thread(self.git.head)
+            committer = self.config.committer
+
+            async def stage_and_commit() -> str:
+                await self._retrying(lambda: self.git.stage(written, removed))
+                self._require_writer()
+                return await self._retrying(
+                    lambda: self.git.commit(dirty, full, author=author or committer, committer=committer)
+                )
+
+            sha = await asyncio.shield(stage_and_commit())
+            marked.clear()
+            changes = await asyncio.to_thread(self.git.changed, head_before, sha)
+            await self._reported(sha, await asyncio.to_thread(self._rows_of, changes, head_before, sha, True))
+            pushed = await self._push_after_commit()
+        log.info(
+            "git_store.commit_intent: saved edits were committed",
+            extra={"extra_data": {**self._log, "scope": scope, "sha": sha, "files": len(dirty), "pushed": pushed}},
+        )
+        return await self._announce(CommitResult(sha=sha, paths=tuple(dirty), pushed=pushed))
 
     # ------------------------------------------------------------------ committing
 
@@ -971,6 +1358,9 @@ class GitRepo:
                 result = await self._commit_files_local(
                     dict(request.files or {}), request.message, request.author, request.base
                 )
+            elif request.op == "commit_intent":
+                idle = None if request.idle is None else timedelta(seconds=request.idle)
+                result = await self._commit_intent_local(request.scope, request.message, request.author, idle)
             else:
                 result = await self._push_now()
         except (GitStoreError, ChangeConflictError) as exc:
@@ -1031,16 +1421,18 @@ class GitRepo:
                 return CommitResult(sha=None)
             # once files start changing the sequence runs to its end even if the caller is
             # cancelled: a commit abandoned halfway leaves files written and nothing committed
-            sha = await asyncio.shield(self._write_and_commit(plan, message, author or self.config.committer, date))
+            sha, taken = await asyncio.shield(
+                self._write_and_commit(plan, message, author or self.config.committer, date)
+            )
             rows = [RowChange(table, pk, deleted, True, sha) for table, pk, deleted in plan.rows]
             await self._reported(sha, rows)
             pushed = await self._push_after_commit()
-            paths = tuple(sorted(plan.writes))
+            paths = tuple(sorted({*plan.writes, *taken}))
         log.info(
             "git_store.commit: a change set was committed",
             extra={"extra_data": {**self._log, "sha": sha, "files": len(paths), "pushed": pushed}},
         )
-        return CommitResult(sha=sha, paths=paths, pushed=pushed)
+        return await self._announce(CommitResult(sha=sha, paths=paths, pushed=pushed))
 
     def _plan(self, changes: Sequence[Change]) -> _Plan:
         """check each change against its file and work out the bytes to write. BLOCKING.
@@ -1096,8 +1488,11 @@ class GitRepo:
                 plan.rows.append((change.table, change.pk, False))
         return plan
 
-    async def _write_and_commit(self, plan: _Plan, message: str, author: Author, date: datetime | None) -> str:
-        """refuse a hand edit in the way, then journal, write, stage and commit the plan's files.
+    async def _write_and_commit(
+        self, plan: _Plan, message: str, author: Author, date: datetime | None
+    ) -> tuple[str, list[str]]:
+        """refuse a hand edit in the way, then journal, write, stage and commit the plan's files, with the saved
+        edits of every pending tail whose folder they touch (and its trailers).
 
         :param plan: the plan
         :ptype plan: _Plan
@@ -1107,30 +1502,58 @@ class GitRepo:
         :ptype author: Author
         :param date: the author date
         :ptype date: datetime | None
-        :return: the new commit
-        :rtype: str
+        :return: the new commit, and the saved files of pending tails it took along
+        :rtype: tuple[str, list[str]]
         :raises HandEditPendingError: when a file to write differs from HEAD
+        :raises GitStoreError: when a file to write holds saved edits not yet committed
         :raises NotTheWriterError: when the lease was lost before the commit; nothing was committed
         """
         paths = sorted(plan.writes)
-        dirty = await asyncio.to_thread(self.git.dirty, paths)
-        if dirty:
-            raise HandEditPendingError([path for _, path in dirty])
+        self._refuse_dirty(await asyncio.to_thread(self.git.dirty, paths))
+        taken, trailers, scopes = await self._flush_tails(paths)
+        message = _with_trailers(message, trailers)
         await asyncio.to_thread(self._write_journal, paths)
         try:
             await asyncio.to_thread(self._apply, plan)
+            root = self.config.work_tree
             written = [path for path in paths if plan.writes[path] is not None]
             removed = [path for path in paths if plan.writes[path] is None]
+            written += [path for path in taken if (root / path).exists()]
+            removed += [path for path in taken if not (root / path).exists()]
+            everything = sorted({*paths, *taken})
             await self._retrying(lambda: self.git.stage(written, removed))
             self._require_writer()
             sha = await self._retrying(
-                lambda: self.git.commit(paths, message, author=author, committer=self.config.committer, date=date)
+                lambda: self.git.commit(everything, message, author=author, committer=self.config.committer, date=date)
             )
         except BaseException:
             await asyncio.to_thread(self._undo, paths)
             raise
         await asyncio.to_thread(self._clear_journal)
-        return sha
+        for scope in scopes:
+            self._pending[scope].clear()
+        return sha, taken
+
+    def _refuse_dirty(self, dirty: Sequence[tuple[str, str]]) -> None:
+        """refuse to write over files that differ from HEAD: saved edits not yet committed, or hand edits.
+
+        :param dirty: ``(status, path)`` of the files to write that differ from HEAD
+        :ptype dirty: Sequence[tuple[str, str]]
+        :return: None
+        :rtype: None
+        :raises GitStoreError: when one holds saved edits (commit them first: :meth:`commit_intent`)
+        :raises HandEditPendingError: when one holds a hand edit
+        """
+        if not dirty:
+            return
+        saved = self.pending_paths()
+        held = sorted(path for _, path in dirty if path in saved)
+        if held:
+            raise GitStoreError(
+                f"saved edits not yet committed in the way, nothing was written: {', '.join(held)}. "
+                f"Commit them first (commit_intent)"
+            )
+        raise HandEditPendingError([path for _, path in dirty])
 
     def _write_journal(self, paths: Sequence[str]) -> None:
         """record the paths about to change, for recovery after a crash. BLOCKING.
@@ -1205,9 +1628,13 @@ class GitRepo:
             self._require_writer()
             await self._notice_head()
             dirty = await asyncio.to_thread(self.git.dirty, list(paths) if paths is not None else None)
-            if not dirty:
+            saved = self.pending_paths()
+            hand = sorted({path for _, path in dirty} - saved)
+            if not hand:
                 return CommitResult(sha=None)
-            targets = sorted({path for _, path in dirty})
+            taken, trailers, scopes = await self._flush_tails(hand)
+            full = _with_trailers(message, trailers)
+            targets = sorted({*hand, *taken})
             root = self.config.work_tree
             written = [path for path in targets if (root / path).exists()]
             removed = [path for path in targets if not (root / path).exists()]
@@ -1218,10 +1645,12 @@ class GitRepo:
                 await self._retrying(lambda: self.git.stage(written, removed))
                 self._require_writer()
                 return await self._retrying(
-                    lambda: self.git.commit(targets, message, author=author or committer, committer=committer)
+                    lambda: self.git.commit(targets, full, author=author or committer, committer=committer)
                 )
 
             sha = await asyncio.shield(stage_and_commit())
+            for scope in scopes:
+                self._pending[scope].clear()
             changes = await asyncio.to_thread(self.git.changed, head_before, sha)
             rows = await asyncio.to_thread(self._rows_of, changes, head_before, sha, True)
             await self._reported(sha, rows)
@@ -1230,7 +1659,7 @@ class GitRepo:
             "git_store.commit_paths: hand edits were committed",
             extra={"extra_data": {**self._log, "sha": sha, "files": len(targets), "pushed": pushed}},
         )
-        return CommitResult(sha=sha, paths=tuple(targets), pushed=pushed)
+        return await self._announce(CommitResult(sha=sha, paths=tuple(targets), pushed=pushed))
 
     async def _commit_files_local(
         self, files: dict[str, bytes | None], message: str, author: Author | None, base: str | None
@@ -1270,19 +1699,19 @@ class GitRepo:
             writes = await asyncio.to_thread(differing)
             if not writes:
                 return CommitResult(sha=None)
-            sha = await asyncio.shield(
+            sha, taken = await asyncio.shield(
                 self._write_and_commit(_Plan(writes=writes), message, author or self.config.committer, None)
             )
             changes = await asyncio.to_thread(self.git.changed, head_before, sha)
             rows = await asyncio.to_thread(self._rows_of, changes, head_before, sha, True)
             await self._reported(sha, rows)
             pushed = await self._push_after_commit()
-            paths = tuple(sorted(writes))
+            paths = tuple(sorted({*writes, *taken}))
         log.info(
             "git_store.commit_files: files were committed",
             extra={"extra_data": {**self._log, "sha": sha, "files": len(paths), "pushed": pushed}},
         )
-        return CommitResult(sha=sha, paths=paths, pushed=pushed)
+        return await self._announce(CommitResult(sha=sha, paths=paths, pushed=pushed))
 
     # ------------------------------------------------------------------ reporting changed rows
 
@@ -1318,6 +1747,16 @@ class GitRepo:
         self._seen_head = head
         if self.is_writer or self.config.clone == "own":
             await asyncio.to_thread(self._record_head, head)
+        await self._tell(rows)
+
+    async def _tell(self, rows: list[RowChange]) -> None:
+        """tell every changed-rows listener of ``rows``; one that fails is logged, the others are still told.
+
+        :param rows: the rows
+        :ptype rows: list[RowChange]
+        :return: None
+        :rtype: None
+        """
         if not rows:
             return
         for callback in list(self._listeners):
@@ -1357,6 +1796,28 @@ class GitRepo:
                 rows.append(RowChange(found[0], found[1], change.status == "D", local, new))
         return rows
 
+    def _rows_in_tree(self, paths: Sequence[str], head: str) -> list[RowChange]:
+        """the rows files in the working tree hold, as saved edits of this process. BLOCKING.
+
+        :param paths: the files, relative to the root
+        :ptype paths: Sequence[str]
+        :param head: the commit they sit on
+        :ptype head: str
+        :return: the rows, files that hold none left out
+        :rtype: list[RowChange]
+        """
+        rows: list[RowChange] = []
+        for path in paths:
+            target = self.config.work_tree / path
+            exists = target.is_file()
+            data = target.read_bytes() if exists and self.layout.reads_content else None
+            if not exists and self.layout.reads_content:
+                data = self.git.show(head, path) if head else None
+            found = self.layout.identify(PurePosixPath(path), data)
+            if found is not None:
+                rows.append(RowChange(found[0], found[1], not exists, True, head))
+        return rows
+
     async def _notice_head(self) -> list[RowChange]:
         """report every commit HEAD gained since this store last looked. Call under the lock.
 
@@ -1392,6 +1853,13 @@ class GitRepo:
         :rtype: list[RowChange]
         """
         async with self._lock:
+            if not self.is_writer and self.pending_paths():
+                # this process saved edits as the writer and is no longer it: they are safe in the tail and the
+                # new writer rebuilds them; on a clone of its own they would block following origin
+                if self.config.clone == "own":
+                    await asyncio.to_thread(self.git.restore, sorted(self.pending_paths()))
+                for marked in self._pending.values():
+                    marked.clear()
             if not self.is_writer and self.config.clone == "own" and self.config.remote_url is not None:
                 await self._catch_up_with_origin()
             return await self._notice_head()
@@ -1528,13 +1996,22 @@ class GitRepo:
             await self.sync()
 
     async def _sweep(self) -> None:
-        """warn about hand edits left uncommitted longer than ``safety_idle``, on the writer.
+        """commit saved edits whose folder had no commit for ``safety_idle``, and warn about hand edits left
+        uncommitted that long, on the writer.
 
         :return: None
         :rtype: None
         """
         if not self.is_writer:
             return
+        for scope in list(self._tails):
+            try:
+                await self._commit_intent_local(scope, _SAFETY_MESSAGE, None, self.config.safety_idle)
+            except (GitStoreError, GitError) as exc:
+                log.warning(
+                    "git_store.safety_commit.failed: saved edits could not be committed; the next sweep tries again",
+                    extra={"extra_data": {**self._log, "scope": scope, "error": f"{type(exc).__name__}: {exc}"}},
+                )
         dirty = await asyncio.to_thread(self._dirty_files)
         cutoff = datetime.now(UTC) - self.config.safety_idle
         stale = [item.path for item in dirty if item.since is None or item.since < cutoff]
@@ -1551,7 +2028,10 @@ class GitRepo:
         :rtype: list[DirtyFile]
         """
         found: list[DirtyFile] = []
+        saved = self.pending_paths()
         for status, path in self.git.dirty():
+            if path in saved:
+                continue
             target = self.config.work_tree / path
             since: datetime | None = None
             with suppress(FileNotFoundError):  # NOSILENT: a removed file has no time; None says so

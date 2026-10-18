@@ -113,6 +113,20 @@ commit, re-read on a miss) show current data on whichever pod serves the request
 itself, and a clone with no writer running read their own files. `GitRepo.read_row` / `read_rows` route the read;
 `read_local` / `scan_local` read this process's tree.
 
+**git-store: saved now, committed later (`PendingTail`, `OpLogTail`, `GitRepo.commit_intent`).** For products that
+save an edit at once but commit only when the user means it (scriob). A tail keeps one folder's saved edits
+(`GitRepo.add_tail`; folders may not overlap, so many stories share one repository); `OpLogTail` keeps them in a
+`threetears.nats.OpLog`, lifted from scriob's coordinator. `OpLogTail.save` appends an op and writes the whole tail
+into the working tree, under the repository's lock, with no commit; `GitRepo.commit_intent(scope, message)` replays
+the tail and commits it with an `Op-Seq: <n>` trailer (edits that net to no change make no commit; `idle=` commits
+only after a quiet stretch). The ops after the folder's newest trailer are the tail: a new writer puts the folder
+back as HEAD has it and replays them, so an edit saved on a pod that dies before its commit is not lost. Kept from
+scriob: a trailer ahead of the log (a reset or fresh log) counts nothing as committed until HEAD moves, however far
+the log grows meanwhile. Saved files are the store's own, not hand edits: `status().dirty` and the sweep's warning
+leave them out, a commit that touches the folder takes them along with the trailer, a write over one is refused,
+and the sweep commits a folder idle past `safety_idle`. `GitRepo.pending(scope)` is the lock-held save a product's
+own tail builds on; `GitRepo.on_committed` hears every commit the store makes. Found adopting git-store in scriob.
+
 **Fixed (git-store):** a work tree inside another git repository was used as if it were one, so commits landed in
 the outer repository; `open()` now refuses it (`GitStoreError`). A nested repository of its own still works.
 

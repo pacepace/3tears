@@ -14,10 +14,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import json
 import os
 import subprocess
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -37,10 +38,13 @@ from threetears.git_store import (
     GitStoreError,
     HandEditPendingError,
     NotTheWriterError,
+    OpLogTail,
     RowChange,
     TemplateLayout,
+    committed_seq_from,
 )
 from threetears.nats import NatsClient, set_default_namespace
+from threetears.nats.oplog import OpLog
 
 pytestmark = pytest.mark.integration
 
@@ -342,3 +346,61 @@ async def test_a_pod_on_its_own_clone_commits_plain_files_through_the_writer(
         await other.commit_files({"aria/training-log.md": b"round 1, retold\n"}, "log again", base=base)
     assert refused.value.paths == ("aria/training-log.md",)
     assert (tmp_path / "a/aria/training-log.md").read_bytes() == b"round 1\n"
+
+
+async def _append_lines(repo: GitRepo, ops: Sequence[dict[str, str]]) -> list[str]:
+    """the toy op of the pending-tail test: append a line to a file, rebuilt from HEAD."""
+    texts: dict[str, str] = {}
+    for item in ops:
+        path = item["path"]
+        if path not in texts:
+            texts[path] = (repo.git.show("HEAD", path) or b"").decode()
+        texts[path] += item["add"] + "\n"
+    for path, text in texts.items():
+        (repo.config.work_tree / path).write_text(text)
+    return list(texts)
+
+
+async def test_saved_edits_survive_the_writer_and_the_next_one_commits_them(
+    tmp_path: Path, origin: Path, connect: Any, opened: Any, namespace: str
+) -> None:
+    # scriob: an edit is saved (op-log + working tree) and committed later; a pod that dies before the commit
+    # loses nothing, because the next writer replays the log's uncommitted tail onto origin's HEAD
+    nats_a, nats_b = await connect("pod-a"), await connect("pod-b")
+    a = await opened(nats_a, work_tree=tmp_path / "a", remote_url=str(origin), clone="own")
+    b = await opened(nats_b, work_tree=tmp_path / "b", remote_url=str(origin), clone="own")
+    assert a.is_writer and not b.is_writer
+    await a.commit_files({"stories/one/scene.md": b"start\n"}, "a story")
+    await b.sync()
+
+    def tail_on(nats: NatsClient) -> Awaitable[OpLogTail[dict[str, str]]]:
+        async def make() -> OpLogTail[dict[str, str]]:
+            log = await OpLog.open(client=nats, repo=f"story-one-{namespace}", branch="main")
+            return OpLogTail(log, scope="stories/one", decode=json.loads, apply=_append_lines)
+
+        return make()
+
+    tail_a, tail_b = await tail_on(nats_a), await tail_on(nats_b)
+    await a.add_tail(tail_a)
+    await b.add_tail(tail_b)
+
+    def line(text: str) -> bytes:
+        return json.dumps({"path": "stories/one/scene.md", "add": text}).encode()
+
+    await tail_a.save(a, payload=line("first"), op_id="op-1")
+    committed = await b.commit_intent("stories/one", "edit")  # forwarded to the writer
+    assert committed.sha is not None and committed.pushed
+    assert committed_seq_from(a.git.last_commit()[2]) == 1  # type: ignore[index]
+
+    await tail_a.save(a, payload=line("second"), op_id="op-2")  # saved, never committed
+    assert origin_head(origin) == committed.sha
+    await a.aclose()  # the writer goes away
+
+    await eventually(lambda: b.is_writer)
+    scene = tmp_path / "b/stories/one/scene.md"
+    assert scene.read_text() == "start\nfirst\nsecond\n"  # rebuilt from the log on origin's HEAD
+    assert b.pending_paths() == {"stories/one/scene.md"}
+
+    result = await b.commit_intent("stories/one", "edit")
+    assert result.sha is not None and result.pushed and origin_head(origin) == result.sha
+    assert committed_seq_from(b.git.last_commit()[2]) == 2  # type: ignore[index]

@@ -48,7 +48,7 @@ __all__ = [
 ]
 
 #: the operations a writer runs for another process.
-Operation = Literal["commit", "commit_paths", "commit_files", "push"]
+Operation = Literal["commit", "commit_paths", "commit_files", "commit_intent", "push"]
 
 
 def _tag(value: Any) -> Any:
@@ -127,6 +127,8 @@ class ForwardedRequest:
     :ivar paths: the files to adopt (``commit_paths``); ``None`` for every changed file
     :ivar files: each file's new bytes, or ``None`` to remove it (``commit_files``)
     :ivar base: the commit those files were based on (``commit_files``); ``None`` for no check
+    :ivar scope: the pending tail's folder (``commit_intent``); ``None`` for the whole repository
+    :ivar idle: commit only when the folder's last commit is older than this many seconds (``commit_intent``)
     :ivar message: the commit message
     :ivar author: the commit's author
     :ivar trailers: trailer lines
@@ -138,6 +140,8 @@ class ForwardedRequest:
     paths: tuple[str, ...] | None = None
     files: Mapping[str, bytes | None] | None = None
     base: str | None = None
+    scope: str | None = None
+    idle: float | None = None
     message: str = ""
     author: Author | None = None
     trailers: Mapping[str, str] | None = None
@@ -172,6 +176,8 @@ def encode_request(request: ForwardedRequest) -> bytes:
             for path, data in request.files.items()
         },
         "base": request.base,
+        "scope": request.scope,
+        "idle": request.idle,
         "message": request.message,
         "author": None if request.author is None else {"name": request.author.name, "email": request.author.email},
         "trailers": dict(request.trailers or {}),
@@ -191,7 +197,7 @@ def decode_request(data: bytes) -> ForwardedRequest:
     """
     body = json.loads(data.decode("utf-8"))
     op = body["op"]
-    if op not in ("commit", "commit_paths", "commit_files", "push"):
+    if op not in ("commit", "commit_paths", "commit_files", "commit_intent", "push"):
         raise ValueError(f"a git-store writer does not run {op!r}")
     changes = tuple(
         Change(
@@ -213,6 +219,8 @@ def decode_request(data: bytes) -> ForwardedRequest:
         if files is None
         else {str(path): None if data is None else base64.b64decode(data) for path, data in files.items()},
         base=None if body.get("base") is None else str(body["base"]),
+        scope=None if body.get("scope") is None else str(body["scope"]),
+        idle=None if body.get("idle") is None else float(body["idle"]),
         message=str(body.get("message", "")),
         author=_author(body.get("author")),
         trailers={str(k): str(v) for k, v in (body.get("trailers") or {}).items()},

@@ -516,6 +516,30 @@ class Git:
             entries.append(CommitEntry(sha, Author(name, email), datetime.fromisoformat(date), subject, body.strip()))
         return entries
 
+    def last_commit(self, path: str | None = None, *, grep: str | None = None) -> tuple[str, datetime, str] | None:
+        """the newest commit from HEAD that touched ``path`` and whose message matches ``grep``.
+
+        :param path: only commits that changed something under this path; ``None`` for any commit
+        :ptype path: str | None
+        :param grep: an extended regular expression one line of the message must match; ``None`` for any
+        :ptype grep: str | None
+        :return: ``(sha, committer date, whole message)``, or ``None`` when no commit qualifies
+        :rtype: tuple[str, datetime, str] | None
+        """
+        if self.head() is None:
+            return None
+        args = ["log", "-1", f"--format=%H{_FIELD}%cI{_FIELD}%B"]
+        if grep is not None:
+            args += ["--extended-regexp", f"--grep={grep}"]
+        args.append("HEAD")
+        if path is not None:
+            args += ["--", path]
+        out = self.run(*args)
+        if not out.strip():
+            return None
+        sha, when, message = out.split(_FIELD, 2)
+        return sha.strip(), datetime.fromisoformat(when), message
+
     def commit_time(self, rev: str = "HEAD") -> datetime | None:
         """when ``rev`` was committed, or ``None`` when it names no commit.
 

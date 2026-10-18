@@ -43,6 +43,20 @@ What it guarantees:
 - **A crash mid-change is recovered**: a journal in the git directory names the files being written,
   and the next writer puts them back as HEAD has them.
 
+**Saved now, committed later.** A product that commits only when the user means it (scriob) gives a folder
+a `PendingTail`; `OpLogTail` keeps the saved edits in a NATS `OpLog`:
+
+```python
+tail = OpLogTail(oplog, scope="stories/one", decode=decode_op, apply=rebuild_from_head)
+await repo.add_tail(tail)
+await tail.save(repo, payload=op_bytes, op_id=op_id)        # on the writer: logged + written, no commit
+await repo.commit_intent("stories/one", "edit")              # one commit, trailer "Op-Seq: <n>"
+```
+
+The ops after the folder's newest `Op-Seq` trailer are uncommitted; a new writer rebuilds them on HEAD, so a
+pod that dies before the commit loses nothing. Saved files are never treated as hand edits; any commit that
+touches the folder takes them along; the sweep commits a folder idle past `safety_idle`.
+
 Many repositories at once (one per entity, one shared, or several): `GitRepos` opens them on first
 use; `RoutedGitStore` is one store over them, routing each row by its key.
 
