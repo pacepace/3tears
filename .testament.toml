@@ -22,3 +22,7 @@ inputs = ["docker/testament.Dockerfile"]
 timeout_s = 1800
 # CI's install (`uv sync --extra vision`), frozen to the lockfile
 steps = [["uv", "sync", "--frozen", "--extra", "vision", "--quiet"]]
+
+[git]
+# Release tags (and the trees they point at) go with the tree, so tests that read a release from git run on the pool.
+tags = ["v[0-9]*"]
