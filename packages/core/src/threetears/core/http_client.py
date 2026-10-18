@@ -19,6 +19,11 @@ the three concerns are reused, never hand-rolled:
   (homed in ``core``) never imports ``threetears.models`` and its transitive
   ``langchain`` weight. ``core`` already depends on ``observe`` but not on
   ``models``; the injection keeps that layering seam intact.
+
+one call skips all three on purpose: :meth:`TracedHttpClient.probe`, the health check, asks once
+and answers ``True`` or ``False``. an upstream that is often off (a machine powered down, a service
+scaled to zero) is checked again and again, and not answering is the answer there, not an error --
+:meth:`~TracedHttpClient.request` would log every exhausted call at ERROR.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 from threetears.core.config import DEFAULT_HTTP_TIMEOUT_SECONDS
-from threetears.observe import retry_with_backoff, traced
+from threetears.observe import get_logger, retry_with_backoff, traced
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
@@ -38,7 +43,10 @@ if TYPE_CHECKING:
 
 __all__ = ["ATTEMPTS_EXTENSION", "CircuitBreakerLike", "TracedHttpClient", "UpstreamHttpError"]
 
+log = get_logger(__name__)
+
 _SPAN_NAME = "threetears.core.http_client.request"
+_PROBE_SPAN_NAME = "threetears.core.http_client.probe"
 
 #: key on :attr:`httpx.Response.extensions` carrying how many attempts this
 #: client spent to obtain the response, the successful one included.
@@ -117,6 +125,11 @@ class UpstreamHttpError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+
+
+#: transport failures that mean the request never reached the upstream: safe to send again even
+#: when sending it twice would not be (``idempotent=False``)
+_NOT_SENT: tuple[type[Exception], ...] = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 class _Retryable(Exception):
@@ -300,6 +313,7 @@ class TracedHttpClient:
         json: Any = None,
         timeout: float | None = None,
         follow_redirects: bool | None = None,
+        idempotent: bool = True,
     ) -> httpx.Response:
         """perform one upstream request with tracing, retry, and breaking.
 
@@ -338,6 +352,13 @@ class TracedHttpClient:
         :param follow_redirects: per-call override of the client's redirect
             policy; ``None`` uses the client-level default
         :ptype follow_redirects: bool | None
+        :param idempotent: whether sending the request twice is harmless. ``False``
+            (a POST that starts work, takes a payment, queues a job) is sent again
+            only when it never left -- a refused connection, a connect or pool
+            timeout -- because a read timeout, a dropped connection or a 5xx may
+            mean the upstream acted on it; any of those ends the call at once with
+            :class:`UpstreamHttpError`. ``True`` (the default) retries as above
+        :ptype idempotent: bool
         :return: full upstream response (caller inspects any non-2xx; not
             raised on 4xx/5xx except retry exhaustion). carries the attempt
             count under :data:`ATTEMPTS_EXTENSION` in ``extensions``
@@ -360,9 +381,11 @@ class TracedHttpClient:
         # status-less UpstreamHttpError that cannot say whether the upstream timed out or
         # refused the connection -- two failures that call for different operator action.
         transport_error: BaseException | None = None
+        # set when a request that must not run twice failed after it left: no further attempt
+        stopped = False
 
         async def _attempt_once() -> None:
-            nonlocal captured, attempts, transport_error
+            nonlocal captured, attempts, transport_error, stopped
             attempts += 1
             try:
                 response = await self._client.request(
@@ -385,11 +408,17 @@ class TracedHttpClient:
                 transport_error = exc
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
+                if not idempotent and not isinstance(exc, _NOT_SENT):
+                    stopped = True
+                    return
                 raise
             captured = response
             if response.status_code >= 500:
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
+                if not idempotent:
+                    stopped = True
+                    return
                 raise _Retryable
             if response.status_code < 400 and self._circuit_breaker is not None:
                 # 2xx/3xx is a genuine upstream success; a 4xx client error
@@ -413,12 +442,12 @@ class TracedHttpClient:
             host=request_host,
         )
 
-        if not succeeded or captured is None:
+        if stopped or not succeeded or captured is None:
             status = captured.status_code if captured is not None else None
             body = captured.content if captured is not None else b""
             raise UpstreamHttpError(
                 f"upstream request to {self._host or request_host or 'the upstream'} "
-                f"failed after {self._max_attempts} attempts",
+                f"failed after {attempts} attempt{'s' if attempts != 1 else ''}",
                 status_code=status,
                 body=body,
             ) from transport_error
@@ -502,6 +531,7 @@ class TracedHttpClient:
         json: Any = None,
         timeout: float | None = None,
         follow_redirects: bool | None = None,
+        idempotent: bool = True,
     ) -> httpx.Response:
         """POST ``path`` (delegates to :meth:`request`).
 
@@ -523,6 +553,8 @@ class TracedHttpClient:
         :param follow_redirects: per-call redirect-policy override; None uses
             the client-level default
         :ptype follow_redirects: bool | None
+        :param idempotent: whether sending it twice is harmless (see :meth:`request`)
+        :ptype idempotent: bool
         :return: full upstream response
         :rtype: httpx.Response
         """
@@ -536,6 +568,7 @@ class TracedHttpClient:
             json=json,
             timeout=timeout,
             follow_redirects=follow_redirects,
+            idempotent=idempotent,
         )
 
     @asynccontextmanager
@@ -659,6 +692,61 @@ class TracedHttpClient:
             yield response
         finally:
             await stream_cm.__aexit__(None, None, None)
+
+    @traced(name=_PROBE_SPAN_NAME)
+    async def probe(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> bool:
+        """whether the upstream answers ``path`` at all: one quiet try, for a health check.
+
+        for an upstream that is often away (a machine that is powered down, a service scaled to
+        zero) checked on a schedule, where not answering is the expected answer rather than a
+        fault. unlike :meth:`request` it sends ONE attempt with no retry, never touches the circuit
+        breaker (neither checked nor fed: a probe asks whether the upstream is there, whatever the
+        breaker currently thinks, and a down machine's probes must not trip it for real traffic),
+        and never raises for a network failure. that failure, and an error status, are logged at
+        DEBUG only. the response body is not read.
+
+        :param path: request path joined onto ``upstream_base_url``, or an absolute URL
+        :ptype path: str
+        :param method: HTTP verb; ``GET`` by default, ``HEAD`` for an endpoint that serves one
+        :ptype method: str
+        :param headers: optional per-call request headers (never retained, never logged)
+        :ptype headers: Mapping[str, str] | None
+        :param timeout: seconds to wait for the answer; ``None`` uses the client's configured
+            timeout. keep it short: a probe that waits long is a slow way to learn "no"
+        :ptype timeout: float | None
+        :return: ``True`` when the upstream answered with a status below 400; ``False`` when it
+            answered 4xx/5xx, refused the connection, timed out, or dropped it
+        :rtype: bool
+        """
+        status: int | None = None
+        error: str | None = None
+        try:
+            async with self._client.stream(
+                method,
+                path,
+                headers=dict(headers) if headers else None,
+                timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+            ) as response:
+                status = response.status_code
+        # NOSILENT: not answering is the probe's answer (False), logged at DEBUG below
+        except httpx.TransportError as exc:
+            error = type(exc).__name__
+        host = self._host or httpx.URL(path).host or None
+        self._record_span_attributes(method=method, status_code=status, host=host)
+        answered = status is not None and status < 400
+        if not answered:
+            log.debug(
+                "http probe: the upstream did not answer",
+                extra={"extra_data": {"host": host, "method": method, "status_code": status, "error": error}},
+            )
+        return answered
 
     def _record_span_attributes(self, *, method: str, status_code: int | None, host: str | None = None) -> None:
         """set host/method/status on the active span; never a header value.
