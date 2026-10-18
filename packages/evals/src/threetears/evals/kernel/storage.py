@@ -53,8 +53,13 @@ from threetears.evals.kernel.campaign import (
     generation_slot_id,
 )
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
-from threetears.evals.kernel.errors import ConflictError, EvalServiceError, StorageError
-from threetears.evals.kernel.remedies import FIND_UNREADABLE_RUNS, REREAD_AND_RETRY, UNREADABLE_JOB_RECORD
+from threetears.evals.kernel.errors import ConflictError, EvalServiceError, StorageError, ValidationFailedError
+from threetears.evals.kernel.remedies import (
+    FIND_UNREADABLE_RUNS,
+    REREAD_AND_RETRY,
+    SCHEMA_REMEDY,
+    UNREADABLE_JOB_RECORD,
+)
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES, DURABLE_DOC_TYPES
 from threetears.evals.schema.models import (
@@ -1257,8 +1262,27 @@ class EvalStorage:
     # =========================================================================
 
     def save_campaign(self, campaign: EvalCampaign) -> None:
-        """Persist a campaign in the scope it names."""
-        self._save(campaign.to_dict())
+        """Persist a campaign in the scope it names, once the document it writes is shown to read back.
+
+        Every scope's campaign listing reads every campaign, so one campaign that could not be read back would
+        refuse the listing, the curation cascade and every read over them. A ``model_copy`` skips validation, so an
+        instance can hold what its stored read refuses; the write is held to the stored read before it is made.
+
+        :param campaign: The campaign.
+        :ptype campaign: EvalCampaign
+        :raises ValidationFailedError: The document would not read back; nothing was written.
+        :raises StorageError: The write failed.
+        """
+        document = campaign.to_dict()
+        try:
+            EvalCampaign.from_dict(document)
+        except ValidationError as unreadable:
+            raise ValidationFailedError(
+                f"campaign {campaign.id!r} would be stored as a document its own read refuses, so nothing was "
+                f"written: {unreadable}",
+                remedy=SCHEMA_REMEDY,
+            ) from unreadable
+        self._save(document)
 
     def load_campaign(self, campaign_id: str, scope_id: str) -> EvalCampaign | None:
         """Load a campaign by id within a scope."""
@@ -2478,8 +2502,8 @@ class EvalStorage:
 
         Sweeps every type in :data:`EVAL_DOC_TYPES` plus the host's own documents named at construction, less the
         durable types (:data:`~threetears.evals.schema.versioning.DURABLE_DOC_TYPES`: templates, rubric dims, judge
-        configs and their tombstones, case sets, test cases, calibration ratings) unless ``include_durable`` is
-        true. ``include_durable`` has no default, so every caller decides, in its own source, whether the labels
+        configs and their tombstones, case sets, test cases, calibration ratings, campaigns) unless
+        ``include_durable`` is true. ``include_durable`` has no default, so every caller decides, in its own source, whether the labels
         and definitions people wrote go too: they are what no engine can make again. With it true the two name
         **every** ``doc_type`` the store can hold, which is what makes this a wipe rather than a partial sweep. A
         core baseline is not this operation: it is :meth:`reset_core`, which leaves the host's documents alone too.

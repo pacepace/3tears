@@ -747,3 +747,41 @@ def test_a_blank_routing_scope_is_refused(blank: str) -> None:
 def test_relocate_refuses_to_move_the_routing_scope_as_a_document_scope() -> None:
     with pytest.raises(ValueError, match="routing scope"):
         RoutedDocumentStore.relocate(_stores(), _BY_LIFECYCLE, scope_ids=["acme", "r"], routing_scope="r")
+
+
+def test_a_campaign_an_older_build_kept_with_the_evidence_is_relocated_and_reads_as_a_campaign_of_aspects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Campaigns became durable at v16: stores started by a build that kept them with the evidence refuse to start
+    until ``relocate`` moves each one where what people author is kept, and it then reads, upgraded, as one aspect."""
+    import json
+    from pathlib import Path
+
+    from threetears.evals.kernel import EvalStorage
+    from threetears.evals.schema import doc_types
+    from threetears.evals.storage import routed
+
+    stores = {**_stores(), "authored": InMemoryDocumentStore()}
+    route = DocTypeRoute(
+        by="lifecycle",
+        to={"kept": "evidence", "durable": "authored", "regenerable": "scratch"},
+        unregistered="evidence",
+    )
+    older = {**doc_types.DOC_TYPE_FACTS, "eval_campaign": DocTypeFacts(origin="input", lifecycle="kept")}
+    with monkeypatch.context() as patched:
+        patched.setattr(routed, "DOC_TYPE_FACTS", older)
+        RoutedDocumentStore.relocate(stores, route, scope_ids=[], routing_scope=_ROUTING)
+    frozen = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
+    stored = {**json.loads(frozen.read_text(encoding="utf-8")), "scope_id": _SCOPE}
+    stores["evidence"].upsert(stored)
+
+    with pytest.raises(RouteChanged, match="eval_campaign"):
+        RoutedDocumentStore(stores, route, routing_scope=_ROUTING)
+    moved = RoutedDocumentStore.relocate(stores, route, scope_ids=[_SCOPE], routing_scope=_ROUTING)
+    campaign = EvalStorage(RoutedDocumentStore(stores, route, routing_scope=_ROUTING)).load_campaign(
+        stored["id"], _SCOPE
+    )
+
+    assert moved.get("eval_campaign") == 1
+    assert (_held(stores["authored"]), _held(stores["evidence"])) == ({stored["id"]}, set())
+    assert campaign is not None and [aspect.label for aspect in campaign.aspects] == [stored["behavior"]]
