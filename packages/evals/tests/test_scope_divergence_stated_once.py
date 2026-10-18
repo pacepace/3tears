@@ -33,7 +33,8 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.reporter_kind import ReporterCase
 from threetears.evals.kernel.host import HostProfile, KindContract, ResolvesInto, Sweepable, freeze
 from threetears.evals.schema import EvalRun, LatencyMetrics, SweepableValue
@@ -242,7 +243,7 @@ class TestWhereAWholeRunSwingWentIsStatedOnce:
     @_SWEEPS
     def test_the_writer_reads_each_carrier_once(self, models: Sequence[str], runs_per_level: int) -> None:
         payload = json.loads(
-            build_user_message(_bundle(models, runs_per_level=runs_per_level, seed="swing")).removeprefix(
+            _writer_message(_bundle(models, runs_per_level=runs_per_level, seed="swing")).removeprefix(
                 "CONTEXT BUNDLE (JSON):\n"
             )
         )
@@ -295,3 +296,8 @@ def _case(frozen: dict[str, Any]) -> ReporterCase:
     return ReporterCase(
         bundle=frozen, bundle_fingerprint=canonical_digest(frozen), bundle_assembled_at="2026-01-01T00:00:00+00:00"
     )
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

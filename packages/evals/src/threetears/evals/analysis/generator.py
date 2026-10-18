@@ -1051,20 +1051,21 @@ def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     With no question asked before the evidence was read, every pattern in it is a lead, and switching on a lead is a
     decision nothing was designed to make. Keeping the control is what such a campaign recommends: it changes
     nothing, and the next steps say what campaign, declared before it runs, would settle the rest. The structural fact
-    is each aspect's ``question_declared``; nothing is read off prose.
+    is each aspect's ``question_declared``; nothing is read off prose. A campaign naming no control has no arm to keep,
+    so this asks nothing of it (:func:`_reject_unseparated_adoption` says why).
 
     :raises SoundnessRefusal: Every aspect is exploratory and the recommendation names a candidate.
     """
-    if any(aspect.question_declared for aspect in bundle.aspects):
+    control = bundle.control()
+    if control is None or any(aspect.question_declared for aspect in bundle.aspects):
         return
     arm = _recommended(document, bundle)
     if arm.role == "control":
         return
-    control = bundle.control()
     raise SoundnessRefusal(
         f"the recommendation names {arm.label!r}, a candidate, and this campaign asked no question before its first "
         "run on any aspect, so it is exploratory: nothing in it is a decision to switch on. "
-        + (f"Recommend the control, {control.label!r}, " if control is not None else "Recommend keeping what is there ")
+        + f"Recommend the control, {control.label!r}, "
         + "and say in `next` what campaign, declared before it runs, would settle the switch"
     )
 
@@ -1083,19 +1084,20 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     not get worse on, and it is held, never traded. An undecided guardrail does not refuse it, and is never read as
     held either: the report states it.
 
-    Recommending the control (keeping what is there) needs no separation.
+    Recommending the control (keeping what is there) needs no separation. **A campaign naming no control** compared
+    nothing against anything — every family is withheld, and code reads no aspect — so no recommendation in it is a
+    switch from what is there, and none is refused for want of a separation it could not have; the report says no
+    control was named, and the writer's next steps say which to name.
 
     :raises SoundnessRefusal: The recommendation names a candidate with a breached guardrail, or with no ``better``
         reading and no ``improved`` comparison.
     """
     arm = _recommended(document, bundle)
-    if arm.role == "control":
+    control = bundle.control()
+    if arm.role == "control" or control is None:
         return
     keys = bundle.arm_keys(arm)
-    control = bundle.control()
-    remedy = "recommend the control" + (f", {control.label!r}," if control is not None else "") + (
-        " and say in `next` what would settle it"
-    )
+    remedy = f"recommend the control, {control.label!r}, and say in `next` what would settle it"
     for aspect in bundle.aspects:
         breached = sorted({name for key in keys for name in aspect.guardrails.of_arm(key).breached})
         if breached:

@@ -34,8 +34,9 @@ from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import cell_dimension_facts
 from threetears.evals.analysis.bundle.insights import insight_standing
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.generator import (
-    build_user_message,
     first_request,
     generate_analysis,
     prompt_content_version,
@@ -428,7 +429,7 @@ class TestTheGeneratorsReadersArePublished:
         _analysis, client = await _generate(bundle)
 
         (call,) = client.calls
-        assert build_user_message(bundle) == call["user"]
+        assert _writer_message(bundle) == call["user"]
 
     def test_a_bundle_with_one_describable_arm_is_not_refused(self) -> None:
         refuse_an_undescribable_arm_table(_bundle())
@@ -572,3 +573,8 @@ class TestProseIsNotRefused:
         assert analysis.document.findings[0].title.startswith(f"{TOYHOST_NARROW}tok beats")
         assert "|---|" in analysis.document.findings[0].body
         assert analysis.document.findings[0].title == _finding(payload)["title"]
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

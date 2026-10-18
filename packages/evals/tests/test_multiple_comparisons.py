@@ -10,13 +10,15 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   for every rank (plain Bonferroni); removing the out-of-range refusal.
 - ``_multiple_comparisons``: reading the verdict off ``p_raw`` instead of ``p_adjusted``; correcting
   over each comparison alone (``holm_adjust([p])``); dropping the control-variant filter on pairs.
-- ``build_user_message``: removing the ``p_raw`` deletion.
+- ``build_campaign_user_message``: sending a raw p.
 - ``_compare`` (through the bundle): disabling the paired no-spread branch, so a deterministic gap is named as a
   shortage of cases; reading the gap by the t-test's refusal instead of ``separation_p``, so a constant
   shift over twelve cases reads untested.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import random
 from collections.abc import Sequence
@@ -30,7 +32,8 @@ from threetears.evals.analysis import (
     ComparisonFamily,
     assemble_context_bundle,
 )
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.stats import (
     UNIFORM_MOVE_NEEDS_RANGE,
     bounded_separation_p,
@@ -232,7 +235,7 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
         borderline = next(c for c in _family(bundle).comparisons if c.name == "extraction.d0")
         assert borderline.p_raw is not None and borderline.p_adjusted is not None
 
-        message = build_user_message(bundle)
+        message = _writer_message(bundle)
 
         assert "p_raw" not in message
         assert repr(borderline.p_raw) not in message, "the raw figure must not reach the writer under any key"
@@ -489,7 +492,7 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
         in row["verdict"]
     )
     assert "materiality threshold" not in row["verdict"], "the reader's words: the margin they declared"
-    assert '"materiality":"immaterial"' in build_user_message(bundle).replace(" ", "")
+    assert '"materiality":"immaterial"' in _writer_message(bundle).replace(" ", "")
 
 
 def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> None:
@@ -552,7 +555,7 @@ def test_equivalent_is_claimed_only_by_the_equivalence_test_against_a_declared_m
         assert (
             comparison.interval is not None and -threshold < comparison.interval[0] < comparison.interval[1] < threshold
         )
-        assert "equivalence_p_raw" not in build_user_message(
+        assert "equivalence_p_raw" not in _writer_message(
             _bundle([], accuracy=_ALIKE, cases=24, profile=_accuracy_threshold(threshold))
         )
     else:
@@ -713,3 +716,8 @@ class TestPairingCorrelation:
     def test_samples_of_different_lengths_are_refused(self) -> None:
         with pytest.raises(ValueError, match="case by case"):
             pairing_correlation([1.0, 2.0, 3.0], [1.0, 2.0])
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

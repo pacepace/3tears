@@ -13,6 +13,8 @@ first and name order disagree.
 
 from __future__ import annotations
 
+from typing import Any
+
 import json
 
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
@@ -24,7 +26,8 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import build_code_only_report, report_markdown
 from threetears.evals.analysis.report.model import TableBlock
 from threetears.evals.analysis.arms import arm_label
@@ -60,7 +63,7 @@ class TestTheWritersCellsFollowTheRule:
         narrow, wide = cell_at(bundle, TOYHOST_NARROW), cell_at(bundle, TOYHOST_WIDE)
 
         assert [cell_ref(c.variant_key, c.apparatus_class_id) for c in bundle.cell_measures] == [narrow, wide]
-        shown = json.loads(build_user_message(bundle).split("\n", 1)[1])
+        shown = json.loads(_writer_message(bundle).split("\n", 1)[1])
         assert shown["cell_measures"][0]["cell"] == "c1"
         assert shown["cell_measures"][0]["variant_key"] == variant_of_cell_ref(narrow)
 
@@ -103,3 +106,8 @@ class TestTheCodeOnlyReportFollowsTheRule:
         narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
         headers = [column.header for column in _table(bundle, "cases").columns]
         assert headers.index(f"▸ {_label(narrow, names)}") < headers.index(_label(wide, names))
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

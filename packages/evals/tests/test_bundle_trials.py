@@ -18,7 +18,8 @@ import pytest
 from threetears.evals.analysis.bundle import trials as trials_module
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema import EvalResult, EvalTrace, GoalStateOutcome, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import eval_trace_doc_id
@@ -228,7 +229,7 @@ def test_the_trials_are_capped_with_the_lost_and_failed_kept_first(monkeypatch: 
 
 
 def test_the_writer_reads_the_trials_without_what_a_reader_drills_into() -> None:
-    payload = json.loads(build_user_message(_bundle(RESULTS)).removeprefix("CONTEXT BUNDLE (JSON):\n"))
+    payload = json.loads(_writer_message(_bundle(RESULTS)).removeprefix("CONTEXT BUNDLE (JSON):\n"))
     assert "package_version" not in payload
     for trial in payload["trials"]:
         assert not {"first_input", "excerpt", "error_words"} & trial.keys()
@@ -240,3 +241,8 @@ def test_the_build_is_carried_and_left_out_of_the_fingerprint() -> None:
     assert bundle.schema_version == 59
     assert bundle.package_version is not None
     assert bundle.model_copy(update={"package_version": "9.9.9"}).fingerprint() == bundle.fingerprint()
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

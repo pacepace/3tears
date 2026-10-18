@@ -40,7 +40,8 @@ from threetears.evals.analysis import (
     build_code_only_report,
 )
 from threetears.evals.analysis.bundle.schema import UNVERIFIED_FOLD_PREFIX
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel import (
     CampaignDesign,
     ControlDeclaration,
@@ -329,7 +330,7 @@ class TestATwoArmSweepFoldsButIsMarkedUnverified:
         assert _confound(_row(bundle, _EFFORT), _UNVERIFIED_PARAMS) is not None
 
     def test_the_mark_reaches_the_generator_s_context(self) -> None:
-        message = build_user_message(self._sweep())
+        message = _writer_message(self._sweep())
         assert '"kind": "unverified_fold"' in message
         assert f'"dimension": "{_UNVERIFIED_PARAMS}"' in message
         assert "folded, unverified:" in message
@@ -740,3 +741,8 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
         )
         with pytest.raises(RegistrationError, match="one of resolves_into / read_residual without the other"):
             SHARED_CORE.extend([self._lever("surface"), family])
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

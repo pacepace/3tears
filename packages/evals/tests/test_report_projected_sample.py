@@ -33,7 +33,8 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import ArmScoreboard, MultipleComparisons
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.analysis.report.decision import (
@@ -422,7 +423,7 @@ async def test_the_bundle_carries_what_the_bounded_interval_read_and_the_writer_
     assert sorted(control) == sorted(CONTROL) and sorted(contrast) == sorted(CANDIDATE)
     again = bounded_difference_interval(control, contrast, paired=True, value_range=(0.0, 1.0), confidence=LEVEL)
     assert again == passed.bounded_interval
-    assert '"case_values"' not in build_user_message(bundle)
+    assert '"case_values"' not in _writer_message(bundle)
 
 
 async def test_an_unclear_page_tables_the_cases_holding_needs_with_their_cost_at_the_nominal_level() -> None:
@@ -643,3 +644,8 @@ async def test_with_two_candidates_a_next_step_may_cite_either_arm_s_projected_c
     )
     (step,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step"]
     assert step.body == title
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

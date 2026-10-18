@@ -352,9 +352,10 @@ class TestTheGenerationFreezesTheAxis:
         assert _generated(bundle).decision_surface.time_axis == bundle.time_axis
 
     def test_the_writer_sees_the_axis_by_alias(self) -> None:
-        from threetears.evals.analysis.generator import build_user_message
+        from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+        from packages.evals.tests.campaign_bundle_support import campaign_bundle
 
-        message = json.loads(build_user_message(_two_days()).split("\n", 1)[1])
+        message = json.loads(_writer_message(_two_days()).split("\n", 1)[1])
         cells = message["time_axis"]["positions"][0]["cells"]
         assert all("cell" in cell and "variant_key" not in cell for cell in cells)
 
@@ -395,3 +396,8 @@ class TestASmallCellRecordsItsCases:
         for cell in bundle.cell_measures:
             assert all(m.case_means is None for m in cell.measures.measures)
             assert all(j.case_means is None for j in cell.judged)
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))
