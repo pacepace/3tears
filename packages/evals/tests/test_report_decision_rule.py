@@ -315,7 +315,7 @@ async def test_a_floor_beside_a_contrast_not_separated_says_why_once_under_the_f
     assert [(block.source, block.text) for block in said][0] == ("floor", FLOORS_WARN_ONLY)
     markdown = report_markdown(report)
     assert markdown.count(FLOORS_WARN_ONLY) == 1
-    decision = markdown.split("\n## Decision\n", 1)[1].split("\n## ", 1)[0]
+    decision = markdown.split("\n## Floors\n", 1)[1].split("\n## ", 1)[0]
     assert decision.index(f"**Floors on {report.bundle.aspect}**") < decision.index(FLOORS_WARN_ONLY)
     assert "unclear: 4 cases are too few for the interval that would show the cost either way" in decision
     # The prod numbers: v2 passed 14 of 60 trials to v1's 29. Shown past the margin on the whole interval, it is
@@ -756,7 +756,7 @@ async def test_a_question_that_declares_no_floor_says_so_in_one_line() -> None:
         ("DisclosureBlock", f"No floor was declared on {bundle.aspect}.")
     ]
     assert _warnings(report) == []
-    assert f"## Decision\n\nNo floor was declared on {bundle.aspect}.\n" in report_markdown(report)
+    assert f"## Floors\n\nNo floor was declared on {bundle.aspect}.\n" in report_markdown(report)
 
 
 async def test_an_exploratory_comparison_has_no_floor_block_at_all() -> None:
@@ -768,7 +768,7 @@ async def test_an_exploratory_comparison_has_no_floor_block_at_all() -> None:
     report = comparison.report
     assert report.bundle.declared is not None and not report.bundle.declared.question
     assert not [block for block in report.blocks if block.section == "decision"]
-    assert "## Decision" not in report_markdown(report) and "No floor was declared" not in report_markdown(report)
+    assert "## Floors" not in report_markdown(report) and "No floor was declared" not in report_markdown(report)
 
 
 # --- the Decision section speaks the reader's words, never the engine's ---------------------------------------------
@@ -785,7 +785,7 @@ def _decision_section(page: str, *, html_page: bool) -> str:
     if html_page:
         body = page[page.index('<section id="decision">') :]
         return html.unescape(re.sub(r"<[^>]+>", " ", body[: body.index("</section>")]))
-    body = page.split("\n## Decision\n", 1)[1]
+    body = page.split("\n## Floors\n", 1)[1]
     return body.split("\n## ", 1)[0]
 
 

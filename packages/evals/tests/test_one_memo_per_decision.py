@@ -65,7 +65,8 @@ ASKED_AT = {label: f"2000-01-{day + 2:02d}T00:00:00+00:00" for day, label in enu
 
 #: The one-arm-pair page v0.70.1 laid out for the billing eval (eight cases, production passing six and the candidate
 #: three, two repeats), read off that release's own code: each section's heading, then each block's section and kind,
-#: runs of a kind counted. A v15 campaign read now folds this page unchanged.
+#: runs of a kind counted. A v15 campaign read now folds this page unchanged, but for one deliberate rename: the
+#: section that held the decision rule holds the floors now, and is headed so (``FLOORS_HEADING_SINCE_0_71``).
 V0701_SECTION_TITLES = {
     "header": "",
     "scoreboard": "Scoreboard",
@@ -78,6 +79,9 @@ V0701_SECTION_TITLES = {
     "methods": "Methods",
     "glossary": "Glossary",
 }
+
+#: The one heading 0.71 renamed: a floor warns and never decides, so its section is not headed "Decision".
+FLOORS_HEADING_SINCE_0_71 = {"decision": "Floors"}
 V0701_BLOCKS = [
     ("header", "disclosure", 2),
     ("scoreboard", "table", 1),
@@ -336,7 +340,7 @@ async def test_a_stored_v15_campaign_reads_as_one_aspect_whose_fold_is_the_aspec
 
     page = off_loop(campaign_report, held.host, source, SCOPE)
     (fold,) = page.aspects
-    assert fold.report.section_titles == V0701_SECTION_TITLES
+    assert fold.report.section_titles == {**V0701_SECTION_TITLES, **FLOORS_HEADING_SINCE_0_71}
     laid_out = [
         (section, kind, len(list(run)))
         for (section, kind), run in groupby((block.section, block.kind) for block in fold.report.blocks)

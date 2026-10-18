@@ -77,7 +77,7 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     )
     assert '<p class="floor"' not in report_html(report)
     # The Decision section opens on the aspect's floors.
-    assert "\n## Decision\n\n**Floors on classify**\n" in report_markdown(report)
+    assert "\n## Floors\n\n**Floors on classify**\n" in report_markdown(report)
     assert lines[5] == "**cheaper candidate passed less often than production; too few cases to call a difference.**"
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
     assert lines[7:10] == [
