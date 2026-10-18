@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Testing: the cross-process cancel test takes job_cancel's documented answer
+
+**Fixed (testing):** `test_a_generation_another_process_runs_reads_running_and_is_cancelled_from_there` required
+`job_cancel` from another process to read `running`. Its contract allows `cancelled` when the holder's next renewal
+lands before the read-back, which a 0.3 s lease makes likely on a loaded machine (the v0.70.1 release run). It now
+takes either; the checks that the holder ended it, with the reason, while it was held, are unchanged.
+
 ## v0.70.1 -- 2026-10-18
 
 ### models: the orphan sweep leaves a Claude CLI in another pid namespace alone
