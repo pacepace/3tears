@@ -521,7 +521,6 @@ class TestLocalGrantAuthorizerCatchupTick:
         finally:
             await authz.stop()
 
-
     @pytest.mark.asyncio
     async def test_a_reload_that_failed_on_a_bump_is_retried_by_the_next_catch_up_tick(self) -> None:
         """the bump is already counted as seen, so only the owed reload can withdraw a revoked grant."""

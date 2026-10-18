@@ -110,7 +110,9 @@ def verify_code(secret_b32: str, code: str) -> bool:
         # the secret's is the secret's own decoding.
         key = totp.byte_secret()
     except ValueError as exc:  # binascii.Error, the base32 decoder's, is a ValueError
-        raise TotpSecretError(f"the stored TOTP secret is not valid base32 ({exc}); the enrolment needs redoing") from exc
+        raise TotpSecretError(
+            f"the stored TOTP secret is not valid base32 ({exc}); the enrolment needs redoing"
+        ) from exc
     if not key:
         raise TotpSecretError("the stored TOTP secret is empty; the enrolment needs redoing")
     if not code:

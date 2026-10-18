@@ -290,7 +290,9 @@ def _verify_argon2(normalized_password: str, stored_hash: str) -> PasswordVerify
         # A malformed argon2 hash denies, never raises past this module (module docstring),
         # and is told apart from a wrong password. Neither error's message quotes the hash.
         fault = f"the stored argon2id hash could not be read ({type(exc).__name__})"
-        contain(exc, log=log, what=f"password verify: {fault}; denied, and the credential needs resetting", level="error")
+        contain(
+            exc, log=log, what=f"password verify: {fault}; denied, and the credential needs resetting", level="error"
+        )
         return PasswordVerifyResult(matched=False, stored_hash_fault=fault)
     return PasswordVerifyResult(matched=True)
 
@@ -310,7 +312,9 @@ def _verify_bcrypt_and_upgrade(normalized_password: str, stored_hash: str) -> Pa
         # A malformed bcrypt hash fails closed and is named, like the argon2 path. bcrypt's
         # message ("Invalid salt") does not quote the hash.
         fault = f"the stored bcrypt hash could not be read ({exc})"
-        contain(exc, log=log, what=f"password verify: {fault}; denied, and the credential needs resetting", level="error")
+        contain(
+            exc, log=log, what=f"password verify: {fault}; denied, and the credential needs resetting", level="error"
+        )
         return PasswordVerifyResult(matched=False, stored_hash_fault=fault)
     if not matched:
         return PasswordVerifyResult(matched=False)
