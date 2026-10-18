@@ -83,6 +83,8 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/judge_temperature.py": {},
     "storage/sqlite.py": {},
     "storage/async_bridge.py": {},
+    "analysis/aspects.py": {},
+    "analysis/campaign_readings.py": {},
     "analysis/campaigns.py": {},
     "analysis/cells.py": {},
     "analysis/confusion.py": {},

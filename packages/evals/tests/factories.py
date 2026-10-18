@@ -19,12 +19,14 @@ Two consequences for a test that reads a run built here:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TelemetryRollup
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel.authored import AuthoredAnalysis
+from threetears.evals.kernel.campaign_upgrade import UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
     EvalAnalysisAttempt,
@@ -32,7 +34,17 @@ from threetears.evals.kernel.campaign import (
     EvalInsight,
     GenerationProvenance,
 )
-from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.kernel.declaration import (
+    AspectDesign,
+    CampaignArm,
+    CampaignDesign,
+    ControlDeclaration,
+    DecisionClause,
+    DecisionRule,
+    Question,
+    RateDrop,
+    SweptAxis,
+)
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.schema.values import SweepableValue
@@ -482,6 +494,120 @@ def make_campaign(**overrides: Any) -> EvalCampaign:
     )
     fields.update(overrides)
     return EvalCampaign(**fields)
+
+
+def minimal_aspect_design(*, axis_id: str | None = None, **overrides: Any) -> AspectDesign:
+    """The smallest valid ``AspectDesign``: one axis at one level, its stimulus controlled and its rig commissioned.
+
+    :param axis_id: The axis to declare. Defaults to the candidate model, the one lever every host declares.
+    :ptype axis_id: str | None
+    :param overrides: Any other ``AspectDesign`` field.
+    :ptype overrides: Any
+    :return: The design.
+    :rtype: AspectDesign
+    """
+    fields: dict[str, Any] = dict(
+        axes=[SweptAxis(axis_id=axis_id or CANDIDATE_MODEL_LEVER, values=[SweepableValue.of("glm", display="GLM")])],
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+    )
+    fields.update(overrides)
+    return AspectDesign(**fields)
+
+
+#: The ``design`` :func:`make_aspect_campaign` declares when a test names none: :func:`minimal_aspect_design`'s.
+_MINIMAL_DESIGN = object()
+
+
+def make_aspect_campaign(
+    *,
+    label: str = "conversation",
+    template_id: str | None = None,
+    run_ids: Sequence[str] = (),
+    design: AspectDesign | None | object = _MINIMAL_DESIGN,
+    question: str = "",
+    control: CampaignArm | None = None,
+    margin: float | None = None,
+    floors: Sequence[DecisionClause] = (),
+    **overrides: Any,
+) -> EvalCampaign:
+    """A stored campaign of ONE aspect, built from what the aspect declares, whatever shape the campaign is stored in.
+
+    A per-aspect test builds its campaign here and reads it through ``aspect_view``, so it never depends on how a
+    campaign holds its aspects. While a campaign is stored as one template, one bag of runs and one design, the
+    aspect is that campaign read through its upgrade, which bounds what this can build:
+
+    - ``label`` is the campaign's ``behavior``, which the one aspect is labelled with.
+    - ``margin`` is derived, never stored: None reads the ``max_points`` of the first ``RateDrop`` in ``floors``
+      that names no reading, as an upgraded aspect's is; a number must equal that, or no floor yields it.
+    - ``floors`` and the merit axes need a ``question``: the stored shape keeps a rule and its axes on one.
+    - ``design`` None is an exploratory aspect, which declares no question, control or floor.
+    - ``control`` is the control arm labelled ``UPGRADED_CONTROL_LABEL``: the stored shape names a control by key.
+
+    :param label: The aspect's label.
+    :ptype label: str
+    :param template_id: The template its runs were gathered on.
+    :ptype template_id: str | None
+    :param run_ids: Its runs.
+    :ptype run_ids: Sequence[str]
+    :param design: Its design: :func:`minimal_aspect_design` when omitted, None for an exploratory aspect.
+    :ptype design: AspectDesign | None
+    :param question: The campaign's question; empty asks none.
+    :ptype question: str
+    :param control: The campaign's control arm; None declares none.
+    :ptype control: CampaignArm | None
+    :param margin: The aspect's margin, as above.
+    :ptype margin: float | None
+    :param floors: The clauses of the floors on the aspect, in order.
+    :ptype floors: Sequence[DecisionClause]
+    :param overrides: Any other campaign field but ``behavior``, ``template_id``, ``run_ids`` and ``declared_design``.
+    :ptype overrides: Any
+    :return: The campaign.
+    :rtype: EvalCampaign
+    :raises ValueError: The arguments declare what this stored shape cannot hold.
+    """
+    aspect_design = minimal_aspect_design() if design is _MINIMAL_DESIGN else design
+    fields: dict[str, Any] = dict(behavior=label, template_id=template_id, run_ids=list(run_ids))
+    if aspect_design is None:
+        if question or control is not None or floors or margin is not None:
+            raise ValueError("an exploratory aspect declares no question, control, margin or floor")
+        return make_campaign(**fields, **overrides)
+    if not isinstance(aspect_design, AspectDesign):
+        raise TypeError(f"design is an AspectDesign or None, not {type(aspect_design).__name__}")
+    derived = next(
+        (clause.max_points for clause in floors if isinstance(clause, RateDrop) and clause.reading is None), None
+    )
+    if margin is not None and margin != derived:
+        raise ValueError(
+            f"a stored campaign's aspect reads its margin off its first floor that reads every pass rate ({derived}); "
+            f"pass RateDrop(max_points={margin}) first in floors"
+        )
+    if not question and (floors or aspect_design.merit_axes):
+        raise ValueError("a stored campaign keeps floors and merit axes on a question; pass the question")
+    questions = (
+        [
+            Question(
+                text=question,
+                decision=DecisionRule(clauses=tuple(floors)) if floors else None,
+                merit_axes=list(aspect_design.merit_axes),
+            )
+        ]
+        if question
+        else []
+    )
+    if control is not None and (control.label, control.role) != (UPGRADED_CONTROL_LABEL, "control"):
+        raise ValueError(
+            f"a stored campaign names its control by key alone, so it reads back as role 'control' labelled "
+            f"{UPGRADED_CONTROL_LABEL!r}; pass that arm"
+        )
+    shared = {name: getattr(aspect_design, name) for name in AspectDesign.model_fields if name != "merit_axes"}
+    fields["declared_design"] = CampaignDesign(
+        **shared,
+        questions=questions,
+        control=control.variant_key if control is not None else None,
+        control_levers=control.levers if control is not None else None,
+        control_identity_version=control.identity_version if control is not None else None,
+    )
+    return make_campaign(**fields, **overrides)
 
 
 def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
