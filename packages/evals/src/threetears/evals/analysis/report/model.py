@@ -892,8 +892,10 @@ class CampaignAspectFold(EvalDocumentModel):
     def head(self) -> list[ReportBlock]:
         """The aspect page's first screen as the fold lays it out: its arms line, scoreboard and caveats, without its
         question and broken floors, which the campaign's first screen carries once, or its verdict line, which reads
-        the aspect alone and could contradict, or pick an arm against, the campaign's table."""
-        dropped = {"floor", "basis", "verdict"}
+        the aspect alone and could contradict, or pick an arm against, the campaign's table. An aspect of one arm keeps
+        its verdict line: it counts that arm's cases passed and missed, and has no other arm to pick against."""
+        one_arm = len(self.report.bundle.scoreboard) == 1
+        dropped = {"floor", "basis"} if one_arm else {"floor", "basis", "verdict"}
         return [
             block
             for block in self.report.blocks
