@@ -86,6 +86,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.decision import (
     PROSE_RULE_LINE,
+    ClauseVerdict,
     RateReading,
     RuleVerdict,
     SampleProjection,
@@ -256,19 +257,23 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
     ruled = ruled_question(questions)
     verdict = sentence = sample = None
     samples: list[SampleProjection] = []
-    if ruled is not None and ruled.decision is not None and control is not None and len(candidates) == 1:
+    if ruled is not None and ruled.decision is not None and control is not None:
         namer = _namer(names)
-        readings = rule_readings(bundle, control, candidates[0], question_id=ruled.id)
-        verdict = evaluate_rule(ruled.decision, readings, control=namer(control), candidate=namer(candidates[0]))
-        sentence = rule_sentence(verdict, control=namer(control), candidate=namer(candidates[0]), bundle=bundle)
-        # The cases a switch needs, which a next step may cite and may not guess at.
         per_case = case_cost_usd(bundle)
-        if (sample := rule_projection(verdict, per_case_usd=per_case)) is not None:
-            samples = [
-                projection
-                for clause in verdict.clauses
-                if (projection := clause_projection(clause, readings, per_case_usd=per_case)) is not None
-            ]
+        # Every arm's cases a switch needs, as the To switch table states them, which the memo may cite and may not
+        # guess at; with one other arm its rule's sentence also stands in for a sentence that guesses.
+        for key in candidates:
+            readings = rule_readings(bundle, control, key, question_id=ruled.id)
+            read = evaluate_rule(ruled.decision, readings, control=namer(control), candidate=namer(key))
+            if (switch := rule_projection(read, per_case_usd=per_case)) is not None:
+                samples += [switch] + [
+                    projection
+                    for clause in read.clauses
+                    if (projection := clause_projection(clause, readings, per_case_usd=per_case)) is not None
+                ]
+            if len(candidates) == 1:
+                verdict, sample = read, switch
+                sentence = rule_sentence(read, control=namer(control), candidate=namer(key), bundle=bundle)
     return MemoStyle(
         bundle=bundle,
         names=names,
@@ -847,11 +852,11 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     reason, so an outcome never sits beside a reading it is not about. A question that wrote its rule as prose and
     declares none typed gets one line saying so, and nothing is settled.
 
-    Where the rule is unsettled, a ``To switch`` table follows: for each clause left unsettled, the independent cases
-    that would show it holds if the arms do not differ and if they differ as observed, each with its cost
-    (:func:`~threetears.evals.analysis.report.decision.clause_projection`), then one line saying each is about, that
-    repeats of a case do not count, and where every count is past what the template holds, that new cases must be
-    written. A settled clause, or a settled rule, projects nothing.
+    Where the rule is unsettled, a ``To switch`` table follows: for each clause left unsettled, what a switch needs
+    if the arms do not differ and if they differ as observed, each count with its cost
+    (:func:`~threetears.evals.analysis.report.decision.clause_projection`), then one line saying how each count was
+    found and that it is about, what repeats do, and, where a switch needs more cases than the run used on every
+    side, that it does. A settled clause, or a settled rule, projects nothing.
     """
     control = _control_key(bundle)
     questions = _preregistered(bundle)
@@ -864,16 +869,18 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     cost = _cost_ruler(bundle)
     others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
     rows: list[dict[str, CellValue]] = []
-    projected: list[tuple[str, str, SampleProjection]] = []
+    projected: list[tuple[ClauseVerdict, str, SampleProjection]] = []
+    switches: list[SampleProjection] = []
     pointed = False
     per_case = case_cost_usd(bundle)
     for key in others:
         readings = rule_readings(bundle, control, key, question_id=asked.id)
         verdict = evaluate_rule(rule, readings, control=arm(control), candidate=arm(key))
-        if rule_projection(verdict, per_case_usd=per_case) is not None:
+        if (switch := rule_projection(verdict, per_case_usd=per_case)) is not None:
             # Only an unsettled rule projects, and only the clauses it left unsettled: a switch is what more cases buy.
+            switches.append(switch)
             projected += [
-                (clause.statement, arm(key), projection)
+                (clause, arm(key), projection)
                 for clause in verdict.clauses
                 if (projection := clause_projection(clause, readings, per_case_usd=per_case)) is not None
             ]
@@ -944,14 +951,20 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             text=keep_is_the_default(arm(control)),
             term="point estimate" if pointed else None,
         ),
-        *_projection_blocks(bundle, projected, single=single),
+        *_projection_blocks(bundle, projected, switches, single=single),
     ]
 
 
 def _projection_blocks(
-    bundle: AnalysisContextBundle, projected: Sequence[tuple[str, str, SampleProjection]], *, single: bool
+    bundle: AnalysisContextBundle,
+    projected: Sequence[tuple[ClauseVerdict, str, SampleProjection]],
+    switches: Sequence[SampleProjection],
+    *,
+    single: bool,
 ) -> list[ReportBlock]:
-    """The ``To switch`` table, one row per unsettled clause and arm, and the line under it; empty with none."""
+    """The ``To switch`` table, one row per unsettled clause and arm, and the line under it, which reads each arm's
+    rule projection (``switches``); empty with none. A cost clause's no-difference cell is blank: it has no margin,
+    and the line says so once."""
     if not projected:
         return []
     columns = [
@@ -962,14 +975,15 @@ def _projection_blocks(
     ]
     rows: list[dict[str, CellValue]] = [
         {
-            "clause": statement,
+            "clause": clause.statement,
             "arm": name,
-            "none": projected_cell(projection, projection.if_none),
+            "none": None if isinstance(clause.clause, CostLower) else projected_cell(projection, projection.if_none),
             "observed": projected_cell(projection, projection.if_observed),
         }
-        for statement, name, projection in projected
+        for clause, name, projection in projected
     ]
-    template_cases = max((board.cases for board in bundle.scoreboard), default=0)
+    run_cases = max((board.cases for board in bundle.scoreboard), default=0)
+    costed = any(isinstance(clause.clause, CostLower) for clause, *_ in projected)
     return [
         TableBlock(
             section="decision",
@@ -983,7 +997,7 @@ def _projection_blocks(
         DisclosureBlock(
             section="decision",
             source="rule",
-            text=projection_note([projection for *_, projection in projected], template_cases=template_cases),
+            text=projection_note(switches, run_cases=run_cases, cost_clause=costed),
         ),
     ]
 
@@ -1082,7 +1096,12 @@ def _memo_blocks(
                 )
             continue
         replaced = len(style.replaced)
-        body = style.sentence(answer.answer)
+        proposed = len(style.proposed)
+        body = style.sentence(answer.answer, plans=True)
+        if not body and len(style.proposed) > proposed:
+            # Every sentence of it proposed a sample size code did not compute, and none was projected: the methods
+            # list what it said.
+            continue
         # An answer the rule's settled outcome replaced is code's answer now, not the memo's resolution: the verdict
         # line says it already, so the answer points at the rule rather than saying it twice.
         resolved = answer.resolution
@@ -1149,7 +1168,7 @@ def _memo_blocks(
                 facts=[Fact(name="Disposition", value=decision.disposition)],
             )
         )
-        if (revisit := style.prose(decision.revisit_when)).strip():
+        if (revisit := style.prose(decision.revisit_when, plans=True)).strip():
             blocks.append(
                 TextBlock(section="memo", role="revisit_when", body=revisit, rests_on=list(decision.rests_on))
             )
@@ -1162,10 +1181,15 @@ def _memo_blocks(
     kept: list[NextStep] = []
     for step in exercised:
         proposed = len(style.proposed)
-        title = style.sentence(step.title, decides=False, step=True)
-        # A step whose title proposed a sample size code did not compute says code's projection instead, once; with no
-        # projection, or once said, the step is not printed.
-        if len(style.proposed) > proposed and (not title or title in steps):
+        title = style.sentence(step.title, decides=False, plans=True)
+        if len(style.proposed) > proposed:
+            # A step whose title proposed a sample size code did not compute says code's projection instead, once,
+            # with none of the writer's facts or why, which were about the step it replaced; with no projection, or
+            # once said, the step is not printed.
+            if title and title not in steps:
+                kept.append(step.model_copy(update={"lever": ""}))
+                steps.append(title)
+                blocks.append(TextBlock(section="memo", role="next_step", body=title))
             continue
         facts = [Fact(name="Leverage", value=step.leverage)]
         if step.lever:
@@ -1175,7 +1199,7 @@ def _memo_blocks(
         kept.append(step)
         steps.append(title)
         blocks.append(TextBlock(section="memo", role="next_step", body=steps[-1], facts=facts))
-        if (why := style.prose(step.why, step=True)).strip():
+        if (why := style.prose(step.why, plans=True)).strip():
             blocks.append(TextBlock(section="memo", role="next_step_why", body=why, fold="Why"))
         blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
     blocks.extend(_coverage_blocks(analysis, kept, steps))

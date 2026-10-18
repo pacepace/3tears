@@ -14,12 +14,14 @@ contributes through these steps, in order:
 4. **Decisions.** Where a declared decision rule settled, a sentence whose decision word (``keep``, ``switch``,
    ``unanswerable``, ``no difference``) disagrees with it is replaced by the verdict line's own sentence, and the
    replacement is disclosed in the methods.
-5. **Sample sizes.** A next step never states a sample size of its own (``Expand the suite to 30 cases for $0.40``):
-   the cases a switch needs are code's (:func:`~threetears.evals.analysis.report.decision.rule_projection`), and a
-   writer's guess at them understated them by 4-15x (#846). A next step's sentence putting a numeral beside cases that
-   the projection does not render, or a cost beside one that it does not price, is replaced in a title by code's
-   sentence on the projected sample (dropped where there is none) and dropped from a step's ``why``. Each is disclosed
-   in the methods. A count the run itself holds (its own cases) is a measured fact, not a proposal.
+5. **Sample sizes.** Where the memo says what to run next (a next step's title and ``why``, a question's answer, a
+   deferred decision's ``revisit_when``), it states no sample size or cost of its own (``Expand the suite to 30 cases
+   for $0.40``): the cases a switch needs are code's (:func:`~threetears.evals.analysis.report.decision.rule_projection`),
+   and a writer's guess at them understated them by 4-15x (#846). A sentence there that proposes more cases (a count,
+   ``thirty``, ``double``, ``3x``, ``a 50-case suite``, ``k to 10``, beside a word for getting more: add, run, expand,
+   more, new, another, settle) at a count the projections do not state, or that names a cost they do not price, is
+   replaced by code's sentence on the projected sample, once, and otherwise dropped; each is disclosed in the methods.
+   A count the run itself reaches (``the 3 cases the candidate missed``) is a measured fact, not a proposal.
 6. **Settled differences.** Where a clause the rule settled reads a finding's reading, a finding's sentence saying
    the evidence cannot confirm, establish or show the difference (:data:`_HEDGES`, a narrow set) disputes the rule:
    it is replaced by code's sentence on that reading, which states the counts and, under the case floor, that only
@@ -58,15 +60,53 @@ _HEDGES = re.compile(
     re.I,
 )
 
-#: A sample size in words: a numeral, or a range of two, beside cases (``30 cases``, ``30-60 more test cases``,
-#: ``~30 independent cases``), or after a case set's size (``the suite to 30``, ``a sample size of 60``, ``n = 30``).
-#: A case named by its number (``case 4``) is a name, not a size, and reads as neither.
+#: The things a sample is counted in, plural: what a proposal to run more is a count of. A count of trials (repeats
+#: included) is held to the trials the run reached, every other to its cases.
+_TRIAL_UNITS = r"(?:trials|runs|repeats|replicates|repetitions)"
+_UNITS = rf"(?:cases|samples|examples|prompts|scenarios|conversations|items|inputs|queries|tasks|{_TRIAL_UNITS})"
+_IN_TRIALS = re.compile(rf"\b{_TRIAL_UNITS}$", re.I)
+
+#: Words between a count and its unit that leave it a count of the same things: ``30 more independent test cases``.
+_BETWEEN = r"(?:(?:more|new|additional|extra|independent|paired|fresh|distinct|further|total|test|different|real)\s+)*"
+
+#: Number words a writer spells a count in, with their values; a count of many (``dozens``) is -1, never a figure.
+_WORD_COUNTS: dict[str, int] = {
+    word: value
+    for value, word in enumerate(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
+        "seventeen eighteen nineteen".split()
+    )
+} | {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+_WORD_COUNTS |= {"hundred": 100, "a hundred": 100, "a dozen": 12, "dozens": -1, "hundreds": -1, "thousands": -1}
+_SPELLED = "|".join(sorted((re.escape(word) for word in _WORD_COUNTS), key=len, reverse=True))
+
+#: A sample size in words, each group one count: a numeral or a range of two beside a unit (``30 cases``, ``30-60
+#: more test cases``, ``~30+ trials``), a compound (``a 50-case suite``), a count after a sample's name (``the suite to
+#: 30``, ``a sample of 60``, ``n = 30``), or one spelled (``thirty cases``, ``thirty-five``). A case named by its
+#: number (``case 4``) is a name, not a size, and reads as none.
 _SAMPLE_SIZE = re.compile(
-    r"(?<![\w.$-])~?(\d[\d,]*)(?:\s*(?:-|–|to|or)\s*(\d[\d,]*))?\s+"
-    r"(?:(?:more|new|additional|extra|independent|paired|fresh|distinct|further|total|test)\s+)*"
-    r"(?:cases|samples|examples)\b"
-    r"|\b(?:sample size|suite|case set|case bank|n)\s*(?:to|of|=)\s*(?:about\s+|roughly\s+|around\s+|at least\s+|~)?"
+    rf"(?<![\w.$-])(?:~\s?)?(\d[\d,]*)\+?(?:\s*(?:-|–|to|or)\s*(\d[\d,]*)\+?)?\s+{_BETWEEN}{_UNITS}\b"
+    r"|(?<![\w.$-])(\d[\d,]*)-(?:case|sample|trial|prompt|scenario)\b"
+    r"|\b(?:sample size|sample|suite|case set|case bank|n)\s*(?:to|of|=)\s*(?:about\s+|roughly\s+|around\s+|at least\s+|~\s?)?"
     r"(\d[\d,]*)(?![\w,]|\.\d)",
+    re.I,
+)
+_SPELLED_SIZE = re.compile(rf"\b({_SPELLED})(?:-\w+)?\s+(?:of\s+)?{_BETWEEN}{_UNITS}\b", re.I)
+
+#: A multiple of the sample, which no projection states: ``double the cases``, ``3x more trials``, ``twice as many``.
+_MULTIPLE = re.compile(
+    rf"\b(?:doubl\w*|tripl\w*|quadrupl\w*|twice|thrice|tenfold|\d+(?:\.\d+)?\s?[x×])(?:\s+\S+){{0,4}}?\s+(?:{_UNITS}|suite|sample)\b",
+    re.I,
+)
+
+#: The repeats per case as a count to change to: ``raise k to 10``, ``k = 9``.
+_REPEATS = re.compile(r"\bk\s*(?:to|=|of|at)\s*(\d+)\b")
+
+#: A word for getting more of a sample, which turns a count beside it into a proposal.
+_ACQUIRE = re.compile(
+    r"\b(?:add\w*|run|runs|running|re-?run\w*|expand\w*|grow\w*|write|writing|collect\w*|gather\w*|extend\w*|"
+    r"increas\w*|rais\w*|bump\w*|scal\w*|more|another|additional|new|extra|further|larger|bigger|fund\w*|launch\w*|"
+    r"settl\w*|doubl\w*|tripl\w*|build\w*|draw\w*)\b",
     re.I,
 )
 
@@ -98,7 +138,7 @@ class MemoStyle:
     def __post_init__(self) -> None:
         self._ids = self._model_ids()
         self._decimals, self._pairs = self._measured()
-        self._cases, self._costs = self._projected()
+        self._counts, self._reached, self._repeats, self._costs = self._projected()
 
     def _model_ids(self) -> list[tuple[re.Pattern[str], str]]:
         """Each arm's raw model id, with and without its vendor, longest first, and the label it becomes."""
@@ -141,41 +181,87 @@ class MemoStyle:
                         pairs.add((round(held), summary.n))
         return [value for value in decimals if value != int(value)], pairs
 
-    def _projected(self) -> tuple[set[int], list[float]]:
-        """Every case count a next step may state, and every cost beside one: what the projections render (``sample``
-        and ``samples``), the cases the run itself holds, and what one more case costs."""
-        cases = {count for board in self.bundle.scoreboard for count in (board.cases, board.usable_cases)}
+    def _projected(self) -> tuple[set[int], tuple[int, int], set[int], list[float]]:
+        """What a sentence on what to run next may state: every count the projections state (``sample`` and
+        ``samples``), the most cases or trials the run itself reached (any count up to it is the run's, not a
+        proposal), its repeats per case, and every cost the projections price with what one case costs."""
+        counts: set[int] = set()
         costs: list[float] = []
         for projection in (*([self.sample] if self.sample is not None else []), *self.samples):
-            cases |= set(projection.counts())
-            costs += [cost for cost in map(projection.cost, projection.counts()) if cost is not None]
-            if projection.per_case_usd is not None:
+            counts |= set(projection.counts())
+            costs += [cost for cost in map(projection.cost, (projection.if_none, projection.if_observed)) if cost]
+            if projection.per_case_usd:
                 costs.append(projection.per_case_usd)
-        return cases, costs
+        reached = [count for board in self.bundle.scoreboard for count in (board.cases, board.usable_cases)]
+        reached += [
+            side.n_cases
+            for family in self.bundle.multiple_comparisons.families
+            for comparison in family.comparisons
+            for side in (comparison.control, comparison.contrast)
+        ]
+        # What the run itself spent is measured, and a sentence may name it.
+        costs += [
+            cost for board in self.bundle.scoreboard for cost in (board.reply_cost_usd, board.test_cost_usd) if cost
+        ]
+        repeats = {summary.k_runs for summary in self.bundle.run_summaries}
+        trials = max((board.ran for board in self.bundle.scoreboard), default=0)
+        return counts, (max(reached, default=0), trials), repeats, costs
+
+    def _priced(self, spelled: str) -> bool:
+        """Whether a cost a sentence names is one the projections price, or one the run measured: as rendered, or
+        rounded from one to the places it is written in, never zero."""
+        value = float(spelled.replace(",", ""))
+        places = len(spelled.split(".")[1]) if "." in spelled else 0
+        if value <= 0:
+            return False
+        return any(abs(round(cost, places) - value) < 1e-9 and abs(value - cost) <= 0.1 * cost for cost in self._costs)
 
     def proposes_sample(self, text: str) -> bool:
-        """Whether ``text`` states a sample size code did not project: a numeral beside cases the projections do not
-        render, or a cost beside such a numeral that they do not price.
+        """Whether ``text``, a sentence on what to run next, states a sample size or a cost code did not project.
+
+        A size is a proposal beside a word for getting more (:data:`_ACQUIRE`), at a count above what the run reached
+        that no projection states; a multiple of the sample (``double the cases``) or a count of many (``dozens of
+        cases``) always is, beside such a word. A cost is one where no projection prices it and the run did not
+        measure it, beside a size or not.
 
         :param text: One sentence.
         :ptype text: str
-        :return: True where the sentence proposes a sample size of its own.
+        :return: True where the sentence proposes a sample size or a cost of its own.
         :rtype: bool
         """
-        sizes = [
-            int(group.replace(",", "")) for found in _SAMPLE_SIZE.finditer(text) for group in found.groups() if group
-        ]
-        if not sizes:
-            return False
-        if any(size not in self._cases for size in sizes):
+        if any(not self._priced(found.group(1) or found.group(2)) for found in _MONEY.finditer(text)):
             return True
-        for found in _MONEY.finditer(text):
-            spelled = (found.group(1) or found.group(2)).replace(",", "")
-            places = len(spelled.split(".")[1]) if "." in spelled else 0
-            # A projected cost is rendered to two figures, so a writer citing it may round as far.
-            if not any(abs(float(spelled) - cost) <= max(0.5 * 10**-places, 0.05 * cost) for cost in self._costs):
-                return True
-        return False
+        if not _ACQUIRE.search(text):
+            return False
+        if _MULTIPLE.search(text):
+            return True
+        cases, trials = self._reached
+        sizes = [
+            (int(group.replace(",", "")), trials if _IN_TRIALS.search(found.group(0)) else cases)
+            for found in _SAMPLE_SIZE.finditer(text)
+            for group in found.groups()
+            if group
+        ]
+        sizes += [
+            (_WORD_COUNTS[found.group(1).casefold()], trials if _IN_TRIALS.search(found.group(0)) else cases)
+            for found in _SPELLED_SIZE.finditer(text)
+        ]
+        if any(size < 0 or (size > reached and size not in self._counts) for size, reached in sizes):
+            return True
+        return any(int(found.group(1)) not in self._repeats for found in _REPEATS.finditer(text))
+
+    def _planned(self, text: str) -> str:
+        """``text`` with each sentence proposing a sample size of its own (:meth:`proposes_sample`) replaced by code's
+        sentence on the projected sample, the first time, and dropped after it or where there is none."""
+        kept: list[str] = []
+        for part in sentences(text):
+            if not self.proposes_sample(part):
+                kept.append(part)
+                continue
+            self.proposed.append(part)
+            if self.sample is not None and (said := projection_sentence(self.sample)) not in kept:
+                kept.append(said)
+        return " ".join(kept)
 
     def holds_measured(self, text: str) -> bool:
         """Whether ``text`` states a number the bundle measured."""
@@ -218,7 +304,7 @@ class MemoStyle:
         fallback: str | None = None,
         decides: bool = True,
         settled: str | None = None,
-        step: bool = False,
+        plans: bool = False,
     ) -> str:
         """One sentence the memo stands on (a title, an answer, a proposal), held to every rule.
 
@@ -232,16 +318,16 @@ class MemoStyle:
         :param settled: Code's sentence on a reading a clause the rule settled, which replaces a sentence disputing that
             difference (:data:`_HEDGES`); None where no settled clause reads it.
         :ptype settled: str | None
-        :param step: Whether it is a next step's title, which states no sample size of its own: one that does is
-            replaced by code's sentence on the projected sample, or is empty where none was projected.
-        :ptype step: bool
+        :param plans: Whether it says what to run next (a next step's title, a question's answer), so it states no
+            sample size or cost of its own: a sentence that does is replaced by code's sentence on the projected sample,
+            or dropped (:meth:`_planned`).
+        :ptype plans: bool
         :return: The sentence to print; its remaining violations are recorded.
         :rtype: str
         """
         named = self.names_arms(" ".join(text.split()))
-        if step and any(self.proposes_sample(part) for part in sentences(named)):
-            self.proposed.append(named)
-            return projection_sentence(self.sample) if self.sample is not None else ""
+        if plans and not (named := self._planned(named)):
+            return ""
         if decides and self._decides_otherwise(named) and self.rule_sentence is not None:
             self.replaced.append(named)
             return self.rule_sentence
@@ -260,7 +346,7 @@ class MemoStyle:
         self.violations += lint_prose(fixed, question=self.question)
         return fixed
 
-    def prose(self, text: str, *, settled: str | None = None, said: str | None = None, step: bool = False) -> str:
+    def prose(self, text: str, *, settled: str | None = None, said: str | None = None, plans: bool = False) -> str:
         """A paragraph in a fold (a finding's body, a caveat), each sentence held to every rule.
 
         :param text: What the memo wrote.
@@ -271,15 +357,15 @@ class MemoStyle:
         :param said: What the finding already printed: a disputing sentence is dropped, not replaced, where that holds
             code's sentence already.
         :ptype said: str | None
-        :param step: Whether it is a next step's ``why``, whose sentences state no sample size of their own: one that
-            does is dropped.
-        :ptype step: bool
+        :param plans: Whether it says what to run next (a next step's ``why``, a deferred decision's
+            ``revisit_when``), whose sentences state no sample size or cost of their own: one that does is dropped.
+        :ptype plans: bool
         :return: The kept sentences; a sentence restating a measured number or breaking a fixable rule is dropped.
         :rtype: str
         """
         kept = []
         for part in sentences(self.names_arms(text)):
-            if step and self.proposes_sample(part):
+            if plans and self.proposes_sample(part):
                 self.proposed.append(part)
                 continue
             if self._decides_otherwise(part) and self.rule_sentence is not None:
@@ -326,7 +412,7 @@ def decision_disclosures(style: MemoStyle) -> Sequence[str]:
         for said in style.hedged
     ]
     lines += [
-        f"The memo said “{said}”, a sample size no code computed, so the page does not print it."
+        f"The memo said “{said}”, a sample size or cost no code computed, so the page does not print it."
         for said in style.proposed
     ]
     if style.dropped:
