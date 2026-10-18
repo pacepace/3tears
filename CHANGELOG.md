@@ -31,6 +31,10 @@ holding.
 beside an empty `<q></q>` (2 of 5 live runs on 0.70.1). The phrase now counts only inside the quote; the previous
 call's question counts anywhere in the reply.
 
+**Fixed (testing):** the Redshift finalizer test waits for the bridge's worker to let go of the driver before
+dropping it. The worker hands back the result before it drops the call it ran, so the driver was sometimes collected
+on the worker's thread, not the test's (one failure in CI on the 0.70.1 main PR).
+
 **Fixed (evals):** the judge-pin baseline rolls forward to v0.70.0, the first release that shipped 3tears-evals,
 and `MIGRATIONS.toml` has a 0.70.1 section.
 
