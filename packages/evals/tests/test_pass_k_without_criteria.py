@@ -138,7 +138,7 @@ def test_the_bundle_the_writer_reads_carries_the_reason() -> None:
 
     points = {p.model: p for subject in bundle.frontier.subjects for p in subject.points}
     assert points["classifier-model"].pass_hat_k is None
-    assert json.dumps(NO_PASS_CRITERION_REASON) in _writer_message(bundle)
+    assert json.dumps(NO_PASS_CRITERION_REASON, ensure_ascii=False) in _writer_message(bundle)
 
 
 def test_the_rendered_comparison_says_the_classifier_has_no_pass_k() -> None:

@@ -1218,6 +1218,10 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
     recommended = analysis.document.recommendation
     arms = [CampaignArm.model_validate(arm) for arm in analysis.campaign_bundle.get("arms") or []]
     chosen = next((arm for arm in arms if arm.label == recommended.arm), None)
+    # The arm as this page names it everywhere else; the writer's label where the page holds no cell of it.
+    page_names = _arm_names(bundle)
+    keys = [] if chosen is None else [chosen.variant_key, *resolve_control_arm(chosen).variant_keys]
+    named = next((page_names[key].label for key in keys if key in page_names), recommended.arm)
     facts = [
         Fact(name="Arm", value=recommended.arm),
         Fact(name="Confidence", value=CONFIDENCE_WORDS[recommended.confidence]),
@@ -1243,7 +1247,7 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
             role="recommendation",
             body=style.prose(" ".join(recommended.reasons), plans=True),
             rests_on=list(recommended.rests_on),
-            facts=[Fact(name="Disposition", value=f"recommend {recommended.arm}")],
+            facts=[Fact(name="Disposition", value=f"recommend {named}")],
         ),
         _facts_table(facts, name="recommendation_facts"),
     ]

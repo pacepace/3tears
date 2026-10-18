@@ -244,7 +244,7 @@ def _adopting_writer() -> Any:
 
     async def generate(*, system: str, user: str, response_format: dict | None = None) -> Any:
         writer.drafts += 1
-        view = json.loads(user.split("\n", 1)[1])
+        view, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
         (aspect,) = view["aspects"]
         tested = next(comparison for comparison in aspect["contrasts"] if comparison["verdict"] == "improved")
         arm, control = tested["cell"], tested["control"]

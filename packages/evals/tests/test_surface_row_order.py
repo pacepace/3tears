@@ -64,8 +64,11 @@ class TestTheWritersCellsFollowTheRule:
 
         assert [cell_ref(c.variant_key, c.apparatus_class_id) for c in bundle.cell_measures] == [narrow, wide]
         shown = json.loads(_writer_message(bundle).split("\n", 1)[1])
-        assert shown["cell_measures"][0]["cell"] == "c1"
-        assert shown["cell_measures"][0]["variant_key"] == variant_of_cell_ref(narrow)
+        (aspect,) = shown["aspects"]
+        assert aspect["cells"][0]["cell"] == "c1"
+        variant = variant_of_cell_ref(narrow)
+        assert variant is not None
+        assert aspect["cells"][0]["arm"] == campaign_bundle(bundle).label_of(variant)
 
     def test_without_a_control_the_arms_are_in_name_order(self) -> None:
         """The wide width's name sorts before the narrow one's (``1024`` before ``256``), whatever the keys say."""
@@ -76,8 +79,8 @@ class TestTheWritersCellsFollowTheRule:
         ]
 
     def test_the_writer_prompt_states_the_rule(self) -> None:
-        """The writer's table is ``cell_measures``, and the seed prompt says what its order is and is not."""
-        assert "(`cell_measures`, control first; its order is not a ranking)" in EVAL_ANALYSIS_GEN_DEFAULT
+        """The writer's table is each aspect's ``cells``, and the seed prompt says what its order is and is not."""
+        assert "(`cells`, control first; its order is not a ranking)" in EVAL_ANALYSIS_GEN_DEFAULT
 
     def test_the_frozen_surface_keeps_the_order(self) -> None:
         bundle = _bundle(control=TOYHOST_NARROW)

@@ -135,6 +135,7 @@ def _memo() -> AuthoredCampaignAnalysis:
             reasons=["The billing floor is broken, and billing is where refunds are lost."],
             confidence="high",
             rests_on=[0],
+            floors_overridden=[],
         ),
         aspect_summaries=[
             AspectSummary(

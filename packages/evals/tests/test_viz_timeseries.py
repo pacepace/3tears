@@ -243,7 +243,7 @@ class TestTheBundleEarnsATimeAxis:
     def test_every_measure_on_the_axis_is_described_on_the_frozen_surface(self) -> None:
         """A surface's facts cover every name in its cells — the axis's included."""
         analysis = _generated(_two_days())
-        surface = analysis.decision_surface
+        surface = analysis.aspects[0].decision_surface
         named = {m.name for p in surface.time_axis.positions for cell in p.cells for m in cell.measures.measures}
         assert named <= set(surface.measures)
 
@@ -351,12 +351,12 @@ def _generated(bundle: Any) -> Any:
 class TestTheGenerationFreezesTheAxis:
     def test_a_bundle_with_one_freezes_it_on_the_decision_surface(self) -> None:
         bundle = _two_days()
-        assert _generated(bundle).decision_surface.time_axis == bundle.time_axis
+        assert _generated(bundle).aspects[0].decision_surface.time_axis == bundle.time_axis
 
     def test_the_writer_sees_the_axis_by_alias(self) -> None:
 
         message = json.loads(_writer_message(_two_days()).split("\n", 1)[1])
-        cells = message["time_axis"]["positions"][0]["cells"]
+        cells = message["aspects"][0]["time_axis"]["positions"][0]["cells"]
         assert all("cell" in cell and "variant_key" not in cell for cell in cells)
 
 

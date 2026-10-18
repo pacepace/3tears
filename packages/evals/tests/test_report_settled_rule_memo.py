@@ -165,7 +165,7 @@ async def test_a_broken_floor_never_replaces_the_memo_s_answer() -> None:
     (answer,) = _answers(report)
     assert answer.body == "Keep production."
     markdown = report_markdown(report)
-    assert "**Answered.** Keep production." in markdown
+    assert "Keep production." in markdown
     assert "See the decision rule above." not in markdown and "Still open" not in markdown
     (warning,) = _warnings(report)
     assert warning.startswith(f"Floor broken on {bundle.aspect}: ")

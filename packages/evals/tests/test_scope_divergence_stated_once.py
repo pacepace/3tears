@@ -242,11 +242,13 @@ class TestWhereAWholeRunSwingWentIsStatedOnce:
 
     @_SWEEPS
     def test_the_writer_reads_each_carrier_once(self, models: Sequence[str], runs_per_level: int) -> None:
-        payload = json.loads(
+        view = json.loads(
             _writer_message(_bundle(models, runs_per_level=runs_per_level, seed="swing")).removeprefix(
-                "CONTEXT BUNDLE (JSON):\n"
+                "CAMPAIGN BUNDLE (JSON):\n"
             )
         )
+        (aspect,) = view["aspects"]
+        payload = aspect["disclosures"]
         assert all("carried_by" not in divergence for divergence in payload["scope_divergences"])
         carriers = Counter(
             (swing["lever"], swing["level_a"], swing["level_b"], swing["whole"], swing["carried_by"])

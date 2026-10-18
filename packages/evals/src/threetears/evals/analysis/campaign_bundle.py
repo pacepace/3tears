@@ -104,6 +104,7 @@ _DISCLOSURES: tuple[str, ...] = (
     "arm_served_models",
     "subject_key_instabilities",
     "frontier_bar_withheld",
+    "time_axis_withheld",
     "retracted_insights",
 )
 
@@ -720,6 +721,7 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
         "goal_check_proofs": payload["goal_check_proofs"],
         "arm_mechanisms": namer.walk(payload["arm_mechanisms"], label),
         "verdict_order": namer.walk(payload["verdict_order"], label),
+        "time_axis": namer.walk(payload["time_axis"], label),
         "trials": _trials(aspect, namer),
         "disclosures": {
             key: namer.walk(payload[key], label) for key in _DISCLOSURES if payload.get(key) not in (None, "", [], {})
