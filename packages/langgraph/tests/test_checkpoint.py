@@ -21,7 +21,7 @@ import pytest
 
 from langgraph.checkpoint.base import WRITES_IDX_MAP
 
-from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint import CheckpointCacheError, ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import AsyncpgPoolAdapter
 from threetears.langgraph.serde import UUIDSafeSerializer
@@ -112,14 +112,14 @@ class TestCacheSerializationHelpers:
 class TestL1Degradation:
     """L1 cache failures degrade gracefully."""
 
-    async def testl1_get_returns_none_on_error(self):
+    async def test_a_failed_l1_read_is_raised_not_answered_as_a_miss(self):
         l1 = AsyncMock()
         l1.get.side_effect = RuntimeError("L1 down")
 
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, scope=_UNSCOPED)
 
-        result = await saver.l1_get("thread-1", "")
-        assert result is None
+        with pytest.raises(CheckpointCacheError, match="L1 checkpoint read failed: RuntimeError: L1 down"):
+            await saver.l1_get("thread-1", "")
 
     async def testl1_put_swallows_error(self):
         l1 = AsyncMock()
@@ -454,14 +454,82 @@ class TestCrashRecoveryWritesDegrade:
 class TestL2Degradation:
     """L2 cache failures degrade gracefully."""
 
-    async def testl2_get_returns_none_on_error(self):
+    async def test_a_failed_l2_read_is_raised_not_answered_as_a_miss(self):
         l2 = AsyncMock()
         l2.get.side_effect = RuntimeError("L2 down")
 
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
 
-        result = await saver.l2_get("thread-1", "")
-        assert result is None
+        with pytest.raises(CheckpointCacheError, match="L2 checkpoint read failed: RuntimeError: L2 down"):
+            await saver.l2_get("thread-1", "")
+
+
+class TestCacheReadFailureFallsThrough:
+    """a cache read that fails reads the durable store, recorded as a miss caused by an error."""
+
+    _CONFIG = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
+
+    @staticmethod
+    def _l3_row(saver: ThreeTierCheckpointSaver) -> dict[str, Any]:
+        cp_type, cp_blob = saver.serde.dumps_typed({"id": "cp-1", "channel_values": {}})
+        _md_type, md_blob = saver.serde.dumps_typed({"step": 1})
+        return {
+            "checkpoint_id": "cp-1",
+            "parent_checkpoint_id": None,
+            "type": cp_type,
+            "checkpoint": cp_blob,
+            "metadata_": md_blob,
+        }
+
+    @staticmethod
+    def _failing_caches() -> tuple[AsyncMock, AsyncMock]:
+        l1 = AsyncMock()
+        l1.get.side_effect = RuntimeError("L1 down")
+        l2 = AsyncMock()
+        l2.get.side_effect = RuntimeError("L2 down")
+        return l1, l2
+
+    async def test_failed_cache_reads_fall_through_to_l3_as_recorded_misses(self, caplog):
+        executor = _make_executor()
+        l1, l2 = self._failing_caches()
+        saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
+        executor.fetchrow.return_value = self._l3_row(saver)
+
+        with caplog.at_level(logging.WARNING, logger="threetears.langgraph.checkpoint"):
+            tup = await saver.aget_tuple(self._CONFIG)
+
+        assert tup is not None and tup.checkpoint["id"] == "cp-1", "the durable store answered"
+        recorded = [r.extra_data for r in caplog.records if getattr(r, "extra_data", {}).get("miss") == "error"]
+        assert recorded == [
+            {
+                "tier": tier,
+                "miss": "error",
+                "contained_site": "threetears.langgraph.checkpoint:ThreeTierCheckpointSaver._cached_or_recorded_miss",
+                "exc_type": "CheckpointCacheError",
+            }
+            for tier in ("L1", "L2")
+        ], "each failed tier is recorded as a miss caused by an error, not passed over as a cold cache"
+
+    async def test_a_plain_miss_records_nothing(self, caplog):
+        executor = _make_executor()
+        l1 = AsyncMock()
+        l1.get.return_value = None
+        saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, scope=_UNSCOPED)
+        executor.fetchrow.return_value = self._l3_row(saver)
+
+        with caplog.at_level(logging.WARNING, logger="threetears.langgraph.checkpoint"):
+            await saver.aget_tuple(self._CONFIG)
+
+        assert not [r for r in caplog.records if getattr(r, "extra_data", {}).get("miss") == "error"]
+
+    async def test_a_failed_l3_read_after_failed_cache_reads_raises(self):
+        executor = _make_executor()
+        executor.fetchrow.side_effect = ConnectionError("postgres down")
+        l1, l2 = self._failing_caches()
+        saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
+
+        with pytest.raises(ConnectionError, match="postgres down"):
+            await saver.aget_tuple(self._CONFIG)
 
     async def testl2_key_with_ns(self):
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)

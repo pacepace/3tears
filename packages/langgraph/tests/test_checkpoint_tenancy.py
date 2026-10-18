@@ -35,7 +35,7 @@ from uuid import UUID
 
 import pytest
 
-from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint import CheckpointCacheError, ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import CheckpointL2Cache, CheckpointL2PrefixCache
 
@@ -887,15 +887,51 @@ class TestPrefixCacheCapability:
         assert isinstance(_PrefixSweepingL2Cache(), CheckpointL2Cache)
         assert isinstance(_DictL2Cache(), CheckpointL2Cache)
 
-    async def test_a_failing_sweep_degrades(self) -> None:
-        """a cache fault must not abort a purge whose L3 half already ran.
+    async def test_a_failing_sweep_is_raised_not_answered_as_a_cache_that_cannot_sweep(self) -> None:
+        """``False`` means "this cache has no prefix sweep"; a sweep that failed is not that.
 
         :return: nothing
         :rtype: None
         """
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=_FailingSweepL2Cache(), scope=_UNSCOPED)
 
-        assert await saver.l2_delete_prefix("t-1.") is False
+        with pytest.raises(CheckpointCacheError, match="prefix sweep of 't-1.' failed: RuntimeError: nats: timeout"):
+            await saver.l2_delete_prefix("t-1.")
+
+    async def test_a_thread_purge_whose_sweep_fails_finishes_every_tier_then_says_so(self) -> None:
+        """the L3 rows, the root L2 key and L1 all go; the caller then hears the sweep failed.
+
+        :return: nothing
+        :rtype: None
+        """
+        executor = _make_executor()
+        l1 = AsyncMock()
+        cache = _FailingSweepL2Cache()
+        saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=cache, scope=_UNSCOPED)
+        await saver.l2_put("t-1", "", b"root")
+
+        with pytest.raises(CheckpointCacheError, match="prefix sweep"):
+            await saver.adelete_thread("t-1")
+
+        assert executor.execute.await_count == 2, "both L3 deletes ran before the sweep was tried"
+        assert ("checkpoints", "t-1") not in cache.store, "the root key is deleted despite the failed sweep"
+        l1.delete.assert_awaited_once_with("t-1")
+
+    async def test_a_customer_purge_whose_sweep_fails_says_so(self) -> None:
+        """an erasure that left a customer's cached bundles behind does not report success.
+
+        :return: nothing
+        :rtype: None
+        """
+        executor = _make_executor()
+        saver = ThreeTierCheckpointSaver(
+            executor=executor, l2_cache=_FailingSweepL2Cache(), scope=CheckpointScope.for_customer(_CUSTOMER_A)
+        )
+
+        with pytest.raises(CheckpointCacheError, match="prefix sweep"):
+            await saver.adelete_customer_threads()
+
+        assert executor.execute.await_count == 2, "the L3 purge committed before the sweep was tried"
 
 
 class TestFromConfigScope:

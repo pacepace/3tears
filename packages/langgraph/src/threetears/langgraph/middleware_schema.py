@@ -26,8 +26,9 @@ The honesty rule ships whenever the agent is datasource-backed -- independent of
 whether a digest documents tables -- because a read against an
 introduced-but-undocumented datasource still returns an ``imperatives`` block and
 still needs the rule that makes the model consume it. The documented-schema block
-is merely appended when a digest documents tables; a fault reading the digest drops
-the block but still ships the honesty rule (a SEPARATE soft-fail).
+is merely appended when a digest documents tables; a fault reading the digest replaces
+the block with a notice that the schema could not be read -- an absent block would read
+as "nothing is documented" -- and still ships the honesty rule (a SEPARATE soft-fail).
 
 The block is a BOUNDED digest, not the whole documented schema, so which tables it
 keeps is a decision and is made by a rule (:func:`_priority_key`): hazard notes first,
@@ -148,6 +149,18 @@ _BLOCK_PREAMBLE = (
     "Use it when you write SQL. "
     "Call the schema-inspection tool only for a table or column that is not listed here. "
     "Do not look up what is already below.\n\n"
+)
+
+#: What stands in for the documented-schema block when the schema could not be read.
+#: An absent block reads to the model as "these datasources document nothing", and it
+#: then writes SQL against guessed names; this says the read failed and sends it to the
+#: inspection tool instead. The same text is stashed on ``metadata`` so a downstream
+#: reader sees the failure, not an empty block.
+_SCHEMA_UNREAD_BLOCK = (
+    "# Documented schema\n"
+    "The documented schema for your datasources could not be read this turn. "
+    "That does not mean they have no documented tables. "
+    "Call the schema-inspection tool for each table and column you use before you write SQL.\n\n"
 )
 
 
@@ -493,15 +506,11 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
         if integration is None:
             passthrough: ModelResponse[Any] = await handler(request)
             return passthrough
-        # datasource_ids() soft-fails internally to [] (never raises): a
-        # non-datasource agent, or one whose datasource has not resolved yet, yields
-        # [] and no injection.
         # The integration asks the hub BY NAME and hands back documented tables.
         # It used to hand back datasource ids for this middleware to read digests
         # with; that meant the agent holding hub-internal ids and reading a
         # hub-owned table, which the rbac carve-out correctly stopped admitting.
-        # Soft-fails internally to [] (never raises): a non-datasource agent, or
-        # one whose hub is briefly unreachable, yields [] and no injection.
+        # A read that fails is caught below and said so in the block's place.
         # The gate is "does this agent HAVE datasources", NOT "did we get
         # tables". The honesty rule ships whenever the agent can read a
         # datasource at all, because any datasource read emits imperatives and
@@ -514,17 +523,18 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
         try:
             tables = await integration.documented_schema()
         except Exception as exc:  # noqa: BLE001 -- priming is best-effort; a fault must not fail the turn
-            # The integration soft-fails internally, so reaching here means it
-            # broke in a way it did not anticipate. The honesty rule still
-            # ships below: losing the schema block degrades the answer, losing
-            # the rule removes the instruction to ground it at all.
+            # The honesty rule still ships below: losing the schema block degrades
+            # the answer, losing the rule removes the instruction to ground it at
+            # all. What ships in the block's place says the read FAILED -- no block
+            # would read as "nothing is documented", which is a different answer.
             contain(
                 exc,
                 log=log,
                 what=f"documented-schema read failed (soft-fail; honesty rule still shipped): {type(exc).__name__}: {exc}",
             )
-            tables = []
-        schema_block = _render_schema_block(tables, budget=self.token_budget)
+            schema_block = _SCHEMA_UNREAD_BLOCK
+        else:
+            schema_block = _render_schema_block(tables, budget=self.token_budget)
         # the honesty rule ships whenever a datasource resolves, so the folded block is
         # always non-empty even when no digest documented tables (schema_block == "").
         block = _HONESTY_PREAMBLE + schema_block
@@ -532,7 +542,7 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
         response: ModelResponse[Any] = await handler(request.override(system_message=merged))
         # stash ONLY the documented-schema block (not the honesty rule) so a downstream
         # node can read it after the model node folds the injected prompt away. empty
-        # string when no digest documented tables.
+        # string when no digest documented tables; the unread notice when the read failed.
         return ExtendedModelResponse(
             model_response=response,
             command=Command(update={"metadata": {"documented_schema_block": schema_block}}),
