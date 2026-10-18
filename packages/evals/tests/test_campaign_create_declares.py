@@ -61,11 +61,10 @@ def _design(fixture: OpsFixture, **changes: Any) -> dict[str, Any]:
 
 
 def _aspect(fixture: OpsFixture, *, design: dict[str, Any] | None = None, **changes: Any) -> dict[str, Any]:
-    """The toy campaign's one aspect, its runs and a margin, declaring ``design`` (the toy host's by default)."""
+    """The toy campaign's one aspect and its runs, declaring ``design`` (the toy host's by default)."""
     aspect: dict[str, Any] = {
         "label": fixture.campaign.behavior,
         "run_ids": list(fixture.campaign.run_ids),
-        "margin": 5,
         "design": _design(fixture) if design is None else design,
     }
     aspect.update(changes)
@@ -94,7 +93,7 @@ async def test_a_campaign_created_with_a_design_carries_it_stamped_by_the_caller
     )
     assert stored is not None and not stored.exploratory
     (aspect,) = stored.aspects
-    assert aspect.design is not None and aspect.margin == 5
+    assert aspect.design is not None and aspect.margin is None, "a campaign naming no control declares no margin"
     assert [axis.axis_id for axis in aspect.design.axes] == [TOYHOST_AXIS]
     assert aspect.design.held_fixed == fixture.campaign.aspects[0].design.held_fixed  # type: ignore[union-attr]
     assert aspect.design.merit_axes == [], "a question naming no axes asks about every one"
@@ -155,9 +154,18 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
             id="an-arm-from-a-run-outside-the-campaign",
         ),
         pytest.param(
-            {"margin": None, "question": _QUESTION},
-            "declares a design and no margin",
-            id="a-declared-aspect-with-no-margin-under-a-question",
+            {
+                "margin": None,
+                "question": _QUESTION,
+                "campaign_arms": [{"label": "control", "role": "control", "from_run_ids": ["{run}"]}],
+            },
+            "declare a design and no margin",
+            id="a-declared-aspect-with-no-margin-under-a-question-of-a-control",
+        ),
+        pytest.param(
+            {"margin": 5},
+            "declare an absolute bar instead",
+            id="a-margin-on-a-campaign-naming-no-control",
         ),
         pytest.param({"design": {"axes": []}}, "axes", id="no-axes"),
     ],

@@ -99,7 +99,7 @@ def _store() -> tuple[EvalStorage, InMemoryDocumentStore]:
     return storage, store
 
 
-def _aspect(label: str, template_id: str, *run_ids: str, margin: float | None = 5.0) -> dict[str, Any]:
+def _aspect(label: str, template_id: str, *run_ids: str, margin: float | None = None) -> dict[str, Any]:
     return {
         "label": label,
         "template_id": template_id,
@@ -126,11 +126,17 @@ def _create(
 
 
 def _two_aspects(storage: EvalStorage, **definition: Any) -> EvalCampaign:
-    """A campaign of a tone aspect and a tools aspect, each holding its model-a run."""
+    """A campaign of a tone aspect and a tools aspect, each holding its model-a run, a margin on each where it names
+    a control."""
+    controlled = any(arm.get("role") == "control" for arm in definition.get("arms", []))
+    margin = 5.0 if controlled else None
     return _create(
         storage,
         question="Is b as good as a?",
-        aspects=[_aspect("tone", "tpl-tone", "tpl-tone-a"), _aspect("tools", "tpl-tools", "tpl-tools-a")],
+        aspects=[
+            _aspect("tone", "tpl-tone", "tpl-tone-a", margin=margin),
+            _aspect("tools", "tpl-tools", "tpl-tools-a", margin=margin),
+        ],
         **definition,
     )
 
@@ -234,12 +240,20 @@ def test_each_aspect_infers_its_own_template_and_refuses_a_declared_design_with_
     storage, _ = _store()
     inferred = _create(storage, aspects=[{"label": "tone", "run_ids": ["tpl-tone-a", "tpl-tone-b"]}], exploratory=True)
 
-    with pytest.raises(ValidationFailedError, match="declares a design and no margin, and the campaign asks"):
-        _create(storage, question="Is b as good as a?", aspects=[_aspect("tone", "tpl-tone", margin=None)])
+    control = [{"label": "a", "role": "control", "from_run_ids": ["tpl-tone-a"]}]
+    with pytest.raises(ValidationFailedError, match="declare a design and no margin, and the campaign asks"):
+        _create(
+            storage,
+            question="Is b as good as a?",
+            aspects=[_aspect("tone", "tpl-tone", "tpl-tone-a", margin=None)],
+            arms=control,
+        )
     unasked = _create(storage, aspects=[_aspect("tone", "tpl-tone", margin=None)])
+    uncontrolled = _create(storage, question="Which is better?", aspects=[_aspect("tone", "tpl-tone", margin=None)])
 
     assert inferred.aspects[0].template_id == "tpl-tone"
     assert unasked.aspects[0].margin is None, "a campaign asking nothing reads no drop, so it needs no margin"
+    assert uncontrolled.aspects[0].margin is None, "nor one naming no control, which reads none"
 
 
 # --- adoption --------------------------------------------------------------------------------------------------------
@@ -420,7 +434,7 @@ def _toy_campaign_launched_into(*, control_before_results: bool) -> tuple[EvalCa
             "subject_id": fixture.campaign.subject_id,
             "behavior": fixture.campaign.behavior,
             "question": "Does the wider chunk extract the fields as well?",
-            "aspects": [{"label": toy.label, "margin": 5, "design": toy.design.model_dump(mode="json")}],
+            "aspects": [{"label": toy.label, "design": toy.design.model_dump(mode="json")}],
         },
         scope_id=fixture.campaign.scope_id,
         created_by="op",
@@ -702,7 +716,7 @@ def test_a_campaign_of_two_aspects_is_two_views_and_none_is_implied() -> None:
 
     assert (tone.aspect, tone.template_id, tone.run_ids) == ("tone", "tpl-tone", ["tpl-tone-a"])
     assert tools.declared is not None and tools.declared.question == campaign.question
-    assert tools.declared.asked_at == campaign.declared_at and tools.declared.margin == 5.0
+    assert tools.declared.asked_at == campaign.declared_at and tools.declared.margin is None
     assert aspect_view(campaign, "tools") == tools
     with pytest.raises(RefusedInput, match="2 aspects"):
         aspect_view(campaign)
@@ -732,3 +746,128 @@ def test_a_derived_label_a_named_arm_already_has_is_told_apart() -> None:
     _control, candidate = campaign_arms(storage, campaign, profile=_HOST)
 
     assert candidate.label == "model=B (2)"
+
+
+# --- three kinds: a margin and a floor need a control ----------------------------------------------------------------
+
+#: An absolute bar on the templates' rubric dimension: what a campaign naming no control holds its arms to.
+_BAR = {"measure_id": "conversation.tone", "threshold": 3, "direction": "higher_is_better"}
+
+
+def _barred(label: str, template_id: str, *run_ids: str, **changes: Any) -> dict[str, Any]:
+    aspect = _aspect(label, template_id, *run_ids, **changes)
+    aspect["design"] = {**aspect["design"], "bars": [_BAR]}
+    return aspect
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        pytest.param({"aspects": [_barred("tone", "tpl-tone", "tpl-tone-a", margin=5.0)]}, id="a-margin"),
+        pytest.param(
+            {
+                "aspects": [_barred("tone", "tpl-tone", "tpl-tone-a")],
+                "floors": [{"aspect": "tone", "clause": {"kind": "rate_drop", "max_points": 5}}],
+            },
+            id="a-floor",
+        ),
+    ],
+)
+def test_a_margin_or_a_floor_on_a_campaign_naming_no_control_is_refused_pointing_at_a_bar(
+    relative: dict[str, Any],
+) -> None:
+    storage, _ = _store()
+
+    with pytest.raises(ValidationFailedError, match="each is read against a control, and this campaign names none"):
+        _create(storage, question="Which arm should ship?", **relative)
+    with pytest.raises(ValidationFailedError) as refused:
+        _create(storage, question="Which arm should ship?", **relative)
+
+    assert "declare an absolute bar instead" in refused.value.remedy and "`bars`" in refused.value.remedy
+    assert storage.list_campaigns(_SCOPE) == []
+
+
+def test_a_margin_given_at_adoption_on_a_campaign_naming_no_control_is_refused() -> None:
+    storage, _ = _store()
+    untold = _source(storage, "tools", "tpl-tools", control=None)
+
+    with pytest.raises(ValidationFailedError, match="a margin on adopted aspect 'tools'"):
+        _create(storage, aspects_from=(untold.id,), margins={"tools": 2.0})
+
+
+def test_a_choice_of_two_arms_with_a_question_and_bars_and_no_margin_is_accepted() -> None:
+    """Two arms, neither shipped: each is held to the bars, and the pair is compared both ways."""
+    storage, _ = _store()
+
+    choice = _create(
+        storage,
+        question="Which model should we ship for tone?",
+        aspects=[_barred("tone", "tpl-tone", "tpl-tone-a", "tpl-tone-b")],
+        arms=[
+            {"label": "a", "role": "candidate", "from_run_ids": ["tpl-tone-a"]},
+            {"label": "b", "role": "candidate", "from_run_ids": ["tpl-tone-b"]},
+        ],
+    )
+
+    assert choice.control is None and [arm.label for arm in choice.arms] == ["a", "b"]
+    declared = aspect_view(choice).declared
+    assert declared is not None and declared.question and declared.design.bars and declared.margin is None
+
+
+def test_a_measurement_of_one_arm_with_a_question_and_bars_is_accepted() -> None:
+    storage, _ = _store()
+
+    measured = _create(
+        storage,
+        question="Does model a clear the tone bar?",
+        aspects=[_barred("tone", "tpl-tone", "tpl-tone-a")],
+        arms=[{"label": "a", "role": "candidate", "from_run_ids": ["tpl-tone-a"]}],
+    )
+    bare = _create(storage, question="How does model a do?", aspects=[_barred("tone", "tpl-tone", "tpl-tone-b")])
+
+    assert measured.control is None and len(measured.arms) == 1
+    assert bare.arms == [] and not bare.exploratory
+
+
+def test_clearing_the_control_of_a_campaign_holding_floors_is_refused() -> None:
+    storage, _ = _store()
+    tone = _source(storage, "tone", "tpl-tone")
+    # Before its runs, the only state a control can be cleared in.
+    storage.save_campaign(tone.model_copy(update={"aspects": [tone.aspects[0].model_copy(update={"run_ids": []})]}))
+
+    with pytest.raises(ValidationFailedError, match="floor tone/rate_drop/"):
+        set_campaign_control(storage, tone.id, _SCOPE, None, set_by="op", profile=_HOST)
+
+
+def test_an_upgraded_campaign_with_floors_and_no_control_reads_and_its_floors_are_named_unread() -> None:
+    """v15 let a design declare a rule and no control; such a campaign still reads, its floors stored as they are and
+    left out of what every reader reads, with the sentence the page says."""
+    storage, store = _store()
+    document = json.loads(_FROZEN_V15.read_text(encoding="utf-8"))
+    design = dict(document["declared_design"])
+    design.update(
+        control=None,
+        control_levers=None,
+        control_identity_version=None,
+        questions=[
+            {
+                "id": "q-1",
+                "text": "Is it kinder?",
+                "asked_at": "2026-01-01T00:00:00+00:00",
+                "decision": {"clauses": [{"kind": "rate_drop", "max_points": 5}]},
+                "merit_axes": [],
+            }
+        ],
+    )
+    document["declared_design"] = design
+    store.upsert(document)
+
+    read = storage.load_campaign(document["id"], document["scope_id"])
+
+    assert read is not None and read.control is None
+    assert [floor.key for floor in read.floors] == [f"{document['behavior']}/rate_drop/*"]
+    assert read.aspects[0].margin == 5.0, "stored as it was"
+    declared = aspect_view(read).declared
+    assert declared is not None and (declared.margin, declared.floors) == (None, [])
+    assert declared.unread_without_control is not None
+    assert "names no control" in declared.unread_without_control and "rate_drop" in declared.unread_without_control
