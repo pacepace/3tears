@@ -608,6 +608,8 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
                     "equivalence_p_adjusted": equivalence_p_adjusted,
                     "interval": interval,
                     "bounded_interval": bounded,
+                    # What the bounded interval read, so a projection can read it again at more cases.
+                    "case_values": None if bounded is None else (list(control_sample), list(contrast_sample)),
                     "verdict": verdict,
                 }
             )

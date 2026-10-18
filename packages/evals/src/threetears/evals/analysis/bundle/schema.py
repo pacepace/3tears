@@ -1674,6 +1674,15 @@ class FamilyComparison(EvalDocumentModel):
             "no range, and in a bundle before shape 55."
         ),
     )
+    case_values: tuple[list[float], list[float]] | None = Field(
+        default=None,
+        description=(
+            "The control's and the contrast's per-case values the bounded test read, aligned case by case when "
+            "`test` is `paired`: carried wherever `bounded_interval` is, so a decision rule's projection can compute "
+            "that interval again at more cases. Left out of what the writer is shown. None where `bounded_interval` "
+            "is None, and in a bundle before shape 58."
+        ),
+    )
     hedges_g: float | None = Field(
         default=None,
         description=(
@@ -2216,8 +2225,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # words; a question whose words state a rule and that declares none typed reads no rule, so the pass rate leaves
     # its family. 57: `unexercised_factors`; a lever read off what ran that fewer than two results exercised leaves the
     # lever levels, the aliasing read, the factor pairs, the divergences and the coverage map over unchanged runs.
+    # 58: each family comparison's `case_values`, the per-case values its bounded interval read, which a decision
+    # rule's projection computes that interval again from at more cases.
     schema_version: int = Field(
-        default=57, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=58, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
