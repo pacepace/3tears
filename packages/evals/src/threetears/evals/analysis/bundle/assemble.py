@@ -344,8 +344,8 @@ def assemble_context_bundle(
     otherwise enter each aggregate with nothing marking it, which is the failure the
     archive surface exists to end.
 
-    **One aspect at a time.** A bundle reads one aspect of the campaign (:func:`~threetears.evals.analysis.aspects.aspect_view`):
-    its runs, its template, and what the campaign declared as that aspect reads it. Nothing here reads the stored
+    **One aspect at a time.** A bundle reads one aspect of the campaign
+    (:func:`~threetears.evals.analysis.aspects.aspect_view`): its runs, its template, and what the campaign declared as that aspect reads it. Nothing here reads the stored
     campaign's own fields, so how a campaign holds its aspects is the view's business alone.
 
     :param campaign: The campaign whose runs to summarise.
@@ -793,7 +793,7 @@ def assemble_context_bundle(
     bundle.launch_declarations = launch_declarations
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
-    bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
+    bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = _multiple_comparisons(
         view.aspect,
         declared,
         design,
@@ -809,8 +809,8 @@ def assemble_context_bundle(
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
         first_run_at=first_run_at,
-        # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold, in
-        # the aspect's family whenever the aspect declares a margin.
+        # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold: in
+        # the question's family when it was asked in time with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
     )
     bundle.reading_scope = _reading_scope(

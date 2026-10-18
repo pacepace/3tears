@@ -54,6 +54,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
@@ -1863,6 +1864,38 @@ class ComparisonFamily(EvalDocumentModel):
     disclosure: str = Field(min_length=1, description="The sentence a writer quotes about this family's correction.")
 
 
+#: The measure a cost floor reads per case: the candidate's own spend per reply, the scoreboard's cost per reply.
+FLOOR_COST_MEASURE = "production_replicating_cost"
+
+#: The readings a floor reads per case whatever the family compares: the overall pass rate and the cost per reply.
+FloorContrastReading = Literal["trial", "measure"]
+
+
+class FloorContrast(EvalDocumentModel):
+    """One arm against the control under one rig, on a reading a floor or an aspect's reading reads per case.
+
+    Carried whatever the aspect's family compares, so a floor on the overall pass rate or the cost per reply, and the
+    aspect's pass-rate reading, never depend on which readings a question asked about: each reads its own interval,
+    at its own level, from these values. Never tested or corrected here: a floor reads it at the nominal level.
+    """
+
+    reading: FloorContrastReading = Field(
+        description=f"`trial` (`name` `{TRIAL_PASS_NAME}`: each case's share of usable trials that passed) or `measure`."
+    )
+    name: str = Field(min_length=1, description="The reading's name: `passed`, or the cost-per-reply measure's key.")
+    control: ComparedCell = Field(description="The control arm's cell under this rig.")
+    contrast: ComparedCell = Field(description="The other arm's cell under the same rig.")
+    test: Literal["paired", "unpaired"] = Field(
+        description="Paired over the cases both cells ran when they share at least two, else unpaired."
+    )
+    case_values: tuple[list[float], list[float]] = Field(
+        description=(
+            "The control's and the arm's per-case values, in the reading's own units, aligned by case when paired: "
+            "what a floor's interval, and an aspect reading's, is computed from."
+        )
+    )
+
+
 class MultipleComparisons(EvalDocumentModel):
     """The aspect's comparisons, corrected as one family: its question's, or the exploratory one over every reading."""
 
@@ -1947,12 +1980,47 @@ NO_DESIGN_EXPLORATORY = (
     "answer, and the design its comparisons read was inferred from the runs, not declared."
 )
 
+#: The sentence an aspect gets when its campaign asks a question that names none of this aspect's merit axes: the
+#: question is the campaign's, and this aspect is not asked about.
+NO_AXIS_EXPLORATORY = (
+    "This campaign's question names no axis this aspect measures, so every finding this aspect supports is "
+    "exploratory: nothing here was asked about, and a pattern found in it is a lead, not an answer."
+)
+
 #: The sentence an aspect gets when its campaign's question was asked only after its first run.
 POST_HOC_EXPLORATORY = (
     "This campaign's question was declared after its first run, so every finding it supports is exploratory: a "
     "question asked once results existed may have been asked of them, and a pattern found here is a lead for a "
     "campaign that declares its question before it launches, not an answer."
 )
+
+
+#: The first bundle shape that reads one aspect of its campaign: a bundle of an earlier shape holds a declaration this
+#: build cannot read, so it is refused rather than half-read.
+ASPECT_BUNDLE_SHAPE = 59
+
+
+def refuse_a_bundle_before_aspects(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
+    """Refuse a stored bundle of a shape from before a bundle read one aspect, naming what holds it and the remedy.
+
+    A stored read is strict, so such a bundle would otherwise fail on the first field it lacks, in pydantic's words; it
+    is refused here, before it is read, in the reader's.
+
+    :param data: The stored bundle, as a mapping.
+    :ptype data: Mapping[str, Any]
+    :param what: What holds it, as a sentence names it (``this analysis``).
+    :ptype what: str
+    :param remedy: What to do instead: regenerate what holds it, or freeze it again.
+    :ptype remedy: str
+    :raises RefusedInput: The bundle's ``schema_version`` is missing or earlier than :data:`ASPECT_BUNDLE_SHAPE`.
+    """
+    shape = data.get("schema_version")
+    if not isinstance(shape, int) or shape < ASPECT_BUNDLE_SHAPE:
+        raise RefusedInput(
+            f"{what} holds an evidence bundle of shape {shape}, from before a bundle read one aspect of its campaign "
+            f"(shape {ASPECT_BUNDLE_SHAPE}), so this build cannot read it",
+            remedy=remedy,
+        )
 
 
 def asks_a_question(declared: AspectDeclaration | None) -> bool:
@@ -2028,8 +2096,9 @@ def exploratory_disclosure(declared: AspectDeclaration | None, first_run_at: str
     One derivation for the bundle's ``reading_scope`` and the report built from a stored analysis, so the two
     cannot word it differently. An aspect with no design (``declared is None``) is exploratory by definition — that
     is derived here, never stored as a flag of its own — and says so as such; one whose campaign asks no question
-    gets the no-question line, and one whose question was asked after its first run (:func:`asked_in_time`) the
-    post-hoc line.
+    gets the no-question line; one whose campaign asks a question naming no axis of this aspect (its ``merit_axes``
+    None) the no-axis line; and one whose question was asked after its first run (:func:`asked_in_time`) the post-hoc
+    line.
 
     :param declared: What the campaign declared, as the aspect reads it, or None when it declared no design.
     :ptype declared: AspectDeclaration | None
@@ -2043,7 +2112,9 @@ def exploratory_disclosure(declared: AspectDeclaration | None, first_run_at: str
         return NO_DESIGN_EXPLORATORY
     if asked_in_time(declared, first_run_at):
         return None
-    return POST_HOC_EXPLORATORY if asks_a_question(declared) else NO_QUESTION_EXPLORATORY
+    if asks_a_question(declared):
+        return POST_HOC_EXPLORATORY
+    return NO_AXIS_EXPLORATORY if declared.question.strip() else NO_QUESTION_EXPLORATORY
 
 
 class ArmExclusions(EvalDocumentModel):
@@ -2274,15 +2345,15 @@ class AnalysisContextBundle(EvalDocumentModel):
     # change level and every judge-identity row carry the settings a judge was sent with, and
     # `request_settings_disclosure` is fingerprinted. 54: `exclusions` (each arm's excluded trials by cause, a cut-off
     # judge reply counted as `truncated` with the cap it was sent) and `differential_exclusions`; a question declared
-    # after the campaign's first run no longer makes it confirmatory (`reading_scope.post_hoc_questions`,
-    # `question_declared`), which moves the families, the reading scope and the verdict order over unchanged runs; and
+    # after the campaign's first run no longer makes it confirmatory (then `reading_scope.post_hoc_questions`, now
+    # `question_post_hoc`; `question_declared`), which moves the families, the reading scope and the verdict order over unchanged runs; and
     # the trials and their census — `scoreboard` (each arm's ran, lost, usable, passed and failed), `trials` (one row
     # per trial, capped) and `trials_omitted`, `case_sets`, `design_frozen_at` and each run summary's
     # `judge_shares_candidate_model` — added; `package_version` is carried and left out of the fingerprint. 55: each
     # family comparison's `bounded_interval` (the interval a non-inferiority claim reads), and the overall pass rate
     # compared as a `trial` reading in the family of each question whose decision rule reads it, which moves that
     # family's size and adjusted p's over unchanged runs. 56: a declared question's decision rule is typed
-    # (`declared_design.questions[].decision`, `RateDrop` and `CostLower` clauses) where a rule was parsed from its
+    # (then `declared_design.questions[].decision`, now the aspect's floors; `RateDrop` and `CostLower` clauses) where a rule was parsed from its
     # words; a question whose words state a rule and that declares none typed reads no rule, so the pass rate leaves
     # its family. 57: `unexercised_factors`; a lever read off what ran that fewer than two results exercised leaves the
     # lever levels, the aliasing read, the factor pairs, the divergences and the coverage map over unchanged runs.
@@ -2294,9 +2365,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # 59: a bundle reads ONE aspect of its campaign: `aspect` (its label) joins the keys, and `declared` (the aspect's
     # declaration: the campaign's one question, its control, the aspect's margin, design and floors) replaces
     # `declared_design`. The family is keyed by the aspect (`ComparisonFamily.aspect`, None for the exploratory one),
-    # the overall pass rate joins it whenever the aspect declares a margin, the reading scope says whether the
-    # question came after the first run (`question_post_hoc`) and the verdict order scopes the one question
-    # (`verdict_order.question`).
+    # the overall pass rate joins it when the question was asked before the first run and the aspect declares a
+    # margin, the reading scope says whether the question came after the first run (`question_post_hoc`), the verdict
+    # order scopes the one question (`verdict_order.question`), and `floor_contrasts` carries the overall pass rate's
+    # and the cost per reply's per-case values whatever the family compares, which the floors read.
     schema_version: int = Field(
         default=59, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
@@ -2616,6 +2688,14 @@ class AnalysisContextBundle(EvalDocumentModel):
             "`refuted`: a control it does not beat, or a check the grammar refused at launch (`refused`)). The check's pass "
             "rate is the measure `goal_state:<check>`; on any check not `proven` that rate may be what a candidate "
             "that did nothing would score, so it never reads as the behaviour measured."
+        ),
+    )
+    floor_contrasts: list[FloorContrast] = Field(
+        default_factory=list,
+        description=(
+            "Each arm against the control under each rig, on the overall pass rate and on the cost per reply, with "
+            "the per-case values a floor reads: carried whatever the family compares, so neither a floor nor the "
+            "aspect's pass-rate reading depends on which readings the question asked about. Empty with no control."
         ),
     )
     multiple_comparisons: MultipleComparisons = Field(
@@ -3374,7 +3454,9 @@ __all__ = [
     "DeclaredLevelCoverage",
     "DesignArm",
     "exploratory_disclosure",
+    "ASPECT_BUNDLE_SHAPE",
     "asked_in_time",
+    "refuse_a_bundle_before_aspects",
     "asks_a_question",
     "question_axes",
     "POST_HOC_EXPLORATORY",
@@ -3382,6 +3464,9 @@ __all__ = [
     "FactorPairPivot",
     "FactorPairScan",
     "FamilyComparison",
+    "FLOOR_COST_MEASURE",
+    "FloorContrast",
+    "FloorContrastReading",
     "GoalCheckProofReading",
     "HeldFixedReading",
     "host_declarations_digest",
@@ -3401,6 +3486,7 @@ __all__ = [
     "PairingCorrelation",
     "MultipleComparisons",
     "NO_DESIGN_EXPLORATORY",
+    "NO_AXIS_EXPLORATORY",
     "NO_QUESTION_EXPLORATORY",
     "observed_mechanism_key",
     "OBSERVED_MECHANISM_PREFIX",

@@ -115,7 +115,7 @@ def _verdict_line(report: Report) -> str:
 
 
 def _projection_table(report: Report) -> TableBlock | None:
-    """The Decision section's ``To settle`` table, or None where the page projects nothing."""
+    """The Decision section's ``To show the floors hold`` table, or None where the page projects nothing."""
     tables = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "projection"]
     return tables[0] if tables else None
 
@@ -309,10 +309,13 @@ def test_a_held_floor_renders_no_projection() -> None:
 
 
 def test_a_broken_cost_floor_projects_nothing_and_its_open_rate_floor_still_does() -> None:
-    """A cost observed higher has broken the cost floor: no number of cases changes that. The rate floor beside it is
-    unclear on its own, so its cases are still projected; floors are read one by one, never as a rule."""
+    """A cost shown higher on its whole interval has broken the cost floor: more cases would not show it held. The
+    rate floor beside it is unclear on its own, so its cases are still projected; floors are read one by one, never
+    as a rule."""
     floors = (RateDrop(max_points=10), CostLower())
-    costly = replace(CHARACTER, control_cost=0.003, candidate_cost=0.004)
+    costly = replace(
+        CHARACTER, control_cost=0.003, candidate_cost=0.004, cost_interval=(0.0005, 0.0015), cost_compared=True
+    )
     rate, cost = _read(floors, costly)
     assert (rate.outcome, cost.outcome) == ("unclear", "broken")
     assert floor_projection(cost, per_case_usd=PER_CASE) is None
@@ -328,7 +331,9 @@ def test_an_open_cost_floor_beside_an_open_rate_floor_needs_the_most_either_need
     range.
     """
     floors = (RateDrop(max_points=10), CostLower())
-    cheaper = replace(CHARACTER, control_cost=0.02, candidate_cost=0.015, cost_interval=(-0.015, 0.005))
+    cheaper = replace(
+        CHARACTER, control_cost=0.02, candidate_cost=0.015, cost_interval=(-0.015, 0.005), cost_compared=True
+    )
     verdicts = _read(floors, cheaper)
     assert [verdict.outcome for verdict in verdicts] == ["unclear", "unclear"]
     cost = floor_projection(verdicts[1])
@@ -427,7 +432,7 @@ async def test_an_unclear_page_tables_the_cases_holding_needs_with_their_cost_at
     report = _page(bundle)
     assert "Showing the floors hold" not in _verdict_line(report), "no floor decides the verdict line"
     table = _projection_table(report)
-    assert table is not None and table.title == "To settle"
+    assert table is not None and table.title == "To show the floors hold"
     (row,) = table.values()
     assert row["floor"] == "no pass rate drops by more than 10 points"
     assert str(row["none"]).startswith(f"{NOMINAL[0]} cases, $") and str(row["observed"]).startswith(
@@ -617,7 +622,8 @@ async def test_a_thirty_case_next_step_and_answer_do_not_survive_the_style_gate_
 
 
 async def test_with_two_candidates_a_next_step_may_cite_either_arm_s_projected_cases() -> None:
-    """Each arm has its own To settle row, and a step citing one of them is citing code, not guessing."""
+    """Each arm has its own "To show the floors hold" row, and a step citing one of them is citing code, not
+    guessing."""
     comparison, bundle = await _ruled(third=True)
     table = _projection_table(_page(bundle))
     assert table is not None and len(table.values()) == 2

@@ -50,10 +50,6 @@ from packages.evals.tests.g2_support import (
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 
-#: The G2 cost floor broken, as the page's first line says it: the floor, its aspect, the arms by name.
-G2_WARNING = "Floor broken on classify: cheaper candidate costs more per reply than production."
-
-
 @pytest.fixture
 async def g2_ruled() -> tuple[Result, Report]:
     """The G2 numbers through the quick path, with the G2 floors declared before the run."""
@@ -68,30 +64,26 @@ async def g2_ruled() -> tuple[Result, Report]:
 async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
-    # A broken floor first, the first thing a reader sees, above the title. The title is the campaign's name; the
+    # The title is the campaign's name (no floor is broken on four cases, so none opens the page above it); the
     # question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
     # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
-    assert lines[0] == f"**{G2_WARNING}**"
-    assert lines[2] == "# G2: can the cheaper model replace production?"
-    assert lines[3] == f'"{G2_QUESTION}"'
-    assert lines[5] == (
+    assert lines[0] == "# G2: can the cheaper model replace production?"
+    assert lines[1] == f'"{G2_QUESTION}"'
+    assert lines[3] == (
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
-    page = report_html(report)
-    assert page.index(f'<p class="floor" role="alert"><strong>{html.escape(G2_WARNING)}</strong></p>') < page.index(
-        "<h1>"
-    )
+    assert '<p class="floor"' not in report_html(report)
     # The Decision section opens on the aspect's floors.
     assert "\n## Decision\n\n**Floors on classify**\n" in report_markdown(report)
-    assert lines[7] == "**cheaper candidate passed less often than production; too few cases to call a difference.**"
+    assert lines[5] == "**cheaper candidate passed less often than production; too few cases to call a difference.**"
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
-    assert lines[9:12] == [
+    assert lines[7:10] == [
         "**Scoreboard**",
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
+    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
     # The case floor's caveat says what is withheld under four cases and why, in the reader's terms; then the one
     # other fact that changes how the verdict reads, the label its row contradicts. Nothing else is under the
@@ -132,7 +124,7 @@ async def test_the_subhead_names_each_arm_by_the_version_that_answered_it(g2_rul
     ]
     bundle = report.bundle.model_copy(update={"arm_served_models": served})
     lines = report_markdown(build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")).splitlines()
-    assert lines[5].startswith(
+    assert lines[3].startswith(
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash-20261001 (cheaper candidate) · "
     )
 
@@ -151,7 +143,7 @@ async def test_the_question_is_quoted_once_under_the_title_and_never_in_the_body
     _, report = g2_ruled
     markdown = report_markdown(report)
     assert markdown.count("does deepseek-v4-flash hold every pass/fail queue-discipline dimension") == 1
-    assert markdown.count(G2_WARNING) == 1 and "Switch to" not in markdown
+    assert "Switch to" not in markdown
     (asked,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
     assert asked.section == "header" and asked.text == f'"{G2_QUESTION}"'
     assert f'<p class="question">{html.escape(asked.text)}</p>' in report_html(report)
@@ -580,7 +572,13 @@ def test_a_memo_sentence_a_broken_floor_warns_against_is_printed_as_written() ->
     """Until floors, a settled rule replaced a memo sentence whose decision word disagreed with it. A floor warns and
     never decides, so the writer's decision words stand; the broken floor is the page's first line instead."""
     readings = FloorReadings(
-        rates=(RateReading("the pass rate", 10, 12, 2, 12),), control_cost=0.003092, candidate_cost=0.003301
+        rates=(RateReading("the pass rate", 10, 12, 2, 12),),
+        control_cost=0.003092,
+        candidate_cost=0.003301,
+        control_cases=20,
+        candidate_cases=20,
+        cost_interval=(0.0001, 0.0003),
+        cost_compared=True,
     )
     floors = tuple(
         read_floor(Floor(aspect="queue", clause=clause), readings, control="production", candidate="cheaper candidate")

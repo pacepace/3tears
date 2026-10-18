@@ -1,18 +1,19 @@
 """The floors on an aspect, each read on one candidate: broken, held or unclear, and why.
 
-A floor (:class:`~threetears.evals.kernel.declaration.Floor`) is a typed clause on one aspect: ``RateDrop(max_points=10)``
-(no pass rate may drop by more than 10 points against the control) or ``CostLower()`` (the candidate must cost less per
+A floor (:class:`~threetears.evals.kernel.declaration.Floor`) is a typed clause on one aspect:
+``RateDrop(max_points=10)`` (no pass rate may drop by more than 10 points against the control) or ``CostLower()`` (the candidate must cost less per
 reply). **A floor only warns.** It never decides: code reports, the writer recommends and a person decides, so a broken
 floor is the first line of the page and the call that adopts the candidate anyway records it as overridden.
 :func:`evaluate_floor` reads one floor on one candidate (:func:`read_floor` with the per-rate detail the page prints),
 and :func:`aspect_pass_rate` reads the aspect's overall pass rate on a candidate, which the campaign's readings compare.
 
 **Each floor is read at its nominal level, with no correction.** A floor is read intersection-union: it is broken where
-any rate it reads is shown past it, so each rate is read on its own bounded interval at
-:data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`, computed again from the per-case values the family's
-comparison carries (``case_values``), never at the family's Bonferroni level: a warning that fires less often for every
-floor added is no warning. Each rate a rate floor reads (the overall pass rate and each check's, or the one reading it
-names) is in one of three states; cost is read as observed:
+any rate it reads is shown past it, so each rate is read on its own two-sided bounded interval at
+:data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL` (each end a 2.5% one-sided claim), computed again from per-case
+values, never at the family's Bonferroni level: a warning that fires less often for every floor added is no warning.
+The overall pass rate's and the cost per reply's values are the bundle's ``floor_contrasts``, carried whatever the
+family compares; a check's are its family comparison's (``case_values``). Each rate a rate floor reads (the overall pass
+rate and each check's, or the one reading it names) is in one of three states, and so is cost, on its own interval:
 
 - **Broken.** Every arm has at least the case floor of usable cases
   (:data:`~threetears.evals.analysis.report.verdict.MIN_CASES`), and the bounded interval on the candidate minus the
@@ -23,11 +24,13 @@ names) is in one of three states; cost is read as observed:
   coarse per-case shares it holds too often (``docs/measuring-soundly.md``).
 - **Unclear**, with the reason in plain words. That includes a drop past the margin on the point estimate alone, whose
   interval reaches back within it: its reason says the point estimate is past and gives the interval, so it never reads
-  as a measured regression. A rate both arms pass on every trial, or on none, cannot separate them, and its reason says
-  so with the counts, on any number of cases.
+  as a measured regression. A rate both arms pass on every trial, or on none, and that no interval reads either way,
+  cannot separate them, and its reason says so with the counts, before any other reason.
 - **A rate floor** is broken when one rate it reads is broken, held when every one is held, and otherwise unclear.
-- **Cost, broken.** A candidate observed to cost no less per reply breaks it: cost is the arm's own price, not a sample.
-- **Cost, held.** Every arm is at the case floor and the cost contrast's interval lies wholly below zero.
+- **Cost.** Read as a rate is, on the t interval on the per-case cost difference at the nominal level (cost declares no
+  range, so no bounded interval exists): broken where every arm is at the case floor and the interval lies wholly above
+  zero, held where it lies wholly below, unclear otherwise. Cost compared on no case, or alike on every case, is
+  unclear and says which.
 
 **Each reason says the counts and the margin in words, naming the arms, and only the rate it is about.** A broken rate
 reads ``v2 passed 14 of 60 to v1's 29, a drop that exceeds the margin of 10 points on its whole interval (at least
@@ -47,7 +50,13 @@ from dataclasses import dataclass, replace
 from functools import reduce
 from typing import TYPE_CHECKING, Literal
 
-from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
+from threetears.evals.analysis.bundle.schema import (
+    FLOOR_COST_MEASURE,
+    TRIAL_PASS_NAME,
+    AnalysisContextBundle,
+    FamilyComparison,
+    FloorContrast,
+)
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
@@ -56,6 +65,7 @@ from threetears.evals.analysis.stats import (
     bounded_cases_to_clear,
     bounded_difference_interval,
     cases_to_clear,
+    difference_interval,
 )
 from threetears.evals.analysis.style import code, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
@@ -72,9 +82,6 @@ FloorOutcome = Literal["broken", "held", "unclear"]
 
 #: The fewest usable cases on every arm before a rate floor can be read broken or held: the page's case floor.
 _FLOOR = SMALL_N_BAND_FLOOR
-
-#: The measure the scoreboard's cost per reply is the mean of, whose contrast decides a cost floor.
-_REPLY_COST = "production_replicating_cost"
 
 #: The share range every rate a floor reads lies in, which its bounded interval is read on.
 _RATE_RANGE = (0.0, 1.0)
@@ -156,7 +163,9 @@ class FloorReadings:
     """What a floor is read against for one candidate.
 
     ``control_cases`` and ``candidate_cases`` are each arm's usable cases, None when not counted; ``cost_interval``
-    is the bundle's contrast interval on the arm's cost per reply minus the control's, None when none was computed.
+    is the t interval on the arm's cost per reply minus the control's at ``confidence``, computed from the per-case
+    costs the bundle carries (``floor_contrasts``), uncorrected; None when none exists. ``cost_compared`` says whether
+    any per-case costs were carried for the pair at all, so an absent interval reads as not compared or as no spread.
     """
 
     rates: tuple[RateReading, ...]
@@ -165,6 +174,8 @@ class FloorReadings:
     control_cases: int | None = None
     candidate_cases: int | None = None
     cost_interval: tuple[float, float] | None = None
+    cost_compared: bool = False
+    confidence: float = INTERVAL_LEVEL
 
     def fewest_cases(self) -> int | None:
         """The fewer usable cases of the two arms; None when either was not counted."""
@@ -340,7 +351,8 @@ def floor_warning(verdict: FloorVerdict, *, candidate: str) -> str:
     candidate and the interval it was broken on.
 
     ``Floor broken on conversation: v2's pass rate falls past the 10-point margin on its whole interval, a drop of
-    12.3 to 35.2 points.`` A cost floor: ``Floor broken on conversation: v2 costs more per reply than v1.``
+    12.3 to 35.2 points.`` A cost floor: ``Floor broken on conversation: v2 costs more per reply than v1 on the whole
+    interval.``
 
     :param verdict: A broken floor, read on ``candidate``.
     :ptype verdict: FloorVerdict
@@ -400,8 +412,10 @@ def _change(drop: float) -> str:
 def _rate_verdict(
     rate: RateReading, fewest: int, margin: float, control: str, candidate: str, *, named: bool
 ) -> RateVerdict:
-    """One rate a rate floor reads, in one of three states: broken (its whole interval past the margin, over enough
-    cases), held (its interval within the margin, over enough cases), or unclear.
+    """One rate a rate floor reads, in one of three states, read in this order: broken (its whole interval past the
+    margin, over enough cases), then held (its interval within the margin, over enough cases), then unclear, whose
+    reason is the first that applies: both arms passing every trial or none (it cannot separate them), too few cases
+    for any interval, a drop past the margin on the point estimate alone, then a drop not shown within the margin.
 
     ``fewest`` is the fewer usable cases of the two arms; ``named`` names the rate in the reason, as every rate past
     the floor's first is.
@@ -483,34 +497,54 @@ def _rate_floor(
 
 
 def _cost_floor(readings: FloorReadings, control: str, candidate: str) -> tuple[FloorOutcome, str]:
-    """A cost floor: broken on a cost observed no lower, held on an interval wholly below zero over enough cases."""
-    ours, theirs = readings.control_cost, readings.candidate_cost
-    if ours is None or theirs is None:
+    """A cost floor, read on its own interval as a rate floor is: broken where the interval on the cost difference lies
+    wholly above zero, held where it lies wholly below, each over enough cases; otherwise unclear, saying why."""
+    if readings.control_cost is None or readings.candidate_cost is None:
         return "unclear", "cost per reply was not measured on both arms"
-    if theirs > ours:
-        return "broken", f"{candidate} costs more per reply than {control}"
-    if theirs == ours:
-        return "broken", f"{candidate} costs no less per reply than {control}"
+    if not readings.cost_compared:
+        return "unclear", "cost per reply was not compared: no case carries it on both arms"
     fewest = readings.fewest_cases()
     if fewest is None:
         return "unclear", "the usable cases were not counted on both arms"
     if fewest < _FLOOR:
         return (
             "unclear",
-            f"{fewest} cases cannot show the cost is lower, which takes an interval estimated only from {_FLOOR} "
-            "independent cases",
+            f"{fewest} cases are too few for the interval that would show the cost either way, which is estimated only "
+            f"from {_FLOOR} independent cases",
         )
-    if readings.cost_interval is None or readings.cost_interval[1] >= 0:
-        return "unclear", "the cost difference did not separate"
-    return "held", f"{candidate} costs less per reply than {control}"
+    interval = readings.cost_interval
+    if interval is None:
+        return "unclear", "every case cost alike on both arms, so no interval on the cost difference exists"
+    if interval[0] > 0:
+        return "broken", f"{candidate} costs more per reply than {control} on the whole interval"
+    if interval[1] < 0:
+        return "held", f"{candidate} costs less per reply than {control}"
+    return "unclear", "the cost difference did not separate"
+
+
+def _floor_contrast(
+    bundle: AnalysisContextBundle, reading: str, name: str, control: str, candidate: str
+) -> FloorContrast | None:
+    """The per-case values a floor reads for ``candidate`` against ``control`` on one reading, whatever the family
+    compares: the first rig both ran under, in the bundle's order. None where the bundle carries none."""
+    return next(
+        (
+            contrast
+            for contrast in bundle.floor_contrasts
+            if contrast.reading == reading
+            and contrast.name == name
+            and contrast.control.variant_key == control
+            and contrast.contrast.variant_key == candidate
+        ),
+        None,
+    )
 
 
 def _contrast(
-    bundle: AnalysisContextBundle, reading: str, name: str, control: str, candidate: str, *, bounded: bool
+    bundle: AnalysisContextBundle, reading: str, name: str, control: str, candidate: str
 ) -> FamilyComparison | None:
-    """The contrast of ``candidate`` against ``control`` on one reading in the aspect's family, carrying the values
-    asked for: its per-case values where ``bounded`` (what a floor's interval is computed again from), else its
-    interval. None when the family tested none, or none carrying them."""
+    """The contrast of ``candidate`` against ``control`` on one reading in the aspect's family, carrying the per-case
+    values a floor's interval is computed again from. None when the family tested none, or none carrying them."""
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             if (
@@ -518,7 +552,7 @@ def _contrast(
                 and comparison.name == name
                 and comparison.control.variant_key == control
                 and comparison.contrast.variant_key == candidate
-                and (comparison.case_values if bounded else comparison.interval) is not None
+                and comparison.case_values is not None
             ):
                 return comparison
     return None
@@ -558,29 +592,33 @@ def _compared_as(name: str) -> str:
     return ACCURACY_MEASURE if name == MATCH_MEASURE else name
 
 
-def _read_on(rate: RateReading, comparison: FamilyComparison | None) -> RateReading:
+def _read_on(
+    rate: RateReading, comparison: FamilyComparison | FloorContrast | None, *, confidence: float
+) -> RateReading:
     """``rate`` with what its contrast carries: its per-case values with higher better (each ``1 - v`` where lower is
-    better, on the rate's 0-1 range), whether they are paired, and the bounded interval on them computed again at the
-    nominal level, uncorrected."""
+    better, on the rate's 0-1 range), whether they are paired, and the bounded interval on them computed again at
+    ``confidence``, uncorrected."""
     if comparison is None or comparison.case_values is None:
         return rate
     control, contrast = comparison.case_values
-    if not comparison.higher_is_better:
+    if isinstance(comparison, FamilyComparison) and not comparison.higher_is_better:
         control, contrast = [1.0 - v for v in control], [1.0 - v for v in contrast]
     paired = comparison.test == "paired"
     interval = bounded_difference_interval(
-        control, contrast, paired=paired, value_range=_RATE_RANGE, confidence=INTERVAL_LEVEL
+        control, contrast, paired=paired, value_range=_RATE_RANGE, confidence=confidence
     )
     return replace(
         rate,
         interval=interval,
         samples=(tuple(control), tuple(contrast)),
         paired=paired,
-        confidence=INTERVAL_LEVEL,
+        confidence=confidence,
     )
 
 
-def floor_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -> FloorReadings:
+def floor_readings(
+    bundle: AnalysisContextBundle, control: str, candidate: str, *, confidence: float = INTERVAL_LEVEL
+) -> FloorReadings:
     """The figures a floor is read against for one candidate on the bundle's aspect, from the bundle alone.
 
     The pass rates are every trial's, then each check's pass rate the arms' cells carry, counted on its better end (a
@@ -588,10 +626,10 @@ def floor_readings(bundle: AnalysisContextBundle, control: str, candidate: str) 
     count: :func:`_held` over :func:`~threetears.evals.kernel.metrics.rule_rates`, the list
     :func:`~threetears.evals.kernel.declaration.decision_readings` offers), then each pass/fail judged dimension on
     the capability axis, read the same way from its scores; each arm's lost trials are trials it could still add.
-    Each rate carries the bounded interval computed again at the nominal level from its contrast's per-case values,
-    where the aspect's family compared it (the overall pass rate's is its ``trial`` contrast, compared whenever the
-    aspect declares a margin). Cost is each arm's cost per reply, with the cost contrast's interval. Each arm carries
-    its usable cases.
+    Each rate carries the bounded interval computed again at ``confidence`` from its per-case values: the overall pass
+    rate's from the bundle's ``floor_contrasts``, carried whatever the family compares, each check's from its family
+    comparison, where the family compared it. Cost is each arm's cost per reply, with the t interval on the per-case
+    costs ``floor_contrasts`` carries, at ``confidence``. Each arm carries its usable cases.
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
@@ -599,6 +637,9 @@ def floor_readings(bundle: AnalysisContextBundle, control: str, candidate: str) 
     :ptype control: str
     :param candidate: The candidate's variant key.
     :ptype candidate: str
+    :param confidence: The two-sided level every interval is read at: the nominal one for a floor; a campaign's
+        readings pass the level their Holm step tests at.
+    :ptype confidence: float
     :return: The readings; no rate where either arm is off the scoreboard.
     :rtype: FloorReadings
     """
@@ -612,7 +653,8 @@ def floor_readings(bundle: AnalysisContextBundle, control: str, candidate: str) 
             RateReading(
                 "the pass rate", ours.passed, ours.usable, theirs.passed, theirs.usable, lost_control, lost_candidate
             ),
-            _contrast(bundle, "trial", TRIAL_PASS_NAME, control, candidate, bounded=True),
+            _floor_contrast(bundle, "trial", TRIAL_PASS_NAME, control, candidate),
+            confidence=confidence,
         )
     ]
     oriented = rule_rates(bundle.measure_catalog.values())
@@ -633,7 +675,8 @@ def floor_readings(bundle: AnalysisContextBundle, control: str, candidate: str) 
                     RateReading(
                         heading, *by_arm[control], *by_arm[candidate], lost_control, lost_candidate, measure=name
                     ),
-                    _contrast(bundle, "measure", _compared_as(name), control, candidate, bounded=True),
+                    _contrast(bundle, "measure", _compared_as(name), control, candidate),
+                    confidence=confidence,
                 )
             )
     # A judged dimension on the pass/fail scale is a pass rate too: each score a 1 or a 0, its count the mean times
@@ -660,21 +703,31 @@ def floor_readings(bundle: AnalysisContextBundle, control: str, candidate: str) 
                         lost_candidate,
                         measure=judged.name,
                     ),
-                    _contrast(bundle, "judged", judged.name, control, candidate, bounded=True),
+                    _contrast(bundle, "judged", judged.name, control, candidate),
+                    confidence=confidence,
                 )
             )
-    cost = _contrast(bundle, "measure", _REPLY_COST, control, candidate, bounded=False)
+    cost = _floor_contrast(bundle, "measure", FLOOR_COST_MEASURE, control, candidate)
+    cost_interval = (
+        None
+        if cost is None
+        else difference_interval(*cost.case_values, paired=cost.test == "paired", confidence=confidence)
+    )
     return FloorReadings(
         rates=tuple(rates),
         control_cost=ours.reply_cost_usd,
         candidate_cost=theirs.reply_cost_usd,
         control_cases=ours.usable_cases,
         candidate_cases=theirs.usable_cases,
-        cost_interval=None if cost is None else cost.interval,
+        cost_interval=cost_interval,
+        cost_compared=cost is not None,
+        confidence=confidence,
     )
 
 
-def aspect_pass_rate(bundle: AnalysisContextBundle, control: str, candidate: str) -> RateReading | None:
+def aspect_pass_rate(
+    bundle: AnalysisContextBundle, control: str, candidate: str, *, confidence: float = INTERVAL_LEVEL
+) -> RateReading | None:
     """The aspect's overall pass rate on one candidate against the control: every usable trial's, with the per-case
     shares its family compared, which a campaign's readings test across aspects.
 
@@ -684,12 +737,15 @@ def aspect_pass_rate(bundle: AnalysisContextBundle, control: str, candidate: str
     :ptype control: str
     :param candidate: The candidate's variant key.
     :ptype candidate: str
-    :return: The rate, its interval at the nominal level (:class:`RateReading`); its ``samples`` and ``interval`` None
-        where the aspect's family did not compare the pass rate (the aspect declares no margin, or no control
-        resolved). None where either arm is off the scoreboard.
+    :param confidence: The two-sided level its interval is read at; the nominal one by default.
+    :ptype confidence: float
+    :return: The rate, its bounded interval at ``confidence`` and the per-case shares it read (:class:`RateReading`),
+        from the bundle's ``floor_contrasts`` whatever the family compares; its ``samples`` and ``interval`` None only
+        where a side has fewer than two cases with a usable trial, or no control resolved. None where either arm is
+        off the scoreboard.
     :rtype: RateReading | None
     """
-    rates = floor_readings(bundle, control, candidate).rates
+    rates = floor_readings(bundle, control, candidate, confidence=confidence).rates
     return next((rate for rate in rates if rate.measure is None), None)
 
 
@@ -697,8 +753,8 @@ def aspect_pass_rate(bundle: AnalysisContextBundle, control: str, candidate: str
 # The cases that would show a floor holds: an unclear floor's interval, computed again at more independent cases
 # =============================================================================
 
-#: How a projection says what showing a floor holds needs on one side of the question: ``more`` cases than the run had (``cases``
-#: of them), ``enough`` (the run's own ``cases`` already clear), ``lost`` (the interval already clears and only the
+#: How a projection says what showing a floor holds needs on one side of the question: ``more`` cases than the run
+#: had (``cases`` of them), ``enough`` (the run's own ``cases`` already clear), ``lost`` (the interval already clears and only the
 #: lost trials keep the drop from being shown within the margin), ``never`` (no number of cases would), or ``beyond``
 #: (more than ``cases``, the most searched).
 NeedKind = Literal["more", "enough", "lost", "never", "beyond"]
@@ -972,13 +1028,13 @@ def projection_sentence(projection: SampleProjection) -> str:
         )
     if none.kind != "never":
         return (
-            f"Showing the floors hold needs {_count_words(none, cases=cases, short=False)} if the arms do not differ, and none would "
-            f"if they differ as observed{tail}"
+            f"Showing the floors hold needs {_count_words(none, cases=cases, short=False)} if the arms do not differ, "
+            f"and none would if they differ as observed{tail}"
         )
     if observed.kind != "never":
         return (
-            f"Showing the floors hold needs {_count_words(observed, cases=cases, short=False)} if the arms differ as observed, and "
-            f"none would if they do not differ{tail}"
+            f"Showing the floors hold needs {_count_words(observed, cases=cases, short=False)} if the arms differ as "
+            f"observed, and none would if they do not differ{tail}"
         )
     return "No number of new cases would show the floors hold, whether the arms do not differ or differ as observed."
 

@@ -38,7 +38,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evidence_digest
+from threetears.evals.analysis.bundle.schema import (
+    AnalysisContextBundle,
+    evidence_digest,
+    refuse_a_bundle_before_aspects,
+)
 from threetears.evals.analysis.errors import GenerationError
 from threetears.evals.analysis.generator import (
     build_user_message,
@@ -419,7 +423,11 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
       every stored read;
     - every frozen value must survive the rebuild unchanged — none altered by validation.
 
-    **A field the bundle model gained after the freeze is NOT a loss, and that tolerance is
+    **A bundle frozen before shape 59 is refused**, before any of this: it holds the campaign's declaration as a
+    ``CampaignDesign``, which a bundle that reads one aspect no longer carries, so no rebuild can keep its values, and
+    the case is frozen again from its campaign instead.
+
+    **From shape 59 on, a field the bundle model gained after the freeze is NOT a loss, and that tolerance is
     deliberate** — the one place a read here accepts an older shape. The frozen bundle is the
     EVIDENCE the case's labels were written against, not a stored document to be dropped and
     rewritten across a change: a re-freeze would re-assemble today's evidence, which is not what
@@ -433,6 +441,7 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
     :ptype case: ReporterCase
     :return: The bundle, carrying every frozen value.
     :rtype: AnalysisContextBundle
+    :raises RefusedInput: The frozen bundle's shape is from before a bundle read one aspect (59).
     :raises ValueError: The frozen bundle does not validate, no longer digests to the recorded
         fingerprint, or loses or changes a frozen value in the round-trip.
     """
@@ -444,6 +453,11 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
             "generator nor the judge would see the bundle this case pins"
         )
     frozen = case.bundle
+    refuse_a_bundle_before_aspects(
+        frozen,
+        what=f"the reporter case frozen over bundle {case.bundle_fingerprint}",
+        remedy="freeze the case again from its campaign, so its bundle reads the campaign's aspect",
+    )
     bundle = AnalysisContextBundle.from_dict(frozen)
     added: list[str] = []
     losses = _losses(frozen, bundle.to_dict(), "bundle", added)

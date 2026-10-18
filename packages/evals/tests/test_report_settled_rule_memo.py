@@ -170,9 +170,9 @@ async def test_a_broken_floor_never_replaces_the_memo_s_answer() -> None:
     markdown = report_markdown(report)
     assert "**Answered.** Keep production." in markdown
     assert "See the decision rule above." not in markdown and "Still open" not in markdown
-    warnings = _warnings(report)
-    assert len(warnings) == 2 and all(line.startswith(f"Floor broken on {bundle.aspect}: ") for line in warnings)
-    assert markdown.startswith(f"**{warnings[0]}**\n\n**{warnings[1]}**\n\n# ")
+    (warning,) = _warnings(report)
+    assert warning.startswith(f"Floor broken on {bundle.aspect}: ")
+    assert markdown.startswith(f"**{warning}**\n\n# ")
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
@@ -187,16 +187,17 @@ async def test_a_memo_recommending_the_arm_a_floor_warns_against_is_printed_as_w
     assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "contradicts" in b.text]
 
 
-async def test_both_floors_broken_read_as_two_warnings_and_the_verdict_names_no_keep() -> None:
+async def test_the_broken_rate_floor_is_one_warning_and_the_verdict_names_no_keep() -> None:
+    """The candidate costs more on every case by one amount: no interval reads the cost floor, so it is unclear and
+    warns of nothing, though the candidate is dearer (until the cost floor read its own interval, it broke)."""
     _, bundle = await _compare(0.003301, shown=True)
     report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
-    rate, cost = _warnings(report)
+    (rate,) = _warnings(report)
     assert rate.startswith(
         f"Floor broken on {bundle.aspect}: cheaper candidate's pass rate falls past the 10-point margin on its whole "
         "interval, a drop of "
     ), rate
-    assert cost == f"Floor broken on {bundle.aspect}: cheaper candidate costs more per reply than production."
-    assert all(lint_prose(line) == [] for line in (rate, cost))
+    assert lint_prose(rate) == []
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
     assert not verdict.startswith("Keep")
 
@@ -220,23 +221,22 @@ async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_he
     markdown = report_markdown(report)
     titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
     # The two values plainly (the gap is measured and stated), then one sentence of what is withheld and why: the
-    # gap's interval, never the gap, and never a bare "needs 5".
-    assert titles == [
-        "Cheaper candidate passed 30 of 60 on Label matched to production's 60.",
-        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092.",
-    ]
+    # gap's interval, never the gap, and never a bare "needs 5". The cost floor read nothing either way (every case
+    # cost alike), so the cost finding is the writer's own, its hedge left to it.
+    assert titles == ["Cheaper candidate passed 30 of 60 on Label matched to production's 60.", cost]
     assert "cannot statistically confirm" not in markdown.split("## Methods", 1)[0]
     # The body keeps what it adds and drops its hedge: the title already states code's counts.
     (said,) = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_body"]
     assert said == "The candidate skipped the queue."
     disclosed = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and "disputes a difference" in b.text]
-    assert len(disclosed) == 3 and DISPUTING in disclosed[0]
+    assert len(disclosed) == 2 and DISPUTING in disclosed[0]
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
 async def test_a_hedge_on_a_drop_past_the_margin_on_its_point_estimate_alone_stands() -> None:
-    """G2's own four cases: the drop is past the margin on its point estimate only, so the rate clause is unsettled
-    (#845), and a finding saying four cases cannot confirm it says what the rule says. Only the cost is replaced."""
+    """G2's own four cases: the drop is past the margin on its point estimate only, so the rate floor is unclear (#845),
+    and a finding saying four cases cannot confirm it says what the floor says. The cost floor is unclear on four cases
+    too, so its finding stands as well (until the cost floor read its own interval, it was replaced)."""
     comparison, bundle = await _compare(0.003301)
     aliases = _aliases(comparison, bundle)
     cost = "Cheaper candidate cost more per reply, but four cases cannot establish the difference"
@@ -247,11 +247,7 @@ async def test_a_hedge_on_a_drop_past_the_margin_on_its_point_estimate_alone_sta
         "Keep production.",
     )
     titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
-    assert titles == [
-        DISPUTING,
-        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092. Whether that gap holds on more "
-        "cases is not estimated below 5 independent cases.",
-    ]
+    assert titles == [DISPUTING, cost]
 
 
 async def test_a_finding_naming_no_reading_is_noted_with_what_was_not_tested_and_leaves_the_memo() -> None:
@@ -332,6 +328,8 @@ def test_a_floor_settles_a_rate_it_read_and_showed_either_way_and_no_other() -> 
         candidate_cost=0.003301,
         control_cases=20,
         candidate_cases=20,
+        cost_interval=(0.0001, 0.0003),
+        cost_compared=True,
     )
     on = {"control": "production", "candidate": "cheaper candidate"}
     verdicts = [read_floor(Floor(aspect="queue", clause=clause), readings, **on) for clause in G2_FLOORS]

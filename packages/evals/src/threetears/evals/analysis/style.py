@@ -358,6 +358,7 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
     fenced = False
     folded = 0
     header_row = False
+    titled = False
     for line in markdown.splitlines():
         if line.startswith("```"):
             fenced = not fenced
@@ -376,8 +377,10 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
         header_row = False
         if line.startswith("#"):
             heading = line.lstrip("#").strip()
-            # The page's title, its one level-one heading, is a name: held to no header length.
-            found += lint_prose(heading, header=not line.startswith("# "))
+            # The page's own title, its first level-one heading, is a name: held to no header length. Any other heading is.
+            title = not titled and line.startswith("# ")
+            titled = titled or title
+            found += lint_prose(heading, header=not title)
             continue
         if _QUOTED_LINE.match(line):
             continue
