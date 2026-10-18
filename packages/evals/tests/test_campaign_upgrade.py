@@ -24,6 +24,7 @@ from threetears.evals.kernel.declaration import (
     Floor,
     Question,
     RateDrop,
+    preregistered_questions,
 )
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.values import SweepableValue
@@ -62,6 +63,12 @@ def _aspect(upgraded: dict[str, Any]) -> Aspect:
 
 
 class TestTheFrozenCampaign:
+    def test_a_behavior_holding_a_slash_labels_an_aspect_that_validates(self) -> None:
+        upgraded = upgrade_campaign_v15({**_frozen(), "behavior": "queue/discipline"})
+
+        assert _aspect(upgraded).label == "queue-discipline"
+        assert upgraded["behavior"] == "queue/discipline"
+
     def test_it_reads_as_one_aspect_labelled_with_its_behavior(self) -> None:
         stored = _frozen()
         upgraded = upgrade_campaign_v15(stored)
@@ -75,7 +82,7 @@ class TestTheFrozenCampaign:
         moved = {"questions", "control", "control_levers", "control_identity_version", "declared_at", "declared_by"}
         assert aspect.design.model_dump(mode="json") == {
             **{key: value for key, value in design.items() if key not in moved},
-            "merit_axes": [],
+            "merit_axes": None,
         }
         assert aspect.margin is None
 
@@ -128,14 +135,22 @@ class TestARuleBearingCampaign:
         ]
         assert [floor.clause for floor in _floors(upgraded)] == list(rule.clauses)
 
-    def test_the_margin_is_the_first_clause_that_reads_every_pass_rate(self) -> None:
+    def test_the_margin_is_the_floor_that_reads_every_pass_rate(self) -> None:
+        first = DecisionRule(clauses=(RateDrop(max_points=3, reading="cites a source"), RateDrop(max_points=5)))
+        upgraded = upgrade_campaign_v15(_stored(Question(text="Is it as good?", decision=first)))
+
+        assert _aspect(upgraded).margin == 5.0
+
+    def test_the_margin_tightens_with_the_floor_it_is_read_off(self) -> None:
         first = DecisionRule(clauses=(RateDrop(max_points=3, reading="cites a source"), RateDrop(max_points=5)))
         second = DecisionRule(clauses=(RateDrop(max_points=2),))
         upgraded = upgrade_campaign_v15(
             _stored(Question(text="Is it as good?", decision=first), Question(text="And cheaper?", decision=second))
         )
 
-        assert _aspect(upgraded).margin == 5.0
+        every_rate = next(floor for floor in _floors(upgraded) if floor.key == "conversation/rate_drop/*")
+        assert every_rate.clause == RateDrop(max_points=2)
+        assert _aspect(upgraded).margin == 2.0
 
     def test_two_clauses_on_one_reading_are_the_tighter_floor(self) -> None:
         first = DecisionRule(clauses=(RateDrop(max_points=5), CostLower()))
@@ -190,8 +205,8 @@ class TestAMultiQuestionCampaign:
 
     def test_it_is_declared_when_its_last_question_was_asked(self) -> None:
         stored = _stored(
-            Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00+00:00"),
             Question(text="Is it quicker?", asked_at="2026-10-03T00:00:00+00:00"),
+            Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00+00:00"),
         )
         stored["declared_design"]["declared_at"] = "2026-10-01T00:00:00+00:00"
 
@@ -199,6 +214,42 @@ class TestAMultiQuestionCampaign:
 
         assert upgraded["declared_at"] == "2026-10-03T00:00:00+00:00"
         assert _aspect(upgraded).declared_at == "2026-10-01T00:00:00+00:00"
+
+    def test_a_design_re_stamped_after_its_questions_leaves_them_pre_registered(self) -> None:
+        # Naming the control after runs joined re-stamps the design: its questions were still asked first.
+        stored = _stored(Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00+00:00"))
+        stored["declared_design"]["declared_at"] = "2026-10-09T00:00:00+00:00"
+
+        upgraded = upgrade_campaign_v15(stored)
+
+        assert upgraded["declared_at"] == "2026-10-02T00:00:00+00:00"
+        assert _aspect(upgraded).declared_at == "2026-10-09T00:00:00+00:00"
+
+    def test_one_asking_nothing_is_declared_when_its_design_was(self) -> None:
+        stored = _stored(Question(text="Old?", retired_at="2026-10-05T00:00:00+00:00"))
+        stored["declared_design"]["declared_at"] = "2026-10-04T00:00:00+00:00"
+
+        upgraded = upgrade_campaign_v15(stored)
+
+        assert upgraded["declared_at"] == "2026-10-04T00:00:00+00:00"
+        design = _aspect(upgraded).design
+        assert design is not None
+        assert design.merit_axes is None
+
+    @pytest.mark.parametrize("asked_at", ["last tuesday", "2026-10-02T00:00:00"])
+    def test_an_unorderable_asked_at_is_refused_as_pre_registration_refuses_it(self, asked_at: str) -> None:
+        stored = _stored(Question(text="Is it kinder?"), Question(text="Is it quicker?"))
+        stored["declared_design"]["questions"][0]["asked_at"] = asked_at
+        design = minimal_declaration().model_copy(
+            update={"questions": [Question(text="Is it kinder?", asked_at=asked_at)]}
+        )
+
+        with pytest.raises(ValueError, match="question .* is stamped") as upgrading:
+            upgrade_campaign_v15(stored)
+        with pytest.raises(ValueError, match="is stamped") as pre_registering:
+            preregistered_questions(design, "2026-10-09T00:00:00+00:00")
+
+        assert str(upgrading.value).split(" is stamped ")[1] == str(pre_registering.value).split(" is stamped ")[1]
 
 
 class TestACampaignWithNoRule:
