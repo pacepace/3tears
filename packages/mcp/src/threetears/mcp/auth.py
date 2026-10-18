@@ -467,6 +467,13 @@ class LocalGrantAuthorizer:
         # non-admin check: the bump that triggered the failed load is already counted as seen,
         # so the cache may hold grants revoked since the last good load.
         self._reload_owed = False
+        # reloads overlap (a bump's, a reset's, the catch-up tick's), so each is numbered when it
+        # STARTS. a success clears the owed flag only when it started after the newest failure,
+        # and installs its cache only when nothing newer has landed: otherwise a slow load that
+        # began before a revocation could finish last and wipe out the failure that followed it.
+        self._reload_started = 0
+        self._applied_generation = 0
+        self._failed_generation = 0
         self._started = False
         self._catchup_task: PeriodicTask | None = None
 
@@ -658,9 +665,16 @@ class LocalGrantAuthorizer:
         allowed, and the bump that asked for this load is already
         counted as seen, so nothing else would have asked again.
 
+        overlapping reloads are ordered by when they STARTED (see
+        ``_reload_started`` in ``__init__``): a failure is owed only if no
+        reload that started later has landed, and a success clears what is
+        owed only if it started after the newest failure.
+
         :return: nothing
         :rtype: None
         """
+        self._reload_started += 1
+        generation = self._reload_started
         try:
             rows = await self._grant_loader()
             new_cache: set[tuple[UUID, str]] = set()
@@ -671,20 +685,30 @@ class LocalGrantAuthorizer:
                     principal_id = UUID(str(principal_id))
                 new_cache.add((principal_id, permission))
         except Exception as exc:
-            self._reload_owed = True
+            superseded = generation < self._applied_generation
+            if not superseded:
+                self._failed_generation = max(self._failed_generation, generation)
+                self._reload_owed = True
             contain(
                 exc,
                 log=log,
                 what=(
-                    "MCP grant cache reload failed; refusing non-admin permission checks "
+                    "MCP grant cache reload failed; a reload that started later has already landed, so nothing is owed"
+                    if superseded
+                    else "MCP grant cache reload failed; refusing non-admin permission checks "
                     "until a reload lands (retried on the next catch-up tick)"
                 ),
-                extra={"prior_grant_count": len(self._cache)},
+                extra={"prior_grant_count": len(self._cache), "reload_generation": generation},
                 level="error",
             )
             return
+        if generation < self._applied_generation:
+            # a reload that started later already landed; this one read older rows.
+            return
         self._cache = new_cache
-        self._reload_owed = False
+        self._applied_generation = generation
+        if generation > self._failed_generation:
+            self._reload_owed = False
         log.info(
             "MCP grant cache reloaded",
             extra={"extra_data": {"grant_count": len(self._cache)}},

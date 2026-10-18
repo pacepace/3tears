@@ -395,6 +395,64 @@ class TestLocalGrantAuthorizer:
             await authz.stop()
 
     @pytest.mark.asyncio
+    async def test_a_slow_reload_that_started_before_a_failing_one_does_not_clear_what_is_owed(self) -> None:
+        """bump 2 starts a slow load of the old rows; bump 3 (a revocation) fails at once; bump 2
+        then finishes. without ordering, its success cleared the owed flag and the revoked grant
+        was allowed again from rows read before the revocation."""
+        principal_id = uuid4()
+        grant = [{"principal_id": principal_id, "permission": "audit.records.read"}]
+        release = asyncio.Event()
+        calls = 0
+
+        async def _loader() -> list[dict[str, Any]]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return grant
+            if calls == 2:
+                await release.wait()
+                return grant
+            raise RuntimeError("L3 down")
+
+        authz, captured = await _build_started_authorizer(loader=AsyncMock(side_effect=_loader))
+        try:
+            slow = asyncio.create_task(captured[0](2, None))
+            await asyncio.sleep(0)
+            await captured[0](3, None)
+            release.set()
+            await slow
+            with pytest.raises(GrantCacheUnavailableError):
+                await authz.allows(Identity(principal_type="user", principal_id=principal_id), "audit.records.read")
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_started_before_a_landed_reload_owes_nothing(self) -> None:
+        principal_id = uuid4()
+        grant = [{"principal_id": principal_id, "permission": "audit.records.read"}]
+        release = asyncio.Event()
+        calls = 0
+
+        async def _loader() -> list[dict[str, Any]]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                await release.wait()
+                raise RuntimeError("L3 was down")
+            return grant
+
+        authz, captured = await _build_started_authorizer(loader=AsyncMock(side_effect=_loader))
+        try:
+            slow = asyncio.create_task(captured[0](2, None))
+            await asyncio.sleep(0)
+            await captured[0](3, None)
+            release.set()
+            await slow
+            assert await authz.allows(Identity(principal_type="user", principal_id=principal_id), "audit.records.read")
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
     async def test_a_reload_that_lands_after_a_failure_answers_again(self) -> None:
         principal_id = uuid4()
         loader = AsyncMock(

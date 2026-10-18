@@ -165,7 +165,9 @@ async def test_an_unreachable_robots_file_is_a_complete_disallow(status: int, ca
     with caplog.at_level("WARNING", logger="threetears.scrape.robots"):
         decision = await gate.check("https://example.gov/anything")
     _assert_unreachable(decision)
-    assert any(f"returned {status}" in record.getMessage() for record in caplog.records), "the status was logged nowhere"
+    assert any(f"returned {status}" in record.getMessage() for record in caplog.records), (
+        "the status was logged nowhere"
+    )
 
 
 def _refuse_connection(request: httpx.Request) -> httpx.Response:
