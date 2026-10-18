@@ -45,6 +45,7 @@ from threetears.git_store import (
     new_signing_seed,
 )
 from threetears.nats import NatsClient, set_default_namespace
+from threetears.nats.forward import ForwardedHandlerError
 from threetears.nats.oplog import OpLog
 
 pytestmark = pytest.mark.integration
@@ -433,6 +434,15 @@ async def test_a_products_own_operation_runs_on_the_writer_or_here_when_nobody_i
     assert writer.is_writer and not other.is_writer
     assert await other.forward("apply_op", b"y", local=runner("other")) == b"done by worker: y"  # forwarded
     assert not other.is_writer
+
+    # the writer's handler raises: the sender gets that error by its type, never "the writer could not be reached"
+    async def boom(_payload: bytes) -> bytes:
+        raise ValueError("a stale sequence")
+
+    await writer.serve("boom", boom)
+    with pytest.raises(ForwardedHandlerError) as raised:
+        await other.forward("boom", b"w", local=runner("other"))
+    assert raised.value.type_name == "ValueError"
 
     # the writer serves no "rename": nobody answers, and the lease is held, so this pod can't take over
     with pytest.raises(NotTheWriterError):

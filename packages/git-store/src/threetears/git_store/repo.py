@@ -672,6 +672,8 @@ class GitRepo:
             except NoOwnerError:
                 await self._become_writer()
                 return await local(payload)
+            except ForwardedHandlerError:
+                raise  # the writer ran it and its handler raised: the sender sees that error, not "unreachable"
             except NatsClientError as exc:
                 raise NotTheWriterError(
                     f"the writer of {self.config.lease_key} could not be reached ({type(exc).__name__}: {exc}); "
