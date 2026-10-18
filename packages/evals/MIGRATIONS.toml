@@ -59,7 +59,7 @@
 
 [[release]]
 version = "0.71.0"
-since = "v0.70.0"
+since = "v0.70.1"
 summary = """
 The first release after 3tears-evals joined the family: the burndown of Discodon's 0.70.0 adoption findings. No
 public name left a root; the breaking changes are signatures and behaviour, listed in `notes`.
@@ -70,6 +70,14 @@ notes = [
     "Both per-run ceilings stop a run between cells, never inside one: `CapBreach.refused_call_usd` is gone, the engine no longer raises `CostCapReached` (it still imports), and `MeteredCallLedger.refusal_message` raises for a host that declared metered tools. A stopped run ends `budget_stopped` with `EvalRun.budget_stops`.",
     "The analysis generation's input-size log line puts its basis in parentheses between the figure and `max_output_tokens` (#827).",
 ]
+
+[[release]]
+version = "0.70.1"
+since = "v0.70.0"
+summary = """
+A models fix only. No public name of 3tears-evals moved or was removed, and no judge wording changed.
+"""
+notes = []
 
 [[release]]
 version = "0.70.0"
