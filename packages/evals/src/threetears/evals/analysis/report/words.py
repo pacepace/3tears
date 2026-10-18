@@ -281,10 +281,22 @@ EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
+def evidence_columns(analysis: EvalAnalysis) -> tuple[tuple[str, str], ...]:
+    """A finding's evidence table's columns for this analysis: :data:`EVIDENCE_COLUMNS`, led by the aspect each row
+    was read on where the campaign holds more than one.
+
+    :param analysis: The analysis.
+    :ptype analysis: EvalAnalysis
+    :return: Column key → header, in display order.
+    :rtype: tuple[tuple[str, str], ...]
+    """
+    return (("aspect", "Aspect"), *EVIDENCE_COLUMNS) if len(analysis.aspects) > 1 else EVIDENCE_COLUMNS
+
+
 def evidence_rows(
     analysis: EvalAnalysis, evidence: Sequence[EvidenceRow], arm: Callable[[str], str]
 ) -> list[dict[str, TableCell]]:
-    """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
+    """A finding's evidence as table rows, keyed by :func:`evidence_columns` — each reading by what a reader calls it.
 
     Each row is read on the aspect it was resolved on (``EvidenceRow.aspect``). A measure's value and spread are stated
     on its one ruler for the report (:func:`~threetears.evals.analysis.report.figures.analysis_rulers`): a share on 0–1 as a percent, a cost per
@@ -305,6 +317,7 @@ def evidence_rows(
         surface = analysis.aspect(row.aspect).decision_surface
         ruler = analysis_rulers(analysis, row.aspect).of(row.measure_id, row.reading)
         values: dict[str, CellValue] = {
+            "aspect": row.aspect,
             "arm": arm(row.cell_ref),
             "measure": ruler.scaled(reading_heading(surface, row.measure_id, row.reading)),
             # Cases, never trials: the count every interval is read over.
@@ -315,7 +328,7 @@ def evidence_rows(
         cells["value"] = TableCell(value=row.value * ruler.factor, unit=ruler.unit)
         if (passed := _passed_of(row)) is not None:
             cells["value"] = TableCell(value=passed)
-        rows.append({key: cells[key] for key, _ in EVIDENCE_COLUMNS})
+        rows.append({key: cells[key] for key, _ in evidence_columns(analysis)})
     return rows
 
 
@@ -360,6 +373,7 @@ __all__ = [
     "CONFIDENCE_WORDS",
     "ENGINE_WORDS",
     "EVIDENCE_COLUMNS",
+    "evidence_columns",
     "EVIDENCE_TIER_WORDS",
     "FIRST_SCREEN_BANNED",
     "GUARDRAIL_DECISION_WORDS",

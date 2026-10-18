@@ -216,7 +216,16 @@ def memo_payload(bundle: CampaignBundle | AnalysisContextBundle) -> dict[str, An
                 "rests_on": [0],
                 "floors_overridden": [],
                 "behind_on": [],
-                "bars_missed": [],
+                # Every bar code read the narrow width missing, each addressed, as a recommendation over one must be.
+                "bars_missed": [
+                    {
+                        "aspect": status.aspect,
+                        "measure": status.measure,
+                        "why": "The narrow width is recommended for its speed; this bar is the next run's work.",
+                    }
+                    for status in bundle.readings.missed_bars()
+                    if status.arm_label == arm_at(bundle, TOYHOST_NARROW)
+                ],
             }
         ],
         "aspect_summaries": [

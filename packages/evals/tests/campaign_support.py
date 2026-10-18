@@ -25,7 +25,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report import Report
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import CampaignArm, DecisionClause, Floor
+from threetears.evals.kernel.declaration import BarOverride, CampaignArm, DecisionClause, Floor
 
 from packages.evals.tests.factories import make_aspect_campaign
 from packages.evals.tests.off_loop import off_loop
@@ -51,13 +51,13 @@ THIRD_LABEL = "v3"
 ASSEMBLED_AT = "2026-10-18T00:00:00+00:00"
 
 
-def _first_cases(right: int) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
-    """A runner answering right on every trial of the first ``right`` cases and wrong on the rest."""
+def _first_cases(right: int, cost: float = 0.002) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
+    """A runner answering right on every trial of the first ``right`` cases and wrong on the rest, at ``cost``."""
 
     async def run(case: Mapping[str, Any]) -> Answer:
         index = int(case["text"].rsplit(" ", 1)[1])
         return Answer(
-            case["label"] if index < right else "skipped", model="m", input_tokens=100, output_tokens=10, cost_usd=0.002
+            case["label"] if index < right else "skipped", model="m", input_tokens=100, output_tokens=10, cost_usd=cost
         )
 
     return run
@@ -147,6 +147,102 @@ async def measured_aspect(
         candidate=keys["candidate"],
         third=keys.get(THIRD_LABEL),
     )
+
+
+@dataclass(frozen=True)
+class MeasuredKind:
+    """One aspect of a campaign of any kind, measured for real: its campaign (its arms named, a control or not), its
+    bundle, its own page, and each arm's variant key by the arm's name."""
+
+    campaign: EvalCampaign
+    bundle: AnalysisContextBundle
+    report: Report
+    keys: dict[str, str]
+
+    def arms(self) -> list[CampaignArm]:
+        """The campaign's arms: its control where it names one, then every other arm as a candidate, by its name."""
+        named = list(self.campaign.arms)
+        taken = {arm.variant_key for arm in named}
+        return named + [
+            CampaignArm(label=name, role="candidate", variant_key=key)
+            for name, key in self.keys.items()
+            if key not in taken
+        ]
+
+
+async def measured_kind(
+    label: str,
+    arms: Mapping[str, int],
+    *,
+    control: bool,
+    bars: Sequence[BarOverride] = (),
+    costs: Mapping[str, float] | None = None,
+    asked_at: str | None = ASKED_AT,
+) -> MeasuredKind:
+    """A real run read as one declared aspect labelled ``label``: each arm passing its first so many cases, the first
+    arm the control where ``control``, else no control at all (a choice, or with one arm a measurement), the aspect
+    holding ``bars``.
+
+    :param label: The aspect's label.
+    :ptype label: str
+    :param arms: The cases each arm passes, by its name, in order.
+    :ptype arms: Mapping[str, int]
+    :param control: Whether the first arm is the control.
+    :ptype control: bool
+    :param bars: The absolute bars the aspect holds its arms to.
+    :ptype bars: Sequence[BarOverride]
+    :param costs: What each arm's reply costs, by its name; 0.002 where unnamed.
+    :ptype costs: Mapping[str, float] | None
+    :param asked_at: When the question was asked.
+    :ptype asked_at: str | None
+    :return: The aspect.
+    :rtype: MeasuredKind
+    """
+    cases = [{"text": f"support request {index}", "label": "queued"} for index in range(CASES)]
+    runners = {name: _first_cases(passes, (costs or {}).get(name, 0.002)) for name, passes in arms.items()}
+    comparison = await Eval(cases, runners, ["label"], k=REPEATS, name=label).run(store=":memory:")
+    storage = comparison.host.storage
+    stored = off_loop(get_campaign, storage, comparison.campaign_id, comparison.scope_id)
+    view = aspect_view(stored)
+    declared = view.declared
+    assert declared is not None
+    named = (
+        declared.control.model_copy(update={"named_at": asked_at, "label": next(iter(arms))})
+        if control and declared.control is not None
+        else None
+    )
+    campaign = make_aspect_campaign(
+        label=label,
+        template_id=view.template_id,
+        run_ids=view.run_ids,
+        design=declared.design.model_copy(update={"merit_axes": [], "bars": list(bars)}),
+        question=QUESTION,
+        asked_at=asked_at,
+        control=named,
+        id=view.campaign_id,
+        scope_id=view.scope_id,
+        name=view.name,
+        subject_id=view.subject_id,
+        subject_kind=view.subject_kind,
+        behavior=view.behavior,
+    )
+    bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=comparison.host.profile)
+    # One arm moves no lever, so its entry names no candidate: it is the arm.
+    keys = (
+        {entry.levers["candidate"].display: entry.variant_key for entry in bundle.variant_index}
+        if len(arms) > 1
+        else {next(iter(arms)): bundle.variant_index[0].variant_key}
+    )
+    report = build_code_only_report(bundle, assembled_at=ASSEMBLED_AT, campaign_name="support")
+    return MeasuredKind(campaign=campaign, bundle=bundle, report=report, keys={name: keys[name] for name in arms})
+
+
+def joined(measured: Sequence[MeasuredKind], *, name: str = "support queue") -> EvalCampaign:
+    """One campaign holding every measured aspect, the first's campaign carrying them all (its arms, its question);
+    written past the authoring gate. Arms named alike in each run share their variant keys."""
+    first = measured[0].campaign
+    aspects = [aspect for one in measured for aspect in one.campaign.aspects]
+    return first.model_copy(update={"aspects": aspects, "name": name})
 
 
 def varied(
@@ -274,8 +370,11 @@ __all__ = [
     "QUESTION",
     "REPEATS",
     "MeasuredAspect",
+    "MeasuredKind",
     "arms_of",
     "campaign_of",
     "measured_aspect",
+    "measured_kind",
+    "joined",
     "varied",
 ]

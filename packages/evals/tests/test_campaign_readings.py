@@ -23,11 +23,14 @@ from threetears.evals.analysis.stats import (
     holm_adjust,
 )
 from threetears.evals.kernel import RefusedInput
-from threetears.evals.kernel.declaration import CampaignArm, Floor, RateDrop
+from threetears.evals.kernel.declaration import BarOverride, CampaignArm, Floor, RateDrop
 
 from packages.evals.tests.campaign_support import (
     CASES,
     MeasuredAspect,
+    MeasuredKind,
+    joined,
+    measured_kind,
     arms_of,
     campaign_of,
     measured_aspect,
@@ -410,3 +413,68 @@ def test_a_campaign_s_kind_is_derived_from_its_arms() -> None:
     assert campaign_kind([arm("v1", "candidate", "a"), arm("v1 again", "candidate", "a")]) == "measurement"
     assert campaign_kind([arm("v1", "candidate", "a"), arm("v2", "candidate", "b")]) == "choice"
     assert campaign_kind([arm("v1", "control", "a"), arm("v2", "candidate", "b")]) == "change"
+
+
+# =============================================================================
+# A choice and a measurement
+# =============================================================================
+
+_KINDS: dict[str, MeasuredKind] = {}
+
+#: The bar every kind's aspects are held to: no reply may cost more than a tenth of a cent. Each arm costs 0.2 cents
+#: a reply unless its name says otherwise, so it misses this bar.
+_COST_BAR = BarOverride(measure_id="cost_usd", threshold=0.001, direction="lower_is_better")
+
+
+async def _kind(label: str) -> MeasuredKind:
+    """Each fixture aspect, measured once for the module: on tone alpha passes nineteen cases to beta's six; on
+    billing ten to nine; solo is one arm alone. ``cheap`` arms cost a twentieth of a cent a reply."""
+    if label not in _KINDS:
+        shapes: dict[str, tuple[dict[str, int], bool]] = {
+            "tone": ({"alpha": 19, "beta": 6}, False),
+            "billing": ({"alpha": 10, "beta": 9}, False),
+            "solo": ({"alpha": 15}, True),
+        }
+        arms, control = shapes[label]
+        _KINDS[label] = await measured_kind(label, arms, control=control, bars=[_COST_BAR], costs={"beta": 0.0005})
+    return _KINDS[label]
+
+
+async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_another() -> None:
+    tone, billing = await _kind("tone"), await _kind("billing")
+    campaign = joined([tone, billing])
+    read = campaign_readings(campaign, {"tone": tone.bundle, "billing": billing.bundle}, arms=tone.arms())
+    assert read.kind == "choice" and read.readings == [] and read.floors == [] and read.control is None
+    by = {pair.aspect: pair for pair in read.pairs}
+    assert (by["tone"].first_label, by["tone"].second_label) == ("alpha", "beta")
+    assert by["tone"].ahead == "alpha" and by["tone"].change == pytest.approx(65.0)
+    assert by["tone"].interval is not None and by["tone"].interval[0] > 0
+    assert by["billing"].ahead is None and "no separation" in by["billing"].reason
+    assert by["billing"].interval is not None and by["billing"].interval[0] <= 0 <= by["billing"].interval[1]
+    # One direction-free family over both aspects' pairs: tone is shown at 97.5%, billing then read at 95%.
+    assert by["tone"].confidence == pytest.approx(_level(2))
+    assert by["billing"].confidence == pytest.approx(_level(1))
+    assert (by["tone"].p_holm or 1.0) <= SIGNIFICANCE_ALPHA * (1 + 1e-9) < (by["billing"].p_holm or 1.0)
+
+
+async def test_a_choice_with_nothing_separated_has_no_arm_ahead() -> None:
+    billing = await _kind("billing")
+    read = campaign_readings(billing.campaign, {"billing": billing.bundle}, arms=billing.arms())
+    (pair,) = read.pairs
+    assert read.kind == "choice" and pair.ahead is None
+
+
+async def test_every_kind_reads_each_arm_against_its_bars_as_the_bundle_adjudicated_them() -> None:
+    tone, solo = await _kind("tone"), await _kind("solo")
+    choice = campaign_readings(tone.campaign, {"tone": tone.bundle}, arms=tone.arms())
+    assert [(bar.arm_label, bar.status) for bar in choice.bars] == [("alpha", "missed"), ("beta", "met")]
+    assert [bar.arm_label for bar in choice.missed_bars()] == ["alpha"]
+    measurement = campaign_readings(solo.campaign, {"solo": solo.bundle}, arms=solo.arms())
+    assert measurement.kind == "measurement" and measurement.pairs == [] and measurement.readings == []
+    (bar,) = measurement.bars
+    assert (bar.status, bar.bar, bar.direction, bar.measure) == ("missed", 0.001, "lower_is_better", "cost_usd")
+    assert bar.reason.startswith("alpha misses the bar on")
+    measures = {reading.measure: reading for reading in measurement.measures}
+    assert measures["passed"].value == pytest.approx(0.75) and measures["passed"].cases == CASES
+    assert all(reading.arm_label == "alpha" and reading.aspect == "solo" for reading in measurement.measures)
+    assert all(reading.interval is not None for reading in measurement.measures if reading.measure != "passed")

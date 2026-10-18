@@ -77,7 +77,13 @@ def _recommending(bundle: CampaignBundle, level: int | None, **fields: Any) -> d
     if level is None:
         payload["recommendation"] = []
     else:
-        payload["recommendation"][0] = {**payload["recommendation"][0], "arm": arm_at(bundle, level), **fields}
+        # Another arm owes its own words on what it missed: the canned draft's are the narrow width's.
+        payload["recommendation"][0] = {
+            **payload["recommendation"][0],
+            "arm": arm_at(bundle, level),
+            "bars_missed": [],
+            **fields,
+        }
     return payload
 
 

@@ -256,18 +256,38 @@ def campaign_report_html(report: CampaignReport) -> str:
         *(_block(block, index) for index, block in enumerate(head) if not _warns(block)),
         "</header>",
     ]
-    memo = [(index, block) for index, block in enumerate(report.blocks) if block.section not in FIRST_SCREEN]
-    links = [("memo", SECTION_TITLES["memo"])] if memo else []
+    present = [
+        section
+        for section in SECTION_TITLES
+        if section not in FIRST_SCREEN and section != "glossary" and any(b.section == section for b in report.blocks)
+    ]
+    # What the memo says reads before the folds; how the page was made (the methods) after them.
+    before = [section for section in present if section == "memo"]
+    after = [section for section in present if section != "memo"]
+    links = [(_section_anchor(section), SECTION_TITLES[section]) for section in before]
     links += [(f"aspect-{slug}-body", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [(_section_anchor(section), SECTION_TITLES[section]) for section in after]
     links += [("glossary-body", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
-    if memo:
-        parts += ['<section id="memo">', f"<h2>{_escape(SECTION_TITLES['memo'])}</h2>", *_folded(memo), "</section>"]
+    for section in before:
+        parts += _campaign_section(report, section)
     for fold, slug in zip(report.aspects, slugs, strict=True):
         parts += _aspect_fold(fold, slug)
+    for section in after:
+        parts += _campaign_section(report, section)
     parts += _glossary(report.terms)
     parts += ["</article>", "</body>", "</html>"]
     return "\n".join(parts) + "\n"
+
+
+def _campaign_section(report: CampaignReport, section: str) -> list[str]:
+    """One section of a campaign's page after its first screen: what it means open, the methods folded."""
+    blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
+    return [
+        f'<section id="{section}">',
+        *_section(section, SECTION_TITLES[section], _folded(blocks), count=None),
+        "</section>",
+    ]
 
 
 #: An id or a link to one, as the page writes them: every id a fold holds is prefixed, every link to a place in it.
@@ -435,6 +455,13 @@ def _text(block: TextBlock) -> str:
             f' <span class="facts">({_escape(facts["Confidence"])} confidence)</span>' if "Confidence" in facts else ""
         )
         return f'<p data-role="recommendation">{lead}{body}{sure}</p>'
+    if block.role == "override":
+        over = (
+            f"The memo recommends {_escape(facts['Arm'])} over {_escape(facts.get('Over', 'it'))}"
+            if "Arm" in facts
+            else "The memo's why"
+        )
+        return f'<p class="override" data-role="override"><strong>{over}:</strong> {body}</p>'
     if block.role in SUMMARY_LEADS:
         return f'<p data-role="{block.role}"><strong>{SUMMARY_LEADS[block.role]}</strong> {body}</p>'
     if block.role == "reason":
@@ -662,8 +689,13 @@ def _trial(block: TrialBlock) -> str:
 
 
 def _warns(block: ReportBlock) -> bool:
-    """Whether ``block`` is a broken floor's warning, which opens the page above its title."""
-    return isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "floor"
+    """Whether ``block`` opens the page above its title: a broken floor's or a missed bar's warning, or the writer's
+    why for a floor its recommendation is made over, which sits beside the warning it answers."""
+    if block.section != "header":
+        return False
+    if isinstance(block, TextBlock):
+        return block.role == "override"
+    return isinstance(block, DisclosureBlock) and block.source in ("floor", "bar")
 
 
 def _disclosure(block: DisclosureBlock) -> str:
@@ -675,7 +707,7 @@ def _disclosure(block: DisclosureBlock) -> str:
         return f'<p class="arms">{text}</p>'
     if block.section == "header" and block.source == "basis":
         return f'<p class="question">{text}</p>'
-    if block.section == "header" and block.source == "floor":
+    if block.section == "header" and block.source in ("floor", "bar"):
         # A broken floor, the page's first line: loud, and announced to a screen reader as it loads.
         return f'<p class="floor" role="alert"><strong>{text}</strong></p>'
     if block.source == "verdict":
