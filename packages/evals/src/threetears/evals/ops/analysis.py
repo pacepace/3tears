@@ -42,13 +42,14 @@ from threetears.evals.analysis.service import (
     list_analyses,
     list_insights,
     PreparedGeneration,
+    record_campaign_call,
     prepare_analysis_generation,
     assembled_analysis_attempt,
     run_analysis_generation,
     running_analysis_attempt,
 )
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
-from threetears.evals.kernel.declaration import Margin
+from threetears.evals.kernel.declaration import CampaignCall, Margin, OverriddenBar
 from threetears.evals.kernel.campaign import AttemptOutcome, ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
 from threetears.evals.kernel.errors import (
     ConflictError,
@@ -502,6 +503,71 @@ def campaign_runs_remove(
     """
     _refuse_no_runs(run_ids, "remove")
     return _campaign_line(remove_runs_from_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
+
+
+class CampaignCallLine(EvalBaseModel):
+    """The call a person recorded on a campaign, as stored."""
+
+    campaign_id: str
+    call: CampaignCall
+
+
+def campaign_record(
+    host: EvalHost,
+    campaign_id: str,
+    scope_id: str,
+    *,
+    arm: str,
+    called_by: str,
+    reason: str = "",
+    floors_overridden: list[str] | None = None,
+    bars_overridden: list[OverriddenBar] | None = None,
+    analysis_id: str | None = None,
+) -> CampaignCallLine:
+    """Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
+
+    Read against code's readings of the evidence as it stands, never a memo's words
+    (:func:`~threetears.evals.analysis.record_campaign_call`): an arm with a broken floor or a missed bar is recorded
+    only when the call names each one as overridden, and an override of one the arm did not break or miss is refused.
+    A new call replaces the earlier one.
+
+    :param host: The host whose store holds the campaign.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param arm: The decided arm, by the label its page shows or by its variant key.
+    :ptype arm: str
+    :param called_by: Who made the call, as the calling surface knows them.
+    :ptype called_by: str
+    :param reason: Why, in the decider's words.
+    :ptype reason: str
+    :param floors_overridden: The key of each broken floor the call overrides.
+    :ptype floors_overridden: list[str] | None
+    :param bars_overridden: Each missed bar the call overrides, by aspect and measure.
+    :ptype bars_overridden: list[OverriddenBar] | None
+    :param analysis_id: The analysis whose memo the call was made over; None for code's readings alone.
+    :ptype analysis_id: str | None
+    :return: The call as stored.
+    :rtype: CampaignCallLine
+    :raises NotFoundError: No campaign with that id in the scope, or no such analysis.
+    :raises ValidationFailedError: See :func:`~threetears.evals.analysis.record_campaign_call`.
+    :raises ConflictError: The campaign changed while its readings were read.
+    """
+    campaign = record_campaign_call(
+        host,
+        campaign_id,
+        scope_id,
+        arm=arm,
+        called_by=called_by,
+        reason=reason,
+        floors_overridden=floors_overridden or (),
+        bars_overridden=bars_overridden or (),
+        analysis_id=analysis_id,
+    )
+    assert campaign.call is not None  # just recorded and re-read
+    return CampaignCallLine(campaign_id=campaign.id, call=campaign.call)
 
 
 def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archived: bool) -> CampaignLine:
@@ -1005,8 +1071,9 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :param format: ``markdown``, ``html`` (one page that needs no script) or ``json`` (the evidence bundle the report
-        was computed from, as ``bundle.json`` beside a written report holds it).
+    :param format: ``markdown``, ``html`` (one page that needs no script) or ``json`` (the page's machine form: code's
+        readings across the campaign's aspects, the recommendation, the call, and each aspect's bundle by its
+        fingerprint, as ``campaign.json`` beside a written page holds it).
     :ptype format: ReportFormat
     :return: The report in that form.
     :rtype: ReportDocument
@@ -1016,7 +1083,7 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
     return ReportDocument(
         campaign_id=campaign_id,
         basis=report.basis,
-        analysis_id=report.source.analysis_id,
+        analysis_id=report.analysis_id,
         format=format,
         body=serialize_report(report, format),
     )
@@ -1231,6 +1298,7 @@ __all__ = [
     "AnalysisLine",
     "AnalysisListing",
     "BarProposals",
+    "CampaignCallLine",
     "CampaignChanges",
     "CampaignDefinition",
     "CampaignLine",
@@ -1254,6 +1322,7 @@ __all__ = [
     "bars_propose",
     "campaign_archive",
     "campaign_create",
+    "campaign_record",
     "campaign_runs_add",
     "campaign_runs_remove",
     "campaign_update",

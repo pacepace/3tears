@@ -83,6 +83,7 @@
   "call": {
     "analysis_id": null,
     "arm": "control",
+    "bars_overridden": [],
     "called_at": "2026-10-19T00:00:00+00:00",
     "called_by": "test:fixture",
     "floors_overridden": [],

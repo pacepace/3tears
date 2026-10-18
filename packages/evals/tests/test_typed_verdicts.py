@@ -236,6 +236,8 @@ class TestTheCommandLineGate:
         assert off_loop(self._gate, comparison) == EXIT_GATE_FAILED == 4
         out = capsys.readouterr().out
         assert out.startswith("gate FAILED: 1 of 1 verdict(s)")
+        # The gate reads the campaign's verdicts, which name each arm as the eval does: never `candidate=worse`, and
+        # the control by its own name, never `control`.
         assert "failed: Correct score: worse worse than current" in out
 
     async def test_a_breached_guardrail_exits_4(self, capsys: pytest.CaptureFixture[str]) -> None:

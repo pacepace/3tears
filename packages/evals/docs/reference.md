@@ -586,8 +586,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings`
 - **`assemble_context_bundle`** · function · Assemble the closed context bundle for a campaign's runs.
   <br>`assemble_context_bundle(campaign: EvalCampaign, *, aspect: str | None = None, storage: CampaignReadStore, insights_as_of: str | None = None, profile: HostProfile) -> AnalysisContextBundle`
-- **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
-  <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
+- **`campaign_report`** · function · The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
+  <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport`
 - **`create_campaign`** · function · Create and persist a campaign: one question, its arms, its aspects and its floors.
   <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = ()) -> EvalCampaign`
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
@@ -1544,6 +1544,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_update` | `write` | `campaign_id`, `name?`, `description?`, `question?`, `aspects?`, `floors?`, `exploratory?`, `control_from_run_id?` | Rename or redescribe a campaign, or declare, amend or withdraw its declaration before its first run. |
 | `campaign_runs_add` | `write` | `campaign_id`, `run_ids`, `aspect?` | Put runs in a campaign's aspect — runs launched after it was created, or measured on their own first. |
 | `campaign_runs_remove` | `write` | `campaign_id`, `run_ids`, `aspect?` | Take runs out of a campaign; the runs and their results stay, in any other campaign too. |
+| `campaign_record` | `write` | `campaign_id`, `arm`, `call_reason?`, `floors_overridden?`, `bars_overridden?`, `analysis_id?` | Record a person's call on a campaign: the arm decided, why, and each warning it overrides. |
 | `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
 | `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
 | `judge_second` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement. |
@@ -1594,11 +1595,13 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 
 | Parameter | Type | Description |
 |---|---|---|
-| `analysis_id` | `string` | A stored analysis's id, as analyses_list names it. |
+| `analysis_id` (on `analysis_archive`, `analysis_delete`) | `string` | A stored analysis's id, as analyses_list names it. |
+| `analysis_id` (on `campaign_record`) | `string` or `null` | A stored analysis's id, as analyses_list names it. |
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
 | `apply` | `boolean` | Store the re-graded check verdicts; false (the default) reports and writes nothing. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
+| `arm` | `string` | The decided arm, by the label the campaign's page shows it under or by its variant key. |
 | `arm_schedule` | `'interleaved'` \| `'sequential'` \| `'concurrent'` or `null` | How the arms share time and provider capacity. interleaved (the default): every arm at once, their cases taken in turn case by case under one width shared by the launch, so a provider's bad minute lands on every arm alike. sequential: one arm after another. concurrent: every arm side by side at its own width, the fastest, loading the providers with every arm at once, so one arm can take a provider's rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run. |
 | `arms` | array of `object` | The arms, in the order they launch and take their turns: each {model, label?, overlays?, apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its siblings. |
 | `aspect` | `string` or `null` | The label of the aspect the runs join or leave. Omitted, each run joins the one aspect gathered on the template it ran (a campaign of one aspect takes every run), and leaves the aspect holding it. |
@@ -1606,8 +1609,10 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `aspects` (on `campaign_update`) | array of `object` or `null` | Where the question is measured, each {label, template_id?, margin?, design?, run_ids?}. design is what the aspect sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally merit_axes, bars ([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control there before it is shown worse, which a declared aspect states when the campaign asks a question and names a control, and a campaign naming no control never states (it holds its arms to bars). template_id omitted is the one template every run of the aspect ran. Labels are unique, and a run belongs to one aspect. |
 | `aspects_from` | array of `string` or `object` | Campaigns of this scope whose aspects this one adopts whole — template, runs, design, margin, and when its design was declared and its question asked — with their floors and arms: each a campaign id, or {campaign_id, label} to adopt a campaign's one aspect under another label. An adopted aspect keeps its readings' standing; what this campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. Two aspects under one label, or one run in two of them, are refused. |
 | `bar` | `number` or `null` | The pass^k a variant must clear, from 0 to 1; omitted ranks the variants without a verdict. |
+| `bars_overridden` | array of `string` | Each absolute bar the decided arm missed that the call overrides, as `<aspect>/<measure>` (an aspect label holds no slash), the aspect and measure the page's bars table names it by. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
+| `call_reason` | `string` | Why the call was made, in the decider's words. |
 | `campaign_arms` | array of `object` | The arms, each {label, role: control\|candidate (default candidate), from_run_ids: [run id, ...]}: a contestant stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying one variant key. One control at most, read first. Omitted, an adopted campaign's arms are carried and every other variant among the runs is read as a candidate. |
 | `campaign_behavior` | `string` | What the sweep's campaign measures. |
 | `campaign_description` | `string` | The sweep's campaign's description. |
@@ -1640,6 +1645,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `export_run_ids` | array of `string` or `null` | Export only these runs, archived ones included since they are named; omitted exports all. |
 | `floors` (on `campaign_create`) | array of `object` | Lines a candidate is warned for crossing, each {aspect, clause}: clause {kind: rate_drop, max_points, reading?} (no pass rate, or the named one, may drop by more than max_points) or {kind: cost_lower} (it must cost less per reply). A floor only warns, on an aspect that declares a design, of a campaign that names a control: without one a floor is read against nothing, and a bar is declared instead. Each aspect, kind and reading once. |
 | `floors` (on `campaign_update`) | array of `object` or `null` | Lines a candidate is warned for crossing, each {aspect, clause}: clause {kind: rate_drop, max_points, reading?} (no pass rate, or the named one, may drop by more than max_points) or {kind: cost_lower} (it must cost less per reply). A floor only warns, on an aspect that declares a design, of a campaign that names a control: without one a floor is read against nothing, and a bar is declared instead. Each aspect, kind and reading once. |
+| `floors_overridden` | array of `string` | The key of each broken floor of the decided arm the call overrides, as the page names it. |
 | `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (script-free). |
 | `from_labels` | `boolean` | Freeze from the scope's person labels instead of from runs: one case per output and criterion, from the content each label carries, reading no run or result, so it works after the runs are gone. A label that carries no content is skipped by name. |
 | `include_archived` | `boolean` | List archived records too; they are left out by default. |

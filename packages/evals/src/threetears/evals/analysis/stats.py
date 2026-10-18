@@ -2569,6 +2569,13 @@ def cases_to_clear(half_width: float, n_cases: int, room: float) -> int | None:
 #: The most cases :func:`bounded_cases_to_clear` searches: past it a projection says "more than" this many.
 PROJECTION_CASE_CAP: Final = 10_000
 
+#: The most cases a projection of an unpaired rate searches, and the share of its count it bisects to. Each arm's
+#: interval is a betting bound read over every case, so reads over thousands of unpaired cases took over a second a
+#: row, and a page holding a dozen unclear rows half a minute; past 500 cases a plan reads "more than 500", and below
+#: it is counted to within five percent.
+UNPAIRED_PROJECTION_CAP: Final = 500
+UNPAIRED_PROJECTION_RESOLUTION: Final = 0.05
+
 
 #: How many orders of a repeated sample :func:`bounded_cases_to_clear` reads the bounded interval in, taking the median
 #: reach: a betting interval on one order of a sample lands up to a third either side of another order's.
@@ -2617,9 +2624,10 @@ def bounded_cases_to_clear(
     confidence: float,
     room: float,
     cap: int = PROJECTION_CASE_CAP,
+    resolution: float = 0.0,
 ) -> int | None:
     """The fewest cases at which the bounded interval, on cases like these, reaches no further than ``room`` below
-    its estimate.
+    its estimate, to within ``resolution`` of it.
 
     **Cases like these** are the observed per-case values repeated in order to ``N`` cases (case ``i`` is observed
     case ``i mod n``, pairs kept together): the run's own spread, taken as the spread new cases would have. At each
@@ -2630,7 +2638,10 @@ def bounded_cases_to_clear(
 
     The search starts at the cases observed, doubles until the reach is within ``room`` or passes ``cap``, then
     bisects, so a projection reads about ``2·log2(N/n)`` intervals. It is the size to plan, at the spread these cases
-    showed, never a promise that the next run settles: a fresh sample's interval lands either side of it.
+    showed, never a promise that the next run settles: a fresh sample's interval lands either side of it. With a
+    ``resolution`` the bisection stops once the count that fails is within that share of the count that clears, and
+    answers the one that clears: an interval read over many cases costs in proportion to them, and a plan needs no
+    exact count in the hundreds.
 
     :param control: The control's per-case values, aligned with ``contrast`` when ``paired``.
     :ptype control: Sequence[float]
@@ -2646,6 +2657,8 @@ def bounded_cases_to_clear(
     :ptype room: float
     :param cap: The most cases searched.
     :ptype cap: int
+    :param resolution: The share of the count the bisection may stop within, from 0 (the exact fewest) below 1.
+    :ptype resolution: float
     :return: The cases, the observed count where it already clears; ``cap + 1`` where even ``cap`` does not; None
         where ``room`` is not above zero, or no interval can be computed on these values.
     :rtype: int | None
@@ -2673,7 +2686,7 @@ def bounded_cases_to_clear(
             return cap + 1
         low = high
     # ``low`` fails and ``high`` clears: the fewest that clear lies above ``low``, at most ``high``.
-    while high - low > 1:
+    while high - low > max(1, int(high * resolution)):
         middle = (low + high) // 2
         if clears(middle):
             high = middle
@@ -2791,6 +2804,8 @@ __all__ = [
     "MIN_PAIRS_FOR_CORRELATION",
     "MIN_PAIRS_FOR_DETERMINISTIC_GAP",
     "PROJECTION_CASE_CAP",
+    "UNPAIRED_PROJECTION_CAP",
+    "UNPAIRED_PROJECTION_RESOLUTION",
     "PROJECTION_ORDERS",
     "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",

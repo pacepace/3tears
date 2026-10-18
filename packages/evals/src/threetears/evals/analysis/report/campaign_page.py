@@ -631,8 +631,8 @@ def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
 
 
 def _call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: CampaignCall | None) -> list[ReportBlock]:
-    """The person's call, who made it and when, their reason quoted, and every broken floor it overrides; a line
-    saying none is recorded while none is."""
+    """The person's call, who made it and when, their reason quoted, and every broken floor and missed bar it
+    overrides; a line saying none is recorded while none is."""
     if call is None:
         return [DisclosureBlock(section="header", source="call", text=NO_CALL)]
     verb = "keep" if call.variant_key == readings.control else "adopt"
@@ -646,6 +646,14 @@ def _call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: Campa
             lines.append(f"The call overrides a broken floor: {said}.")
         else:
             lines.append(f"The call does not name the broken floor as overridden: {said}.")
+    overridden = {(bar.aspect, bar.measure) for bar in call.bars_overridden}
+    for missed in readings.missed_bars():
+        if missed.arm != call.variant_key:
+            continue
+        if (missed.aspect, missed.measure) in overridden:
+            lines.append(f"The call overrides a missed bar on {missed.aspect}: {missed.reason}.")
+        else:
+            lines.append(f"The call does not name the missed bar on {missed.aspect} as overridden: {missed.reason}.")
     return [DisclosureBlock(section="header", source="call", text=line) for line in lines]
 
 

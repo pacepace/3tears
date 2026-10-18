@@ -14,8 +14,8 @@ the control. Everything here is the engine's own path, composed:
 - **The campaign declares its design** — one axis per factor, a controlled stimulus, a commissioned apparatus and the
   repeats each arm ran — through :func:`~threetears.evals.analysis.create_campaign`, which gates the declaration
   against the host's vocabulary as it gates any other. One arm is a campaign of one run, its own control.
-- **The control is designated from the control arm's run** through
-  :func:`~threetears.evals.analysis.set_campaign_control`, which reads the variant key that run's observations carry.
+- **The control is named from the control arm's run**, by the arm's own name, as the campaign is created: its variant
+  key is the one that run's observations carry.
 - **The report is the campaign's report**: with no analysis generated, the code-only report, whose contrasts table
   tests every other arm against the control on every reading, Holm-corrected, and says which separated.
 
@@ -45,16 +45,16 @@ from threetears.evals.analysis import (
     Verdict,
     VerdictKind,
     gate_verdicts,
+    CampaignReport,
     Report,
     TableBlock,
-    assemble_context_bundle,
     build_code_only_report,
+    campaign_report,
+    campaign_report_markdown,
     create_campaign,
     get_campaign,
     judge_agreement,
     judge_self_agreement,
-    report_markdown,
-    set_campaign_control,
     variant_key_of_run,
 )
 from threetears.evals.kernel import (
@@ -71,7 +71,7 @@ from threetears.evals.kernel import (
     separation_criterion,
     tier_of,
 )
-from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale, utc_now_iso
+from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -188,9 +188,12 @@ class Result:
     :ivar scope_id: The scope the campaign and its runs are stored in.
     :ivar control: The arm every other arm is tested against: the runner mapping's first key, or the one arm.
     :ivar arms: Each arm's run summary, by arm name, in the order the arms were given.
-    :ivar report: The campaign's report, as :func:`~threetears.evals.analysis.campaign_report` reads it.
+    :ivar report: The eval's one aspect's page, laid out over the bundle of the page's one fold (:attr:`page`) with
+        each arm named by its variant: every reading here is read off its bundle, verdicts and blocks.
     :ivar host: The host the runs and the campaign are stored in, for reading them further.
     :ivar campaign_id: The campaign holding every arm's run.
+    :ivar page: The campaign's page, as :func:`~threetears.evals.analysis.campaign_report` reads it: what
+        :meth:`write` writes and every other door serves.
     :ivar factors: The factors each arm name names a level of, in order: ``("candidate",)`` when the arms are named
         plainly on the arm lever, ``("model",)`` when the one arm or the arms are named as models.
     :ivar store: Where the runs are stored, in words: the file, or that they are held in memory.
@@ -217,6 +220,7 @@ class Result:
     report: Report
     host: EvalHost
     campaign_id: str
+    page: CampaignReport
     factors: tuple[str, ...] = (CANDIDATE_MODEL_LEVER,)
     store: str = ""
     fields: tuple[str, ...] = ()
@@ -361,7 +365,9 @@ class Result:
         :rtype: str
         """
         if full:
-            return "\n\n".join([*(summary.render() for summary in self.arms.values()), report_markdown(self.report)])
+            return "\n\n".join(
+                [*(summary.render() for summary in self.arms.values()), campaign_report_markdown(self.page)]
+            )
         one_arm = len(self.arms) == 1
         lines = [self._verdict_line()]
         if one_arm:
@@ -454,16 +460,18 @@ class Result:
         return f"{self.name}: " + "; ".join(f"{row['reading']}: {row['verdict']}" for row in decided)
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
-        """Write the report as one self-contained page, its Markdown and its bundle, and the judged answers to label.
+        """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle, and the
+        judged answers to label.
 
         :param out_dir: The directory; created when missing.
         :ptype out_dir: Path | str
-        :return: Each file written, by role: ``html`` (``report.html``), ``bundle`` (``bundle.json``) and ``markdown``
-            (``report.md``), and, for a judged eval, ``to_label`` (:data:`TO_LABEL`): each judged answer on each
-            dimension, the judge's verdict withheld, for a person to label and ``Judge(labels=...)`` to read back.
+        :return: Each file written, by role, as :meth:`~threetears.evals.analysis.CampaignReport.write` names them
+            (``html``, ``markdown``, ``json``, ``bundle:<aspect>``), and, for a judged eval, ``to_label``
+            (:data:`TO_LABEL`): each judged answer on each dimension, the judge's verdict withheld, for a person to
+            label and ``Judge(labels=...)`` to read back.
         :rtype: dict[str, Path]
         """
-        written: dict[str, Path] = {str(role): path for role, path in self.report.write(out_dir).items()}
+        written = self.page.write(out_dir)
         if self.judge is not None:
             path = Path(out_dir) / TO_LABEL
             _write_to_label(path, self.to_label)
@@ -937,10 +945,10 @@ def declare(
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
-    The report is the campaign's code-only report, as :func:`~threetears.evals.analysis.campaign_report` reads
-    a campaign no analysis has been generated for — which a campaign filed a moment ago is — laid out here from
-    the evidence bundle it is assembled from, so each contrast the report tests is matched to the arm whose run
-    carries its variant key rather than to the words the report names it by. ``levels`` is each arm's level of
+    The page is the campaign's code-only page, as :func:`~threetears.evals.analysis.campaign_report` reads a
+    campaign no analysis has been generated for — which a campaign filed a moment ago is — and the report its one
+    aspect's page over the same bundle, read off that bundle, so each contrast the report tests is matched to the arm
+    whose run carries its variant key rather than to the words the report names it by. ``levels`` is each arm's level of
     each factor, by arm name. A campaign of one arm is one run, its own control.
     """
     ordered = [control, *(arm for arm in arms if arm != control)]
@@ -977,18 +985,21 @@ def declare(
     }
     if arms[control].template_id is not None:
         aspect["template_id"] = arms[control].template_id
+    # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`.
+    control_arm = {"label": control, "role": "control", "from_run_ids": [arms[control].run_id]}
     campaign = create_campaign(
         host.storage,
-        {"name": name, "subject_id": name, "behavior": behavior, "aspects": [aspect]},
+        {"name": name, "subject_id": name, "behavior": behavior, "aspects": [aspect], "arms": [control_arm]},
         scope_id=scope_id,
         created_by=created_by,
         profile=host.profile,
     )
-    campaign = set_campaign_control(
-        host.storage, campaign.id, scope_id, arms[control].run_id, set_by=created_by, profile=host.profile
-    )
-    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
-    report = build_code_only_report(bundle, assembled_at=utc_now_iso(), campaign_name=campaign.name)
+    page = campaign_report(host, campaign.id, scope_id)
+    (fold,) = page.aspects
+    bundle = fold.report.bundle
+    # The same bundle laid out alone, its arms named by their variants as the eval names them, not by the campaign's
+    # labels the page's fold reads.
+    report = build_code_only_report(bundle, assembled_at=fold.report.source.generated_at, campaign_name=campaign.name)
     arm_variants = {
         arm: variant
         for arm, summary in arms.items()
@@ -1008,6 +1019,7 @@ def declare(
         control=control,
         arms=dict(arms),
         report=report,
+        page=page,
         host=host,
         factors=factors,
         contrast_arms=tuple(

@@ -322,8 +322,10 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   insight ledger, so a store holding a v11 insight refuses ``analysis_generate``, ``analysis_estimate`` and a
 #:   code-only ``report_read`` over that subject until it is cleared: the operator step is
 #:   ``EvalStorage.drop_derived(scopes)``, which deletes the analyses, insights and judge profiles of the named scopes
-#:   (each regenerates from the kept core: an analysis and its insights by generating again, a judge profile from its
-#:   judge's results) and leaves cassettes and every kept and durable document in place.
+#:   and leaves cassettes and every kept and durable document in place. An analysis and its insights regenerate by
+#:   generating again; a judge profile only when the operator runs ``judge_profiles_record`` over its runs, which the
+#:   drop returns (``DerivedDropped.judge_profiles``) — until then a campaign that took its judges' tier from it reads
+#:   its own evidence's tier. The refusal of an old document names this step.
 REGENERABLE_SCHEMA_VERSION: int = 12
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 

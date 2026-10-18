@@ -102,7 +102,9 @@ def _current_schema_only(version: int) -> int:
         raise ValueError(
             f"this document was written under eval schema v{version} and this build reads "
             f"v{REGENERABLE_SCHEMA_VERSION} only; a regenerable document is regenerated across a schema change, "
-            "never migrated"
+            "never migrated. An operator clears every old one in a scope with EvalStorage.drop_derived(scopes), then "
+            "generates its analyses again (analysis_generate) and records each judge profile it returns again "
+            "(judge_profiles_record over that profile's run_ids)"
         )
     return version
 

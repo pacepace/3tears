@@ -52,6 +52,7 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.kinds import campaign_kind
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.references import cell_index, resolve_reading
 from threetears.evals.analysis.report.figures import (
@@ -243,11 +244,24 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
         source=source,
         memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names, style),
         finding_count=len(analysis.document.findings),
-        writer=(
-            f"{generation.generator_model}, prompt {generation.prompt_id} version {generation.prompt_version}, "
-            f"{_date(generation.generated_at)}"
-        ),
+        writer=analysis_writer(analysis),
         style=style,
+    )
+
+
+def analysis_writer(analysis: EvalAnalysis) -> str:
+    """Who wrote a stored analysis's memo, as a page's methods name its writer: the model, the prompt and its version,
+    and the day.
+
+    :param analysis: The analysis.
+    :ptype analysis: EvalAnalysis
+    :return: The words.
+    :rtype: str
+    """
+    generation = analysis.generation
+    return (
+        f"{generation.generator_model}, prompt {generation.prompt_id} version {generation.prompt_version}, "
+        f"{_date(generation.generated_at)}"
     )
 
 
@@ -321,6 +335,7 @@ def build_code_only_report(
     assembled_at: str,
     campaign_name: str | None = None,
     arm_labels: Mapping[str, str] | None = None,
+    writer: str | None = None,
 ) -> Report:
     """Lay a campaign's evidence out as its page, when no analysis exists to report through.
 
@@ -339,6 +354,9 @@ def build_code_only_report(
         (:meth:`~threetears.evals.analysis.campaign_readings.CampaignReadings.arm_labels`), which name those arms
         everywhere on the page in place of their variants' names; None names every arm by its variant.
     :ptype arm_labels: Mapping[str, str] | None
+    :param writer: Who wrote the memo of the campaign page this page is a fold of, as the methods name a writer; None
+        says no analysis was written. The memo is the campaign page's: this page lays out none of its words.
+    :ptype writer: str | None
     :return: The report, ``basis="code_only"``.
     :rtype: Report
     """
@@ -357,7 +375,7 @@ def build_code_only_report(
         source=source,
         memo=lambda *_: memo,
         finding_count=0,
-        writer=None,
+        writer=writer,
         arm_labels=arm_labels,
     )
 
@@ -1242,8 +1260,6 @@ def _recommendation_blocks(
     arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
     recommended = analysis.document.recommended()
     if recommended is None:
-        from threetears.evals.analysis.campaign_readings import campaign_kind  # that module reads this package
-
         kind = campaign_kind(arms)
         return [DisclosureBlock(section="memo", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
     chosen = next((arm for arm in arms if arm.label == recommended.arm), None)
@@ -3635,7 +3651,7 @@ def _methods_table(
         (
             "Bundle",
             f"{source.bundle_fingerprint}, shape {bundle.schema_version}, 3tears-evals "
-            f"{bundle.package_version or 'version not recorded'}, {len(bundle.run_ids)} runs; bundle.json beside this "
+            f"{bundle.package_version or 'version not recorded'}, {len(bundle.run_ids)} runs; its JSON beside this "
             "page",
         )
     )
@@ -3873,6 +3889,7 @@ __all__ = [
     "TOO_FEW_CASES",
     "bar_verdicts",
     "build_code_only_report",
+    "analysis_writer",
     "build_report",
     "contrast_verdicts",
     "guardrail_verdicts",

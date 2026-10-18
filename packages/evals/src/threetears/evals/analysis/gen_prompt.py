@@ -28,13 +28,16 @@ points at it by its heading.
 
 **Nothing here is enforced by reading the model's prose.**
 Whether an analysis follows this guidance is measured by evaluating the report writer
-(``analysis_reporter_v1``), and no rule here exists to satisfy a validator. The report's first screen — its verdict
-and the count of every trial — is code's, so the writer authors findings, one recommendation, a summary per aspect and
-next steps: the recommendation names the findings it rests on, and the generator checks those links structurally,
-refuses a candidate recommended in an exploratory campaign or with no separated upside, refuses a recommendation of an
-arm with a broken floor that does not name the floor and why, and looks at the words twice — whether a finding's title in a common null
-phrasing cites no null the bundle established (:mod:`threetears.evals.analysis.null_claims`), and whether it names an
-arm its finding cites no reading of (:mod:`threetears.evals.analysis.arm_mentions`). Rule 9 states both as rules for
+(``analysis_reporter_v1``), and no rule here exists to satisfy a validator. The report's first screen — every warning
+code raised, code's readings and the count of every trial — is code's, so the writer authors findings, at most one
+recommendation, a summary per aspect and next steps. The generator checks the recommendation structurally against the
+campaign's kind: a measurement recommends nothing, a change always recommends, and a choice's pick of an arm shown
+ahead on no pair is at ``low`` confidence. It refuses a candidate recommended in an exploratory campaign or with no
+separated upside, and a recommendation that leaves a warning on its arm unaddressed — a broken floor
+(``floors_overridden``), another arm shown ahead (``behind_on``) or a missed bar (``bars_missed``), each with why. It
+looks at the words twice — whether a finding's title in a common null phrasing cites no null the bundle established
+(:mod:`threetears.evals.analysis.null_claims`), and whether it names an arm its finding cites no reading of
+(:mod:`threetears.evals.analysis.arm_mentions`). Rule 9 states both as rules for
 the reader and names none of the phrases: a prompt coaching toward a check's words teaches the writer to reword the
 claim, not to drop it.
 
