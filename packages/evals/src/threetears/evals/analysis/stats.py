@@ -2505,6 +2505,42 @@ def paired_detectable_difference(
     return high
 
 
+def cases_to_clear(half_width: float, n_cases: int, room: float) -> int | None:
+    """The independent cases an interval needs for its half-width on ``n_cases`` to shrink within ``room``.
+
+    An interval's half-width falls as ``1/√n`` over independent cases, so ``half_width`` read on ``n_cases`` is
+    within ``room`` from ``⌈n_cases · (half_width / room)²⌉`` cases. Repeats of a case are not independent of it: the
+    count is of cases, and no number of repeats enters it.
+
+    **It is a projection, so it is "about".** A t interval narrows close to ``1/√n`` once its critical value has
+    settled. A bounded interval by betting (:func:`bounded_difference_interval`) does not: it carries a finite-sample
+    excess that falls away as cases grow, so it narrows faster than ``1/√n`` at first. Simulated on paired pass
+    shares over three repeats, its half-width times ``√n`` fell from about 109 points at 12 cases to 77 at 107 while
+    the t interval's held near 60. Scaled from a dozen cases, then, the bounded interval overstates the cases it
+    needs, by up to about twice, and the t interval understates them, since the bounded one stays the wider. Either
+    way it is the size of the sample to plan, not a promise that the next run settles.
+
+    :param half_width: The interval's half-width on the side that must clear, in the reading's units, at least 0.
+    :ptype half_width: float
+    :param n_cases: The independent cases it was read over, at least 1.
+    :ptype n_cases: int
+    :param room: How far that side may reach from the true difference and still clear: the margin less the true
+        difference, in the same units.
+    :ptype room: float
+    :return: The cases, at least 1; None where ``room`` is not above zero, so no number of cases clears it.
+    :rtype: int | None
+    :raises ValueError: ``n_cases`` below 1 or ``half_width`` negative.
+    """
+    if n_cases < 1:
+        raise ValueError(f"an interval is read over at least one case, got {n_cases}")
+    if half_width < 0:
+        raise ValueError(f"a half-width is never negative, got {half_width}")
+    if room <= 0:
+        return None
+    # A hair under a whole count is that count: 12 · (29.8 / 10)² is 106.5648, and 12 · (10 / 10)² must stay 12.
+    return max(1, math.ceil(n_cases * (half_width / room) ** 2 - 1e-9))
+
+
 class VarianceComponents(NamedTuple):
     """How one reading varies across cases and across repeats of one case, estimated from earlier runs.
 
@@ -2629,6 +2665,7 @@ __all__ = [
     "bounded_mean_p",
     "case_means",
     "case_rate_interval",
+    "cases_to_clear",
     "ci_half_width",
     "clustered_standard_error",
     "cohen_kappa",

@@ -1314,7 +1314,8 @@ and v2 costs less per reply. Otherwise stay on v1.`
   unsettled. A rate clause settles either way only over every arm at the case floor, on an interval: keep where a
   rate's drop is past the margin on its whole interval, switch where every rate's is within it. A drop past the
   margin on its point estimate alone is unsettled. A cost clause keeps on a cost observed no lower
-  ([Reading reports](reading-reports.md)).
+  ([Reading reports](reading-reports.md)). An unsettled rule's page states the independent cases a switch needs,
+  computed from the interval each open clause was read on, with their cost.
 - **A rule written as prose is refused** when the design is declared: a question whose text says `Decision rule:`
   and declares no `decision` names `Question.decision` in the refusal. A question stored that way before rules were
   typed still loads; its page says the rule went unread, and its verdict is exploratory.
