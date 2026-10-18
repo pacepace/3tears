@@ -29,7 +29,11 @@ from threetears.evals.schema.versioning import (
 _RUN = EvalRun.from_dict(
     json.loads(
         (
-            Path(__file__).resolve().parent / "fixtures" / "core_documents" / f"v{CORE_SCHEMA_VERSION}" / "eval_run.json"
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "core_documents"
+            / f"v{CORE_SCHEMA_VERSION}"
+            / "eval_run.json"
         ).read_text(encoding="utf-8")
     )
 ).to_dict()
