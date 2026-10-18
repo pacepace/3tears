@@ -477,6 +477,7 @@ def assemble_context_bundle(
         archived_control_variants=archived_control_variants,
         has_unresolved_members=bool(unresolved),
         folds=folds,
+        declared_axes=_declared_axes(campaign.declared_design),
         profile=profile,
     )
     design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, served=served, profile=profile)

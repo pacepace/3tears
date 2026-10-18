@@ -29,10 +29,14 @@ packages (bumped in lock-step).
   levers were kept once two results across the campaign made a call in the role, so a role one arm ran four times and
   the other never ran read as a level, aliased with whatever else separated the arms (a memo reported that the
   candidate model and the research tool's model "move together" and recommended a run to separate them, when neither
-  run set the research model). The predicate now counts arms, by variant key. A single-arm campaign has nothing to
-  compare and keeps the result count.
+  run set the research model). The predicate now counts arms, by variant key, among the runs that delivered results.
+  A lever whose value differs between runs of one arm (a default that moved between builds) is still a level. A
+  single-arm campaign has nothing to compare, so it keeps the result count: its lever rows and aliasing read are
+  those it had.
 - **Never observed in an arm is unknown, not a level.** The lever levels, the control's departures and the coverage
   map leave such a run out of the lever instead of placing it at the inherited default beside the arms that observed it.
+  A lever some run named, or the campaign declared as an axis, keeps the inherited level for an arm that did not run
+  the role. A coverage row's `n` counts only the results that sit at a level.
 - `unexercised_factors` keeps the lever, and Not tested says `observed in one arm only` where several results made the
   calls. Bundle shape 58; `UnexercisedFactor.results` is no longer capped at 1.
 ### 3tears-evals: an unsettled rule states the cases that would settle it, and a memo no longer guesses them
