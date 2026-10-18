@@ -290,7 +290,7 @@ class _GroupSlot:
                 self._semaphore.release()
 
 
-def _tell_member_end(on_member_end: Callable[[str], None], run_id: str, _task: asyncio.Task[None]) -> None:
+def _tell_member_end(on_member_end: Callable[[str], None], run_id: str, _task: asyncio.Task[None] | None) -> None:
     """Tell a group's caller one member's task is done; what the hook raises is logged, never the task's."""
     try:
         on_member_end(run_id)
@@ -980,25 +980,36 @@ class EvalJobManager:
             if measure_latency
             else _GroupSlot(self._semaphore, len(members), in_turn=in_turn)
         )
-        for run, work, job_timeout_s in members:
-            if self._leases is not None:
-                self._leases.hold(
-                    RUN_JOB,
-                    run.id,
-                    run.scope_id,
-                    cancel=functools.partial(self.cancel_job, run.id),
-                    stop=functools.partial(self._fence, run.id),
+        started: set[str] = set()
+        try:
+            for run, work, job_timeout_s in members:
+                if self._leases is not None:
+                    self._leases.hold(
+                        RUN_JOB,
+                        run.id,
+                        run.scope_id,
+                        cancel=functools.partial(self.cancel_job, run.id),
+                        stop=functools.partial(self._fence, run.id),
+                    )
+                task = asyncio.create_task(
+                    self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
+                    name=f"eval-{run.id[:8]}",
                 )
-            task = asyncio.create_task(
-                self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
-                name=f"eval-{run.id[:8]}",
-            )
-            # Released on the TASK's end, not in the coroutine's ``finally``: a task cancelled before
-            # its first step never runs its body, and its share of the slot would never come back.
-            task.add_done_callback(lambda _task: slot.leave())
+                # Released on the TASK's end, not in the coroutine's ``finally``: a task cancelled before
+                # its first step never runs its body, and its share of the slot would never come back.
+                task.add_done_callback(lambda _task: slot.leave())
+                if on_member_end is not None:
+                    task.add_done_callback(functools.partial(_tell_member_end, on_member_end, run.id))
+                self._tasks[run.id] = task
+                started.add(run.id)
+        except BaseException:
+            # A member left without a task is never told ended by its task, so whatever its siblings wait on from it
+            # (an interleaved launch's turns) is told here, before the failure goes on.
             if on_member_end is not None:
-                task.add_done_callback(functools.partial(_tell_member_end, on_member_end, run.id))
-            self._tasks[run.id] = task
+                for run in runs:
+                    if run.id not in started:
+                        _tell_member_end(on_member_end, run.id, None)
+            raise
         return [run.id for run, _, _ in members]
 
     def _fence(self, run_id: str) -> None:
