@@ -53,7 +53,7 @@
     },
     "threetears.evals.Result": {
       "kind": "dataclass",
-      "signature": "Result(name: str, scope_id: str, control: str, arms: dict[str, EvalSummary], report: Report, host: EvalHost, campaign_id: str, factors: tuple[str, ...] = ('model',), store: str = '', fields: tuple[str, ...] = (), judge: Judge | None = None, disclosures: tuple[str, ...] = (), calibrations: tuple[JudgeCalibration, ...] = (), to_label: tuple[dict[str, str], ...] = (), contrast_arms: tuple[str | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[str, str] = dict(), labelled_arms: dict[str, str | None] = dict())",
+      "signature": "Result(name: str, scope_id: str, control: str, arms: dict[str, EvalSummary], report: Report, host: EvalHost, campaign_id: str, page: CampaignReport, factors: tuple[str, ...] = ('model',), store: str = '', fields: tuple[str, ...] = (), judge: Judge | None = None, disclosures: tuple[str, ...] = (), calibrations: tuple[JudgeCalibration, ...] = (), to_label: tuple[dict[str, str], ...] = (), contrast_arms: tuple[str | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[str, str] = dict(), labelled_arms: dict[str, str | None] = dict())",
       "tier": "host-contract"
     },
     "threetears.evals.ROOT_EXTRAS": {
@@ -2441,6 +2441,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.OverriddenBar": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.PassHatPoint": {
       "kind": "typed dict",
       "signature": "",
@@ -4693,7 +4698,7 @@
     },
     "threetears.evals.analysis.campaign_report": {
       "kind": "function",
-      "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report",
+      "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport",
       "tier": "stable"
     },
     "threetears.evals.analysis.campaign_report_html": {
@@ -5786,6 +5791,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.record_campaign_call": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.refuse_undeliverable_reporter_template": {
       "kind": "function",
       "signature": "refuse_undeliverable_reporter_template(template: EvalTemplate) -> None",
@@ -6776,6 +6786,11 @@
       "signature": "campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine",
       "tier": "stable"
     },
+    "threetears.evals.ops.campaign_record": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.campaign_runs_add": {
       "kind": "function",
       "signature": "",
@@ -6788,6 +6803,11 @@
     },
     "threetears.evals.ops.campaign_update": {
       "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.CampaignCallLine": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },

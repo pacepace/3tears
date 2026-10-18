@@ -1513,11 +1513,21 @@ class Floor(EvalDocumentModel, CoreShapeModel):
         return f"{self.aspect}/{self.clause.kind}/{reading or '*'}"
 
 
+class OverriddenBar(EvalDocumentModel, CoreShapeModel):
+    """An absolute bar a call's arm missed on one aspect, named as the writer's ``bars_missed`` names one: the aspect
+    and the bar's measure."""
+
+    aspect: str = Field(min_length=1, description="The aspect's label.")
+    measure: str = Field(min_length=1, description="The bar's measure, spelled as the bundle spells it.")
+
+
 class CampaignCall(EvalDocumentModel, CoreShapeModel):
-    """What a person decided over a campaign's readings: the arm, why, and every broken floor they chose to override.
+    """What a person decided over a campaign's readings: the arm, why, and every broken floor and missed bar they chose
+    to override.
 
     Code reports, the writer recommends, a person decides. The call is the person's, recorded beside what the
-    readings said, so a later reader sees both — and a broken floor the call overrode is named here, never silent.
+    readings said, so a later reader sees both — and a broken floor or missed bar the call overrode is named here,
+    never silent.
     """
 
     arm: str = Field(
@@ -1540,9 +1550,23 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
             "on an arm with a broken floor names it here or is refused; a key for a floor not broken is refused."
         ),
     )
+    bars_overridden: list[OverriddenBar] = Field(
+        default_factory=list,
+        description=(
+            "Every absolute bar the decided arm missed and the decider overrode, by aspect and measure, each once. A "
+            "call on an arm that missed a bar names it here or is refused; a bar the arm did not miss is refused."
+        ),
+    )
     analysis_id: str | None = Field(
         default=None,
         description="The analysis whose memo the call was made over; None when it was made on code's readings alone.",
+    )
+    run_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The campaign's runs when the call was made, so a page can say how many have joined since. A run curated "
+            "away, or a result scored late on a run already held, is not told apart."
+        ),
     )
     called_at: str = Field(default_factory=utc_now_iso, description="When the call was recorded (ISO-8601).")
     called_by: str = Field(
@@ -1582,6 +1606,23 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
         if duplicates := sorted({key for key in keys if keys.count(key) > 1}):
             raise ValueError(f"floors_overridden names {', '.join(duplicates)} more than once; name each floor once")
         return keys
+
+    @field_validator("bars_overridden")
+    @classmethod
+    def _each_bar_once(cls, bars: list[OverriddenBar]) -> list[OverriddenBar]:
+        """Refuse a bar named twice: overriding it once is the whole record.
+
+        :param bars: The overridden bars.
+        :ptype bars: list[OverriddenBar]
+        :return: The bars.
+        :rtype: list[OverriddenBar]
+        :raises ValueError: An aspect and measure appear twice.
+        """
+        named = [(bar.aspect, bar.measure) for bar in bars]
+        if duplicates := sorted({pair for pair in named if named.count(pair) > 1}):
+            spelled = ", ".join(f"{measure} on {aspect}" for aspect, measure in duplicates)
+            raise ValueError(f"bars_overridden names {spelled} more than once; name each bar once")
+        return bars
 
 
 def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -> list[Question]:
@@ -2420,6 +2461,7 @@ __all__ = [
     "DecisionRule",
     "Floor",
     "GuardrailMargin",
+    "OverriddenBar",
     "PROSE_RULE_MARK",
     "Question",
     "RateDrop",

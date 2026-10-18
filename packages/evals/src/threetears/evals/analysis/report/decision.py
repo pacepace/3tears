@@ -61,6 +61,8 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     PROJECTION_CASE_CAP,
+    UNPAIRED_PROJECTION_CAP,
+    UNPAIRED_PROJECTION_RESOLUTION,
     SMALL_N_BAND_FLOOR,
     bounded_cases_to_clear,
     bounded_difference_interval,
@@ -895,18 +897,34 @@ def project_rate(
     if len(control) < 2 or len(contrast) < 2:
         return None
     paired = rate.paired
+    # An unpaired rate's interval is read over each arm's cases apart, at a cost in proportion to them: its search
+    # stops sooner and coarser (UNPAIRED_PROJECTION_CAP, or four times the cases observed where that is more, so it
+    # always reads past what the run held), so a page of unclear rows is laid out in seconds.
+    observed_cases = max(len(control), len(contrast))
+    cap = PROJECTION_CASE_CAP if paired else max(UNPAIRED_PROJECTION_CAP, 4 * observed_cases)
+    resolution = 0.0 if paired else UNPAIRED_PROJECTION_RESOLUTION
 
     def search(room: float) -> int | None:
         return bounded_cases_to_clear(
-            control, contrast, paired=paired, value_range=(0.0, 1.0), confidence=rate.confidence or 0.0, room=room
+            control,
+            contrast,
+            paired=paired,
+            value_range=(0.0, 1.0),
+            confidence=rate.confidence or 0.0,
+            room=room,
+            cap=cap,
+            resolution=resolution,
         )
 
     drop = (sum(control) / len(control) - sum(contrast) / len(contrast)) * 100
-    observed = _needed(search((margin - drop) / 100), cases)
+    observed = _needed(search((margin - drop) / 100), cases, cap=cap)
     if observed.kind == "enough":
         observed = CasesNeeded("lost")
     return SampleProjection(
-        cases=cases, if_none=_needed(search(margin / 100), cases), if_observed=observed, per_case_usd=per_case_usd
+        cases=cases,
+        if_none=_needed(search(margin / 100), cases, cap=cap),
+        if_observed=observed,
+        per_case_usd=per_case_usd,
     )
 
 
@@ -1085,8 +1103,17 @@ def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, 
     counted = sorted(need.cases for need in needs if need.kind == "more")
     if counted and all(need.kind in ("more", "beyond", "never") for need in needs):
         beyond = any(need.kind == "beyond" for need in needs)
-        top = f"more than {format_number(PROJECTION_CASE_CAP)}" if beyond else str(counted[-1])
-        span = f"about {counted[0]}" if counted[0] == counted[-1] and not beyond else f"about {counted[0]} to {top}"
+        caps = sorted({need.cases for need in needs if need.kind == "beyond"})
+        if not beyond:
+            span = f"about {counted[0]}" if counted[0] == counted[-1] else f"about {counted[0]} to {counted[-1]}"
+        elif caps[0] >= counted[-1]:
+            span = f"about {counted[0]} to more than {format_number(caps[-1])}"
+        else:
+            # A search stopped at a cap below a count another row reached: that row needs more than its cap, which
+            # may be fewer or more than the counts, so the range is the counts' and the cap is said apart.
+            low, high = counted[0], counted[-1]
+            counts = f"about {low}" if low == high else f"about {low} to {high}"
+            span = f"{counts}, or more than {format_number(caps[0])} where a search stopped there"
         said.append(f"This run used {run_cases} cases; showing the floors hold needs {span}, more than it ran.")
     return " ".join(said)
 

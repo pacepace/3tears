@@ -29,7 +29,15 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from threetears.evals.analysis import Report, build_report, campaign_report, report_html, report_markdown
+from threetears.evals.analysis import (
+    Report,
+    assemble_context_bundle,
+    build_code_only_report,
+    build_report,
+    report_html,
+    report_markdown,
+)
+from threetears.evals.analysis.campaigns import campaign_arms, set_campaign_control
 from threetears.evals.analysis.arms import (
     ELISION,
     LABEL_LEVEL_CHARS,
@@ -249,6 +257,13 @@ def _profile_with_a_second_kind() -> HostProfile:
     )
 
 
+def _aspect_page(host: Any, campaign: Any) -> Report:
+    """The campaign's one aspect's code-only page, naming each arm by its variant, as the aspect page's builder does
+    when no campaign labels are passed to it: the names these tests pin."""
+    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    return build_code_only_report(bundle, assembled_at="2026-10-18T00:00:00+00:00", campaign_name=campaign.name)
+
+
 def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
     """The code-only report of a toy-host campaign over ``batches``, measured alike."""
     host = toyhost_host(profile=profile)
@@ -271,7 +286,7 @@ def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
         created_by="test:fixture",
     )
     host.storage.save_campaign(campaign)
-    return campaign_report(host, campaign.id, campaign.scope_id)
+    return _aspect_page(host, campaign)
 
 
 def _batch(*, reviewer_pool: str = "pool-a", instructions: str | None = None) -> EvalRun:
@@ -336,7 +351,7 @@ class TestARigOnlyCampaignIsNamedByItsModel:
 def one_lever() -> Report:
     """The toy campaign: two arms that differ on chunk width alone."""
     host, campaign = toy_campaign_host()
-    return campaign_report(host, campaign.id, campaign.scope_id)
+    return _aspect_page(host, campaign)
 
 
 @pytest.fixture(scope="module")
@@ -510,3 +525,24 @@ class TestAnAnalysisReportNamesArmsByTheRule:
         for output in (report_markdown(report), report_html(report)):
             assert _LEVER_DUMP_MARK not in output
             assert "(not a " not in output
+
+
+# --- a campaign's derived arms are labelled as the page names them -------------------------------------------------
+
+
+def test_a_derived_arm_is_labelled_by_the_page_s_word_and_a_taken_one_gets_a_number() -> None:
+    """The toy campaign names no arm, so both chunk widths are derived: each labelled ``1024tok``, never
+    ``chunk_tokens=1024tok``. Naming the 256-token control ``1024tok`` takes that word, so the derived arm reads
+    ``1024tok (2)``."""
+    host, campaign = toy_campaign_host()
+    derived = campaign_arms(host.storage, campaign, profile=host.profile)
+    assert sorted(arm.label for arm in derived) == ["1024tok", "256tok"]
+    assert all(arm.role == "candidate" for arm in derived)
+
+    named = set_campaign_control(
+        host.storage, campaign.id, campaign.scope_id, campaign.run_ids[0], set_by="t", profile=host.profile
+    )
+    assert named.control is not None
+    held = named.model_copy(update={"arms": [named.control.model_copy(update={"label": "1024tok"})]})
+    labels = [arm.label for arm in campaign_arms(host.storage, held, profile=host.profile)]
+    assert labels[0] == "1024tok" and labels[1:] == ["1024tok (2)"]

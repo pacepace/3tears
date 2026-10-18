@@ -41,6 +41,7 @@ from threetears.evals.analysis import (
     build_code_only_report,
     build_report,
     campaign_report,
+    campaign_report_html,
     report_html,
     report_markdown,
     set_campaign_control,
@@ -388,8 +389,10 @@ class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
 
 @pytest.fixture
 def code_only() -> tuple[EvalHost, Report]:
+    """The campaign's one aspect's page, as the campaign's code-only page folds it."""
     host, campaign = toy_campaign_host()
-    return host, campaign_report(host, campaign.id, campaign.scope_id)
+    (fold,) = campaign_report(host, campaign.id, campaign.scope_id).aspects
+    return host, fold.report
 
 
 class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
@@ -417,7 +420,7 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         (methods, *notes) = [block for block in report.blocks if block.section == "methods"]
         assert isinstance(methods, TableBlock) and all(block.fold == "Disclosures" for block in notes)
         (bundle,) = [row["value"] for row in methods.values() if row["item"] == "Bundle"]
-        assert report.source.bundle_fingerprint in str(bundle) and "bundle.json beside this page" in str(bundle)
+        assert report.source.bundle_fingerprint in str(bundle) and "its JSON beside this page" in str(bundle)
 
     def test_it_serializes_as_one_page_and_its_markdown(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
@@ -449,7 +452,9 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
 async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
     host, analysis, report = toy
     resolved = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-    assert report_html(resolved) == report_html(report)
+    stored = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
+    assert campaign_report_html(resolved) == campaign_report_html(stored)
+    assert resolved.basis == "analysis" and resolved.analysis_id == analysis.id
     assert report.basis == "analysis" and report.source.analysis_id == analysis.id
 
 
@@ -459,9 +464,9 @@ async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalH
     off_loop(set_analysis_archived, host.storage, analysis.id, analysis.scope_id, archived=True, reason="shown false")
 
     report = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-    assert report.basis == "code_only" and report.source.analysis_id is None
+    assert report.basis == "code_only" and report.analysis_id is None
     # The archived analysis is still readable by its id.
-    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).source.analysis_id == analysis.id
+    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).analysis_id == analysis.id
 
 
 async def test_a_next_step_on_a_lever_no_comparison_exercised_is_not_on_the_page(
@@ -500,7 +505,8 @@ def _controlled() -> tuple[Any, Report]:
     )
     assert named.control is not None
     host.storage.save_campaign(named.model_copy(update={"arms": [named.control.model_copy(update={"named_at": None})]}))
-    return campaign, campaign_report(host, campaign.id, campaign.scope_id)
+    (fold,) = campaign_report(host, campaign.id, campaign.scope_id).aspects
+    return campaign, fold.report
 
 
 def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control() -> None:
@@ -516,8 +522,9 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     assert comparisons.rows and {row["question"] for row in statistics.values()} == {"Q1"}
     assert {row["question"] for row in contrast_rows(report.bundle)} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}
-    assert by_reading["Field accuracy"] == "1024tok better than 256tok"
-    assert by_reading["Turn time"] == "1024tok worse than 256tok (lower is better)"
+    # The campaign's page folds this page, and names each arm by the campaign's label for it.
+    assert by_reading["Field accuracy"] == "1024tok better than control"
+    assert by_reading["Turn time"] == "1024tok worse than control (lower is better)"
     assert any(
         isinstance(block, DisclosureBlock) and block.source == "comparisons" and "Holm" in block.text
         for block in report.blocks

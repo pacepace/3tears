@@ -21,6 +21,7 @@ import pytest
 
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.analysis import NO_ANALYSIS, AnalysisContextBundle
+from threetears.evals.analysis.report.campaign_page import NO_RECOMMENDATION
 from threetears.evals.kernel import CandidateOutput
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact
@@ -117,14 +118,15 @@ def test_bundle_prints_the_campaigns_bundle_as_json(capsys: pytest.CaptureFixtur
 
 
 def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: pytest.CaptureFixture[str]) -> None:
-    """No analysis, no keyless analyst: the report is the evidence as code computed it, and says so first."""
+    """No analysis, no keyless analyst: the report is the campaign's page over the evidence as code computed it, saying
+    that no recommendation was written, with the aspect's page in its fold."""
     host = courier_host()
     campaign = asyncio.run(run_courier_campaign(host))
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
     title = out.splitlines()[0]
     assert title.startswith(f"# {campaign.name}")
-    assert out.splitlines()[3].startswith("**")  # the verdict, under the title and the arms
+    assert NO_RECOMMENDATION in out
     assert f"| Analysis | {NO_ANALYSIS} |" in out and out.count(NO_ANALYSIS) == 1
     assert "**Scoreboard**" in out and "## Cases" in out and "## Methods" in out
 
@@ -147,16 +149,17 @@ def _without_assembly_time(text: str) -> str:
     return re.sub(r"\d{4}-\d{2}-\d{2}T[0-9:.+]+(Z|[+-]\d{2}:\d{2})?", "<at>", text)
 
 
-def test_report_as_json_is_the_bundle_the_report_was_computed_from(capsys: pytest.CaptureFixture[str]) -> None:
+def test_report_as_json_names_the_bundle_the_report_was_computed_from(capsys: pytest.CaptureFixture[str]) -> None:
     host = courier_host()
     campaign = asyncio.run(run_courier_campaign(host))
     args = ["report", campaign.id, "--scope", COURIER_SCOPE, "--format", "json"]
     assert run_cli(args, host_factory=lambda: host) == 0
-    bundle = AnalysisContextBundle.from_json(capsys.readouterr().out)
+    document = json.loads(capsys.readouterr().out)
 
-    assert bundle.campaign_id == campaign.id and sorted(bundle.run_ids) == sorted(campaign.run_ids)
+    assert (document["kind"], document["campaign_id"]) == ("campaign", campaign.id)
+    (aspect,) = document["aspects"]
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
-    assert bundle.fingerprint() in capsys.readouterr().out, "the page names the bundle it was computed from"
+    assert aspect["bundle_fingerprint"] in capsys.readouterr().out, "the page names the bundle it was computed from"
 
 
 def test_report_writes_the_page_its_markdown_and_its_bundle_to_out(
@@ -171,9 +174,12 @@ def test_report_writes_the_page_its_markdown_and_its_bundle_to_out(
     page = (out / "report.html").read_text(encoding="utf-8")
     assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and "<script" not in page.lower()
     assert (out / "report.md").read_text(encoding="utf-8").startswith(f"# {campaign.name}")
-    assert AnalysisContextBundle.from_json((out / "bundle.json").read_text(encoding="utf-8")).campaign_id == campaign.id
+    (bundle,) = out.glob("bundle-*.json")
+    assert AnalysisContextBundle.from_json(bundle.read_text(encoding="utf-8")).campaign_id == campaign.id
+    assert json.loads((out / "campaign.json").read_text(encoding="utf-8"))["campaign_id"] == campaign.id
     assert capsys.readouterr().out == (
-        f"wrote the code-only report of campaign {campaign.id} to {out}: report.html, bundle.json, report.md\n"
+        f"wrote the code-only report of campaign {campaign.id} to {out}: report.html, report.md, campaign.json, "
+        f"{bundle.name}\n"
     )
 
 

@@ -54,8 +54,12 @@ from threetears.evals.analysis.report.decision import (
     read_floor,
 )
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
+from threetears.evals.analysis import stats
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
+    PROJECTION_ORDERS,
+    UNPAIRED_PROJECTION_CAP,
     bounded_cases_to_clear,
     bounded_difference_interval,
     cases_to_clear,
@@ -628,3 +632,74 @@ async def test_with_two_candidates_a_next_step_may_cite_either_arm_s_projected_c
 def _writer_message(bundle: Any) -> str:
     """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
     return build_campaign_user_message(campaign_bundle(bundle))
+
+
+def test_an_unpaired_rate_s_projection_reads_no_interval_past_its_cap_and_says_more_than_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Twenty production cases against twenty-three of the candidate's, alike in pass rate: no count under the
+    unpaired cap shows them within ten points, so the projection reads "more than 500" — and never reads an interval
+    over more cases than that, which is what kept a page of such rows from taking half a minute."""
+    read_over: list[int] = []
+
+    def counted(a: Sequence[float], b: Sequence[float], **kwargs: Any) -> tuple[float, float] | None:
+        read_over.append(max(len(a), len(b)))
+        return bounded_difference_interval(a, b, **kwargs)
+
+    monkeypatch.setattr(stats, "bounded_difference_interval", counted)
+    # Values no other test reads, so no interval is a cached one.
+    control = tuple(float(index % 5 < 3) for index in range(20))
+    candidate = tuple(float(index % 23 < 13) for index in range(23))
+    rate = RateReading("the pass rate", 12, 20, 13, 23, samples=(control, candidate), paired=False, confidence=0.975)
+
+    projection = project_rate(rate, cases=20, margin=10.0)
+
+    assert projection is not None and projection.if_none == CasesNeeded("beyond", UNPAIRED_PROJECTION_CAP)
+    assert read_over and max(read_over) <= UNPAIRED_PROJECTION_CAP
+    assert len(read_over) <= 2 * PROJECTION_ORDERS * 10, "two searches, each a few doublings up to the cap"
+    assert f"more than {UNPAIRED_PROJECTION_CAP}" in projected_cell(projection, projection.if_none)
+
+
+def test_an_unpaired_projection_over_more_cases_than_the_cap_searches_past_the_run_it_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Six hundred production cases against six hundred and ten of the candidate's: the unpaired cap is four times
+    the cases observed where that is more than 500, so the search starts at the run and never answers fewer cases than
+    it read."""
+    read_over: list[int] = []
+
+    def counted(a: Sequence[float], b: Sequence[float], **kwargs: Any) -> tuple[float, float] | None:
+        read_over.append(max(len(a), len(b)))
+        return bounded_difference_interval(a, b, **kwargs)
+
+    monkeypatch.setattr(stats, "bounded_difference_interval", counted)
+    control = tuple(float(index % 10 < 7) for index in range(600))
+    candidate = tuple(float(index % 61 < 42) for index in range(610))
+    rate = RateReading(
+        "the pass rate", 420, 600, 420, 610, samples=(control, candidate), paired=False, confidence=0.975
+    )
+
+    projection = project_rate(rate, cases=600, margin=2.0)
+
+    assert projection is not None
+    cap = 4 * 610
+    assert read_over and min(read_over) >= 610 and max(read_over) <= cap
+    need = projection.if_none
+    assert (need.kind == "more" and 610 < need.cases <= cap) or need == CasesNeeded("beyond", cap), need
+    if need.kind == "beyond":
+        assert projected_cell(projection, need) == f"more than {format_number(cap)} cases"
+
+
+def test_a_note_over_a_count_past_another_row_s_cap_never_reads_a_range_ending_below_its_start() -> None:
+    """One row counted at 1,500 and 2,000 cases, another stopped at its 500-case cap: the note gives the counts' range
+    and says the cap apart, never "about 1500 to more than 500"."""
+    counted = SampleProjection(cases=20, if_none=CasesNeeded("more", 2000), if_observed=CasesNeeded("more", 1500))
+    stopped = SampleProjection(cases=20, if_none=CasesNeeded("beyond", 500), if_observed=CasesNeeded("never"))
+
+    note = projection_note([counted, stopped], run_cases=20)
+
+    assert "to more than 500" not in note
+    assert "showing the floors hold needs about 1500 to 2000, or more than 500 where a search stopped there" in note
+    wider = SampleProjection(cases=20, if_none=CasesNeeded("beyond", 10_000), if_observed=CasesNeeded("more", 300))
+    said = f"needs about 300 to more than {format_number(10_000)}, more than it ran"
+    assert said in projection_note([wider], run_cases=20)

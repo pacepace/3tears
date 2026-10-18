@@ -19,6 +19,7 @@ from threetears.evals.analysis import (
     DisclosureBlock,
     TableBlock,
     build_code_only_report,
+    campaign_report_markdown,
     report_markdown,
     variant_key_of_run,
 )
@@ -121,7 +122,7 @@ async def test_every_other_arm_is_tested_against_the_control_and_the_better_one_
     assert {row["control"] for row in rows} == {"hasty"}
     assert [row["reading"] for row in _comparisons(comparison).values()] == [row["reading"] for row in rows]
     markdown = report_markdown(comparison.report)
-    assert comparison.render(full=True).endswith(markdown)
+    assert comparison.render(full=True).endswith(campaign_report_markdown(comparison.page))
     assert "No control resolved" not in markdown
     assert "hasty (control) vs careful" in markdown
 

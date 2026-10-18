@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 from pydantic import Field, ValidationError
 
 from threetears.evals.analysis.arms import arm_names
+from threetears.evals.analysis.style import arm_name
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
@@ -1697,8 +1698,9 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
     A campaign stored before arms existed names its control alone, and a campaign named from a sweep names none, so
     every variant among an aspect's runs that no named arm resolves to is read as a candidate of its own, in aspect
     order then the order its runs first carry it. A derived candidate is labelled by the levers on which the
-    campaign's variants differ (:func:`~threetears.evals.analysis.arms.arm_names`), its digest beside the label where
-    two would read alike, and a ``(2)``, ``(3)`` … where a label is still taken. Derived on every read and never
+    campaign's variants differ (:func:`~threetears.evals.analysis.arms.arm_names`), read as the page reads them
+    (:func:`~threetears.evals.analysis.style.arm_name`: ``careful``, never ``candidate=careful``), its digest beside the
+    label where two would read alike, and a ``(2)``, ``(3)`` … where a label is still taken. Derived on every read and never
     stored, so a person naming the arms later replaces them whole.
 
     **A derived label is not an identity.** It is read over the variants the runs carry now, so a variant joining
@@ -1733,9 +1735,11 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
     taken = {arm.label for arm in named}
     arms = list(named)
     for key, addressed in derived.items():
-        label, suffix = names[key], 2
+        # The page's word for the arm (`careful`, not `candidate=careful`), so the first screen and every fold read it.
+        word = arm_name(names[key]).label
+        label, suffix = word, 2
         while label in taken:
-            label, suffix = f"{names[key]} ({suffix})", suffix + 1
+            label, suffix = f"{word} ({suffix})", suffix + 1
         taken.add(label)
         arms.append(
             CampaignArm(
