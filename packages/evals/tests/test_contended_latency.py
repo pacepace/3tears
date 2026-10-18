@@ -31,9 +31,16 @@ from threetears.evals.analysis.lenses.history import compute_history
 from threetears.evals.kernel import EvalCampaign, Question
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.schema.models import LatencyMetrics
-from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_eval_result,
+    make_eval_run,
+    minimal_declaration,
+    make_campaign,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.aspect_support import with_aspect
 
 CONTROL = "control-model"
 CONTRAST = "contrast-model"
@@ -86,7 +93,7 @@ def _campaign(
             ]
         }
     )
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=runs[0].scope_id,
         name="latency under concurrency",
         subject_id=runs[0].subject_snapshot.subject_id,
@@ -234,10 +241,7 @@ class TestTheScopeLenses:
 class TestACampaignDeclaringLatencyUnderTest:
     def test_its_runs_read_under_concurrency_are_named_with_the_remedy(self) -> None:
         campaign, runs, results = _campaign([(CONTROL, "serial", 0.0), (CONTRAST, "concurrent", 0.0)])
-        assert campaign.declared_design is not None
-        declared = campaign.model_copy(
-            update={"declared_design": campaign.declared_design.model_copy(update={"measure_latency": True})}
-        )
+        declared = with_aspect(campaign, design={"measure_latency": True})
 
         bundle = assemble_context_bundle(declared, storage=ToyhostStorage(runs, results), profile=_PROFILE)
 

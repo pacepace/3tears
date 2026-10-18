@@ -39,7 +39,7 @@ from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_k
 from threetears.evals.schema.values import SweepableValue
 
 #: The frozen v15 campaign: a design declaring a control and asking no question.
-_FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "core_documents" / "v15" / "eval_campaign.json"
+_FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
 
 _LEVERS = {"model": SweepableValue.of("glm", display="GLM")}
 _KEY = compute_variant_key(_LEVERS)
@@ -326,13 +326,20 @@ class TestAspectViews:
         assert declared is not None
         assert (declared.question, declared.design.merit_axes) == ("", None)
 
-    def test_the_factory_refuses_a_margin_its_stored_shape_would_change(self) -> None:
-        with pytest.raises(ValueError, match="pass margin=5.0"):
-            make_aspect_campaign(
-                question="Is it kinder?", design=minimal_aspect_design(merit_axes=[]), floors=[RateDrop(max_points=5)]
-            )
-        with pytest.raises(ValueError, match="pass margin=None"):
-            make_aspect_campaign(question="Is it kinder?", design=minimal_aspect_design(merit_axes=[]), margin=5.0)
+    def test_the_factory_stores_a_margin_apart_from_the_floors(self) -> None:
+        """A campaign of aspects holds the margin on the aspect, so neither implies the other."""
+        floored = make_aspect_campaign(
+            question="Is it kinder?", design=minimal_aspect_design(merit_axes=[]), floors=[RateDrop(max_points=5)]
+        )
+        margined = make_aspect_campaign(
+            question="Is it kinder?", design=minimal_aspect_design(merit_axes=[]), margin=3.0
+        )
+
+        assert (floored.aspects[0].margin, [floor.key for floor in floored.floors]) == (
+            None,
+            ["conversation/rate_drop/*"],
+        )
+        assert (margined.aspects[0].margin, margined.floors) == (3.0, [])
 
     def test_the_factory_refuses_a_question_without_its_axes(self) -> None:
         with pytest.raises(ValueError, match="merit_axes are its question's"):

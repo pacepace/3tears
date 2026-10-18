@@ -44,7 +44,6 @@ from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.kernel import (
     CampaignDesign,
     ControlDeclaration,
-    EvalCampaign,
     SweptAxis,
     resolve_variant_identity,
 )
@@ -74,6 +73,7 @@ from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
 from packages.evals.tests.fixtures.toyhost.variant import variant_levers
+from packages.evals.tests.factories import make_campaign
 
 if TYPE_CHECKING:
     from threetears.evals.schema import EvalResult
@@ -232,7 +232,7 @@ def _bundle(
             held_fixed=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
             declared_at="2026-03-14T09:30:00+00:00",
         )
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
         scope_id=TOYHOST_SCOPE,
         name="effort",

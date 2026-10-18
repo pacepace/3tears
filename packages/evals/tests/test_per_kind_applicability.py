@@ -51,7 +51,7 @@ from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRAC
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -510,7 +510,6 @@ def test_bisecting_a_judged_and_a_code_only_run_of_one_kind_reads_the_judge_as_a
 def test_a_bundle_over_a_judged_and_a_code_only_run_of_one_kind_records_no_unknown_judge() -> None:
     """The cell partition and the confound scan read the code-only run's judge as unseated, never undecided."""
     from threetears.evals.analysis import assemble_context_bundle
-    from threetears.evals.kernel import EvalCampaign
     from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 
     profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
@@ -535,7 +534,7 @@ def test_a_bundle_over_a_judged_and_a_code_only_run_of_one_kind_records_no_unkno
         ],
         code_only.id: [make_eval_result(eval_run_id=code_only.id, scope_id=code_only.scope_id, rubric_scores=[])],
     }
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=judged.scope_id,
         name="judged and code-only",
         subject_id=judged.subject_snapshot.subject_id,

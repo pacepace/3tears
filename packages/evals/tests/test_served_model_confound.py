@@ -29,7 +29,6 @@ from threetears.evals.analysis import (
 from threetears.evals.kernel import (
     CampaignDesign,
     ControlDeclaration,
-    EvalCampaign,
     SweptAxis,
     resolve_variant_identity,
 )
@@ -43,6 +42,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.factories import make_campaign
 
 #: The alias a launch asks for, and two concrete models a provider could resolve it to.
 _ALIAS = "~vendor/extractor-latest"
@@ -111,7 +111,7 @@ def _bundle(
     storage = ToyhostStorage(
         [batch for batch, _ in batches], {batch.id: _results(batch, served) for batch, served in batches}
     )
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="0b6f2a54-3c1e-4d8a-9e27-5a1c7f3b2d60",
         scope_id=TOYHOST_SCOPE,
         name="served-model",

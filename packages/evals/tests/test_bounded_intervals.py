@@ -201,7 +201,7 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
             name="strict vs loose",
             subject_id="sentiment",
             behavior="classify",
-            run_ids=[strict.run_id, loose.run_id],
+            aspects=[{"label": "classify", "run_ids": [strict.run_id, loose.run_id]}],
             exploratory=True,
         ),
         SCOPE,

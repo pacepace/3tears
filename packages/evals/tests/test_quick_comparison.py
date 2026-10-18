@@ -95,11 +95,12 @@ async def test_the_control_resolves_to_the_variant_the_control_arm_ran() -> None
     comparison = await _compare()
     storage = comparison.host.storage
     campaign = off_loop(storage.load_campaign, comparison.campaign_id, SCOPE)
-    assert campaign is not None and campaign.declared_design is not None
-    design = campaign.declared_design
+    assert campaign is not None and campaign.aspects[0].design is not None and campaign.control is not None
+    design = campaign.aspects[0].design
     run_id = comparison.arms["hasty"].run_id
-    assert design.control == variant_key_of_run(off_loop(storage.query_eval_results_by_run, run_id, SCOPE))
-    assert design.control != variant_key_of_run(
+    control = campaign.control.variant_key
+    assert control == variant_key_of_run(off_loop(storage.query_eval_results_by_run, run_id, SCOPE))
+    assert control != variant_key_of_run(
         off_loop(storage.query_eval_results_by_run, comparison.arms["careful"].run_id, SCOPE)
     )
     (axis,) = design.axes

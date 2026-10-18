@@ -128,5 +128,5 @@ async def test_a_comparison_declaring_latency_runs_every_arm_serially_and_its_ca
         run = off_loop(storage.load_eval_run, summary.run_id, "latency-compare")
         assert run is not None and (run.measure_latency, run.cell_concurrency) == (True, 1)
     campaign = off_loop(storage.load_campaign, comparison.campaign_id, "latency-compare")
-    assert campaign is not None and campaign.declared_design is not None
-    assert campaign.declared_design.measure_latency is True
+    assert campaign is not None and campaign.aspects[0].design is not None
+    assert campaign.aspects[0].design.measure_latency is True

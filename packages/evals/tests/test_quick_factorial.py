@@ -157,14 +157,14 @@ async def test_each_cell_runs_as_one_arm_at_its_model_and_its_lever() -> None:
 async def test_the_campaign_declares_one_axis_per_factor_at_the_levels_the_runs_carry() -> None:
     comparison = await _factorial()
     campaign = off_loop(comparison.host.storage.load_campaign, comparison.campaign_id, SCOPE)
-    assert campaign is not None and campaign.declared_design is not None
-    design = campaign.declared_design
+    assert campaign is not None and campaign.aspects[0].design is not None and campaign.control is not None
+    design = campaign.aspects[0].design
     model_axis, prompt_axis = design.axes
     assert (model_axis.axis_id, prompt_axis.axis_id) == (CANDIDATE_MODEL_LEVER, "callable.prompt")
     assert [value.content_hash for value in prompt_axis.values] == [
         SweepableValue.of(level, display=level).content_hash for level in ("v1", "v2")
     ]
-    assert design.control == variant_key_of_run(
+    assert campaign.control.variant_key == variant_key_of_run(
         off_loop(comparison.host.storage.query_eval_results_by_run, comparison.arms["model=a, prompt=v1"].run_id, SCOPE)
     )
     assert design.intended_repetitions == 2

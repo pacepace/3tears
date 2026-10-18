@@ -30,13 +30,13 @@ from threetears.evals.analysis import (
     summarize_run,
 )
 from threetears.evals.analysis.reporting import model_identity_disclosure, unconfirmed_model_identities
-from threetears.evals.kernel import EvalCampaign, EvalStorage
+from threetears.evals.kernel import EvalStorage
 from threetears.evals import Answer
 from threetears.evals.quick.one_call import callable_host
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.schema import EvalResult, EvalRun, RoleUsage, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
     TOYHOST_SUBJECT,
@@ -231,7 +231,7 @@ def _campaign_bundle(served: str | None) -> Any:
             batch, profile=toyhost_profile(), cost_usd=0.02, total_ms=900.0, field_accuracy=0.8
         )
     ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="5f0c9a3e-2b7d-4e41-8c6a-9d3e1f2a7b40",
         scope_id=TOYHOST_SCOPE,
         name="model-identity",

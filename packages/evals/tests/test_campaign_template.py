@@ -1,8 +1,8 @@
-"""A campaign knows the template its runs ran, so a bar on that template's rubric is one its author can declare.
+"""An aspect knows the template its runs ran, so a bar on that template's rubric is one its author can declare.
 
 ``campaign_create`` took no template and inferred none, so a bar on a template rubric dimension was refused
 because "this campaign names no template that could be read" — a remedy no caller of that action could reach,
-though every run it named ran one template. So a campaign takes ``template_id``, refused when the scope holds no
+though every run it named ran one template. So each aspect takes ``template_id``, refused when the scope holds no
 such template; when it names none and every run it holds ran one template, that template is its own; and a bar
 that still finds no template is refused naming both ways to give it one.
 """
@@ -46,13 +46,20 @@ def _definition(run_ids: list[str], **extra: object) -> dict[str, object]:
     design = toyhost_design().model_copy(
         update={"bars": [BarOverride(measure_id=_DIM, threshold=3, direction="higher_is_better")]}
     )
+    moved = {"declared_at", "declared_by", "questions", "control", "control_levers", "control_identity_version"}
     return {
         "name": "a bar on the template's rubric",
         "subject_id": "subject-1",
         "behavior": "extraction",
-        "run_ids": run_ids,
-        "declared_design": design.model_dump(mode="json", exclude={"declared_at", "declared_by"}),
-        **extra,
+        "aspects": [
+            {
+                "label": "extraction",
+                "run_ids": run_ids,
+                "margin": 5,
+                "design": design.model_dump(mode="json", exclude=moved),
+                **extra,
+            }
+        ],
     }
 
 
@@ -63,13 +70,13 @@ def _create(storage: EvalStorage, definition: dict[str, object]):  # type: ignor
 def test_runs_of_one_template_give_the_campaign_its_template_and_a_bar_on_its_rubric_is_declared() -> None:
     storage = _store({"run-a": "tpl-1", "run-b": "tpl-1"})
     campaign = _create(storage, _definition(["run-a", "run-b"]))
-    assert campaign.template_id == "tpl-1"
+    assert campaign.aspects[0].template_id == "tpl-1"
 
 
 def test_a_named_template_is_the_campaigns() -> None:
     storage = _store({"run-a": "tpl-1", "run-b": "tpl-2"})
     campaign = _create(storage, _definition(["run-a", "run-b"], template_id="tpl-2"))
-    assert campaign.template_id == "tpl-2"
+    assert campaign.aspects[0].template_id == "tpl-2"
 
 
 def test_a_named_template_the_scope_does_not_hold_is_refused_with_how_to_find_one() -> None:
@@ -91,4 +98,4 @@ def test_the_action_takes_the_template() -> None:
     action = tool.action("campaign_create") or next(
         t.action("campaign_create") for t in eval_catalogue().mount_all(standard_tools()) if t.action("campaign_create")
     )
-    assert "template_id" in action.params.model_fields
+    assert "template_id" in (action.params.model_fields["aspects"].description or "")

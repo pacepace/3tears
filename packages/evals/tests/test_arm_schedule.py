@@ -193,7 +193,7 @@ def _disclosure(host: OpsHost, storage: EvalStorage, runs: list[EvalRun], name: 
             name=name,
             subject_id=TOYHOST_SUBJECT.subject_id,
             behavior="extraction",
-            run_ids=[run.id for run in runs],
+            aspects=[{"label": "extraction", "run_ids": [run.id for run in runs]}],
             exploratory=True,
         ),
         TOYHOST_SCOPE,

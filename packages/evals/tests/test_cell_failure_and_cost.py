@@ -59,13 +59,12 @@ from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.lenses.cost_estimate import compute_estimate_cost
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
-from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, grade_goal_checks
 from packages.evals.tests.job_support import InMemoryRunStore, settled
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from packages.evals.tests.scripted_table import ScriptedTable, actor
 from threetears.evals.schema.models import ConversationSpec, ConversationStopCause
 from threetears.evals.run import drive_conversation
@@ -1003,7 +1002,7 @@ def test_the_analysis_bundle_counts_unpriced_results_and_never_reads_their_rows_
         )
         for i in range(2)
     ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="c",
         subject_id=run.subject_snapshot.subject_id,
@@ -1041,7 +1040,7 @@ def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_co
         )
         for i in range(3)
     ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="c",
         subject_id=run.subject_snapshot.subject_id,
@@ -1094,7 +1093,7 @@ def test_a_judge_kind_campaign_states_each_arms_cost_per_reply_from_the_judge_un
         for model, run in runs.items()
     }
     (one, *_) = runs.values()
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=one.scope_id,
         name="c",
         subject_id=one.subject_snapshot.subject_id,

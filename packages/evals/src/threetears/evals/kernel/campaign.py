@@ -28,11 +28,17 @@ from typing import Any, Literal, Self, get_args
 from pydantic import Field, computed_field, field_validator, model_validator
 
 from threetears.evals.kernel.authored import AuthoredAnalysis, Confidence
-from threetears.evals.kernel.declaration import CampaignDesign
+from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, CampaignDesign, Floor
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalDocumentModel, VerbatimJsonObject
+from threetears.evals.schema.base import (
+    CoreDocumentModel,
+    CoreShapeModel,
+    DurableDocumentModel,
+    EvalDocumentModel,
+    VerbatimJsonObject,
+)
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
     CancelRequestedAtField,
@@ -41,8 +47,14 @@ from threetears.evals.schema.job_lease import (
     LostField,
 )
 from threetears.evals.schema.refusal import RefusalField
-from threetears.evals.schema.models import ArmSchedule, CoreSchemaVersion, SchemaVersion, utc_now_iso
-from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.models import (
+    ArmSchedule,
+    CoreSchemaVersion,
+    DurableSchemaVersion,
+    SchemaVersion,
+    utc_now_iso,
+)
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, DURABLE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.schema.logs import get_logger
@@ -125,52 +137,43 @@ class CampaignWindow(EvalDocumentModel):
     end: str = Field(description="Latest member-run created_at (ISO-8601).")
 
 
-class EvalCampaign(CoreDocumentModel):
-    """A curated set of eval runs under one subject×behavior — the analysis hub.
+class EvalCampaign(DurableDocumentModel):
+    """What a person set out to learn, and the runs gathered to learn it: one question, its arms, its aspects.
 
-    **Kept** (:mod:`threetears.evals.schema.versioning`): a campaign is what a person set out to learn and
-    which runs they gathered to learn it, and nothing stored can make that again, so a later release reads it
-    and upgrades it rather than refusing it.
+    **Durable** (:mod:`threetears.evals.schema.versioning`, durable v16): a campaign is authored — the question, the
+    arms, the margin each aspect holds a candidate to, the floors — and nothing stored can make it again, so it
+    outlives every core baseline reset and a later release upgrades it rather than refusing it. A campaign stored
+    before aspects existed (core or durable v15) reads as one aspect labelled with its behavior.
 
-    A campaign has no open/closed status: ``archived`` is the lifecycle a campaign has.
+    **A campaign asks ONE question of its arms** (``question``), and an **aspect** is where it is measured: one
+    template, the runs gathered on it, the margin a candidate may fall below the control by there, and the design
+    those runs were gathered under (:class:`~threetears.evals.kernel.declaration.Aspect`). A campaign has at least one
+    aspect; a run belongs to one aspect of a campaign at most, though a run may belong to more than one campaign.
+    Every per-aspect reader reads a campaign through :func:`~threetears.evals.analysis.aspects.aspect_view`, never
+    through these fields.
 
-    Lives in one ``scope_id``, and so do its member runs: a run in another scope is
-    refused at attachment (:mod:`threetears.evals.analysis.campaigns`), because every
-    read of a campaign's members is a read within one scope. Membership (``run_ids``)
-    is curated, not queried: a run may belong to more than one campaign, and a campaign
-    holds exactly the runs an operator attached to it.
+    **The arms are variants, not runs** (:class:`~threetears.evals.kernel.declaration.CampaignArm`): each is a
+    variant key beside its pre-image, addressed from a run and named by a label, so curating a run out never takes
+    an arm with it — the control was once ``control_run_id``, a run on the campaign that archiving it destroyed. At
+    most one arm is the control, and it comes first. A campaign that names no candidate arm reads
+    each other variant among its runs as one (:func:`~threetears.evals.analysis.campaigns.campaign_arms`).
 
-    Subject and Behavior are *references*, not FK-enforced fields:
-    ``subject_id`` points at an existing subject the host owns and
-    ``template_id`` at an existing ``eval_template``. ``subject_kind`` is a discriminator (free string) —
-    data the render/grouping layer keys on, never a code branch. **It has
-    no default kind.** A blank means this campaign declared none; defaulting it to
-    whichever kind the host happens to evaluate most would make every other
-    consumer's campaign silently claim a kind nobody chose, which is the same
-    dishonesty as branching on it.
+    **Floors only warn** (:class:`~threetears.evals.kernel.declaration.Floor`): each is a typed clause on one aspect,
+    and a broken one is the first thing the page says. **The call** is what a person decided over the readings
+    (:class:`~threetears.evals.kernel.declaration.CampaignCall`), None until one is recorded.
 
-    **Membership alone does not describe an experiment, which is what
-    ``declared_design`` is for.** A bag of runs cannot say whether each cell moved
-    one lever off a shared reference or whether the sweep was factorial, so an
-    analysis reading it has to guess — and guessing factorial over a star design
-    pools cells that share no lever, which manufactures a difference inside the
-    comparison arm.
+    **Exploratory is derived, never stored**: a campaign none of whose aspects declares a design is exploratory, and
+    its report says once that its readings confirm nothing.
 
-    **The control lives on the declaration and is a VARIANT, not a run.** It was
-    ``control_run_id`` here for the whole of its previous life, and the cost was a
-    design that any curation could destroy: archive the control run and the campaign
-    stopped being an experiment, even where three other runs carried the identical
-    contestant stack. ``declared_design.control`` is a variant key, so a control
-    resolves through whichever observation carries it — and nothing on this model is
-    a pointer at a run whose deletion could dangle it. The key is kept beside its
-    pre-image (``control_levers``, ``control_identity_version``), as a run keeps its
-    lever map beside its own, so a change to how the identity predicate digests a map
-    re-keys the control instead of orphaning it.
+    Lives in one ``scope_id``, and so do its member runs: a run in another scope is refused at attachment
+    (:mod:`threetears.evals.analysis.campaigns`). Subject and Behavior are *references*, not FK-enforced fields.
+    ``subject_kind`` is a discriminator (free string) with no default kind. A campaign has no open/closed status:
+    ``archived`` is the lifecycle a campaign has.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_campaign"] = "eval_campaign"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     name: str = Field(min_length=1, description="Operator-facing campaign name.")
@@ -187,27 +190,49 @@ class EvalCampaign(CoreDocumentModel):
             "campaign declared no kind — not that it is of the host's usual kind."
         ),
     )
-    behavior: str = Field(min_length=1, description="Which aspect is under test, e.g. 'tool selection'.")
-    template_id: str | None = Field(default=None, description="Reference to an existing eval_template (the Behavior).")
-    run_ids: list[str] = Field(
-        default_factory=list,
-        description="Curated membership; a run may belong to more than one campaign.",
+    behavior: str = Field(min_length=1, description="What the campaign is about, e.g. 'tool selection'.")
+    question: str = Field(
+        default="",
+        description=(
+            "The one question the campaign asks of its arms, in the operator's words: what would make a candidate "
+            "the one to adopt. Empty = it asks none: every reading is exploratory, though a design is declared."
+        ),
     )
-    declared_design: CampaignDesign | None = Field(
+    arms: list[CampaignArm] = Field(
+        default_factory=list,
+        description=(
+            "The arms a person named, each a variant addressed from a run: the control, when one is named, first, "
+            "then the candidates. Empty = none named; every variant among the runs is then read as a candidate."
+        ),
+    )
+    aspects: list[Aspect] = Field(
+        min_length=1,
+        description=(
+            "Where the question is measured, in the order a page lists them: each aspect's template, runs, margin and "
+            "design. At least one; labels are unique, and a run belongs to one aspect at most."
+        ),
+    )
+    floors: list[Floor] = Field(
+        default_factory=list,
+        description=(
+            "The lines a candidate is warned for crossing, each on one aspect, in declaration order. Each floor's "
+            "key is unique. Empty = none: no reading is warned of."
+        ),
+    )
+    declared_at: str | None = Field(
         default=None,
         description=(
-            "What this campaign SET OUT to learn — operator input, never derived. The realized "
-            "design lives on the bundle and is derived from observations; the delta between the two "
-            "is the coverage story, which is why they are two fields and not one. A declared value "
-            "with no observations is `unswept` AND NAMED, where an inferred design can only report "
-            "what happened to run.\n\n"
-            "**Nullable, and that is a real state:** a campaign may legitimately never declare one. "
-            "Such a campaign is EXPLORATORY — derived from this field being null, never stored as a "
-            "flag of its own: its report and its analysis bundle say once, at the top, that no design "
-            "was declared so its readings confirm nothing; its design is the one inferred from the runs, "
-            "never presented as declared; and the axis-completeness validator degrades from a gate to a "
-            "warning. Declare one when a question is settled before the runs; explore when it is not."
+            "When the question, its margins and its floors were declared in full (ISO-8601): a reading confirms only "
+            "what was asked before the evidence existed. An aspect's design carries its own time "
+            "(`aspects[].declared_at`). None when the campaign declares nothing."
         ),
+    )
+    declared_by: str = Field(
+        default="", description="Who declared the question, as the declaring surface knows them; empty when unrecorded."
+    )
+    call: CampaignCall | None = Field(
+        default=None,
+        description="What a person decided over the campaign's readings. None = no call recorded yet.",
     )
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
@@ -217,8 +242,7 @@ class EvalCampaign(CoreDocumentModel):
             "Who created the campaign, as the CREATING SURFACE knows them — `web:<username>` from a "
             "session, `mcp` from the action seam, which names the surface rather than a person "
             "because an MCP token identifies the surface. Server-owned: a caller-supplied value is "
-            "discarded, because authorship a caller types is a claim rather than a record, and this "
-            "field spent its whole life advertised as an optional key and written by nobody. Required "
+            "discarded, because authorship a caller types is a claim rather than a record. Required "
             "and non-blank: every campaign has an author, and a later editor is not it."
         ),
     )
@@ -230,6 +254,113 @@ class EvalCampaign(CoreDocumentModel):
         if v != "eval_campaign":
             raise ValueError(f"doc_type must be 'eval_campaign', got '{v}'")
         return v
+
+    @model_validator(mode="after")
+    def _aspects_hold_their_runs_alone(self) -> Self:
+        """Each aspect's label is unique, and each run is held once, by one aspect.
+
+        :return: The validated campaign.
+        :rtype: EvalCampaign
+        :raises ValueError: Two aspects share a label, or a run is held twice — by one aspect or by two.
+        """
+        labels = [aspect.label for aspect in self.aspects]
+        if repeated := sorted({label for label in labels if labels.count(label) > 1}):
+            raise ValueError(
+                f"aspect label(s) {', '.join(map(repr, repeated))} name more than one aspect; label each once"
+            )
+        holder: dict[str, str] = {}
+        for aspect in self.aspects:
+            for run_id in aspect.run_ids:
+                if run_id in holder:
+                    where = (
+                        f"twice by aspect {aspect.label!r}"
+                        if holder[run_id] == aspect.label
+                        else f"by aspects {holder[run_id]!r} and {aspect.label!r}"
+                    )
+                    raise ValueError(f"run {run_id!r} is held {where}; a run belongs to one aspect of a campaign")
+                holder[run_id] = aspect.label
+        return self
+
+    @model_validator(mode="after")
+    def _floors_are_on_its_aspects(self) -> Self:
+        """Every floor names one of the campaign's aspects, and no two floors share a key.
+
+        :return: The validated campaign.
+        :rtype: EvalCampaign
+        :raises ValueError: A floor names no aspect of the campaign, or two floors have one key.
+        """
+        labels = {aspect.label for aspect in self.aspects}
+        if stray := sorted({floor.aspect for floor in self.floors} - labels):
+            raise ValueError(
+                f"floor(s) on {', '.join(map(repr, stray))}, which the campaign has no aspect for; its aspects are "
+                f"{', '.join(map(repr, sorted(labels)))}"
+            )
+        keys = [floor.key for floor in self.floors]
+        if repeated := sorted({key for key in keys if keys.count(key) > 1}):
+            raise ValueError(f"floor(s) {', '.join(repeated)} are declared more than once; declare each floor once")
+        return self
+
+    @model_validator(mode="after")
+    def _one_control_first(self) -> Self:
+        """At most one arm is the control and it comes first; labels and variant keys name one arm each.
+
+        :return: The validated campaign.
+        :rtype: EvalCampaign
+        :raises ValueError: Two control arms, a control after a candidate, or a label or key on two arms.
+        """
+        controls = [index for index, arm in enumerate(self.arms) if arm.role == "control"]
+        if len(controls) > 1:
+            raise ValueError(f"the campaign names {len(controls)} control arms; a campaign has one control at most")
+        if controls and controls[0] != 0:
+            raise ValueError(f"the control arm {self.arms[controls[0]].label!r} comes after a candidate; list it first")
+        for what, values in (
+            ("label", [arm.label for arm in self.arms]),
+            ("variant key", [arm.variant_key for arm in self.arms]),
+        ):
+            if repeated := sorted({value for value in values if values.count(value) > 1}):
+                raise ValueError(f"arm {what}(s) {', '.join(map(repr, repeated))} name more than one arm")
+        return self
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="Every run the campaign holds, aspect by aspect in order. Derived from the aspects, never stored as a choice."
+    )
+    @property
+    def run_ids(self) -> list[str]:
+        """Every run the campaign holds, its aspects' in order."""
+        return [run_id for aspect in self.aspects for run_id in aspect.run_ids]
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="Whether no aspect declares a design: its readings confirm nothing. Derived, never stored as a choice."
+    )
+    @property
+    def exploratory(self) -> bool:
+        """Whether no aspect of the campaign declares a design."""
+        return all(aspect.design is None for aspect in self.aspects)
+
+    @property
+    def control(self) -> CampaignArm | None:
+        """The control arm, or None when the campaign names none."""
+        return self.arms[0] if self.arms and self.arms[0].role == "control" else None
+
+    def aspect(self, label: str) -> Aspect | None:
+        """The aspect labelled ``label``, or None when the campaign has none.
+
+        :param label: The aspect's label.
+        :ptype label: str
+        :return: The aspect.
+        :rtype: Aspect | None
+        """
+        return next((aspect for aspect in self.aspects if aspect.label == label), None)
+
+    def aspect_of_run(self, run_id: str) -> Aspect | None:
+        """The aspect holding ``run_id``, or None when no aspect does.
+
+        :param run_id: The run.
+        :ptype run_id: str
+        :return: The aspect.
+        :rtype: Aspect | None
+        """
+        return next((aspect for aspect in self.aspects if run_id in aspect.run_ids), None)
 
 
 class CampaignView(EvalDocumentModel):

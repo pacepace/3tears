@@ -438,9 +438,11 @@ class TestAJudgedGuardrail:
         }
         assert {row["measure_id"] for row in comparison.contrasts()} == {"correct", "answer.clear"}
 
-        design = off_loop(
-            get_campaign, comparison.host.storage, comparison.campaign_id, comparison.scope_id
-        ).declared_design
+        design = (
+            off_loop(get_campaign, comparison.host.storage, comparison.campaign_id, comparison.scope_id)
+            .aspects[0]
+            .design
+        )
         assert design is not None and design.guardrail_margins == [
             GuardrailMargin(dimension="answer.private", margin=0.1)
         ]

@@ -19,12 +19,11 @@ from threetears.evals.analysis.bundle import trials as trials_module
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema import EvalResult, EvalTrace, GoalStateOutcome, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import eval_trace_doc_id
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -69,7 +68,7 @@ RESULTS = [
 
 def _bundle(results: list[EvalResult], traces: dict[str, EvalTrace] | None = None) -> AnalysisContextBundle:
     run = make_eval_run(status="completed", rubric_scales={"conversation.tone": "ordinal"})
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="trials",
         subject_id=run.subject_snapshot.subject_id,
@@ -184,7 +183,7 @@ def test_a_bundle_over_many_traced_trials_reads_their_evidence_in_one_store_call
                 judged_artifact=JudgedArtifact.TRANSCRIPT,
             ),
         )
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="many trials",
         subject_id=run.subject_snapshot.subject_id,
@@ -203,7 +202,7 @@ def test_a_bundle_over_many_traced_trials_reads_their_evidence_in_one_store_call
 
 def test_a_bundle_whose_kept_trials_record_no_trace_reads_none() -> None:
     run = make_eval_run(status="completed", rubric_scales={"conversation.tone": "ordinal"})
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="untraced",
         subject_id=run.subject_snapshot.subject_id,

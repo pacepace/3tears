@@ -42,6 +42,7 @@ from threetears.evals.analysis.null_claims import NULL_CLAIM_PATTERNS, null_clai
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
 from threetears.evals.schema.models import utc_now_iso
+from packages.evals.tests.aspect_support import with_control
 
 #: The #2083 headline, verbatim — now a finding's title.
 _HEADLINE_2083 = (
@@ -133,13 +134,8 @@ def _bundle(*, total_ms: ComparisonVerdict = "not_separated") -> AnalysisContext
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(profile=profile)
     bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
-    assert campaign.declared_design is not None
-    design = campaign.declared_design.model_copy(
-        update={"control": variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW))}
-    )
-    bundle = assemble_context_bundle(
-        campaign.model_copy(update={"declared_design": design}), storage=storage, profile=profile
-    )
+    controlled = with_control(campaign, variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW)))
+    bundle = assemble_context_bundle(controlled, storage=storage, profile=profile)
     families = [
         family.model_copy(
             update={

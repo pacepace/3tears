@@ -1,16 +1,14 @@
-"""A campaign's design is frozen at its first run, and a question declared after it confirms nothing.
+"""A campaign's declaration is frozen at its first run, and a question declared after it confirms nothing.
 
 Before this, ``campaign_update`` replaced a design (and added or reworded its questions) whatever runs the campaign
-held, and every reader took ``live_questions()`` with no regard to when a question was asked: a question added after
-the results read as confirmatory, and a campaign with no question carried the exploratory label nowhere a reader
-would look first. Now:
+held, and every reader took the questions with no regard to when they were asked. Now:
 
-- **the freeze**: once a run has joined, ``declared_design`` is refused in any form, and so is re-pointing or
-  clearing the control; ``name`` and ``description`` stay editable, and the control may be addressed once, while
-  the design names none (the path ``quick.compare`` takes);
-- **the backstop** that needs no stored field: :func:`preregistered_questions` reads each question's own
-  ``asked_at`` against the first member run's ``created_at``, and every reader that scopes a reading by the
-  questions reads it, so a design changed some other way (an older build) still reads as post hoc.
+- **the freeze**: once any aspect holds a run, the declaration (``question``, ``aspects``, ``floors``) is refused in
+  any form, and so is re-pointing or clearing the control; ``name`` and ``description`` stay editable, and the
+  control may be addressed once, while none is named (the path ``quick.compare`` takes);
+- **the backstop** that needs no trust in that path: the campaign's ``declared_at`` (when its question was asked in
+  full) is read against the first member run's ``created_at``, so a question declared after the evidence reads as
+  post hoc.
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, POS
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
 from threetears.evals.kernel.declaration import Question, preregistered_questions
 from threetears.evals.kernel.errors import ConflictError
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign_of_one_aspect, toyhost_design
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, ops_fixture
 
@@ -46,10 +44,24 @@ def _control(fixture: OpsFixture, run_id: str | None) -> Any:
     )
 
 
-def _with_question(asked_at: str) -> dict[str, Any]:
-    design = toyhost_design()
-    added = Question(id="q-post", text="does the wider chunk cut the error rate?", asked_at=asked_at)
-    return design.model_copy(update={"questions": [*design.questions, added]}).model_dump(mode="json")
+def _aspects(fixture: OpsFixture, *, runs: bool = False) -> list[dict[str, Any]]:
+    """The toy campaign's one aspect, redeclared as an update sends it: its design and a margin, holding no runs."""
+    (aspect,) = fixture.campaign.aspects
+    assert aspect.design is not None
+    declared: dict[str, Any] = {
+        "label": aspect.label,
+        "margin": 5,
+        "design": aspect.design.model_dump(mode="json"),
+    }
+    if runs:
+        declared["run_ids"] = list(aspect.run_ids)
+    return [declared]
+
+
+def _without_runs(fixture: OpsFixture) -> None:
+    """Store the toy campaign holding no runs."""
+    emptied = [aspect.model_copy(update={"run_ids": []}) for aspect in fixture.campaign.aspects]
+    fixture.host.eval_host.storage.save_campaign(fixture.campaign.model_copy(update={"aspects": emptied}))
 
 
 def _bundle(fixture: OpsFixture) -> Any:
@@ -62,28 +74,47 @@ def _bundle(fixture: OpsFixture) -> Any:
 # --- the freeze --------------------------------------------------------------------------------------------------
 
 
-def test_a_question_added_after_the_first_run_is_refused_with_the_remedy() -> None:
+def test_a_question_reworded_after_the_first_run_is_refused_with_the_remedy() -> None:
     """The repro: before, this update succeeded and the bundle read the new question as confirmatory."""
     fixture = ops_fixture()
     assert fixture.campaign.run_ids, "the corpus campaign holds its runs"
 
-    with pytest.raises(ConflictError, match=r"holds 2 run\(s\), so its design is frozen") as refused:
-        _update(fixture, {"declared_design": _with_question(_LATER)})
+    with pytest.raises(ConflictError, match=r"holds 2 run\(s\), so what it declared is frozen") as refused:
+        _update(fixture, {"question": "does the wider chunk cut the error rate?"})
 
-    assert "create a new campaign with the amended design (campaign_create)" in refused.value.remedy
+    assert "create a new campaign with the amended declaration (campaign_create" in refused.value.remedy
     stored = fixture.host.eval_host.storage.load_campaign(fixture.campaign.id, TOYHOST_SCOPE)
-    assert stored is not None and stored.declared_design == fixture.campaign.declared_design
+    assert stored is not None and stored == fixture.campaign
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        pytest.param({"floors": [{"aspect": "extract_invoice_fields", "clause": {"kind": "cost_lower"}}]}, id="floors"),
+        pytest.param({"aspects": "redeclared"}, id="aspects"),
+    ],
+)
+def test_floors_and_aspects_are_frozen_too(updates: dict[str, Any]) -> None:
+    fixture = ops_fixture()
+    if updates.get("aspects") == "redeclared":
+        updates = {"aspects": _aspects(fixture)}
+
+    with pytest.raises(ConflictError, match="what it declared is frozen"):
+        _update(fixture, updates)
 
 
 def test_withdrawing_a_design_and_declaring_one_on_an_exploratory_campaign_with_runs_are_refused() -> None:
     fixture = ops_fixture()
-    with pytest.raises(ConflictError, match="design is frozen"):
-        _update(fixture, {"declared_design": None}, exploratory=True)
+    (aspect,) = fixture.campaign.aspects
+    with pytest.raises(ConflictError, match="what it declared is frozen"):
+        _update(fixture, {"aspects": [{"label": aspect.label}]}, exploratory=True)
 
-    exploratory = fixture.campaign.model_copy(update={"declared_design": None})
+    exploratory = fixture.campaign.model_copy(
+        update={"aspects": [aspect.model_copy(update={"design": None})], "arms": [], "floors": [], "question": ""}
+    )
     fixture.host.eval_host.storage.save_campaign(exploratory)
-    with pytest.raises(ConflictError, match="design is frozen"):
-        _update(fixture, {"declared_design": toyhost_design().model_dump(mode="json")})
+    with pytest.raises(ConflictError, match="what it declared is frozen"):
+        _update(fixture, {"aspects": _aspects(fixture)})
 
 
 def test_name_and_description_stay_editable() -> None:
@@ -92,16 +123,21 @@ def test_name_and_description_stay_editable() -> None:
     updated = _update(fixture, {"name": "renamed", "description": "a better account of it"})
 
     assert (updated.name, updated.description) == ("renamed", "a better account of it")
-    assert updated.declared_design == fixture.campaign.declared_design
+    assert (updated.aspects, updated.question, updated.declared_at) == (
+        fixture.campaign.aspects,
+        fixture.campaign.question,
+        fixture.campaign.declared_at,
+    )
 
 
 def test_the_control_is_addressed_once_and_never_re_pointed_or_cleared() -> None:
     fixture = ops_fixture()
     first, second = fixture.campaign.run_ids
-    assert fixture.campaign.declared_design is not None and fixture.campaign.declared_design.control is None
+    assert fixture.campaign.control is None
 
     designated = _control(fixture, first)
-    assert designated.declared_design is not None and designated.declared_design.control is not None
+    assert designated.control is not None
+    assert designated.declared_at == fixture.campaign.declared_at, "naming the control does not re-date the question"
 
     with pytest.raises(ConflictError, match="re-pointing it"):
         _control(fixture, second)
@@ -111,28 +147,40 @@ def test_the_control_is_addressed_once_and_never_re_pointed_or_cleared() -> None
         _update(fixture, {}, clear_control=True)
 
 
-def test_a_campaign_with_no_run_keeps_its_design_editable() -> None:
+def test_a_campaign_with_no_run_keeps_its_declaration_editable() -> None:
     fixture = ops_fixture()
-    fixture.host.eval_host.storage.save_campaign(fixture.campaign.model_copy(update={"run_ids": []}))
+    _without_runs(fixture)
 
-    updated = _update(fixture, {"declared_design": _with_question(_LATER)})
+    updated = _update(fixture, {"question": "does the wider chunk cut the error rate?", "aspects": _aspects(fixture)})
 
-    assert updated.declared_design is not None
-    assert [question.id for question in updated.declared_design.live_questions()][-1] == "q-post"
+    assert updated.question == "does the wider chunk cut the error rate?"
+    assert updated.declared_by == "op" and updated.declared_at is not None
+    assert updated.declared_at != fixture.campaign.declared_at, "a declaration rewritten is dated when it was"
+
+
+def test_an_update_declaring_aspects_holding_runs_is_refused() -> None:
+    fixture = ops_fixture()
+    _without_runs(fixture)
+
+    with pytest.raises(Exception, match="runs join an aspect through campaign_runs_add"):
+        _update(fixture, {"aspects": _aspects(fixture, runs=True)})
 
 
 # --- the backstop: when a question was asked, read against the first run -------------------------------------------
 
 
 def test_a_question_written_past_the_freeze_after_the_first_run_reads_as_post_hoc() -> None:
-    """An older build's write: no stored field marks it, and its own asked_at says it came after the evidence."""
+    """An older build's write: no stored field marks it, and its own time says it came after the evidence."""
     fixture = ops_fixture()
-    design = fixture.campaign.declared_design
-    assert design is not None
-    only_late = design.model_copy(
-        update={"questions": [Question(id="q-post", text="is the wider chunk better?", asked_at=_LATER)]}
+    (aspect,) = fixture.campaign.aspects
+    late = fixture.campaign.model_copy(
+        update={
+            "question": "is the wider chunk better?",
+            "declared_at": _LATER,
+            "aspects": [aspect.model_copy(update={"asked_at": _LATER})],
+        }
     )
-    fixture.host.eval_host.storage.save_campaign(fixture.campaign.model_copy(update={"declared_design": only_late}))
+    fixture.host.eval_host.storage.save_campaign(late)
 
     bundle = _bundle(fixture)
 
@@ -160,7 +208,19 @@ def test_a_late_question_beside_an_early_one_makes_the_campaign_s_one_question_p
     design = toyhost_design()
     late = Question(id="q-post", text="does the wider chunk cut the error rate?", asked_at=_LATER)
     both = design.model_copy(update={"questions": [*design.questions, late]})
-    fixture.host.eval_host.storage.save_campaign(fixture.campaign.model_copy(update={"declared_design": both}))
+    (aspect,) = fixture.campaign.aspects
+    stored = toyhost_campaign_of_one_aspect(
+        declared_design=both,
+        id=fixture.campaign.id,
+        scope_id=fixture.campaign.scope_id,
+        name=fixture.campaign.name,
+        subject_id=fixture.campaign.subject_id,
+        behavior=fixture.campaign.behavior,
+        template_id=aspect.template_id,
+        run_ids=list(aspect.run_ids),
+        created_by=fixture.campaign.created_by,
+    )
+    fixture.host.eval_host.storage.save_campaign(stored)
 
     bundle = _bundle(fixture)
 
@@ -178,10 +238,11 @@ def test_preregistration_with_no_run_reads_every_live_question_and_refuses_an_un
 
 def test_a_design_with_no_question_says_so_as_before() -> None:
     fixture = ops_fixture()
-    design = fixture.campaign.declared_design
-    assert design is not None
-    asked_nothing = design.model_copy(update={"questions": []})
-    fixture.host.eval_host.storage.save_campaign(fixture.campaign.model_copy(update={"declared_design": asked_nothing}))
+    (aspect,) = fixture.campaign.aspects
+    assert aspect.design is not None
+    unasked = aspect.model_copy(update={"design": aspect.design.model_copy(update={"merit_axes": None})})
+    asked_nothing = fixture.campaign.model_copy(update={"question": "", "floors": [], "aspects": [unasked]})
+    fixture.host.eval_host.storage.save_campaign(asked_nothing)
 
     bundle = _bundle(fixture)
 

@@ -74,6 +74,7 @@ from threetears.evals.run import (
 from threetears.evals.schema import EvalTemplate, EvalTestCase, RubricDim
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
+    make_campaign,
     make_eval_result,
     make_eval_run,
     make_judge_config,
@@ -121,7 +122,7 @@ def _run_on(storage: EvalStorage, template: EvalTemplate, run_id: str, cases: in
 
 
 def _campaign(run_ids: list[str]) -> EvalCampaign:
-    return EvalCampaign(
+    return make_campaign(
         scope_id=TOYHOST_SCOPE,
         name="queue discipline over time",
         subject_id="subject-1",
@@ -163,7 +164,7 @@ def test_a_campaign_spanning_a_reset_refuses_to_pool_the_two_revisions() -> None
     said = str(refused.value)
     assert repr(toyhost_template().name) in said and "revision 1" in said and "revision 2" in said, said
 
-    for definition in ({"run_ids": ["run-four", "run-seven"]},):
+    for definition in ({"aspects": [{"label": "b", "run_ids": ["run-four", "run-seven"]}]},):
         with pytest.raises(ValidationFailedError, match="revision"):
             create_campaign(
                 storage,
@@ -175,7 +176,12 @@ def test_a_campaign_spanning_a_reset_refuses_to_pool_the_two_revisions() -> None
             )
     alone = create_campaign(
         storage,
-        {"name": "four only", "subject_id": "subject-1", "behavior": "b", "run_ids": ["run-four"]},
+        {
+            "name": "four only",
+            "subject_id": "subject-1",
+            "behavior": "b",
+            "aspects": [{"label": "b", "run_ids": ["run-four"]}],
+        },
         scope_id=TOYHOST_SCOPE,
         created_by="t",
         profile=profile,
@@ -206,7 +212,12 @@ def test_two_templates_sharing_a_name_at_revision_one_are_not_two_revisions_and_
 
     created = create_campaign(
         storage,
-        {"name": "one name", "subject_id": "subject-1", "behavior": "b", "run_ids": ["run-first", "run-second"]},
+        {
+            "name": "one name",
+            "subject_id": "subject-1",
+            "behavior": "b",
+            "aspects": [{"label": "b", "run_ids": ["run-first", "run-second"]}],
+        },
         scope_id=TOYHOST_SCOPE,
         created_by="t",
         profile=profile,
@@ -214,17 +225,25 @@ def test_two_templates_sharing_a_name_at_revision_one_are_not_two_revisions_and_
     )
     alone = create_campaign(
         storage,
-        {"name": "first only", "subject_id": "subject-1", "behavior": "b", "run_ids": ["run-first"]},
+        {
+            "name": "first only",
+            "subject_id": "subject-1",
+            "behavior": "b",
+            "aspects": [{"label": "b", "run_ids": ["run-first"]}],
+        },
         scope_id=TOYHOST_SCOPE,
         created_by="t",
         profile=profile,
         exploratory=True,
     )
-    add_runs_to_campaign(storage, alone.id, TOYHOST_SCOPE, ["run-second"])
+    # A run of the other template is refused by the aspect gathered on the first, for its template, never as a
+    # revision: an aspect reads its own template's runs, while a campaign created over both pools them.
+    with pytest.raises(ValidationFailedError, match="is gathered on 'one-name-1'") as refused:
+        add_runs_to_campaign(storage, alone.id, TOYHOST_SCOPE, ["run-second"])
     bundle = assemble_context_bundle(_campaign(["run-first", "run-second"]), storage=storage, profile=profile)
 
+    assert "revision" not in str(refused.value)
     assert created.run_ids == ["run-first", "run-second"]
-    assert storage.load_campaign(alone.id, TOYHOST_SCOPE).run_ids == ["run-first", "run-second"]  # type: ignore[union-attr]
     assert bundle.cells, "the bundle assembles"
 
 

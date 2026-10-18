@@ -27,7 +27,6 @@ import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.kernel.host import HostProfile
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -39,6 +38,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.factories import make_campaign
 
 _MECHANISM = "context_tokens_in"
 
@@ -93,7 +93,7 @@ def _mechanism_state(
         ]
         for level, batch in enumerate(batches)
     }
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="0b6f1c2e-4a7d-4e59-8c31-2d9e7f5a1b46",
         scope_id=TOYHOST_SCOPE,
         name="inert lever",

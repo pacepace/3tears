@@ -127,6 +127,33 @@ def toyhost_design() -> CampaignDesign:
     )
 
 
+#: The version a campaign was stored at while it held one design: its stored read upgrades it.
+_ONE_DESIGN_VERSION = 15
+
+
+def toyhost_campaign_of_one_aspect(*, declared_design: CampaignDesign, **fields: object) -> EvalCampaign:
+    """A toy-host campaign of one aspect, labelled with its behavior, declared by one design.
+
+    The toy host's designs ask their questions, and name their control, as one design does, so the campaign is read
+    as a campaign stored with that design is (its stored read upgrades it to the one aspect it reads as): the question,
+    the control arm, the margin and the floors are the ones every stored campaign of that design reads with.
+
+    :param declared_design: The design, its questions and control included.
+    :ptype declared_design: CampaignDesign
+    :param fields: The campaign's other fields, ``template_id`` and ``run_ids`` among them.
+    :ptype fields: object
+    :return: The campaign.
+    :rtype: EvalCampaign
+    """
+    stored = {
+        **fields,
+        "doc_type": "eval_campaign",
+        "schema_version": _ONE_DESIGN_VERSION,
+        "declared_design": declared_design.model_dump(mode="json"),
+    }
+    return EvalCampaign.from_dict(stored)
+
+
 def toyhost_campaign(
     *,
     grader_versions: tuple[str, str] | None = None,
@@ -178,7 +205,7 @@ def toyhost_campaign(
         },
         insights,
     )
-    campaign = EvalCampaign(
+    campaign = toyhost_campaign_of_one_aspect(
         # Pinned for the same reason the batches are: `EvalCampaign.id` defaults
         # to `uuid4`, so the campaign this fixture assembles was a different
         # campaign every call and no two bundles could fingerprint alike.
@@ -230,5 +257,6 @@ __all__ = [
     "TOYHOST_WIDE",
     "toyhost_bundle",
     "toyhost_campaign",
+    "toyhost_campaign_of_one_aspect",
     "toyhost_design",
 ]

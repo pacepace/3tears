@@ -39,7 +39,6 @@ from threetears.evals.kernel import (
     REASONING_RATIO_KEY,
     CampaignDesign,
     ControlDeclaration,
-    EvalCampaign,
     SweptAxis,
     resolve_variant_identity,
 )
@@ -80,6 +79,7 @@ from packages.evals.tests.fixtures.toyhost.profile import (
     toyhost_profile,
 )
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_ROLES, TOYHOST_SWEEPABLES
+from packages.evals.tests.factories import make_campaign
 
 _CONTEXT = "context_tokens_in"
 _PAGE_LIMIT = "extractor.page_limit"
@@ -182,7 +182,7 @@ def _bundle(
     """Assemble a campaign over ``arms``."""
     host = profile if profile is not None else _profile()
     storage = ToyhostStorage([arm.batch for arm in arms], {arm.batch.id: _observations(arm, host) for arm in arms})
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="5f0c3b9e-7d61-4a2b-9c84-3e1f6a2d7b90",
         scope_id=TOYHOST_SCOPE,
         name="mechanism",

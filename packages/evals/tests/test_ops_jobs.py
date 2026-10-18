@@ -225,10 +225,8 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
     # The page is that campaign's: titled by its name, with the question it declared quoted alone on the line under
     # the title (first letter capitalized); a campaign that declares none is titled by its name and what it compares.
-    design = fixture.campaign.declared_design
-    assert design is not None
-    (question,) = design.questions
-    asked = " ".join(question.text.split())
+    assert fixture.campaign.question
+    asked = " ".join(fixture.campaign.question.split())
     assert markdown.body.startswith(f'# {fixture.campaign.name}\n"{asked[:1].upper()}{asked[1:]}"\n')
     assert f"**{line.verdict}**" in markdown.body and line.findings >= 1
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
@@ -437,7 +435,7 @@ def test_a_campaign_is_created_archived_and_listed_as_typed_lines() -> None:
             name="widths",
             subject_id=TOYHOST_SUBJECT.subject_id,
             behavior="speed",
-            run_ids=fixture.campaign.run_ids,
+            aspects=[{"label": "speed", "run_ids": fixture.campaign.run_ids}],
             exploratory=True,
         ),
         TOYHOST_SCOPE,

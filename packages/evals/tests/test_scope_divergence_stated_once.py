@@ -35,7 +35,6 @@ from pydantic import BaseModel, Field
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.reporter_kind import ReporterCase
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.kernel.host import HostProfile, KindContract, ResolvesInto, Sweepable, freeze
 from threetears.evals.schema import EvalRun, LatencyMetrics, SweepableValue
 from threetears.evals.schema.hashing import canonical_digest
@@ -51,6 +50,7 @@ from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
 from packages.evals.tests.fixtures.toyhost.variant import variant_levers
+from packages.evals.tests.factories import make_campaign
 
 if TYPE_CHECKING:
     from threetears.evals.schema import EvalResult
@@ -159,7 +159,7 @@ def _bundle(models: Sequence[str], *, runs_per_level: int, seed: str) -> Analysi
         ]
         for batch in batches
     }
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="2f6c8a1e-4d3b-4e97-b5a2-7c9d0e1f3a64",
         scope_id=TOYHOST_SCOPE,
         name="model",

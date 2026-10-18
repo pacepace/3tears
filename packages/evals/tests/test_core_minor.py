@@ -691,6 +691,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "GuardrailDirection": values(GuardrailDirection),
         "CampaignDesign.crossing": frozenset({"full", "star"}),
         "ControlDeclaration.stimulus": frozenset({"controlled", "uncontrolled"}),
+        "ArmRole": frozenset({"control", "candidate"}),
         "VariationAxis.generator": frozenset({"enum", "sample", "llm"}),
         "ConversationSpec.turn_scheduler": frozenset({"round_robin", "llm_decided"}),
         "BudgetStop.currency": frozenset({"cost_usd", "metered_calls"}),
@@ -781,15 +782,15 @@ def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
 
 
 def test_a_campaign_update_keeps_what_a_newer_build_wrote_on_its_design() -> None:
-    """The design is carried over as the stored instance, re-stamped, never as a dump: a field a newer build wrote on
-    the design, on one of its axes and on an axis's value all survive a campaign update this build makes."""
+    """The aspects are carried over as the stored instances, never as a dump: a field a newer build wrote on an
+    aspect's design, on one of its axes and on an axis's value all survive a campaign update this build makes."""
     from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
     from threetears.evals.analysis.campaigns import update_campaign
     from threetears.evals.kernel.campaign import EvalCampaign
 
     storage, store = memory_storage()
     document = _at_newer_minor(stored_sample(EvalCampaign))
-    design = document["declared_design"]
+    design = document["aspects"][0]["design"]
     design["review_board"] = "a newer build's"
     design["axes"][0]["weight"] = 2
     design["axes"][0]["values"][0]["note"] = "kept"
@@ -802,16 +803,15 @@ def test_a_campaign_update_keeps_what_a_newer_build_wrote_on_its_design() -> Non
         {"name": "renamed"},
         updated_by="operator",
         profile=toyhost_profile(),
-        clear_control=True,
     )
 
     stored = store.get(document["id"], document["scope_id"])
     assert stored is not None and updated.name == "renamed"
-    assert stored["schema_minor"] == NEWER
-    assert stored["declared_design"]["control"] is None
-    assert stored["declared_design"]["review_board"] == "a newer build's"
-    assert stored["declared_design"]["axes"][0]["weight"] == 2
-    assert stored["declared_design"]["axes"][0]["values"][0]["note"] == "kept"
+    assert stored["schema_minor"] == _newer_minor_of(document)
+    kept = stored["aspects"][0]["design"]
+    assert kept["review_board"] == "a newer build's"
+    assert kept["axes"][0]["weight"] == 2
+    assert kept["axes"][0]["values"][0]["note"] == "kept"
 
 
 def test_production_cost_is_withheld_when_a_row_names_a_role_this_build_does_not_know() -> None:
@@ -881,8 +881,8 @@ def test_shapes_compare_by_what_they_hold_not_by_the_minor_they_were_read_at() -
     assert marked != "not a shape"
 
     campaign = stored_sample(EvalCampaign)
-    value_here = EvalCampaign.from_dict(campaign).declared_design.axes[0].values[0]  # type: ignore[union-attr]
-    value_marked = EvalCampaign.from_dict(_at_newer_minor(campaign)).declared_design.axes[0].values[0]  # type: ignore[union-attr]
+    value_here = EvalCampaign.from_dict(campaign).aspects[0].design.axes[0].values[0]  # type: ignore[union-attr]
+    value_marked = EvalCampaign.from_dict(_at_newer_minor(campaign)).aspects[0].design.axes[0].values[0]  # type: ignore[union-attr]
     assert value_marked == value_here and hash(value_marked) == hash(value_here)
     assert {value_here: "found"}[value_marked] == "found"
 
@@ -908,37 +908,34 @@ def test_a_run_a_newer_minor_wrote_elsewhere_passes_the_rejudge_settings_check()
     assert "carry a field" not in request_settings_drift(run.judge_asked_settings)
 
 
-def test_a_campaign_a_newer_minor_wrote_echoed_whole_keeps_its_pre_image() -> None:
-    """A client reads a campaign a newer build wrote and sends its whole design back: the lever map it echoes is the
-    server's as this build declares it, so the update is not refused, and the stored pre-image — kept fields on its
-    lever values included — is kept."""
+def test_a_campaign_a_newer_minor_wrote_keeps_its_control_s_pre_image_through_an_edit() -> None:
+    """A campaign a newer build wrote is edited here: the control arm's stored pre-image — kept fields on its lever
+    values included — and a field the newer build wrote on the campaign are written back as read."""
     from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
     from threetears.evals.analysis.campaigns import update_campaign
     from threetears.evals.kernel.campaign import EvalCampaign
 
     storage, store = memory_storage()
     document = _at_newer_minor(stored_sample(EvalCampaign), **NEWER_FIELD)
-    lever = next(iter(document["declared_design"]["control_levers"]))
-    document["declared_design"]["control_levers"][lever]["note"] = "a newer build's"
+    (control,) = document["arms"]
+    lever = next(iter(control["levers"]))
+    control["levers"][lever]["note"] = "a newer build's"
     store.upsert(document)
     served = EvalCampaign.from_dict(document).model_dump(mode="json")
-    assert "note" not in json.dumps(served["declared_design"]), "a client reads only what this build declares"
+    assert "note" not in json.dumps(served["arms"]), "a client reads only what this build declares"
 
     update_campaign(
         storage,
         document["id"],
         document["scope_id"],
-        {"declared_design": served["declared_design"]},
+        {"description": "read again"},
         updated_by="operator",
         profile=toyhost_profile(),
     )
 
     stored = store.get(document["id"], document["scope_id"])
     assert stored is not None
-    design = stored["declared_design"]
-    assert (design["control"], design["control_identity_version"]) == (
-        document["declared_design"]["control"],
-        document["declared_design"]["control_identity_version"],
-    )
-    assert design["control_levers"][lever]["note"] == "a newer build's"
+    (arm,) = stored["arms"]
+    assert (arm["variant_key"], arm["identity_version"]) == (control["variant_key"], control["identity_version"])
+    assert arm["levers"][lever]["note"] == "a newer build's"
     assert stored["written_by_a_newer_build"] == NEWER_FIELD["written_by_a_newer_build"]

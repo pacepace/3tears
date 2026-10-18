@@ -1304,6 +1304,14 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
             "without one is dated by the build accepting it, the only predicate it can have been read under."
         ),
     )
+    named_at: str | None = Field(
+        default=None,
+        description=(
+            "When the arm was addressed from its run (ISO-8601). A control named after an aspect's first run turns "
+            "that aspect's comparisons post hoc: what they are read against was chosen once the evidence existed. "
+            "None = not recorded (an arm upgraded from a campaign stored before arms existed)."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -1412,6 +1420,22 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
     declared_at: str | None = Field(
         default=None, description="When this aspect's design was declared (ISO-8601); None when it declares none."
     )
+    asked_at: str | None = Field(
+        default=None,
+        description=(
+            "When the question this aspect is asked was asked in full (ISO-8601): its pre-registration time, which a "
+            "reading confirms only if it predates the aspect's first run. An adopted aspect keeps its source's, so "
+            "adopting it never re-dates it. None = no time recorded, read as asked after the evidence."
+        ),
+    )
+    margin_declared_at: str | None = Field(
+        default=None,
+        description=(
+            "When `margin` was declared (ISO-8601), where that was after `asked_at`: a margin added when the aspect "
+            "was adopted is dated then, and reads as declared after the runs where that is later than the first. "
+            "None = declared with the aspect's question."
+        ),
+    )
 
     @field_validator("label")
     @classmethod
@@ -1444,6 +1468,15 @@ class Floor(EvalDocumentModel, CoreShapeModel):
     aspect: str = Field(min_length=1, description="The label of the aspect whose readings this floor is read on.")
     clause: DecisionClause = Field(
         description="The line: a `RateDrop` (no pass rate may drop by more than `max_points`) or a `CostLower` (the arm must cost less per reply)."
+    )
+    declared_at: str | None = Field(
+        default=None,
+        description=(
+            "When this floor was declared (ISO-8601), where that was after its aspect's question was asked: a floor "
+            "added when the aspect was adopted is dated then, and reads as declared after the runs where that is "
+            "later than the aspect's first run, while the aspect's own readings keep their time. None = declared "
+            "with the aspect's question."
+        ),
     )
 
     @model_validator(mode="after")

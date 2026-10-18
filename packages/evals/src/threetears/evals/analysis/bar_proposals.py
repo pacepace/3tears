@@ -68,7 +68,9 @@ class BaselineBarProposals:
         return tuple(proposal for proposal in self.proposals if proposal.vacuous)
 
 
-def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) -> BaselineBarProposals:
+def propose_bars(
+    host: EvalHost, baseline_campaign_id: str, *, scope_id: str, aspect: str | None = None
+) -> BaselineBarProposals:
     """Propose a bar on every measure the baseline campaign's incumbent was measured on.
 
     Each proposal's threshold is anchored at the incumbent's mean — "no worse than today" — and moved
@@ -93,17 +95,20 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
     :ptype baseline_campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
+    :param aspect: The aspect whose incumbent is read, by label; None reads the campaign's only aspect.
+    :ptype aspect: str | None
     :return: The proposals, each flagged vacuous where nothing could fail it, and the measures nothing
         could be proposed on, with why.
     :rtype: BaselineBarProposals
     :raises NotFoundError: No such campaign in the scope.
+    :raises RefusedInput: ``aspect`` is None and the campaign has several aspects, or it names none of them.
     :raises ValidationFailedError: The campaign measured no cell, or more than one — a baseline is one
         configuration under one rig.
     """
     campaign = host.storage.load_campaign(baseline_campaign_id, scope_id)
     if campaign is None:
         raise NotFoundError("campaign", baseline_campaign_id, remedy=FIND_CAMPAIGN)
-    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    bundle = assemble_context_bundle(campaign, aspect=aspect, storage=host.storage, profile=host.profile)
     if len(bundle.cell_measures) != 1:
         raise ValidationFailedError(
             f"campaign {baseline_campaign_id!r} measured {len(bundle.cell_measures)} cells, and a baseline is one "

@@ -488,10 +488,17 @@ def test_the_resolver_refuses_a_campaign_the_scope_does_not_hold() -> None:
 
 
 def _controlled() -> tuple[Any, Report]:
+    """The toy campaign with its control declared beside its question, before the runs.
+
+    Not named afterwards through ``set_campaign_control``: a control chosen once the runs exist is dated then, which
+    turns the question it is read against post hoc (``test_campaign_aspects.py``).
+    """
     host, campaign = toy_campaign_host()
-    set_campaign_control(
+    named = set_campaign_control(
         host.storage, campaign.id, campaign.scope_id, campaign.run_ids[0], set_by="t", profile=host.profile
     )
+    assert named.control is not None
+    host.storage.save_campaign(named.model_copy(update={"arms": [named.control.model_copy(update={"named_at": None})]}))
     return campaign, campaign_report(host, campaign.id, campaign.scope_id)
 
 

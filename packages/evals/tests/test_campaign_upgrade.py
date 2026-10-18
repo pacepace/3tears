@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
-from packages.evals.tests.factories import make_campaign, minimal_declaration
+from packages.evals.tests.factories import minimal_declaration
 from threetears.evals.kernel.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL, upgrade_campaign_v15
 from threetears.evals.kernel.declaration import (
     Aspect,
     CampaignArm,
+    CampaignDesign,
     CostLower,
     DecisionRule,
     Floor,
@@ -28,13 +31,14 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.values import SweepableValue
-from threetears.evals.schema.versioning import CORE_ADDRESSING_FIELDS
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.schema.versioning import DURABLE_ADDRESSING_FIELDS, CoreVersionRefused, upgrade_durable_document
 
 #: The frozen v15 campaign, as the release that shipped the corpus wrote it.
-_FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "core_documents" / "v15" / "eval_campaign.json"
+_FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
 
 #: The fields the store reads a campaign by, which no step may touch.
-_ADDRESSING = CORE_ADDRESSING_FIELDS["eval_campaign"]
+_ADDRESSING = DURABLE_ADDRESSING_FIELDS["eval_campaign"]
 
 #: A control's pre-image, and the key it digests to.
 _LEVERS = {"model": SweepableValue.of("glm", display="GLM")}
@@ -46,11 +50,24 @@ def _frozen() -> dict[str, Any]:
     return loaded
 
 
+def _v15(
+    declared_design: CampaignDesign | None = None, *, template_id: str | None = None, run_ids: Sequence[str] = ()
+) -> dict[str, Any]:
+    """A stored v15 campaign: the frozen one's fields, holding ``template_id``, ``run_ids`` and this design."""
+    stored = _frozen()
+    stored.update(
+        template_id=template_id,
+        run_ids=list(run_ids),
+        declared_design=None if declared_design is None else declared_design.model_dump(mode="json"),
+    )
+    return stored
+
+
 def _stored(*questions: Question, control: bool = True, **campaign: Any) -> dict[str, Any]:
-    """A campaign this build stores, its design asking ``questions``, as its stored document."""
+    """A v15 campaign, its design asking ``questions``, as its stored document."""
     design = minimal_declaration(control=_KEY, control_levers=_LEVERS) if control else minimal_declaration()
     design = design.model_copy(update={"questions": list(questions)})
-    return make_campaign(declared_design=design, **campaign).to_dict()
+    return _v15(design, **campaign)
 
 
 def _floors(upgraded: dict[str, Any]) -> list[Floor]:
@@ -236,20 +253,51 @@ class TestAMultiQuestionCampaign:
         assert design is not None
         assert design.merit_axes is None
 
-    @pytest.mark.parametrize("asked_at", ["last tuesday", "2026-10-02T00:00:00"])
-    def test_an_unorderable_asked_at_is_refused_as_pre_registration_refuses_it(self, asked_at: str) -> None:
+    @pytest.mark.parametrize("asked_at", ["last tuesday", "2026-10-02T00:00:00", None, 7])
+    def test_an_unorderable_asked_at_leaves_the_question_undated_and_the_campaign_readable(self, asked_at: Any) -> None:
+        """v15 never validated a question's time, so the step reads it rather than refusing the document: which part
+        was asked last cannot be said, so the question is undated, read as asked after the evidence. A refusal
+        here would make a stored campaign unreadable, and with it every listing of its scope."""
         stored = _stored(Question(text="Is it kinder?"), Question(text="Is it quicker?"))
         stored["declared_design"]["questions"][0]["asked_at"] = asked_at
         design = minimal_declaration().model_copy(
-            update={"questions": [Question(text="Is it kinder?", asked_at=asked_at)]}
+            update={"questions": [Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00")]}
         )
 
-        with pytest.raises(ValueError, match="question .* is stamped") as upgrading:
-            upgrade_campaign_v15(stored)
-        with pytest.raises(ValueError, match="is stamped") as pre_registering:
+        upgraded = upgrade_campaign_v15(stored)
+        read = EvalCampaign.from_dict({**stored, "schema_version": 15})
+
+        assert (upgraded["declared_at"], _aspect(upgraded).asked_at) == (None, None)
+        assert read.declared_at is None and read.aspects[0].asked_at is None
+        with pytest.raises(ValueError, match="is stamped"):
             preregistered_questions(design, "2026-10-09T00:00:00+00:00")
 
-        assert str(upgrading.value).split(" is stamped ")[1] == str(pre_registering.value).split(" is stamped ")[1]
+    def test_a_question_without_an_id_or_words_is_read_as_having_none(self) -> None:
+        stored = _stored(Question(text="Is it kinder?"))
+        del stored["declared_design"]["questions"][0]["id"], stored["declared_design"]["questions"][0]["text"]
+
+        assert upgrade_campaign_v15(stored)["question"] == ""
+
+
+class TestWhatV15NeverValidated:
+    def test_a_run_named_twice_is_held_once_in_first_named_order(self) -> None:
+        stored = _v15(run_ids=["run-1", "run-2", "run-1"])
+
+        read = EvalCampaign.from_dict({**stored, "schema_version": 15})
+
+        assert _aspect(upgrade_campaign_v15(stored)).run_ids == ["run-1", "run-2"]
+        assert read.run_ids == ["run-1", "run-2"]
+
+    def test_a_document_the_step_cannot_read_is_refused_as_a_version_refusal_never_a_raw_error(self) -> None:
+        stored = _v15()
+        del stored["behavior"]
+
+        with pytest.raises(CoreVersionRefused, match="v15 to v16 step") as refused:
+            upgrade_durable_document({**stored, "schema_version": 15})
+        with pytest.raises(ValidationError, match="schema_version"):
+            EvalCampaign.from_dict({**stored, "schema_version": 15})
+
+        assert isinstance(refused.value.__cause__, KeyError)
 
 
 class TestACampaignWithNoRule:
@@ -263,7 +311,7 @@ class TestACampaignWithNoRule:
         assert upgrade_campaign_v15(_stored(control=False))["arms"] == []
 
     def test_one_with_no_design_is_one_exploratory_aspect(self) -> None:
-        stored = make_campaign(template_id="template-1", run_ids=["run-1", "run-2"]).to_dict()
+        stored = _v15(template_id="template-1", run_ids=["run-1", "run-2"])
         upgraded = upgrade_campaign_v15(stored)
 
         aspect = _aspect(upgraded)
@@ -280,7 +328,7 @@ class TestACampaignWithNoRule:
         pytest.param(
             _stored(Question(text="Switch?", decision=DecisionRule(clauses=(RateDrop(max_points=5),)))), id="ruled"
         ),
-        pytest.param(make_campaign(run_ids=["run-1"]).to_dict(), id="exploratory"),
+        pytest.param(_v15(run_ids=["run-1"]), id="exploratory"),
     ],
 )
 class TestTheStepIsPure:
