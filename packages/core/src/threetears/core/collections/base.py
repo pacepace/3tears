@@ -68,6 +68,7 @@ from threetears.core.exceptions import (
     GenerationUnavailableError,
     L2EpochRegressedError,
     L2ScopeNotConfiguredError,
+    L2WriteRefusedError,
 )
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger, traced
@@ -2162,6 +2163,12 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         An absent-marker and an expired row both read as ``None`` here: this method answers "is
         there a live row", and neither is one.
+
+        Where L2 is this collection's only store (:attr:`l2_is_the_store`) a :class:`KvError` is
+        not a miss -- there is nothing behind L2 to fall through to, and ``None`` would read as
+        "the row is gone" -- so it propagates.
+
+        :raises KvError: when L2 is the store and could not be read
         """
         lookup = await self._l2_lookup(entity_id)
         return lookup.row
@@ -2170,7 +2177,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         """read one L2 entry and classify it: live row, fresh absent-marker, or neither.
 
         Same narrow exception scope as :meth:`_get_from_l2`: a :class:`KvError` degrades to a
-        plain miss, which sends the caller to L3.
+        plain miss, which sends the caller to L3 -- except where L2 is the store
+        (:attr:`l2_is_the_store`), where it propagates.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
@@ -2192,6 +2200,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             # that was made and then evicted in between.
             raw, latest = await kv.get_latest(key=key)
         except KvError as exc:
+            if self.l2_is_the_store:
+                # no durable tier to fall back to: an unreadable store is not an absent row, and
+                # answering None here would let a caller act on "gone" during an outage.
+                raise
             log.warning(
                 "L2 cache read failed",
                 extra={
@@ -2253,23 +2265,19 @@ class BaseCollection(ABC, Generic[EntityT]):
                 raise CorruptCacheEntry(self.table_name, "absent-marker generation", raw) from exc
         return self.decode_row(raw)
 
-    @property
-    def l2_is_the_store(self) -> bool:
-        """whether L2 is the only store this collection's rows have, rather than a cache of one.
-
-        ``False`` by default: a durable tier stands behind L2 -- an L3 pool, a structured
-        :class:`~threetears.core.backends.protocol.DurableStore`, an object store -- and an L2
-        write it refused costs a cache miss, not the row. A collection with no durable tier
-        (heartbeats, presence, a coordination table on a deployment with no L3) answers ``True``,
-        and then a write or delete L2 refused raises :class:`KvError` from :meth:`save_entity`,
-        :meth:`delete` and the L2 helpers its own write paths call, instead of reporting the
-        row stored or gone. ``l3_pool`` alone cannot say this: several collections keep their
-        durable tier somewhere else and leave it ``None``.
-
-        :return: ``True`` when L2 is the store
-        :rtype: bool
-        """
-        return False
+    #: whether L2 is the only store this collection's rows have, rather than a cache of one.
+    #:
+    #: ``False`` by default: a durable tier stands behind L2 -- an L3 pool, a structured
+    #: :class:`~threetears.core.backends.protocol.DurableStore`, an object store -- and an L2
+    #: failure costs a cache miss, not the row. A collection with no durable tier (heartbeats,
+    #: presence, a coordination table on a deployment with no L3) sets ``True``, and then a write
+    #: or delete L2 refused raises :class:`~threetears.core.exceptions.L2WriteRefusedError` from
+    #: :meth:`save_entity`, :meth:`delete` and the L2 helpers its own write paths call, and a
+    #: failed L2 read raises its :class:`KvError` rather than answering "absent". ``l3_pool``
+    #: alone cannot say this: several collections keep their durable tier somewhere else and
+    #: leave it ``None``. A class that forces ``l3_pool`` to ``None`` must set this in its own
+    #: body (``tests/enforcement/test_l2_only_collections_declare_their_store.py``).
+    l2_is_the_store: bool = False
 
     async def _save_to_l2(self, entity_id: Any, data: dict[str, Any]) -> bool:
         """write entity payload to the L2 NATS KV bucket.
@@ -2294,8 +2302,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: ``True`` when L2 took the row; ``False`` when there is no bucket, or when a
             bucket that only caches a durable tier refused it
         :rtype: bool
-        :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
-            the write
+        :raises L2WriteRefusedError: when L2 is this collection's store (:attr:`l2_is_the_store`)
+            and refused the write
         """
         try:
             kv = await self._ensure_kv()
@@ -2314,7 +2322,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         except KvError as exc:
             if self.l2_is_the_store:
                 self._evict_l1(entity_id)
-                raise KvError(
+                raise L2WriteRefusedError(
                     f"{self.table_name} row {entity_id!s} was not saved: L2 is this collection's only store "
                     f"and refused the write ({type(exc).__name__}: {exc})"
                 ) from exc
@@ -2375,8 +2383,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: whether the key was deleted; ``False`` when there is no bucket, or when a bucket
             that only caches a durable tier refused the delete
         :rtype: bool
-        :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
-            the delete
+        :raises L2WriteRefusedError: when L2 is this collection's store (:attr:`l2_is_the_store`)
+            and refused the delete
         """
         try:
             kv = await self._ensure_kv()
@@ -2385,7 +2393,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             return await kv.delete(key=self.l2_key(entity_id))
         except KvError as exc:
             if self.l2_is_the_store:
-                raise KvError(
+                raise L2WriteRefusedError(
                     f"{self.table_name} row {entity_id!s} was not deleted: L2 is this collection's only store "
                     f"and refused the delete ({type(exc).__name__}: {exc})"
                 ) from exc

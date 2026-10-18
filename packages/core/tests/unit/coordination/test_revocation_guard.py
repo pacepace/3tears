@@ -25,6 +25,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -33,7 +34,7 @@ from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination import RedemptionLedger, RevocationGuard
 from threetears.core.coordination.tables import CoordinationRevocationsCollection, coordination_collection
-from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.core.exceptions import DataLayerUnavailableError, L2WriteRefusedError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import KvError
 
@@ -276,8 +277,25 @@ class TestRevocationGuard:
         # with no L3 (identity-edge), L2 is the only store: a revocation it refused is not recorded,
         # and only an error tells offboarding to try again rather than leave the session alive.
         guard = _guard(_registry(_FailingNats()))
-        with pytest.raises(KvError, match="was not saved: L2 is this collection's only store"):
+        # the read of the existing entry is refused first: L2 is the store, so it raises too
+        with pytest.raises(KvError, match="kv down"):
             await guard.record_revocation("sub:p1", revoked_at=_NOW)
+
+    @pytest.mark.asyncio
+    async def test_with_no_l3_a_revocation_write_l2_refused_raises(self) -> None:
+        nats = _Nats()
+        guard = _guard(_registry(nats))
+        bucket = await nats.kv_bucket(name="collections")
+        bucket.put = AsyncMock(side_effect=KvError("kv down"))  # type: ignore[method-assign]
+        with pytest.raises(L2WriteRefusedError, match="was not saved: L2 is this collection's only store"):
+            await guard.record_revocation("sub:p1", revoked_at=_NOW)
+
+    @pytest.mark.asyncio
+    async def test_with_no_l3_an_unreadable_denylist_is_not_read_as_not_revoked(self) -> None:
+        # fail closed: with L2 the only store, "could not read" must never answer "never revoked"
+        guard = _guard(_registry(_FailingNats()))
+        with pytest.raises(KvError):
+            await guard.is_revoked_before("sub:p1", moment=_NOW)
 
     @pytest.mark.asyncio
     async def test_an_l3_failure_propagates_so_the_caller_denies(self) -> None:

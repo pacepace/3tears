@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from threetears.nats.errors import KvError
+
 __all__ = [
     "ConcurrentModificationError",
     "CorruptCacheEntry",
@@ -14,6 +16,7 @@ __all__ = [
     "GenerationUnavailableError",
     "InvalidL2ScopeError",
     "L2EpochRegressedError",
+    "L2WriteRefusedError",
     "L2ScopeError",
     "L2ScopeNotConfiguredError",
 ]
@@ -35,6 +38,15 @@ class GenerationNotCommittedError(GenerationUnavailableError):
     so nothing was written and there is no advance to name. A collection settling such a
     transaction meets this, which is an ordinary outcome rather than a fault in the generation
     store, and logs it as one.
+    """
+
+
+class L2WriteRefusedError(KvError):
+    """Raised when L2 refused a write or delete on a collection whose only store L2 is.
+
+    See :attr:`threetears.core.collections.base.BaseCollection.l2_is_the_store`. A
+    :class:`~threetears.nats.errors.KvError`, so a handler written for the transport failure
+    still catches it; ``__cause__`` carries the refusal itself.
     """
 
 

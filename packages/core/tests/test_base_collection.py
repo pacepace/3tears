@@ -18,7 +18,7 @@ from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.exceptions import ConcurrentModificationError, L2WriteRefusedError
 from threetears.nats.errors import KvError
 
 
@@ -1128,9 +1128,7 @@ class TestL2BucketResolutionDegradesGracefully:
 class _L2StoreCollection(StubCollection):
     """the stub with no durable tier behind L2: L2 is where its rows live."""
 
-    @property
-    def l2_is_the_store(self) -> bool:
-        return True
+    l2_is_the_store: bool = True
 
 
 class TestAnL2WriteRefusedFailsTheSaveOnlyWhereL2IsTheStore:
@@ -1146,7 +1144,7 @@ class TestAnL2WriteRefusedFailsTheSaveOnlyWhereL2IsTheStore:
         coll = _L2StoreCollection(registry, config_always, nats_client=nats)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
-        with pytest.raises(KvError, match="was not saved: L2 is this collection's only store"):
+        with pytest.raises(L2WriteRefusedError, match="was not saved: L2 is this collection's only store"):
             await coll.save_entity(entity)
 
         assert entity.is_dirty is True, "the handle keeps the edits that did not land"
@@ -1163,7 +1161,7 @@ class TestAnL2WriteRefusedFailsTheSaveOnlyWhereL2IsTheStore:
         await coll.save_entity(coll.create({"id": "e1", "name": "Alice", "score": 10}))
         nats.bucket.delete = AsyncMock(side_effect=KvError("broker unreachable"))
 
-        with pytest.raises(KvError, match="was not deleted: L2 is this collection's only store"):
+        with pytest.raises(L2WriteRefusedError, match="was not deleted: L2 is this collection's only store"):
             await coll.delete("e1")
 
         assert nats.store, "the row is still in L2 for every other replica"
@@ -1184,6 +1182,32 @@ class TestAnL2WriteRefusedFailsTheSaveOnlyWhereL2IsTheStore:
 
         assert coll.get_row_sync("e1") is None
         assert any("only store; the row is lost" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_read_l2_could_not_answer_raises_where_l2_is_the_store(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """nothing stands behind L2 to fall through to: an outage must not read as "absent"."""
+        nats = _make_nats_mock()
+        coll = _L2StoreCollection(registry, config_always, nats_client=nats)
+        await coll.save_entity(coll.create({"id": "e1", "name": "Alice", "score": 10}))
+        coll.evict_from_cache_sync("e1")
+        nats.bucket.get_latest = AsyncMock(side_effect=KvError("broker unreachable"))
+
+        with pytest.raises(KvError, match="broker unreachable"):
+            await coll.get("e1")
+
+    @pytest.mark.asyncio
+    async def test_a_read_l2_could_not_answer_still_falls_through_where_a_durable_tier_holds_the_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        nats = _make_nats_mock()
+        nats.bucket.get_latest = AsyncMock(side_effect=KvError("broker unreachable"))
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows={"e1": {"id": "e1", "name": "Alice"}})
+
+        entity = await coll.get("e1")
+
+        assert entity is not None and entity.name == "Alice"
 
     @pytest.mark.asyncio
     async def test_with_no_bucket_an_l2_store_collection_keeps_its_rows_in_l1(

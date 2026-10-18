@@ -130,6 +130,9 @@ class _AnswerIndex(BaseCollection[_IndexRow]):
 
     primary_key_column: str | tuple[str, ...] = ("name",)
     caches_in_l1: ClassVar[bool] = False
+    #: derived: the index is rebuilt by the answers it indexes, and it changes only by
+    #: compare-and-set, which raises on its own
+    l2_is_the_store: bool = False
 
     def __init__(self, registry: CollectionRegistry, config: CoreConfig, nats_client: Any, *, table_name: str) -> None:
         self._table_name = table_name
@@ -234,6 +237,9 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
 
     primary_key_column: str | tuple[str, ...] = ("version", "request")
     caches_in_l1: ClassVar[bool] = False
+    #: derived: a miss computes the answer again, and answers are written by compare-and-set,
+    #: which raises on its own
+    l2_is_the_store: bool = False
 
     #: how long a replica waits for a peer computing the same answer before computing it too: an
     #: answer takes up to a few seconds on a large read
