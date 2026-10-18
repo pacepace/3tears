@@ -68,6 +68,7 @@ from threetears.evals.schema import (
 )
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost, WorldRegistry
 from threetears.evals.run import JudgeService, RunnerOptions, execute_run, run_blocking
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign_of_one_aspect
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_COST_CEILING_USD,
     TOYHOST_GRADER_VERSION,
@@ -515,7 +516,7 @@ def toyhost_run_campaign(path: ToyhostRunPath) -> EvalCampaign:
     :return: The campaign, naming both arms in declaration order.
     :rtype: EvalCampaign
     """
-    return EvalCampaign(
+    return toyhost_campaign_of_one_aspect(
         id="7c1e2f05-4b83-42d7-9a6e-8d0f35b91c47",
         scope_id=TOYHOST_SCOPE,
         name="extractor model bake-off",
@@ -609,7 +610,7 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
             "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
         }
     )
-    return EvalCampaign(
+    return toyhost_campaign_of_one_aspect(
         id=str(uuid.uuid5(_RUN_ID_NAMESPACE, "campaign|" + "|".join(run.id for run in members))),
         scope_id=TOYHOST_SCOPE,
         name="retrieval depth sweep",

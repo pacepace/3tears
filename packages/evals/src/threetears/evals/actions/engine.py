@@ -142,6 +142,7 @@ from threetears.evals.ops import (
     runs_bisected_text,
     runs_compared_text,
 )
+from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
@@ -404,18 +405,20 @@ class CampaignsListParams(EvalBaseModel):
 
 
 class CampaignCreateParams(EvalBaseModel):
-    """``campaign_create`` — the operation's own definition, declared design and control run included."""
+    """``campaign_create`` — the operation's own definition: question, arms, aspects, floors and adoption."""
 
     name: Name
     subject_id: SubjectId
     behavior: Behavior
     description: Description = ""
-    run_ids: RunIds = Field(default_factory=list)
-    template_id: Annotated[
-        str | None, Field(min_length=1, description=LaunchArguments.model_fields["template_id"].description)
-    ] = None
-    declared_design: Annotated[dict[str, Any] | None, CampaignDefinition.model_fields["declared_design"]] = None
-    control_from_run_id: Annotated[str | None, CampaignDefinition.model_fields["control_from_run_id"]] = None
+    question: Annotated[str, CampaignDefinition.model_fields["question"]] = ""
+    campaign_arms: Annotated[list[dict[str, Any]], CampaignDefinition.model_fields["arms"]] = Field(
+        default_factory=list
+    )
+    aspects: Annotated[list[dict[str, Any]], CampaignDefinition.model_fields["aspects"]] = Field(default_factory=list)
+    floors: Annotated[list[dict[str, Any]], CampaignDefinition.model_fields["floors"]] = Field(default_factory=list)
+    margins: Annotated[dict[str, float], CampaignDefinition.model_fields["margins"]] = Field(default_factory=dict)
+    aspects_from: Annotated[list[str], CampaignDefinition.model_fields["aspects_from"]] = Field(default_factory=list)
     exploratory: Annotated[bool, CampaignDefinition.model_fields["exploratory"]] = False
 
 
@@ -429,7 +432,9 @@ class CampaignUpdateParams(EvalBaseModel):
     description: Annotated[
         str | None, Field(description=CampaignCreateParams.model_fields["description"].description)
     ] = None
-    declared_design: Annotated[dict[str, Any] | None, CampaignChanges.model_fields["declared_design"]] = None
+    question: Annotated[str | None, CampaignChanges.model_fields["question"]] = None
+    aspects: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["aspects"]] = None
+    floors: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["floors"]] = None
     exploratory: Annotated[bool, CampaignChanges.model_fields["exploratory"]] = False
     control_from_run_id: Annotated[str | None, CampaignChanges.model_fields["control_from_run_id"]] = None
 
@@ -439,6 +444,7 @@ class CampaignRunsParams(EvalBaseModel):
 
     campaign_id: CampaignId
     run_ids: RunIds
+    aspect: Annotated[str | None, Field(min_length=1, description=MEMBERSHIP_ASPECT_DESCRIPTION)] = None
 
 
 class JudgeConfigsListParams(EvalBaseModel):
@@ -903,7 +909,10 @@ async def _campaigns_list(host: OpsHost, caller: Caller, params: CampaignsListPa
 
 async def _campaign_create(host: OpsHost, caller: Caller, params: CampaignCreateParams) -> CampaignLine:
     eval_host = host.eval_host
-    definition = CampaignDefinition.model_validate(params.model_dump())
+    # `campaign_arms` on the tool, since a sweep's `arms` are launch specs: one name, one meaning across a tool.
+    fields = params.model_dump()
+    fields["arms"] = fields.pop("campaign_arms")
+    definition = CampaignDefinition.model_validate(fields)
     return await run_blocking(
         eval_host.blocking_executor,
         campaign_create,
@@ -932,7 +941,12 @@ async def _campaign_update(host: OpsHost, caller: Caller, params: CampaignUpdate
 async def _campaign_runs_add(host: OpsHost, caller: Caller, params: CampaignRunsParams) -> CampaignLine:
     eval_host = host.eval_host
     return await run_blocking(
-        eval_host.blocking_executor, campaign_runs_add, eval_host, params.campaign_id, params.run_ids, caller.scope_id
+        eval_host.blocking_executor,
+        partial(campaign_runs_add, aspect=params.aspect),
+        eval_host,
+        params.campaign_id,
+        params.run_ids,
+        caller.scope_id,
     )
 
 
@@ -940,7 +954,7 @@ async def _campaign_runs_remove(host: OpsHost, caller: Caller, params: CampaignR
     eval_host = host.eval_host
     return await run_blocking(
         eval_host.blocking_executor,
-        campaign_runs_remove,
+        partial(campaign_runs_remove, aspect=params.aspect),
         eval_host,
         params.campaign_id,
         params.run_ids,
@@ -1390,7 +1404,7 @@ async def _analysis_generate_path(stage: ConformanceStage) -> Mapping[str, Any]:
                 name="jobs conformance campaign",
                 subject_id=stage.sample.subject_id,
                 behavior="conformance",
-                run_ids=[run_id],
+                aspects=[{"label": "conformance", "run_ids": [run_id]}],
                 exploratory=True,
             ),
             stage.caller.scope_id,
@@ -1681,7 +1695,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="campaign_create",
-            summary="Create a campaign over runs in the scope, for an analysis to read.",
+            summary="Create a campaign: one question asked of its arms, measured on one or more aspects.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignCreateParams,
@@ -1692,75 +1706,67 @@ def engine_actions() -> tuple[Action, ...]:
                 "name": "model bake-off",
                 "subject_id": "subject-1",
                 "behavior": "accuracy",
-                "run_ids": [run_id],
-                "declared_design": {
-                    "axes": [
-                        {
-                            "axis_id": "model",
-                            "values": [
-                                {"content": "model-a", "display": "model-a"},
-                                {"content": "model-b", "display": "model-b"},
+                "question": "Is model-b as accurate as model-a?",
+                "aspects": [
+                    {
+                        "label": "accuracy",
+                        "margin": 5,
+                        "run_ids": [run_id],
+                        "design": {
+                            "axes": [
+                                {
+                                    "axis_id": "model",
+                                    "values": [
+                                        {"content": "model-a", "display": "model-a"},
+                                        {"content": "model-b", "display": "model-b"},
+                                    ],
+                                }
                             ],
-                        }
-                    ],
-                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
-                },
-                "control_from_run_id": run_id,
+                            "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                        },
+                    }
+                ],
+                "campaign_arms": [{"label": "model-a", "role": "control", "from_run_ids": [run_id]}],
             },
             detail=(
-                "declared_design states what the campaign sets out to learn — its axes and what it held fixed, and "
-                "optionally its questions, bars and merit priority — and is refused, naming why, when this host "
-                "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_from_run_id "
-                "names the run whose variant every other cell is read against. A campaign with no settled question "
-                "says exploratory: true instead of declaring a design — exactly one of the two, never neither, never "
-                "both — and its report and analysis say once that its readings confirm nothing, its design inferred "
-                "from the runs. campaign_update declares one later. template_id names the template whose rubric "
-                "dimensions and goal-state checks a bar may name; omitted, it is the one template every run named ran."
+                "A campaign asks one question of its arms and measures it on its aspects: each a template and the "
+                "runs gathered on it, with the design those runs answer and a margin — how far a candidate may fall "
+                "below the control there before it is shown worse. A design is refused, naming why, when this host "
+                "cannot honour it: an axis it does not declare, a bar looser than the registered one. Each arm is "
+                "read from its runs, which must all carry one variant key, or the create is refused naming the keys. "
+                "Floors warn when a candidate crosses a line on an aspect; they never block. aspects_from adopts "
+                "other campaigns' aspects whole, each keeping when its design was declared; what is added at "
+                "adoption is dated now. A campaign with no settled question says exploratory: true instead of "
+                "declaring any design — exactly one of the two, never neither, never both — and its report and "
+                "analysis say once that its readings confirm nothing."
             ),
         ),
         Action(
             name="campaign_update",
-            summary="Rename or redescribe a campaign, or declare, amend or withdraw its design before its first run.",
+            summary="Rename or redescribe a campaign, or declare, amend or withdraw its declaration before its first run.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignUpdateParams,
             result=CampaignLine,
             handler=_campaign_update,
             render=render.render_model,
-            example={
-                "campaign_id": campaign_id,
-                "declared_design": {
-                    "axes": [
-                        {
-                            "axis_id": "model",
-                            "values": [
-                                {"content": "model-a", "display": "model-a"},
-                                {"content": "model-b", "display": "model-b"},
-                            ],
-                        }
-                    ],
-                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
-                },
-            },
+            example={"campaign_id": campaign_id, "question": "Is model-b as accurate as model-a, and cheaper?"},
             detail=(
-                "Changes only what it is sent: name, description, declared_design. A declared_design is validated and "
-                "gated as campaign_create's is and replaces the stored one, its questions reconciled with the stored "
-                "ones by id, so a question is retired rather than dropped; declaring one on an exploratory campaign "
-                "makes it declared, since exploratory is read off whether a design is declared. declared_design: null "
-                "withdraws the declaration and is refused unless exploratory: true is sent with it; exploratory: true "
-                "beside a design is refused. control_from_run_id names one of the campaign's runs whose variant "
-                "becomes the control, resolved for you, in the same write as any design sent beside it; null clears "
-                "the control. It needs a declaration — sent here, or already stored — and a design sent here keeps no "
-                "control it does not type or name. Once the campaign holds a run its design is frozen: "
-                "declared_design is refused in any form, and so is re-pointing or clearing the control, which may "
-                "be named once while none is declared; name and description stay editable, and an amended design "
-                "is a new campaign (campaign_create). Runs join and leave through campaign_runs_add and "
-                "campaign_runs_remove."
+                "Changes only what it is sent: name, description, question, aspects (replacing them whole, holding "
+                "no runs) and floors. A declaration it writes is validated and gated as campaign_create's is, and "
+                "dated now. Aspects none of which declares a design withdraw the declaration, only beside "
+                "exploratory: true, which clears the question, floors and arms too; exploratory: true beside a "
+                "design is refused. control_from_run_id names one of the campaign's runs whose variant becomes the "
+                "control arm, resolved for you; null clears it. Once any aspect holds a run the declaration is "
+                "frozen: question, aspects and floors are refused in any form, and so is re-pointing or clearing a "
+                "control, which may be named once while none is; name and description stay editable, and an "
+                "amended declaration is a new campaign (campaign_create, adopting the aspects it keeps). Runs join "
+                "and leave through campaign_runs_add and campaign_runs_remove."
             ),
         ),
         Action(
             name="campaign_runs_add",
-            summary="Put runs in a campaign — runs launched after it was created, or measured on their own first.",
+            summary="Put runs in a campaign's aspect — runs launched after it was created, or measured on their own first.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignRunsParams,
@@ -1769,8 +1775,10 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id, "run_ids": [run_id]},
             detail=(
-                "A run the campaign already holds is not added twice. A run outside the caller's scope is refused, "
-                "and then none is added. Once a run is in, campaign_update can name it the control."
+                "Each run joins the aspect named, or the one aspect gathered on the template it ran; a run no aspect "
+                "or several aspects could take is refused, naming them, and then none is added. A run already in "
+                "that aspect is not added twice; one in another aspect, or outside the caller's scope, is refused. "
+                "Once a run is in, campaign_update can name it the control."
             ),
         ),
         Action(
@@ -1784,9 +1792,9 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id, "run_ids": [run_id]},
             detail=(
-                "Membership only: nothing is deleted. A run the campaign does not hold is refused, and then none is "
-                "removed. The control is a variant, not a run, so it stays declared; where no remaining run carries "
-                "it, the report says the control is unobserved."
+                "Membership only: nothing is deleted. Each run leaves the aspect holding it. A run the campaign (or "
+                "the named aspect) does not hold is refused, and then none is removed. An arm is a variant, not a "
+                "run, so it stays named; where no remaining run carries it, the report says the arm is unobserved."
             ),
         ),
         Action(

@@ -4,11 +4,11 @@ A campaign created with no design used to be exploratory by default, so a caller
 saying its readings confirm nothing without ever having chosen that; and nothing on MCP or REST could declare one
 afterwards, though ``update_campaign`` could and the control refusal sent the operator to it. Pinned here:
 
-- **A create says which**: ``declared_design`` or ``exploratory``, exactly one — neither is refused naming both,
-  both are refused as a contradiction — through ``analysis.create_campaign`` and the ``campaign_create`` action.
-- **``exploratory`` is never stored**: the campaign carries no such field, and being exploratory is read off
-  ``declared_design is None``, so declaring a design through ``campaign_update`` makes a campaign declared.
-- **The way back is said too**: ``declared_design: null`` withdraws a declaration only beside ``exploratory: true``;
+- **A create says which**: an aspect declaring a design, or ``exploratory``, exactly one — neither is refused naming
+  both, both are refused as a contradiction — through ``analysis.create_campaign`` and the ``campaign_create`` action.
+- **``exploratory`` is never stored as a choice**: it is derived from no aspect declaring a design, so declaring one
+  through ``campaign_update`` makes a campaign declared.
+- **The way back is said too**: aspects declaring no design withdraw a declaration only beside ``exploratory: true``;
   ``exploratory: true`` beside a design, or on a declared campaign the update leaves declared, is refused.
 - **``campaign_update`` is an action** like the others, and the refusal that sends an operator to declare a design
   names it.
@@ -36,16 +36,27 @@ def evals() -> MountedTool:
 
 
 def _design() -> dict[str, Any]:
-    """The toy host's declaration as an author sends it: no authorship, no date — the surface stamps both."""
-    return toyhost_design().model_dump(mode="json", exclude={"declared_at", "declared_by"})
+    """The toy host's declaration as one aspect's design: no question, control or date — the campaign's own."""
+    moved = {"declared_at", "declared_by", "questions", "control", "control_levers", "control_identity_version"}
+    return toyhost_design().model_dump(mode="json", exclude=moved)
 
 
-def _definition(fixture: OpsFixture, **fields: Any) -> dict[str, Any]:
+def _aspects(fixture: OpsFixture, *, declared: bool, runs: bool = True) -> list[dict[str, Any]]:
+    """The toy campaign's one aspect, declaring its design and a margin or exploratory, holding its runs or none."""
+    aspect: dict[str, Any] = {"label": fixture.campaign.behavior}
+    if runs:
+        aspect["run_ids"] = list(fixture.campaign.run_ids)
+    if declared:
+        aspect.update(design=_design(), margin=5)
+    return [aspect]
+
+
+def _definition(fixture: OpsFixture, *, declared: bool = False, runs: bool = True, **fields: Any) -> dict[str, Any]:
     return {
         "name": "said at birth",
         "subject_id": TOYHOST_SUBJECT.subject_id,
         "behavior": fixture.campaign.behavior,
-        "run_ids": list(fixture.campaign.run_ids),
+        "aspects": _aspects(fixture, declared=declared, runs=runs),
         **fields,
     }
 
@@ -56,12 +67,14 @@ def _stored(fixture: OpsFixture, campaign_id: str) -> EvalCampaign:
     return campaign
 
 
-def _python_create(fixture: OpsFixture, *, exploratory: bool = False, **fields: Any) -> EvalCampaign:
+def _python_create(
+    fixture: OpsFixture, *, exploratory: bool = False, declared: bool = False, runs: bool = True
+) -> EvalCampaign:
     eval_host = fixture.host.eval_host
     return off_loop(
         create_campaign,
         eval_host.storage,
-        _definition(fixture, **fields),
+        _definition(fixture, declared=declared, runs=runs),
         scope_id=TOYHOST_SCOPE,
         created_by=CALLER.identity,
         profile=eval_host.profile,
@@ -73,18 +86,18 @@ async def _call(tool: MountedTool, fixture: OpsFixture, action: str, **arguments
     return await tool.call({"action": action, **arguments}, host=fixture.host, caller=CALLER)
 
 
-#: A campaign holding no run yet: its design is not frozen, so an update may still declare, amend or withdraw it.
-_BEFORE_ITS_FIRST_RUN: dict[str, Any] = {"run_ids": []}
+#: A campaign holding no run yet: its declaration is not frozen, so an update may still declare, amend or withdraw it.
+_BEFORE_ITS_FIRST_RUN: dict[str, Any] = {"runs": False}
 
 
-async def _exploratory_campaign(tool: MountedTool, fixture: OpsFixture, **fields: Any) -> str:
-    created = await _call(tool, fixture, "campaign_create", **_definition(fixture, **fields), exploratory=True)
+async def _exploratory_campaign(tool: MountedTool, fixture: OpsFixture, *, runs: bool = True) -> str:
+    created = await _call(tool, fixture, "campaign_create", **_definition(fixture, runs=runs), exploratory=True)
     assert not created.is_error, created.text
     return str(created.structured["id"])
 
 
-async def _declared_campaign(tool: MountedTool, fixture: OpsFixture, **fields: Any) -> str:
-    created = await _call(tool, fixture, "campaign_create", **_definition(fixture, **fields), declared_design=_design())
+async def _declared_campaign(tool: MountedTool, fixture: OpsFixture, *, runs: bool = True) -> str:
+    created = await _call(tool, fixture, "campaign_create", **_definition(fixture, declared=True, runs=runs))
     assert not created.is_error, created.text
     return str(created.structured["id"])
 
@@ -100,7 +113,7 @@ def test_a_python_create_that_says_neither_is_refused_naming_both_and_writes_not
         _python_create(fixture)
 
     said = str(refused.value)
-    assert "says neither" in said and "declared_design" in said and "exploratory: true" in said, said
+    assert "says neither" in said and "a design on an aspect" in said and "exploratory: true" in said, said
     assert off_loop(fixture.host.eval_host.storage.list_campaigns, TOYHOST_SCOPE) == before
 
 
@@ -108,19 +121,19 @@ def test_a_python_create_that_says_both_is_refused_as_a_contradiction() -> None:
     fixture = off_loop(ops_fixture)
 
     with pytest.raises(ValidationFailedError, match="both declares a design and says it is exploratory"):
-        _python_create(fixture, exploratory=True, declared_design=_design())
+        _python_create(fixture, exploratory=True, declared=True)
 
 
 def test_a_python_create_with_a_design_is_declared_and_one_saying_exploratory_is_not() -> None:
     fixture = off_loop(ops_fixture)
 
-    declared = _python_create(fixture, declared_design=_design())
+    declared = _python_create(fixture, declared=True)
     exploratory = _python_create(fixture, exploratory=True)
 
-    assert declared.declared_design is not None
-    assert exploratory.declared_design is None
-    assert "exploratory" not in EvalCampaign.model_fields, "an assertion checked, never stored"
-    assert "exploratory" not in _stored(fixture, exploratory.id).model_dump()
+    assert not declared.exploratory and declared.aspects[0].design is not None
+    assert exploratory.exploratory and exploratory.aspects[0].design is None
+    assert "exploratory" not in EvalCampaign.model_fields, "an assertion checked, never stored as a choice"
+    assert "exploratory" in EvalCampaign.model_computed_fields, "derived from the aspects on every read"
 
 
 @pytest.mark.parametrize(
@@ -128,17 +141,17 @@ def test_a_python_create_with_a_design_is_declared_and_one_saying_exploratory_is
     [
         pytest.param({}, "says neither", id="neither"),
         pytest.param({"exploratory": False}, "says neither", id="exploratory-false-and-no-design"),
-        pytest.param({"exploratory": True, "declared_design": "{design}"}, "both declares a design", id="both"),
+        pytest.param({"exploratory": True, "declared": True}, "both declares a design", id="both"),
     ],
 )
 async def test_the_create_action_refuses_a_campaign_that_does_not_say_which_once(
     evals: MountedTool, arguments: dict[str, Any], says: str
 ) -> None:
     fixture = off_loop(ops_fixture)
-    resolved = {key: (_design() if value == "{design}" else value) for key, value in arguments.items()}
+    declared = bool(arguments.pop("declared", False))
     before = off_loop(fixture.host.eval_host.storage.list_campaigns, TOYHOST_SCOPE)
 
-    outcome = await _call(evals, fixture, "campaign_create", **_definition(fixture), **resolved)
+    outcome = await _call(evals, fixture, "campaign_create", **_definition(fixture, declared=declared), **arguments)
 
     assert outcome.is_error and says in outcome.text, outcome.text
     assert outcome.refusal is not None and outcome.refusal.kind == "validation_failed"
@@ -149,7 +162,7 @@ async def test_the_create_action_takes_either_and_its_line_says_which(evals: Mou
     fixture = off_loop(ops_fixture)
 
     exploratory = await _call(evals, fixture, "campaign_create", **_definition(fixture), exploratory=True)
-    declared = await _call(evals, fixture, "campaign_create", **_definition(fixture), declared_design=_design())
+    declared = await _call(evals, fixture, "campaign_create", **_definition(fixture, declared=True))
 
     assert not exploratory.is_error and not declared.is_error, (exploratory.text, declared.text)
     assert CampaignLine.model_validate(exploratory.structured).exploratory
@@ -166,12 +179,14 @@ async def test_declaring_a_design_on_an_exploratory_campaign_makes_it_declared(e
     fixture = off_loop(ops_fixture)
     campaign_id = await _exploratory_campaign(evals, fixture, **_BEFORE_ITS_FIRST_RUN)
 
-    outcome = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=_design())
+    outcome = await _call(
+        evals, fixture, "campaign_update", campaign_id=campaign_id, aspects=_aspects(fixture, declared=True, runs=False)
+    )
 
     assert not outcome.is_error, outcome.text
     assert not CampaignLine.model_validate(outcome.structured).exploratory
     stored = _stored(fixture, campaign_id)
-    assert stored.declared_design is not None and stored.declared_design.declared_by == CALLER.identity
+    assert stored.aspects[0].design is not None and stored.declared_by == CALLER.identity
     listed = await _call(evals, fixture, "campaigns_list")
     assert next(line for line in listed.structured["campaigns"] if line["id"] == campaign_id)["exploratory"] is False
 
@@ -181,7 +196,9 @@ async def test_withdrawing_a_declaration_without_saying_exploratory_is_refused(e
     campaign_id = await _declared_campaign(evals, fixture, **_BEFORE_ITS_FIRST_RUN)
     before = _stored(fixture, campaign_id)
 
-    outcome = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=None)
+    outcome = await _call(
+        evals, fixture, "campaign_update", campaign_id=campaign_id, aspects=_aspects(fixture, declared=False, runs=False)
+    )
 
     assert outcome.is_error and "exploratory: true" in outcome.text, outcome.text
     assert _stored(fixture, campaign_id) == before
@@ -194,12 +211,18 @@ async def test_withdrawing_a_declaration_saying_exploratory_leaves_the_campaign_
     campaign_id = await _declared_campaign(evals, fixture, **_BEFORE_ITS_FIRST_RUN)
 
     outcome = await _call(
-        evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=None, exploratory=True
+        evals,
+        fixture,
+        "campaign_update",
+        campaign_id=campaign_id,
+        aspects=_aspects(fixture, declared=False, runs=False),
+        exploratory=True,
     )
 
     assert not outcome.is_error, outcome.text
     assert CampaignLine.model_validate(outcome.structured).exploratory
-    assert _stored(fixture, campaign_id).declared_design is None
+    stored = _stored(fixture, campaign_id)
+    assert stored.exploratory and (stored.question, stored.arms, stored.floors) == ("", [], [])
 
 
 @pytest.mark.parametrize(
@@ -207,14 +230,14 @@ async def test_withdrawing_a_declaration_saying_exploratory_leaves_the_campaign_
     [
         pytest.param(
             "exploratory",
-            {"declared_design": "{design}", "exploratory": True},
-            "both declares a design",
+            {"aspects": "{declared}", "exploratory": True},
+            "exploratory: true says something",
             id="a-design-and-exploratory",
         ),
         pytest.param(
             "declared",
             {"name": "renamed", "exploratory": True},
-            "this update keeps it",
+            "exploratory: true says something",
             id="exploratory-keeping-a-design",
         ),
         pytest.param("declared", {}, "names nothing to change", id="nothing"),
@@ -225,9 +248,12 @@ async def test_an_update_that_contradicts_itself_or_its_campaign_is_refused_and_
 ) -> None:
     fixture = off_loop(ops_fixture)
     make = _exploratory_campaign if start == "exploratory" else _declared_campaign
-    campaign_id = await make(evals, fixture)
+    campaign_id = await make(evals, fixture, runs=False)
     before = _stored(fixture, campaign_id)
-    resolved = {key: (_design() if value == "{design}" else value) for key, value in arguments.items()}
+    resolved = {
+        key: (_aspects(fixture, declared=True, runs=False) if value == "{declared}" else value)
+        for key, value in arguments.items()
+    }
 
     outcome = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, **resolved)
 
@@ -245,7 +271,9 @@ async def test_an_update_changes_only_what_it_is_sent(evals: MountedTool) -> Non
     assert not outcome.is_error, outcome.text
     after = _stored(fixture, campaign_id)
     assert after.name == "renamed" and outcome.structured["name"] == "renamed"
-    assert after.declared_design == before.declared_design, "an omitted declared_design is left as it is"
+    assert (after.aspects, after.question, after.declared_at) == (before.aspects, before.question, before.declared_at), (
+        "an omitted declaration is left as it is"
+    )
     assert after.description == before.description and after.run_ids == before.run_ids
 
 
@@ -264,7 +292,7 @@ async def test_an_exploratory_campaign_may_be_renamed_saying_it_is_exploratory(e
 def test_the_python_update_holds_to_the_same_rule() -> None:
     fixture = off_loop(ops_fixture)
     eval_host = fixture.host.eval_host
-    campaign = _python_create(fixture, declared_design=_design(), **_BEFORE_ITS_FIRST_RUN)
+    campaign = _python_create(fixture, declared=True, **_BEFORE_ITS_FIRST_RUN)
 
     def update(updates: dict[str, Any], **keywords: Any) -> EvalCampaign:
         return off_loop(
@@ -278,10 +306,11 @@ def test_the_python_update_holds_to_the_same_rule() -> None:
             **keywords,
         )
 
+    withdrawn = _aspects(fixture, declared=False, runs=False)
     with pytest.raises(ValidationFailedError, match="exploratory: true"):
-        update({"declared_design": None})
-    assert update({"declared_design": None}, exploratory=True).declared_design is None
-    assert update({"declared_design": _design()}).declared_design is not None
+        update({"aspects": withdrawn})
+    assert update({"aspects": withdrawn}, exploratory=True).exploratory
+    assert not update({"aspects": _aspects(fixture, declared=True, runs=False)}).exploratory
 
 
 # --- the action, and the refusal that names it ----------------------------------------------------------------------
@@ -294,7 +323,9 @@ async def test_campaign_update_is_a_write_with_a_help_page_and_an_example(evals:
         "campaign_id",
         "name",
         "description",
-        "declared_design",
+        "question",
+        "aspects",
+        "floors",
         "exploratory",
         "control_from_run_id",
     }
@@ -303,7 +334,7 @@ async def test_campaign_update_is_a_write_with_a_help_page_and_an_example(evals:
         {"action": "help", "topic": "campaign_update"}, host=off_loop(ops_fixture).host, caller=CALLER
     )
 
-    assert not page.is_error and "declared_design" in page.text and "exploratory" in page.text, page.text
+    assert not page.is_error and "aspects" in page.text and "exploratory" in page.text, page.text
 
 
 async def test_the_control_refusal_on_an_exploratory_campaign_names_campaign_update(evals: MountedTool) -> None:

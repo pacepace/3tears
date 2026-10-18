@@ -275,6 +275,13 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
                 subject_id=arguments.subject_id,
                 behavior=arguments.campaign_behavior,
                 description=arguments.campaign_description,
+                # One aspect, the sweep's template, which every arm's run joins as it is created.
+                aspects=[
+                    {
+                        "label": arguments.campaign_behavior.replace("/", "-"),
+                        "template_id": arguments.template_id,
+                    }
+                ],
                 exploratory=True,
             ),
             scope_id,

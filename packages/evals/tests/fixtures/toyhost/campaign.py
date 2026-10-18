@@ -24,6 +24,7 @@ from threetears.evals.kernel import (
     Question,
     SweptAxis,
 )
+from threetears.evals.kernel.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -127,6 +128,25 @@ def toyhost_design() -> CampaignDesign:
     )
 
 
+def toyhost_campaign_of_one_aspect(*, declared_design: CampaignDesign, **fields: object) -> EvalCampaign:
+    """A toy-host campaign of one aspect, labelled with its behavior, declared by one design.
+
+    The toy host's designs ask their questions, and name their control, as one design does; the campaign holds them
+    as the one aspect such a design reads as (``upgrade_campaign_v15``), so the question, the control arm, the margin
+    and the floors are the ones every stored campaign of that design reads with.
+
+    :param declared_design: The design, its questions and control included.
+    :ptype declared_design: CampaignDesign
+    :param fields: The campaign's other fields, ``template_id`` and ``run_ids`` among them.
+    :ptype fields: object
+    :return: The campaign.
+    :rtype: EvalCampaign
+    """
+    return EvalCampaign.model_validate(
+        upgrade_campaign_v15({**fields, "declared_design": declared_design.model_dump(mode="json")})
+    )
+
+
 def toyhost_campaign(
     *,
     grader_versions: tuple[str, str] | None = None,
@@ -178,7 +198,7 @@ def toyhost_campaign(
         },
         insights,
     )
-    campaign = EvalCampaign(
+    campaign = toyhost_campaign_of_one_aspect(
         # Pinned for the same reason the batches are: `EvalCampaign.id` defaults
         # to `uuid4`, so the campaign this fixture assembles was a different
         # campaign every call and no two bundles could fingerprint alike.
@@ -230,5 +250,6 @@ __all__ = [
     "TOYHOST_WIDE",
     "toyhost_bundle",
     "toyhost_campaign",
+    "toyhost_campaign_of_one_aspect",
     "toyhost_design",
 ]

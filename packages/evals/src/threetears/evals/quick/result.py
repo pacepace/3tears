@@ -676,7 +676,7 @@ class Result:
 
         def declared() -> Result:
             campaign = get_campaign(self.host.storage, self.campaign_id, self.scope_id)
-            design = campaign.declared_design
+            design = campaign.aspects[0].design
             levels = {
                 arm: dict.fromkeys(self.factors, arm) if (pairs := coordinates(arm)) is None else pairs
                 for arm in self.arms
@@ -966,23 +966,23 @@ def declare(
         design["measure_latency"] = True
     if guardrail_margins:
         design["guardrail_margins"] = [entry.model_dump() for entry in guardrail_margins]
-    filed: dict[str, Any] = {
-        "name": name,
-        "subject_id": name,
-        "behavior": behavior,
+    # One aspect, the eval's: every arm ran the one template the eval authored, so the aspect names it (a judged
+    # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). The eval
+    # declares no margin on the pass rate and none is assumed, so its readings are never shown worse.
+    aspect: dict[str, Any] = {
+        "label": behavior.replace("/", "-"),
         "run_ids": [summary.run_id for summary in arms.values()],
-        "declared_design": design,
+        "design": design,
     }
-    # Every arm ran the one template the eval authored, so the campaign names it: a judged guardrail's margin is
-    # declared on a dimension of its rubric, which the declaration gate reads from it.
     if arms[control].template_id is not None:
-        filed["template_id"] = arms[control].template_id
+        aspect["template_id"] = arms[control].template_id
     campaign = create_campaign(
         host.storage,
-        filed,
+        {"name": name, "subject_id": name, "behavior": behavior, "aspects": [aspect]},
         scope_id=scope_id,
         created_by=created_by,
         profile=host.profile,
+        margin_optional=True,
     )
     campaign = set_campaign_control(
         host.storage, campaign.id, scope_id, arms[control].run_id, set_by=created_by, profile=host.profile

@@ -35,7 +35,12 @@ def _storage_with_a_run_in_each_scope():
 
 
 def _definition(*run_ids: str) -> dict[str, object]:
-    return {"name": "c", "subject_id": "subject-1", "behavior": "conversation", "run_ids": list(run_ids)}
+    return {
+        "name": "c",
+        "subject_id": "subject-1",
+        "behavior": "conversation",
+        "aspects": [{"label": "conversation", "run_ids": list(run_ids)}],
+    }
 
 
 class TestCreation:
