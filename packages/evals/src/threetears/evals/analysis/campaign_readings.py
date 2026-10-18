@@ -1,9 +1,20 @@
-"""What code reads off a campaign, aspect by aspect: each candidate's change against the control, and every floor.
+"""What code reads off a campaign, aspect by aspect, by its kind: a change's candidates against the control and its
+floors, a choice's pairs of arms, a measurement's measures, and every arm against every absolute bar.
 
-Code reports, the writer recommends, a person decides. This is the report: per aspect and candidate, the change in
-pass rate against the control and whether it is **shown better**, **shown worse** or **unclear**; per floor and
-candidate, whether it is broken, held or unclear; and for an unclear reading, the cases that would settle it. The
-writer's recommendation and the person's call both read it, and neither can change it.
+Code reports, the writer recommends, a person decides. This is the report, and what it holds depends on the
+campaign's kind, which its arms decide (:func:`campaign_kind`) and nothing declares:
+
+- **A change** (a control and its candidates): per aspect and candidate, the change in pass rate against the control
+  and whether it is **shown better**, **shown worse** or **unclear**; per floor and candidate, whether it is broken,
+  held or unclear; and for an unclear reading, the cases that would settle it.
+- **A choice** (two or more arms, no control): per aspect, every pair of arms, the difference between them and which
+  is **shown ahead**, if either; one family over every pair × aspect, since a pair has no direction.
+- **A measurement** (one arm): each aspect's measures for that arm, each with its interval; nothing is compared.
+
+Every kind reads each arm against each absolute bar, as the aspect's bundle adjudicated it. The writer's
+recommendation and the person's call both read the report, and neither can change it.
+
+The sections below are a change's; a choice's pairs are read by the same step-down over one family.
 
 **One family per candidate across its aspects, two directions.** Each candidate's rows, one per aspect, are tested
 as one family at the campaign's α, separately for gains and for drops: a gain is the change tested against zero, a
@@ -57,6 +68,7 @@ from threetears.evals.analysis.stats import (
     SMALL_N_BAND_FLOOR,
     bounded_difference_interval,
     holm_adjust,
+    pooled_rate_interval,
 )
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.analysis_measures import BarVerdict
@@ -131,7 +143,19 @@ class AspectReading(EvalDocumentModel):
     aspect: str = Field(description="The aspect's label.")
     arm: str = Field(description="The candidate's variant key.")
     arm_label: str = Field(description="What a reader calls the candidate: its arm's label, else its variant's name.")
-    change: float = Field(description="The candidate's pass rate minus the control's, in points (positive = better).")
+    change: float = Field(
+        description=(
+            "The candidate's pass rate minus the control's, in points (positive = better): the mean of the per-case "
+            "shares its intervals read, so it always lies in them; on the trial counts only where no interval was read."
+        )
+    )
+    rig: str | None = Field(
+        default=None,
+        description=(
+            "The test setup (apparatus class) whose per-case shares `change` and the intervals read, where both arms "
+            "ran under more than one; None where they share one, or none. The counts are over every rig."
+        ),
+    )
     gain_interval: tuple[float, float] | None = Field(
         description=(
             "The change's interval in points, low then high, at `gain_confidence`: what `better` is read on. None "
@@ -252,7 +276,19 @@ class PairReading(EvalDocumentModel):
     first_label: str = Field(description="What a reader calls the first arm.")
     second: str = Field(description="The second arm's variant key.")
     second_label: str = Field(description="What a reader calls the second arm.")
-    change: float = Field(description="The first arm's pass rate minus the second's, in points.")
+    change: float = Field(
+        description=(
+            "The first arm's pass rate minus the second's, in points: the mean of the per-case shares `interval` "
+            "reads, so it always lies in it; on the trial counts only where no interval was read."
+        )
+    )
+    rig: str | None = Field(
+        default=None,
+        description=(
+            "The test setup whose per-case shares `change` and `interval` read, where both arms ran under more than "
+            "one; None where they share one, or none. The counts are over every rig."
+        ),
+    )
     interval: tuple[float, float] | None = Field(
         description="The difference's two-sided bounded interval in points at `confidence`; None when unbounded."
     )
@@ -265,9 +301,12 @@ class PairReading(EvalDocumentModel):
     )
     ahead: str | None = Field(
         description=(
-            "The label of the arm shown ahead: the interval excludes zero, every arm at the case floor, and past the "
-            "lost trials. None = no separation. A reading, never a pick."
+            "The variant key of the arm shown ahead (`first` or `second`): the interval excludes zero, every arm at "
+            "the case floor, and past the lost trials. None = no separation. A reading, never a pick."
         )
+    )
+    ahead_label: str | None = Field(
+        default=None, description="What a reader calls the arm shown ahead; None with no separation."
     )
     reason: str = Field(default="", description="Why, in one plain sentence naming the arms.")
     confirmatory: bool = Field(
@@ -307,8 +346,22 @@ class MeasureReading(EvalDocumentModel):
     arm_label: str = Field(description="What a reader calls the arm.")
     measure: str = Field(description="The measure's key; `passed` for the trials' own pass rate.")
     name: str = Field(description="The measure as a reader names it.")
+    rig: str | None = Field(
+        default=None,
+        description=(
+            "The test setup the value was measured under: a measure is read per cell, an arm under each rig apart. "
+            "None for the trials' pass rate, which is counted over every rig."
+        ),
+    )
     value: float | None = Field(description="The arm's value: a mean, or a share for a rate. None with none.")
-    interval: tuple[float, float] | None = Field(description="The value's interval; None below two cases.")
+    interval: tuple[float, float] | None = Field(
+        description=(
+            "The value's interval: the cell summary's own, or for the pass rate the Wilson interval on its count with "
+            "the cases as the independent draws (`stats.pooled_rate_interval`). None below two cases."
+        )
+    )
+    passed: int | None = Field(default=None, description="For the pass rate, the trials passed; None otherwise.")
+    trials: int | None = Field(default=None, description="For the pass rate, the usable trials; None otherwise.")
     cases: int = Field(ge=0, description="The independent cases behind the value.")
     higher_is_better: bool | None = Field(default=None, description="Which way is better; None where undeclared.")
 
@@ -377,15 +430,19 @@ class CampaignReadings(EvalDocumentModel):
         return [status for status in self.floors if status.status == "broken"]
 
     def arm_labels(self) -> dict[str, str]:
-        """What a reader calls each arm the readings name, by variant key: the control and every candidate with a
-        row. What an aspect's own page is built with (``build_code_only_report(..., arm_labels=...)``), so a fold
-        names the arms as the campaign's table does.
+        """What a reader calls each arm the readings name, by variant key, for every kind: the control, every candidate
+        with a row, both arms of every pair, every arm measured or held to a bar. What an aspect's own page is built
+        with (``build_code_only_report(..., arm_labels=...)``), so a fold names the arms as the campaign's table does.
 
         :return: Variant key → label.
         :rtype: dict[str, str]
         """
         labels = {self.control: self.control_label} if self.control is not None else {}
         labels.update({row.arm: row.arm_label for row in self.readings})
+        for pair in self.pairs:
+            labels.update({pair.first: pair.first_label, pair.second: pair.second_label})
+        labels.update({measure.arm: measure.arm_label for measure in self.measures})
+        labels.update({status.arm: status.arm_label for status in self.bars})
         return labels
 
     def on_aspect(self, aspect: str) -> list[AspectReading]:
@@ -423,6 +480,7 @@ class _Row:
     rate: RateReading
     confirmatory: bool
     per_case_usd: float | None
+    rigs: list[str]
     levels: dict[float, RateReading]
     drops: dict[float, tuple[bool, str]]
 
@@ -601,6 +659,38 @@ def _candidates(campaign: EvalCampaign, arms: Sequence[CampaignArm]) -> list[Cam
     return found
 
 
+def _shared_rigs(bundle: AnalysisContextBundle, first: str, second: str) -> list[str]:
+    """The test setups both arms ran under on the aspect, in the bundle's order of cells."""
+    theirs = {cell.apparatus_class_id for cell in bundle.cells if cell.variant_key == second}
+    return [
+        rig
+        for rig in dict.fromkeys(c.apparatus_class_id for c in bundle.cells if c.variant_key == first)
+        if rig in theirs
+    ]
+
+
+def _change(rate: RateReading) -> float:
+    """The second arm's pass rate minus the first's (the candidate's minus the control's), in points: the mean of the
+    per-case shares the interval reads, so the change always lies in its interval; on the trial counts only where the
+    rate carries no per-case shares."""
+    if rate.samples is None:
+        return -rate.point_drop()
+    control, contrast = rate.samples
+    return 100 * (math.fsum(contrast) / len(contrast) - math.fsum(control) / len(control))
+
+
+def _rig_read(rate: RateReading, rigs: Sequence[str]) -> str | None:
+    """The rig a rate's shares were read under, said only where the arms shared more than one."""
+    return rate.rig if len(rigs) > 1 else None
+
+
+def _no_interval(first: str, second: str, rigs: Sequence[str]) -> str:
+    """Why no interval was read: no rig both arms ran under, or too few cases with a usable trial on the one read."""
+    if not rigs:
+        return f"no interval could be read: {first} and {second} ran under no test setup in common"
+    return "no interval could be read: a side has fewer than two cases with a usable trial"
+
+
 def _reason(row: _Row, reading: ShownReading, gain_level: float, drop_level: float, drop_reason: str) -> str:
     """Why a row reads as it does, in one sentence naming the arms."""
     arm, control = row.arm.label, row.control_label
@@ -611,7 +701,7 @@ def _reason(row: _Row, reading: ShownReading, gain_level: float, drop_level: flo
     fewest = row.fewest()
     rate = row.at(gain_level)
     if rate.interval is None:
-        return "no interval could be read: a side has fewer than two cases with a usable trial"
+        return _no_interval(arm, control, row.rigs)
     if fewest is None:
         return "the usable cases were not counted on both arms"
     if fewest < _CASE_FLOOR:
@@ -634,11 +724,11 @@ def campaign_readings(
     campaign: EvalCampaign,
     bundles: Mapping[str, AnalysisContextBundle],
     *,
-    arms: Sequence[CampaignArm] | None = None,
+    arms: Sequence[CampaignArm],
 ) -> CampaignReadings:
-    """What code reads off a campaign: each candidate against the control on every aspect, and every floor.
+    """What code reads off a campaign, by its kind (:func:`campaign_kind`, over ``arms``).
 
-    Per aspect and candidate, the aspect's pass rate
+    **A change.** Per aspect and candidate, the aspect's pass rate
     (:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate`): the change in points, shown better, shown
     worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
     at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart; nothing corrects across
@@ -649,23 +739,29 @@ def campaign_readings(
     with no correction. A row is confirmatory only where the campaign's question was asked on that aspect before its
     first run (the bundle's ``question_declared``).
 
-    A candidate that did not run on an aspect, or an aspect its control did not run on, has no row there. A campaign
-    naming no control reads no row and no floor.
+    A candidate that did not run on an aspect, or an aspect its control did not run on, has no row there. Each row's
+    change and intervals are read on one rig's per-case shares, named where both arms ran under several.
+
+    **A choice** (no control, two or more arms) reads no row and no floor: every pair of arms on every aspect both ran
+    on, the difference and the arm shown ahead, by one step-down over every pair × aspect. **A measurement** (one arm,
+    a control alone among them) reads no row, pair or floor: each aspect's measures for its arm. **Every kind** reads
+    each arm against each absolute bar the bundle adjudicated.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
     :param bundles: Each aspect's evidence, keyed by its label: one per aspect, each assembled for it.
     :ptype bundles: Mapping[str, AnalysisContextBundle]
     :param arms: The campaign's arms as read (:func:`~threetears.evals.analysis.campaigns.campaign_arms`: the named,
-        then the derived candidates); None reads the named arms alone.
-    :ptype arms: Sequence[CampaignArm] | None
+        then the derived candidates). Required: a change whose candidates are derived from its runs names only its
+        control, so the named arms alone would read it as a measurement.
+    :ptype arms: Sequence[CampaignArm]
     :return: The readings.
     :rtype: CampaignReadings
     :raises RefusedInput: An aspect has no bundle, a bundle is keyed by a label the campaign does not hold, or a bundle
         reads another aspect than the one it is keyed by.
     """
     checked = _checked_bundles(campaign, bundles)
-    every = _distinct(campaign.arms if arms is None else arms)
+    every = _distinct(arms)
     kind = campaign_kind(every)
     alpha = SIGNIFICANCE_ALPHA
     labels = [aspect.label for aspect in campaign.aspects]
@@ -710,6 +806,7 @@ def campaign_readings(
                     rate=rate,
                     confirmatory=bundle.question_declared,
                     per_case_usd=per_case,
+                    rigs=_shared_rigs(bundle, control_key, arm.variant_key),
                     levels={},
                     drops={},
                 )
@@ -723,8 +820,8 @@ def campaign_readings(
 
     gains = _decided(rows, gain_kept, lambda index, level: rows[index].gain_shown(level), alpha)
     drops = _decided(rows, drop_kept, lambda index, level: rows[index].drop_verdict(level)[0], alpha)
-    gain_holm = _holm(rows, gain_kept, gains)
-    drop_holm = _holm(rows, drop_kept, drops)
+    gain_holm = _holm(rows, gain_kept, gains, alpha)
+    drop_holm = _holm(rows, drop_kept, drops, alpha)
     readings: list[AspectReading] = []
     for index, row in enumerate(rows):
         gain, drop = gains.get(index), drops.get(index)
@@ -748,7 +845,8 @@ def campaign_readings(
                 aspect=row.aspect,
                 arm=row.arm.variant_key,
                 arm_label=row.arm.label,
-                change=-row.rate.point_drop(),
+                change=_change(row.rate),
+                rig=_rig_read(row.rate, row.rigs),
                 gain_interval=_points(gain_rate),
                 gain_confidence=gain_level,
                 drop_interval=_points(drop_rate),
@@ -808,6 +906,7 @@ class _Pair:
     base: FloorReadings
     rate: RateReading
     confirmatory: bool
+    rigs: list[str]
     levels: dict[float, RateReading]
 
     def at(self, confidence: float) -> RateReading:
@@ -866,12 +965,13 @@ def _pair_readings(
                         base=floor_readings(bundle, low.variant_key, high.variant_key),
                         rate=rate,
                         confirmatory=bundle.question_declared,
+                        rigs=_shared_rigs(bundle, low.variant_key, high.variant_key),
                         levels={},
                     )
                 )
     family = [index for index, pair in enumerate(pairs) if pair.rate.interval is not None]
     decided = _step_down(family, lambda index, level: pairs[index].leader(level) is not None, alpha)
-    adjusted = dict(zip(family, holm_adjust([decided[index].p for index in family]), strict=True))
+    adjusted = _snapped(family, holm_adjust([decided[index].p for index in family]), decided, alpha)
     read: list[PairReading] = []
     for index, pair in enumerate(pairs):
         decision = decided.get(index)
@@ -895,12 +995,15 @@ def _pair_readings(
                 first_label=pair.first.label,
                 second=pair.second.variant_key,
                 second_label=pair.second.label,
-                change=sign * rate.point_drop(),
+                # The rate reads the arm second in key order minus the first.
+                change=-sign * _change(rate),
+                rig=_rig_read(rate, pair.rigs),
                 interval=None if interval is None else (interval[0], interval[1]),
                 confidence=decision.level if decision is not None else None,
                 p=decision.p if decision is not None else None,
                 p_holm=adjusted.get(index),
-                ahead=leader.label if leader is not None else None,
+                ahead=leader.variant_key if leader is not None else None,
+                ahead_label=leader.label if leader is not None else None,
                 reason=_pair_reason(pair, leader, rate),
                 confirmatory=pair.confirmatory,
                 first_cases=first_cases,
@@ -922,7 +1025,7 @@ def _pair_reason(pair: _Pair, leader: CampaignArm | None, rate: RateReading) -> 
         return f"{leader.label} is ahead of {behind}: the whole interval on the difference is one side of zero"
     fewest = pair.base.fewest_cases()
     if rate.interval is None:
-        return "no interval could be read: a side has fewer than two cases with a usable trial"
+        return _no_interval(first, second, pair.rigs)
     if fewest is not None and fewest < _CASE_FLOOR:
         return f"{fewest} cases are too few: an interval is read only from {_CASE_FLOOR} independent cases"
     if rate.interval[0] > 0 or rate.interval[1] < 0:
@@ -999,8 +1102,9 @@ def _bar_statuses(
 def _measure_readings(
     campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
 ) -> list[MeasureReading]:
-    """A measurement's measures on every aspect: each arm's pass rate (the scoreboard's count, which carries no
-    interval), then each measure its cells summarise with an interval, the summary's own."""
+    """A measurement's measures on every aspect: each arm's pass rate, its count over every rig with the Wilson
+    interval on it, the cases the independent draws (:func:`~threetears.evals.analysis.stats.pooled_rate_interval`);
+    then each measure each of its cells (one per rig) summarises with an interval, the summary's own."""
     labels = {arm.variant_key: arm.label for arm in arms}
     found: list[MeasureReading] = []
     for aspect in campaign.aspects:
@@ -1015,7 +1119,9 @@ def _measure_readings(
                     measure="passed",
                     name="pass rate",
                     value=board.passed / board.usable if board.usable else None,
-                    interval=None,
+                    interval=pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases),
+                    passed=board.passed,
+                    trials=board.usable,
                     cases=board.usable_cases,
                     higher_is_better=True,
                 )
@@ -1036,6 +1142,7 @@ def _measure_readings(
                             arm_label=label,
                             measure=summary.name,
                             name=measure_name(summary.name, descriptor.reader_name if descriptor else None),
+                            rig=cell.apparatus_class_id,
                             value=value,
                             interval=(summary.ci_low, summary.ci_high)
                             if summary.ci_low is not None and summary.ci_high is not None
@@ -1047,12 +1154,23 @@ def _measure_readings(
     return found
 
 
-def _holm(rows: Sequence[_Row], keep: Callable[[_Row], bool], decided: Mapping[int, _Decision]) -> dict[int, float]:
+def _holm(
+    rows: Sequence[_Row], keep: Callable[[_Row], bool], decided: Mapping[int, _Decision], alpha: float
+) -> dict[int, float]:
     """Each row's p Holm-adjusted within its candidate's family: at most α exactly where the step-down showed it."""
     adjusted: dict[int, float] = {}
     for family in _families(rows, keep):
-        adjusted.update(zip(family, holm_adjust([decided[index].p for index in family]), strict=True))
+        adjusted.update(_snapped(family, holm_adjust([decided[index].p for index in family]), decided, alpha))
     return adjusted
+
+
+def _snapped(
+    family: Sequence[int], adjusted: Sequence[float], decided: Mapping[int, _Decision], alpha: float
+) -> dict[int, float]:
+    """Each row's Holm-adjusted p, a shown row's held to at most α: its p is ``α / k`` on the grid and Holm multiplies
+    it back by ``k``, which in floating point can land a hair above α (``(0.05 / 11) * 11``), so a host filtering on
+    ``p_holm <= α`` would disagree with the reading."""
+    return {index: min(p, alpha) if decided[index].shown else p for index, p in zip(family, adjusted, strict=True)}
 
 
 def _points(rate: RateReading | None) -> tuple[float, float] | None:

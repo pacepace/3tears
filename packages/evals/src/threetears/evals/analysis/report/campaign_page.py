@@ -1,22 +1,28 @@
 """Build a campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then
 one fold per aspect.
 
-Code reports, the writer recommends, a person decides, and the page keeps the three apart. The first screen, in
-order:
+Code reports, the writer recommends, a person decides, and the page keeps the three apart. What the first screen
+holds depends on the campaign's kind (:func:`~threetears.evals.analysis.campaign_readings.campaign_kind`). For every
+kind it opens, above the title, with **every bar an arm misses**, then **every broken floor**, one loud line each,
+each followed by the writer's why where the memo recommends that arm over it: a bar or a floor only warns, and this is
+where it warns. Then **the question**, quoted whole as the campaign asks it. Then, for **a change**:
 
-1. **Every broken floor**, one loud line each, above the title: a floor only warns, and this is where it warns.
-2. **The title and the question**, quoted whole as the campaign asks it.
-3. **The writer's recommendation**, the arm and how sure, then each reason; with no memo, one line saying no
+1. **The writer's recommendation**, the arm and how sure, then each reason; with no memo, one line saying no
    recommendation was written.
-4. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
+2. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
    interval it was read on, the aspect's margin, and what the row shows (shown better, shown worse or unclear). Under
    it, the lines that change how a row reads: the level each interval was read at, an aspect with no margin (never
    shown worse), an aspect whose question came after its first run (its readings are leads), a margin or a floor
-   declared after the runs.
-5. **What would settle each unclear row**: the cases that would show the arm within the aspect's margin, if the arms
+   declared after the runs, the test setup a row was read under where the arms ran under several.
+3. **What would settle each unclear row**: the cases that would show the arm within the aspect's margin, if the arms
    do not differ and if they differ as observed.
-6. **The person's call**, or that none is recorded yet; a call adopting an arm past a broken floor says which floor it
-   overrides.
+
+For **a choice**: the table of every pair of arms on every aspect and the arm shown ahead, the writer's why for each
+aspect its pick is shown behind on, the frontier's reading of which arm clears a bar cheapest, then the writer's
+recommendation. For **a measurement**: each aspect's measures for its one arm, and no recommendation.
+
+Every kind then shows its bars table and the person's call (a measurement only once one is recorded), or that none is
+recorded yet; a call adopting an arm past a broken floor says which floor it overrides.
 
 Then the memo's findings and next steps, and one closed fold per aspect: the writer's summary of the aspect (what
 changed, how sure, what it means) when there is one, then the aspect's own page as
@@ -31,11 +37,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from threetears.evals.analysis.arms import arm_names
+from threetears.evals.analysis.arms import arm_names, short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, FloorStatus, PairReading
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.quantities import POINTS
+from threetears.evals.analysis.quantities import PERCENT, POINTS
 from threetears.evals.analysis.report.decision import floor_statement, projected_cell
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.report.model import (
@@ -250,7 +256,12 @@ def _floor_warnings(
     memo recommends the arm over that floor. Past :data:`_WARNINGS_APART` of them, one line per candidate names every
     floor it breaks, so the warnings stay readable, its whys after it."""
     broken = readings.broken_floors()
-    overrides = _overrides(memo, style)
+    recommended, overrides = _overrides(memo, style)
+
+    def answered(status: FloorStatus) -> list[ReportBlock]:
+        # The why answers the recommended arm's breaking of the floor, never another arm's breaking of the same one.
+        return overrides.get(status.floor, []) if status.arm_label == recommended else []
+
     if len(broken) <= _WARNINGS_APART:
         blocks: list[ReportBlock] = []
         for status in broken:
@@ -259,7 +270,7 @@ def _floor_warnings(
                     section="header", source="floor", text=_warning(_floor_of(campaign, status.floor), status)
                 )
             )
-            blocks += overrides.get(status.floor, [])
+            blocks += answered(status)
         return blocks
     by_arm: dict[str, list[FloorStatus]] = {}
     for status in broken:
@@ -275,15 +286,18 @@ def _floor_warnings(
                 + ".",
             )
         )
-        grouped += [block for status in statuses for block in overrides.get(status.floor, [])]
+        grouped += [block for status in statuses for block in answered(status)]
     return grouped
 
 
-def _overrides(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle | None) -> dict[str, list[ReportBlock]]:
-    """The writer's why for each broken floor its recommendation is made over, by the floor's key, styled."""
+def _overrides(
+    memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle | None
+) -> tuple[str | None, dict[str, list[ReportBlock]]]:
+    """The arm the memo recommends, and the writer's why for each broken floor it is recommended over, by the floor's
+    key, styled; no arm and nothing with no recommendation."""
     recommendation = memo.recommended() if memo is not None else None
     if recommendation is None or style is None:
-        return {}
+        return None, {}
     found: dict[str, list[ReportBlock]] = {}
     arm = recommendation.arm
     for override in recommendation.floors_overridden:
@@ -291,7 +305,7 @@ def _overrides(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle | No
             found.setdefault(override.floor, []).append(
                 TextBlock(section="header", role="override", body=why, facts=[Fact(name="Arm", value=arm)])
             )
-    return found
+    return arm, found
 
 
 #: The most broken floors the page warns of one line each; past it, one line per candidate.
@@ -447,11 +461,24 @@ def _table_blocks(
         )
     ]
     notes = _level_lines(levels, readings) if levels else []
+    notes += [
+        _rig_line(row.aspect, f"{row.arm_label}'s change against {control}", row.rig)
+        for row in readings.readings
+        if row.rig is not None
+    ]
     notes += _floor_beside_lines(campaign, readings)
     notes += _unread_lines(campaign, readings)
     notes += _timing_lines(campaign, readings, reports)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes if note]
     return blocks
+
+
+def _rig_line(aspect: str, what: str, rig: str) -> str:
+    """Which test setup a row's change and interval were read under, where the arms ran under several."""
+    return (
+        f"On {aspect}, {what} and its interval are read under test setup {short_digest(rig)}, the first both ran "
+        "under; the pass counts are over every setup."
+    )
 
 
 def _percent(level: float) -> str:
@@ -690,8 +717,10 @@ def _pair_words(pair: PairReading) -> str:
     if pair.ahead is None:
         said = f"{pair.first_label} and {pair.second_label} not separated"
     else:
-        behind = pair.second_label if pair.ahead == pair.first_label else pair.first_label
-        said = f"{pair.ahead} ahead of {behind}"
+        ahead, behind = (
+            (pair.first_label, pair.second_label) if pair.ahead == pair.first else (pair.second_label, pair.first_label)
+        )
+        said = f"{ahead} ahead of {behind}"
     return said if pair.confirmatory else f"{said}, a lead"
 
 
@@ -728,7 +757,7 @@ def _pair_blocks(
         if pair.confidence is not None:
             levels.append(pair.confidence)
         change = round(pair.change, 1)
-        ahead = pair.ahead or "no separation"
+        ahead = pair.ahead_label or "no separation"
         cells = table_row(
             {
                 "aspect": pair.aspect,
@@ -764,6 +793,11 @@ def _pair_blocks(
             if round(low, 4) == round(high, 4)
             else f"Each interval is read at the level its pair was tested at, from {_percent(low)} to {_percent(high)}."
         )
+    notes += [
+        _rig_line(pair.aspect, f"the difference between {pair.first_label} and {pair.second_label}", pair.rig)
+        for pair in readings.pairs
+        if pair.rig is not None
+    ]
     notes += _timing_lines(campaign, readings, reports)
     notes += _unread_without_control_lines(campaign, reports)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes if note]
@@ -773,11 +807,10 @@ def _pair_blocks(
 def _frontier_blocks(
     campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
 ) -> list[ReportBlock]:
-    """Where an aspect's frontier names the cheapest arm shown to clear its bar, one line saying so: a reading of
-    the bundle's frontier, never a pick."""
-    labels = {pair.first: pair.first_label for pair in readings.pairs} | {
-        pair.second: pair.second_label for pair in readings.pairs
-    }
+    """Where an aspect's frontier read which arm clears its bar cheapest, one line saying what it read: the arm shown
+    cheaper than every other that cleared, the only arm that cleared with a cost, or the arms that cleared with none
+    shown cheaper than the rest. A reading of the bundle's frontier, never a pick."""
+    labels = readings.arm_labels()
     lines: list[ReportBlock] = []
     for aspect in campaign.aspects:
         for subject in reports[aspect.label].bundle.frontier.subjects:
@@ -785,45 +818,66 @@ def _frontier_blocks(
             if verdict is None:
                 continue
             named = labels.get(verdict.variant_key, verdict.model)
-            tied = [labels.get(key, key[:12]) for key in getattr(verdict, "tied_with", []) or []]
-            beside = f", not shown cheaper than {', '.join(tied)}" if tied else ""
+            tied = [labels.get(tie.variant_key, tie.model) for tie in verdict.tied_with]
             lines.append(
                 DisclosureBlock(
                     section="scoreboard",
                     source="comparisons",
-                    text=f"Cheapest arm shown to clear the bar on {aspect.label}: {named}{beside}.",
+                    text=_frontier_words(aspect.label, named, tied, verdict.cost_decision),
                 )
             )
     return lines
 
 
+def _frontier_words(aspect: str, named: str, tied: Sequence[str], decision: str | None) -> str:
+    """What one aspect's frontier verdict reads, by how its cost was decided."""
+    if tied:
+        arms = ", ".join([named, *tied[:-1]]) + f" and {tied[-1]}"
+        why = (
+            "too few priced cases to show any of them cheaper"
+            if decision == "untested"
+            else "none is shown cheaper than the rest"
+        )
+        return f"Arms shown to clear the bar on {aspect}: {arms}; {why}."
+    if decision == "only_cleared":
+        return f"Only arm shown to clear the bar on {aspect} at a known cost: {named}."
+    if decision == "shown_cheapest":
+        return f"Cheapest arm shown to clear the bar on {aspect}: {named}, shown cheaper than every other that cleared."
+    return f"Arm shown to clear the bar on {aspect} at the lowest observed cost: {named}."
+
+
 def _measure_blocks(
     campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
 ) -> list[ReportBlock]:
-    """A measurement's table: each aspect's measures for its arm, each value with its interval."""
+    """A measurement's table: each aspect's measures for its arm, each value with its interval, the pass rate as its
+    count; a Setup column where an arm was measured under more than one test setup, each cell's apart."""
+    rigs: dict[str, set[str]] = {}
+    for reading in readings.measures:
+        if reading.rig is not None:
+            rigs.setdefault(reading.arm, set()).add(reading.rig)
+    by_rig = any(len(held) > 1 for held in rigs.values())
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
         TableColumn(key="arm", header="Arm"),
+        *([TableColumn(key="setup", header="Setup")] if by_rig else []),
         TableColumn(key="measure", header="Measure", term="reading"),
         TableColumn(key="value", header="Value"),
         TableColumn(key="interval", header="Interval", term="interval"),
         TableColumn(key="cases", header="Cases", term="cases"),
     ]
-    rows = [
-        table_row(
-            {
-                "aspect": reading.aspect,
-                "arm": reading.arm_label,
-                "measure": reading.name,
-                "value": None if reading.value is None else round(reading.value, 4),
-                "interval": None
-                if reading.interval is None
-                else f"[{format_number(round(reading.interval[0], 4))}, {format_number(round(reading.interval[1], 4))}]",
-                "cases": reading.cases,
-            }
-        )
-        for reading in readings.measures
-    ]
+    rows = []
+    for reading in readings.measures:
+        values: dict[str, CellValue] = {
+            "aspect": reading.aspect,
+            "arm": reading.arm_label,
+            "measure": reading.name,
+            "value": _measured(reading.value, reading.passed, reading.trials),
+            "interval": _measured_interval(reading.interval, reading.passed is not None),
+            "cases": reading.cases,
+        }
+        if by_rig:
+            values["setup"] = "every setup" if reading.rig is None else short_digest(reading.rig)
+        rows.append(table_row(values))
     blocks: list[ReportBlock] = [
         TableBlock(
             section="scoreboard",
@@ -841,8 +895,44 @@ def _measure_blocks(
         ),
     ]
     notes = _timing_lines(campaign, readings, reports) + _unread_without_control_lines(campaign, reports)
+    notes += _unread_until_candidate_lines(campaign)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes]
     return blocks
+
+
+def _measured(value: float | None, passed: int | None, trials: int | None) -> CellValue:
+    """A measure's value as the table states it: a pass rate as its count, any other value as measured."""
+    if passed is not None and trials is not None:
+        return f"{passed} of {trials}"
+    return None if value is None else round(value, 4)
+
+
+def _measured_interval(interval: tuple[float, float] | None, rate: bool) -> str | None:
+    """A measure's interval as the table states it: a pass rate's in percent, any other in the measure's units."""
+    if interval is None:
+        return None
+    if rate:
+        return f"[{_points(100 * interval[0])}{PERCENT}, {_points(100 * interval[1])}{PERCENT}]"
+    return f"[{format_number(round(interval[0], 4))}, {format_number(round(interval[1], 4))}]"
+
+
+def _unread_until_candidate_lines(campaign: EvalCampaign) -> list[str]:
+    """A change whose control alone has run reads as a measurement, so its margins and floors wait for a candidate;
+    one line saying which, so they are not silently dropped."""
+    control = campaign.control
+    margined = [aspect.label for aspect in campaign.aspects if aspect.margin is not None]
+    if control is None or not (margined or campaign.floors):
+        return []
+    waiting = []
+    if margined:
+        waiting.append(f"the margin{'s' if len(margined) > 1 else ''} on {', '.join(margined)}")
+    if campaign.floors:
+        waiting.append(f"{len(campaign.floors)} floor{'s' if len(campaign.floors) > 1 else ''}")
+    plural = len(waiting) > 1 or len(margined) > 1 or len(campaign.floors) > 1
+    return [
+        f"Only the control, {control.label}, has run, so {' and '.join(waiting)} {'are' if plural else 'is'} read "
+        "once a candidate runs."
+    ]
 
 
 #: What each bar status is called on the page.
@@ -926,9 +1016,7 @@ class _CampaignStyle:
     @classmethod
     def over(cls, campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]) -> _CampaignStyle:
         """One pass per aspect, every arm named by its campaign label, every unclear row's projection known."""
-        labels = readings.arm_labels() | {pair.first: pair.first_label for pair in readings.pairs}
-        labels |= {pair.second: pair.second_label for pair in readings.pairs}
-        labels |= {measure.arm: measure.arm_label for measure in readings.measures}
+        labels = readings.arm_labels()
         samples = tuple(row.projection for row in readings.readings if row.projection is not None)
         question = " ".join(campaign.question.split()) or None
         return cls(

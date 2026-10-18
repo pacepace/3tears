@@ -541,7 +541,7 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
                 "interval": _figures(pair.interval),
                 "confidence": pair.confidence,
                 "p_holm": _figure(pair.p_holm),
-                "ahead": pair.ahead,
+                "ahead": pair.ahead_label,
                 "confirmatory": pair.confirmatory,
                 "passed": [
                     f"{pair.first_passed} of {pair.first_trials}",
