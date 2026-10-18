@@ -235,8 +235,6 @@ def _text(block: TextBlock) -> list[str]:
         return [f"- {_inert(body)}"]
     if block.role == "next_step":
         return [f"**Next:** {body}"]
-    if block.role == "revisit_when":
-        return [f"Revisit when: {body}"]
     if block.role == "caveat":
         return [f"Caveat ({facts.get('Kind', 'unkinded')}): {body}"]
     if block.role == "carried_forward":

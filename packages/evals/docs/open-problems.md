@@ -72,12 +72,11 @@ this: 19 of 24 results were concurrent, and the only trace was a memo finding ci
 
 ### The analysis writer may propose a next step naming no reading
 
-No issue filed yet. A memo's next step, and a recommendation's revisit-when, are the writer's words held to the
+No issue filed yet. A memo's next step is the writer's words held to the
 page's style, and nothing holds them to a reading: G2's "revisit when at least 20 independent cases confirm whether
 the candidate meets the queue checks and yields lower cost" said nothing about latency, the reading its own finding
-had just said was withheld. The generator should refuse a next step or a revisit-when that names no reading the
-surface holds, as it refuses a finding whose evidence names a cell it does not hold. Not built: the next-step and
-revisit-when models carry no `evidence`, so there is nothing to resolve yet.
+had just said was withheld. The generator should refuse a next step that names no reading the
+surface holds, as it refuses a finding whose evidence names a cell it does not hold. Not built: the next-step model carries no `evidence`, so there is nothing to resolve yet.
 
 ## Judging
 

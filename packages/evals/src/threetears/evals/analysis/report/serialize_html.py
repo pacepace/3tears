@@ -468,8 +468,6 @@ def _text(block: TextBlock) -> str:
         return f'<p data-role="reason">{body}</p>'
     if block.role == "next_step":
         return f'<p data-role="next_step"><strong>Next:</strong> {body}</p>'
-    if block.role == "revisit_when":
-        return f"<p><em>Revisit when:</em> {body}</p>"
     if block.role == "caveat":
         return f'<div class="caveat"><strong>Caveat</strong> ({_escape(facts.get("Kind", "unkinded"))}): {body}</div>'
     if block.role == "carried_forward":
