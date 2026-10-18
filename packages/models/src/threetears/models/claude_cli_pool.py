@@ -103,7 +103,6 @@ __all__ = [
     "claude_cli_pool",
     "close_claude_cli_pool",
     "configure_claude_cli_pool",
-    "in_another_pid_namespace",
     "kill_process_tree",
     "launch_fingerprint",
     "bind_tool_server_to_context",
@@ -294,12 +293,7 @@ def _nested_pids(pid: int) -> int | None:
     return None
 
 
-def in_another_pid_namespace(
-    pid: int,
-    *,
-    read_namespace: Callable[[int | str], str | None] = _pid_namespace,
-    read_nested: Callable[[int], int | None] = _nested_pids,
-) -> bool:
+def _in_another_pid_namespace(pid: int) -> bool:
     """Whether ``pid`` lives in a pid namespace other than this process's.
 
     A marker names its owner by pid and start time as the owner's own namespace numbers them. A
@@ -310,17 +304,13 @@ def in_another_pid_namespace(
 
     :param pid: the process to check
     :ptype pid: int
-    :param read_namespace: reads a process's namespace link (``"self"`` for this one)
-    :ptype read_namespace: Callable[[int | str], str | None]
-    :param read_nested: reads how many ids a process's ``NSpid`` line gives it
-    :ptype read_nested: Callable[[int], int | None]
     :return: ``True`` when it is known to live elsewhere
     :rtype: bool
     """
-    own, theirs = read_namespace("self"), read_namespace(pid)
+    own, theirs = _pid_namespace("self"), _pid_namespace(pid)
     if own is not None and theirs is not None:
         return own != theirs
-    nested = read_nested(pid)
+    nested = _nested_pids(pid)
     return nested is not None and nested > 1
 
 
@@ -483,7 +473,7 @@ def _owner_is_alive(marker: str) -> bool:
 
 
 def sweep_orphaned_claude_clis(
-    *, grace_seconds: float = 2.0, elsewhere: Callable[[int], bool] = in_another_pid_namespace
+    *, grace_seconds: float = 2.0, elsewhere: Callable[[int], bool] = _in_another_pid_namespace
 ) -> int:
     """Kill pooled CLIs whose owning process is gone. A host runs this at startup.
 
@@ -491,7 +481,7 @@ def sweep_orphaned_claude_clis(
     shutdown hook, and the CLIs it started are reparented to init and keep running. A marked CLI
     whose owner is still alive belongs to a sibling worker and is left alone, and so is one in
     another pid namespace, whose marker's owner cannot be judged from here
-    (``elsewhere``, :func:`in_another_pid_namespace`).
+    (``elsewhere``, by default its namespace link, else its ``NSpid`` line).
 
     :param grace_seconds: how long each SIGTERM gets before SIGKILL
     :ptype grace_seconds: float
