@@ -53,6 +53,7 @@ _CONFIG = CodebaseConventionsConfig(
             "dependency_alignment",
             "dict_state_detection",
             "fake_parity",
+            "grep_q_pipefail",
             "invalidation_listener",
             "jwt_alg_pinning",
             "logger_coverage",

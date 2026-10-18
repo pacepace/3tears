@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### scrape and enforcement: a quiet grep at the end of a pipe no longer fails a check that matched
+
+**Fixed (scrape):** the sidecar's entrypoint checked for the window manager with `xprop ... | grep -q` under
+`pipefail`. `grep -q` exits on its first match; when xprop was still writing it died of SIGPIPE (141) and `pipefail`
+failed the check, so a running window manager could read as missing and the boot was refused. The answer is now read
+whole and then matched (`wm_running`), tested against a fake xprop writing past the 64 KB pipe buffer.
+
+**Added (enforcement): `threetears.enforcement.grep_q_pipefail`.** Refuses a pipe (`|` or `|&`, not `||`) into
+`grep`, `egrep` or `fgrep` running quiet (`-q` in any flag position, `--quiet`, `--silent`) in every `*.sh` that sets
+`pipefail` and in every GitHub workflow (whose bash steps run with it). Lines continued by a trailing `\` or `|` are
+joined, comment lines skipped, and a scan that finds no files is refused. `run_grep_q_pipefail_enforcement(
+GrepQPipefailConfig(repo_root=...))` is the one-line pytest shell; 3tears runs it in
+`tests/enforcement/test_no_grep_q_pipeline_under_pipefail.py`. The hub (#643), reports (#60) and geography (#14) carry
+their own copies of this gate and can now share this one.
+
 ### core: synchronous callers get a supported bridge and a synchronous lease; TracedHttpClient gets a quiet probe
 
 **Added (core): `threetears.core.sync.run(work, *, timeout=None)`.** Runs one async call to the end from
