@@ -44,14 +44,18 @@ def _step(title: str, lever: str) -> NextStep:
 def _report() -> Report:
     """Four levers: one measured and found, one measured with no finding, one unswept with a step, one without."""
     analysis = make_analysis(
-        aspects=[analysed_aspect(coverage=CoverageLens(
-            levers=[
-                _lever("chunk_tokens", "measured"),
-                _lever("retriever_top_k", "measured"),
-                _lever("extraction_schema", "unswept"),
-                _lever("ocr_engine_version", "thin"),
-            ]
-        ))],
+        aspects=[
+            analysed_aspect(
+                coverage=CoverageLens(
+                    levers=[
+                        _lever("chunk_tokens", "measured"),
+                        _lever("retriever_top_k", "measured"),
+                        _lever("extraction_schema", "unswept"),
+                        _lever("ocr_engine_version", "thin"),
+                    ]
+                )
+            )
+        ],
         document=empty_document(
             findings=[_finding("wider chunks extract more", ["chunk_tokens"])],
             next=[

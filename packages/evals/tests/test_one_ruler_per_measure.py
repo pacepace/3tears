@@ -141,7 +141,8 @@ class TestWordsAndEvidenceReadOnTheRuler:
         held = SimpleNamespace(decision_surface=surface, bundle={})
         subject = SimpleNamespace(aspect=lambda label: held)
         slow = next(c for c in surface.cells if c.variant_key == entry(CANDIDATE).variant_key)
-        row = EvidenceRow(aspect="conversation", 
+        row = EvidenceRow(
+            aspect="conversation",
             cell_ref=cell_ref(slow.variant_key, slow.apparatus_class_id),
             measure_id=LATENCY,
             reading="measure",
@@ -163,7 +164,8 @@ class TestWordsAndEvidenceReadOnTheRuler:
         held = SimpleNamespace(decision_surface=surface, bundle={})
         subject = SimpleNamespace(aspect=lambda label: held)
         cell = surface.cells[0]
-        row = EvidenceRow(aspect="conversation", 
+        row = EvidenceRow(
+            aspect="conversation",
             cell_ref=cell_ref(cell.variant_key, cell.apparatus_class_id),
             measure_id='goal_state:call_count("music.queue_track") >= 2',
             reading="measure",

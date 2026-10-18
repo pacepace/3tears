@@ -181,6 +181,7 @@ class TestEachAspectIsHeldToItsBudget:
         view = aspect_view(bundle, 0, budget=_size(no_contrasts) - 50)
         assert view["contrasts"] == [] and view["trials"] == []
         assert view["cells"][0] == whole["cells"][0]
+
         def readings(cell: dict[str, Any]) -> int:
             return len(cell["measures"]) + len(cell["judged"])
 

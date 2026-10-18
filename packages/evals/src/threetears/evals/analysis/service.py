@@ -93,7 +93,6 @@ from threetears.evals.kernel.remedies import (
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
-    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
     from threetears.evals.kernel.campaign import AspectAnalysis, AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
     from threetears.evals.kernel.host.profile import HostProfile
@@ -1294,14 +1293,14 @@ def list_analysis_attempts(storage: AnalysisStore, campaign_id: str, scope_id: s
 
 
 def _assembled_campaign_bundle(
-    campaign: EvalCampaign, *, storage: AnalysisStore, profile: HostProfile, insights_as_of: str | None = None
+    campaign: EvalCampaign, *, storage: EvalStorage, profile: HostProfile, insights_as_of: str | None = None
 ) -> CampaignBundle:
     """Assemble every aspect's bundle, the campaign's arms and code's readings into the campaign bundle. Blocking.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
-    :param storage: Where its runs, results and insights are read.
-    :ptype storage: AnalysisStore
+    :param storage: Where its runs, results and insights are read, and its arms addressed.
+    :ptype storage: EvalStorage
     :param profile: The host's vocabulary.
     :ptype profile: HostProfile
     :param insights_as_of: The insight ledger's cutoff, or None for now.
@@ -1879,7 +1878,9 @@ def freeze_reporter_case(
             )
         # The ledger as the generation read it, on `inspect_analysis_bundle`'s terms.
         assembled_at = analysis.generation.bundle_assembled_at
-        bundle = _assembled_campaign_bundle(campaign, storage=storage, profile=host.profile, insights_as_of=assembled_at)
+        bundle = _assembled_campaign_bundle(
+            campaign, storage=storage, profile=host.profile, insights_as_of=assembled_at
+        )
     else:
         # Stamped BEFORE assembly, as a generation stamps it: the instant is the
         # insight ledger's cutoff.

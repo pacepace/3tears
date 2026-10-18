@@ -185,26 +185,6 @@ class CampaignBundle(EvalDocumentModel):
         """
         return canonical_digest(self.frame())
 
-    def to_dict(self) -> dict[str, Any]:
-        """The whole campaign bundle as a dict: its frame, each aspect's bundle whole in its place.
-
-        :return: The dict :meth:`from_dict` reads back.
-        :rtype: dict[str, Any]
-        """
-        whole = self.model_dump(mode="json", exclude={"aspects"})
-        whole["aspects"] = [bundle.to_dict() for bundle in self.aspects]
-        return whole
-
-    def to_json(self, *, indent: int | None = None) -> str:
-        """:meth:`to_dict` as JSON.
-
-        :param indent: The indent, or None for compact.
-        :ptype indent: int | None
-        :return: The JSON text.
-        :rtype: str
-        """
-        return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
-
     @staticmethod
     def refuse_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
         """Refuse a frozen campaign bundle, or frame, of a shape this build does not read.
@@ -228,10 +208,12 @@ class CampaignBundle(EvalDocumentModel):
             )
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any], *, what: str = "this campaign bundle", remedy: str = "") -> CampaignBundle:
+    def from_dict(
+        cls, data: Mapping[str, Any], *, what: str = "this campaign bundle", remedy: str = ""
+    ) -> CampaignBundle:
         """Read a whole campaign bundle back, refusing one of another shape with a remedy.
 
-        :param data: A campaign bundle, as :meth:`to_dict` wrote it.
+        :param data: A campaign bundle, as ``to_dict`` wrote it (each aspect's bundle whole in its place).
         :ptype data: Mapping[str, Any]
         :param what: What holds it, as a sentence names it, for the refusal.
         :ptype what: str
@@ -248,19 +230,21 @@ class CampaignBundle(EvalDocumentModel):
         for aspect in data.get("aspects") or []:
             refuse_a_bundle_before_aspects(aspect, what=what, remedy=fix)
             bundles.append(AnalysisContextBundle.from_dict(dict(aspect)))
-        return cls.model_validate({**{key: value for key, value in data.items() if key != "aspects"}, "aspects": bundles})
+        return cls.model_validate(
+            {**{key: value for key, value in data.items() if key != "aspects"}, "aspects": bundles}
+        )
 
     @classmethod
-    def from_json(cls, text: str) -> CampaignBundle:
-        """Read :meth:`to_json`'s text back.
+    def from_json(cls, json_str: str) -> CampaignBundle:
+        """Read ``to_json``'s text back, refusing another shape as :meth:`from_dict` does.
 
-        :param text: The JSON text.
-        :ptype text: str
+        :param json_str: The JSON text.
+        :ptype json_str: str
         :return: The bundle.
         :rtype: CampaignBundle
         :raises RefusedInput: See :meth:`from_dict`.
         """
-        return cls.from_dict(json.loads(text))
+        return cls.from_dict(json.loads(json_str))
 
     @classmethod
     def from_frame(
@@ -284,7 +268,9 @@ class CampaignBundle(EvalDocumentModel):
         held = [(bundle.aspect, bundle.fingerprint()) for bundle in bundles]
         if named != held:
             raise ValueError(f"{what}'s campaign bundle names aspects {named}, and its aspects hold {held}")
-        return cls.model_validate({**{key: value for key, value in frame.items() if key != "aspects"}, "aspects": bundles})
+        return cls.model_validate(
+            {**{key: value for key, value in frame.items() if key != "aspects"}, "aspects": bundles}
+        )
 
     # ------------------------------------------------------------------ reading it
 
@@ -426,7 +412,8 @@ def campaign_evidence_digest(document: Mapping[str, Any]) -> str:
     """
     frame = {key: value for key, value in document.items() if key != "aspects"}
     frame["aspects"] = [
-        {"aspect": aspect.get("aspect"), "fingerprint": evidence_digest(aspect)} for aspect in document.get("aspects") or []
+        {"aspect": aspect.get("aspect"), "fingerprint": evidence_digest(aspect)}
+        for aspect in document.get("aspects") or []
     ]
     return canonical_digest(frame)
 
@@ -544,7 +531,9 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
     return view
 
 
-def aspect_view(bundle: CampaignBundle, index: int, *, budget: int = CAMPAIGN_MESSAGE_CHARS_PER_ASPECT) -> dict[str, Any]:
+def aspect_view(
+    bundle: CampaignBundle, index: int, *, budget: int = CAMPAIGN_MESSAGE_CHARS_PER_ASPECT
+) -> dict[str, Any]:
     """One aspect's part of the writer's view, trimmed to ``budget`` characters of compact JSON.
 
     Trimmed in a fixed order, each step only as far as it must: the flagged trials' excerpts, last trial first; then
@@ -618,7 +607,7 @@ class _Namer:
         for key, value in node.items():
             if key in ("variant_key", "apparatus_class_id"):
                 continue
-            out[self.labels.get(key, key)] = self.walk(value, aspect, f"{path}.{key}")
+            out[self.labels.get(str(key), str(key))] = self.walk(value, aspect, f"{path}.{key}")
         return out
 
 
@@ -626,7 +615,8 @@ def _arms(bundle: CampaignBundle, namer: _Namer) -> dict[str, Any]:
     """Every arm by its label and role, with the levels that tell it apart; the levels every arm shares, once."""
     entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
     described = writer_arms(list(entries.values()))
-    by_key = {arm["variant_key"]: arm for arm in described["arms"]}  # type: ignore[index, union-attr]
+    listed: list[dict[str, Any]] = described["arms"]  # type: ignore[assignment]  # writer_arms types its values as object
+    by_key = {arm["variant_key"]: arm for arm in listed}
     roles = {key: arm.role for arm in bundle.arms for key in bundle.arm_keys(arm)}
     arms: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -651,7 +641,7 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
     """One aspect's part of the view, whole."""
     label = aspect.aspect
     declared = aspect.declared
-    design = aspect.declared.design if declared is not None else None
+    design = declared.design if declared is not None else None
     payload = aspect.to_dict()
     view: dict[str, Any] = {
         "aspect": label,
@@ -696,9 +686,7 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
             }
             for summary in aspect.run_summaries
         ],
-        "coverage": namer.walk(
-            [_without(row, "declared_levels") for row in payload["coverage"]], label
-        ),
+        "coverage": namer.walk([_without(row, "declared_levels") for row in payload["coverage"]], label),
         "cells": _cells(aspect, namer),
         "measures": _measures(aspect),
         "contrast_families": [
@@ -713,9 +701,7 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
         ],
         "contrasts_withheld": payload["multiple_comparisons"].get("withheld"),
         "contrasts": _contrasts(aspect, namer),
-        "guardrails": namer.walk(
-            [_without(check, "control") for check in payload["guardrails"]["checks"]], label
-        ),
+        "guardrails": namer.walk([_without(check, "control") for check in payload["guardrails"]["checks"]], label),
         "bars": namer.walk(payload["bar_adjudications"], label),
         "judge_evidence_tiers": namer.walk(payload["judge_evidence_tiers"], label),
         "goal_check_proofs": payload["goal_check_proofs"],
@@ -825,8 +811,12 @@ def _contrasts(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, A
     for family in aspect.multiple_comparisons.families:
         for comparison in family.comparisons:
             row = {
-                "cell": namer.cell(aspect.aspect, comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
-                "control": namer.cell(aspect.aspect, comparison.control.variant_key, comparison.control.apparatus_class_id),
+                "cell": namer.cell(
+                    aspect.aspect, comparison.contrast.variant_key, comparison.contrast.apparatus_class_id
+                ),
+                "control": namer.cell(
+                    aspect.aspect, comparison.control.variant_key, comparison.control.apparatus_class_id
+                ),
                 "reading": comparison.reading,
                 "name": comparison.name,
                 "verdict": comparison.verdict,
@@ -845,7 +835,9 @@ def _contrasts(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, A
             }
             separated = comparison.verdict in _SEPARATED
             p = comparison.p_adjusted if comparison.p_adjusted is not None else 1.0
-            rows.append(((0 if separated else 1, p), {key: value for key, value in row.items() if value not in (None, [])}))
+            rows.append(
+                ((0 if separated else 1, p), {key: value for key, value in row.items() if value not in (None, [])})
+            )
     return [row for _, row in sorted(rows, key=lambda pair: pair[0])]
 
 

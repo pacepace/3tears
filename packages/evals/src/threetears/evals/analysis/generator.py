@@ -1143,7 +1143,9 @@ def _reject_unaddressed_floors(document: AuthoredCampaignAnalysis, bundle: Campa
     """
     arm = _recommended(document, bundle)
     keys = bundle.arm_keys(arm)
-    broken = {status.floor: status for status in bundle.readings.floors if status.arm in keys and status.status == "broken"}
+    broken = {
+        status.floor: status for status in bundle.readings.floors if status.arm in keys and status.status == "broken"
+    }
     named = [override.floor for override in document.recommendation.floors_overridden]
     faults: list[str] = []
     if twice := sorted({floor for floor in named if named.count(floor) > 1}):

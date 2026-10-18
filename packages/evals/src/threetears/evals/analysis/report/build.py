@@ -1208,7 +1208,9 @@ def _memo_blocks(
     return [*blocks, *noted]
 
 
-def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle, style: MemoStyle) -> list[ReportBlock]:
+def _recommendation_blocks(
+    analysis: EvalAnalysis, bundle: AnalysisContextBundle, style: MemoStyle
+) -> list[ReportBlock]:
     """The writer's one recommendation: the arm, its reasons, how sure, and what it is made over.
 
     The reasons are the writer's words, through ``style``; the arm, its guardrails' standing, the floors it is made
@@ -1216,7 +1218,8 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
     undecided guardrail is never read as shown safe: the standing says so.
     """
     recommended = analysis.document.recommendation
-    arms = [CampaignArm.model_validate(arm) for arm in analysis.campaign_bundle.get("arms") or []]
+    listed = analysis.campaign_bundle.get("arms")
+    arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
     chosen = next((arm for arm in arms if arm.label == recommended.arm), None)
     # The arm as this page names it everywhere else; the writer's label where the page holds no cell of it.
     page_names = _arm_names(bundle)
@@ -1234,7 +1237,9 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
         facts.append(
             Fact(
                 name="Floors overridden",
-                value="; ".join(f"{override.floor}: {' '.join(override.why.split())}" for override in recommended.floors_overridden),
+                value="; ".join(
+                    f"{override.floor}: {' '.join(override.why.split())}" for override in recommended.floors_overridden
+                ),
             )
         )
     # The findings a recommendation rests on are the ones printed just above it: its block carries them for a

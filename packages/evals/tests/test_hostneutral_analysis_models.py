@@ -132,7 +132,10 @@ def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None
         document=document,
         resolutions=[FindingResolution()],
         aspects=[aspect],
-        campaign_bundle={"schema_version": 1, "aspects": [{"aspect": "extraction", "fingerprint": aspect.bundle_fingerprint}]},
+        campaign_bundle={
+            "schema_version": 1,
+            "aspects": [{"aspect": "extraction", "fingerprint": aspect.bundle_fingerprint}],
+        },
         design_snapshot=CampaignDeclaration(
             question="Which extractor model?",
             declared_at=None,

@@ -125,7 +125,10 @@ class TestCaseLimits:
     def test_a_bundle_that_reproduces_with_every_arm_described_and_celled_has_no_limits(self, toy_bundle) -> None:
         assert len(toy_bundle.variant_index) == 2, "the fixture must carry arms, or 'no limits' is vacuous"
         assert case_limits(campaign_bundle(toy_bundle)) == []
-        assert case_limits(campaign_bundle(toy_bundle), recorded_fingerprint=campaign_bundle(toy_bundle).fingerprint()) == []
+        assert (
+            case_limits(campaign_bundle(toy_bundle), recorded_fingerprint=campaign_bundle(toy_bundle).fingerprint())
+            == []
+        )
 
     def test_a_recorded_memo_read_from_another_bundle_is_stated_first(self, toy_bundle) -> None:
         stale = "sha256:not-this-bundle"

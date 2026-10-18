@@ -372,12 +372,9 @@ class TestWhatAFamilyCovers:
         )
         assert (
             "Where an aspect carries no contrast family (`contrasts_withheld` says why), no comparison between arms is "
-            "separated"
-            in (EVAL_ANALYSIS_GEN_DEFAULT)
+            "separated" in (EVAL_ANALYSIS_GEN_DEFAULT)
         )
-        assert "with no question asked, on every merit-axis reading as one family" in (
-            EVAL_ANALYSIS_GEN_DEFAULT
-        )
+        assert "with no question asked, on every merit-axis reading as one family" in (EVAL_ANALYSIS_GEN_DEFAULT)
 
     def test_a_contrast_is_paired_with_the_control_on_its_own_rig_only(self) -> None:
         """Two rigs: each contrast cell meets the control cell of its rig, never the other's."""

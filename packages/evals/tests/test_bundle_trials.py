@@ -233,7 +233,9 @@ def test_the_writer_reads_the_flagged_trials_and_only_the_tail_of_what_their_jud
     payload = json.loads(_writer_message(bundle).removeprefix("CAMPAIGN BUNDLE (JSON):\n"))
     assert "package_version" not in json.dumps(payload)
     (aspect,) = payload["aspects"]
-    assert [trial["state"] for trial in aspect["trials"]] == [trial.state for trial in bundle.trials if trial.state != "passed"]
+    assert [trial["state"] for trial in aspect["trials"]] == [
+        trial.state for trial in bundle.trials if trial.state != "passed"
+    ]
     for trial in aspect["trials"]:
         assert not {"first_input", "error_words", "result_id"} & trial.keys()
         assert {"trial", "state", "cause"} <= trial.keys()

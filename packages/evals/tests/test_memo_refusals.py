@@ -184,7 +184,9 @@ class TestTheRecommendationIsPinned:
         bundle = _bundle()
         payload = _recommending(bundle, TOYHOST_WIDE)
         payload["recommendation"]["rests_on"] = []
-        with pytest.raises(SoundnessRefusal, match=r"names the findings it rests on.*recommendation\.rests_on is empty"):
+        with pytest.raises(
+            SoundnessRefusal, match=r"names the findings it rests on.*recommendation\.rests_on is empty"
+        ):
             await _generate(bundle, payload)
 
     async def test_keeping_the_control_may_rest_on_no_finding(self) -> None:
@@ -243,7 +245,9 @@ async def test_a_finding_naming_trials_the_campaign_holds_keeps_them_and_each_as
     (aspect,) = analysis.aspects
     assert AnalysisContextBundle.from_dict(dict(aspect.bundle)).fingerprint() == bundle.aspects[0].fingerprint()
     assert aspect.bundle_fingerprint == bundle.aspects[0].fingerprint()
-    assert CampaignBundle.from_frame(analysis.campaign_bundle, [bundle.aspects[0]]).fingerprint() == bundle.fingerprint()
+    assert (
+        CampaignBundle.from_frame(analysis.campaign_bundle, [bundle.aspects[0]]).fingerprint() == bundle.fingerprint()
+    )
     assert analysis.generation.bundle_fingerprint == bundle.fingerprint()
 
 

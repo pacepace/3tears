@@ -36,7 +36,9 @@ from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.schema.models import utc_now_iso
 
 
-def _floor(bundle: CampaignBundle, key: str, *, level: int = TOYHOST_WIDE, status: FloorState = "broken") -> FloorStatus:
+def _floor(
+    bundle: CampaignBundle, key: str, *, level: int = TOYHOST_WIDE, status: FloorState = "broken"
+) -> FloorStatus:
     variant = variant_of_cell_ref(cell_at(bundle, level))
     assert variant is not None
     return FloorStatus(

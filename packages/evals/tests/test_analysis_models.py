@@ -112,7 +112,9 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
                 arm="alpha-2",
                 reasons=["Much faster at equal quality."],
                 rests_on=[0],
-                floors_overridden=[FloorOverride(floor="planning/cost_lower/*", why="Cost is not this team's concern.")],
+                floors_overridden=[
+                    FloorOverride(floor="planning/cost_lower/*", why="Cost is not this team's concern.")
+                ],
             ),
         ),
         aspect_summaries=overrides.pop("aspect_summaries", [_summary()]),
@@ -181,7 +183,10 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             floors=[],
         ),
         aspects=[aspect],
-        campaign_bundle={"schema_version": 1, "aspects": [{"aspect": "planning", "fingerprint": aspect.bundle_fingerprint}]},
+        campaign_bundle={
+            "schema_version": 1,
+            "aspects": [{"aspect": "planning", "fingerprint": aspect.bundle_fingerprint}],
+        },
     )
     defaults.update(overrides)
     return EvalAnalysis(**defaults)
@@ -470,7 +475,9 @@ class TestAspectsAreOneEach:
     """An analysis covers its campaign's aspects once each, and every row and summary names one of them."""
 
     def test_a_resolved_row_on_an_aspect_the_analysis_lacks_is_refused(self):
-        row = EvidenceRow(aspect="routing", cell_ref="vk:ac", measure_id="m", reading="measure", value=1.0, n=1, dispersion="x")
+        row = EvidenceRow(
+            aspect="routing", cell_ref="vk:ac", measure_id="m", reading="measure", value=1.0, n=1, dispersion="x"
+        )
         finding = _finding("a", evidence=[EvidenceRef(cell="vk:ac", measure_id="m", reading="measure")])
         with pytest.raises(ValidationError, match=r"names aspect\(s\) \['routing'\], which this analysis lacks"):
             _make_analysis(findings=[finding], resolutions=[FindingResolution(evidence=[row])])

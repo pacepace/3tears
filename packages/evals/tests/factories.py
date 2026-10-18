@@ -713,7 +713,10 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
         ),
         document=empty_document(),
         aspects=[aspect],
-        campaign_bundle={"schema_version": 1, "aspects": [{"aspect": aspect.label, "fingerprint": aspect.bundle_fingerprint}]},
+        campaign_bundle={
+            "schema_version": 1,
+            "aspects": [{"aspect": aspect.label, "fingerprint": aspect.bundle_fingerprint}],
+        },
     )
     fields.update(overrides)
     return EvalAnalysis(**fields)

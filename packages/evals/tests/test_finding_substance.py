@@ -206,15 +206,33 @@ class TestACaveatSaysWhichClassOfQualificationItIs:
 class TestEvidenceRowsCarryTheirBasis:
     def test_a_row_with_no_cell_is_refused(self):
         with pytest.raises(ValidationError, match="cell_ref"):
-            EvidenceRow(aspect="conversation", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+            EvidenceRow(
+                aspect="conversation", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1"
+            )
 
     def test_a_cell_keyed_row_is_legitimate(self):
-        row = EvidenceRow(aspect="conversation", cell_ref="v:a", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+        row = EvidenceRow(
+            aspect="conversation",
+            cell_ref="v:a",
+            measure_id="cost_usd",
+            reading="measure",
+            value=0.5,
+            n=3,
+            dispersion="±0.1",
+        )
         assert row.cell_ref == "v:a"
 
     def test_an_empty_cell_ref_is_refused_rather_than_passing_for_a_coordinate(self):
         with pytest.raises(ValidationError):
-            EvidenceRow(aspect="conversation", cell_ref="", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+            EvidenceRow(
+                aspect="conversation",
+                cell_ref="",
+                measure_id="cost_usd",
+                reading="measure",
+                value=0.5,
+                n=3,
+                dispersion="±0.1",
+            )
 
     @pytest.mark.parametrize("missing", ["n", "dispersion", "reading"])
     def test_n_dispersion_and_the_reading_kind_are_required(self, missing):
