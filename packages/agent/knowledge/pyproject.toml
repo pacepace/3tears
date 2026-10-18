@@ -30,6 +30,8 @@ dependencies = [
     "3tears-observe>=0.70.0,<0.71.0",
     "pgvector",
     "langchain-core",
+    "langchain>=1.0",
+    "langgraph>=1.0",
 ]
 
 [project.urls]

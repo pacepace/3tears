@@ -60,6 +60,8 @@ dependencies = [
 # backed (postgres / yugabyte / agent_internal) drivers ship today
 # (snowflake / bigquery drivers are stubs).
 redshift = ["redshift-connector>=2.1"]
+# query spans from the drivers (drivers.base, asyncpg_driver, redshift_driver); without it they are off
+tracing = ["opentelemetry-api>=1.20,<2"]
 snowflake = ["snowflake-connector-python>=3.0"]
 bigquery = ["google-cloud-bigquery>=3.0"]
 # reading a warehouse export's parquet files (threetears.datasources.export_read)

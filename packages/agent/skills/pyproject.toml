@@ -27,6 +27,7 @@ dependencies = [
     "langchain-core",
     "pydantic",
     "uuid-utils",
+    "sqlalchemy",
 ]
 
 [project.urls]

@@ -60,6 +60,9 @@ otel-http = [
     "opentelemetry-instrumentation-logging>=0.61b0,<1",
     "opentelemetry-instrumentation>=0.61b0,<1",
 ]
+# the in-flight gauge and the metrics accessors export through prometheus_client when it is installed,
+# and are silent no-ops when it is not
+prometheus = ["prometheus-client>=0.20"]
 asgi = [
     "uuid-utils",
 ]

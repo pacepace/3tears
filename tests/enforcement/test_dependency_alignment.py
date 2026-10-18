@@ -33,7 +33,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEPENDENCY_FLOORS = (
     DependencyFloor(
         package="packages/search",
-        allowed=("3tears-media-contracts", "3tears-observe", "pydantic"),
+        allowed=("3tears-media-contracts", "3tears-observe", "pydantic", "pydantic-core"),
         rationale=(
             "search-spec.md D24, matching SR-L7's permitted floor exactly. The leaf's whole "
             "value to a constrained host (samsung on a Pi; any embedded consumer) is that "
@@ -80,8 +80,24 @@ _AS_FOUND_RATIONALE = (
 #: the packages with hard dependencies and no argued floor yet, pinned at what they declared on
 #: 2026-10-17. An entry leaves this list when its floor is argued and moves to ``_DEPENDENCY_FLOORS``.
 _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("packages/agent/acl", ("3tears", "3tears-observe", "pydantic")),
-    ("packages/agent/audit", ("3tears", "3tears-nats", "3tears-observe", "pydantic")),
+    (
+        "packages/agent/acl",
+        (
+            "3tears",
+            "3tears-observe",
+            "pydantic",
+            "sqlalchemy",
+        ),
+    ),
+    (
+        "packages/agent/audit",
+        (
+            "3tears",
+            "3tears-nats",
+            "3tears-observe",
+            "pydantic",
+        ),
+    ),
     (
         "packages/agent/identity",
         (
@@ -92,6 +108,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "langchain-core",
             "pydantic",
             "uuid-utils",
+            "sqlalchemy",
         ),
     ),
     (
@@ -105,6 +122,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "langchain-core",
             "pydantic",
             "uuid-utils",
+            "sqlalchemy",
         ),
     ),
     (
@@ -118,6 +136,8 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "3tears-observe",
             "pgvector",
             "langchain-core",
+            "langchain",
+            "langgraph",
         ),
     ),
     (
@@ -131,9 +151,23 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "pgvector",
             "uuid-utils",
             "langchain-core",
+            "langchain",
+            "langgraph",
+            "pydantic",
+            "sqlalchemy",
         ),
     ),
-    ("packages/agent/skills", ("3tears", "3tears-observe", "langchain-core", "pydantic", "uuid-utils")),
+    (
+        "packages/agent/skills",
+        (
+            "3tears",
+            "3tears-observe",
+            "langchain-core",
+            "pydantic",
+            "uuid-utils",
+            "sqlalchemy",
+        ),
+    ),
     (
         "packages/agent/tools",
         (
@@ -150,6 +184,8 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "langchain-core",
             "httpx",
             "prometheus-client",
+            "pydantic",
+            "sqlalchemy",
         ),
     ),
     (
@@ -164,6 +200,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "langchain-core",
             "pydantic",
             "jinja2",
+            "sqlalchemy",
         ),
     ),
     (
@@ -179,11 +216,40 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "ruamel.yaml",
             "jsonpath-ng",
             "watchfiles",
+            "asyncpg",
         ),
     ),
-    ("packages/backup", ("3tears", "3tears-media-contracts", "3tears-object-store", "3tears-observe")),
-    ("packages/channels", ("3tears", "3tears-agent-acl", "3tears-nats", "3tears-observe")),
-    ("packages/conversations", ("3tears", "3tears-agent-acl", "3tears-langgraph", "3tears-observe")),
+    (
+        "packages/backup",
+        (
+            "3tears",
+            "3tears-media-contracts",
+            "3tears-object-store",
+            "3tears-observe",
+            "pydantic",
+        ),
+    ),
+    (
+        "packages/channels",
+        (
+            "3tears",
+            "3tears-agent-acl",
+            "3tears-nats",
+            "3tears-observe",
+            "pydantic",
+            "sqlalchemy",
+        ),
+    ),
+    (
+        "packages/conversations",
+        (
+            "3tears",
+            "3tears-agent-acl",
+            "3tears-langgraph",
+            "3tears-observe",
+            "langchain-core",
+        ),
+    ),
     (
         "packages/core",
         (
@@ -196,12 +262,47 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "pyjwt",
             "httpx",
             "pyyaml",
+            "pydantic-core",
         ),
     ),
-    ("packages/datasources", ("3tears", "3tears-nats", "3tears-observe", "pydantic", "asyncpg", "pyyaml")),
-    ("packages/enforcement", ("3tears", "3tears-observe")),
-    ("packages/epoch", ("3tears", "3tears-nats", "3tears-observe", "pydantic", "uuid-utils")),
-    ("packages/geo", ("3tears", "3tears-observe", "3tears-media-contracts", "shapely", "mapbox-vector-tile")),
+    (
+        "packages/datasources",
+        (
+            "3tears",
+            "3tears-nats",
+            "3tears-observe",
+            "pydantic",
+            "asyncpg",
+            "pyyaml",
+        ),
+    ),
+    (
+        "packages/enforcement",
+        (
+            "3tears",
+            "3tears-observe",
+        ),
+    ),
+    (
+        "packages/epoch",
+        (
+            "3tears",
+            "3tears-nats",
+            "3tears-observe",
+            "pydantic",
+            "uuid-utils",
+        ),
+    ),
+    (
+        "packages/geo",
+        (
+            "3tears",
+            "3tears-observe",
+            "3tears-media-contracts",
+            "shapely",
+            "mapbox-vector-tile",
+        ),
+    ),
     (
         "packages/iam",
         (
@@ -231,6 +332,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "langgraph-checkpoint",
             "asyncpg",
             "uuid-utils",
+            "pydantic",
         ),
     ),
     (
@@ -250,10 +352,24 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "uuid-utils",
         ),
     ),
-    ("packages/nats", ("3tears-observe", "pydantic")),
+    (
+        "packages/nats",
+        (
+            "3tears-observe",
+            "pydantic",
+        ),
+    ),
     (
         "packages/object-store",
-        ("3tears", "3tears-media-contracts", "3tears-observe", "aioboto3", "cryptography", "pydantic"),
+        (
+            "3tears",
+            "3tears-media-contracts",
+            "3tears-observe",
+            "aioboto3",
+            "cryptography",
+            "pydantic",
+            "botocore",
+        ),
     ),
     (
         "packages/registry",
@@ -266,9 +382,21 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "3tears-observe",
             "nats-py",
             "prometheus-client",
+            "pydantic",
+            "sqlalchemy",
         ),
     ),
-    ("packages/scheduled-jobs", ("3tears", "3tears-nats", "3tears-observe", "uuid-utils", "apscheduler")),
+    (
+        "packages/scheduled-jobs",
+        (
+            "3tears",
+            "3tears-nats",
+            "3tears-observe",
+            "uuid-utils",
+            "apscheduler",
+            "sqlalchemy",
+        ),
+    ),
     (
         "packages/scrape",
         (
@@ -285,6 +413,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "beautifulsoup4",
             "camoufox",
             "playwright",
+            "soupsieve",
         ),
     ),
 )

@@ -32,6 +32,7 @@ dependencies = [
     "3tears-media-contracts>=0.70.0,<0.71.0",
     "3tears-object-store>=0.70.0,<0.71.0",
     "3tears-observe>=0.70.0,<0.71.0",
+    "pydantic>=2.0",
 ]
 
 [project.urls]

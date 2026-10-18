@@ -23,6 +23,8 @@ dependencies = [
     "3tears-observe>=0.70.0,<0.71.0",
     "nats-py>=2.0",
     "prometheus-client>=0.20",
+    "pydantic>=2.0",
+    "sqlalchemy",
 ]
 
 [project.urls]

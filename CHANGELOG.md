@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### every package declares what it imports, checked per package
+
+**Changed (packaging):** 3tears now runs its own declared-imports gate
+(`threetears.enforcement.imports_declared`) on each of its packages
+(`tests/enforcement/test_imports_declared.py`). Twenty-three packages imported something they never
+declared, mostly sqlalchemy and pydantic that `3tears` happened to install. Each now declares it.
+Module-level imports became hard dependencies, and their floors moved with them. Optional imports
+became extras:
+- `3tears[pgvector]`, `3tears[uuid-utils]`, and boto3 in `3tears[testing]`
+- `3tears-datasources[tracing]` and `3tears-models[tracing]`
+- `3tears-observe[prometheus]`
+- mcp in `3tears-models[claude-cli]`
+- fastmcp-slim in `3tears-evals[fastmcp]`
+- starlette in `3tears-scrape[hitl]`
+- charset-normalizer in `3tears-search[extract]`
+
+Nothing installs anything it did not before; the declarations only name what was arriving by
+accident.
+
 ### core: two dependencies nothing needed are gone, and object-store declares what it imports
 
 **Changed (core):** `3tears` no longer depends on `aiosqlite`, which nothing in the family imported

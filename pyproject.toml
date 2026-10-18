@@ -68,6 +68,10 @@ dev-dependencies = [
     "nats-py>=2.10",
     "nkeys>=0.2",
     "simpleeval>=1.0.4",
+    # 3tears-agent-tools' `ocr` extra, installed in dev so its imports resolve for the declared-imports
+    # gate (tests/enforcement/test_imports_declared.py); the tesseract binary is still only needed at runtime
+    "pdf2image",
+    "pytesseract",
     "pint>=0.25.2",
     "trafilatura>=2.0.0",
     "pillow>=10.0",

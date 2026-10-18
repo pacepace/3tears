@@ -25,6 +25,7 @@ dependencies = [
     "3tears-agent-acl>=0.70.0,<0.71.0",
     "3tears-langgraph>=0.70.0,<0.71.0",
     "3tears-observe>=0.70.0,<0.71.0",
+    "langchain-core",
 ]
 
 [project.urls]

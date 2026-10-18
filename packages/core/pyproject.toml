@@ -31,6 +31,7 @@ dependencies = [
     "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
     "httpx",  # traced outbound HTTP transport (core.http_client)
     "pyyaml>=6.0",  # duplicate-key-refusing loader for human-authored files (core.authored_yaml)
+    "pydantic-core",  # to_jsonable_python (core.serialization); pydantic pins the release
 ]
 
 [project.optional-dependencies]
@@ -64,7 +65,12 @@ testing = [
     "testcontainers[nats,postgres]>=4.0",
     "docker>=7.0",
     "pytest>=8.0",
+    "boto3",  # the MinIO bucket fixture (core.testing.fixtures)
 ]
+# Value types core's L1 caches and schema mapping accept when the host already uses them: pgvector's
+# Vector columns and uuid_utils' UUID. Core probes for each and works without it.
+pgvector = ["pgvector"]
+uuid-utils = ["uuid-utils"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
