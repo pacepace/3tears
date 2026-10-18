@@ -30,7 +30,12 @@ import pytest
 from threetears.core.coordination import LockHeld
 from threetears.nats.errors import KvError
 
-from threetears.scheduled_jobs.background import IN_FLIGHT_SKIP_OUTPUT_KEY, BackgroundDispatch, in_flight_lock_key
+from threetears.scheduled_jobs.background import (
+    IN_FLIGHT_SKIP_OUTPUT_KEY,
+    BackgroundDispatch,
+    FireNotRecordedError,
+    in_flight_lock_key,
+)
 from threetears.scheduled_jobs.config import DEFAULT_JOB_CONFIG
 from threetears.scheduled_jobs.events import EVENT_FIRE_WAITING_EXCLUSION_GROUP
 from threetears.scheduled_jobs.protocols import FireStore
@@ -309,10 +314,43 @@ async def test_a_finalize_that_fails_is_logged_and_releases_the_kind(caplog: pyt
         return JobFireResult()
 
     await dispatch.wrap(_body)(_trigger(), uuid4())
-    with caplog.at_level("ERROR"):
+    with caplog.at_level("ERROR"), pytest.raises(FireNotRecordedError):
         await dispatch.join()
     assert dispatch.in_flight == {}
     assert any("finalize" in r.getMessage() for r in caplog.records)
+
+
+async def test_join_names_each_fire_whose_row_could_not_be_finalized_once() -> None:
+    """A lost write is not "recorded": join says which fires the reaper will fail, then forgets them."""
+    fires = _FakeFireStore(raise_on_finalize=True)
+    dispatch = _dispatch(fires)
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="succeeded")
+
+    fire_id = uuid4()
+    await dispatch.wrap(_body)(_trigger("lost"), fire_id)
+    with pytest.raises(FireNotRecordedError, match="left to the reaper") as raised:
+        await dispatch.join()
+    assert raised.value.unrecorded == (("lost", fire_id),)
+    assert isinstance(raised.value.__cause__, ConnectionError)
+
+    await dispatch.join()  # nothing new was lost, so nothing is said twice
+
+
+async def test_aclose_says_when_a_fire_it_recorded_could_not_be_written() -> None:
+    fires = _FakeFireStore(raise_on_finalize=True)
+    dispatch = _dispatch(fires)
+    release = asyncio.Event()
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        await release.wait()
+        return JobFireResult()
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await asyncio.sleep(0)
+    with pytest.raises(FireNotRecordedError):
+        await dispatch.aclose()
 
 
 # ---------------------------------------------------------------------------

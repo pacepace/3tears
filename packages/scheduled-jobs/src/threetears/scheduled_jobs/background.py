@@ -60,7 +60,7 @@ import functools
 import hashlib
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -90,6 +90,7 @@ __all__ = [
     "IN_FLIGHT_SKIP_OUTPUT_KEY",
     "REAP_MARGIN_SECONDS",
     "BackgroundDispatch",
+    "FireNotRecordedError",
     "in_flight_lock_key",
 ]
 
@@ -125,6 +126,27 @@ _HANDLER_EXCEPTION: Final[str] = "handler_exception"
 _TIMEOUT: Final[str] = "timeout"
 _CANCELLED: Final[str] = "cancelled"
 _OTHER: Final[str] = "other"
+
+
+class FireNotRecordedError(RuntimeError):
+    """Raised by :meth:`BackgroundDispatch.join` (and so :meth:`~BackgroundDispatch.aclose`) for
+    fires whose row could not be finalized.
+
+    Each such row stays ``'dispatching'`` until the tick's reaper records it as failed, so its real
+    outcome -- a success included -- is lost. Every fire's own failure was already logged at ERROR
+    when its write failed; this is what tells the code waiting on the dispatcher.
+
+    :param unrecorded: ``(kind, fire_id)`` of each fire whose row was not written, in the order they failed
+    :ptype unrecorded: Sequence[tuple[str, UUID]]
+    """
+
+    def __init__(self, unrecorded: Sequence[tuple[str, UUID]]) -> None:
+        self.unrecorded: tuple[tuple[str, UUID], ...] = tuple(unrecorded)
+        named = ", ".join(f"{kind} {fire_id}" for kind, fire_id in self.unrecorded)
+        super().__init__(
+            f"{len(self.unrecorded)} background fire row(s) could not be finalized and are left to the "
+            f"reaper, which will record them as failed: {named}"
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -218,6 +240,10 @@ class BackgroundDispatch:
         self._started: set[UUID] = set()
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
         self._writes: set[asyncio.Task[None]] = set()
+        # Fires whose finalize write failed since the last join, and the first such failure:
+        # join raises them, so a lost record is not reported as recorded.
+        self._unrecorded: list[tuple[str, UUID]] = []
+        self._first_unrecorded_error: Exception | None = None
         self._closed = False
 
     @property
@@ -261,15 +287,26 @@ class BackgroundDispatch:
         return _hand_off
 
     async def join(self) -> None:
-        """Wait until every fire handed off so far (and any handed off meanwhile) is recorded."""
+        """Wait until every fire handed off so far (and any handed off meanwhile) is recorded.
+
+        :raises FireNotRecordedError: when the row of any fire settled since the last ``join`` could
+            not be finalized; each is named once
+        """
         while self._tasks or self._writes:
             await asyncio.gather(*list(self._tasks.values()), *list(self._writes), return_exceptions=True)
+        if self._unrecorded:
+            unrecorded, cause = self._unrecorded, self._first_unrecorded_error
+            self._unrecorded, self._first_unrecorded_error = [], None
+            raise FireNotRecordedError(unrecorded) from cause
 
     async def aclose(self) -> None:
         """Stop: refuse new fires, cancel the running ones, and record each as failed.
 
         A fire whose body had already finished keeps its real result; a fire cancelled before its
         task ever started is recorded here, since it never reached its own handler.
+
+        :raises FireNotRecordedError: when any fire's row could not be finalized (see :meth:`join`);
+            everything else has been stopped and recorded by then
         """
         self._closed = True
         tasks = list(self._tasks.values())
@@ -592,6 +629,9 @@ class BackgroundDispatch:
                 },
                 level="error",
             )
+            self._unrecorded.append((trigger.kind, fire_id))
+            if self._first_unrecorded_error is None:
+                self._first_unrecorded_error = exc
             return
         emitter = self._emitter if self._emitter is not None else get_scheduled_jobs_emitter()
         emitter.inc_fire(status=result.status, schedule_type=trigger.schedule_type)

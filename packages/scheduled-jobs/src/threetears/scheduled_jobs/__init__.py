@@ -44,6 +44,7 @@ from threetears.scheduled_jobs.background import (
     IN_FLIGHT_SKIP_OUTPUT_KEY,
     REAP_MARGIN_SECONDS,
     BackgroundDispatch,
+    FireNotRecordedError,
     in_flight_lock_key,
 )
 from threetears.scheduled_jobs.collections import (
@@ -149,6 +150,7 @@ __all__ = [
     "DispatchCallback",
     "DispatchRoutes",
     "DueSchedule",
+    "FireNotRecordedError",
     "FireStore",
     "JobConfig",
     "JobFireCollection",
