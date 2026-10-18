@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.70.1 -- 2026-10-18
+
 ### models: the orphan sweep leaves a Claude CLI in another pid namespace alone
 
 **Fixed (models):** `sweep_orphaned_claude_clis` skips a marked CLI that lives in a pid namespace
