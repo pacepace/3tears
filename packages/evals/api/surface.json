@@ -1261,6 +1261,26 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.ArmRole": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.Aspect": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.AspectDesign": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.AspectSummary": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.AttemptOutcome": {
       "kind": "literal",
       "signature": "",
@@ -1272,6 +1292,11 @@
       "tier": "provisional"
     },
     "threetears.evals.kernel.AuthoredAnalysis": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.AuthoredCampaignAnalysis": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -1358,6 +1383,16 @@
     },
     "threetears.evals.kernel.CallUsage": {
       "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.CampaignArm": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.CampaignCall": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -1926,6 +1961,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.Floor": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.fold_phase_timings": {
       "kind": "function",
       "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]",
@@ -2466,6 +2506,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.Recommendation": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.Recordable": {
       "kind": "protocol",
       "signature": "Recordable{model_dump(self, *, mode: Literal['json']) -> dict[str, Any]; model_validate(cls, obj: Any) -> Self}",
@@ -2542,6 +2587,11 @@
       "tier": "provisional"
     },
     "threetears.evals.kernel.resolve_context_identity": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.resolve_control_arm": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"

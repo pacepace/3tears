@@ -133,6 +133,41 @@ class AuthoredAnalysis(_Authored):
     next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
 
 
+class Recommendation(_Authored):
+    """The one call the writer recommends for a campaign: which arm, why, how sure, and the findings it rests on.
+
+    One per campaign, over every aspect: a person decides, and this is what they decide over. Keeping the control is
+    a recommendation like any other, named by the control's label.
+    """
+
+    arm: str = Field(description="The label of the arm to adopt; the control's label to keep it.")
+    reasons: list[ModelProse] = Field(
+        description="Why, one reason each, strongest first; every broken floor on the arm addressed by name."
+    )
+    confidence: Confidence
+    rests_on: list[int] = Field(description="Positions in `findings` this rests on; at least one.")
+
+
+class AspectSummary(_Authored):
+    """One aspect, as the writer reads it: what changed there, how sure the evidence is, and what it means here."""
+
+    aspect: str = Field(description="The aspect's label, spelled as the bundle spells it; one entry per aspect.")
+    what_changed: ModelProse = Field(description="What the candidate changed on this aspect, in one plain sentence.")
+    how_sure: ModelProse = Field(
+        description="How sure the evidence is, in plain words; the reading code gave, never a new number."
+    )
+    means: ModelProse = Field(description="What it means for this campaign's question: the writer's judgment.")
+
+
+class AuthoredCampaignAnalysis(_Authored):
+    """A decision memo over a campaign of aspects: findings across them, one recommendation, a summary per aspect."""
+
+    findings: list[Finding] = Field(description="The findings, across every aspect, in reading order.")
+    recommendation: Recommendation
+    aspect_summaries: list[AspectSummary] = Field(description="One per aspect, in the campaign's order.")
+    next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
+
+
 class MapFieldInSchema(TypeError):
     """An object admits arbitrary keys, which no strict structured-output mode accepts."""
 
@@ -374,7 +409,9 @@ def validate_authored(payload: Any, caveat_kinds: Iterable[str]) -> AuthoredAnal
 __all__ = [
     "SCHEMA_NAME",
     "SLOT_BUDGET",
+    "AspectSummary",
     "AuthoredAnalysis",
+    "AuthoredCampaignAnalysis",
     "Caveat",
     "Confidence",
     "Decision",
@@ -385,6 +422,7 @@ __all__ = [
     "OffVocabulary",
     "QuestionAnswer",
     "Reading",
+    "Recommendation",
     "authored_schema",
     "count_slots",
     "response_format",

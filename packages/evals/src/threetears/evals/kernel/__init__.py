@@ -25,7 +25,10 @@ from threetears.evals.kernel.analysis_measures import (
     MeasureSummary,
 )
 from threetears.evals.kernel.authored import (
+    AspectSummary,
     AuthoredAnalysis,
+    AuthoredCampaignAnalysis,
+    Recommendation,
     Caveat,
     Confidence,
     Decision,
@@ -108,8 +111,15 @@ from threetears.evals.kernel.covariates import (
     fold_phase_timings,
 )
 from threetears.evals.kernel.declaration import (
+    ArmRole,
+    Aspect,
+    AspectDesign,
     BarName,
+    CampaignArm,
+    CampaignCall,
     CampaignDesign,
+    Floor,
+    resolve_control_arm,
     DesignRefused,
     UndeclarableAxisError,
     UnreadableBarName,
@@ -490,6 +500,18 @@ __all__ = [
     "AttemptOutcome",
     "AttributionScope",
     "AuthoredAnalysis",
+    # The campaign of aspects: one question, its arms, per aspect the design it is read under, its floors and the
+    # call a person records; and the memo shape the writer authors over it. Beside today's campaign and unused by it.
+    "ArmRole",
+    "Aspect",
+    "AspectDesign",
+    "AspectSummary",
+    "AuthoredCampaignAnalysis",
+    "CampaignArm",
+    "CampaignCall",
+    "Floor",
+    "Recommendation",
+    "resolve_control_arm",
     "BarAdjudication",
     "BarDecision",
     # What a bar name resolves to, and why one cannot carry a verdict: the structured answer an

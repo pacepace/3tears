@@ -40,7 +40,7 @@ from datetime import datetime
 from functools import cache
 from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
 
-from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, computed_field, field_validator, model_validator
 
 from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import RefusedInput
@@ -307,6 +307,137 @@ class CostLower(EvalDocumentModel, CoreShapeModel):
 DecisionClause = Annotated[RateDrop | CostLower, Field(discriminator="kind")]
 
 
+# ---------------------------------------------------------------------------
+# The rules a declaration is held to, one implementation each: the campaign's design and an aspect's
+# design (and a question's axes, and an arm's key) validate through these, so the two cannot drift.
+# ---------------------------------------------------------------------------
+
+
+def _each_merit_axis_once(axes: list[MeritAxis]) -> list[MeritAxis]:
+    """Refuse a merit axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
+    if duplicates := sorted({axis for axis in axes if axes.count(axis) > 1}):
+        raise ValueError(f"merit_axes names {', '.join(duplicates)} more than once; name each axis once")
+    return axes
+
+
+def _is_variant_key(value: str) -> bool:
+    """Whether ``value`` has the shape of a variant key: a 64-character lowercase hex digest."""
+    return len(value) == _VARIANT_KEY_LENGTH and all(c in "0123456789abcdef" for c in value)
+
+
+def _date_an_undated_key(data: Any, key: str, version: str) -> Any:
+    """Stamp this build's identity version beside a stored key that arrives without one.
+
+    A key typed by hand states no predicate; the only one it can have been read under is the build accepting it.
+
+    :param data: The authored or stored fields, before validation.
+    :ptype data: Any
+    :param key: The field holding the variant key.
+    :ptype key: str
+    :param version: The field holding the predicate it was computed under.
+    :ptype version: str
+    :return: The fields, with ``version`` stamped where ``key`` is set and ``version`` is not.
+    :rtype: Any
+    """
+    if isinstance(data, Mapping) and data.get(key) is not None and data.get(version) is None:
+        return {**data, version: IDENTITY_VERSION}
+    return data
+
+
+def _pre_image_is_the_key_s(key: str, levers: Mapping[str, SweepableValue] | None, version: int | None) -> bool:
+    """Whether a lever map is the pre-image of ``key``, checked only under this build's predicate.
+
+    A map recorded under another predicate digested to the key by THAT predicate's arithmetic, so holding it to
+    this one would refuse every key declared before a bump: the exact document the map is kept to rescue.
+    """
+    return levers is None or version != IDENTITY_VERSION or compute_variant_key(levers) == key
+
+
+def _refuse_repeated_design_entries(
+    axes: Sequence[SweptAxis],
+    bars: Sequence[BarOverride],
+    guardrail_margins: Sequence[GuardrailMargin],
+    merit_priority: Sequence[MeritAxis],
+) -> None:
+    """One entry per axis, per measure, per guardrail dimension and per ranked merit axis.
+
+    A declared axis is the denominator of every coverage number and of the typed-answer validator's "did the
+    answer address every axis"; a duplicate double-counts it. Two bars on one measure is worse: both persist,
+    both read as the standard, and nothing decides which governs.
+
+    :raises ValueError: An axis id, a measure id, a guardrail margin's dimension or a merit-priority axis appears
+        twice.
+    """
+    ids = [axis.axis_id for axis in axes]
+    if duplicates := sorted({axis for axis in ids if ids.count(axis) > 1}):
+        raise ValueError(
+            f"duplicate axis ids: {', '.join(duplicates)} — coverage and the typed-answer validator "
+            f"count declared axes, so a repeat is counted twice and neither entry's levels govern"
+        )
+    measures = [bar.measure_id for bar in bars]
+    if duplicates := sorted({m for m in measures if measures.count(m) > 1}):
+        raise ValueError(
+            f"more than one bar on: {', '.join(duplicates)} — both would read as this campaign's "
+            f"standard on that measure and nothing decides which one it is held to"
+        )
+    guarded = [entry.dimension for entry in guardrail_margins]
+    if duplicates := sorted({name for name in guarded if guarded.count(name) > 1}):
+        raise ValueError(
+            f"more than one guardrail margin on: {', '.join(duplicates)} — nothing would decide which one the "
+            "dimension is held to"
+        )
+    priority = list(merit_priority)
+    if duplicates := sorted({axis for axis in priority if priority.count(axis) > 1}):
+        raise ValueError(
+            f"merit_priority names {', '.join(duplicates)} more than once — it is a strongest-first ranking of "
+            "axes, and an axis ranked twice puts its bars in two tiers; name each axis once"
+        )
+
+
+def _cell_identity(axes: Sequence[SweptAxis], cell: Mapping[str, str]) -> tuple[str, ...]:
+    """A cell, authored as ``{axis_id: level content_hash or display}``, as its levels' content hashes in axis order.
+
+    :raises ValueError: The cell does not name exactly the declared axes, or names a level its axis does not
+        declare, or one that matches more than one declared level.
+    """
+    ids = [axis.axis_id for axis in axes]
+    if sorted(cell) != sorted(ids):
+        raise ValueError(
+            f"a skipped cell names axes {sorted(cell)}, and a cell is one level of EVERY declared axis: {sorted(ids)}"
+        )
+    identity = []
+    for axis in axes:
+        named = cell[axis.axis_id]
+        matches = [level for level in axis.values if named in (level.content_hash, level.display)]
+        if len(matches) != 1:
+            raise ValueError(
+                f"a skipped cell names {named!r} on axis {axis.axis_id!r}, which "
+                + ("is none of its declared levels" if not matches else "matches more than one declared level")
+                + f"; name one of: {', '.join(level.display for level in axis.values)}"
+            )
+        identity.append(matches[0].content_hash)
+    return tuple(identity)
+
+
+def _skipped_by_design(
+    axes: Sequence[SweptAxis],
+    skipped_cells: Sequence[Mapping[str, str]],
+    crossing: Literal["full", "star"] | None,
+    cell: tuple[str, ...],
+) -> bool:
+    """Whether a design left ``cell`` (one content hash per axis, in axis order) out on purpose.
+
+    True when ``skipped_cells`` names it, or ``crossing`` is ``star`` and it differs from the centre (each axis's
+    first declared level) on more than one axis.
+    """
+    if cell in {_cell_identity(axes, skipped) for skipped in skipped_cells}:
+        return True
+    if crossing == "star":
+        centre = [axis.values[0].content_hash for axis in axes]
+        return sum(1 for level, middle in zip(cell, centre, strict=True) if level != middle) > 1
+    return False
+
+
 class DecisionRule(EvalDocumentModel, CoreShapeModel):
     """When a question's answer switches from the control: typed clauses, never words the engine has to parse.
 
@@ -392,9 +523,7 @@ class Question(EvalDocumentModel, CoreShapeModel):
     @classmethod
     def _each_axis_once(cls, axes: list[MeritAxis]) -> list[MeritAxis]:
         """Refuse an axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
-        if duplicates := sorted({axis for axis in axes if axes.count(axis) > 1}):
-            raise ValueError(f"merit_axes names {', '.join(duplicates)} more than once; name each axis once")
-        return axes
+        return _each_merit_axis_once(axes)
 
     asked_at: str = Field(default_factory=utc_now_iso, description="When it was asked (ISO-8601).")
     retired_at: str | None = Field(
@@ -700,7 +829,7 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         """
         if value is None:
             return None
-        if len(value) != _VARIANT_KEY_LENGTH or any(c not in "0123456789abcdef" for c in value):
+        if not _is_variant_key(value):
             raise ValueError(
                 f"`control` is a variant key — a {_VARIANT_KEY_LENGTH}-character lowercase hex digest over the "
                 f"resolved contestant stack — and '{value}' is not one. A run id is not a control any more: name the run "
@@ -727,13 +856,7 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         :return: The fields, with ``control_identity_version`` stamped where a control has none.
         :rtype: Any
         """
-        if (
-            isinstance(data, Mapping)
-            and data.get("control") is not None
-            and data.get("control_identity_version") is None
-        ):
-            return {**data, "control_identity_version": IDENTITY_VERSION}
-        return data
+        return _date_an_undated_key(data, "control", "control_identity_version")
 
     @model_validator(mode="after")
     def _the_control_s_pre_image_is_its_own(self) -> CampaignDesign:
@@ -759,11 +882,7 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
                     "(`control_from_run_id`)"
                 )
             return self
-        if (
-            self.control_levers is not None
-            and self.control_identity_version == IDENTITY_VERSION
-            and compute_variant_key(self.control_levers) != self.control
-        ):
+        if not _pre_image_is_the_key_s(self.control, self.control_levers, self.control_identity_version):
             raise ValueError(
                 "`control_levers` does not digest to `control` under this build's identity predicate, so it is "
                 "not the control's pre-image — address the control from a run (`control_from_run_id`), which "
@@ -786,30 +905,7 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         :raises ValueError: An axis id, a measure id, a guardrail margin's dimension or a merit-priority axis appears
             twice.
         """
-        axes = [axis.axis_id for axis in self.axes]
-        if duplicates := sorted({axis for axis in axes if axes.count(axis) > 1}):
-            raise ValueError(
-                f"duplicate axis ids: {', '.join(duplicates)} — coverage and the typed-answer validator "
-                f"count declared axes, so a repeat is counted twice and neither entry's levels govern"
-            )
-        measures = [bar.measure_id for bar in self.bars]
-        if duplicates := sorted({m for m in measures if measures.count(m) > 1}):
-            raise ValueError(
-                f"more than one bar on: {', '.join(duplicates)} — both would read as this campaign's "
-                f"standard on that measure and nothing decides which one it is held to"
-            )
-        guarded = [entry.dimension for entry in self.guardrail_margins]
-        if duplicates := sorted({name for name in guarded if guarded.count(name) > 1}):
-            raise ValueError(
-                f"more than one guardrail margin on: {', '.join(duplicates)} — nothing would decide which one the "
-                "dimension is held to"
-            )
-        priority = list(self.merit_priority)
-        if duplicates := sorted({axis for axis in priority if priority.count(axis) > 1}):
-            raise ValueError(
-                f"merit_priority names {', '.join(duplicates)} more than once — it is a strongest-first ranking of "
-                "axes, and an axis ranked twice puts its bars in two tiers; name each axis once"
-            )
+        _refuse_repeated_design_entries(self.axes, self.bars, self.guardrail_margins, self.merit_priority)
         return self
 
     @model_validator(mode="after")
@@ -836,24 +932,7 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
         :raises ValueError: The cell does not name exactly the declared axes, or names a level its axis does not
             declare, or one that matches more than one declared level.
         """
-        axes = [axis.axis_id for axis in self.axes]
-        if sorted(cell) != sorted(axes):
-            raise ValueError(
-                f"a skipped cell names axes {sorted(cell)}, and a cell is one level of EVERY declared axis: "
-                f"{sorted(axes)}"
-            )
-        identity = []
-        for axis in self.axes:
-            named = cell[axis.axis_id]
-            matches = [level for level in axis.values if named in (level.content_hash, level.display)]
-            if len(matches) != 1:
-                raise ValueError(
-                    f"a skipped cell names {named!r} on axis {axis.axis_id!r}, which "
-                    + ("is none of its declared levels" if not matches else "matches more than one declared level")
-                    + f"; name one of: {', '.join(level.display for level in axis.values)}"
-                )
-            identity.append(matches[0].content_hash)
-        return tuple(identity)
+        return _cell_identity(self.axes, cell)
 
     def declares_cells(self) -> bool:
         """Whether this design says which combinations of its levels it meant to run."""
@@ -868,12 +947,7 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
             axis's first declared level) on more than one axis.
         :rtype: bool
         """
-        if cell in {self.cell_identity(skipped) for skipped in self.skipped_cells}:
-            return True
-        if self.crossing == "star":
-            centre = [axis.values[0].content_hash for axis in self.axes]
-            return sum(1 for level, middle in zip(cell, centre, strict=True) if level != middle) > 1
-        return False
+        return _skipped_by_design(self.axes, self.skipped_cells, self.crossing, cell)
 
     def question_words(self, question_id: str) -> str:
         """A declared question as a reader reads it: its text, or — for an id this design does not hold — the id.
@@ -1008,25 +1082,403 @@ def resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl:
     """
     if design is None or design.control is None:
         return ResolvedControl(variant_keys=[], identity_version=None, source="undeclared")
-    stored = design.control_identity_version if design.control_identity_version is not None else IDENTITY_VERSION
+    return _resolve_control_key(design.control, design.control_levers, design.control_identity_version)
+
+
+def _resolve_control_key(key: str, levers: Mapping[str, SweepableValue] | None, version: int | None) -> ResolvedControl:
+    """:func:`resolve_declared_control` over a declared control's key, its pre-image and its predicate."""
+    stored = version if version is not None else IDENTITY_VERSION
     if stored == IDENTITY_VERSION:
-        return ResolvedControl(variant_keys=[design.control], identity_version=stored, source="current")
-    if design.control_levers is not None:
-        rekeyed = compute_variant_key(design.control_levers)
-        keys = [design.control] if rekeyed == design.control else [rekeyed, design.control]
+        return ResolvedControl(variant_keys=[key], identity_version=stored, source="current")
+    if levers is not None:
+        rekeyed = compute_variant_key(levers)
+        keys = [key] if rekeyed == key else [rekeyed, key]
         return ResolvedControl(variant_keys=keys, identity_version=stored, source="rekeyed")
     return ResolvedControl(
-        variant_keys=[design.control],
+        variant_keys=[key],
         identity_version=stored,
         source="unrekeyable",
         stale_disclosure=(
-            f"The declared control {design.control} matches no observation here and cannot be resolved: it is a "
+            f"The declared control {key} matches no observation here and cannot be resolved: it is a "
             f"bare variant key computed under identity predicate v{stored}, this build keys variants under "
             f"v{IDENTITY_VERSION}, and no lever map was recorded beside it to re-key it from, so no run this build "
             "stamps can carry it and every comparison here is marginal. Re-address the control from a run of its "
             "arm (control_from_run_id on campaign_update), which records the lever map beside the key."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# A campaign of aspects: one question, its arms, and per aspect the design it is read under. Beside
+# today's design and unused by it; the campaign that holds them is the next stored shape.
+# ---------------------------------------------------------------------------
+
+
+class AspectDesign(EvalDocumentModel, CoreShapeModel):
+    """What one aspect of a campaign set out to vary and hold itself to — the declaration, one aspect's worth.
+
+    An aspect is one part of what a campaign asks, measured on its own runs. Its design is :class:`CampaignDesign`
+    less what belongs to the campaign as a whole: the question (a campaign asks one), the control (the campaign's
+    control :class:`CampaignArm`) and when it was declared (:attr:`Aspect.declared_at`). It gains the merit axes an
+    answer would move here, which were each question's own. Every rule the campaign's design is held to, this is
+    held to, by the same code.
+    """
+
+    axes: list[SweptAxis] = Field(
+        min_length=1,
+        description=(
+            "What this aspect set out to vary. At least one: a declaration with no axes declares nothing, and "
+            "coverage and the typed-answer validator count these as their denominator."
+        ),
+    )
+    bars: list[BarOverride] = Field(
+        default_factory=list,
+        description="Standards this aspect holds itself to, tighter than the registered ones. Empty = the registry's bars apply unchanged.",
+    )
+    guardrail_margins: list[GuardrailMargin] = Field(
+        default_factory=list,
+        description=(
+            "The margin of each judged guardrail (a boundary rubric dimension) this aspect decides, one per "
+            "dimension. Empty = none declared, and every judged guardrail is held at zero change. A measure's "
+            "margin is its descriptor's `materiality_threshold`, never declared here."
+        ),
+    )
+    intended_repetitions: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "How many repetitions this design intends per cell, counted per case: a cell's least-repeated case is "
+            "what is compared. The bundle names every cell that falls short. None = unstated, which makes a "
+            "shortfall undetectable rather than zero."
+        ),
+    )
+    held_fixed: ControlDeclaration = Field(
+        description=(
+            "What held still while this aspect's runs ran — the stimulus, `controlled` or `uncontrolled`, and the "
+            "apparatus, `commissioned` or `witnessed`. Not the control arm, which names WHICH CELL is the "
+            "reference; this names WHAT WAS HELD STILL."
+        )
+    )
+    merit_axes: list[MeritAxis] = Field(
+        default_factory=list,
+        description=(
+            "Which axes the campaign's question would move on this aspect. The bundle lists the bars on these axes "
+            "(`verdict_order`). Empty means unscoped: the question asks about every axis."
+        ),
+    )
+    merit_priority: list[MeritAxis] = Field(
+        default_factory=list,
+        description=(
+            "Tie-break order when no bar picks a winner, strongest first. Empty = no stated preference, and the "
+            "analysis must not invent one."
+        ),
+    )
+    crossing: Literal["full", "star"] | None = Field(
+        default=None,
+        description=(
+            "Which combinations of the declared levels (cells) this design meant to run. full = every combination; "
+            "star = the centre (each axis's FIRST declared level) and every cell differing from it on one axis "
+            "only, the rest skipped by design. None = the design says nothing about combinations."
+        ),
+    )
+    skipped_cells: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Cells left out on purpose, each naming every declared axis once with one of its declared levels, by "
+            "the level's content_hash or its display. A skipped cell that did not run is skipped by design, never "
+            "a gap. Empty = none beyond what crossing skips."
+        ),
+    )
+    measure_latency: bool = Field(
+        default=False,
+        description=(
+            "Whether latency is under test on this aspect. Its runs must then be launched with "
+            "`measure_latency=True`, one cell at a time; latency read under concurrency is withheld from every "
+            "reading. False: a bar on a latency measure, a merit axis of latency or `latency` in `merit_priority` "
+            "is refused when the design is declared."
+        ),
+    )
+
+    @field_validator("merit_axes")
+    @classmethod
+    def _each_axis_once(cls, axes: list[MeritAxis]) -> list[MeritAxis]:
+        """Refuse an axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
+        return _each_merit_axis_once(axes)
+
+    @model_validator(mode="after")
+    def _axes_and_bars_are_keyed_too(self) -> AspectDesign:
+        """One entry per axis, per measure, per guardrail dimension and per ranked merit axis.
+
+        :return: The validated design.
+        :rtype: AspectDesign
+        :raises ValueError: One of them appears twice.
+        """
+        _refuse_repeated_design_entries(self.axes, self.bars, self.guardrail_margins, self.merit_priority)
+        return self
+
+    @model_validator(mode="after")
+    def _skipped_cells_name_declared_levels(self) -> AspectDesign:
+        """Each skipped cell names every declared axis once, at a level that axis declares — or it is refused.
+
+        :return: The validated design.
+        :rtype: AspectDesign
+        :raises ValueError: A skipped cell names an undeclared axis, leaves one out, or names an undeclared level.
+        """
+        for cell in self.skipped_cells:
+            self.cell_identity(cell)
+        return self
+
+    def cell_identity(self, cell: Mapping[str, str]) -> tuple[str, ...]:
+        """A cell, authored as ``{axis_id: level content_hash or display}``, as its levels' content hashes in axis
+        order.
+
+        :param cell: The cell.
+        :ptype cell: Mapping[str, str]
+        :return: One content hash per declared axis, in the order the axes are declared.
+        :rtype: tuple[str, ...]
+        :raises ValueError: The cell does not name exactly the declared axes, or names a level its axis does not
+            declare, or one that matches more than one declared level.
+        """
+        return _cell_identity(self.axes, cell)
+
+    def declares_cells(self) -> bool:
+        """Whether this design says which combinations of its levels it meant to run."""
+        return self.crossing is not None or bool(self.skipped_cells)
+
+    def skipped_by_design(self, cell: tuple[str, ...]) -> bool:
+        """Whether the design left ``cell`` (one content hash per axis, in axis order) out on purpose.
+
+        :param cell: The combination.
+        :ptype cell: tuple[str, ...]
+        :return: True when ``skipped_cells`` names it, or ``crossing`` is ``star`` and it differs from the centre on
+            more than one axis.
+        :rtype: bool
+        """
+        return _skipped_by_design(self.axes, self.skipped_cells, self.crossing, cell)
+
+
+#: What an arm is to its campaign: the ``control`` every other arm is read against, or a ``candidate`` for it.
+ArmRole = Literal["control", "candidate"]
+
+
+class CampaignArm(EvalDocumentModel, CoreShapeModel):
+    """One arm of a campaign: a contestant stack, named, and whether it is the control or a candidate.
+
+    An arm is a **variant key**, not a run, so curating a run out of a campaign never takes an arm with it while
+    another observation carries the same stack. The key is stored beside its pre-image, as every stored variant key
+    is: ``levers``, the map it was digested from, and ``identity_version``, the predicate that digested it — so a
+    change to how a map is digested re-keys the arm instead of orphaning it (:func:`resolve_control_arm`).
+
+    **The key and its pre-image are the server's, never the caller's.** An authoring surface addresses an arm from a
+    run and records the run's own key and lever map; a caller names the run, not the digest.
+    """
+
+    label: str = Field(
+        min_length=1,
+        description="What a reader calls this arm: unique within its campaign, and the word every page names it by.",
+    )
+    role: ArmRole = Field(
+        description="`control`: the arm every other arm is read against, one per campaign at most. `candidate`: an arm read against it."
+    )
+    variant_key: str = Field(
+        description=(
+            "The contestant stack this arm is: a 64-hex variant key, ADDRESSED from a run rather than typed. Read "
+            "through `identity_version` and `levers` beside it, never alone."
+        )
+    )
+    levers: dict[str, SweepableValue] | None = Field(
+        default=None,
+        description=(
+            "The arm's PRE-IMAGE: the resolved lever map `variant_key` was digested from, recorded from the run the "
+            "arm was addressed from. Under a later identity predicate the arm matches the key this map re-keys to as "
+            "well as the stored one. Server-owned. None = the key was typed, so it names only the cells stamped under "
+            "its own predicate."
+        ),
+    )
+    identity_version: int = Field(
+        ge=1,
+        description=(
+            "Which key-derivation predicate (`IDENTITY_VERSION`) `variant_key` was computed under. A key that arrives "
+            "without one is dated by the build accepting it, the only predicate it can have been read under."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _an_undated_key_is_dated_by_the_build_accepting_it(cls, data: Any) -> Any:
+        """Stamp this build's identity version beside a key that arrives without one, as a design's control is.
+
+        :param data: The authored or stored fields, before validation.
+        :ptype data: Any
+        :return: The fields, with ``identity_version`` stamped where it is absent.
+        :rtype: Any
+        """
+        return _date_an_undated_key(data, "variant_key", "identity_version")
+
+    @field_validator("variant_key")
+    @classmethod
+    def _an_arm_is_a_variant_key(cls, value: str) -> str:
+        """Refuse a key that is not the shape of a variant key: one that is not a digest joins no observation.
+
+        :param value: The arm's key.
+        :ptype value: str
+        :return: The validated key.
+        :rtype: str
+        :raises ValueError: The value is not a 64-character lowercase hex digest.
+        """
+        if not _is_variant_key(value):
+            raise ValueError(
+                f"an arm's `variant_key` is a {_VARIANT_KEY_LENGTH}-character lowercase hex digest over the resolved "
+                f"contestant stack, and '{value}' is not one; address the arm from a run of it, and the key is "
+                "resolved for you"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _the_pre_image_is_the_arm_s_own(self) -> CampaignArm:
+        """The lever map, under this build's predicate, digests to the arm's key.
+
+        :return: The validated arm.
+        :rtype: CampaignArm
+        :raises ValueError: The map does not digest to ``variant_key``, so it is some other arm's pre-image and
+            re-keying from it would move this arm onto that one.
+        """
+        if not _pre_image_is_the_key_s(self.variant_key, self.levers, self.identity_version):
+            raise ValueError(
+                f"arm {self.label!r}: `levers` does not digest to `variant_key` under this build's identity predicate, "
+                "so it is not the arm's pre-image; address the arm from a run, which records the two together"
+            )
+        return self
+
+
+def resolve_control_arm(arm: CampaignArm | None) -> ResolvedControl:
+    """The keys that name a campaign's control arm under this build, by the rule :func:`resolve_declared_control` reads.
+
+    :param arm: The control arm, or None for a campaign that declares none.
+    :ptype arm: CampaignArm | None
+    :return: The resolved control.
+    :rtype: ResolvedControl
+    """
+    if arm is None:
+        return ResolvedControl(variant_keys=[], identity_version=None, source="undeclared")
+    return _resolve_control_key(arm.variant_key, arm.levers, arm.identity_version)
+
+
+class Aspect(EvalDocumentModel, CoreShapeModel):
+    """One part of what a campaign asks, read on its own runs: its template, its margin, its design and its runs.
+
+    A campaign asks one question of its arms, and an aspect is where that question is measured: one behavior's
+    template, the runs gathered on it, and the design they were gathered under. Each aspect is read on its own
+    (shown better, shown worse or unclear against the control) and the campaign's recommendation reads them all.
+    """
+
+    label: str = Field(
+        min_length=1,
+        description="What a reader calls this aspect: unique within its campaign. A campaign stored before aspects existed reads as one aspect labelled with its behavior.",
+    )
+    template_id: str | None = Field(
+        default=None,
+        description="Reference to an existing eval_template this aspect's runs were gathered on; None names none.",
+    )
+    stratum: None = Field(
+        default=None,
+        description="Which stratum of the template's cases this aspect reads. Always None: every aspect reads all of them.",
+    )
+    margin: float | None = Field(
+        default=None,
+        gt=0.0,
+        lt=100.0,
+        allow_inf_nan=False,
+        description=(
+            "How far, in points of a 0-100 pass rate, a candidate may fall below the control here before it is "
+            "shown worse. None = no margin declared, which only an aspect upgraded from a campaign stored without "
+            "one holds: its readings are shown better or unclear, never shown worse, and the page says no margin "
+            "was declared."
+        ),
+    )
+    design: AspectDesign | None = Field(
+        default=None,
+        description="What this aspect set out to vary and hold itself to. None = exploratory: its readings confirm nothing, and the page says so once.",
+    )
+    run_ids: list[str] = Field(
+        default_factory=list,
+        description="Curated membership: the runs this aspect reads. A run belongs to one aspect of a campaign at most.",
+    )
+    declared_at: str | None = Field(
+        default=None, description="When this aspect's design was declared (ISO-8601); None when it declares none."
+    )
+
+
+class Floor(EvalDocumentModel, CoreShapeModel):
+    """A line a candidate is warned for crossing on one aspect: a typed clause, read on that aspect's readings.
+
+    A floor only WARNS, and loudly: a broken floor is the first thing on the campaign's page, the writer must address
+    it, and a recorded call that adopts the arm anyway names it as overridden (:attr:`CampaignCall.floors_overridden`).
+    It never blocks. A stored decision rule reads back as floors on its one aspect, one per clause.
+    """
+
+    aspect: str = Field(min_length=1, description="The label of the aspect whose readings this floor is read on.")
+    clause: DecisionClause = Field(
+        description="The line: a `RateDrop` (no pass rate may drop by more than `max_points`) or a `CostLower` (the arm must cost less per reply)."
+    )
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "`{aspect}/{kind}/{reading}`, with `*` for a clause that reads every pass rate or reads none: what a "
+            "recorded call names an overridden floor by. Derived on every read, never stored as a choice."
+        )
+    )
+    @property
+    def key(self) -> str:
+        """The floor's key: its aspect, its clause's kind and the reading it reads (``*`` for all or none)."""
+        reading = self.clause.reading if isinstance(self.clause, RateDrop) else None
+        return f"{self.aspect}/{self.clause.kind}/{reading or '*'}"
+
+
+class CampaignCall(EvalDocumentModel, CoreShapeModel):
+    """What a person decided over a campaign's readings: the arm, why, and every broken floor they chose to override.
+
+    Code reports, the writer recommends, a person decides. The call is the person's, recorded beside what the
+    readings said, so a later reader sees both — and a broken floor the call overrode is named here, never silent.
+    """
+
+    arm: str = Field(
+        min_length=1, description="The label of the arm decided on; the control's label keeps the control."
+    )
+    reason: str = Field(
+        default="", description="Why, in the decider's words. Optional, and the first thing a later reader wants."
+    )
+    floors_overridden: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The key (`Floor.key`) of every floor the decided arm broke and the decider overrode, each once. A call "
+            "on an arm with a broken floor names it here or is refused; a key for a floor not broken is refused."
+        ),
+    )
+    analysis_id: str | None = Field(
+        default=None,
+        description="The analysis whose memo the call was made over; None when it was made on code's readings alone.",
+    )
+    called_at: str = Field(default_factory=utc_now_iso, description="When the call was recorded (ISO-8601).")
+    called_by: str = Field(
+        min_length=1,
+        description="Who made the call, as the recording surface knows them. Server-owned, as `created_by` is.",
+    )
+
+    @field_validator("floors_overridden")
+    @classmethod
+    def _each_floor_once(cls, keys: list[str]) -> list[str]:
+        """Refuse a floor named twice: overriding it once is the whole record.
+
+        :param keys: The overridden floors' keys.
+        :ptype keys: list[str]
+        :return: The keys.
+        :rtype: list[str]
+        :raises ValueError: A key appears twice.
+        """
+        if duplicates := sorted({key for key in keys if keys.count(key) > 1}):
+            raise ValueError(f"floors_overridden names {', '.join(duplicates)} more than once; name each floor once")
+        return keys
 
 
 def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -> list[Question]:
@@ -1858,16 +2310,22 @@ def _instant(stamp: str, what: str) -> datetime:
 
 __all__ = [
     "NO_TEMPLATE_REMEDY",
+    "ArmRole",
+    "Aspect",
+    "AspectDesign",
     "BarName",
     "BarNameKind",
     "BarNameRefusal",
     "BarOverride",
+    "CampaignArm",
+    "CampaignCall",
     "CampaignDesign",
     "ControlDeclaration",
     "ControlSource",
     "CostLower",
     "DecisionClause",
     "DecisionRule",
+    "Floor",
     "GuardrailMargin",
     "PROSE_RULE_MARK",
     "Question",
@@ -1886,6 +2344,7 @@ __all__ = [
     "reconcile_question_edits",
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
+    "resolve_control_arm",
     "resolve_declared_control",
     "states_a_prose_rule",
 ]
