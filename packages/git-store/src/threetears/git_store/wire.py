@@ -14,6 +14,7 @@ writer did: :class:`~threetears.git_store.errors.ChangeConflictError` with every
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from threetears.git_store.change import Change, CommitResult, OnConflict
 from threetears.git_store.errors import (
     ChangeConflictError,
     ConflictedRow,
+    FileConflictError,
     GitStoreError,
     HandEditPendingError,
     NotTheWriterError,
@@ -46,7 +48,7 @@ __all__ = [
 ]
 
 #: the operations a writer runs for another process.
-Operation = Literal["commit", "commit_paths", "push"]
+Operation = Literal["commit", "commit_paths", "commit_files", "push"]
 
 
 def _tag(value: Any) -> Any:
@@ -123,6 +125,8 @@ class ForwardedRequest:
     :ivar op: which one
     :ivar changes: the change set's writes (``commit``)
     :ivar paths: the files to adopt (``commit_paths``); ``None`` for every changed file
+    :ivar files: each file's new bytes, or ``None`` to remove it (``commit_files``)
+    :ivar base: the commit those files were based on (``commit_files``); ``None`` for no check
     :ivar message: the commit message
     :ivar author: the commit's author
     :ivar trailers: trailer lines
@@ -132,6 +136,8 @@ class ForwardedRequest:
     op: Operation
     changes: tuple[Change, ...] = ()
     paths: tuple[str, ...] | None = None
+    files: Mapping[str, bytes | None] | None = None
+    base: str | None = None
     message: str = ""
     author: Author | None = None
     trailers: Mapping[str, str] | None = None
@@ -159,6 +165,13 @@ def encode_request(request: ForwardedRequest) -> bytes:
             for change in request.changes
         ],
         "paths": None if request.paths is None else list(request.paths),
+        "files": None
+        if request.files is None
+        else {
+            path: None if data is None else base64.b64encode(data).decode("ascii")
+            for path, data in request.files.items()
+        },
+        "base": request.base,
         "message": request.message,
         "author": None if request.author is None else {"name": request.author.name, "email": request.author.email},
         "trailers": dict(request.trailers or {}),
@@ -178,7 +191,7 @@ def decode_request(data: bytes) -> ForwardedRequest:
     """
     body = json.loads(data.decode("utf-8"))
     op = body["op"]
-    if op not in ("commit", "commit_paths", "push"):
+    if op not in ("commit", "commit_paths", "commit_files", "push"):
         raise ValueError(f"a git-store writer does not run {op!r}")
     changes = tuple(
         Change(
@@ -191,10 +204,15 @@ def decode_request(data: bytes) -> ForwardedRequest:
         for item in body["changes"]
     )
     paths = body.get("paths")
+    files = body.get("files")
     return ForwardedRequest(
         op=cast("Operation", op),
         changes=changes,
         paths=None if paths is None else tuple(str(path) for path in paths),
+        files=None
+        if files is None
+        else {str(path): None if data is None else base64.b64decode(data) for path, data in files.items()},
+        base=None if body.get("base") is None else str(body["base"]),
         message=str(body.get("message", "")),
         author=_author(body.get("author")),
         trailers={str(k): str(v) for k, v in (body.get("trailers") or {}).items()},
@@ -234,6 +252,8 @@ def encode_failure(error: GitStoreError | ChangeConflictError) -> bytes:
         }
     elif isinstance(error, HandEditPendingError):
         detail = {"type": "hand_edit", "paths": list(error.paths)}
+    elif isinstance(error, FileConflictError):
+        detail = {"type": "file_conflict", "paths": list(error.paths)}
     elif isinstance(error, NotTheWriterError):
         detail = {"type": "not_writer", "message": str(error)}
     else:
@@ -250,6 +270,7 @@ def decode_reply(data: bytes) -> CommitResult:
     :rtype: CommitResult
     :raises ChangeConflictError: when the writer found rows changed since they were read
     :raises HandEditPendingError: when uncommitted hand edits were in the way
+    :raises FileConflictError: when files sent to be committed changed since their base
     :raises NotTheWriterError: when the process that answered was no longer the writer
     :raises GitStoreError: for any other refusal
     """
@@ -271,6 +292,8 @@ def decode_reply(data: bytes) -> CommitResult:
         raise ChangeConflictError(rows)
     if kind == "hand_edit":
         raise HandEditPendingError([str(path) for path in error["paths"]])
+    if kind == "file_conflict":
+        raise FileConflictError([str(path) for path in error["paths"]])
     if kind == "not_writer":
         raise NotTheWriterError(str(error["message"]))
     raise GitStoreError(str(error.get("message", "the writer refused the change")))

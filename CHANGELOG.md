@@ -97,6 +97,14 @@ consumer can pass a `CollectionReplayAnchor` as `GitRepo(replay_anchor=...)`), s
 restart doesn't refuse its first requests. The receiver's sender posture is `signed-envelope`; the open allowlist
 row it was added under is gone.
 
+**git-store: files committed through the writer (`GitRepo.commit_files`).** Writes the given bytes (``None``
+removes a file) and commits them as one commit, on the writer: a process on a clone of its own sends them over the
+sealed forward family, since a commit of its own would race the writer's pushes. For files that aren't rows (a
+training log) and for a hand edit made on such a clone. With ``base=`` (the commit the sender read the files at),
+a file the repository changed since then refuses the whole change with the new `FileConflictError`; an uncommitted
+hand edit of one on the writer refuses it with `HandEditPendingError`. Rows among the files are reported like any
+commit's, so every cache drops them. Found adopting git-store in samhla (a pod couldn't commit a training log).
+
 **git-store: every pod reads current data.** A process on a clone of its own that isn't the writer now has its
 durable reads (`fetch_one`, `scan`) answered by the writer (a sealed `read` request on the forward family), because
 its own clone lags the writer's until it fetches and a collection would have cached the stale row. So the git tier

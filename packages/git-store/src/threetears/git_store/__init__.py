@@ -17,6 +17,7 @@ from threetears.git_store.envelope import ForwardRefusedError
 from threetears.git_store.errors import (
     ChangeConflictError,
     ConflictedRow,
+    FileConflictError,
     GitStoreError,
     HandEditPendingError,
     NotTheWriterError,
@@ -37,6 +38,7 @@ __all__ = [
     "CommitResult",
     "ConflictedRow",
     "DirtyFile",
+    "FileConflictError",
     "ForwardRefusedError",
     "GitDurableStore",
     "GitError",

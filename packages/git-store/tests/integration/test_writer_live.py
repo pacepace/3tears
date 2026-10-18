@@ -33,6 +33,7 @@ from threetears.git_store import (
     GitDurableStore,
     GitRepo,
     GitRepoConfig,
+    FileConflictError,
     GitStoreError,
     HandEditPendingError,
     NotTheWriterError,
@@ -320,5 +321,24 @@ async def test_a_pod_on_its_own_clone_reads_what_the_writer_just_committed_befor
     rows = await GitDurableStore(other).scan("keepers", {"character": "aria"})
     assert [r["score"] for r in rows if r["tile"] == "7"] == [2]
 
-    await writer.aclose()  # no writer: pod b reads its own clone
-    assert await GitDurableStore(other).fetch_one("keepers", key("7")) is None or True
+
+async def test_a_pod_on_its_own_clone_commits_plain_files_through_the_writer(
+    tmp_path: Path, origin: Path, connect: Any, opened: Any
+) -> None:
+    # a training log isn't a row: a pod on a clone of its own sends the bytes, and the writer commits and pushes them
+    writer = await opened(await connect("pod-a"), work_tree=tmp_path / "a", remote_url=str(origin), clone="own")
+    other = await opened(await connect("pod-b"), work_tree=tmp_path / "b", remote_url=str(origin), clone="own")
+    assert writer.is_writer and not other.is_writer
+    await writer.commit_files({"aria/card.md": b"Aria\n"}, "a first commit")
+    await other.sync()
+    base = other.git.head()
+    assert base is not None
+    result = await other.commit_files({"aria/training-log.md": b"round 1\n"}, "log round 1", base=base)
+    assert result.sha is not None and result.pushed
+    assert (tmp_path / "a/aria/training-log.md").read_bytes() == b"round 1\n"
+    assert not (tmp_path / "b/aria/training-log.md").exists()  # pod b's own tree is untouched until it pulls
+
+    with pytest.raises(FileConflictError) as refused:  # based on the old commit: someone changed it since
+        await other.commit_files({"aria/training-log.md": b"round 1, retold\n"}, "log again", base=base)
+    assert refused.value.paths == ("aria/training-log.md",)
+    assert (tmp_path / "a/aria/training-log.md").read_bytes() == b"round 1\n"

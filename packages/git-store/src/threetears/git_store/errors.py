@@ -12,6 +12,7 @@ from threetears.core.exceptions import ConcurrentModificationError
 __all__ = [
     "ChangeConflictError",
     "ConflictedRow",
+    "FileConflictError",
     "GitStoreError",
     "HandEditPendingError",
     "NotTheWriterError",
@@ -92,6 +93,28 @@ class HandEditPendingError(GitStoreError):
         super().__init__(
             f"uncommitted hand edits in the way, nothing was written: {', '.join(self.paths)}. "
             f"Commit the edit first, or put the file back"
+        )
+
+
+class FileConflictError(GitStoreError):
+    """files sent to be committed changed in the repository since the commit they were based on.
+
+    Nothing was written. Read them again (pull, or fetch them from the writer) and send the change again.
+
+    :ivar paths: the files that changed
+    """
+
+    def __init__(self, paths: Sequence[str]) -> None:
+        """name the files that changed.
+
+        :param paths: the files, relative to the working tree's root
+        :ptype paths: Sequence[str]
+        :return: None
+        :rtype: None
+        """
+        self.paths = tuple(paths)
+        super().__init__(
+            f"files changed since the commit they were based on, nothing was written: {', '.join(self.paths)}"
         )
 
 

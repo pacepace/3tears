@@ -25,6 +25,7 @@ from threetears.git_store import (
     ChangeConflictError,
     CommitResult,
     ConflictedRow,
+    FileConflictError,
     GitDurableStore,
     GitRepoConfig,
     GitRepos,
@@ -123,6 +124,19 @@ class TestWire:
         assert edited.value.paths == ("a.json",)
         with pytest.raises(NotTheWriterError):
             decode_reply(encode_failure(NotTheWriterError("gone")))
+
+    def test_files_cross_as_bytes_and_their_conflict_comes_back(self) -> None:
+        request = ForwardedRequest(
+            op="commit_files",
+            files={"aria/log.md": b"\x00binary\xff", "aria/old.md": None},
+            base="abc",
+            message="m\n",
+            trailers={},
+        )
+        assert decode_request(encode_request(request)) == request
+        with pytest.raises(FileConflictError) as stale:
+            decode_reply(encode_failure(FileConflictError(["aria/log.md"])))
+        assert stale.value.paths == ("aria/log.md",)
 
     def test_an_unknown_operation_is_refused(self) -> None:
         with pytest.raises(ValueError):

@@ -49,6 +49,7 @@ from threetears.git_store.envelope import DEFAULT_ISSUER, ForwardEnvelope, GitDi
 from threetears.git_store.advanced import AdvancedListener, RepoAdvanced, publish_advanced
 from threetears.git_store.change import Change, ChangeSet, CommitResult, same_version
 from threetears.git_store.errors import (
+    FileConflictError,
     ChangeConflictError,
     ConflictedRow,
     GitStoreError,
@@ -709,6 +710,41 @@ class GitRepo:
         request = ForwardedRequest(op="commit_paths", paths=checked, message=full, author=author)
         return await self._as_writer(request, lambda: self._commit_paths_local(checked, full, author))
 
+    async def commit_files(
+        self,
+        files: Mapping[str, bytes | None],
+        message: str,
+        *,
+        author: Author | None = None,
+        base: str | None = None,
+    ) -> CommitResult:
+        """write these files' bytes (``None`` removes one) and commit them as one commit, on the writer.
+
+        For files that aren't rows (a log, a note) and for a hand edit made on a clone of its own: that
+        clone can't commit for itself (its commit would race the writer's pushes), so it sends the bytes.
+        Rows among the files are reported like any commit's, so every cache drops them.
+
+        :param files: each path, relative to the root, with its new bytes or ``None``
+        :ptype files: Mapping[str, bytes | None]
+        :param message: the commit message
+        :ptype message: str
+        :param author: who the commit names as author; ``None`` for the committer
+        :ptype author: Author | None
+        :param base: the commit the sender read these files at; the writer refuses any of them changed
+            since. ``None``: no check
+        :ptype base: str | None
+        :return: the commit; ``sha`` is ``None`` when every file already had those bytes
+        :rtype: CommitResult
+        :raises ValueError: for a path outside the working tree
+        :raises FileConflictError: when a file changed since ``base``; nothing was written
+        :raises HandEditPendingError: when the writer's tree has an uncommitted edit of one of them
+        :raises NotTheWriterError: when no writer could take it
+        """
+        checked = dict(zip(_checked_paths(list(files)), files.values(), strict=True))
+        full = _message_with_trailers(message, None)
+        request = ForwardedRequest(op="commit_files", files=checked, base=base, message=full, author=author)
+        return await self._as_writer(request, lambda: self._commit_files_local(checked, full, author, base))
+
     async def push(self) -> bool:
         """push to origin now, even after a refusal stopped automatic pushes.
 
@@ -931,6 +967,10 @@ class GitRepo:
                 result = await self._commit_local(list(request.changes), request.message, request.author, request.date)
             elif request.op == "commit_paths":
                 result = await self._commit_paths_local(request.paths, request.message, request.author)
+            elif request.op == "commit_files":
+                result = await self._commit_files_local(
+                    dict(request.files or {}), request.message, request.author, request.base
+                )
             else:
                 result = await self._push_now()
         except (GitStoreError, ChangeConflictError) as exc:
@@ -1191,6 +1231,58 @@ class GitRepo:
             extra={"extra_data": {**self._log, "sha": sha, "files": len(targets), "pushed": pushed}},
         )
         return CommitResult(sha=sha, paths=tuple(targets), pushed=pushed)
+
+    async def _commit_files_local(
+        self, files: dict[str, bytes | None], message: str, author: Author | None, base: str | None
+    ) -> CommitResult:
+        """write and commit files sent whole, on the writer.
+
+        :param files: each path with its new bytes, or ``None`` to remove it
+        :ptype files: dict[str, bytes | None]
+        :param message: the whole message
+        :ptype message: str
+        :param author: the author
+        :ptype author: Author | None
+        :param base: the commit the sender read them at; ``None`` for no check
+        :ptype base: str | None
+        :return: the commit
+        :rtype: CommitResult
+        :raises FileConflictError: when a file changed since ``base``
+        :raises GitStoreError: when this repository doesn't have ``base``
+        :raises HandEditPendingError: when one of them has an uncommitted edit here
+        """
+        async with self._lock:
+            self._require_writer()
+            await self._notice_head()
+            head_before = await asyncio.to_thread(self.git.head)
+            if base is not None and base != head_before:
+                if await asyncio.to_thread(self.git.rev_parse, base) is None:
+                    raise GitStoreError(f"the writer of {self.config.lease_key} has no commit {base}")
+                moved = {change.path for change in await asyncio.to_thread(self.git.changed, base, head_before or base)}
+                stale = sorted(moved & set(files))
+                if stale:
+                    raise FileConflictError(stale)
+
+            def differing() -> dict[str, bytes | None]:
+                current = {path: None if head_before is None else self.git.show(head_before, path) for path in files}
+                return {path: data for path, data in files.items() if current[path] != data}
+
+            writes = await asyncio.to_thread(differing)
+            if not writes:
+                return CommitResult(sha=None)
+            sha = await asyncio.shield(
+                self._write_and_commit(_Plan(writes=writes), message, author or self.config.committer, None)
+            )
+            changes = await asyncio.to_thread(self.git.changed, head_before, sha)
+            rows = await asyncio.to_thread(self._rows_of, changes, head_before, sha, True)
+            await self._reported(sha, rows)
+            pushed = await self._push_after_commit()
+            paths = tuple(sorted(writes))
+        log.info(
+            "git_store.commit_files: files were committed",
+            extra={"extra_data": {**self._log, "sha": sha, "files": len(paths), "pushed": pushed}},
+        )
+        return CommitResult(sha=sha, paths=paths, pushed=pushed)
 
     # ------------------------------------------------------------------ reporting changed rows
 

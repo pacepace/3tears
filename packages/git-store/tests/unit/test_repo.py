@@ -15,6 +15,7 @@ import pytest
 from threetears.git_store import (
     Author,
     Change,
+    FileConflictError,
     GitDurableStore,
     GitRepo,
     GitRepoConfig,
@@ -144,6 +145,68 @@ async def test_hand_edits_are_adopted_by_commit_paths(make_repo: Any) -> None:
     everything = await repo.commit_paths(None, "and the rest")
     assert everything.paths == ("aria/elsewhere.txt",)
     assert (await repo.commit_paths(None, "nothing left")).sha is None
+
+
+async def test_commit_files_writes_the_bytes_as_one_commit(make_repo: Any) -> None:
+    repo = await make_repo()
+    store = GitDurableStore(repo)
+    await store.upsert("keepers", keeper("1", score=1))
+    seen: list[RowChange] = []
+
+    async def record(rows: list[RowChange]) -> None:
+        seen.extend(rows)
+
+    repo.on_rows_changed(record)
+    root = repo.config.work_tree
+    row = (root / "aria/keepers/V3/1.json").read_bytes().replace(b'"score": 1', b'"score": 7')
+    base = repo.git.head()
+    result = await repo.commit_files(
+        {"aria/training-log.md": b"tried a new look\n", "aria/keepers/V3/1.json": row},
+        "log and a fixed score",
+        author=Author("Pace", "pace@example.org"),
+        base=base,
+    )
+    assert result.sha is not None and result.paths == ("aria/keepers/V3/1.json", "aria/training-log.md")
+    assert (root / "aria/training-log.md").read_text() == "tried a new look\n"
+    assert [(r.pk["tile"], r.local) for r in seen] == [("1", True)]  # a row among them is reported
+    stored = await store.fetch_one("keepers", key("1"))
+    assert stored is not None and stored["score"] == 7
+    assert repo.git.dirty() == []
+
+    same = await repo.commit_files({"aria/training-log.md": b"tried a new look\n"}, "no change")
+    assert same.sha is None
+    gone = await repo.commit_files({"aria/training-log.md": None}, "drop the log")
+    assert gone.paths == ("aria/training-log.md",) and not (root / "aria/training-log.md").exists()
+
+
+async def test_commit_files_refuses_a_file_changed_since_its_base(make_repo: Any) -> None:
+    repo = await make_repo()
+    base = (await repo.commit_files({"aria/notes.md": b"one\n", "aria/other.md": b"a\n"}, "first")).sha
+    await repo.commit_files({"aria/notes.md": b"two\n"}, "second", base=base)
+    with pytest.raises(FileConflictError) as refused:
+        await repo.commit_files({"aria/notes.md": b"three\n", "aria/other.md": b"b\n"}, "stale", base=base)
+    assert refused.value.paths == ("aria/notes.md",)
+    assert (repo.config.work_tree / "aria/notes.md").read_text() == "two\n"
+    assert (repo.config.work_tree / "aria/other.md").read_text() == "a\n"  # refused whole
+    ok = await repo.commit_files({"aria/other.md": b"b\n"}, "untouched since base", base=base)
+    assert ok.sha is not None
+    with pytest.raises(GitStoreError, match="has no commit"):
+        await repo.commit_files({"aria/other.md": b"c\n"}, "unknown base", base="0" * 40)
+
+
+async def test_commit_files_refuses_over_a_hand_edit(make_repo: Any) -> None:
+    repo = await make_repo()
+    await repo.commit_files({"aria/notes.md": b"one\n"}, "first")
+    (repo.config.work_tree / "aria/notes.md").write_text("edited by hand\n")
+    with pytest.raises(GitStoreError, match="hand edits"):
+        await repo.commit_files({"aria/notes.md": b"two\n"}, "over it")
+    assert (repo.config.work_tree / "aria/notes.md").read_text() == "edited by hand\n"
+
+
+@pytest.mark.parametrize("path", ["../outside", "/etc/passwd", ".git/config", ""])
+async def test_commit_files_refuses_a_path_outside_the_tree(make_repo: Any, path: str) -> None:
+    with pytest.raises(ValueError):
+        await (await make_repo()).commit_files({path: b"x"}, "no")
 
 
 @pytest.mark.parametrize("path", ["../outside", "/etc/passwd", ".git/config", ""])
