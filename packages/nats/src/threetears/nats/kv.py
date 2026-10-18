@@ -2235,8 +2235,8 @@ class NatsKvBucket:
         gets a FRESH name: a name still held by a consumer the server has not yet reaped would
         refuse the create. It sends a heartbeat while the key is quiet, and when three go missing --
         a broker restart emptied the stream, or the consumer was reaped during a long disconnect --
-        or the server says it ended the consumer, the watch replaces it. The replacement redelivers the key's latest
-        message, so nothing written in between is missed; a redelivery of the message this watch
+        or the server says it ended the consumer, or a delivered message's stream sequence cannot be read, the watch
+        replaces it. The replacement redelivers the key's latest message, so nothing written in between is missed; a redelivery of the message this watch
         last yielded is not yielded again.
 
         A consumer create that fails is logged, naming the grant to check, and retried after
@@ -2640,7 +2640,9 @@ class _KeyWatchConsumer:
 
         A message counts only when it carries this consumer's own ack reply: any client in the
         account can get bytes delivered onto the inbox, and only the server's delivery for this
-        consumer names it. Anything else is dropped and logged.
+        consumer names it. Anything else is dropped and logged. One of its own whose stream
+        sequence cannot be read ends the iteration, with a WARNING, so the caller replaces the
+        consumer rather than run on past a message it never yielded.
 
         :param key: the watched key, carried onto each update; ``None`` for a prefix watch, whose
             updates carry the key their subject names
@@ -2711,32 +2713,40 @@ class _KeyWatchConsumer:
                 # no proof of life: a forgery must not keep a consumer the broker lost looking alive
                 continue
             last_heard = time.monotonic()
-            update = self._update_of(msg, key=key if key is not None else msg.subject[len(key_prefix) :])
-            if update is not None:
-                yield update
+            try:
+                revision = int(msg.metadata.sequence.stream)
+            except (NotJSMessageError, ValueError, IndexError) as exc:
+                # a value with no revision cannot be ordered against the next one, and dropping it
+                # while the consumer runs on leaves a gap the watcher never hears of -- a prefix
+                # watch never even catches up, its pending count waiting on the dropped message. so
+                # the consumer ends here: the caller replaces it, and the replacement redelivers the
+                # latest message of every watched key with its real revision.
+                log.warning(
+                    "key watch message on %s carries no stream sequence; replacing the consumer so the "
+                    "latest message is redelivered with its revision: %s",
+                    self._subject,
+                    exc,
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
+                )
+                return
+            yield self._update_of(
+                msg, key=key if key is not None else msg.subject[len(key_prefix) :], revision=revision
+            )
 
-    def _update_of(self, msg: Msg, *, key: str) -> KvKeyUpdate | None:
-        """the update a delivered data message carries, or ``None`` when its revision cannot be read.
+    @staticmethod
+    def _update_of(msg: Msg, *, key: str, revision: int) -> KvKeyUpdate:
+        """the update a delivered data message carries.
 
         :param msg: the delivered message, already known to be this consumer's own
         :ptype msg: Msg
         :param key: the watched key
         :ptype key: str
-        :return: the update, or ``None`` for a message dropped because its ack reply names no sequence
-        :rtype: KvKeyUpdate | None
+        :param revision: the message's stream sequence, read off its ack reply
+        :ptype revision: int
+        :return: the update
+        :rtype: KvKeyUpdate
         """
         headers = msg.headers or {}
-        try:
-            revision = int(msg.metadata.sequence.stream)
-        except (NotJSMessageError, ValueError, IndexError) as exc:
-            # a value with no revision cannot be ordered against the next one: dropped, not applied
-            log.warning(
-                "key watch message on %s carries no stream sequence; dropped: %s",
-                self._subject,
-                exc,
-                extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
-            )
-            return None
         removed = headers.get(_KV_OPERATION_HEADER) in _KV_REMOVAL_OPERATIONS
         return KvKeyUpdate(key=key, value=None if removed else bytes(msg.data), revision=revision)
 

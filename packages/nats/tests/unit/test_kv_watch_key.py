@@ -336,6 +336,70 @@ class TestReplacingAConsumer:
 
         assert updates[1] == KvKeyUpdate(key=_KEY, value=b"5", revision=1)
 
+    async def test_a_message_whose_sequence_cannot_be_read_replaces_the_consumer(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the message was dropped and the consumer ran on, so the watcher never heard of the gap.
+
+        the replacement redelivers the key's latest message with its real revision.
+        """
+        unsequenced = _delivered(b"3", sequence=7)
+        unsequenced = Msg(
+            _client=None,  # type: ignore[arg-type]
+            subject=unsequenced.subject,
+            reply=unsequenced.reply.replace(".1.7.7.", ".1.not-a-sequence.7."),
+            data=unsequenced.data,
+            headers=None,
+        )
+        bucket, raw, js, _log = _bucket([[unsequenced], [_delivered(b"3", sequence=7)]])
+
+        # a heartbeat far longer than the test's budget: only the unreadable sequence can trigger the replacement
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.kv"):
+            updates = await asyncio.wait_for(
+                _take(bucket.watch_key(key=_KEY, heartbeat=timedelta(seconds=30)), 1), timeout=2
+            )
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
+        assert len(js.creates) == 2
+        assert raw.inboxes[0].unsubscribed
+        assert any("carries no stream sequence; replacing the consumer" in r.getMessage() for r in caplog.records)
+
+    async def test_a_prefix_watch_still_catches_up_past_a_message_whose_sequence_cannot_be_read(self) -> None:
+        """the dropped message was never counted against the consumer's pending, so the watch never said it had caught up."""
+
+        def _on(key: str, data: bytes, *, sequence: str) -> Msg:
+            reply = f"$JS.ACK.{_STREAM}.{_OWN}.1.{sequence}.1.1700000000000000000.0"
+            return Msg(_client=None, subject=f"$KV.{_BUCKET}.snap.{key}", reply=reply, data=data, headers=None)  # type: ignore[arg-type]
+
+        log: list[str] = []
+        raw = _Raw(
+            [
+                [_on("a", b"1", sequence="1"), _on("b", b"2", sequence="?")],
+                [_on("a", b"1", sequence="1"), _on("b", b"2", sequence="2")],
+            ],
+            log,
+        )
+        js = _JetStream(log, pending=2)
+        bucket = NatsKvBucket(client=_Client(raw, js), full_name=_BUCKET, kv=_ForbiddenKv(), ttl=None)  # type: ignore[arg-type]
+
+        seen: list[KvKeyUpdate | None] = []
+        async with aclosing(bucket.watch_prefix(prefix="snap.", heartbeat=timedelta(seconds=30))) as watch:
+
+            async def _until_caught_up() -> None:
+                async for update in watch:
+                    seen.append(update)
+                    if update is None:
+                        return
+
+            await asyncio.wait_for(_until_caught_up(), timeout=2)
+
+        assert seen == [
+            KvKeyUpdate(key="snap.a", value=b"1", revision=1),
+            KvKeyUpdate(key="snap.b", value=b"2", revision=2),
+            None,
+        ]
+        assert len(js.creates) == 2
+
     async def test_a_failed_create_is_logged_naming_the_grant_and_retried(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
