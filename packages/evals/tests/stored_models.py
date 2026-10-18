@@ -30,8 +30,9 @@ from packages.evals.tests.factories import (
     make_rubric_dim,
     make_template,
     make_test_case,
-    minimal_declaration,
+    minimal_aspect_design,
 )
+from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, CostLower, Floor, RateDrop
 from threetears.evals.kernel.campaign import EvalGenerationSlot, EvalSweep, SweepArmRecord, generation_slot_id
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
@@ -241,13 +242,37 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "CatalogRubricDim": make_rubric_dim,
     "EvalAnalysis": make_analysis,
     "EvalAnalysisAttempt": lambda: make_analysis_attempt(faults=[_LEASE_FAULT]),
-    # Its control addressed from a run, so the frozen corpus holds the key beside its pre-image and the predicate.
+    # Two aspects, one exploratory, under one question: its control addressed from a run, so the frozen corpus holds
+    # the key beside its pre-image and the predicate, a margin, a floor of each kind and a recorded call.
     "EvalCampaign": lambda: make_campaign(
-        declared_design=minimal_declaration(
-            control=compute_variant_key(_CONTROL_LEVERS),
-            control_levers=_CONTROL_LEVERS,
-            control_identity_version=IDENTITY_VERSION,
-        )
+        question="Does GLM hold up across both behaviors?",
+        arms=[
+            CampaignArm(
+                label="control",
+                role="control",
+                variant_key=compute_variant_key(_CONTROL_LEVERS),
+                levers=_CONTROL_LEVERS,
+                identity_version=IDENTITY_VERSION,
+            )
+        ],
+        aspects=[
+            Aspect(
+                label="conversation",
+                template_id="t-1",
+                margin=5.0,
+                design=minimal_aspect_design(merit_axes=["quality"]),
+                run_ids=["run-1"],
+                declared_at="2026-10-18T00:00:00+00:00",
+            ),
+            Aspect(label="tool selection", template_id="t-2", run_ids=["run-2"]),
+        ],
+        floors=[
+            Floor(aspect="conversation", clause=RateDrop(max_points=5.0)),
+            Floor(aspect="conversation", clause=CostLower()),
+        ],
+        declared_at="2026-10-18T00:00:00+00:00",
+        declared_by="test:fixture",
+        call=CampaignCall(arm="control", reason="held", called_by="test:fixture", called_at="2026-10-19T00:00:00+00:00"),
     ),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,

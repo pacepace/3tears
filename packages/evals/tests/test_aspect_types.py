@@ -271,6 +271,7 @@ class TestAspectViews:
             design=design,
             question="Is the candidate kinder?",
             control=control,
+            margin=5.0,
             floors=[RateDrop(max_points=5), CostLower()],
         )
 

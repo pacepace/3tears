@@ -691,6 +691,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "GuardrailDirection": values(GuardrailDirection),
         "CampaignDesign.crossing": frozenset({"full", "star"}),
         "ControlDeclaration.stimulus": frozenset({"controlled", "uncontrolled"}),
+        "ArmRole": frozenset({"control", "candidate"}),
         "VariationAxis.generator": frozenset({"enum", "sample", "llm"}),
         "ConversationSpec.turn_scheduler": frozenset({"round_robin", "llm_decided"}),
         "BudgetStop.currency": frozenset({"cost_usd", "metered_calls"}),

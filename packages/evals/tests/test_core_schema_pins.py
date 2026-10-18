@@ -29,7 +29,9 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
 - **The core's membership moved.** A type became core or stopped being core; that is a decision about
   what is kept, recorded in ``CORE_DOC_TYPES`` and here together. The eight types people author left the core
   for the durable space at ``.26`` (``tests/test_durable_schema_pins.py``), and their ``.25`` fixtures moved with
-  them, unedited, to ``tests/fixtures/durable_documents/v15/``.
+  them, unedited, to ``tests/fixtures/durable_documents/v15/``. The campaign followed at durable v16 (``0.71``):
+  its v15 fixture moved out of this released corpus the same way, unedited, its digest with it. A move is the one
+  change a released corpus takes: the file leaves with its bytes, and no other frozen file is touched.
 
 The v15 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
 v15 document yet, so while that is true a baseline change regenerates it in place rather than copying it. (The v14
@@ -85,7 +87,6 @@ PINNED_CORE_SCHEMA_MINOR = 5
 CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_action_job": "c4ba4afa81458b9622c671c6f9e7b68597ec4a61ed6d8b30ab6100630eb17576",
     "eval_analysis_attempt": "f2e2f717c585f848d303f50e6281ce612b0e2ac98ee3ea9d9723b3f2f3336e7d",
-    "eval_campaign": "c57abefb0e6b4b1fb41fbe19c43df62ecdd7c1d3c01d48121fa11b88c0b4417f",
     "eval_generation_slot": "15390327b5b6768b941afae65297ea9f4bb0483519348704c1916ddff87534c1",
     "eval_judge_temperature_check": "cf53d911912573a9e3f018eb60d2ade38aefe8ec3608c865d2cbd9516ea041b5",
     "eval_launch": "048c6cb18b727a32c4c99677266aa082b4b3fe91ace5c2bff8c75f3f976c2bd6",
@@ -130,9 +131,6 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "eval_out_of_run_spend": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "purpose", "launch_group_id", "template_id", "created_at"}
     ),
-    "eval_campaign": frozenset(
-        {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
-    ),
     "eval_sweep": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "cancel_requested_at", "cancel_request_reason"}
     ),
@@ -169,7 +167,6 @@ FIRST_STORED_AT: dict[str, int] = {}
 FIXTURE_DIGESTS: dict[str, str] = {
     "v15/eval_action_job.json": "e60d422e3e3abb8566b70a4aba8045d9edd6db7c59fd2e59195decefa085600a",
     "v15/eval_analysis_attempt.json": "7224e64e5ac9834fe48a1d01b06b14d8385697e166e09e080eabc0a86e6b218c",
-    "v15/eval_campaign.json": "b2f12dfb925d69d599de0d9040a2f1a5bfed57d268aa60ca87cc57eb4c9b46bb",
     "v15/eval_generation_slot.json": "8247c1c6d36cc4e0194b10c9fec78e3136915d498f0c3954b94716c6f514eb6e",
     "v15/eval_judge_temperature_check.json": "8a10da2dd4533731e201eb4f72a651e0b82b849e97edb4f709e809abe5975563",
     "v15/eval_launch.json": "e747653cad60721d6990e48625b511f4ec35ae532828364fa1ff635e3e148c70",

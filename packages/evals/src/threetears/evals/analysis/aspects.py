@@ -6,21 +6,16 @@ aspects is here. An :class:`AspectView` is the campaign's keys and one aspect: i
 :class:`AspectDeclaration`, which is what the campaign declared as that aspect reads it — the one question, the
 control arm, the aspect's margin and design, and the floors on it.
 
-**Over today's stored campaign, through the upgrade.** A stored campaign still holds one template, one bag of runs and
-one design carrying its questions and its control, so it is read as the one aspect it upgrades to
-(:func:`~threetears.evals.kernel.campaign_upgrade.upgrade_campaign_v15`): the same rules a stored campaign is upgraded
-by, so the view and the upgrade cannot disagree about what a campaign declared.
+**One reading of every stored campaign.** A campaign stored before aspects existed is upgraded on its stored read
+(:func:`~threetears.evals.kernel.campaign_upgrade.upgrade_campaign_v15`, registered as the durable v15 step), so by the
+time a view is taken every campaign holds its aspects, and the view reads them as stored.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
-
 from pydantic import Field
 
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalDocumentModel
@@ -88,14 +83,7 @@ def aspect_views(campaign: EvalCampaign) -> list[AspectView]:
     :return: One view per aspect; a campaign stored before aspects existed has one, labelled with its behavior.
     :rtype: list[AspectView]
     """
-    upgraded = upgrade_campaign_v15(campaign.model_dump(mode="json"))
-    arms = [CampaignArm.model_validate(arm) for arm in upgraded["arms"]]
-    control = next((arm for arm in arms if arm.role == "control"), None)
-    floors = [Floor.model_validate(floor) for floor in upgraded["floors"]]
-    return [
-        _view(campaign, Aspect.model_validate(aspect), upgraded, control=control, floors=floors)
-        for aspect in upgraded["aspects"]
-    ]
+    return [_view(campaign, aspect) for aspect in campaign.aspects]
 
 
 def aspect_view(campaign: EvalCampaign, aspect: str | None = None) -> AspectView:
@@ -127,27 +115,20 @@ def aspect_view(campaign: EvalCampaign, aspect: str | None = None) -> AspectView
     return found
 
 
-def _view(
-    campaign: EvalCampaign,
-    aspect: Aspect,
-    upgraded: dict[str, Any],
-    *,
-    control: CampaignArm | None,
-    floors: Sequence[Floor],
-) -> AspectView:
+def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
     """One aspect's view over the campaign it belongs to."""
     declared = (
         None
         if aspect.design is None
         else AspectDeclaration(
-            question=upgraded["question"],
-            asked_at=upgraded["declared_at"],
+            question=campaign.question,
+            asked_at=campaign.declared_at,
             design=aspect.design,
-            control=control,
+            control=campaign.control,
             margin=aspect.margin,
-            floors=[floor for floor in floors if floor.aspect == aspect.label],
+            floors=[floor for floor in campaign.floors if floor.aspect == aspect.label],
             declared_at=aspect.declared_at,
-            declared_by=upgraded["declared_by"],
+            declared_by=campaign.declared_by,
         )
     )
     return AspectView(

@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from packages.evals.tests.factories import make_campaign, minimal_declaration
+from packages.evals.tests.factories import minimal_declaration
 from threetears.evals.kernel.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL, upgrade_campaign_v15
 from threetears.evals.kernel.declaration import (
     Aspect,
     CampaignArm,
+    CampaignDesign,
     CostLower,
     DecisionRule,
     Floor,
@@ -27,13 +29,13 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.values import SweepableValue
-from threetears.evals.schema.versioning import CORE_ADDRESSING_FIELDS
+from threetears.evals.schema.versioning import DURABLE_ADDRESSING_FIELDS
 
 #: The frozen v15 campaign, as the release that shipped the corpus wrote it.
-_FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "core_documents" / "v15" / "eval_campaign.json"
+_FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
 
 #: The fields the store reads a campaign by, which no step may touch.
-_ADDRESSING = CORE_ADDRESSING_FIELDS["eval_campaign"]
+_ADDRESSING = DURABLE_ADDRESSING_FIELDS["eval_campaign"]
 
 #: A control's pre-image, and the key it digests to.
 _LEVERS = {"model": SweepableValue.of("glm", display="GLM")}
@@ -45,11 +47,24 @@ def _frozen() -> dict[str, Any]:
     return loaded
 
 
+def _v15(
+    declared_design: CampaignDesign | None = None, *, template_id: str | None = None, run_ids: Sequence[str] = ()
+) -> dict[str, Any]:
+    """A stored v15 campaign: the frozen one's fields, holding ``template_id``, ``run_ids`` and this design."""
+    stored = _frozen()
+    stored.update(
+        template_id=template_id,
+        run_ids=list(run_ids),
+        declared_design=None if declared_design is None else declared_design.model_dump(mode="json"),
+    )
+    return stored
+
+
 def _stored(*questions: Question, control: bool = True, **campaign: Any) -> dict[str, Any]:
-    """A campaign this build stores, its design asking ``questions``, as its stored document."""
+    """A v15 campaign, its design asking ``questions``, as its stored document."""
     design = minimal_declaration(control=_KEY, control_levers=_LEVERS) if control else minimal_declaration()
     design = design.model_copy(update={"questions": list(questions)})
-    return make_campaign(declared_design=design, **campaign).to_dict()
+    return _v15(design, **campaign)
 
 
 def _floors(upgraded: dict[str, Any]) -> list[Floor]:
@@ -212,7 +227,7 @@ class TestACampaignWithNoRule:
         assert upgrade_campaign_v15(_stored(control=False))["arms"] == []
 
     def test_one_with_no_design_is_one_exploratory_aspect(self) -> None:
-        stored = make_campaign(template_id="template-1", run_ids=["run-1", "run-2"]).to_dict()
+        stored = _v15(template_id="template-1", run_ids=["run-1", "run-2"])
         upgraded = upgrade_campaign_v15(stored)
 
         aspect = _aspect(upgraded)
@@ -229,7 +244,7 @@ class TestACampaignWithNoRule:
         pytest.param(
             _stored(Question(text="Switch?", decision=DecisionRule(clauses=(RateDrop(max_points=5),)))), id="ruled"
         ),
-        pytest.param(make_campaign(run_ids=["run-1"]).to_dict(), id="exploratory"),
+        pytest.param(_v15(run_ids=["run-1"]), id="exploratory"),
     ],
 )
 class TestTheStepIsPure:

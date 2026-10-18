@@ -9,14 +9,15 @@ needs, and that a run produced or binds is in the core (:data:`CORE_DOC_TYPES`, 
 :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`): the run, its results and traces, the out-of-run spend
 ledger, the campaign a person declared and gathered runs into, and the records of what a sweep and each analysis
 generation came to, which attempt holds a campaign's generation slot, and the records of every other job — a
-launch, a second judge's pass, a judge temperature comparison, a host action. A core document is read only at
+launch, a second judge's pass, a judge temperature comparison, a host action. (The campaign itself left the core
+for the durable space at durable v16: what a person set out to learn is authored, and outlives a core reset.) A core document is read only at
 this build's major (:data:`CORE_BASELINE_VERSION` is :data:`CORE_SCHEMA_VERSION`), and no core upgrader exists: a
 core major is a baseline reset, which moves both numbers, refuses every core document below them by name, and is
 followed by deleting them (``EvalStorage.reset_core``). A newer minor of the same major is read (below).
 
 **What people author is durable** (:data:`DURABLE_DOC_TYPES`, the ``durable`` entries of the registry): the
-templates, rubric dims and judge configs (with their tombstones), case sets and test cases, and calibration
-ratings. Its version space is its own, forked from the core at core v15 (:data:`DURABLE_SCHEMA_VERSION`), and it
+templates, rubric dims and judge configs (with their tombstones), case sets and test cases, calibration ratings,
+and campaigns. Its version space is its own, forked from the core at core v15 (:data:`DURABLE_SCHEMA_VERSION`), and it
 obeys every rule below that the core does, with two differences that make it outlive every core baseline:
 
 - **Its baseline never moves.** :data:`DURABLE_BASELINE_VERSION` is 15 forever (``tests/test_durable_schema_pins.py``
@@ -30,7 +31,8 @@ durable version, so a core change to a shape both spaces embed turns the durable
 document needs a core document to be read, rendered or calibrated**: a durable document's references to core
 documents (a rating's ``run_id`` and ``result_id``) are provenance and may dangle once a reset deletes what they
 name; references the other way (a run's template and judge configs, a result's test case) are fine, because
-durable outlives core.
+durable outlives core. A campaign's run ids are provenance of that kind: a core reset leaves the campaign, its
+question, arms, aspects and floors, naming runs that no longer resolve, which its view reports as unresolved.
 
 **Everything else is regenerable.** Analyses, insights and judge profiles are derived from the core, so they keep
 the strict rule they always had: a document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is
@@ -157,6 +159,8 @@ the document, so extending one is a major. Each, and why:
   method that a reader trusts or re-derives by.
 - ``DeclaredMeritAxis``, ``GuardrailDirection``, ``CampaignDesign.crossing``, ``ControlDeclaration.stimulus`` — the
   semantics of an analysis design.
+- ``ArmRole`` — which arm of a campaign every other is read against; an arm of a role an older build cannot name
+  would be read against nothing, or as the control.
 - The decision rule's clause ``kind`` tags (``rate_drop``, ``cost_lower``) — what a declared rule switches on; a new
   clause is a new model, which an older build would have to settle without knowing what it asks.
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
@@ -327,15 +331,15 @@ the third-party quota of every corpus again.
 #: The kept documents, by ``doc_type``: the ``kept`` entries of
 #: :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`, derived so the registry is the one place a type's
 #: lifecycle is decided. Embedded shapes (a result's rubric scores, usage rows and goal-state outcomes, a run's
-#: context components and subject snapshot, a ledger's calls, a campaign's declared design, a sweep's arms) are
-#: core through their parent.
+#: context components and subject snapshot, a ledger's calls, a sweep's arms) are core through their parent.
 CORE_DOC_TYPES: Final[frozenset[str]] = frozenset(
     doc_type for doc_type, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "kept"
 )
 
 #: What people author, by ``doc_type``: the ``durable`` entries of
 #: :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`, derived as :data:`CORE_DOC_TYPES` is. Embedded shapes
-#: (a template's rubric dims, a rating's rated content) are durable through their parent.
+#: (a template's rubric dims, a rating's rated content, a campaign's arms, aspects, designs and floors) are durable
+#: through their parent.
 DURABLE_DOC_TYPES: Final[frozenset[str]] = frozenset(
     doc_type for doc_type, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "durable"
 )
@@ -360,7 +364,6 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "eval_trace": _ADDRESSED_EVERYWHERE
         | {"result_id", "eval_run_id", "judge_evidence", "judged_artifact", "schema_minor"},
         "eval_out_of_run_spend": _ADDRESSED_EVERYWHERE | {"purpose", "launch_group_id", "template_id", "created_at"},
-        "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
         "eval_sweep": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_analysis_attempt": _ADDRESSED_EVERYWHERE
         | {"campaign_id", "created_at", "cancel_requested_at", "cancel_request_reason"},
@@ -388,6 +391,7 @@ DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTyp
         "rubric_dim_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
         "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
         "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
+        "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
     }
 )
 
@@ -429,7 +433,19 @@ DURABLE_BASELINE_VERSION: Final[int] = 15
 #: - **v15** — the fork from core v15 (``v0.68.0-evaladopt.26``): the eight types people author left the core with
 #:   their shapes and their stored bytes unchanged, so every durable document ``.25`` wrote as core v15 reads here as
 #:   durable v15 with no step, and ``.25`` reads this build's durable documents as core v15 at a newer minor.
-DURABLE_SCHEMA_VERSION: int = 15
+#: - **v16** — a campaign is durable, and asks one question of one or more aspects (``v0.71.0``): ``eval_campaign``
+#:   left the core with its stored bytes, and its shape is now ``question``, ``arms`` (``CampaignArm``, the control
+#:   first), ``aspects`` (``Aspect``: label, template, margin, design, runs, when its design was declared),
+#:   ``floors`` (``Floor``), ``declared_at`` and ``declared_by`` (when, and by whom, the question was asked in full)
+#:   and ``call`` (``CampaignCall``); ``template_id``, ``run_ids`` and ``declared_design`` are gone. The step
+#:   (``upgrade_campaign_v15``) reads a v15 campaign, core or durable, as one aspect labelled with its behavior; a
+#:   question's id, lineage and retirement are dropped with it, since the campaign asks one question. Every other
+#:   durable type passes through unchanged but for its number. Costs, recorded rather than avoided: a build before
+#:   this one refuses every durable document this one writes (a durable major is never read back by an older
+#:   build, so a fleet does not roll back past it once it has written); a core baseline reset no longer deletes
+#:   campaigns, which keep naming the runs it deleted; and a host whose ``RoutedDocumentStore`` routes by
+#:   lifecycle or origin finds campaigns placed anew and runs ``RoutedDocumentStore.relocate`` before starting.
+DURABLE_SCHEMA_VERSION: int = 16
 """The durable major this build writes, and the newest a read of a durable document accepts."""
 
 #: The durable minor this build writes within :data:`DURABLE_SCHEMA_VERSION`, under the core's minor rules. Every
@@ -471,12 +487,36 @@ DURABLE_SCHEMA_VERSION: int = 15
 #:   seed or a definition reset wrote, so a case whose corpus relabelled its stratum reads stale and one an operator
 #:   relabelled reads customized. In no digest pre-image and in no identity key. An older build that ignores this
 #:   field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 5
+#: - **v16.0** — the campaign's move (above): every other durable shape exactly as v15.5 stored it.
+DURABLE_SCHEMA_MINOR: int = 0
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
+
+def _campaign_of_aspects(document: dict[str, Any]) -> dict[str, Any]:
+    """The v15 → v16 step: a stored v15 campaign as the campaign of one aspect it reads as.
+
+    :func:`~threetears.evals.kernel.campaign_upgrade.upgrade_campaign_v15`, imported when a step first runs rather
+    than when this module loads, since the kernel imports this module.
+
+    :param document: The stored v15 campaign.
+    :ptype document: dict[str, Any]
+    :return: The campaign at the v16 shape.
+    :rtype: dict[str, Any]
+    """
+    from threetears.evals.kernel.campaign_upgrade import upgrade_campaign_v15
+
+    return upgrade_campaign_v15(document)
+
 
 #: The registered durable steps, oldest first: ``[s.from_version for s in DURABLE_UPGRADERS]`` is
 #: ``range(DURABLE_BASELINE_VERSION, DURABLE_SCHEMA_VERSION)``. A constant, so no import registers a step.
-DURABLE_UPGRADERS: tuple[CoreUpgrader, ...] = ()
+DURABLE_UPGRADERS: tuple[CoreUpgrader, ...] = (
+    CoreUpgrader(
+        from_version=15,
+        doc_types=frozenset({"eval_campaign"}),
+        reason="a campaign asks one question of one or more aspects; a v15 campaign reads as one aspect",
+        upgrade=_campaign_of_aspects,
+    ),
+)
 
 
 @dataclass(frozen=True)

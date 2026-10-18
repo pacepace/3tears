@@ -26,7 +26,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Telem
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel.authored import AuthoredAnalysis
-from threetears.evals.kernel.campaign_upgrade import UPGRADED_CONTROL_LABEL
+from threetears.evals.kernel.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
     EvalAnalysisAttempt,
@@ -35,14 +35,13 @@ from threetears.evals.kernel.campaign import (
     GenerationProvenance,
 )
 from threetears.evals.kernel.declaration import (
+    Aspect,
     AspectDesign,
     CampaignArm,
     CampaignDesign,
     ControlDeclaration,
     DecisionClause,
-    DecisionRule,
-    Question,
-    RateDrop,
+    Floor,
     SweptAxis,
 )
 from threetears.evals.schema import SubjectSnapshot
@@ -73,6 +72,7 @@ from threetears.evals.schema.models import (
     WorldSeed,
     VariationAxis,
     eval_trace_doc_id,
+    utc_now_iso,
 )
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import omit_paths
@@ -487,13 +487,46 @@ def make_rubric_dim(**overrides: Any) -> CatalogRubricDim:
     return CatalogRubricDim(**fields)
 
 
+#: The keywords a campaign took before it held aspects, which :func:`make_campaign` still reads as one aspect.
+_ONE_ASPECT_KEYWORDS = ("template_id", "run_ids", "declared_design")
+
+
 def make_campaign(**overrides: Any) -> EvalCampaign:
-    """Create an ``EvalCampaign`` in the default scope, holding no runs."""
+    """Create an ``EvalCampaign`` in the default scope, holding no runs.
+
+    A test may still describe a campaign of one aspect by the keywords a campaign took before it held aspects:
+    ``template_id``, ``run_ids`` and ``declared_design`` (a ``CampaignDesign``). They are read as a stored v15
+    campaign is, through ``upgrade_campaign_v15``, so the campaign built is the one such a campaign upgrades to: one
+    aspect labelled with ``behavior``, its control arm, its question and its floors. A test about aspects passes
+    ``aspects`` (or uses :func:`make_aspect_campaign`) instead, and never both.
+
+    :param overrides: Any campaign field, or the one-aspect keywords above.
+    :ptype overrides: Any
+    :return: The campaign.
+    :rtype: EvalCampaign
+    :raises ValueError: The one-aspect keywords are given beside ``aspects``.
+    """
     fields: dict[str, Any] = dict(
         scope_id="uni-1", name="campaign", subject_id="subject-1", behavior="conversation", created_by="test:fixture"
     )
+    legacy = {key: overrides.pop(key) for key in _ONE_ASPECT_KEYWORDS if key in overrides}
     fields.update(overrides)
-    return EvalCampaign(**fields)
+    if "aspects" in fields:
+        if legacy:
+            raise ValueError(f"pass aspects or the one-aspect keywords {sorted(legacy)}, not both")
+        return EvalCampaign(**fields)
+    design = legacy.get("declared_design")
+    stored = upgrade_campaign_v15(
+        {
+            "behavior": fields["behavior"],
+            "template_id": legacy.get("template_id"),
+            "run_ids": list(legacy.get("run_ids", [])),
+            "declared_design": design.model_dump(mode="json") if isinstance(design, CampaignDesign) else design,
+        }
+    )
+    for key in ("question", "arms", "aspects", "floors", "declared_at", "declared_by"):
+        fields.setdefault(key, stored[key])
+    return EvalCampaign.model_validate(fields)
 
 
 def minimal_aspect_design(*, axis_id: str | None = None, **overrides: Any) -> AspectDesign:
@@ -530,18 +563,11 @@ def make_aspect_campaign(
     floors: Sequence[DecisionClause] = (),
     **overrides: Any,
 ) -> EvalCampaign:
-    """A stored campaign of ONE aspect, built from what the aspect declares, whatever shape the campaign is stored in.
+    """A stored campaign of ONE aspect, built from what the aspect declares.
 
     A per-aspect test builds its campaign here and reads it through ``aspect_view``, so it never depends on how a
-    campaign holds its aspects. While a campaign is stored as one template, one bag of runs and one design, the
-    aspect is that campaign read through its upgrade, which bounds what this can build:
-
-    - ``label`` is the campaign's ``behavior``, which the one aspect is labelled with.
-    - ``margin`` is derived, never stored: None reads the ``max_points`` of the first ``RateDrop`` in ``floors``
-      that names no reading, as an upgraded aspect's is; a number must equal that, or no floor yields it.
-    - ``floors`` and the merit axes need a ``question``: the stored shape keeps a rule and its axes on one.
-    - ``design`` None is an exploratory aspect, which declares no question, control or floor.
-    - ``control`` is the control arm labelled ``UPGRADED_CONTROL_LABEL``: the stored shape names a control by key.
+    campaign holds its aspects. The campaign's ``behavior`` defaults to ``label``; a declared aspect and the
+    campaign's question are dated now, an exploratory one (``design`` None) is dated never.
 
     :param label: The aspect's label.
     :ptype label: str
@@ -555,59 +581,38 @@ def make_aspect_campaign(
     :ptype question: str
     :param control: The campaign's control arm; None declares none.
     :ptype control: CampaignArm | None
-    :param margin: The aspect's margin, as above.
+    :param margin: The aspect's margin; None declares none.
     :ptype margin: float | None
     :param floors: The clauses of the floors on the aspect, in order.
     :ptype floors: Sequence[DecisionClause]
-    :param overrides: Any other campaign field but ``behavior``, ``template_id``, ``run_ids`` and ``declared_design``.
+    :param overrides: Any other campaign field but ``aspects``, ``arms``, ``floors`` and ``question``.
     :ptype overrides: Any
     :return: The campaign.
     :rtype: EvalCampaign
-    :raises ValueError: The arguments declare what this stored shape cannot hold.
     """
     aspect_design = minimal_aspect_design() if design is _MINIMAL_DESIGN else design
-    fields: dict[str, Any] = dict(behavior=label, template_id=template_id, run_ids=list(run_ids))
-    if aspect_design is None:
-        if question or control is not None or floors or margin is not None:
-            raise ValueError("an exploratory aspect declares no question, control, margin or floor")
-        return make_campaign(**fields, **overrides)
-    if not isinstance(aspect_design, AspectDesign):
+    if aspect_design is not None and not isinstance(aspect_design, AspectDesign):
         raise TypeError(f"design is an AspectDesign or None, not {type(aspect_design).__name__}")
-    derived = next(
-        (clause.max_points for clause in floors if isinstance(clause, RateDrop) and clause.reading is None), None
-    )
-    if margin is not None and margin != derived:
-        raise ValueError(
-            f"a stored campaign's aspect reads its margin off its first floor that reads every pass rate ({derived}); "
-            f"pass RateDrop(max_points={margin}) first in floors"
-        )
-    if not question and (floors or aspect_design.merit_axes):
-        raise ValueError("a stored campaign keeps floors and merit axes on a question; pass the question")
-    questions = (
-        [
-            Question(
-                text=question,
-                decision=DecisionRule(clauses=tuple(floors)) if floors else None,
-                merit_axes=list(aspect_design.merit_axes),
+    now = utc_now_iso() if aspect_design is not None else None
+    fields: dict[str, Any] = dict(
+        behavior=label,
+        question=question,
+        arms=[control] if control is not None else [],
+        aspects=[
+            Aspect(
+                label=label,
+                template_id=template_id,
+                margin=margin,
+                design=aspect_design,
+                run_ids=list(run_ids),
+                declared_at=now,
             )
-        ]
-        if question
-        else []
+        ],
+        floors=[Floor(aspect=label, clause=clause) for clause in floors],
+        declared_at=now,
     )
-    if control is not None and (control.label, control.role) != (UPGRADED_CONTROL_LABEL, "control"):
-        raise ValueError(
-            f"a stored campaign names its control by key alone, so it reads back as role 'control' labelled "
-            f"{UPGRADED_CONTROL_LABEL!r}; pass that arm"
-        )
-    shared = {name: getattr(aspect_design, name) for name in AspectDesign.model_fields if name != "merit_axes"}
-    fields["declared_design"] = CampaignDesign(
-        **shared,
-        questions=questions,
-        control=control.variant_key if control is not None else None,
-        control_levers=control.levers if control is not None else None,
-        control_identity_version=control.identity_version if control is not None else None,
-    )
-    return make_campaign(**fields, **overrides)
+    fields.update(overrides)
+    return make_campaign(**fields)
 
 
 def empty_bundle(**overrides: Any) -> AnalysisContextBundle:

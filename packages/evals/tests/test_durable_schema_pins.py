@@ -1,8 +1,8 @@
 """The durable space's shape is pinned, and it is the one space where a major must ship an upgrader.
 
 ``schema/versioning.py`` splits what people author (templates, rubric dims, judge configs and their tombstones, case
-sets, test cases, calibration ratings) out of the evidence core into a version space of its own, forked from core
-v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
+sets, test cases, calibration ratings, and since durable v16 campaigns) out of the evidence core into a version space
+of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
 this file is the gate that holds it to its promise:
 
 - every durable type's validation JSON schema, embedded shapes included, is pinned to a digest under the durable
@@ -12,7 +12,8 @@ this file is the gate that holds it to its promise:
 - every durable version from the baseline has a ledger entry and an upgrader, and every minor's entry carries
   ``MINOR_ADDITIVITY_SENTENCE``;
 - the frozen corpus under ``tests/fixtures/durable_documents/`` (the ``.25`` documents, moved here unedited from the
-  core corpus) keeps reading under this build.
+  core corpus, and the campaign's v15 document, moved the same way when it became durable at v16) keeps reading
+  under this build, an older major's through the registered steps.
 
 **When this goes red**: a durable shape moved, so bump ``DURABLE_SCHEMA_MINOR`` (additive only, with a ledger line
 ending in the sentence) or ``DURABLE_SCHEMA_VERSION`` (copy ``durable_documents/v{N}/`` to ``v{N+1}/`` first, append
@@ -44,27 +45,29 @@ from threetears.evals.schema.versioning import (
     DURABLE_UPGRADERS,
     DURABLE_VERSION_SPACE,
     CoreUpgrader,
+    upgrade_durable_document,
 )
 
 #: The durable baseline, which never moves.
 NEVER_MOVES = 15
 
 #: The ``DURABLE_SCHEMA_VERSION`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_VERSION = 15
+PINNED_DURABLE_SCHEMA_VERSION = 16
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 5
+PINNED_DURABLE_SCHEMA_MINOR = 0
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "6646e761e3a67aa254a02978fe732abc8370c2f8fe93cb147a7f32cbdf6176bb",
-    "case_set": "980745df7981bc641f340c260811351fc72058245416ae61dbad1aac68f327cc",
-    "eval_template": "5a6ffda3e3460d0942af2e8faa81b215d7fee6568dda0dddbdf426b3e9faad6b",
-    "eval_test_case": "978b35500aa33540a41ba69099870ca6b488dc897791b412826ab6f9e3482c4a",
-    "judge_config": "01b1c0246bc5f7d8186f092d39c26d06080c49ebbad4b6b657149b5206c5081a",
-    "judge_config_tombstone": "737c5dac2ef12f0a0cf7726109b3490545a0fa21ab2dfdbba7213fe36b24b659",
-    "rubric_dim": "2df412fff0485883d042ec75a99c37aed9b3f4547fdfe23818b370478fd89e5b",
-    "rubric_dim_tombstone": "3a9f0d2feda63a8ccd04500b98f6fec7a815f8cb8a1d98be27ee70980861b4ac",
+    "calibration_rating": "eba355b7d100ad86fc1b3cd0b29af82393a8bd049a0a8fe2fe45a1f149d3c055",
+    "case_set": "0bff3e60a900a9f3439007960fd15ad66b7e0081c6a1d60ca95fe17cfe6c4633",
+    "eval_campaign": "497d0c7efdef144fbc92acef3f95facafcf71d3d370305b580dfe3b58e5efb6a",
+    "eval_template": "c288c8eaf42ce174839c0e795918bef339752462af56203ce6269eece3211191",
+    "eval_test_case": "03cd7a0d17c6da66c76234972cce33e9bfae14de0c8e825230073030fa95c493",
+    "judge_config": "4c87095eeee288755adaf9aa34b35c0bfcdc2bc0246070e5452575197160a5a4",
+    "judge_config_tombstone": "dc5928b52ed9868544111304b3995d03c3fb15483040945551408861b28b1666",
+    "rubric_dim": "4fd8290740c9a6cdf2b61e49ac5644b6807f3391781180b0d1e80d428f555e3e",
+    "rubric_dim_tombstone": "dc4251ee2888bf2a6a00ec11b67d0cf42d465dbe6004366feceeaa7e16aa3ab8",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.
@@ -91,21 +94,35 @@ PINNED_DURABLE_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "rubric_dim_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
     "judge_config_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
     "case_set": frozenset({"id", "doc_type", "schema_version", "scope_id", "name", "version"}),
+    "eval_campaign": frozenset(
+        {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
+    ),
 }
 
 #: The frozen durable corpus: one directory per durable major, one stored document per durable type.
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "durable_documents"
 
-#: Each frozen durable fixture's sha256: the ``.25`` documents, moved from the core corpus with these exact bytes.
+#: Each frozen durable fixture's sha256: the ``.25`` documents and the campaign's v15 one, moved from the core corpus
+#: with these exact bytes, and the v16 corpus this build writes.
 FIXTURE_DIGESTS: dict[str, str] = {
     "v15/calibration_rating.json": "894f74e31dcdb42e26cb949b080cbcb2e76bb20d8361ed1c17bc74a9c7864e7e",
     "v15/case_set.json": "1a30692918a1dcd4ff1702bf3c2095133e6652021e30961f29a8528a673cd082",
+    "v15/eval_campaign.json": "b2f12dfb925d69d599de0d9040a2f1a5bfed57d268aa60ca87cc57eb4c9b46bb",
     "v15/eval_template.json": "4cf70858e2c14deabf3af88055d8e31dcba1bbb0253ae953baa23998be8abebf",
     "v15/eval_test_case.json": "504dcf34cff61440e782e30322cf9cc42cf681fbbb866faddff9aef48ee405cd",
     "v15/judge_config.json": "d3f29495b08a71effd16ad0b64b9f28ccff653aa2e21bf858a795099af4a1c96",
     "v15/judge_config_tombstone.json": "b75f4d2f2597723a72655afe3cf852de1bcd21bc43c90c18c841e50264d33a4b",
     "v15/rubric_dim.json": "b65c88b862dddf2723ea3972be8381cca002131d7d9ae524418602d1bc2f6378",
     "v15/rubric_dim_tombstone.json": "da3fb751ac55bf182f339faf233fc65aeeb0d467044c78ee9709844761042cef",
+    "v16/calibration_rating.json": "085d1e7f28b15a7b6fffc850dca73c88bb7afcc543169367fd42bb1b21ee775c",
+    "v16/case_set.json": "cae61566ce663fc6eff2ddb4604e6b5a066e4b347bd998ea391647e2dcb7730c",
+    "v16/eval_campaign.json": "ab9796d1031d859adda87b69ca99d3e9e25a1a6bd7f3e0d3e341a8697280d24a",
+    "v16/eval_template.json": "0ffbc44743965bd0786cf8d8ad0d2482cc0c96a8a0628bd93ab82cca6dcdd113",
+    "v16/eval_test_case.json": "11c704d4c76a2ad0fa591720bf388b7c489484c4ab29182085a8e50fe6610e77",
+    "v16/judge_config.json": "62d655a09e85d57fd1142bc3ea3e2241f7293718e7300d4f53ced8406bbb36a9",
+    "v16/judge_config_tombstone.json": "4831dcf1c41fa3725f578d2119d046473c832cec7fb25a3ab04fa57d5b26eea7",
+    "v16/rubric_dim.json": "34a340255217cbafb3b9be7c6517d3b200b77aa07aedf77c32f06b372db3bc45",
+    "v16/rubric_dim_tombstone.json": "374d32a4b7497c976dec064095209bffd224d861dac6f17b492366e60034ad09",
 }
 
 
@@ -193,7 +210,7 @@ def test_every_durable_major_ships_its_upgrader() -> None:
 
 
 def test_a_durable_major_without_an_upgrader_is_named() -> None:
-    """The rule above, on a made-up chain, so it is seen firing while the real chain is empty at the baseline."""
+    """The rule above, on a made-up chain, so it is seen firing whatever the real chain holds."""
     step = CoreUpgrader(from_version=15, doc_types=frozenset({"eval_template"}), reason="r", upgrade=dict)
 
     assert _steps_missing((), 15, 16) == [15]
@@ -256,9 +273,32 @@ def test_every_frozen_durable_document_reads_under_this_build(path: Path) -> Non
     if (document["schema_version"], document.get("schema_minor", 0)) == (DURABLE_SCHEMA_VERSION, DURABLE_SCHEMA_MINOR):
         assert read.to_dict() == document, "a document at the current version reads back whole"
     else:
-        # A later minor's fields are written at their defaults, at any depth (a template's dims gained ``judge``);
-        # every value the document stored is kept as it was.
+        # An older major is read through the registered steps, which rewrite only the types they name; a later
+        # minor's fields are then written at their defaults, at any depth (a template's dims gained ``judge``). Every
+        # value the stepped document holds is kept as it was.
         rewritten = read.to_dict()
-        assert keeps({key: value for key, value in document.items() if key != "schema_minor"}, rewritten), (
-            "a document at an older minor reads back with every stored value as it was"
+        stepped = upgrade_durable_document(document)
+        assert keeps({key: value for key, value in stepped.items() if key != "schema_minor"}, rewritten), (
+            "a document at an older version reads back with every value its upgrade holds as it was"
         )
+
+
+def test_a_frozen_v15_campaign_reads_as_one_aspect() -> None:
+    """The one type the v15 step rewrites: its template, runs and design move into one aspect labelled behavior."""
+    document = json.loads((FIXTURES / "v15" / "eval_campaign.json").read_text(encoding="utf-8"))
+    campaign = _durable_models()["eval_campaign"].from_dict(document)
+
+    (aspect,) = campaign.aspects  # type: ignore[attr-defined]
+    assert aspect.label == document["behavior"]
+    assert aspect.template_id == document["template_id"]
+    assert aspect.run_ids == document["run_ids"]
+    assert campaign.arms[0].variant_key == document["declared_design"]["control"]  # type: ignore[attr-defined]
+    assert "declared_design" not in campaign.to_dict()
+
+
+def test_every_other_durable_type_passes_the_v15_step_unchanged() -> None:
+    for path in sorted((FIXTURES / "v15").glob("*.json")):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if document["doc_type"] == "eval_campaign":
+            continue
+        assert upgrade_durable_document(document) == {**document, "schema_version": DURABLE_SCHEMA_VERSION}
