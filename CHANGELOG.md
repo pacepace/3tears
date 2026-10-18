@@ -8,6 +8,24 @@ packages (bumped in lock-step).
 
 ## v0.71.0 -- 2026-10-17
 
+### 3tears-evals: an unsettled rule states the cases that would settle it, and a memo no longer guesses them
+
+- **An unsettled decision rule says the independent cases a switch needs, computed** (#846). For each clause left
+  open, code scales the bounded interval the clause was read on by 1/sqrt(n) over independent cases: the cases that
+  would show it holds if the arms do not differ (the optimistic bound) and if they differ as observed. The verdict
+  line says it once (`A switch needs about 107 independent cases if the arms do not differ, 205 if they differ as
+  observed; only new cases count, not repeats.`), and the Decision section tables each clause's counts with their
+  cost (`To switch`), then says each is about, and, where every count is past what the template holds, that new
+  cases must be written. A drop at or past the margin says no number of cases would show it within. Repeats never
+  enter a count. A settled clause, or a settled rule, projects nothing.
+- **A memo's next step may not state a sample size of its own.** Discodon's character campaign (12 cases, a 10-point
+  margin) proposed "30 cases ... would formally settle question q1 for roughly $0.40"; its own interval needed about
+  107 cases with no true difference, so the writer had understated the cost by 4-15x. A next step's numeral beside
+  cases that the projection does not render, or a cost beside one, is now replaced by code's sentence (dropped from
+  its `why`) and listed in the methods.
+- Breaking for a host matching on the unsettled verdict line or the Decision section's blocks: the migration notes
+  give the strings.
+
 ### 3tears-evals: a decision rule's rate clause reads keep only on a drop shown past its margin
 
 - **A `RateDrop` rate has three states, and only one reads as a regression** (#845). Shown to break: every arm at
