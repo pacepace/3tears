@@ -10,7 +10,7 @@ arms a finding cites is structure: the cells of its evidence rows and the arms o
 this title name" is read off the words, and only by the names the bundle itself gives each arm
 (:func:`arm_vocabulary`): the display of each level that tells it apart (:func:`~threetears.evals.analysis.arms.distinguishing_axes`),
 and for a provider-qualified level (``acme/ling-3.1-flash``) the part after its last ``/`` too, since that is the
-model's own name. A display's trailing parenthetical qualifier is not part of the name a title writes
+model's own name. A labelled display's label (one token, then ``(label)``) is not part of the name a title writes
 (``deepseek-v4.1-flash (production)`` is written "deepseek-v4.1-flash"), so the display with it dropped is a name too,
 where exactly one display yields it and no level carries it whole: two arms of one model told apart by their labels
 (``m (production)``, ``m (tuned)``) share the stripped name, which then names neither. Nothing invents an alias: a writer shortening ``gpt-6-luna-pro`` to "Luna Pro" names nothing here,
@@ -55,8 +55,8 @@ _WORDS = re.compile(r"[^\W\d_]+|\d+")
 _DASHES = r"\-\u2010-\u2014"
 
 #: What may join two of a name's words in a title: nothing, or up to two spaces, hyphens or dashes, dots, slashes,
-#: colons or underscores.
-_JOIN = rf"[\s{_DASHES}_./:]{{0,2}}"
+#: colons, underscores or parentheses (a display's qualifier, ``Ling 3.1 Flash (tuned)``, written as the page shows it).
+_JOIN = rf"[\s{_DASHES}_./:()]{{0,2}}"
 
 #: A letter or digit.
 _ALNUM = r"[^\W_]"
@@ -116,21 +116,36 @@ def _is_quantity(axis: str, form: str) -> bool:
 
 
 def _forms(display: str) -> list[str]:
-    """The names one level display offers: itself, and for a provider-qualified one the part after its last ``/``."""
+    """The names one level display offers: itself, and for a provider-qualified one the part after its last ``/``.
+
+    The tail is taken of the model, never of a label after it: ``acme/m (eu/prod)`` offers ``m (eu/prod)``.
+    """
     whole = " ".join(display.split())
-    tail = whole.rsplit("/", 1)[-1].strip()
+    labelled = _LABELLED.fullmatch(whole)
+    model, qualifier = (labelled["model"], labelled["qualifier"]) if labelled else (whole, "")
+    tail = f"{model.rsplit('/', 1)[-1].strip()}{qualifier}"
     return [whole] if not tail or tail == whole else [whole, tail]
 
 
-#: A trailing parenthetical qualifier: ``(production)`` closing a display.
-_QUALIFIER = re.compile(r"\s*\([^()]*\)\s*$")
+def _unqualified(display: str) -> str | None:
+    """A labelled display without its label, or None for any other shape."""
+    labelled = _LABELLED.fullmatch(" ".join(display.split()))
+    return labelled["model"] if labelled else None
 
 
-def _pattern(words: tuple[str, ...], *, unspaced_unit: bool) -> re.Pattern[str]:
+#: A labelled display, the shape the page gives an arm: one token, then its label in parentheses
+#: (``deepseek-v4.1-flash (production)``). Only that shape has a qualifier to drop: a longer lead-in is words, not a
+#: model id with a label.
+_LABELLED = re.compile(r"(?P<model>\S+)(?P<qualifier> \([^()]+\))")
+
+
+def _pattern(words: tuple[str, ...], *, unspaced_unit: bool, qualified: bool = False) -> re.Pattern[str]:
     joins = [_JOIN] * (len(words) - 1)
     if unspaced_unit:
         joins[-1] = ""
     body = re.escape(words[0]) + "".join(join + re.escape(word) for join, word in zip(joins, words[1:], strict=True))
+    if qualified:
+        body += r"\)?"
     return re.compile(rf"(?<!{_ALNUM})(?<!{_ALNUM}{_GLUE}){body}(?!{_ALNUM})(?!{_GLUE}{_ALNUM})", re.IGNORECASE)
 
 
@@ -165,8 +180,8 @@ def arm_vocabulary(entries: Sequence[VariantIndexEntry]) -> list[ArmName]:
                 spelled.setdefault(words, form)
                 unspaced_unit.setdefault(words, _is_quantity(axis, form))
                 carriers.setdefault(words, set()).add(entry.variant_key)
-            unqualified = _QUALIFIER.sub("", level.display)
-            if unqualified == level.display:
+            unqualified = _unqualified(level.display)
+            if unqualified is None:
                 continue
             for form in _forms(unqualified):
                 words = tuple(word.lower() for word in _WORDS.findall(form))
@@ -182,7 +197,11 @@ def arm_vocabulary(entries: Sequence[VariantIndexEntry]) -> list[ArmName]:
             unspaced_unit[words] = stripped_unspaced[words]
             carriers[words] = stripped_carriers[words]
     return [
-        ArmName(spelled[words], frozenset(carriers[words]), _pattern(words, unspaced_unit=unspaced_unit[words]))
+        ArmName(
+            spelled[words],
+            frozenset(carriers[words]),
+            _pattern(words, unspaced_unit=unspaced_unit[words], qualified=spelled[words].endswith(")")),
+        )
         for words in spelled
     ]
 

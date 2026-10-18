@@ -184,6 +184,13 @@ class MeasureFacts(EvalDocumentModel):
             "immaterial. None when the host declared none, and every difference is then material."
         ),
     )
+    subject_spend: bool = Field(
+        default=False,
+        description=(
+            "True for a spend measure read in a judge-kind campaign, where it is the subject's own spend and a "
+            "heading does not call it measuring spend."
+        ),
+    )
     population: MeasurePopulation | None = Field(
         default=None,
         description=(
@@ -901,9 +908,10 @@ class DecisionSurface(EvalDocumentModel):
             return f"{measure_id} (judged)"
         facts = self.measures.get(measure_id)
         named = facts.reader_name if facts is not None else None
+        subject_spend = facts.subject_spend if facts is not None else False
         if named is None and (core := METRIC_DESCRIPTORS.get(measure_id)) is not None:
             named = core.reader_name
-        return measure_title(measure_id, named)
+        return measure_title(measure_id, named, subject_spend=subject_spend)
 
 
 __all__ = [

@@ -182,7 +182,8 @@ def test_one_model_under_two_labels_is_named_by_neither_with_its_qualifier_dropp
         for model in ("acme/ling-3.1-flash (production)", "acme/ling-3.1-flash (tuned)", "acme/gpt-6")
     ]
     assert _named("Ling 3.1 Flash is slower", arms) == []
-    assert _named("Ling 3.1 Flash (tuned) is slower", arms) == []
+    assert _named("Ling 3.1 Flash (tuned) is slower", arms) == [("Ling 3.1 Flash (tuned)", _arm(tuned))]
+    assert _named("ling-3.1-flash (production) is slower", arms) == [("ling-3.1-flash (production)", _arm(production))]
     assert _named("GPT-6 is slower", arms) == [("GPT-6", _arm(other))]
 
 
@@ -191,6 +192,16 @@ def test_a_dropped_qualifier_never_borrows_the_name_of_an_arm_displayed_without_
         _entry(model=model) for model in ("acme/ling-3.1-flash", "acme/ling-3.1-flash (production)")
     ]
     assert _named("Ling 3.1 Flash is slower", arms) == [("Ling 3.1 Flash", _arm(plain))]
+
+
+def test_only_a_labelled_display_s_label_is_dropped() -> None:
+    """``current (deepseek-v4)`` is words and a model, not a model and a label; ``acme/m (eu/prod)`` offers no ``prod)``."""
+    current, other = arms = [
+        _entry(model=model) for model in ("current model (deepseek-v4)", "acme/ling-3.1-flash (eu/prod)")
+    ]
+    assert _named("The current model is slower", arms) == []
+    assert _named("Ling 3.1 Flash is slower", arms) == [("Ling 3.1 Flash", _arm(other))]
+    assert _named("prod is slower", arms) == []
 
 
 # --- through the generator ----------------------------------------------------------------------------------------
