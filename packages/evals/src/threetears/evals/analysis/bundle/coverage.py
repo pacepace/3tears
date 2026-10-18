@@ -51,6 +51,7 @@ from threetears.evals.analysis.bundle.config import (
     _resolve_config,
     _declared_axes,
     _unexercised_levers,
+    _with_unobserved_unknown,
     EffectiveLever,
 )
 from threetears.evals.analysis.bundle.design import (
@@ -532,6 +533,9 @@ def _coverage_map(
     # A lever read off what ran that no comparison exercised is no lever, unless the campaign declared it as an axis.
     unexercised = _unexercised_levers(runs, results_by_run, profile=profile, declared_axes=axes)
     levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged) - unexercised
+    # A recovered lever a run never observed is unknown there, not a level of its own: its records leave that lever's
+    # levels, cells and k rather than sitting at the inherited default beside the arms that did observe it.
+    effective_by_run = _with_unobserved_unknown(effective_by_run, profile=profile)
 
     coverage: list[LeverCoverageInput] = []
     declared_axes = {axis.axis_id: axis for axis in declared_design.axes} if declared_design else {}

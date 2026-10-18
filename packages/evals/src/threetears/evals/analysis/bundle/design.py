@@ -576,7 +576,9 @@ def _campaign_design(
         departed = {
             lever: overlays.get(lever) or _INHERITED_DEFAULT_LEVEL
             for lever in sorted((set(overlays) | set(control_overlays)) - {_CANDIDATE_MODEL_LEVER})
-            if (overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
+            # A lever recovered from a role one side never ran is unobserved there, not departed from.
+            if not (lever in profile.observed_model_levers and (lever not in overlays or lever not in control_overlays))
+            and (overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
             != (control_overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
         }
         if first.candidate_model != control_model:
@@ -805,6 +807,11 @@ def _lever_levels(
                 level: str = run.candidate_model
             else:
                 effective = configs[run.id].get(lever)
+                if effective is None and lever in profile.observed_model_levers:
+                    # Recovered from a role this run never ran: not observed here, which is unknown rather than
+                    # a level, and not "observed at another value". Left out like an ambiguous run is, so it
+                    # moves together with nothing.
+                    continue
                 if effective is None:
                     # The lever does not apply to this run: it named no override and nothing
                     # recovers a value. That is the "ran at the subject's own setting" cohort,

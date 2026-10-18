@@ -8,6 +8,19 @@ packages (bumped in lock-step).
 
 ## v0.71.0 -- 2026-10-17
 
+### 3tears-evals: a lever only one arm observed is not a level, so it aliases with nothing
+
+- **A recovered lever counts as a level only where at least two arms observed it** (#840). `observed_model_levers`
+  levers were kept once two results across the campaign made a call in the role, so a role one arm ran four times and
+  the other never ran read as a level, aliased with whatever else separated the arms (a memo reported that the
+  candidate model and the research tool's model "move together" and recommended a run to separate them, when neither
+  run set the research model). The predicate now counts arms, by variant key. A single-arm campaign has nothing to
+  compare and keeps the result count.
+- **Never observed in an arm is unknown, not a level.** The lever levels, the control's departures and the coverage
+  map leave such a run out of the lever instead of placing it at the inherited default beside the arms that observed it.
+- `unexercised_factors` keeps the lever, and Not tested says `observed in one arm only` where several results made the
+  calls. Bundle shape 58; `UnexercisedFactor.results` is no longer capped at 1.
+
 ### 3tears-evals: a decision rule's rate clause reads keep only on a drop shown past its margin
 
 - **A `RateDrop` rate has three states, and only one reads as a regression** (#845). Shown to break: every arm at

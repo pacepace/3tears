@@ -1262,14 +1262,15 @@ class AliasedFactors(EvalDocumentModel):
 
 
 class UnexercisedFactor(EvalDocumentModel):
-    """A lever read off what ran that the campaign never exercised, so no level and no lever: a factor whose role made
-    fewer than two calls across every result, at most one, on one arm."""
+    """A lever read off what ran that the campaign never exercised, so no level and no lever: a factor whose role no arm
+    ran, or only one arm did (any number of its results), so no arm ran at a level of it beside another that did too."""
 
     factor: str = Field(min_length=1, description="The lever, as the host names it.")
     role: str = Field(min_length=1, description="The role whose calls its level is read from.")
-    results: int = Field(ge=0, le=1, description="The results that made a call in the role: 0 or 1.")
+    results: int = Field(ge=0, description="The results that made a call in the role, across the campaign.")
     arms: list[str] = Field(
-        default_factory=list, description="The variant key of the arm whose result made that call; empty for none."
+        default_factory=list,
+        description="The variant key of the one arm whose results made those calls; empty for none.",
     )
 
 
@@ -2216,8 +2217,11 @@ class AnalysisContextBundle(EvalDocumentModel):
     # words; a question whose words state a rule and that declares none typed reads no rule, so the pass rate leaves
     # its family. 57: `unexercised_factors`; a lever read off what ran that fewer than two results exercised leaves the
     # lever levels, the aliasing read, the factor pairs, the divergences and the coverage map over unchanged runs.
+    # 58: that rule counts the ARMS that observed the lever, not the results, so a lever one arm observed in any number
+    # of results is unexercised too (`UnexercisedFactor.results` is no longer capped at 1), and a run that never
+    # observed a recovered lever is unknown in the coverage map, not a level of its own.
     schema_version: int = Field(
-        default=57, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=58, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2744,7 +2748,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         exclude_if=lambda value: not value,
         description=(
             "Levers read off what ran (a role's model) that no arm exercised beside another: no call in the role, or "
-            "one call on one arm. Each is no level and no lever: it is in no aliasing group, factor pair, coverage "
+            "calls in one arm only. Each is no level and no lever: it is in no aliasing group, factor pair, coverage "
             "row or divergence, and is not a next step; the page lists it under Not tested."
         ),
     )

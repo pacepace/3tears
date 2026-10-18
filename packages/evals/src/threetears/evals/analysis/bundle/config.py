@@ -16,6 +16,7 @@ from threetears.evals.analysis.reporting import (
     lever_level,
 )
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.schema.models import EvalResult
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -107,10 +108,11 @@ def _observed_models(results: list[EvalResult], role: str) -> set[str]:
     return {usage.model for result in results for usage in result.usage if usage.role == role and usage.model}
 
 
-#: How many results must have observed a recovered lever's role, across the campaign, for the lever to be a level at
-#: all. One call in a campaign is one arm's single result: the other arms never exercised the lever, so a level it
-#: "took" there is no setting anyone compared — reading it as one aliases it with whatever else tells the arms apart.
-_EXERCISED_FLOOR = 2
+#: How many ARMS (variants) must have observed a recovered lever's role for the lever to be a level at all. A role one
+#: arm ran and the other never did is not a setting anyone compared: the arm that did has a value, the arm that did not
+#: has none to differ from it, and reading that absence as a level aliases the lever with whatever else tells the arms
+#: apart. Results are not arms: any number of results in one arm is still one arm.
+_EXERCISED_ARM_FLOOR = 2
 
 
 def _exercised(
@@ -145,6 +147,15 @@ def _declared_axes(declared_design: CampaignDesign | None) -> frozenset[str]:
     return frozenset(axis.axis_id for axis in declared_design.axes) if declared_design is not None else frozenset()
 
 
+def _arm_of_run(runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]]) -> dict[str, str]:
+    """Each run's arm: the variant key its observations carry, or ``run:<id>`` for a run none resolved a key for.
+
+    The grouping the design lenses use (``_CampaignArms.groups``): an unplaced run cannot pool with any other, so it is
+    an arm of its own.
+    """
+    return {run.id: variant_key_of_run(results_by_run.get(run.id, [])) or f"run:{run.id}" for run in runs}
+
+
 def _unexercised_levers(
     runs: list[EvalRun],
     results_by_run: dict[str, list[EvalResult]],
@@ -152,19 +163,67 @@ def _unexercised_levers(
     profile: HostProfile,
     declared_axes: Collection[str],
 ) -> frozenset[str]:
-    """The levers read off what ran that no comparison exercised: fewer than :data:`_EXERCISED_FLOOR` results observed
-    them across the campaign, so no arm ran at a level of them beside another arm that did too.
+    """The levers read off what ran that no comparison exercised: fewer than :data:`_EXERCISED_ARM_FLOOR` arms
+    observed them, so no arm ran at a level of them beside another arm that did too.
 
     Such a lever is no level and no lever: it is left out of the lever levels (so of the aliasing read, the factor
     pairs and the divergences) and of the coverage map, and the bundle lists it in ``unexercised_factors``. A lever
     the campaign declared as an axis (``declared_axes``) is a level by declaration whatever its calls, so it is never
     one: the rule reads only observed levers nobody declared, and every reader of it reads it here.
+
+    Arms are counted, not results: a role one arm made every call in, and the other arm never ran, is observed in one
+    arm only however many results made the calls, and reading it as a level would alias it with whatever else
+    separates the two arms. A campaign of a single arm has no second arm to compare, so there the rule falls back to
+    results (fewer than :data:`_EXERCISED_ARM_FLOOR` of them) and a lever with several calls keeps its one level.
+
+    :param runs: The campaign's resolved runs.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results, keyed by run id.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param profile: The host whose levers these are.
+    :ptype profile: HostProfile
+    :param declared_axes: The levers the campaign declared as axes, each a level whatever its calls.
+    :ptype declared_axes: Collection[str]
+    :return: The recovered levers fewer than two arms observed, declared axes excepted.
+    :rtype: frozenset[str]
     """
+    arm_of = _arm_of_run(runs, results_by_run)
+    single_arm = len(set(arm_of.values())) < _EXERCISED_ARM_FLOOR
     return frozenset(
         lever
         for lever, by_run in _exercised(runs, results_by_run, profile=profile).items()
-        if sum(by_run.values()) < _EXERCISED_FLOOR and lever not in declared_axes
+        if lever not in declared_axes
+        and (
+            sum(by_run.values()) < _EXERCISED_ARM_FLOOR
+            if single_arm
+            else len({arm_of[run_id] for run_id, count in by_run.items() if count}) < _EXERCISED_ARM_FLOOR
+        )
     )
+
+
+def _with_unobserved_unknown(
+    effective_by_run: dict[str, dict[str, EffectiveLever]], *, profile: HostProfile
+) -> dict[str, dict[str, EffectiveLever]]:
+    """``effective_by_run`` with every recovered lever a run never observed marked ``unknown`` rather than absent.
+
+    A lever recovered from a role is absent from a run that never ran the role, and :func:`_lever_value` reads an
+    absent lever as the inherited default level. For a recovered lever that is wrong: "never observed in this arm" is
+    not a level, and not the same answer as "observed at another value". Marked ``value=None``, the run's records
+    are dropped from that lever's levels, as an ambiguous run's are.
+
+    :param effective_by_run: Each run's resolved levers, keyed by run id.
+    :ptype effective_by_run: dict[str, dict[str, EffectiveLever]]
+    :param profile: The host whose recovery rules these are.
+    :ptype profile: HostProfile
+    :return: A copy with the unobserved recovered levers added as ``EffectiveLever(None, "unknown")``.
+    :rtype: dict[str, dict[str, EffectiveLever]]
+    """
+    unobserved = EffectiveLever(None, "unknown")
+    recovered = set(profile.observed_model_levers)
+    return {
+        run_id: {**dict.fromkeys(recovered - set(flat), unobserved), **flat}
+        for run_id, flat in effective_by_run.items()
+    }
 
 
 def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostProfile) -> dict[str, EffectiveLever]:

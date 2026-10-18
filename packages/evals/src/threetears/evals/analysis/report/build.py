@@ -3197,7 +3197,10 @@ def _not_tested_blocks(
 
 
 def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """A lever no comparison exercised, in one line: ``tool model: no tool call was made on either arm.``"""
+    """A lever no comparison exercised, in one line: ``tool model: no tool call was made on either arm.``
+
+    Calls in one arm only say so: ``observed in one arm only``.
+    """
     name = humanize("dimension", factor.factor.rsplit(".", 1)[-1])
     call = f"{factor.role.replace('_', ' ')} call"
     arms = len(bundle.scoreboard)
@@ -3207,6 +3210,11 @@ def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBund
     if arms <= 1:
         return f"{name}: one {call} was made in all its trials, too few to read a level from."
     others = "the other arm" if arms == 2 else "the other arms"
+    if factor.results > 1:
+        return (
+            f"{name}: {factor.results} results made {call}s, all on {arm(factor.arms[0])}, and none on {others}, "
+            "so it was observed in one arm only and is not a level."
+        )
     return f"{name}: one {call} was made, on {arm(factor.arms[0])}, and none on {others}, so it is not a level."
 
 

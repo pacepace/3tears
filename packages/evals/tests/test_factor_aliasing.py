@@ -255,3 +255,33 @@ class TestALeverNoComparisonExercisedIsNoLevel:
         assert _OBSERVED not in {row.name for row in undeclared.coverage}
         assert [factor.factor for factor in undeclared.unexercised_factors] == [_OBSERVED]
         assert [line for line in _not_tested(undeclared) if line.startswith("rerank depth:")]
+
+
+class TestALeverOnlyOneArmObservedIsNotALevel:
+    """One fixture shape, read both ways: the arms differ only in ``chunk_tokens``, and role ``inner_agent`` is called
+    in several results. Where only one arm made the calls, the other has no value to differ from, so the lever aliases
+    with nothing; where both made them at different models, it is a level and aliases as it should."""
+
+    _CALLS = dict.fromkeys(range(3), "research-model-1")
+
+    def test_calls_in_several_results_of_one_arm_alias_with_nothing(self) -> None:
+        bundle = _observed_bundle({1: self._CALLS})
+
+        assert not [group for group in bundle.aliased_factors if _OBSERVED in group.factors]
+        assert bundle.factor_pairs is None or _OBSERVED not in bundle.factor_pairs.factors
+        assert _OBSERVED not in {row.name for row in bundle.coverage}
+        assert _OBSERVED not in {divergence.lever for divergence in bundle.scope_divergences}
+        (factor,) = bundle.unexercised_factors
+        assert (factor.factor, factor.role, factor.results) == (_OBSERVED, "inner_agent", 3)
+        assert len(factor.arms) == 1
+        (line,) = [line for line in _not_tested(bundle) if line.startswith("rerank depth:")]
+        assert line.startswith("rerank depth: 3 results made inner agent calls, all on ")
+        assert line.endswith(", and none on the other arm, so it was observed in one arm only and is not a level.")
+
+    def test_calls_in_both_arms_at_different_models_are_a_level_that_aliases(self) -> None:
+        bundle = _observed_bundle({0: self._CALLS, 1: dict.fromkeys(range(3), "research-model-2")})
+
+        assert bundle.unexercised_factors == []
+        (group,) = [group for group in bundle.aliased_factors if _OBSERVED in group.factors]
+        assert "chunk_tokens" in group.factors
+        assert _OBSERVED in {row.name for row in bundle.coverage}
