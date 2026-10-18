@@ -65,6 +65,7 @@ uv run --isolated --no-project --python 3.14 \
         -p no:cacheprovider \
         "$OBSERVE_DIR/tests/test_otel_internals.py" \
         "$OBSERVE_DIR/tests/test_setup.py" \
+        "$OBSERVE_DIR/tests/test_http_trace_export.py" \
         "$OBSERVE_DIR/tests/test_tracing.py" \
         "$OBSERVE_DIR/tests/test_smoke.py" \
         ${@+"$@"}

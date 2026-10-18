@@ -990,17 +990,29 @@ otel = [
     { name = "opentelemetry-instrumentation-logging" },
     { name = "opentelemetry-sdk" },
 ]
+otel-http = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-instrumentation-logging" },
+    { name = "opentelemetry-sdk" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-api", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
     { name = "opentelemetry-instrumentation", marker = "extra == 'otel'", specifier = ">=0.61b0,<1" },
+    { name = "opentelemetry-instrumentation", marker = "extra == 'otel-http'", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-instrumentation-logging", marker = "extra == 'otel'", specifier = ">=0.61b0,<1" },
+    { name = "opentelemetry-instrumentation-logging", marker = "extra == 'otel-http'", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
     { name = "uuid-utils", marker = "extra == 'asgi'" },
 ]
-provides-extras = ["otel", "asgi"]
+provides-extras = ["otel", "otel-http", "asgi"]
 
 [[package]]
 name = "3tears-registry"

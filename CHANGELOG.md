@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### observe: traces can export over OTLP/HTTP, and the otel-http extra installs no gRPC
+
+**Added (observe):** `TelemetryConfig.protocol`, `"grpc"` (the default, unchanged) or
+`"http/protobuf"`, which posts spans to `<endpoint>/v1/traces`. A new `otel-http` extra carries the
+`otel` extra's OpenTelemetry packages with the HTTP exporter in place of the exporter metapackage,
+so it installs no grpcio: about 10 MB against the `otel` extra's 49. Log export was already
+OTLP/HTTP. The `otel` extra is unchanged. With `protocol="grpc"` and no gRPC exporter installed,
+`init_telemetry` raises `ImportError` naming the extra to install.
+
 ### Testing: the cross-process cancel test takes job_cancel's documented answer
 
 **Fixed (testing):** `test_a_generation_another_process_runs_reads_running_and_is_cancelled_from_there` required

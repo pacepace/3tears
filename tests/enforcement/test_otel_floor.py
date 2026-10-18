@@ -45,6 +45,10 @@ _FLOOR_SCRIPT = "scripts/test-otel-floor.sh"
 #: the release-train members 3tears declares; they version together.
 _LOCKSTEP = ("opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp")
 
+#: what the ``otel-http`` extra declares in place of the ``otel`` extra's exporter metapackage, which
+#: also installs the gRPC exporter and grpcio; the same release train, so the same floor and ceiling.
+_HTTP_EXPORTER = "opentelemetry-exporter-otlp-proto-http"
+
 #: the contrib-train members 3tears declares; versioned ``0.Mb0``, released alongside core ``1.(M-21)``.
 _CONTRIB = ("opentelemetry-instrumentation-logging", "opentelemetry-instrumentation")
 
@@ -139,9 +143,8 @@ def _major_minor(version: str) -> tuple[int, int]:
 
 
 _LISTS = _declared_lists()
-_OBSERVE_OTEL = _otel_requirements(
-    tomllib.loads(_OBSERVE_PYPROJECT.read_text(encoding="utf-8"))["project"]["optional-dependencies"]["otel"]
-)
+_OBSERVE_EXTRAS = tomllib.loads(_OBSERVE_PYPROJECT.read_text(encoding="utf-8"))["project"]["optional-dependencies"]
+_OBSERVE_OTEL = _otel_requirements(_OBSERVE_EXTRAS["otel"])
 
 
 def test_the_declarations_were_found() -> None:
@@ -154,6 +157,20 @@ def test_the_declarations_were_found() -> None:
     assert "pyproject.toml tool.uv.dev-dependencies" in with_otel, (
         "the root dev-dependencies no longer name OpenTelemetry; this guard compares them to observe's floor"
     )
+
+
+def test_the_otel_http_extra_is_the_otel_extra_without_grpc() -> None:
+    """``otel-http`` swaps the exporter metapackage for its HTTP half and changes nothing else.
+
+    The floor script installs the ``otel`` extra's floors, which include the HTTP exporter at the
+    same release, so this equality is what puts ``otel-http``'s floor under that run too.
+    """
+    expected = {
+        (_HTTP_EXPORTER if name == "opentelemetry-exporter-otlp" else name): spec
+        for name, spec in _OBSERVE_OTEL.items()
+    }
+    assert _otel_requirements(_OBSERVE_EXTRAS["otel-http"]) == expected
+    assert not [dep for dep in _OBSERVE_EXTRAS["otel-http"] if "grpc" in dep]
 
 
 def test_every_opentelemetry_requirement_states_a_floor() -> None:

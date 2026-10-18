@@ -46,6 +46,17 @@ otel = [
     # same release, so it moves with it
     "opentelemetry-instrumentation>=0.61b0,<1",
 ]
+# `otel` without gRPC: traces over OTLP/HTTP (TelemetryConfig.protocol="http/protobuf"), logs as
+# always. The `otel` extra's exporter metapackage installs the gRPC exporter too, and grpcio is
+# about 39 of the 49 MB that extra adds; this one adds about 10. Same floors and ceilings as `otel`,
+# for the same reasons.
+otel-http = [
+    "opentelemetry-api>=1.40,<2",
+    "opentelemetry-sdk>=1.40,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.40,<2",
+    "opentelemetry-instrumentation-logging>=0.61b0,<1",
+    "opentelemetry-instrumentation>=0.61b0,<1",
+]
 asgi = [
     "uuid-utils",
 ]

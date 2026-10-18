@@ -14,6 +14,13 @@ Structured logging, tracing, and OpenTelemetry setup for 3tears applications.
 ```bash
 pip install 3tears-observe
 
-# With OpenTelemetry SDK support:
+# With OpenTelemetry SDK support, traces over OTLP/gRPC:
 pip install 3tears-observe[otel]
+
+# The same over OTLP/HTTP, with no gRPC installed (about 10 MB against about 49):
+pip install 3tears-observe[otel-http]
 ```
+
+With `otel-http`, set `TelemetryConfig(protocol="http/protobuf", endpoint="http://collector:4318")`;
+spans go to `<endpoint>/v1/traces`. `protocol` defaults to `"grpc"`, which needs the `otel` extra.
+Log export is OTLP/HTTP under either extra.
