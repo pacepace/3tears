@@ -449,6 +449,47 @@ class TestSoftFail:
             _drive(KnowledgeInjectionMiddleware(), _request(SystemMessage(content="base")), cfg)
 
 
+class _UnmultipliableComponent:
+    """a stored-vector component that faults the moment it is ranked, as a corrupt cast can."""
+
+    def __mul__(self, other: Any) -> float:
+        raise RuntimeError("ranking boom")
+
+    __rmul__ = __mul__
+
+
+class TestAFaultAfterTheInvariantsAreKnown:
+    """owner ruling: fail closed only when the invariants could not be retrieved; a fault after
+    they are known injects them alone, with a notice, and the turn runs."""
+
+    def test_a_ranking_fault_injects_the_invariants_alone_with_a_notice(self, caplog: pytest.LogCaptureFixture) -> None:
+        invariant = _entry_snapshot(title="Always", body="exclude test accounts", always_inject=True)
+        situational = _entry_snapshot(title="Sometimes", body="use the weekly view")
+        integration = _integration(
+            entries=[invariant, situational],
+            embedding_model=_FixedEmbedder([1.0, 0.0]),
+            embeddings={situational.id: [_UnmultipliableComponent(), _UnmultipliableComponent()]},  # type: ignore[list-item]
+        )
+        with caplog.at_level("WARNING"):
+            req, out = _drive(
+                KnowledgeInjectionMiddleware(token_budget=10_000),
+                _request(SystemMessage(content="base")),
+                _configurable(integration),
+            )
+        text = _system_text(req)
+        assert "exclude test accounts" in text, "the invariant still applies"
+        assert "use the weekly view" not in text
+        assert "could not be applied" in text and "Do not treat a rule" in text
+        assert _metadata(out)["governed_knowledge_block"] in text
+        records = [r for r in caplog.records if "past its invariants" in r.getMessage()]
+        assert [getattr(r, "extra_data", {}).get("exc_type") for r in records] == ["RuntimeError"]
+
+    def test_a_fault_before_the_invariants_are_known_still_fails_closed(self) -> None:
+        integration = _integration(entries=[_entry_snapshot(always_inject=True)], entry_raises=True)
+        with pytest.raises(GovernedKnowledgeUnavailableError):
+            _drive(KnowledgeInjectionMiddleware(), _request(SystemMessage(content="base")), _configurable(integration))
+
+
 class TestSyncMirror:
     def test_sync_wrap_model_call_passes_through(self) -> None:
         mw = KnowledgeInjectionMiddleware()

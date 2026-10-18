@@ -104,7 +104,9 @@ class DraftListIncompleteError(RuntimeError):
         :ptype drafts: list[DraftView]
         :param unread: the sides that could not be read
         :ptype unread: list[str]
-        :param causes: one ``Type: message`` per unread side, in the same order
+        :param causes: the exception class that stopped each unread side, in the same order --
+            the class only: a backend's own message can carry SQL or a URL, and this
+            message is shown to a model; the full text is contained where it was caught
         :ptype causes: list[str]
         :return: nothing
         :rtype: None
@@ -353,7 +355,7 @@ class KnowledgeIntegration:
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- one backend's fault must not hide the other side's drafts; it is raised below, after both are read
                 contain(exc, log=log, what=f"{side} drafts list failed: {type(exc).__name__}: {exc}")
                 unread.append(side)
-                causes.append(f"{type(exc).__name__}: {exc}")
+                causes.append(type(exc).__name__)
         if unread:
             raise DraftListIncompleteError(drafts, unread, causes)
         return drafts
@@ -382,8 +384,9 @@ async def retrieve_entries(
     run measures platform knowledge only even when the caller's visibility admits
     customer / user rows. ``None`` (the normal turn) honors the full visible set.
 
-    Soft-fails on error -- returns ``([], [])`` and logs a warning naming the error
-    class. NEVER crashes the turn; NEVER a bare ``except Exception: pass``.
+    A read that fails raises :class:`GovernedKnowledgeUnavailableError` (fail
+    closed): an always-inject entry may have been among the rows not fetched, so
+    the turn must not proceed as if there were none.
 
     :param integration: knowledge integration instance
     :ptype integration: KnowledgeIntegration
@@ -400,8 +403,9 @@ async def retrieve_entries(
         from the verified call identity
     :ptype customer_scope: UUID
     :return: tuple ``(effective_views, layered_views)`` aligned by index;
-        ``([], [])`` when retrieval is disabled or soft-fails
+        ``([], [])`` when retrieval is disabled (no collection wired)
     :rtype: tuple[list[EntryEffective], list[EntryLayered]]
+    :raises GovernedKnowledgeUnavailableError: when the entries could not be read
     """
     if integration.entry_collection is None:
         return [], []
@@ -458,10 +462,9 @@ async def retrieve_concepts(
     the merge -- the SAME filter the hub fingerprint applies -- so a ``baseline``
     run measures platform concepts only. ``None`` honors the full visible set.
 
-    Soft-fails on error -- returns ``([], [])`` and logs a warning naming the error
-    class. NEVER crashes the turn; NEVER a bare ``except Exception: pass``. A
-    concept-fetch failure here is contained so the caller's entry injection (a
-    SEPARATE retrieve call) is never broken by a concept backend fault.
+    A read that fails raises :class:`GovernedKnowledgeUnavailableError` (fail
+    closed): an always-inject concept may have been among the rows not fetched,
+    so the turn must not proceed as if there were none.
 
     :param integration: knowledge integration instance
     :ptype integration: KnowledgeIntegration
@@ -480,8 +483,9 @@ async def retrieve_concepts(
         from the verified call identity
     :ptype customer_scope: UUID
     :return: tuple ``(effective_views, layered_views)`` aligned by index;
-        ``([], [])`` when retrieval is disabled or soft-fails
+        ``([], [])`` when retrieval is disabled (no collection wired)
     :rtype: tuple[list[ConceptEffective], list[ConceptLayered]]
+    :raises GovernedKnowledgeUnavailableError: when the concepts could not be read
     """
     if integration.concept_collection is None:
         return [], []

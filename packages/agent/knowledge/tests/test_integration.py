@@ -247,7 +247,8 @@ class TestListOwnDrafts:
             entry_collection=_DraftColl([_draft("entry")]),
             concept_collection=_DraftColl([], raises=True),
         )
-        with pytest.raises(DraftListIncompleteError, match=r"concept drafts \(RuntimeError: draft boom\)") as caught:
+        with pytest.raises(DraftListIncompleteError, match=r"concept drafts \(RuntimeError\)") as caught:
             await integration.list_own_drafts(uuid7(), customer_scope=uuid7())
+        assert "draft boom" not in str(caught.value), "the backend's own text stays in the log"
         assert [d.target for d in caught.value.drafts] == ["entry"]
         assert caught.value.unread == ["concept"]

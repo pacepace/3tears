@@ -52,11 +52,15 @@ while the rest of the governed block still reaches the agent. Governance does NO
 fail open on its own HARD rules: a retrieval fault raises
 :class:`~threetears.agent.knowledge.integration.GovernedKnowledgeUnavailableError`,
 an INVARIANT (``always_inject``) concept / entry that fails to render raises
-:class:`GovernedKnowledgeRenderError`, and any other fault building the block
-propagates -- the seam FAILS CLOSED, because a turn that proceeds with no governed
-block cannot show an always-inject rule was not among what it lost. Dropping the
-entire governed block on a fault (the pattern this middleware previously carried)
-is exactly the fail-open a governance layer must not do.
+:class:`GovernedKnowledgeRenderError`, and a fault before the invariants are known
+(reading the verified identity, splitting the rows) propagates -- the seam FAILS
+CLOSED, because a turn that proceeds with no governed block cannot show an
+always-inject rule was not among what it lost. A fault AFTER the invariants are known
+(ranking, rendering the situational tail, building the ledgers) does not fail the
+turn: it is contained and the invariants inject alone, followed by a notice that the
+rest could not be applied. Dropping the entire governed block on a fault (the
+pattern this middleware previously carried) is exactly the fail-open a governance
+layer must not do.
 
 Async is the real path -- retrieval + embedding are ``async def``. The synchronous
 :meth:`~KnowledgeInjectionMiddleware.wrap_model_call` mirror cannot drive them, so
@@ -214,6 +218,17 @@ _SCOPE_RENDER_RANK: dict[Scope, int] = {
 }
 
 
+#: What follows the invariants when the rest of the governed knowledge could not be
+#: ranked or rendered. Without it the model reads the invariants as everything that
+#: applies to this turn.
+_SITUATIONAL_UNAVAILABLE_NOTICE = (
+    "## Other governed knowledge\n"
+    "The rest of the governed knowledge for this turn could not be applied, so only the "
+    "always-apply rules above are shown. Do not treat a rule, term or procedure missing "
+    "here as one that does not exist."
+)
+
+
 class KnowledgeInjectionState(AgentState[Any]):
     """Agent state extended with the ``metadata`` governed-knowledge channel.
 
@@ -304,8 +319,9 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
     exactly one system message). The rendered block + shadow-disclosure ledgers are
     persisted onto ``metadata`` via a returned ``Command`` state update. Opt-in: no
     integration (or no verified identity) on ``config["configurable"]`` -> the seam
-    is a pass-through. Only the situational ranking degrades without failing the
-    turn; a fault reading or building the governed block fails it closed.
+    is a pass-through. A fault reading the governed layer, or before its invariants
+    are known, fails the turn closed; a fault after that injects the invariants alone
+    under a notice that the rest could not be applied.
     """
 
     name = "KnowledgeInjectionMiddleware"
@@ -346,7 +362,8 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
         :class:`ExtendedModelResponse` whose ``Command`` persists the block + shadow
         ledgers onto ``metadata``. Proceeds on the un-merged request (a plain
         response) when no integration/identity is configured or when nothing is
-        retrieved. A fault reading or building the block raises (fail closed).
+        retrieved. A fault before the invariants are known raises (fail closed); one
+        after injects the invariants alone, with a notice.
 
         :param request: the model request (carries ``system_message`` + ``messages``
             + ``state``).
@@ -393,9 +410,10 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
                 # the same fail-open, reached from the other side.
                 log.error("governed knowledge injection failed closed: the governed layer could not be read")
                 raise
-            # any other fault building the block propagates too. it used to be absorbed into
-            # an empty block, and the turn proceeded with NO governed knowledge -- invariants
-            # included -- reading exactly like a turn that had none to apply.
+            # any other fault here came before the invariants were known (a fault after is
+            # answered inside, by the invariants alone), so it propagates too. it used to be
+            # absorbed into an empty block, and the turn proceeded with NO governed knowledge
+            # -- invariants included -- reading exactly like a turn that had none to apply.
         if not block:
             passthrough: ModelResponse[Any] = await handler(request)
             return passthrough
@@ -499,6 +517,95 @@ async def _build_governed_injection(
 
     concept_inv, concept_sit = _split_invariant_concepts(concept_effective)
     entry_inv, entry_sit = _split_invariant_entries(entry_effective)
+    # the invariants are known from here on, so a fault past this point does not fail
+    # the turn: the invariants still inject, alone, under a notice that the rest could
+    # not be applied. only an invariant that cannot be RENDERED still fails closed.
+    try:
+        return await _rank_and_render(
+            integration,
+            concept_inv=concept_inv,
+            concept_sit=concept_sit,
+            entry_inv=entry_inv,
+            entry_sit=entry_sit,
+            user_id=user_id,
+            customer_id=customer_id,
+            messages=messages,
+            budget=budget,
+        )
+    except GovernedKnowledgeRenderError:
+        raise
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- the invariants are known; a fault ranking or rendering the rest falls back to them alone rather than failing the turn
+        contain(
+            exc,
+            log=log,
+            what=f"governed knowledge could not be ranked or rendered past its invariants "
+            f"({type(exc).__name__}); injecting the invariants alone",
+        )
+        return _invariants_only_injection(concept_inv=concept_inv, entry_inv=entry_inv)
+
+
+def _invariants_only_injection(
+    *,
+    concept_inv: list[ConceptEffective],
+    entry_inv: list[EntryEffective],
+) -> tuple[str, dict[str, Any]]:
+    """The governed block when everything but the invariants failed: the invariants, then a notice.
+
+    :param concept_inv: the invariant concepts
+    :ptype concept_inv: list[ConceptEffective]
+    :param entry_inv: the invariant entries
+    :ptype entry_inv: list[EntryEffective]
+    :return: tuple ``(block, metadata)``; the block always carries
+        :data:`_SITUATIONAL_UNAVAILABLE_NOTICE`, so the model never reads the gap as
+        "nothing else applies"
+    :rtype: tuple[str, dict[str, Any]]
+    :raises GovernedKnowledgeRenderError: when an invariant cannot be rendered
+    """
+    invariants = _render_block(
+        invariant_concepts=concept_inv,
+        situational_concepts=[],
+        invariant_entries=entry_inv,
+        situational_entries=[],
+    )
+    block = f"{invariants}\n\n{_SITUATIONAL_UNAVAILABLE_NOTICE}" if invariants else _SITUATIONAL_UNAVAILABLE_NOTICE
+    return block, {"governed_knowledge_block": block}
+
+
+async def _rank_and_render(
+    integration: KnowledgeIntegration,
+    *,
+    concept_inv: list[ConceptEffective],
+    concept_sit: list[ConceptEffective],
+    entry_inv: list[EntryEffective],
+    entry_sit: list[EntryEffective],
+    user_id: UUID,
+    customer_id: UUID,
+    messages: Sequence[BaseMessage],
+    budget: int | None,
+) -> tuple[str, dict[str, Any]]:
+    """Rank + trim the situational tail, render the whole block and build its ledgers.
+
+    :param integration: knowledge integration instance
+    :ptype integration: KnowledgeIntegration
+    :param concept_inv: invariant concepts
+    :ptype concept_inv: list[ConceptEffective]
+    :param concept_sit: situational concepts
+    :ptype concept_sit: list[ConceptEffective]
+    :param entry_inv: invariant entries
+    :ptype entry_inv: list[EntryEffective]
+    :param entry_sit: situational entries
+    :ptype entry_sit: list[EntryEffective]
+    :param user_id: the verified turn user
+    :ptype user_id: UUID
+    :param customer_id: the verified turn customer
+    :ptype customer_id: UUID
+    :param messages: the running message list (source of the turn query)
+    :ptype messages: Sequence[BaseMessage]
+    :param budget: explicit shared situational-tail token budget, or ``None`` to scale it
+    :ptype budget: int | None
+    :return: tuple ``(block, metadata)``; ``("", {})`` when nothing renders
+    :rtype: tuple[str, dict[str, Any]]
+    """
     # the pool the budget must cover is known only here, after the invariant split
     # and before the trim, so this is where the scaling is resolved. every budget
     # consumer below (the D9 warning, the trim, the starvation + drop warnings)
