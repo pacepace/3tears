@@ -7,7 +7,7 @@ aspects is here. An :class:`AspectView` is the campaign's keys and one aspect: i
 control arm, the aspect's margin and design, and the floors on it.
 
 **One reading of every stored campaign.** A campaign stored before aspects existed is upgraded on its stored read
-(:func:`~threetears.evals.kernel.campaign_upgrade.upgrade_campaign_v15`, registered as the durable v15 step), so by the
+(:func:`~threetears.evals.schema.campaign_upgrade.upgrade_campaign_v15`, registered as the durable v15 step), so by the
 time a view is taken every campaign holds its aspects, and the view reads them as stored.
 """
 

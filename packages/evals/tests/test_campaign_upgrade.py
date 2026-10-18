@@ -17,7 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.factories import minimal_declaration
-from threetears.evals.kernel.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL, upgrade_campaign_v15
+from threetears.evals.schema.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL, upgrade_campaign_v15
 from threetears.evals.kernel.declaration import (
     Aspect,
     CampaignArm,

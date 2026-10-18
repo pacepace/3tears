@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import Field, ValidationError
 
@@ -42,7 +42,7 @@ from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
 from threetears.evals.kernel.campaign import EvalCampaign, VariantIndexEntry
-from threetears.evals.kernel.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL
+from threetears.evals.schema.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.declaration import (
     Aspect,
     AspectDesign,
@@ -52,6 +52,7 @@ from threetears.evals.kernel.declaration import (
     DecisionClause,
     DecisionRule,
     Floor,
+    Margin,
     Question,
     aware_instant,
     resolve_control_arm,
@@ -201,10 +202,6 @@ class AspectDefinition(EvalBaseModel):
         description="What the aspect sets out to vary and hold itself to. Omitted, the aspect is exploratory.",
     )
     run_ids: list[str] = Field(default_factory=list, description="The aspect's runs, each in the campaign's scope.")
-
-
-#: A margin as a caller states one: points of a 0-100 pass rate, strictly between the ends and finite.
-Margin = Annotated[float, Field(gt=0.0, lt=100.0, allow_inf_nan=False)]
 
 
 class FloorDefinition(EvalBaseModel):
@@ -1761,7 +1758,6 @@ __all__ = [
     "AspectSource",
     "CampaignAuthoring",
     "FloorDefinition",
-    "Margin",
     "CampaignStore",
     "DeclarableAxes",
     "OpenAxisFamily",

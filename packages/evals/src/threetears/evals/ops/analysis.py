@@ -24,7 +24,6 @@ from pydantic import Field
 from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import (
-    Margin,
     add_runs_to_campaign,
     create_campaign,
     list_campaigns,
@@ -49,6 +48,7 @@ from threetears.evals.analysis.service import (
     running_analysis_attempt,
 )
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
+from threetears.evals.kernel.declaration import Margin
 from threetears.evals.kernel.campaign import AttemptOutcome, ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
 from threetears.evals.kernel.errors import (
     ConflictError,
