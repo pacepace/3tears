@@ -1398,6 +1398,9 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
     del payload["host_declarations_digest"]
     for insight in payload["prior_insights"]:
         del insight["invalidation_trigger"]
+    # Which label a spend measure takes, for the page: the writer reads the label itself, as its reader name.
+    for facts in payload["measure_catalog"].values():
+        facts.pop("subject_spend", None)
     for family in payload["multiple_comparisons"]["families"]:
         for comparison in family["comparisons"]:
             del comparison["p_raw"]

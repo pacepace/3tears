@@ -962,10 +962,10 @@ def projected_usd(value: float) -> str:
 
 def _count_words(need: CasesNeeded, *, cases: int, short: bool) -> str:
     """One count as the projection sentence says it: ``about 107 independent cases`` (``about 107`` when ``short``),
-    ``this run's 12 cases``, ``more than 10,000 independent cases``."""
+    ``this run's 12 cases``, ``more than 10000 independent cases``."""
     if need.kind == "enough":
         return f"this run's {cases} cases"
-    said = f"more than {need.cases:,}" if need.kind == "beyond" else f"about {need.cases}"
+    said = f"more than {format_number(need.cases)}" if need.kind == "beyond" else f"about {need.cases}"
     return said if short else f"{said} independent cases"
 
 
@@ -1008,7 +1008,7 @@ def projection_sentence(projection: SampleProjection) -> str:
 
 def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
     """One side of a projection as a table cell says it, with its cost: ``107 cases, $2.7``, ``this run's 12 cases``,
-    ``re-run the lost trials``, ``more than 10,000 cases`` or ``none would``."""
+    ``re-run the lost trials``, ``more than 10000 cases`` or ``none would``."""
     if need.kind == "never":
         return "none would"
     if need.kind == "lost":
@@ -1016,7 +1016,7 @@ def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
     if need.kind == "enough":
         return f"this run's {projection.cases} cases"
     if need.kind == "beyond":
-        return f"more than {need.cases:,} cases"
+        return f"more than {format_number(need.cases)} cases"
     cost = projection.cost(need)
     return f"{need.cases} cases" + ("" if cost is None else f", {projected_usd(cost)}")
 
@@ -1049,7 +1049,7 @@ def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, 
     counted = sorted(need.cases for need in needs if need.kind == "more")
     if counted and all(need.kind in ("more", "beyond", "never") for need in needs):
         beyond = any(need.kind == "beyond" for need in needs)
-        top = f"more than {PROJECTION_CASE_CAP:,}" if beyond else str(counted[-1])
+        top = f"more than {format_number(PROJECTION_CASE_CAP)}" if beyond else str(counted[-1])
         span = f"about {counted[0]}" if counted[0] == counted[-1] and not beyond else f"about {counted[0]} to {top}"
         said.append(f"This run used {run_cases} cases; a switch needs {span}, more than it ran.")
     return " ".join(said)

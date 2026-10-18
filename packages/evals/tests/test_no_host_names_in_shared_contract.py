@@ -228,6 +228,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "run/__init__.py",
     # Named, versioned case sets: engine vocabulary for which cases a launch targets.
     "run/case_sets.py",
+    # How a launch's arms take their cells: engine vocabulary, the same for every host.
+    "run/arm_schedule.py",
     "kernel/dsl.py",
     # The goal grammar, the static half the stored template validates through.
     "schema/goal_grammar.py",

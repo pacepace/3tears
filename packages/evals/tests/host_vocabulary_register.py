@@ -210,6 +210,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "gen/proposers.py": {},
     "gen/variation_gen.py": {},
     "run/__init__.py": {},
+    "run/arm_schedule.py": {},
     "run/authoring.py": {},
     "run/budget.py": {},
     "run/cassette_proxy.py": {},
