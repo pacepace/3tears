@@ -395,7 +395,7 @@ def _checked_bundles(
     if missing := [label for label in labels if label not in bundles]:
         raise RefusedInput(
             f"campaign {campaign.id} has no evidence bundle for aspect(s) {', '.join(missing)}",
-            remedy="assemble one bundle per aspect (assemble_context_bundle(campaign, aspect=label, ...)) and pass them all",
+            remedy="pass one bundle per aspect, each assembled for that aspect and keyed by its label",
         )
     if stray := sorted(set(bundles) - set(labels)):
         raise RefusedInput(

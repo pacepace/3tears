@@ -138,13 +138,13 @@ def _checked_reports(
     if readings.campaign_id != campaign.id:
         raise RefusedInput(
             f"the readings are of campaign {readings.campaign_id}, not {campaign.id}",
-            remedy="read the campaign's own readings (campaign_readings(campaign, bundles))",
+            remedy="pass the readings read off this campaign, over its own aspects' bundles",
         )
     labels = [aspect.label for aspect in campaign.aspects]
     if missing := [label for label in labels if label not in reports]:
         raise RefusedInput(
             f"campaign {campaign.id} has no page for aspect(s) {', '.join(missing)}",
-            remedy="build one page per aspect (build_code_only_report over its bundle) and pass them all",
+            remedy="pass one page per aspect, each built over that aspect's bundle and keyed by its label",
         )
     if stray := sorted(set(reports) - set(labels)):
         raise RefusedInput(
