@@ -32,6 +32,8 @@ from collections.abc import Sequence
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
     SECTION_TITLES,
+    CampaignAspectFold,
+    CampaignReport,
     ChartBlock,
     DisclosureBlock,
     Report,
@@ -41,7 +43,7 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
     TrialBlock,
 )
-from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, trial_summary
+from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
@@ -207,28 +209,153 @@ def report_html(report: Report) -> str:
         "</header>",
     ]
     titles = report.section_titles
-    sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN and section != "glossary"]
-    present = [section for section in sections if any(block.section == section for block in report.blocks)]
+    present = _present_sections(report)
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append(
         "<nav>"
         + "".join(f'<a href="#{_section_anchor(section)}">{_escape(titles[section])}</a>' for section in nav)
         + "</nav>"
     )
+    parts += _sections(report, present)
+    parts += _glossary(report.terms)
+    parts += ["</article>", "</body>", "</html>"]
+    return "\n".join(parts) + "\n"
+
+
+def campaign_report_html(report: CampaignReport) -> str:
+    """Render a campaign's page as one standalone HTML page that needs no script.
+
+    The first screen is the page's ``<header>``: every broken floor first, loud and announced (``role="alert"``),
+    then the title and the rest of the first screen in order. The memo's findings follow, open, under ``What it
+    means``; then one closed ``<section>`` per aspect, its summary the aspect's label and what code read there, its
+    body the writer's summary of the aspect and the aspect's own page laid out as its page lays it out, a heading
+    level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
+    (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
+
+    :param report: The campaign's page.
+    :ptype report: CampaignReport
+    :return: The page.
+    :rtype: str
+    """
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN]
+    slugs = report.fold_ids
+    parts = [
+        "<!doctype html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{_escape(_one_line(report.title))}</title>",
+        f"<style>{_STYLE}{SVG_STYLE}</style>",
+        "</head>",
+        "<body>",
+        f'<article data-basis="{_escape(report.basis)}" data-page="campaign">',
+        "<header>",
+        *(_block(block, index) for index, block in enumerate(head) if _warns(block)),
+        f"<h1>{_escape(_one_line(report.title))}</h1>",
+        *(_block(block, index) for index, block in enumerate(head) if not _warns(block)),
+        "</header>",
+    ]
+    memo = [(index, block) for index, block in enumerate(report.blocks) if block.section not in FIRST_SCREEN]
+    links = [("memo", SECTION_TITLES["memo"])] if memo else []
+    links += [(f"aspect-{slug}-body", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [("glossary-body", SECTION_TITLES["glossary"])] if report.terms else []
+    parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
+    if memo:
+        parts += ['<section id="memo">', f"<h2>{_escape(SECTION_TITLES['memo'])}</h2>", *_folded(memo), "</section>"]
+    for fold, slug in zip(report.aspects, slugs, strict=True):
+        parts += _aspect_fold(fold, slug)
+    parts += _glossary(report.terms)
+    parts += ["</article>", "</body>", "</html>"]
+    return "\n".join(parts) + "\n"
+
+
+#: An id or a link to one, as the page writes them: every id a fold holds is prefixed, every link to a place in it.
+_ID_ATTRIBUTE = re.compile(r'\b(id|aria-labelledby)="([^"]*)"')
+_LOCAL_LINK = re.compile(r'href="#(?!g-)([^"]*)"')
+
+
+def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
+    """One aspect's closed fold: the writer's summary of it, then its page's first screen and sections, a heading level
+    down, every id in it prefixed ``a-<slug>-``.
+
+    The page's own title, its quoted question and its broken floors are left out: the campaign's first screen carries
+    them once. Its glossary is the campaign page's.
+    """
+    report = fold.report
+    head = [
+        block
+        for block in report.blocks
+        if block.section in FIRST_SCREEN
+        and not (
+            isinstance(block, DisclosureBlock) and block.section == "header" and block.source in ("floor", "basis")
+        )
+    ]
+    body = [
+        *(_block(block, index) for index, block in enumerate(fold.summary)),
+        *(_block(block, index) for index, block in enumerate(head)),
+        *_sections(report, _present_sections(report)),
+    ]
+    prefix = f"a-{slug}-"
+    inner = _prefixed("\n".join(body), prefix)
+    return [
+        f'<section id="aspect-{slug}">',
+        f'<details class="section"><summary><h2>{_escape(fold.aspect)}</h2> '
+        f'<span class="count">· {_escape(fold.shows)}</span></summary>',
+        f'<div class="section-body" id="aspect-{slug}-body">',
+        inner,
+        "</div></details>",
+        "</section>",
+    ]
+
+
+def _prefixed(markup: str, prefix: str) -> str:
+    """``markup`` with every id it holds and every link to a place on the page prefixed, its headings a level down.
+
+    Safe on the page's own markup alone: every text node is escaped, so a quote, an ``id="`` or an ``<h2>`` in it is
+    one the serializer wrote. A glossary link (``#g-...``) is left alone: the glossary is the page's, not the fold's.
+    """
+
+    def ids(match: re.Match[str]) -> str:
+        return f'{match.group(1)}="' + " ".join(prefix + part for part in match.group(2).split()) + '"'
+
+    markup = _ID_ATTRIBUTE.sub(ids, markup)
+    markup = _LOCAL_LINK.sub(lambda match: f'href="#{prefix}{match.group(1)}"', markup)
+    for level in (4, 3, 2):
+        markup = markup.replace(f"<h{level}>", f"<h{level + 1}>").replace(f"</h{level}>", f"</h{level + 1}>")
+    return markup
+
+
+def _present_sections(report: Report) -> list[str]:
+    """The sections after the first screen that hold a block, in reading order; never the glossary."""
+    sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN and section != "glossary"]
+    return [section for section in sections if any(block.section == section for block in report.blocks)]
+
+
+def _sections(report: Report, present: Sequence[str]) -> list[str]:
+    """Each section after the first screen, in a ``<section>`` of its id."""
+    titles = report.section_titles
+    parts: list[str] = []
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
         parts.extend(_section(section, titles[section], _folded(blocks), count=_section_count(section, blocks)))
         parts.append("</section>")
-    if report.terms:
-        entries = "".join(
-            f'<dt id="g-{_slug(term)}">{_escape(term)}</dt><dd>{_escape(GLOSSARY[term])}</dd>' for term in report.terms
-        )
-        parts.append('<section id="glossary">')
-        parts.extend(_section("glossary", titles["glossary"], [f'<dl class="glossary">{entries}</dl>'], count=None))
-        parts.append("</section>")
-    parts += ["</article>", "</body>", "</html>"]
-    return "\n".join(parts) + "\n"
+    return parts
+
+
+def _glossary(terms: Sequence[str]) -> list[str]:
+    """The glossary section defining ``terms``, closed; nothing when the page links none."""
+    if not terms:
+        return []
+    entries = "".join(
+        f'<dt id="g-{_slug(term)}">{_escape(term)}</dt><dd>{_escape(GLOSSARY[term])}</dd>' for term in terms
+    )
+    return [
+        '<section id="glossary">',
+        *_section("glossary", SECTION_TITLES["glossary"], [f'<dl class="glossary">{entries}</dl>'], count=None),
+        "</section>",
+    ]
 
 
 def _section(section: str, title: str, body: Sequence[str], *, count: int | None) -> list[str]:
@@ -310,7 +437,14 @@ def _text(block: TextBlock) -> str:
     if block.role == "recommendation":
         disposition = facts.get("Disposition", "")
         lead = f"<strong>{_escape(disposition[:1].upper() + disposition[1:])}:</strong> " if disposition else ""
-        return f'<p data-role="recommendation">{lead}{body}</p>'
+        sure = (
+            f' <span class="facts">({_escape(facts["Confidence"])} confidence)</span>' if "Confidence" in facts else ""
+        )
+        return f'<p data-role="recommendation">{lead}{body}{sure}</p>'
+    if block.role in SUMMARY_LEADS:
+        return f'<p data-role="{block.role}"><strong>{SUMMARY_LEADS[block.role]}</strong> {body}</p>'
+    if block.role == "reason":
+        return f'<p data-role="reason">{body}</p>'
     if block.role == "next_step":
         return f'<p data-role="next_step"><strong>Next:</strong> {body}</p>'
     if block.role == "revisit_when":
@@ -599,5 +733,6 @@ def _one_line(text: str) -> str:
 
 
 __all__ = [
+    "campaign_report_html",
     "report_html",
 ]

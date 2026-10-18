@@ -46,6 +46,7 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
     TrialRow,
     UnexercisedFactor,
+    asks_a_question,
     refuse_a_bundle_before_aspects,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -867,8 +868,10 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     reading it is not about. A broken floor is also the page's first line (:func:`_floor_warning_blocks`); here it
     reads as plainly as a held one.
 
-    With no floor declared, one line says so. Where a floor is unclear, a ``To show the floors hold`` table follows: for each unclear floor, what showing it holds needs if the
-    arms do not differ and if they differ as observed, each count with its cost
+    A campaign that asks a question and declares no floor says so in one line; an exploratory one, which asks nothing
+    and so cannot declare a floor, has no floor block at all. Where a floor is unclear, a ``To show the floors hold``
+    table follows: for each unclear floor, what showing it holds needs if the arms do not differ and if they differ as
+    observed, each count with its cost
     (:func:`~threetears.evals.analysis.report.decision.floor_projection`), then one line saying how each count was
     found and that it is about, what repeats do, and, where holding needs more cases than the run used on every side,
     that it does. A floor broken or held projects nothing.
@@ -878,6 +881,8 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     if control is None or not _candidates(bundle):
         return []
     if not read:
+        if not asks_a_question(bundle.declared):
+            return []
         return [DisclosureBlock(section="decision", source="floor", text=f"No floor was declared on {bundle.aspect}.")]
     cost = _cost_ruler(bundle)
     others = list(read)

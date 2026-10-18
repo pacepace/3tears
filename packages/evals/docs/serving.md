@@ -309,8 +309,8 @@ argument (below). By default they are interleaved: every arm is prepared, then a
 launches one arm after another and `concurrent` launches them all at once, each its own launch. To compare latency,
 also declare `measure_latency`, which every arm's launch takes and which runs the arms sequential. Launched one after
 another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
-the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design: declare what the arms were
-swept to learn with `campaign_update` once they are known. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design, and its readings are leads: to ask a
+question of what it found, declare a campaign before the runs that answer it. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
 the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a
@@ -352,23 +352,29 @@ An agent calls `action='help'` for the actions grouped by workflow and `action='
 one action's parameters and an example. A parameter the action does not declare is refused, naming the
 ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read through.
 
-**A campaign is declared or exploratory, and the caller says which.** `campaign_create` takes a
-`declared_design` or `exploratory: true` — exactly one; neither is refused naming both, and both are refused as a
-contradiction. `exploratory` is checked, never stored: a campaign is exploratory exactly while it declares no
-design. `campaign_update` changes a campaign's `name`, `description` or `declared_design` after it exists, so an
-operator who started exploring declares the design when the question settles, and the campaign is declared from
-that write on. Going back is said too: `declared_design: null` withdraws the declaration only beside
-`exploratory: true`.
+**A campaign is declared or exploratory, and the caller says which.** `campaign_create` takes a `design` on at
+least one of its `aspects`, or `exploratory: true` — exactly one; neither is refused naming both, and both are
+refused as a contradiction. `exploratory` is checked, never stored: a campaign is exploratory exactly while none of
+its aspects declares a design. A declared campaign also takes its one `question`, its `campaign_arms` (`{label,
+role, from_run_ids}`, the control first), each aspect's `margin`, and its `floors` (`{aspect, clause}`); an
+exploratory one takes none of them.
 
-**Everything a campaign needs is an action.** An agent can start ad hoc and end with a declared, controlled
-campaign without a line of Python:
+**Everything a campaign needs is an action:**
 
-1. `run_launch` the arms, then `campaign_create` with their `run_ids` and `exploratory: true`;
-2. `campaign_runs_add` the runs launched later (`campaign_runs_remove` takes one out; its results stay);
-3. `campaign_update` with the `declared_design` once the question settles, and `control_from_run_id` naming the
-   member run whose variant is the control — one write, so a refused control leaves the design unwritten too.
-   `control_from_run_id` alone re-names the control on a declared campaign, and `control_from_run_id: null`
-   clears it.
+1. `campaign_create` with the question and each aspect's template, margin and design, before any run (arms are
+   named from runs, so none yet: each variant the runs bring is read as a candidate); `campaign_update` may still
+   amend the `question`, `aspects` and `floors` while no aspect holds a run;
+2. `run_launch` the arms, then `campaign_runs_add` each run to its aspect (by its template, or the `aspect` you
+   name; `campaign_runs_remove` takes one out, and its results stay);
+3. `campaign_update` with `control_from_run_id`, naming the member run whose variant is the control. Once a run has
+   joined, the control is named once and never re-pointed, and a control named after an aspect's first run makes
+   that aspect's comparisons post hoc.
+
+To ask again after the runs, `campaign_create` with `aspects_from` adopts the aspects it keeps, each with the time
+its question was asked; what it adds (`margins` for an adopted aspect, a floor, an arm, the question's new words)
+is dated now and reads as declared after the runs.
+<!-- slice1: WP-5 -- the campaign_record action (the person's call, overriding a broken floor by key) goes here once
+it lands. -->
 
 `judge_configs_list` names the judge configs a second judge's `second_judge_config_ids` can map a dimension to.
 

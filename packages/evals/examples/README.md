@@ -189,8 +189,9 @@ These are documented in the guides:
 
 - Judge reliability and evidence tiers:
   [Reading reports](../docs/reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
-- Declaring a campaign's design (axes, question, bar), and when exploring without one is the right call:
-  [Measuring soundly](../docs/measuring-soundly.md#start-from-the-question).
+- Declaring a campaign (one question, its arms, the aspects it is measured on and the floors that warn), and when
+  exploring without one is the right call:
+  [Measuring soundly](../docs/measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects).
 - Budgets and spend caps: [Cost and budgets](../docs/cost-and-budgets.md).
 - Conversations with a simulated user, generating cases, storage, and writing your own host:
   [Adopting the engine](../docs/adopting-a-host.md).

@@ -762,6 +762,18 @@ async def test_a_question_that_declares_no_floor_says_so_in_one_line() -> None:
     assert f"## Decision\n\nNo floor was declared on {bundle.aspect}.\n" in report_markdown(report)
 
 
+async def test_an_exploratory_comparison_has_no_floor_block_at_all() -> None:
+    """A quick comparison asks no question, so it can declare no floor: the page says nothing about floors, as it did
+    before floors existed."""
+    cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(7)]
+    arms = {"production": _passing([3] * 7, 0.0031), "candidate": _passing([2] * 7, 0.0021)}
+    comparison = await Eval(cases, arms, ["label"], k=3, name="exploratory").run(store=":memory:")
+    report = comparison.report
+    assert report.bundle.declared is not None and not report.bundle.declared.question
+    assert not [block for block in report.blocks if block.section == "decision"]
+    assert "## Decision" not in report_markdown(report) and "No floor was declared" not in report_markdown(report)
+
+
 # --- the Decision section speaks the reader's words, never the engine's ---------------------------------------------
 
 #: The engine's names for a floor's parts, which the Decision section never prints.

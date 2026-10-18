@@ -33,6 +33,7 @@ which :meth:`Report.write` puts beside the page, and the page names its fingerpr
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Literal, Self, get_args
@@ -40,8 +41,10 @@ from typing import Annotated, Literal, Self, get_args
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialCheck, TrialJudgement, TrialState
+from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.quantities import number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
@@ -84,6 +87,10 @@ FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
 TextRole = Literal[
     "answer",
     "recommendation",
+    "reason",
+    "what_changed",
+    "how_sure",
+    "means",
     "revisit_when",
     "finding_title",
     "finding_body",
@@ -107,9 +114,11 @@ TextRole = Literal[
 #: corrected. ``strata``: a stratum too small to read alone. ``guardrails``: how guardrails were decided.
 #: ``scope``: which readings no declared question asked about. ``not_tested``: something the campaign could not
 #: speak to. ``calibration``: a judge not yet calibrated against people's labels — a state with its next step, never a
-#: failure. ``generation``: how the report itself was made.
+#: failure. ``generation``: how the report itself was made. ``call``: on a campaign's page, the person's call, or that
+#: none is recorded yet, and every broken floor it overrides.
 DisclosureSource = Literal[
     "arms",
+    "call",
     "caveat",
     "basis",
     "floor",
@@ -847,12 +856,135 @@ class Report(EvalDocumentModel):
         return files
 
 
+class CampaignAspectFold(EvalDocumentModel):
+    """One aspect's fold of a campaign's page: the writer's summary of the aspect, then that aspect's own page."""
+
+    aspect: str = Field(min_length=1, description="The aspect's label: the fold's heading.")
+    shows: str = Field(
+        min_length=1,
+        description="What code read on the aspect, in a few words beside the heading (`v2 shown worse`).",
+    )
+    summary: list[ReportBlock] = Field(
+        default_factory=list,
+        description=(
+            "The writer's summary of the aspect (what changed, how sure, what it means), as text blocks; empty "
+            "with no memo, or none for this aspect."
+        ),
+    )
+    report: Report = Field(
+        description=(
+            "The aspect's own page (`build_code_only_report` over its bundle), laid out in the fold below the summary "
+            "without its title, its question or its broken floors, which the campaign's first screen carries."
+        )
+    )
+
+
+class CampaignReport(EvalDocumentModel):
+    """A campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then one
+    fold per aspect.
+
+    **The first screen, in order** (:attr:`blocks`, every one in the ``header`` section): every broken floor, one loud
+    line each, above the title; the question; the writer's recommendation, or a line saying none was written; code's
+    table of every aspect × candidate (its change against the control, the interval it was read on, the margin and
+    what it shows); the cases that would settle each unclear row; the person's call, or that none is recorded, and
+    any broken floor it overrides. :attr:`blocks` may also hold the memo's findings and next steps (``memo``), which
+    the recommendation rests on. Then :attr:`aspects`, one fold each, in the campaign's order.
+
+    **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
+    nothing else, and a code-only campaign page (no memo) holds none.
+    """
+
+    basis: ReportBasis = Field(description="`analysis` with a memo over the campaign, `code_only` without one.")
+    title: str = Field(min_length=1, description="The title line: the campaign's name.")
+    campaign_id: str = Field(min_length=1, description="The campaign.")
+    campaign_name: str | None = Field(default=None, description="The campaign's name, where known.")
+    scope_id: str = Field(min_length=1, description="The scope the campaign lives in.")
+    finding_count: int = Field(ge=0, description="How many findings the memo holds.")
+    blocks: list[ReportBlock] = Field(description="The first screen, then the memo's findings, in reading order.")
+    aspects: list[CampaignAspectFold] = Field(description="One fold per aspect, in the campaign's order.")
+    readings: CampaignReadings = Field(description="What code read off the campaign: every row and every floor.")
+    call: CampaignCall | None = Field(default=None, description="The person's call; None while none is recorded.")
+
+    @model_validator(mode="after")
+    def _the_basis_matches_what_the_page_holds(self) -> Self:
+        """Refuse a code-only page holding a finding or a writer's words, and a block linked to a finding not held.
+
+        :raises ValueError: A code-only page counts a finding or holds a text block, or a block names a finding
+            position past ``finding_count``.
+        """
+        blocks = [*self.blocks, *(block for fold in self.aspects for block in fold.summary)]
+        for index, block in enumerate(blocks):
+            named = ([block.finding] if block.finding is not None else []) + list(block.rests_on)
+            if stray := sorted({position for position in named if not 0 <= position < self.finding_count}):
+                raise ValueError(
+                    f"block {index} ({block.kind}) is linked to finding position(s) {stray}, and the page holds "
+                    f"{self.finding_count} finding(s)"
+                )
+        if self.basis == "code_only":
+            if self.finding_count:
+                raise ValueError(f"a code-only page has no findings, and this one counts {self.finding_count}")
+            if authored := [index for index, block in enumerate(blocks) if isinstance(block, TextBlock)]:
+                raise ValueError(f"a code-only page holds no writer's words, and blocks {authored} are text blocks")
+        return self
+
+    @property
+    def terms(self) -> list[str]:
+        """Every glossary term the page links, in the order first linked: its own first screen's, then each aspect's
+        fold's — what its one glossary defines."""
+        linked: list[str] = []
+        for block in self.blocks:
+            found = (
+                [column.term for column in block.columns]
+                if isinstance(block, TableBlock)
+                else [block.term]
+                if isinstance(block, DisclosureBlock)
+                else []
+            )
+            linked += [term for term in found if term is not None and term not in linked]
+        for fold in self.aspects:
+            linked += [term for term in fold.report.terms if term not in linked]
+        return linked
+
+    @property
+    def fold_ids(self) -> list[str]:
+        """Each aspect's fold as the id its section and every id inside it are named by: the label in lower case,
+        each run of other characters one hyphen, numbered where two would read alike."""
+        ids: list[str] = []
+        for fold in self.aspects:
+            slug = re.sub(r"[^a-z0-9]+", "-", fold.aspect.casefold()).strip("-") or "aspect"
+            ids.append(f"{slug}-{len(ids) + 1}" if slug in ids else slug)
+        return ids
+
+    def json_document(self) -> dict[str, object]:
+        """The page's machine form: code's readings, the call, and each aspect's bundle by its fingerprint and shape.
+
+        :return: A JSON-ready mapping.
+        :rtype: dict[str, object]
+        """
+        return {
+            "campaign_id": self.campaign_id,
+            "basis": self.basis,
+            "readings": self.readings.to_dict(),
+            "call": self.call.to_dict() if self.call is not None else None,
+            "aspects": [
+                {
+                    "aspect": fold.aspect,
+                    "bundle_fingerprint": fold.report.source.bundle_fingerprint,
+                    "bundle_schema_version": fold.report.bundle.schema_version,
+                }
+                for fold in self.aspects
+            ],
+        }
+
+
 __all__ = [
     "FINDING_ROLES",
     "FIRST_SCREEN",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",
+    "CampaignAspectFold",
+    "CampaignReport",
     "CellValue",
     "ChartBlock",
     "ChartKind",

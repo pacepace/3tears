@@ -150,6 +150,10 @@ GLOSSARY: dict[str, str] = {
         "The arm every other arm is compared against, usually what runs in production today; ▸ marks it in a table."
     ),
     "trial": "One case run once on one arm.",
+    "aspect": (
+        "One part of what a campaign asks, read on its own cases with its own margin; every aspect is read against "
+        "the control."
+    ),
     "case": "One input the eval feeds every arm; repeats of a case are not independent.",
     "usable": "A trial the test setup did not spoil; only usable trials count for or against an arm.",
     "lost": (

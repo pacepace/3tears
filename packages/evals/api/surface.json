@@ -4586,6 +4586,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.build_campaign_report": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.build_code_only_report": {
       "kind": "function",
       "signature": "",
@@ -4616,13 +4621,33 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.campaign_readings": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.campaign_report": {
       "kind": "function",
       "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report",
       "tier": "stable"
     },
+    "threetears.evals.analysis.campaign_report_html": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.campaign_report_markdown": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.campaign_verdicts": {
       "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.CampaignAspectFold": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -4633,6 +4658,11 @@
     },
     "threetears.evals.analysis.CampaignReadStore": {
       "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.CampaignReport": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -5903,7 +5933,7 @@
     },
     "threetears.evals.analysis.serialize_report": {
       "kind": "function",
-      "signature": "serialize_report(report: Report, format: ReportFormat) -> str",
+      "signature": "serialize_report(report: Report | CampaignReport, format: ReportFormat) -> str",
       "tier": "stable"
     },
     "threetears.evals.analysis.SeriesPoint": {

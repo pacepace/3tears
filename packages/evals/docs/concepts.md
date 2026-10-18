@@ -68,6 +68,7 @@ against people.
 | margin, guardrail, gate | the difference too small to matter; a reading no arm may get worse on; the CI check over the verdicts | [rung 3](ladder.md#rung-3-two-prompts-compared) |
 | world, goal check, did-nothing control | the state an agent acts on; a check of the state it left; the proof that a check can fail | [rung 4](ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) |
 | store, scope, host | where runs are kept; the name they are found by; the value that serves them | [serving](serving.md#keep-your-runs-and-read-them-back) |
+| campaign, aspect, floor | one question asked of the arms; where it is measured; a line a candidate is warned for crossing | [measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects) |
 
 ## The picture underneath
 
@@ -92,11 +93,14 @@ An `Eval` builds all of this for you (`as_host`); a host of your own declares it
      |
      |  you put the runs you want compared into
      v
-  campaign  e.g. "v1 vs v2", in one scope; its results pool into
-            analysis cells: one variant measured under one rig
+  campaign  one question asked of its arms, e.g. "should v2 replace v1?", in one scope
+     |  measured on one or more
+     v
+  aspect    one template and the runs gathered on it, with its margin and design;
+            its results pool into analysis cells: one variant measured under one rig
      |
      v
-  analysis bundle   every number code computed about the campaign, frozen and fingerprinted
+  analysis bundle   every number code computed about one aspect, frozen and fingerprinted
      |
      |  optionally, a model reads the bundle and writes findings: an analysis
      v
@@ -392,23 +396,42 @@ agreement, never its point estimate, and an undecided one says how many more res
 ### Comparing and reading
 
 #### Campaign
-A curated set of runs under one subject and behaviour, the hub an analysis attaches to (`EvalCampaign`).
-Membership is chosen, not queried; a run may sit in several campaigns. Its declared design names a
-**control**, which is a variant key, not a run, kept beside the lever map and identity version it was computed
-from (`control_levers`, `control_identity_version`); what it **held fixed** (`held_fixed`: the stimulus,
-controlled or not, and the apparatus, commissioned or witnessed); and its **questions**, each with the rule that
-settles it, if any (`Question.decision`: typed clauses the engine settles, never words it parses). A campaign with
-no declared design is **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing
-design, never stored, so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:*
-"triage v1 vs v2", control = the v1 variant, held fixed = one case battery on a commissioned rig. Which design to
-declare for a question: [Measuring soundly](measuring-soundly.md#declare-the-design-and-its-control).
+What a person set out to learn, and the runs gathered to learn it (`EvalCampaign`): **one question** asked of its
+**arms**, measured on one or more **aspects**, with the **floors** a candidate is warned for crossing, in one scope.
+Membership is chosen, not queried: a run joins one aspect of a campaign, and may sit in several campaigns. The
+hierarchy is campaign → aspect → run → cell. A campaign is authored, so it is durable: no core baseline reset
+deletes it ([Stored data](adopting-a-host.md#stored-data-what-is-kept)). A campaign none of whose aspects declares
+a design is **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing designs,
+never stored. One that declares a design but asks no question asks nothing, so its readings are exploratory too.
+*Example:* "Should v2 replace v1?", control v1, measured on two aspects, routing and replies. Declaring one:
+[Measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects).
+
+#### Aspect
+One place a campaign's question is measured (`Aspect`): a template, the runs gathered on it, its **margin** (how
+far, in points of the pass rate, a candidate may fall below the control there before it is shown worse) and its
+**design** (the axes it varies, what it held fixed, the merit axes its readings are tested on, its bars). Each
+aspect is read on its own, against the same control, and keeps its own pre-registration time (`asked_at`): a
+reading confirms only what was asked before that aspect's first run. A campaign adopting another's aspect
+(`aspects_from`) keeps that time; whatever it adds is dated when it is added. A campaign stored before aspects
+existed reads as one aspect labelled with its behavior.
+
+#### Floor
+A line a candidate is warned for crossing on one aspect (`Floor`): a typed clause, `RateDrop` (no pass rate drops
+by more than `max_points`) or `CostLower` (the candidate costs less per reply), never words the engine parses. A
+floor reads `broken`, `held` or `unclear`, on its own interval at the nominal level. It only **warns**, loudly: a
+broken floor is the first line of the page. It never decides, blocks or writes the verdict; code reports, the
+writer recommends, and a person decides.
+<!-- slice1: WP-4/WP-5 -- the writer's recommendation and the recorded call (campaign_record, CampaignCall,
+floors_overridden) are defined here once they land. -->
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
 so any run of that configuration counts toward it. An `Eval` comparison sets it from its runner mapping's first
-key; elsewhere it is addressed
-from a run (`control_from_run_id`), which records the run's lever map and identity version beside the key, as a
-run records its own; nobody sets those by hand. Every read resolves it through `resolve_declared_control` to the
+key; elsewhere it is the campaign's first arm, with role `control` (`CampaignArm`), addressed from a run: an arm's
+`from_run_ids` at creation, or `set_campaign_control` (`control_from_run_id` on the `campaign_update` action)
+afterwards. The server records the run's variant key beside its lever map and identity version, as a run records
+its own; nobody types those. A control named after an aspect's first run makes that aspect's readings post hoc.
+Every read resolves it through `resolve_control_arm` to the
 keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
 version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a
 change to how a lever map is digested, not a renamed lever, kind or overlay field. So a control keeps matching its
@@ -418,7 +441,8 @@ wherever any run carries the recomputed key; the cells under the earlier version
 version (`design.earlier_control`), named on every surface, disclosed once, in no contrast or adoption check, no contestant on the frontier,
 and not in the control's numbers. A key typed by hand records no lever map; when no cell carries it under a later
 identity version it is **stale**: the bundle says it cannot be resolved (`control_excluded`), and the remedy is to
-address it again from a run. *Example:* the v1 arm.
+address it again from a run. A candidate arm nobody named is read off the runs: each other variant among them is
+one. *Example:* the v1 arm.
 
 #### Delta, interval and adjusted p
 What a comparison reports for each arm against the control, per reading. The **delta** (the report's **Change**
@@ -445,8 +469,10 @@ miss. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#ru
 to read them.
 
 #### Analysis bundle
-Everything code computed about a campaign, assembled once and fingerprinted (`AnalysisContextBundle`), so
-two analysis prompts run over the same fingerprint are comparable. Nothing is fetched while an analysis is
+Everything code computed about one aspect of a campaign, assembled once and fingerprinted
+(`AnalysisContextBundle`, its `aspect` naming which), so two analysis prompts run over the same fingerprint are
+comparable. A campaign of several aspects is assembled one aspect at a time (`assemble_context_bundle(...,
+aspect=...)`). Nothing is fetched while an analysis is
 written: the bundle is the whole context. The CLI's `bundle` prints it inside a `BundleInspection` wrapper
 (campaign, scope, fingerprint, and the bundle as its `bundle` field); save the bundle alone with
 `bundle.to_json()`.

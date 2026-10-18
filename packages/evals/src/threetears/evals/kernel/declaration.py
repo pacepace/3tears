@@ -1311,8 +1311,9 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
     named_at: str | None = Field(
         default=None,
         description=(
-            "When the arm was addressed from its run (ISO-8601). A control named after an aspect's first run turns "
+            "When the arm was addressed from its run (ISO-8601). A control named after an aspect's first result turns "
             "that aspect's comparisons post hoc: what they are read against was chosen once the evidence existed. "
+            "Named after its runs were launched and before any result landed, it was named before anything was seen. "
             "None = not recorded (an arm upgraded from a campaign stored before arms existed)."
         ),
     )
@@ -1436,7 +1437,8 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         default=None,
         description=(
             "When `margin` was declared (ISO-8601), where that was after `asked_at`: a margin added when the aspect "
-            "was adopted is dated then, and reads as declared after the runs where that is later than the first. "
+            "was adopted is dated then, and reads as declared after the evidence where that is later than the "
+            "aspect's first result. "
             "None = declared with the aspect's question."
         ),
     )
@@ -1477,8 +1479,8 @@ class Floor(EvalDocumentModel, CoreShapeModel):
         default=None,
         description=(
             "When this floor was declared (ISO-8601), where that was after its aspect's question was asked: a floor "
-            "added when the aspect was adopted is dated then, and reads as declared after the runs where that is "
-            "later than the aspect's first run, while the aspect's own readings keep their time. None = declared "
+            "added when the aspect was adopted is dated then, and reads as declared after the evidence where that is "
+            "later than the aspect's first result, while the aspect's own readings keep their time. None = declared "
             "with the aspect's question."
         ),
     )
