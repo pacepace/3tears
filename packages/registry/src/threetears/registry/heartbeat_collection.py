@@ -42,6 +42,7 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
+from threetears.core.exceptions import L2WriteRefusedError
 from threetears.observe import get_logger
 
 from threetears.registry.entities import HeartbeatEntity
@@ -75,14 +76,8 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
     #: collection treats as timestamps.
     datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_last_heartbeat", "date_created", "date_updated"})
 
-    @property
-    def l2_is_the_store(self) -> bool:
-        """L2 is where heartbeats live: no L3 stands behind it, so a write L2 refused raises.
-
-        :return: ``True``
-        :rtype: bool
-        """
-        return True
+    #: L2 is where heartbeats live: no L3 stands behind it, so an L2 failure raises.
+    l2_is_the_store: bool = True
 
     def __init__(
         self,
@@ -157,6 +152,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :ptype entity_id: Any
         :return: hydrated :class:`HeartbeatEntity` or ``None`` on miss
         :rtype: HeartbeatEntity | None
+        :raises KvError: when L2, this collection's store, could not be read: an outage is not a miss
         """
         row: dict[str, Any] | None = self.get_row_sync(entity_id)
         if row is None:
@@ -198,11 +194,13 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :ptype conn: Any
         :return: nothing
         :rtype: None
-        :raises KvError: when a KV bucket is configured and L2 refused the row; this pod's L1 copy
-            is dropped, no invalidation is published, and the entity keeps its unsaved edits
+        :raises L2WriteRefusedError: when a KV bucket is configured and L2 refused the row; this
+            pod's L1 copy is dropped, no invalidation is published, and the entity keeps its
+            unsaved edits and still reads them
         """
         del conn  # never threaded through the L1+L2-only path
-        data = entity.to_dict()
+        working = entity.to_dict()
+        data = dict(working)
         now = datetime.now(UTC)
         if entity.is_new:
             data.setdefault("date_created", now)
@@ -215,7 +213,13 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         # legacy payloads to aware-UTC at the boundary.
         if self._l1 is not None:
             self._l1.upsert(self.table_name, data, self.primary_key_column)
-        await self._save_to_l2(entity.id, data)
+        try:
+            await self._save_to_l2(entity.id, data)
+        except L2WriteRefusedError:
+            # L1 has dropped the row (no store holds it): the handle keeps what it was saving, as
+            # BaseCollection._withdraw_unstored does, so it still reads and a retry writes it
+            entity.hold_row(working)
+            raise
         await self._publish_invalidation(entity.id)
         entity.mark_clean()
         entity.original_date_updated = data.get("date_updated")
@@ -236,8 +240,8 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :ptype entity_id: Any
         :return: ``True`` -- deletes are idempotent
         :rtype: bool
-        :raises KvError: when a KV bucket is configured and L2 refused the delete; the row is
-            still there for every other replica
+        :raises L2WriteRefusedError: when a KV bucket is configured and L2 refused the delete; the
+            row is still there for every other replica
         """
         if self._l1 is not None:
             self._l1.delete_by_id(
