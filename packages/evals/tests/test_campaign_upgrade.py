@@ -63,6 +63,12 @@ def _aspect(upgraded: dict[str, Any]) -> Aspect:
 
 
 class TestTheFrozenCampaign:
+    def test_a_behavior_holding_a_slash_labels_an_aspect_that_validates(self) -> None:
+        upgraded = upgrade_campaign_v15({**_frozen(), "behavior": "queue/discipline"})
+
+        assert _aspect(upgraded).label == "queue-discipline"
+        assert upgraded["behavior"] == "queue/discipline"
+
     def test_it_reads_as_one_aspect_labelled_with_its_behavior(self) -> None:
         stored = _frozen()
         upgraded = upgrade_campaign_v15(stored)

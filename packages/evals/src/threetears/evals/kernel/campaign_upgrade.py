@@ -44,7 +44,8 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     ``archived``, ``created_at``) and every field below not named here pass through untouched; ``schema_version`` is
     the chain's to set, never a step's.
 
-    - **One aspect**, labelled with ``behavior``: the campaign's ``template_id`` and ``run_ids``, ``stratum`` None,
+    - **One aspect**, labelled with ``behavior`` (each ``/`` in it read as ``-``, since an aspect label is the first
+      part of a floor's key and takes no ``/``): the campaign's ``template_id`` and ``run_ids``, ``stratum`` None,
       and its design — the stored design less its questions, its control and when and by whom it was declared, plus
       ``merit_axes``: the live questions' axes, each once in the order first named; empty when a live question
       names none (an unscoped question asks about every axis, so the joined one does too); None when no question is
@@ -78,7 +79,8 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     template_id = upgraded.pop("template_id", None)
     run_ids = upgraded.pop("run_ids", [])
     design = upgraded.pop("declared_design", None)
-    label = upgraded["behavior"]
+    # A label is the first part of a floor's key, which `/` separates, so a behavior holding one is spelled with `-`.
+    label = upgraded["behavior"].replace("/", "-")
     aspect: dict[str, Any] = {
         "label": label,
         "template_id": template_id,
