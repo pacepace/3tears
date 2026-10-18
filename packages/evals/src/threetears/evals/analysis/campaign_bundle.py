@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -62,6 +62,9 @@ CAMPAIGN_BUNDLE_SHAPE = 1
 #: grows with its aspects, at most this much each, and the system prompt is budgeted apart
 #: (:data:`~threetears.evals.analysis.gen_prompt.PROMPT_CHAR_BUDGET`). Like that budget, it only falls.
 CAMPAIGN_MESSAGE_CHARS_PER_ASPECT = 24_500
+
+#: What kind of campaign a bundle is, derived from its arms (:attr:`CampaignBundle.kind`).
+CampaignKind = Literal["measurement", "choice", "change"]
 
 #: What opens the writer's user message.
 CAMPAIGN_MESSAGE_HEADING = "CAMPAIGN BUNDLE (JSON):\n"
@@ -355,6 +358,17 @@ class CampaignBundle(EvalDocumentModel):
         :rtype: tuple[str, str] | None
         """
         return self.trial_ids().get(trial_id)
+
+    @property
+    def kind(self) -> CampaignKind:
+        """What kind of campaign this is, derived from its arms: a measurement, a choice or a change.
+
+        A **measurement** has one arm; a **choice** several and no control (nothing is shipped to change from); a
+        **change** a control and its candidates. Never declared.
+        """
+        if self.control() is not None:
+            return "change"
+        return "measurement" if len(self.arms) <= 1 else "choice"
 
     def control(self) -> CampaignArm | None:
         """The campaign's control arm, or None when it declares none."""

@@ -62,7 +62,10 @@ the campaign holds; a finding names only trials the campaign holds. A candidate 
 asked its question before its runs (:func:`_reject_exploratory_adoption`), where code's reading or a comparison
 separated it from the control in its favour and no guardrail breached (:func:`_reject_unseparated_adoption`), and
 **a broken floor is addressed**: a floor only warns, never blocks, but a recommendation of an arm that broke one names
-each such floor and why the breach is acceptable (:func:`_reject_unaddressed_floors`).
+each such floor and why the breach is acceptable (:func:`_reject_unaddressed_warnings`), as a choice's pick names
+each aspect another arm was shown ahead on, and any recommendation each absolute bar its arm missed. Which kind a
+campaign is decides what it may recommend at all (:func:`_reject_recommendation_off_kind`): a measurement nothing, a
+choice an arm or no clear winner, a change a candidate or the control.
 
 **Closed dependency set.** The generator depends only on the bundle, the
 resolved prompt string, the host's profile, and an injected model-provider client (a
@@ -817,12 +820,13 @@ def _assemble_and_validate(
     except (ValidationError, OffVocabulary) as refused:
         raise SoundnessRefusal(f"generator output does not match the analysis contract: {refused}") from refused
     _reject_mismatched_aspect_summaries(document, bundle)
+    _reject_recommendation_off_kind(document, bundle)
     _reject_unpinned_recommendation(document, bundle)
     _reject_unknown_trials(document, bundle)
     _reject_unknown_arm(document, bundle)
     _reject_exploratory_adoption(document, bundle)
     _reject_unseparated_adoption(document, bundle)
-    _reject_unaddressed_floors(document, bundle)
+    _reject_unaddressed_warnings(document, bundle)
     return _resolved_analysis(document, bundle, generation)
 
 
@@ -861,8 +865,10 @@ def _resolved_analysis(
     model_versions: dict[str, str] = {}
     for aspect in bundle.aspects:
         model_versions.update(aspect.model_versions)
+    chosen = _recommended(document, bundle)
     try:
         analysis = EvalAnalysis(
+            recommended_variant_key=chosen.variant_key if chosen is not None else None,
             campaign_id=bundle.campaign_id,
             subject_id=bundle.subject_id,
             subject_kind=bundle.subject_kind,
@@ -975,25 +981,55 @@ def _reject_mismatched_aspect_summaries(document: AuthoredCampaignAnalysis, bund
         )
 
 
+def _reject_recommendation_off_kind(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
+    """Refuse a recommendation a campaign of this kind cannot make, or the absence of one it must.
+
+    The kind is derived from the campaign's arms (:attr:`CampaignBundle.kind`), never declared. A **measurement** (one
+    arm) compares no arms, so there is nothing to recommend: one is refused. A **change** (a control and its
+    candidates) always recommends — a candidate, or keeping the control, which is what a change does when nothing moved
+    it. A **choice** (several arms, no control) picks one, or recommends nothing when no arm stood out: no clear winner.
+
+    :raises SoundnessRefusal: A measurement's memo recommends an arm, or a change's recommends nothing.
+    """
+    recommended = document.recommended()
+    kind = bundle.kind
+    if kind == "measurement" and recommended is not None:
+        raise SoundnessRefusal(
+            f"the recommendation names {recommended.arm!r}, and this campaign measures one arm, so there is no arm to "
+            "choose and nothing to recommend: leave `recommendation` empty, and say in each aspect's summary what was "
+            "measured there and what it means"
+        )
+    if kind == "change" and recommended is None:
+        control = bundle.control()
+        raise SoundnessRefusal(
+            "`recommendation` is empty, and this campaign compares candidates against a control, so it recommends one: "
+            "a candidate the evidence separated from the control, or keeping the control"
+            + (f", {control.label!r}" if control is not None else "")
+        )
+
+
 def _reject_unpinned_recommendation(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
-    """Refuse a recommendation of a candidate that rests on no finding, or any that rests on one that is not there.
+    """Refuse a recommendation of an arm that rests on no finding, or any that rests on one that is not there.
 
     A recommendation is the memo's one claim to action, and the report prints the findings it rests on beside it
-    (and the cases their trials show), so a switch resting on nothing is advice the evidence never reached. Keeping
-    the control is what a campaign does when nothing moved it, so it may rest on no finding: an honest memo of a thin
-    campaign need not invent one to hang it on. A position past the findings is refused here rather than by the stored
-    model, so the refusal can say what to fix.
+    (and the cases their trials show), so a switch, or a choice's pick, resting on nothing is advice the evidence
+    never reached. Keeping a change's control is what a campaign does when nothing moved it, so it may rest on no
+    finding: an honest memo of a thin campaign need not invent one to hang it on. A position past the findings is
+    refused here rather than by the stored model, so the refusal can say what to fix.
 
     :raises SoundnessRefusal: ``recommendation.rests_on`` names a position past the findings, or is empty on a
-        recommendation of a candidate.
+        recommendation that is not keeping the control.
     """
+    recommended = document.recommended()
+    if recommended is None:
+        return
     count = len(document.findings)
-    rests_on = document.recommendation.rests_on
-    arm = bundle.arm(document.recommendation.arm)
+    rests_on = recommended.rests_on
+    arm = bundle.arm(recommended.arm)
     if stray := sorted({position for position in rests_on if not 0 <= position < count}):
         complaint = f"recommendation.rests_on names finding position(s) {stray}"
-    elif not rests_on and arm is not None and arm.role != "control" and bundle.control() is not None:
-        complaint = "recommendation.rests_on is empty, and a switch to a candidate rests on the findings that show it"
+    elif not rests_on and not (arm is not None and arm.role == "control"):
+        complaint = "recommendation.rests_on is empty, and a pick of an arm rests on the findings that show it"
     else:
         return
     raise SoundnessRefusal(
@@ -1027,44 +1063,52 @@ def _reject_unknown_trials(document: AuthoredCampaignAnalysis, bundle: CampaignB
 def _reject_unknown_arm(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
     """Refuse a recommendation naming an arm the campaign does not hold.
 
-    The recommendation names its arm by label, and code resolves the label to the arm's variant key, which is what a
-    person's call is matched to; a label no arm carries resolves to nothing.
+    The recommendation names its arm by label, and code resolves the label to the arm's variant key, which it stores
+    beside the memo (``EvalAnalysis.recommended_variant_key``) and a person's call is matched to; a label no arm
+    carries resolves to nothing.
 
     :raises SoundnessRefusal: ``recommendation.arm`` is no arm's label.
     """
-    if bundle.arm(document.recommendation.arm) is not None:
+    recommended = document.recommended()
+    if recommended is None or bundle.arm(recommended.arm) is not None:
         return
     labels = [arm.label for arm in bundle.arms]
     raise SoundnessRefusal(
-        f"recommendation.arm is {document.recommendation.arm!r}, which is no arm's label; name the arm as `arms` "
+        f"recommendation.arm is {recommended.arm!r}, which is no arm's label; name the arm as `arms` "
         f"names it — the arms are {labels or '(none: the campaign holds no arm)'}"
     )
 
 
-def _recommended(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> CampaignArm:
-    """The arm the recommendation names, which :func:`_reject_unknown_arm` has already proved exists."""
-    arm = bundle.arm(document.recommendation.arm)
+def _recommended(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> CampaignArm | None:
+    """The arm the recommendation names, which :func:`_reject_unknown_arm` has already proved exists; None for none."""
+    recommended = document.recommended()
+    if recommended is None:
+        return None
+    arm = bundle.arm(recommended.arm)
     if arm is None:  # pragma: no cover — the chain refuses an unknown label before any reader of this
-        raise SoundnessRefusal(f"recommendation.arm {document.recommendation.arm!r} is no arm's label")
+        raise SoundnessRefusal(f"recommendation.arm {recommended.arm!r} is no arm's label")
     return arm
 
 
+def _confirmatory(bundle: CampaignBundle) -> list[AnalysisContextBundle]:
+    """The aspects whose question was asked before their first result: the only ones whose evidence decides."""
+    return [aspect for aspect in bundle.aspects if aspect.question_declared]
+
+
 def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
-    """Refuse a recommendation of a candidate in a campaign none of whose aspects asked its question before its runs.
+    """Refuse a change's switch to a candidate when none of its aspects asked its question before its runs.
 
     With no question asked before the evidence was read, every pattern in it is a lead, and switching on a lead is a
     decision nothing was designed to make. Keeping the control is what such a campaign recommends: it changes
     nothing, and the next steps say what campaign, declared before it runs, would settle the rest. The structural fact
-    is each aspect's ``question_declared``; nothing is read off prose. A campaign naming no control has no arm to keep,
-    so this asks nothing of it (:func:`_reject_unseparated_adoption` says why).
+    is each aspect's ``question_declared``; nothing is read off prose. A switch in a campaign some of whose aspects
+    asked in time rests only on those aspects (:func:`_reject_unseparated_adoption`).
 
-    :raises SoundnessRefusal: Every aspect is exploratory and the recommendation names a candidate.
+    :raises SoundnessRefusal: Every aspect is exploratory and a change's recommendation names a candidate.
     """
-    control = bundle.control()
-    if control is None or any(aspect.question_declared for aspect in bundle.aspects):
-        return
     arm = _recommended(document, bundle)
-    if arm.role == "control":
+    control = bundle.control()
+    if arm is None or control is None or bundle.kind != "change" or arm.role == "control" or _confirmatory(bundle):
         return
     raise SoundnessRefusal(
         f"the recommendation names {arm.label!r}, a candidate, and this campaign asked no question before its first "
@@ -1075,30 +1119,31 @@ def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
 
 
 def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
-    """Refuse a recommendation of a candidate no reading separated from the control in its favour.
+    """Refuse a change's switch to a candidate no confirmatory reading separated from the control in its favour.
 
     Recommending a candidate is a claim that it beat what it replaces, and the bundle says whether it did in two
-    places: code's reading of each aspect (``better`` is the gain shown, Holm-adjusted across the aspects), and each
-    aspect's ``multiple_comparisons``. One ``better`` reading or one ``improved`` comparison, on any aspect, is
-    enough: a trade-off is a legitimate recommendation. What is refused is a candidate with no separated upside —
-    every tested reading ``not_separated``, or separated only by ``regressed`` — or one no test could reach, which is
-    refused saying so, since a reader cannot tell a recommendation resting on nothing from one resting on a test.
+    places: code's reading of each aspect (``better`` is the gain shown, Holm-adjusted), and each aspect's
+    ``multiple_comparisons``. **Only confirmatory evidence counts**: a reading code marked ``confirmatory`` and a
+    comparison on an aspect whose question was asked before its first result. A pattern found on an aspect asked
+    after its runs is a lead, and licenses no switch however strong it looks. One such ``better`` reading or
+    ``improved`` comparison is enough: a trade-off is a legitimate recommendation. What is refused is a candidate with
+    no confirmatory upside — every tested reading ``not_separated``, or separated only by ``regressed`` — or one no
+    test could reach, which is refused saying so, since a reader cannot tell a recommendation resting on nothing from
+    one resting on a test.
 
     **A breached guardrail refuses the candidate whatever it gained**, on any aspect: a guardrail is what the arm must
     not get worse on, and it is held, never traded. An undecided guardrail does not refuse it, and is never read as
     held either: the report states it.
 
-    Recommending the control (keeping what is there) needs no separation. **A campaign naming no control** compared
-    nothing against anything — every family is withheld, and code reads no aspect — so no recommendation in it is a
-    switch from what is there, and none is refused for want of a separation it could not have; the report says no
-    control was named, and the writer's next steps say which to name.
+    Keeping the control needs no separation. A choice has no control to separate from; its pick answers to the pair
+    readings instead (:func:`_reject_unaddressed_warnings`).
 
-    :raises SoundnessRefusal: The recommendation names a candidate with a breached guardrail, or with no ``better``
-        reading and no ``improved`` comparison.
+    :raises SoundnessRefusal: A change's recommendation names a candidate with a breached guardrail, or with no
+        confirmatory ``better`` reading and no confirmatory ``improved`` comparison.
     """
     arm = _recommended(document, bundle)
     control = bundle.control()
-    if arm.role == "control" or control is None:
+    if arm is None or control is None or bundle.kind != "change" or arm.role == "control":
         return
     keys = bundle.arm_keys(arm)
     remedy = f"recommend the control, {control.label!r}, and say in `next` what would settle it"
@@ -1110,63 +1155,173 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
                 f"{'s' if len(breached) > 1 else ''} {', '.join(breached)} (`guardrails`: shown worse than the control "
                 f"by more than the margin), and no gain elsewhere pays for a guardrail; {remedy}"
             )
-    if any(reading.arm in keys and reading.reading == "better" for reading in bundle.readings.readings):
+    readings = [reading for reading in bundle.readings.readings if reading.arm in keys]
+    if any(reading.reading == "better" and reading.confirmatory for reading in readings):
         return
+    confirmatory = _confirmatory(bundle)
     against = [
         comparison
-        for aspect in bundle.aspects
+        for aspect in confirmatory
         for family in aspect.multiple_comparisons.families
         for comparison in family.comparisons
         if comparison.contrast.variant_key in keys
     ]
     if any(comparison.verdict == "improved" for comparison in against):
         return
-    withheld = [aspect.multiple_comparisons.withheld for aspect in bundle.aspects]
-    why = _no_separation(against, withheld=withheld[0] if all(withheld) else None)
+    late = [
+        aspect.aspect
+        for aspect in bundle.aspects
+        if not aspect.question_declared
+        and (
+            any(reading.aspect == aspect.aspect and reading.reading == "better" for reading in readings)
+            or any(
+                comparison.contrast.variant_key in keys and comparison.verdict == "improved"
+                for family in aspect.multiple_comparisons.families
+                for comparison in family.comparisons
+            )
+        )
+    ]
+    withheld = [aspect.multiple_comparisons.withheld for aspect in confirmatory]
+    why = _no_separation(against, withheld=withheld[0] if withheld and all(withheld) else None)
+    leads = (
+        f" It is shown better only on {', '.join(repr(label) for label in late)}, whose question was asked after its "
+        "runs: a lead there licenses no switch."
+        if late
+        else ""
+    )
     raise SoundnessRefusal(
-        f"the recommendation names {arm.label!r}, but {why}, and code's reading shows it better on no aspect; {remedy}"
+        f"the recommendation names {arm.label!r}, but on the aspects asked in time {why}, and code's reading shows it "
+        f"better on none of them.{leads} {remedy[:1].upper()}{remedy[1:]}"
     )
 
 
-def _reject_unaddressed_floors(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
-    """Refuse a recommendation of an arm with a broken floor that does not name the floor and why breaking it is fine.
+#: One warning code raised on the recommended arm, as the writer must address it: its key, the words of what code
+#: read, and the field that addresses it.
+_Warning = tuple[str, str]
 
-    A floor only warns: it never blocks a recommendation, and a person may still make the call over it. But the
-    writer must address it, so a reader is never handed a recommendation silent about the warning the page opens
-    with. Structurally: every floor code read ``broken`` on the recommended arm is named, once, in
-    ``recommendation.floors_overridden`` with a reason; and nothing is named there that the arm did not break, since a
-    reason for overriding a floor that held argues against nothing. Which floors broke is code's
-    (``CampaignReadings.floors``); whether the reason is good is the reader's, and the reporter eval measures it.
 
-    :raises SoundnessRefusal: A floor broken on the recommended arm is not named, one is named twice or with no
-        reason, or one is named that the arm did not break.
+def _reject_unaddressed_warnings(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
+    """Refuse a recommendation that leaves a warning code raised on its arm unaddressed, or addresses one never raised.
+
+    Code warns and never blocks: a broken floor (a change), another arm shown ahead on an aspect (a choice) and a
+    missed absolute bar each leave the recommendation standing, and a person may still make the call over them. But
+    the writer must address each, so a reader is never handed a recommendation silent about the warning the page
+    shows. Structurally, per warning kind: every warning code raised on the recommended arm is named, once, in its
+    field with a reason; and nothing is named there that code did not raise, since a reason for overriding a warning
+    that never fired argues against nothing. Which warnings fired is code's (``CampaignReadings``); whether the reason
+    is good is the reader's, and the reporter eval measures it.
+
+    - ``floors_overridden``: every floor code read ``broken`` on the arm, by its ``floor`` key.
+    - ``behind_on``: every aspect a choice's pair readings show another arm ahead of the arm on, by aspect and that
+      arm's label.
+    - ``bars_missed``: every absolute bar the arm missed, by aspect and measure.
+
+    :raises SoundnessRefusal: A warning raised on the recommended arm is not named, one is named twice or with no
+        reason, or one is named that code did not raise.
     """
+    recommended = document.recommended()
     arm = _recommended(document, bundle)
+    if recommended is None or arm is None:
+        return
     keys = bundle.arm_keys(arm)
-    broken = {
-        status.floor: status for status in bundle.readings.floors if status.arm in keys and status.status == "broken"
-    }
-    named = [override.floor for override in document.recommendation.floors_overridden]
     faults: list[str] = []
-    if twice := sorted({floor for floor in named if named.count(floor) > 1}):
-        faults.append(f"names floor(s) {twice} more than once in `floors_overridden`; once each")
-    if blank := [o.floor for o in document.recommendation.floors_overridden if not o.why.strip()]:
-        faults.append(f"gives no reason in `floors_overridden` for {blank}; say why breaking each is acceptable")
-    if missing := [floor for floor in broken if floor not in named]:
-        reasons = "; ".join(f"{floor}: {broken[floor].reason}" for floor in missing)
-        faults.append(
-            f"names {arm.label!r}, which broke floor(s) {missing} ({reasons}). A floor only warns, so the arm may "
-            "still be recommended, but the recommendation names each broken floor in `floors_overridden` with why "
-            "breaking it is acceptable here — or recommends another arm"
-        )
-    if stray := sorted(set(named) - set(broken)):
-        held = sorted(broken) or "none"
-        faults.append(
-            f"names floor(s) {stray} in `floors_overridden`, which {arm.label!r} did not break (the floors it broke: "
-            f"{held}); name only a broken floor there"
-        )
+    broken = {
+        status.floor: status.reason
+        for status in bundle.readings.floors
+        if status.arm in keys and status.status == "broken"
+    }
+    faults += _addressed(
+        "floors_overridden",
+        "floor",
+        raised=broken,
+        named=[(override.floor, override.why) for override in recommended.floors_overridden],
+        arm=arm.label,
+        what="broke floor(s)",
+        remedy=(
+            "A floor only warns, so the arm may still be recommended, but the recommendation names each broken floor "
+            "in `floors_overridden` with why breaking it is acceptable here — or recommends another arm"
+        ),
+    )
+    faults += _addressed(
+        "behind_on",
+        "aspect and arm",
+        raised=_behind(bundle, keys),
+        named=[(f"{behind.aspect}/{behind.ahead_arm}", behind.why) for behind in recommended.behind_on],
+        arm=arm.label,
+        what="is shown behind another arm on",
+        remedy=(
+            "Being behind on an aspect only warns, so the arm may still be picked, but the recommendation names each "
+            "such aspect and the arm ahead there in `behind_on` with why it is picked all the same — or picks another"
+        ),
+    )
+    faults += _addressed(
+        "bars_missed",
+        "aspect and measure",
+        raised=_missed_bars(bundle, keys),
+        named=[(f"{missed.aspect}/{missed.measure}", missed.why) for missed in recommended.bars_missed],
+        arm=arm.label,
+        what="missed bar(s)",
+        remedy=(
+            "A missed bar only warns, so the arm may still be recommended, but the recommendation names each missed "
+            "bar in `bars_missed` with why recommending it below the bar is acceptable — or recommends another arm"
+        ),
+    )
     if faults:
         raise SoundnessRefusal("the recommendation " + "; and it ".join(faults))
+
+
+def _behind(bundle: CampaignBundle, keys: frozenset[str]) -> dict[str, str]:
+    """Each aspect a choice's pair readings show another arm ahead of the arm ``keys`` name, keyed ``aspect/ahead``.
+
+    :return: ``"<aspect>/<ahead arm's label>" -> code's reason``; empty outside a choice.
+    """
+    return {}
+
+
+def _missed_bars(bundle: CampaignBundle, keys: frozenset[str]) -> dict[str, str]:
+    """Each absolute bar code read the arm ``keys`` name as below, keyed ``aspect/measure``.
+
+    :return: ``"<aspect>/<measure>" -> code's reason``; empty where it missed none.
+    """
+    return {}
+
+
+def _addressed(
+    field: str,
+    keyed_by: str,
+    *,
+    raised: Mapping[str, str],
+    named: Sequence[tuple[str, str]],
+    arm: str,
+    what: str,
+    remedy: str,
+) -> list[str]:
+    """What one warning field leaves unaddressed, names twice, gives no reason for, or names that never fired.
+
+    :param field: The recommendation's field that addresses this kind of warning.
+    :param keyed_by: What its entries are keyed by, as the refusal says it.
+    :param raised: Each warning code raised on the arm, by its key, with code's reason.
+    :param named: Each entry the writer gave, as its key and its reason.
+    :param arm: The recommended arm's label.
+    :param what: What a raised warning says of the arm, as the refusal words it.
+    :param remedy: What to do, as the refusal says it.
+    :return: Each fault, in words; empty when the field addresses exactly what was raised.
+    """
+    keys = [key for key, _ in named]
+    faults: list[str] = []
+    if twice := sorted({key for key in keys if keys.count(key) > 1}):
+        faults.append(f"names {twice} more than once in `{field}`; once each")
+    if blank := [key for key, why in named if not why.strip()]:
+        faults.append(f"gives no reason in `{field}` for {blank}; say why each is acceptable")
+    if missing := [key for key in raised if key not in keys]:
+        reasons = "; ".join(f"{key}: {raised[key]}" for key in missing)
+        faults.append(f"names {arm!r}, which {what} {missing} ({reasons}). {remedy}")
+    if stray := sorted(set(keys) - set(raised)):
+        faults.append(
+            f"names {stray} in `{field}`, by {keyed_by}, and code raised no such warning on {arm!r} (it raised: "
+            f"{sorted(raised) or 'none'}); name only what code raised there"
+        )
+    return faults
 
 
 #: How many established nulls a refusal names before counting the rest.
