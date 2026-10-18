@@ -43,11 +43,15 @@ _CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _FLOOR_SCRIPT = "scripts/test-otel-floor.sh"
 
 #: the release-train members 3tears declares; they version together.
-_LOCKSTEP = ("opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp")
+_LOCKSTEP = (
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-grpc",
+    "opentelemetry-exporter-otlp-proto-http",
+)
 
-#: what the ``otel-http`` extra declares in place of the ``otel`` extra's exporter metapackage, which
-#: also installs the gRPC exporter and grpcio; the same release train, so the same floor and ceiling.
-_HTTP_EXPORTER = "opentelemetry-exporter-otlp-proto-http"
+#: the ``otel`` extra's gRPC exporter, which brings grpcio; the ``otel-http`` extra is ``otel`` without it.
+_GRPC_EXPORTER = "opentelemetry-exporter-otlp-proto-grpc"
 
 #: the contrib-train members 3tears declares; versioned ``0.Mb0``, released alongside core ``1.(M-21)``.
 _CONTRIB = ("opentelemetry-instrumentation-logging", "opentelemetry-instrumentation")
@@ -160,15 +164,12 @@ def test_the_declarations_were_found() -> None:
 
 
 def test_the_otel_http_extra_is_the_otel_extra_without_grpc() -> None:
-    """``otel-http`` swaps the exporter metapackage for its HTTP half and changes nothing else.
+    """``otel-http`` is the ``otel`` extra less its gRPC exporter, and changes nothing else.
 
-    The floor script installs the ``otel`` extra's floors, which include the HTTP exporter at the
-    same release, so this equality is what puts ``otel-http``'s floor under that run too.
+    The floor script installs the ``otel`` extra's floors, so this equality is what puts
+    ``otel-http``'s floor under that run too.
     """
-    expected = {
-        (_HTTP_EXPORTER if name == "opentelemetry-exporter-otlp" else name): spec
-        for name, spec in _OBSERVE_OTEL.items()
-    }
+    expected = {name: spec for name, spec in _OBSERVE_OTEL.items() if name != _GRPC_EXPORTER}
     assert _otel_requirements(_OBSERVE_EXTRAS["otel-http"]) == expected
     assert not [dep for dep in _OBSERVE_EXTRAS["otel-http"] if "grpc" in dep]
 

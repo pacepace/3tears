@@ -37,19 +37,22 @@ dependencies = []
 # consumer should resolve one before this code is tested against it.
 # scripts/test-otel-floor.sh runs the OpenTelemetry tests at exactly these floors, and CI runs
 # it, so a floor that falls behind the code goes red here.
+# The two exporters are named rather than the `opentelemetry-exporter-otlp` metapackage, which installs
+# exactly these two and owns no module of its own: setup.py imports the gRPC one, _otel_internals the
+# HTTP one, and a declaration should name the distribution an import comes from.
 otel = [
     "opentelemetry-api>=1.40,<2",
     "opentelemetry-sdk>=1.40,<2",
-    "opentelemetry-exporter-otlp>=1.40,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.40,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.40,<2",
     "opentelemetry-instrumentation-logging>=0.61b0,<1",
     # `is_instrumentation_enabled`, which the export filter reads; instrumentation-logging pins this
     # same release, so it moves with it
     "opentelemetry-instrumentation>=0.61b0,<1",
 ]
 # `otel` without gRPC: traces over OTLP/HTTP (TelemetryConfig.protocol="http/protobuf"), logs as
-# always. The `otel` extra's exporter metapackage installs the gRPC exporter too, and grpcio is
-# about 39 of the 49 MB that extra adds; this one adds about 10. Same floors and ceilings as `otel`,
-# for the same reasons.
+# always. The `otel` extra's gRPC exporter brings grpcio, about 39 of the 49 MB that extra adds; this
+# one adds about 10. Same floors and ceilings as `otel`, for the same reasons.
 otel-http = [
     "opentelemetry-api>=1.40,<2",
     "opentelemetry-sdk>=1.40,<2",
