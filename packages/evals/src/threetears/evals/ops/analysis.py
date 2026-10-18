@@ -1005,8 +1005,9 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :param format: ``markdown``, ``html`` (one page that needs no script) or ``json`` (the evidence bundle the report
-        was computed from, as ``bundle.json`` beside a written report holds it).
+    :param format: ``markdown``, ``html`` (one page that needs no script) or ``json`` (the page's machine form: code's
+        readings across the campaign's aspects, the recommendation, the call, and each aspect's bundle by its
+        fingerprint, as ``campaign.json`` beside a written page holds it).
     :ptype format: ReportFormat
     :return: The report in that form.
     :rtype: ReportDocument
@@ -1016,7 +1017,7 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
     return ReportDocument(
         campaign_id=campaign_id,
         basis=report.basis,
-        analysis_id=report.source.analysis_id,
+        analysis_id=report.analysis_id,
         format=format,
         body=serialize_report(report, format),
     )

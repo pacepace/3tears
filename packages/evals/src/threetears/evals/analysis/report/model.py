@@ -33,6 +33,7 @@ which :meth:`Report.write` puts beside the page, and the page names its fingerpr
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -921,6 +922,9 @@ class CampaignReport(EvalDocumentModel):
     campaign_id: str = Field(min_length=1, description="The campaign.")
     campaign_name: str | None = Field(default=None, description="The campaign's name, where known.")
     scope_id: str = Field(min_length=1, description="The scope the campaign lives in.")
+    analysis_id: str | None = Field(
+        default=None, description="The stored analysis whose memo the page lays out; None on a code-only page."
+    )
     finding_count: int = Field(ge=0, description="How many findings the memo holds.")
     blocks: list[ReportBlock] = Field(description="The first screen, then the memo's findings, in reading order.")
     aspects: list[CampaignAspectFold] = Field(description="One fold per aspect, in the campaign's order.")
@@ -950,6 +954,8 @@ class CampaignReport(EvalDocumentModel):
                 raise ValueError(
                     f"a code-only page folds code-only aspect pages, and {', '.join(analysed)} renders an analysis"
                 )
+            if self.analysis_id is not None:
+                raise ValueError(f"a code-only page lays out no analysis, and this one names {self.analysis_id}")
             if self.recommendation is not None:
                 raise ValueError("a code-only page has no memo, so it holds no recommendation")
             if self.finding_count:
@@ -977,6 +983,45 @@ class CampaignReport(EvalDocumentModel):
         return linked
 
     @property
+    def verdicts(self) -> list[Verdict]:
+        """Every verdict code reaches on the campaign, typed: each aspect's page's, aspect by aspect in the campaign's
+        order, each naming its aspect — what a gate reads."""
+        return [verdict for fold in self.aspects for verdict in fold.report.verdicts]
+
+    def write(self, out_dir: Path | str) -> dict[str, Path]:
+        """Write the page as one self-contained HTML file, its Markdown, its JSON, and each aspect's bundle.
+
+        ``report.html`` needs nothing beside it; ``report.md`` is the same page as Markdown; ``campaign.json`` is the
+        page's machine form (:meth:`json_document`), naming each aspect's bundle by its fingerprint; and each aspect's
+        bundle is written whole as ``bundle-<fold id>.json`` (:attr:`fold_ids`), so the fingerprint the page names is
+        the one a reader computes from the file.
+
+        :param out_dir: The directory; created when missing.
+        :ptype out_dir: Path | str
+        :return: Each file written, by role: ``html``, ``markdown``, ``json``, and ``bundle:<aspect>`` per aspect.
+        :rtype: dict[str, Path]
+        """
+        # Deferred: the serializers import this module for the block types they lay out.
+        from threetears.evals.analysis.report.serialize_html import campaign_report_html
+        from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+
+        directory = Path(out_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        files: dict[str, Path] = {
+            "html": directory / "report.html",
+            "markdown": directory / "report.md",
+            "json": directory / "campaign.json",
+        }
+        files["html"].write_text(campaign_report_html(self), encoding="utf-8")
+        files["markdown"].write_text(campaign_report_markdown(self), encoding="utf-8")
+        files["json"].write_text(json.dumps(self.json_document(), indent=2) + "\n", encoding="utf-8")
+        for fold, fold_id in zip(self.aspects, self.fold_ids, strict=True):
+            path = directory / f"bundle-{fold_id}.json"
+            path.write_text(fold.report.bundle.to_json(indent=2) + "\n", encoding="utf-8")
+            files[f"bundle:{fold.aspect}"] = path
+        return files
+
+    @property
     def fold_ids(self) -> list[str]:
         """Each aspect's fold as the id its section and every id inside it are named by: the label in lower case,
         each run of other characters one hyphen, numbered where two would read alike."""
@@ -1000,6 +1045,7 @@ class CampaignReport(EvalDocumentModel):
             "shape": CAMPAIGN_JSON_SHAPE,
             "campaign_id": self.campaign_id,
             "basis": self.basis,
+            "analysis_id": self.analysis_id,
             "recommendation": None
             if recommendation is None
             else {"arm": recommendation.arm, "confidence": recommendation.confidence},

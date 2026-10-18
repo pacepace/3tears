@@ -241,7 +241,7 @@ async def test_the_bundle_calls_an_undeclared_campaign_exploratory_once(evals: M
     assert "inferred from the runs" in NO_DESIGN_EXPLORATORY and "confirm nothing" in NO_DESIGN_EXPLORATORY
 
 
-async def test_the_code_only_report_says_so_once_straight_after_its_opening_line(evals: MountedTool) -> None:
+async def test_the_code_only_report_says_so_once_on_its_first_screen(evals: MountedTool) -> None:
     fixture, campaign_id, _bundle = await _exploratory(evals)
 
     read = await evals.call(
@@ -250,11 +250,13 @@ async def test_the_code_only_report_says_so_once_straight_after_its_opening_line
 
     assert not read.is_error, read.text
     page = read.structured["body"]
-    # At the top: the verdict line, straight under the title and the arms, and nowhere else on the page.
-    lines = page.splitlines()
-    assert lines[0].startswith("# ") and lines[2] == ""
-    assert lines[3].startswith(f"**{_EXPLORATORY_BASIS}")
-    assert page.count(_EXPLORATORY_BASIS) == 1
+    # On the first screen, under the title and above the aspect's fold, and nowhere else on the page: the fold leaves
+    # out the aspect page's own exploratory verdict line, which the campaign's first screen carries once.
+    title = next(index for index, line in enumerate(page.splitlines()) if line.startswith("# "))
+    first_screen = page.split("\n## ", 1)[0]
+    lead = "No question was declared, so every reading is a lead."
+    assert page.count(lead) == 1 and first_screen.index(lead) > first_screen.index(page.splitlines()[title])
+    assert _EXPLORATORY_BASIS not in page
 
 
 async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: MountedTool) -> None:

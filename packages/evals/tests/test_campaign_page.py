@@ -49,7 +49,7 @@ from threetears.evals.kernel.authored import (
     Recommendation,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import BarOverride, CampaignCall, RateDrop
+from threetears.evals.kernel.declaration import BarOverride, CampaignCall, OverriddenBar, RateDrop
 
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
@@ -664,3 +664,32 @@ async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:
     warning = first.index("**Bar missed on tone: alpha")
     why = first.index("**The memo recommends alpha over it:** A cent a reply is affordable at this volume.")
     assert warning < why < first.index("# support queue")
+
+
+async def test_a_recorded_call_names_each_missed_bar_it_overrides_and_each_it_does_not() -> None:
+    """Alpha misses the cost bar on tone and on billing; the call overrides tone's and is silent on billing's, and the
+    page says both, beside the call."""
+    measured = [await _kind(label) for label in ("tone", "billing")]
+    campaign = joined(measured)
+    bundles = {one.bundle.aspect: one.bundle for one in measured}
+    read = campaign_readings(campaign, bundles, arms=measured[0].arms())
+    missed = {status.aspect: status for status in read.missed_bars() if status.arm_label == "alpha"}
+    assert set(missed) == {"tone", "billing"}
+    call = CampaignCall(
+        arm="alpha",
+        variant_key=missed["tone"].arm,
+        bars_overridden=[OverriddenBar(aspect="tone", measure=missed["tone"].measure)],
+        called_at="2026-10-18T09:00:00+00:00",
+        called_by="brooks",
+    )
+    reports = {
+        label: build_code_only_report(
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+        )
+        for label, evidence in bundles.items()
+    }
+    first = _first_screen_markdown(build_campaign_report(campaign, read, reports, None, call=call))
+    called = first.index("Called: adopt alpha, by brooks on 18 Oct 2026.")
+    overrides = first.index(f"The call overrides a missed bar on tone: {missed['tone'].reason}.")
+    silent = first.index(f"The call does not name the missed bar on billing as overridden: {missed['billing'].reason}.")
+    assert called < overrides < silent

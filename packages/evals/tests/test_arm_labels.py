@@ -29,7 +29,14 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from threetears.evals.analysis import Report, build_report, campaign_report, report_html, report_markdown
+from threetears.evals.analysis import (
+    Report,
+    assemble_context_bundle,
+    build_code_only_report,
+    build_report,
+    report_html,
+    report_markdown,
+)
 from threetears.evals.analysis.arms import (
     ELISION,
     LABEL_LEVEL_CHARS,
@@ -249,6 +256,13 @@ def _profile_with_a_second_kind() -> HostProfile:
     )
 
 
+def _aspect_page(host: Any, campaign: Any) -> Report:
+    """The campaign's one aspect's code-only page, naming each arm by its variant, as the aspect page's builder does
+    when no campaign labels are passed to it: the names these tests pin."""
+    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    return build_code_only_report(bundle, assembled_at="2026-10-18T00:00:00+00:00", campaign_name=campaign.name)
+
+
 def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
     """The code-only report of a toy-host campaign over ``batches``, measured alike."""
     host = toyhost_host(profile=profile)
@@ -271,7 +285,7 @@ def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
         created_by="test:fixture",
     )
     host.storage.save_campaign(campaign)
-    return campaign_report(host, campaign.id, campaign.scope_id)
+    return _aspect_page(host, campaign)
 
 
 def _batch(*, reviewer_pool: str = "pool-a", instructions: str | None = None) -> EvalRun:
@@ -336,7 +350,7 @@ class TestARigOnlyCampaignIsNamedByItsModel:
 def one_lever() -> Report:
     """The toy campaign: two arms that differ on chunk width alone."""
     host, campaign = toy_campaign_host()
-    return campaign_report(host, campaign.id, campaign.scope_id)
+    return _aspect_page(host, campaign)
 
 
 @pytest.fixture(scope="module")

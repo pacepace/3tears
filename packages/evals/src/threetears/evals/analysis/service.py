@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
 from threetears.evals.analysis.bundle.insights import superseding_insights
-from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.campaign_bundle import (
     CampaignBundle,
@@ -59,9 +58,15 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     reporter_case_payload,
 )
-from threetears.evals.analysis.report import Report, Verdict, build_code_only_report, build_report
+from threetears.evals.analysis.bundle.schema import (
+    AnalysisContextBundle,
+    BundleInspection,
+    refuse_a_bundle_before_aspects,
+)
+from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
+from threetears.evals.analysis.report.build import analysis_writer
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.kernel.campaign import EvalAnalysisAttempt
+from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalCampaign
 from threetears.evals.kernel.errors import (
     ConflictError,
     EvalServiceError,
@@ -94,7 +99,7 @@ from threetears.evals.kernel.remedies import (
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
-    from threetears.evals.kernel.campaign import AspectAnalysis, AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
+    from threetears.evals.kernel.campaign import AspectAnalysis, AttemptOutcome, EvalAnalysis, EvalInsight
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -1484,12 +1489,103 @@ def _analysed_aspect(analysis: EvalAnalysis, label: str | None) -> AspectAnalysi
 # ---------------------------------------------------------------------------
 
 
-def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Report:
-    """Read one stored analysis as its report — the one page every door renders.
+def _campaign_page(
+    campaign: EvalCampaign,
+    bundle: CampaignBundle,
+    *,
+    assembled_at: str,
+    analysis: EvalAnalysis | None = None,
+) -> CampaignReport:
+    """Lay a campaign bundle out as the campaign's page: code's readings, the memo where there is one, the call.
 
-    Laid out over the bundle frozen with the analysis at generation, so it reads as it was written whatever has been
-    archived or re-run since, and every disclosure on it is the frozen bundle's own. Derived on every read and never
-    written back, so a stored analysis stays pivotable.
+    Each aspect's fold is that aspect's code-only page over its bundle, its arms named by the campaign's labels; the
+    memo, when there is one, is laid out once, on the campaign's page, never again inside a fold.
+
+    :param campaign: The campaign, declaring what the bundle was assembled against.
+    :ptype campaign: EvalCampaign
+    :param bundle: Its evidence: every aspect's bundle and code's readings across them.
+    :ptype bundle: CampaignBundle
+    :param assembled_at: When the bundle was assembled (ISO-8601), which dates each aspect's page.
+    :ptype assembled_at: str
+    :param analysis: The stored analysis whose memo the page lays out; None for a code-only page.
+    :ptype analysis: EvalAnalysis | None
+    :return: The page.
+    :rtype: CampaignReport
+    """
+    labels = bundle.readings.arm_labels()
+    writer = analysis_writer(analysis) if analysis is not None else None
+    reports = {
+        aspect.aspect: build_code_only_report(
+            aspect, assembled_at=assembled_at, campaign_name=campaign.name, arm_labels=labels, writer=writer
+        )
+        for aspect in bundle.aspects
+    }
+    memo = analysis.document if analysis is not None else None
+    page = build_campaign_report(campaign, bundle.readings, reports, memo, call=campaign.call)
+    return page if analysis is None else page.model_copy(update={"analysis_id": analysis.id})
+
+
+def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalCampaign:
+    """The campaign as the analysis's generation read it: what it declared then, and the call recorded since.
+
+    An analysis outliving its campaign is still laid out, named by the campaign's id.
+    """
+    declared = analysis.design_snapshot
+    snapshot = {
+        "question": declared.question,
+        "declared_at": declared.declared_at,
+        "declared_by": declared.declared_by or "",
+        "arms": list(declared.arms),
+        "aspects": list(declared.aspects),
+        "floors": list(declared.floors),
+    }
+    if campaign is not None:
+        return campaign.model_copy(update=snapshot)
+    return EvalCampaign.model_validate(
+        {
+            "id": analysis.campaign_id,
+            "scope_id": analysis.scope_id,
+            "name": analysis.campaign_id,
+            "subject_id": analysis.subject_id,
+            "subject_kind": analysis.subject_kind,
+            "behavior": analysis.behavior,
+            "created_by": declared.declared_by or "unknown",
+            **snapshot,
+        }
+    )
+
+
+def _analysed_bundle(analysis: EvalAnalysis) -> CampaignBundle:
+    """The campaign bundle a stored analysis was written over, put back together from its frame and frozen aspects.
+
+    :raises RefusedInput: The analysis was written over a bundle of another shape.
+    """
+    what = f"analysis {analysis.id}"
+    remedy = "generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands"
+    bundles = []
+    for held in analysis.aspects:
+        refuse_a_bundle_before_aspects(held.bundle, what=what, remedy=remedy)
+        bundles.append(AnalysisContextBundle.from_dict(dict(held.bundle)))
+    return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
+
+
+def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> CampaignReport:
+    """A stored analysis laid out as its campaign's page, over everything frozen with it."""
+    return _campaign_page(
+        _as_analysed(analysis, campaign),
+        _analysed_bundle(analysis),
+        assembled_at=analysis.generation.bundle_assembled_at,
+        analysis=analysis,
+    )
+
+
+def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> CampaignReport:
+    """Read one stored analysis as its campaign's page — the one page every door renders.
+
+    Laid out over the bundles and code's readings frozen with the analysis at generation, so it reads as it was
+    written whatever has been archived or re-run since: the campaign as it was declared then, every aspect's fold over
+    its frozen bundle, the memo once on the first screen. The person's call is the campaign's as recorded now. Derived
+    on every read and never written back, so a stored analysis stays pivotable.
 
     :param storage: Where the analysis is read.
     :ptype storage: AnalysisStore
@@ -1497,30 +1593,29 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     :ptype analysis_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :return: The report; :meth:`~threetears.evals.analysis.report.Report.write` puts it in a directory, and
-        :func:`~threetears.evals.analysis.report.report_markdown` and
-        :func:`~threetears.evals.analysis.report.report_html` serialize it.
-    :rtype: Report
+    :return: The page, ``basis="analysis"``; :meth:`~threetears.evals.analysis.report.CampaignReport.write` puts it
+        in a directory, and :func:`~threetears.evals.analysis.report.serialize_report` serializes it.
+    :rtype: CampaignReport
     :raises NotFoundError: No analysis with that id in the scope.
+    :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
-    # The campaign titles the report by name; an analysis outliving its campaign is still reported, by its id.
-    campaign = storage.load_campaign(analysis.campaign_id, scope_id)
-    return build_report(analysis, campaign_name=campaign.name if campaign is not None else None)
+    return _analysis_page(analysis, storage.load_campaign(analysis.campaign_id, scope_id))
 
 
-def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
-    """The campaign's report — THE answer to "what is this campaign's report", for every caller.
+def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport:
+    """The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
 
-    **The rule.** The campaign's newest analysis that is not archived, laid out by
-    :func:`~threetears.evals.analysis.report.build_report` (``basis="analysis"``). When it has none —
-    no generation has run, or every analysis it had was archived (an archive is the claim that an
-    analysis was wrong, so it is not the campaign's report) — the campaign's evidence assembled now and
-    laid out by :func:`~threetears.evals.analysis.report.build_code_only_report` (``basis="code_only"``),
-    which says in its first block that no analysis was generated. A particular analysis, archived ones
-    included, is read by its id through :func:`analysis_report`.
+    **The rule.** The campaign's newest analysis that is not archived, laid out over what was frozen with it
+    (``basis="analysis"``, as :func:`analysis_report` lays it out). When it has none — no generation has run, or every
+    analysis it had was archived (an archive is the claim that an analysis was wrong, so it is not the campaign's
+    report) — the campaign's evidence assembled now (``basis="code_only"``), which says that no analysis was written.
+    Either way the page is the campaign's (:class:`~threetears.evals.analysis.report.CampaignReport`): code's readings
+    across its aspects, the writer's recommendation where there is one, the person's call, then one fold per aspect.
+    A campaign of one aspect has one fold, holding that aspect's page. A particular analysis, archived ones included,
+    is read by its id through :func:`analysis_report`.
 
-    Costs no model call either way: the code-only report is storage reads and arithmetic.
+    Costs no model call either way: the code-only page is storage reads and arithmetic.
 
     :param host: The host: where the campaign and its analyses are read, and the vocabulary its evidence is
         assembled in when there is no analysis.
@@ -1529,26 +1624,39 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :return: The report; its ``basis`` says which it is.
-    :rtype: Report
+    :return: The page; its ``basis`` says which it is.
+    :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
     if live:
-        return build_report(live[0], campaign_name=campaign.name)
+        return _analysis_page(live[0], campaign)
+    return _code_only_page(host, campaign)
+
+
+def _code_only_page(host: EvalHost, campaign: EvalCampaign) -> CampaignReport:
+    """The campaign's code-only page over its evidence assembled now, whatever analyses it holds.
+
+    :param host: The host: where the campaign's runs, results and insights are read, and its vocabulary.
+    :ptype host: EvalHost
+    :param campaign: The campaign.
+    :ptype campaign: EvalCampaign
+    :return: The page, ``basis="code_only"``.
+    :rtype: CampaignReport
+    """
     assembled_at = utc_now_iso()
-    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
-    return build_code_only_report(bundle, assembled_at=assembled_at, campaign_name=campaign.name)
+    bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
+    return _campaign_page(campaign, bundle, assembled_at=assembled_at)
 
 
 def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]:
     """Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
 
-    The code-only report's :attr:`~threetears.evals.analysis.report.model.Report.verdicts` over the evidence
-    assembled now — each guardrail, each bar on each cell, each contrast against the control — whether or not an
-    analysis was generated: a gate rests on code's verdicts, never on an analyst's words, and an analysis's
-    frozen surface holds no contrast. Costs no model call.
+    The code-only page's :attr:`~threetears.evals.analysis.report.CampaignReport.verdicts` over the evidence assembled
+    now — on every aspect, each guardrail, each bar on each cell, each contrast against the control, each naming its
+    aspect — whether or not an analysis was generated: a gate rests on code's verdicts, never on an analyst's words,
+    and an analysis's frozen surface holds no contrast. Costs no model call.
 
     :param host: The host whose store holds the campaign, and whose vocabulary its evidence is assembled in.
     :ptype host: EvalHost
@@ -1556,13 +1664,11 @@ def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[V
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :return: The verdicts, in the report's order.
+    :return: The verdicts, aspect by aspect in the campaign's order, each in its page's order.
     :rtype: list[Verdict]
     :raises NotFoundError: No campaign with that id in the scope.
     """
-    campaign = _load_campaign(host.storage, campaign_id, scope_id)
-    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
-    return build_code_only_report(bundle, assembled_at=utc_now_iso(), campaign_name=campaign.name).verdicts
+    return _code_only_page(host, _load_campaign(host.storage, campaign_id, scope_id)).verdicts
 
 
 # ---------------------------------------------------------------------------
