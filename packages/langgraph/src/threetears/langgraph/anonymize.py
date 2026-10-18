@@ -100,6 +100,7 @@ KEPT_METADATA_KEYS: Final[frozenset[str]] = frozenset(
         "user_id",
         "surfaced_memory_ids",
         "documented_schema_block",
+        "documented_schema_unread",
         "governed_knowledge_block",
         "knowledge_shadow_disclosures",
         "knowledge_concept_shadow_disclosures",

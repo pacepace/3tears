@@ -204,21 +204,31 @@ class TestInjection:
         assert out.command.update["metadata"]["documented_schema_block"] == ""
 
     def test_a_failed_schema_read_says_so_rather_than_reading_as_no_documented_tables(self) -> None:
-        integration = _StubIntegration(["ds-1"], raise_on_read=True)
+        integration = _StubIntegration(["sales", "ops"], raise_on_read=True)
         req, out = _drive(SchemaPrimingMiddleware(), _request(None), {"schema_priming_integration": integration})
         assert isinstance(out, ExtendedModelResponse)
         assert req.system_message is not None
         content = req.system_message.content
         assert isinstance(content, str)
-        # the honesty rule still ships, and the model is told the schema was not read --
-        # not handed the bare rule, which is what a datasource documenting nothing gets.
+        # the honesty rule still ships, and the model is told the schema was not read and
+        # which tool reads it -- not handed the bare rule a datasource documenting nothing gets.
         assert content.startswith(_honesty_rule())
-        assert content != _honesty_rule()
         assert "could not be read this turn" in content
         assert "does not mean they have no documented tables" in content
+        assert "`datasource.sales.schema`, `datasource.ops.schema`" in content
         assert out.command is not None
-        stashed = out.command.update["metadata"]["documented_schema_block"]
-        assert "could not be read this turn" in stashed, "a downstream reader sees the failure, not an empty block"
+        metadata = out.command.update["metadata"]
+        assert metadata["documented_schema_block"] == "", "the notice is not stored as documentation"
+        assert metadata["documented_schema_unread"] == "RuntimeError"
+
+    def test_a_read_schema_clears_the_unread_mark(self) -> None:
+        _req, out = _drive(
+            SchemaPrimingMiddleware(),
+            _request(None),
+            {"schema_priming_integration": _StubIntegration(["ds-1"], [_TABLE])},
+        )
+        assert isinstance(out, ExtendedModelResponse) and out.command is not None
+        assert out.command.update["metadata"]["documented_schema_unread"] == ""
 
 
 class TestNoop:

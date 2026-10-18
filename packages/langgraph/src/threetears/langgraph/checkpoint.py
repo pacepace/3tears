@@ -55,7 +55,7 @@ one implementation with no parallel path.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, cast
 from uuid import UUID
@@ -93,6 +93,7 @@ from threetears.observe import contain, get_logger
 
 __all__ = [
     "CheckpointCacheError",
+    "CheckpointPurgeIncompleteError",
     "ThreeTierCheckpointSaver",
 ]
 
@@ -106,9 +107,48 @@ class CheckpointCacheError(RuntimeError):
     where they used to answer ``None`` -- the same ``None`` as "not cached" -- and by
     :meth:`~ThreeTierCheckpointSaver.l2_delete_prefix` where it used to answer ``False``, the same
     ``False`` as "this cache cannot sweep by prefix". :meth:`~ThreeTierCheckpointSaver.aget_tuple`
-    records a read failure as a miss caused by an error and reads L3; a purge finishes every tier
-    and then raises it, so an erasure that left cached bundles behind says so.
+    records a read failure as a miss caused by an error and reads L3. :meth:`l1_delete` and
+    :meth:`l2_delete` raise it too; a purge collects those as
+    :class:`CheckpointPurgeIncompleteError`.
     """
+
+
+class CheckpointPurgeIncompleteError(CheckpointCacheError):
+    """a purge deleted the durable rows, but at least one cache delete or sweep failed.
+
+    raised by :meth:`ThreeTierCheckpointSaver.adelete_thread` and
+    :meth:`~ThreeTierCheckpointSaver.adelete_customer_threads` once every tier has been
+    tried, so an erasure that left cached bundles behind says so instead of reporting
+    success. it is a :class:`CheckpointCacheError`, and told apart from a failed READ by its
+    type and :attr:`l3_committed`.
+
+    retrying the purge is safe and is the remedy: every step is a delete, so a second run
+    deletes nothing twice and only finishes what the first could not. until it succeeds,
+    the saver that raised this reads the purged thread from L3 alone, so it never serves the
+    erased thread back from its caches; another saver sharing the L2 bucket can, until the
+    retry lands.
+
+    :ivar l3_committed: always ``True`` -- the durable rows are gone; only cache entries may remain
+    :ivar failures: the cache failures, in the order the tiers were tried
+    """
+
+    l3_committed = True
+
+    def __init__(self, what: str, failures: list[CheckpointCacheError]) -> None:
+        """
+        :param what: the purge that ran, for the message
+        :ptype what: str
+        :param failures: the cache failures, in the order the tiers were tried
+        :ptype failures: list[CheckpointCacheError]
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(
+            f"{what}: the durable rows are deleted but {len(failures)} cache step(s) failed: "
+            + "; ".join(str(failure) for failure in failures)
+            + ". Retrying the purge is safe."
+        )
+        self.failures = failures
 
 
 _DEFAULT_L2_BUCKET = "checkpoints"
@@ -377,6 +417,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self._l2_bucket = l2_bucket
         self._scope = scope
         self._flush_callback = flush_callback
+        # stored thread ids whose purge deleted L3 but could not clear a cache: read from L3
+        # alone until a purge of them succeeds, so an erased thread is never served from cache
+        self._cache_bypassed_threads: set[str] = set()
 
     # ------------------------------------------------------------------
     # Tenancy helpers
@@ -555,7 +598,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             contain(exc, log=log, what="L1 checkpoint write failed")
 
     async def l1_delete(self, thread_id: str, *, customer: UUID | None = None) -> None:
-        """delete a thread's L1 entry, swallowing errors.
+        """delete a thread's L1 entry.
 
         :param thread_id: conversation/thread identifier
         :ptype thread_id: str
@@ -564,6 +607,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype customer: UUID | None
         :return: nothing
         :rtype: None
+        :raises CheckpointCacheError: when the L1 delete failed -- the entry may still be cached
         """
         if self._l1 is None:
             return
@@ -571,7 +615,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         try:
             await self._l1.delete(storage_thread_id)
         except Exception as exc:
-            contain(exc, log=log, what="L1 checkpoint delete failed")
+            raise CheckpointCacheError(f"L1 checkpoint delete failed ({type(exc).__name__})") from exc
 
     # ------------------------------------------------------------------
     # L2 helpers
@@ -652,7 +696,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             contain(exc, log=log, what="L2 checkpoint write failed")
 
     async def l2_delete(self, thread_id: str, checkpoint_ns: str, *, customer: UUID | None = None) -> None:
-        """delete one thread+namespace L2 entry, swallowing errors.
+        """delete one thread+namespace L2 entry.
 
         Takes ``checkpoint_ns`` because L2 is keyed on it and the protocol offers
         only exact-key deletes -- no prefix sweep, no listing. This used to
@@ -671,6 +715,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype customer: UUID | None
         :return: nothing
         :rtype: None
+        :raises CheckpointCacheError: when the L2 delete failed -- the entry may still be cached
         """
         if self._l2 is None:
             return
@@ -678,7 +723,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         try:
             await self._l2.delete(self._l2_bucket, key)
         except Exception as exc:
-            contain(exc, log=log, what="L2 checkpoint delete failed")
+            raise CheckpointCacheError(f"L2 checkpoint delete failed ({type(exc).__name__})") from exc
 
     async def l2_delete_prefix(self, prefix: str) -> bool:
         """sweep every L2 key under ``prefix``, reporting whether it happened.
@@ -852,9 +897,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         checkpoint_ns: str = config["configurable"].get("checkpoint_ns", "")
         checkpoint_id = get_checkpoint_id(config)
 
-        if checkpoint_id is None:
+        # a thread whose purge could not clear a cache is read from L3 alone: what the cache
+        # still holds is the erased thread
+        bypassed = self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads
+        if checkpoint_id is None and not bypassed:
             # --- L1 attempt ---
-            cached = await self._cached_or_recorded_miss("L1", self.l1_get, thread_id, checkpoint_ns, customer)
+            cached = await self._l1_or_recorded_miss(thread_id, checkpoint_ns, customer)
             if cached is not None:
                 try:
                     bundle = self.deserialize_checkpoint_tuple(cached)
@@ -863,7 +911,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     contain(exc, log=log, what="L1 checkpoint deserialization failed, falling through")
 
             # --- L2 attempt ---
-            cached = await self._cached_or_recorded_miss("L2", self.l2_get, thread_id, checkpoint_ns, customer)
+            cached = await self._l2_or_recorded_miss(thread_id, checkpoint_ns, customer)
             if cached is not None:
                 try:
                     bundle = self.deserialize_checkpoint_tuple(cached)
@@ -878,25 +926,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # that failed above and an L3 that fails here leave nothing to answer with.
         return await self._l3_get_tuple(thread_id, checkpoint_ns, checkpoint_id, customer=customer)
 
-    async def _cached_or_recorded_miss(
-        self,
-        tier: str,
-        read: Callable[..., Awaitable[bytes | None]],
-        thread_id: str,
-        checkpoint_ns: str,
-        customer: UUID | None,
-    ) -> bytes | None:
-        """one cache tier's read for :meth:`aget_tuple`, a failure recorded as a miss caused by an error.
+    async def _l1_or_recorded_miss(self, thread_id: str, checkpoint_ns: str, customer: UUID | None) -> bytes | None:
+        """:meth:`l1_get` for :meth:`aget_tuple`, a failure recorded as a miss caused by an error.
 
         a cache tier is only ever a copy of L3, so a read that failed falls through to the tiers
         below rather than failing the turn. it is not a plain miss, though: it is contained --
-        logged with its traceback and counted on ``contained_errors_total`` against this site --
-        so an L1 or L2 that is down shows as down, not as a cold cache.
+        logged with its traceback and counted on ``contained_errors_total`` against THIS site,
+        one per tier -- so an L1 that is down shows as down, not as a cold cache.
 
-        :param tier: ``"L1"`` or ``"L2"``, for the record
-        :ptype tier: str
-        :param read: :meth:`l1_get` or :meth:`l2_get`
-        :ptype read: Callable[..., Awaitable[bytes | None]]
         :param thread_id: conversation/thread identifier
         :ptype thread_id: str
         :param checkpoint_ns: checkpoint namespace
@@ -907,14 +944,30 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :rtype: bytes | None
         """
         try:
-            return await read(thread_id, checkpoint_ns, customer=customer)
+            return await self.l1_get(thread_id, checkpoint_ns, customer=customer)
         except CheckpointCacheError as exc:
-            contain(
-                exc,
-                log=log,
-                what=f"{tier} checkpoint read failed; reading the durable store instead",
-                extra={"tier": tier, "miss": "error"},
-            )
+            contain(exc, log=log, what="L1 checkpoint read failed; reading the next tier", extra={"miss": "error"})
+            return None
+
+    async def _l2_or_recorded_miss(self, thread_id: str, checkpoint_ns: str, customer: UUID | None) -> bytes | None:
+        """:meth:`l2_get` for :meth:`aget_tuple`, a failure recorded as a miss caused by an error.
+
+        the L2 counterpart of :meth:`_l1_or_recorded_miss`, a site of its own so the two tiers
+        count apart on ``contained_errors_total``.
+
+        :param thread_id: conversation/thread identifier
+        :ptype thread_id: str
+        :param checkpoint_ns: checkpoint namespace
+        :ptype checkpoint_ns: str
+        :param customer: the customer this call addresses, already resolved
+        :ptype customer: UUID | None
+        :return: the cached blob, or None on a miss or a recorded failed read
+        :rtype: bytes | None
+        """
+        try:
+            return await self.l2_get(thread_id, checkpoint_ns, customer=customer)
+        except CheckpointCacheError as exc:
+            contain(exc, log=log, what="L2 checkpoint read failed; reading the durable store", extra={"miss": "error"})
             return None
 
     async def _l3_get_tuple(
@@ -1606,8 +1659,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :rtype: None
         :raises TypeError: when customer is neither None nor a UUID
         :raises ValueError: when the customer cannot be reconciled with the scope
-        :raises CheckpointCacheError: when the L2 prefix sweep failed; raised after the L3 rows
-            and the other cache entries are deleted, so namespaced bundles may still be cached
+        :raises CheckpointPurgeIncompleteError: when a cache delete or the L2 sweep failed; raised
+            after every tier was tried, the L3 rows deleted. retrying is safe, and until a retry
+            succeeds this saver reads the thread from L3 alone
         """
         # reconciled here rather than left to :meth:`storage_thread_id` so a
         # refusal names THIS method -- the one the caller invoked -- instead of
@@ -1630,13 +1684,18 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # method carried as a comment until an L2 was actually wired in front of
         # it. It is reported rather than assumed away: a purge that answers an
         # erasure request has to say what it could not reach.
-        sweep_failed: CheckpointCacheError | None = None
+        # every cache step is tried; their failures are raised together once all have run, so one
+        # failed delete never leaves another tier holding the thread too
+        failures: list[CheckpointCacheError] = []
         try:
             swept = await self.l2_delete_prefix(f"{storage_thread_id}.")
         except CheckpointCacheError as exc:
-            # raised once the other tiers are done: a failed sweep must not leave L1 holding the thread too
-            sweep_failed, swept = exc, True
-        await self.l2_delete(thread_id, "", customer=resolved)
+            failures.append(exc)
+            swept = True
+        try:
+            await self.l2_delete(thread_id, "", customer=resolved)
+        except CheckpointCacheError as exc:
+            failures.append(exc)
         if not swept and self._l2 is not None:
             log.warning(
                 "L2 cache cannot sweep by prefix; bundles cached under a non-empty checkpoint_ns "
@@ -1645,9 +1704,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             )
 
         # L1 drops the thread across every namespace by its own protocol.
-        await self.l1_delete(thread_id, customer=resolved)
-        if sweep_failed is not None:
-            raise sweep_failed
+        try:
+            await self.l1_delete(thread_id, customer=resolved)
+        except CheckpointCacheError as exc:
+            failures.append(exc)
+        if failures:
+            self._cache_bypassed_threads.add(storage_thread_id)
+            raise CheckpointPurgeIncompleteError(f"purge of thread {thread_id!r}", failures)
+        self._cache_bypassed_threads.discard(storage_thread_id)
 
     async def adelete_customer_threads(self, *, customer: UUID | None = None) -> None:
         """delete every checkpoint and write belonging to this saver's customer.
@@ -1693,8 +1757,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :raises ValueError: when the customer cannot be reconciled with the
             scope, or when no customer is named at all, since the pattern would
             then match every row in the table
-        :raises CheckpointCacheError: when the L2 prefix sweep failed; raised after the L3 rows
-            are deleted, so this customer's bundles may still be cached
+        :raises CheckpointPurgeIncompleteError: when the L2 prefix sweep failed; raised after the
+            L3 rows are deleted, so this customer's bundles may still be cached. retrying is safe
         """
         prefix = self._customer_prefix(
             self._scope.customer_for_operation(customer, operation="adelete_customer_threads"),
@@ -1718,12 +1782,13 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             pattern,
         )
 
-        sweep_failed: CheckpointCacheError | None = None
+        failures: list[CheckpointCacheError] = []
         try:
             swept = self._l2 is None or await self.l2_delete_prefix(prefix)
         except CheckpointCacheError as exc:
             # raised after the L1 report below, so the caller hears about both tiers
-            sweep_failed, swept = exc, True
+            failures.append(exc)
+            swept = True
         if not swept:
             log.warning(
                 "L2 cache cannot sweep by prefix; this customer's cached checkpoint bundles survive "
@@ -1735,8 +1800,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "L1 cache deletes one thread at a time and cannot enumerate a customer's threads; "
                 "this customer's cached checkpoint bundles survive the purge until they are evicted.",
             )
-        if sweep_failed is not None:
-            raise sweep_failed
+        if failures:
+            raise CheckpointPurgeIncompleteError(f"purge of customer prefix {prefix!r}", failures)
 
     async def aanonymize_threads(
         self,

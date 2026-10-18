@@ -35,7 +35,11 @@ from uuid import UUID
 
 import pytest
 
-from threetears.langgraph.checkpoint import CheckpointCacheError, ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint import (
+    CheckpointCacheError,
+    CheckpointPurgeIncompleteError,
+    ThreeTierCheckpointSaver,
+)
 from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import CheckpointL2Cache, CheckpointL2PrefixCache
 
@@ -910,12 +914,52 @@ class TestPrefixCacheCapability:
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=cache, scope=_UNSCOPED)
         await saver.l2_put("t-1", "", b"root")
 
-        with pytest.raises(CheckpointCacheError, match="prefix sweep"):
+        with pytest.raises(CheckpointPurgeIncompleteError, match="prefix sweep") as caught:
             await saver.adelete_thread("t-1")
+        assert caught.value.l3_committed
 
         assert executor.execute.await_count == 2, "both L3 deletes ran before the sweep was tried"
         assert ("checkpoints", "t-1") not in cache.store, "the root key is deleted despite the failed sweep"
         l1.delete.assert_awaited_once_with("t-1")
+
+    async def test_a_failed_exact_delete_is_raised_and_the_erased_thread_is_never_served_from_cache(self) -> None:
+        """the root key survives a failed delete; this saver reads the thread from L3 alone until a retry lands.
+
+        :return: nothing
+        :rtype: None
+        """
+
+        class _DeleteDown(_PrefixSweepingL2Cache):
+            down = True
+
+            async def delete(self, bucket: str, key: str) -> None:
+                if self.down:
+                    raise RuntimeError("nats: timeout")
+                await super().delete(bucket, key)
+
+        executor = _make_executor()
+        l1 = AsyncMock()
+        l1.get.return_value = None
+        cache = _DeleteDown()
+        saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=cache, scope=_UNSCOPED)
+        bundle = saver.serialize_checkpoint_tuple({"id": "erased", "channel_values": {}}, {}, None, [])  # type: ignore[arg-type]
+        await saver.l2_put("t-1", "", bundle)
+
+        with pytest.raises(
+            CheckpointPurgeIncompleteError, match=r"L2 checkpoint delete failed \(RuntimeError\)"
+        ) as caught:
+            await saver.adelete_thread("t-1")
+        assert caught.value.l3_committed and len(caught.value.failures) == 1
+        l1.delete.assert_awaited_once_with("t-1")
+        assert ("checkpoints", "t-1") in cache.store, "the erased bundle is still cached"
+
+        assert await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}) is None, (
+            "the erased thread is never served back from the cache that still holds it"
+        )
+
+        cache.down = False
+        await saver.adelete_thread("t-1")  # the retry is safe, and finishes the job
+        assert ("checkpoints", "t-1") not in cache.store
 
     async def test_a_customer_purge_whose_sweep_fails_says_so(self) -> None:
         """an erasure that left a customer's cached bundles behind does not report success.
@@ -928,8 +972,9 @@ class TestPrefixCacheCapability:
             executor=executor, l2_cache=_FailingSweepL2Cache(), scope=CheckpointScope.for_customer(_CUSTOMER_A)
         )
 
-        with pytest.raises(CheckpointCacheError, match="prefix sweep"):
+        with pytest.raises(CheckpointPurgeIncompleteError, match="prefix sweep") as caught:
             await saver.adelete_customer_threads()
+        assert isinstance(caught.value, CheckpointCacheError) and caught.value.l3_committed
 
         assert executor.execute.await_count == 2, "the L3 purge committed before the sweep was tried"
 

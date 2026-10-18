@@ -7,18 +7,28 @@ own quiet answer. These pin the one refusal that replaced them.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from langchain_core.embeddings import Embeddings
 
 from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_documents, embed_query
 
 
+class _Array(list[float]):
+    """a vector whose truth value is ambiguous, as a numpy array's is."""
+
+    def __bool__(self) -> bool:
+        raise ValueError("The truth value of an array with more than one element is ambiguous.")
+
+
 class _Scripted(Embeddings):
     """answers what it is given, or raises it."""
 
-    def __init__(self, query: list[float] | Exception, documents: list[list[float]] | Exception) -> None:
+    def __init__(self, query: Any, documents: Any) -> None:
         self._query = query
         self._documents = documents
+        self.sent: list[list[str]] = []
 
     def embed_query(self, text: str) -> list[float]:
         raise NotImplementedError
@@ -32,6 +42,7 @@ class _Scripted(Embeddings):
         return self._query
 
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.sent.append(list(texts))
         if isinstance(self._documents, Exception):
             raise self._documents
         return self._documents
@@ -44,14 +55,30 @@ async def test_a_query_vector_is_answered() -> None:
 @pytest.mark.parametrize(
     ("embedder", "text", "why"),
     [
-        (_Scripted(ConnectionError("gateway down"), []), "hello", "the embedder failed: ConnectionError: gateway down"),
+        (_Scripted(ConnectionError("gateway down"), []), "hello", r"the embedder failed \(ConnectionError\)"),
         (_Scripted([], []), "hello", "answered an empty vector"),
+        (_Scripted(_Array(), []), "hello", "answered an empty vector"),
         (_Scripted([0.1], []), "", "there is no text to embed"),
+        (_Scripted([0.1], []), "  \n ", "there is no text to embed"),
     ],
 )
 async def test_a_query_that_gives_no_usable_vector_is_refused(embedder: Embeddings, text: str, why: str) -> None:
     with pytest.raises(EmbeddingUnavailableError, match=why):
         await embed_query(embedder, text)
+
+
+async def test_a_numpy_vector_is_answered_as_floats() -> None:
+    assert await embed_query(_Scripted(_Array([0.5, 0.25]), []), "hello") == [0.5, 0.25]
+
+
+async def test_the_providers_own_message_never_reaches_the_refusal() -> None:
+    """a caller hands this message to a model; a provider's text can carry a key."""
+    leak = ValueError("Incorrect API key provided: sk-proj-FAKE1234567890 at https://api.example.test/v1")
+    for call in (embed_query(_Scripted(leak, []), "hello"), embed_documents(_Scripted([], leak), ["a"])):
+        with pytest.raises(EmbeddingUnavailableError) as caught:
+            await call
+        assert "sk-proj" not in str(caught.value) and "https://" not in str(caught.value)
+        assert caught.value.__cause__ is leak, "the full text stays on the cause, for contain() to log"
 
 
 async def test_the_provider_fault_is_chained() -> None:
@@ -68,12 +95,22 @@ async def test_an_empty_batch_makes_no_call() -> None:
     assert await embed_documents(_Scripted([], ConnectionError("never called")), []) == []
 
 
+async def test_a_whitespace_text_is_not_sent_and_comes_back_without_a_vector() -> None:
+    embedder = _Scripted([], [[1.0]])
+    assert await embed_documents(embedder, ["  ", "b"]) == [None, [1.0]]
+    assert embedder.sent == [["b"]]
+
+
+async def test_one_empty_vector_leaves_that_text_without_one_and_keeps_the_rest() -> None:
+    assert await embed_documents(_Scripted([], [[1.0], _Array()]), ["a", "b"]) == [[1.0], None]
+
+
 @pytest.mark.parametrize(
     ("documents", "why"),
     [
-        (ConnectionError("gateway down"), "the embedder failed: ConnectionError: gateway down"),
+        (ConnectionError("gateway down"), r"the embedder failed \(ConnectionError\)"),
         ([[1.0]], "answered 1 vector"),
-        ([[1.0], []], "empty vector for at least one text"),
+        ([[], []], "no usable vector for any text"),
     ],
 )
 async def test_a_batch_that_gives_no_usable_vectors_is_refused(

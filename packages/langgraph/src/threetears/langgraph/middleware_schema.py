@@ -75,7 +75,7 @@ from threetears.observe.text_block import one_line
 from threetears.langgraph.state import merge_metadata
 from threetears.observe import contain, get_logger
 
-__all__ = ["SchemaPrimingMiddleware", "SchemaPrimingState"]
+__all__ = ["DOCUMENTED_SCHEMA_UNREAD_KEY", "SchemaPrimingMiddleware", "SchemaPrimingState"]
 
 log = get_logger(__name__)
 
@@ -151,17 +151,38 @@ _BLOCK_PREAMBLE = (
     "Do not look up what is already below.\n\n"
 )
 
-#: What stands in for the documented-schema block when the schema could not be read.
-#: An absent block reads to the model as "these datasources document nothing", and it
-#: then writes SQL against guessed names; this says the read failed and sends it to the
-#: inspection tool instead. The same text is stashed on ``metadata`` so a downstream
-#: reader sees the failure, not an empty block.
-_SCHEMA_UNREAD_BLOCK = (
-    "# Documented schema\n"
-    "The documented schema for your datasources could not be read this turn. "
-    "That does not mean they have no documented tables. "
-    "Call the schema-inspection tool for each table and column you use before you write SQL.\n\n"
-)
+#: The live introspection tool a datasource ``<name>`` is read with (the
+#: ``datasource.*.schema`` tool named in this module's docstring); the unread notice
+#: sends the model to it by name.
+_SCHEMA_TOOL_NAME = "datasource.{name}.schema"
+
+#: The ``metadata`` key a failed documented-schema read is recorded under: the
+#: exception class, or ``""`` on a turn whose read succeeded. Kept apart from
+#: ``documented_schema_block`` so a reader testing that block for text never takes a
+#: failed read for documentation, and written on every primed turn so a failure does
+#: not outlive the turn it happened on.
+DOCUMENTED_SCHEMA_UNREAD_KEY = "documented_schema_unread"
+
+
+def _schema_unread_block(datasource_names: list[str]) -> str:
+    """What stands in for the documented-schema block when the schema could not be read.
+
+    An absent block reads to the model as "these datasources document nothing", and it
+    then writes SQL against guessed names; this says the read failed and names the
+    inspection tool to use instead.
+
+    :param datasource_names: the agent's declared datasource names
+    :ptype datasource_names: list[str]
+    :return: the notice, ending in a blank line like the block it replaces
+    :rtype: str
+    """
+    tools = ", ".join(f"`{_SCHEMA_TOOL_NAME.format(name=name)}`" for name in datasource_names)
+    return (
+        "# Documented schema\n"
+        "The documented schema for your datasources could not be read this turn. "
+        "That does not mean they have no documented tables. "
+        f"Before you write SQL, call {tools} for each table and column you use.\n\n"
+    )
 
 
 class SchemaPrimingState(AgentState[Any]):
@@ -177,7 +198,8 @@ class SchemaPrimingState(AgentState[Any]):
     channel must be declared here for the stash to persist.
 
     :ivar metadata: per-run metadata bag; the middleware writes the rendered
-        documented-schema block under ``documented_schema_block``.
+        documented-schema block under ``documented_schema_block`` and, under
+        ``documented_schema_unread``, the class of a failed read (``""`` when it was read).
     """
 
     metadata: NotRequired[Annotated[dict[str, Any], merge_metadata]]
@@ -532,20 +554,27 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
                 log=log,
                 what=f"documented-schema read failed (soft-fail; honesty rule still shipped): {type(exc).__name__}: {exc}",
             )
-            schema_block = _SCHEMA_UNREAD_BLOCK
+            unread = type(exc).__name__
+            prompt_block = _schema_unread_block(list(integration.datasource_names))
+            schema_block = ""
         else:
+            unread = ""
             schema_block = _render_schema_block(tables, budget=self.token_budget)
+            prompt_block = schema_block
         # the honesty rule ships whenever a datasource resolves, so the folded block is
         # always non-empty even when no digest documented tables (schema_block == "").
-        block = _HONESTY_PREAMBLE + schema_block
+        block = _HONESTY_PREAMBLE + prompt_block
         merged = _fold_into_system(request.system_message, block)
         response: ModelResponse[Any] = await handler(request.override(system_message=merged))
         # stash ONLY the documented-schema block (not the honesty rule) so a downstream
         # node can read it after the model node folds the injected prompt away. empty
-        # string when no digest documented tables; the unread notice when the read failed.
+        # string when no digest documented tables AND when the read failed -- a failed
+        # read is told apart by DOCUMENTED_SCHEMA_UNREAD_KEY, never by text in the block.
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"metadata": {"documented_schema_block": schema_block}}),
+            command=Command(
+                update={"metadata": {"documented_schema_block": schema_block, DOCUMENTED_SCHEMA_UNREAD_KEY: unread}}
+            ),
         )
 
     def wrap_model_call(

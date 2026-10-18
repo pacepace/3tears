@@ -21,7 +21,12 @@ import pytest
 
 from langgraph.checkpoint.base import WRITES_IDX_MAP
 
-from threetears.langgraph.checkpoint import CheckpointCacheError, ThreeTierCheckpointSaver
+from prometheus_client import REGISTRY
+
+from threetears.langgraph.checkpoint import (
+    CheckpointCacheError,
+    ThreeTierCheckpointSaver,
+)
 from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import AsyncpgPoolAdapter
 from threetears.langgraph.serde import UUIDSafeSerializer
@@ -130,13 +135,14 @@ class TestL1Degradation:
         # Should not raise
         await saver.l1_put("thread-1", "", b"data")
 
-    async def testl1_delete_swallows_error(self):
+    async def test_a_failed_l1_delete_is_raised_not_reported_as_deleted(self):
         l1 = AsyncMock()
         l1.delete.side_effect = RuntimeError("L1 down")
 
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, scope=_UNSCOPED)
 
-        await saver.l1_delete("thread-1")
+        with pytest.raises(CheckpointCacheError, match=r"L1 checkpoint delete failed \(RuntimeError\)"):
+            await saver.l1_delete("thread-1")
 
 
 class TestCrashRecoveryWritesDegrade:
@@ -365,7 +371,7 @@ class TestCrashRecoveryWritesDegrade:
         The row reaches L3, the cache keeps serving the pre-interrupt bundle,
         detect_interrupt finds nothing, and the approval gate is skipped -- the
         same end state as never writing the row. So this invalidation does NOT go
-        through l1_delete/l2_delete, which degrade by design.
+        go through l1_delete/l2_delete: it raises the cache's own error.
         """
         l1, l2 = AsyncMock(), AsyncMock()
         l2.delete.side_effect = RuntimeError("NATS request failed: nats: timeout")
@@ -464,6 +470,11 @@ class TestL2Degradation:
             await saver.l2_get("thread-1", "")
 
 
+def _contained(site: str) -> float:
+    labels = {"site": site, "exc_type": "CheckpointCacheError"}
+    return REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0
+
+
 class TestCacheReadFailureFallsThrough:
     """a cache read that fails reads the durable store, recorded as a miss caused by an error."""
 
@@ -494,21 +505,20 @@ class TestCacheReadFailureFallsThrough:
         l1, l2 = self._failing_caches()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
         executor.fetchrow.return_value = self._l3_row(saver)
+        sites = {
+            tier: f"threetears.langgraph.checkpoint:ThreeTierCheckpointSaver._{tier}_or_recorded_miss"
+            for tier in ("l1", "l2")
+        }
+        before = {tier: _contained(site) for tier, site in sites.items()}
 
         with caplog.at_level(logging.WARNING, logger="threetears.langgraph.checkpoint"):
             tup = await saver.aget_tuple(self._CONFIG)
 
         assert tup is not None and tup.checkpoint["id"] == "cp-1", "the durable store answered"
-        recorded = [r.extra_data for r in caplog.records if getattr(r, "extra_data", {}).get("miss") == "error"]
-        assert recorded == [
-            {
-                "tier": tier,
-                "miss": "error",
-                "contained_site": "threetears.langgraph.checkpoint:ThreeTierCheckpointSaver._cached_or_recorded_miss",
-                "exc_type": "CheckpointCacheError",
-            }
-            for tier in ("L1", "L2")
-        ], "each failed tier is recorded as a miss caused by an error, not passed over as a cold cache"
+        assert {tier: _contained(site) - before[tier] for tier, site in sites.items()} == {"l1": 1, "l2": 1}, (
+            "each failed tier counts against its own site on contained_errors_total, not as a cold cache"
+        )
+        assert [r.extra_data["miss"] for r in caplog.records if hasattr(r, "extra_data")] == ["error", "error"]
 
     async def test_a_plain_miss_records_nothing(self, caplog):
         executor = _make_executor()

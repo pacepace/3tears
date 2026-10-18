@@ -41,7 +41,11 @@ from threetears.langgraph.caching import (
     should_bind_tools_fresh,
 )
 from threetears.langgraph.catalog import ObjectCataloger
-from threetears.langgraph.checkpoint import CheckpointCacheError, ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint import (
+    CheckpointCacheError,
+    CheckpointPurgeIncompleteError,
+    ThreeTierCheckpointSaver,
+)
 from threetears.langgraph.checkpoint_scope import (
     DEFAULT_CUSTOMER_CONFIG_KEY,
     CheckpointScope,
@@ -140,6 +144,7 @@ __all__ = [
     "ChatModelCapabilities",
     "CheckpointAnonymization",
     "CheckpointCacheError",
+    "CheckpointPurgeIncompleteError",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
