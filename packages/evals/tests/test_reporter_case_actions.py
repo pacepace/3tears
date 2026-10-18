@@ -33,6 +33,7 @@ from threetears.evals.schema import EvalResult
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.kernel import NotFoundError, ValidationFailedError, delivered_a_turn
 from threetears.evals.schema.models import EvalTestCase
+from threetears.evals.kernel.declaration import Aspect
 from threetears.evals.ops import (
     FrozenReporterCase,
     ReporterCaseListing,
@@ -76,6 +77,21 @@ def _tools() -> dict[str, Any]:
 # =============================================================================
 # Freezing
 # =============================================================================
+
+
+def test_a_campaign_of_several_aspects_is_refused_a_freeze_with_its_remedy() -> None:
+    """A reporter case freezes the campaign bundle a writer reads, and in this build only a campaign of one aspect."""
+    fixture = reporter_fixture()
+    storage = fixture.host.eval_host.storage
+    campaign = fixture.campaign.model_copy(update={"aspects": [*fixture.campaign.aspects, Aspect(label="second")]})
+    storage.save_campaign(campaign)
+
+    with pytest.raises(ValidationFailedError, match="has 2 aspects") as refused:
+        freeze_corpus_campaign(fixture)
+
+    assert "a reporter case freezes a campaign of one aspect only" in str(refused.value)
+    assert "campaign_create" in (refused.value.remedy or "")
+    assert _stored_cases(fixture, reporter_template().id) == []
 
 
 def test_a_freeze_without_an_analysis_pins_the_bundle_alone() -> None:

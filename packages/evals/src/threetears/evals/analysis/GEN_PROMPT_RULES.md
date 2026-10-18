@@ -68,7 +68,7 @@ has, so every host pushes the new seed to its prompt store, and a reporter eval 
 | Rule 12 | "confirm or overturn an adopted or rejected decision" → "overturn the recommendation"; the stale "the page's To switch table sizes and prices it" → code's `cases_to_settle` and the page |
 | Rule 13 | "every decision agrees with its findings … deferred, not adopted" → "the recommendation agrees with its findings … not made; keep the control"; "an answer" → "a summary" in the axis check |
 
-The prompt fell from 24,343 to 23,133 characters, still 13 rules.
+The prompt fell from 24,343 to 23,156 characters, still 13 rules.
 
 ## Not rules, but load-bearing
 
