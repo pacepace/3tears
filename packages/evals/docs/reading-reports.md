@@ -382,12 +382,11 @@ nothing, and the design its comparisons read was inferred from the runs, not dec
 
 **A question counts only if it was asked before the evidence.** A question confirms nothing when it was declared
 after the campaign's first member run was created, since it may have been asked of results that already existed.
-Each question's own `asked_at` is read against the earliest member run's `created_at`
-(`preregistered_questions`), and every reader that scopes a reading by the questions (the comparison families, the
-reading scope, the verdict order, the disclosure) reads that, so they cannot disagree. A late question builds no
-family, its ids are listed as `reading_scope.post_hoc_questions` (and on the bundle as `post_hoc_questions`), and
-`question_declared` is true only when a question was asked in time. When every live question came late, the one
-disclosure says so and names them. To keep it from happening, a campaign's design is frozen once it holds a run:
+A campaign asks one question, and when it was asked (the latest of its live questions' `asked_at`, for a campaign
+stored with several) is read against the earliest member run's `created_at` (`asked_in_time`); every reader that
+scopes a reading by the question (the comparison family, the reading scope, the verdict order, the disclosure) reads
+that, so they cannot disagree. A late question builds no family, `reading_scope.question_post_hoc` says so, and
+`question_declared` is true only when the question was asked in time. When it came late, the one disclosure says so. To keep it from happening, a campaign's design is frozen once it holds a run:
 `campaign_update` refuses `declared_design` in any form, and refuses re-pointing or clearing the control (which may
 be named once, from a run, while none is declared); the name and description stay editable, and an amended design
 is a new campaign, declared before launching into it.
