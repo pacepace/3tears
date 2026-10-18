@@ -74,7 +74,7 @@ from threetears.agent.memory.collections import (
 )
 from langchain_core.embeddings import Embeddings
 
-from threetears.agent.memory.embedding_utils import _safe_aembed_query
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_query
 from threetears.agent.memory.types import MemoryType
 from threetears.core.utils.local_time import parse_date_bound, render_local_time, resolve_zone
 from threetears.observe.text_block import one_line, under
@@ -882,9 +882,10 @@ async def load_memory_search_tool(
 
         embedding = None
         if run_semantic:
-            embedding = await _safe_aembed_query(embedding_provider, query)
-            if embedding is None:
-                return _tool_error("memory_search", "embed", "Embedding API request failed")
+            try:
+                embedding = await embed_query(embedding_provider, query)
+            except EmbeddingUnavailableError as exc:
+                return _tool_error("memory_search", "embed", str(exc))
 
         fts_text = query.strip()[:500] if len(query.strip()) >= 3 else None
 
@@ -1319,15 +1320,13 @@ async def load_memory_recall_tool(
                         limit=limit,
                     )
                 else:
-                    embedding = await _safe_aembed_query(
-                        embedding_provider,
-                        chunk_query,
-                    )
-                    if embedding is None:
+                    try:
+                        embedding = await embed_query(embedding_provider, chunk_query)
+                    except EmbeddingUnavailableError as exc:
                         return _tool_error(
                             "memory_recall",
                             "embed",
-                            "embedding unavailable for chunk_query mode",
+                            f"embedding unavailable for chunk_query mode: {exc}",
                         )
                     chunks = await memory_chunk_collection.hybrid_search_within_memory(
                         memory_id=mem_uuid,
@@ -2021,9 +2020,10 @@ async def load_memory_add_tool(
                 return read
             targets = read
 
-        embedding = await _safe_aembed_query(embedding_provider, content)
-        if embedding is None:
-            return _tool_error("memory_add", "embed", "embedding provider returned None")
+        try:
+            embedding = await embed_query(embedding_provider, content)
+        except EmbeddingUnavailableError as exc:
+            return _tool_error("memory_add", "embed", str(exc))
 
         not_kept = ""
         if permanent and not await _may_be_permanent(permanent_allowed, content):
@@ -2433,11 +2433,14 @@ async def load_memory_update_tool(
         if (text, kind, name) == (old_text, old_type, old_alias):
             return _no_change("memory_update", f"[memory:{target}] already says that. Nothing was changed.")
 
-        embedding: list[float] | None = (
-            entity.embedding if text == old_text else await _safe_aembed_query(embedding_provider, text)
-        )
+        embedding: list[float] | None = entity.embedding
+        if text != old_text:
+            try:
+                embedding = await embed_query(embedding_provider, text)
+            except EmbeddingUnavailableError as exc:
+                return _tool_error("memory_update", "embed", f"{exc}. Nothing was changed.")
         if not embedding:
-            return _tool_error("memory_update", "embed", "embedding provider returned None. Nothing was changed.")
+            return _tool_error("memory_update", "embed", "the memory carries no embedding. Nothing was changed.")
 
         # A name is unique per person, so it comes off the old memory before the
         # new one takes it, and goes back if the replacement is not written.
@@ -3001,9 +3004,10 @@ async def load_chunk_search_tool(
         if not query or not query.strip():
             return "Empty query. Provide a search term."
 
-        embedding = await _safe_aembed_query(embedding_provider, query)
-        if embedding is None:
-            return "Passage search is down; try memory_search."
+        try:
+            embedding = await embed_query(embedding_provider, query)
+        except EmbeddingUnavailableError as exc:
+            return f"Passage search is down ({exc}); try memory_search."
 
         # v0.7.5: ``mode`` remaps the semantic/keyword blend so the
         # agent can self-correct between "I want similar concepts"

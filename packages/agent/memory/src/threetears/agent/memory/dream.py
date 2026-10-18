@@ -52,10 +52,10 @@ from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryConsolidationsCollection,
 )
-from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.events import MemoryConsolidatedEvent
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
+from threetears.langgraph.embeddings import embed_query
 from threetears.langgraph.events import dispatch_event
 from threetears.observe import contain, get_logger, traced
 
@@ -405,9 +405,10 @@ class DreamService:
     ) -> UUID | None:
         """synthesize + commit one gist for a cluster; return its id or None.
 
-        Skips (returns ``None``, logs) on reflector failure, unparseable
-        output, or a failed gist embedding so a single bad cluster does not
-        abort the pass.
+        Skips (returns ``None``, logs) on reflector failure or unparseable
+        output so a single bad cluster does not abort the pass. A gist that
+        cannot be embedded raises, and the pass's per-cluster handler records
+        it as a failure rather than a skip.
 
         :param members: the cluster's source memory dicts (>= min size)
         :ptype members: list[dict[str, Any]]
@@ -419,6 +420,7 @@ class DreamService:
         :ptype user_id: UUID | None
         :return: the committed gist id, or ``None`` on skip
         :rtype: UUID | None
+        :raises EmbeddingUnavailableError: when the gist could not be embedded
         """
         source_ids: list[UUID] = [m["memory_id"] for m in members]
         # inherit the conversation anchor from the newest source: memories
@@ -447,13 +449,10 @@ class DreamService:
             )
             return None
 
-        embedding = await _safe_aembed_query(self._embedding_provider, gist_text)
-        if embedding is None:
-            log.warning(
-                "Dream consolidation skipped cluster: gist embedding failed",
-                extra={"extra_data": {"agent_id": str(agent_id), "source_count": len(source_ids)}},
-            )
-            return None
+        # a gist that cannot be embedded raises EmbeddingUnavailableError to the pass's
+        # per-cluster handler, which contains it as a failed cluster -- not the deliberate
+        # skip a None return means
+        embedding = await embed_query(self._embedding_provider, gist_text)
 
         gist_id = await supersede(
             self._memories,

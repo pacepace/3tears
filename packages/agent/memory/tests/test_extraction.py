@@ -22,7 +22,9 @@ import pytest
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.extraction import (
+    ExtractionCooldownUnavailableError,
     ExtractionGate,
+    ExtractionModelFailedError,
     ExtractionOutcome,
     ExtractionResult,
     MemoryExtractor,
@@ -400,23 +402,51 @@ class TestRateLimit:
         bucket.advance_clock(timedelta(seconds=1))
         assert await ext.check_rate_limit(conversation_id) == (True, 0)
 
-    async def test_read_failure_fails_open(
+    async def test_a_cooldown_that_cannot_be_read_is_raised_not_read_as_no_cooldown(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = MagicMock()
         nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        assert await ext.check_rate_limit(uuid.uuid7()) == (True, 0)
+        with pytest.raises(ExtractionCooldownUnavailableError, match="could not be read: RuntimeError: nats down"):
+            await ext.check_rate_limit(uuid.uuid7())
 
-    async def test_claim_transport_failure_fails_open(
+    async def test_a_turn_whose_cooldown_cannot_be_read_fails_before_any_model_call(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = MagicMock()
+        nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
+        factory = _worthy_factory()
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=factory)
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED, result
+        assert "cooldown could not be read" in result.reason
+        assert factory.calls == {"worthiness": 0, "extraction": 0, "resolution": 0}
+
+    async def test_a_claim_that_cannot_be_written_is_raised_not_read_as_claimed(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = MagicMock()
         nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        assert await ext.claim_rate_limit(uuid.uuid7()) == (True, 0)
+        with pytest.raises(ExtractionCooldownUnavailableError, match="could not be claimed: RuntimeError: nats down"):
+            await ext.claim_rate_limit(uuid.uuid7())
+
+    async def test_a_claim_the_bucket_refuses_is_raised_not_read_as_claimed(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        class _RefusingBucket(_TtlRefusingBucket):
+            async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
+                del key, value, ttl
+                raise KvError("KV create failed: nats: timeout")
+
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=_SingleBucketClient(_RefusingBucket()))
+        with pytest.raises(ExtractionCooldownUnavailableError, match="could not be claimed: KvError"):
+            await ext.claim_rate_limit(uuid.uuid7())
 
     async def test_claim_on_a_bucket_refusing_per_key_ttl_fails_loud(
         self,
@@ -670,6 +700,27 @@ class TestExtractionResult:
         assert result.outcome is ExtractionOutcome.FAILED
         assert "embed" in result.reason
 
+    async def test_a_candidate_that_cannot_be_embedded_is_counted_as_failed_beside_the_stored_ones(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        class _DownForOneText(StubEmbeddingProvider):
+            async def aembed_query(self, text: str) -> list[float]:
+                if text == "Prefers Python":
+                    raise RuntimeError("embedding service down")
+                return await super().aembed_query(text)
+
+        factory = StubChatModelFactory(
+            worthiness_content=json.dumps({"worthy": True}),
+            extraction_content=json.dumps(
+                [{"type": "fact", "content": "Lives in Seattle"}, {"type": "preference", "content": "Prefers Python"}]
+            ),
+        )
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory, embedding=_DownForOneText())
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert (result.outcome, result.stored) == (ExtractionOutcome.STORED, 1), result
+        assert "failed=1" in result.reason, "the candidate that could not be embedded used to vanish from the tally"
+
     async def test_an_unexpected_error_is_a_failure_naming_it(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
@@ -769,25 +820,46 @@ class TestWorthinessGate:
         worthy, _ = await ext.check_worthiness("hello world", "response text")
         assert not worthy
 
-    async def test_invalid_json_passes_fail_open(
+    async def test_a_reply_that_is_not_json_is_raised_not_read_as_worthy(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         factory = StubChatModelFactory(worthiness_content="not json at all")
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        worthy, reason = await ext.check_worthiness("hello world", "response text")
-        assert worthy
-        assert reason == "parse_error"
+        with pytest.raises(ExtractionModelFailedError, match="worthiness model's reply was not valid JSON"):
+            await ext.check_worthiness("hello world", "response text")
 
-    async def test_llm_error_passes_fail_open(
+    async def test_a_reply_that_is_not_an_object_is_raised_not_read_as_worthy(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = StubChatModelFactory(worthiness_content="[true]")
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
+        with pytest.raises(ExtractionModelFailedError, match="was list, not an object"):
+            await ext.check_worthiness("hello world", "response text")
+
+    async def test_a_failed_call_is_raised_not_read_as_worthy(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         factory = StubChatModelFactory(error_on={"worthiness"})
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        worthy, reason = await ext.check_worthiness("hello world", "response text")
-        assert worthy
-        assert reason == "llm_error"
+        with pytest.raises(ExtractionModelFailedError, match="worthiness model call failed: RuntimeError"):
+            await ext.check_worthiness("hello world", "response text")
+
+    async def test_a_turn_whose_worthiness_call_fails_answers_failed_and_extracts_nothing(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = CountingChatModelFactory(
+            error_on={"worthiness"},
+            extraction_content=json.dumps([{"type": "fact", "content": "Lives in Seattle"}]),
+        )
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=FakeNatsClient(), factory=factory)
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED, result
+        assert "worthiness model call failed" in result.reason
+        assert factory.calls["extraction"] == 0, "an outage is not a yes"
 
 
 # -- Extraction tests ---------------------------------------------------------
@@ -836,7 +908,7 @@ class TestExtractCandidates:
         result = await ext.extract_candidates("msg", "resp")
         assert result == []
 
-    async def test_non_list_returns_empty(
+    async def test_a_reply_that_is_not_a_list_is_raised_not_read_as_nothing_found(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
@@ -844,8 +916,8 @@ class TestExtractCandidates:
             extraction_content=json.dumps({"type": "fact", "content": "x"}),
         )
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        result = await ext.extract_candidates("msg", "resp")
-        assert result == []
+        with pytest.raises(ExtractionModelFailedError, match="was dict, not a list"):
+            await ext.extract_candidates("msg", "resp")
 
     async def test_markdown_wrapped_json_parsed(
         self,
@@ -877,6 +949,19 @@ class TestExtractCandidates:
 
 
 # -- Resolution tests ---------------------------------------------------------
+
+
+#: one candidate with a near-duplicate already stored: the case resolution exists for.
+_CANDIDATES_WITH_A_NEAR_DUPLICATE: list[dict[str, Any]] = [
+    {
+        "type": "fact",
+        "content": "Lives in Seattle",
+        "embedding": [1.0],
+        "similar_memories": [
+            {"memory_id": "m1", "content": "Lives in Seattle, WA", "type_memory": "fact", "similarity": 0.97}
+        ],
+    },
+]
 
 
 class TestResolveActions:
@@ -932,6 +1017,28 @@ class TestResolveActions:
         outside = re.sub(rf"<untrusted nonce={nonce}>.*?</untrusted nonce={nonce}>", "", text, flags=re.DOTALL)
         assert order in text and order not in outside
         assert untrusted_rule(nonce) in str(system.content)
+
+    async def test_a_failed_resolution_call_is_raised_not_answered_as_add_everything(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(error_on={"resolution"}))
+        with pytest.raises(ExtractionModelFailedError, match="resolution model call failed: RuntimeError"):
+            await ext.resolve_actions(_CANDIDATES_WITH_A_NEAR_DUPLICATE)
+
+    @pytest.mark.parametrize(
+        ("reply", "why"),
+        [("I cannot decide", "not valid JSON"), (json.dumps({"index": 0, "action": "NOOP"}), "was dict, not a list")],
+    )
+    async def test_an_unreadable_resolution_reply_is_raised_not_answered_as_add_everything(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        reply: str,
+        why: str,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(resolution_content=reply))
+        with pytest.raises(ExtractionModelFailedError, match=why):
+            await ext.resolve_actions(_CANDIDATES_WITH_A_NEAR_DUPLICATE)
 
     async def test_no_similar_memories_no_llm_call(
         self,
@@ -1563,12 +1670,41 @@ class TestAFailedExtractionModelIsAFailure:
         result = await _extract_turn(ext, uuid.uuid7())
         assert (result.outcome, result.gate) == (ExtractionOutcome.SKIPPED, ExtractionGate.NOTHING_FOUND)
 
-    async def test_the_public_hook_still_answers_an_empty_list_on_failure(
+    async def test_the_public_hook_raises_a_failed_call_rather_than_answering_nothing_found(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(error_on={"extraction"}))
-        assert await ext.extract_candidates("msg", "resp") == []
+        with pytest.raises(ExtractionModelFailedError, match="extraction model call failed"):
+            await ext.extract_candidates("msg", "resp")
+
+    async def test_an_override_that_delegates_to_the_hook_answers_failed(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """a replaced hook calling the base one got ``[]`` for an outage, and the turn read NOTHING_FOUND."""
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            nats_client=FakeNatsClient(),
+            factory=StubChatModelFactory(worthiness_content=json.dumps({"worthy": True}), error_on={"extraction"}),
+        )
+        own = ext.extract_candidates
+
+        async def _facts_only(
+            user_message: str,
+            assistant_response: str,
+            *,
+            user_id: uuid.UUID | None = None,
+            conversation_id: uuid.UUID | None = None,
+        ) -> list[dict[str, str]]:
+            found = await own(user_message, assistant_response, user_id=user_id, conversation_id=conversation_id)
+            return [c for c in found if c["type"] == "fact"]
+
+        ext.extract_candidates = _facts_only  # type: ignore[method-assign]
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED, result
+        assert result.gate is None
+        assert "extraction model call failed" in result.reason
 
 
 class TestATurnThatStoresNothingGivesTheCooldownBack:
