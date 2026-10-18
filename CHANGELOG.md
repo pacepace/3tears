@@ -139,6 +139,11 @@ editor, a merged PR), on the writer (forwarded from any other process): fetch, f
 report the changed rows so every cache drops them, rebuild pending tails on the new HEAD. A branch that diverged
 raises the new `DivergedError` and changes nothing; one only ahead is pushed. Asked for by scriob (its Pull button).
 
+**git-store: a saved file moves with its edits (`commit_files(..., moves={old: new})`).** The new path gets the
+old one's bytes as the writer's tree holds them, saved edits of a pending tail included, and the old path is removed,
+in the same commit as the folder's other saved edits and its trailer. scriob's rename (a saved heading edit, then the
+file moved to its new name) stays one commit. A move from a missing file or onto an existing one is refused.
+
 **Fixed (git-store):** a work tree inside another git repository was used as if it were one, so commits landed in
 the outer repository; `open()` now refuses it (`GitStoreError`). A nested repository of its own still works.
 

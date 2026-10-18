@@ -430,3 +430,77 @@ def test_a_diverged_refusal_crosses_the_wire() -> None:
     with pytest.raises(DivergedError) as refused:
         decode_reply(encode_failure(DivergedError("main", "a" * 40, "b" * 40)))
     assert refused.value.head == "a" * 40 and "both moved on" in str(refused.value)
+
+
+async def test_a_saved_file_moves_with_its_edits_in_one_commit(make_repo: Any, git_cli: Any) -> None:
+    # scriob's rename: the new heading is saved as an op, then the file moves to its new name, all one commit
+    repo = await seeded(make_repo, git_cli)
+    root = repo.config.work_tree
+    (root / "stories/one/other.md").write_text("see james\n")
+    git_cli(root, "add", "-A")
+    git_cli(root, "commit", "-qm", "a reference")
+    await repo.sync()
+    one = tail(MemoryLog())
+    await repo.add_tail(one)
+    await one.save(repo, payload=op("stories/one/scene.md", add="# jimmy"), op_id="heading")
+    await one.save(repo, payload=op("stories/one/other.md", set="see jimmy\n"), op_id="relabel")
+    head = repo.git.head()
+
+    result = await repo.commit_files({}, "rename", moves={"stories/one/scene.md": "stories/one/jimmy.md"})
+    assert [entry.sha for entry in repo.git.log(rev=f"{head}..HEAD")] == [result.sha]  # one commit
+    assert set(result.paths) == {"stories/one/scene.md", "stories/one/jimmy.md", "stories/one/other.md"}
+    assert (root / "stories/one/jimmy.md").read_text() == "start\n# jimmy\n"
+    assert not (root / "stories/one/scene.md").exists()
+    assert repo.git.show("HEAD", "stories/one/other.md") == b"see jimmy\n"  # the folder's other saved edit too
+    assert committed_seq_from(last_message(repo)) == 2  # the trailer covers the tail
+    assert repo.pending_paths() == set() and repo.git.dirty() == []
+
+    await one.replay(repo)  # nothing after the trailer: the old file is not brought back
+    assert not (root / "stories/one/scene.md").exists()
+
+
+async def test_a_move_onto_an_existing_file_or_from_a_missing_one_is_refused(make_repo: Any, git_cli: Any) -> None:
+    repo = await seeded(make_repo, git_cli)
+    with pytest.raises(GitStoreError, match="exists"):
+        await repo.commit_files({}, "rename", moves={"stories/one/scene.md": "stories/two/scene.md"})
+    with pytest.raises(GitStoreError, match="no such file"):
+        await repo.commit_files({}, "rename", moves={"stories/one/nope.md": "stories/one/new.md"})
+    with pytest.raises(ValueError, match="moved path"):
+        await repo.commit_files({"stories/one/new.md": b"x"}, "x", moves={"stories/one/scene.md": "stories/one/new.md"})
+
+
+async def test_a_second_desync_after_the_heal_is_found_again(make_repo: Any, git_cli: Any) -> None:
+    repo = await seeded(make_repo, git_cli)
+    first = MemoryLog()
+    one = tail(first)
+    await repo.add_tail(one)
+    for n in range(2):
+        await one.save(repo, payload=op("stories/one/scene.md", add=f"a{n}"), op_id=f"a{n}")
+    await repo.commit_intent("stories/one", "edit")  # trailer 2
+
+    second = MemoryLog()  # reset: trailer 2 is ahead of it
+    repo.remove_tail("stories/one")
+    two = tail(second)
+    await repo.add_tail(two)
+    await two.save(repo, payload=op("stories/one/scene.md", add="b0"), op_id="b0")
+    assert await two.committed_through(repo) == 0
+    for n in range(1, 5):
+        await two.save(repo, payload=op("stories/one/scene.md", add=f"b{n}"), op_id=f"b{n}")
+    await repo.commit_intent("stories/one", "edit")  # heals: trailer 5
+    assert await two.committed_through(repo) == 5
+
+    third = MemoryLog()  # reset again, behind the newer trailer
+    repo.remove_tail("stories/one")
+    three = tail(third)
+    await repo.add_tail(three)
+    for n in range(5):  # grows to the stale trailer's own number with no commit
+        await three.save(repo, payload=op("stories/one/scene.md", add=f"c{n}"), op_id=f"c{n}")
+    assert await three.committed_through(repo) == 0  # stale again, detected on its own
+    assert (repo.config.work_tree / "stories/one/scene.md").read_text().endswith("c3\nc4\n")
+    await repo.commit_intent("stories/one", "edit")
+    assert await three.committed_through(repo) == 5
+
+
+def test_moves_cross_the_wire() -> None:
+    request = ForwardedRequest(op="commit_files", files={}, moves={"a.md": "b.md"}, message="rename\n")
+    assert decode_request(encode_request(request)).moves == {"a.md": "b.md"}

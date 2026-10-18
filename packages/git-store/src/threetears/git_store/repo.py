@@ -1150,12 +1150,17 @@ class GitRepo:
         *,
         author: Author | None = None,
         base: str | None = None,
+        moves: Mapping[str, str] | None = None,
     ) -> CommitResult:
         """write these files' bytes (``None`` removes one) and commit them as one commit, on the writer.
 
         For files that aren't rows (a log, a note) and for a hand edit made on a clone of its own: that
         clone can't commit for itself (its commit would race the writer's pushes), so it sends the bytes.
         Rows among the files are reported like any commit's, so every cache drops them.
+
+        ``moves`` renames files in the same commit: each new path gets the old one's bytes as the writer's tree
+        holds them, saved edits of a pending tail included (they ride along, with the tail's trailer), and the old
+        path is removed. A rename that also edits text (scriob's) saves the edit first, then moves the file.
 
         :param files: each path, relative to the root, with its new bytes or ``None``
         :ptype files: Mapping[str, bytes | None]
@@ -1166,17 +1171,26 @@ class GitRepo:
         :param base: the commit the sender read these files at; the writer refuses any of them changed
             since. ``None``: no check
         :ptype base: str | None
+        :param moves: old path -> new path, moved in the same commit
+        :ptype moves: Mapping[str, str] | None
         :return: the commit; ``sha`` is ``None`` when every file already had those bytes
         :rtype: CommitResult
-        :raises ValueError: for a path outside the working tree
+        :raises ValueError: for a path outside the working tree, or a move that also appears in ``files``
+        :raises GitStoreError: for a move from a file that isn't there, or onto one that is
         :raises FileConflictError: when a file changed since ``base``; nothing was written
         :raises HandEditPendingError: when the writer's tree has an uncommitted edit of one of them
         :raises NotTheWriterError: when no writer could take it
         """
         checked = dict(zip(_checked_paths(list(files)), files.values(), strict=True))
+        moved = dict(zip(_checked_paths(list(moves or {})), _checked_paths(list((moves or {}).values())), strict=True))
+        touched = [*moved, *moved.values()]
+        if len(set(touched)) != len(touched) or set(touched) & set(checked):
+            raise ValueError("a moved path appears twice, or also among the files written")
         full = _message_with_trailers(message, None)
-        request = ForwardedRequest(op="commit_files", files=checked, base=base, message=full, author=author)
-        return await self._as_writer(request, lambda: self._commit_files_local(checked, full, author, base))
+        request = ForwardedRequest(
+            op="commit_files", files=checked, base=base, message=full, author=author, moves=moved or None
+        )
+        return await self._as_writer(request, lambda: self._commit_files_local(checked, full, author, base, moved))
 
     async def pull(self) -> CommitResult:
         """take what origin has that this branch lacks, now (someone pushed from outside), on the writer.
@@ -1446,7 +1460,7 @@ class GitRepo:
                 result = await self._commit_paths_local(request.paths, request.message, request.author)
             elif request.op == "commit_files":
                 result = await self._commit_files_local(
-                    dict(request.files or {}), request.message, request.author, request.base
+                    dict(request.files or {}), request.message, request.author, request.base, dict(request.moves or {})
                 )
             elif request.op == "pull":
                 result = await self._pull_local()
@@ -1581,7 +1595,7 @@ class GitRepo:
         return plan
 
     async def _write_and_commit(
-        self, plan: _Plan, message: str, author: Author, date: datetime | None
+        self, plan: _Plan, message: str, author: Author, date: datetime | None, *, moving: set[str] | None = None
     ) -> tuple[str, list[str]]:
         """refuse a hand edit in the way, then journal, write, stage and commit the plan's files, with the saved
         edits of every pending tail whose folder they touch (and its trailers).
@@ -1594,6 +1608,8 @@ class GitRepo:
         :ptype author: Author
         :param date: the author date
         :ptype date: datetime | None
+        :param moving: files being moved away: their saved edits travel with the move, so they may be removed
+        :ptype moving: set[str] | None
         :return: the new commit, and the saved files of pending tails it took along
         :rtype: tuple[str, list[str]]
         :raises HandEditPendingError: when a file to write differs from HEAD
@@ -1601,7 +1617,9 @@ class GitRepo:
         :raises NotTheWriterError: when the lease was lost before the commit; nothing was committed
         """
         paths = sorted(plan.writes)
-        self._refuse_dirty(await asyncio.to_thread(self.git.dirty, paths))
+        saved = self.pending_paths()
+        dirty = await asyncio.to_thread(self.git.dirty, paths)
+        self._refuse_dirty([(status, path) for status, path in dirty if not (path in (moving or ()) and path in saved)])
         taken, trailers, scopes = await self._flush_tails(paths)
         message = _with_trailers(message, trailers)
         await asyncio.to_thread(self._write_journal, paths)
@@ -1620,6 +1638,8 @@ class GitRepo:
             )
         except BaseException:
             await asyncio.to_thread(self._undo, paths)
+            for scope in scopes:  # a saved file the undo put back as HEAD has it gets its saved edits again
+                await self._replay_tail(scope)
             raise
         await asyncio.to_thread(self._clear_journal)
         for scope in scopes:
@@ -1753,8 +1773,37 @@ class GitRepo:
         )
         return await self._announce(CommitResult(sha=sha, paths=tuple(targets), pushed=pushed))
 
+    async def _moved_bytes(self, moves: Mapping[str, str]) -> dict[str, bytes | None]:
+        """the writes a set of moves comes to: each new path gets the old one's bytes as the tree holds them now
+        (saved edits rebuilt first), each old path is removed. Under the lock.
+
+        :param moves: old path -> new path
+        :ptype moves: Mapping[str, str]
+        :return: the writes
+        :rtype: dict[str, bytes | None]
+        :raises GitStoreError: for a move from a missing file, or onto an existing one
+        """
+        for scope in [scope for scope in self._tails if any(_covers(scope, path) for path in moves)]:
+            await self._replay_tail(scope)
+        root = self.config.work_tree
+        writes: dict[str, bytes | None] = {}
+        for old, new in moves.items():
+            source, target = root / old, root / new
+            if not source.is_file():
+                raise GitStoreError(f"cannot move {old}: there is no such file")
+            if target.exists():
+                raise GitStoreError(f"cannot move {old} onto {new}: {new} exists")
+            writes[new] = await asyncio.to_thread(source.read_bytes)
+            writes[old] = None
+        return writes
+
     async def _commit_files_local(
-        self, files: dict[str, bytes | None], message: str, author: Author | None, base: str | None
+        self,
+        files: dict[str, bytes | None],
+        message: str,
+        author: Author | None,
+        base: str | None,
+        moves: dict[str, str] | None = None,
     ) -> CommitResult:
         """write and commit files sent whole, on the writer.
 
@@ -1766,6 +1815,8 @@ class GitRepo:
         :ptype author: Author | None
         :param base: the commit the sender read them at; ``None`` for no check
         :ptype base: str | None
+        :param moves: old path -> new path
+        :ptype moves: dict[str, str] | None
         :return: the commit
         :rtype: CommitResult
         :raises FileConflictError: when a file changed since ``base``
@@ -1780,9 +1831,11 @@ class GitRepo:
                 if await asyncio.to_thread(self.git.rev_parse, base) is None:
                     raise GitStoreError(f"the writer of {self.config.lease_key} has no commit {base}")
                 moved = {change.path for change in await asyncio.to_thread(self.git.changed, base, head_before or base)}
-                stale = sorted(moved & set(files))
+                stale = sorted(moved & {*files, *(moves or {})})
                 if stale:
                     raise FileConflictError(stale)
+            if moves:
+                files = {**files, **await self._moved_bytes(moves)}
 
             def differing() -> dict[str, bytes | None]:
                 current = {path: None if head_before is None else self.git.show(head_before, path) for path in files}
@@ -1792,7 +1845,9 @@ class GitRepo:
             if not writes:
                 return CommitResult(sha=None)
             sha, taken = await asyncio.shield(
-                self._write_and_commit(_Plan(writes=writes), message, author or self.config.committer, None)
+                self._write_and_commit(
+                    _Plan(writes=writes), message, author or self.config.committer, None, moving=set(moves or {})
+                )
             )
             changes = await asyncio.to_thread(self.git.changed, head_before, sha)
             rows = await asyncio.to_thread(self._rows_of, changes, head_before, sha, True)

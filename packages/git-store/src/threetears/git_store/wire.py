@@ -130,6 +130,7 @@ class ForwardedRequest:
     :ivar base: the commit those files were based on (``commit_files``); ``None`` for no check
     :ivar scope: the pending tail's folder (``commit_intent``); ``None`` for the whole repository
     :ivar idle: commit only when the folder's last commit is older than this many seconds (``commit_intent``)
+    :ivar moves: old path -> new path, moved in the same commit (``commit_files``)
     :ivar message: the commit message
     :ivar author: the commit's author
     :ivar trailers: trailer lines
@@ -143,6 +144,7 @@ class ForwardedRequest:
     base: str | None = None
     scope: str | None = None
     idle: float | None = None
+    moves: Mapping[str, str] | None = None
     message: str = ""
     author: Author | None = None
     trailers: Mapping[str, str] | None = None
@@ -179,6 +181,7 @@ def encode_request(request: ForwardedRequest) -> bytes:
         "base": request.base,
         "scope": request.scope,
         "idle": request.idle,
+        "moves": None if request.moves is None else dict(request.moves),
         "message": request.message,
         "author": None if request.author is None else {"name": request.author.name, "email": request.author.email},
         "trailers": dict(request.trailers or {}),
@@ -222,6 +225,7 @@ def decode_request(data: bytes) -> ForwardedRequest:
         base=None if body.get("base") is None else str(body["base"]),
         scope=None if body.get("scope") is None else str(body["scope"]),
         idle=None if body.get("idle") is None else float(body["idle"]),
+        moves=None if body.get("moves") is None else {str(k): str(v) for k, v in body["moves"].items()},
         message=str(body.get("message", "")),
         author=_author(body.get("author")),
         trailers={str(k): str(v) for k, v in (body.get("trailers") or {}).items()},
