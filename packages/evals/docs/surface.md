@@ -4,7 +4,7 @@
 where each is imported from. What a name does is in the [reference](reference.md#public-api), which lists the
 same names; what each tier promises is in [stability tiers](adopting-a-host.md#stability-tiers).
 
-About 520 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional`
+About 530 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional`
 names, most of them the types a declared signature reaches; they import, and nothing about them is promised.
 Each line below is one root, `threetears.evals.` dropped from its name. `tests/test_api_tiers.py` holds this page
 to `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py`.
@@ -40,10 +40,10 @@ A model grading on a rubric, the examples it must grade a known way, and the rep
 Two or more arms as a campaign, its bundle, report and frontier, the classifier measures, and the gate a pipeline fails on.
 
 - `schema`: `LatencyMetrics`
-- `kernel`: `BarOverride`, `CampaignDesign`, `confusion_cell`, `CONFUSION_CELL_MEASURE`, `ControlDeclaration`, `CostLower`, `DecisionRule`, `EvalAnalysis`, `EvalInsight`, `MATCH_MEASURE`, `Question`, `RateDrop`, `SweptAxis`
+- `kernel`: `AspectDesign`, `BarOverride`, `CampaignCall`, `confusion_cell`, `CONFUSION_CELL_MEASURE`, `ControlDeclaration`, `CostLower`, `EvalAnalysis`, `EvalInsight`, `Floor`, `MATCH_MEASURE`, `OverriddenBar`, `RateDrop`, `SweptAxis`
 - `run`: `get_result_trace`, `get_run`, `list_results`, `list_runs`
-- `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateResult`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`
-- `ops`: `scope_history`
+- `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CampaignReadings`, `CampaignReport`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateResult`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`
+- `ops`: `campaign_record`, `scope_history`
 
 ## Rung 4: a world, a log, a host and serving
 

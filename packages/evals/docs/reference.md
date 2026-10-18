@@ -264,9 +264,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ActionSeam`** · protocol · A kind's synchronous tools, as the cassette lane records and replays them.
 - **`AdmissionRefusedError`** · *host contract* · exception · A launch refused because it would admit more unfinished runs than the process may hold (status 429).
 - **`AdmittedCall`** · dataclass · A planned call its budget admitted, at the ceiling it was priced at.
+- **`AspectDesign`** · *host contract* · model · What one aspect of a campaign set out to vary and hold itself to — the declaration, one aspect's worth.
 - **`AuthoredJudgeCase`** · model · A calibration case written by hand: an output, the criterion it is judged on, and the verdict it must get.
 - **`BarOverride`** · model · A standard this campaign holds itself to, tighter than the registered one.
-- **`CampaignDesign`** · model · The declaration: what this campaign set out to learn, before it learned anything.
+- **`CampaignCall`** · *host contract* · model · What a person decided over a campaign's readings: the arm, why, and every broken floor and missed bar they chose to override.
 - **`CandidateKind`** · *host contract* · protocol · The two operations that vary between one evaluable subject and another.
 - **`CandidateKindDefect`** · *host contract* · exception · A kind handed back output that contradicts its own `CandidateKind.judged_artifact`.
 - **`CandidateOutput`** · *host contract* · model · What one candidate produced, as everything below the dispatch sees it.
@@ -281,7 +282,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
 - **`CostCapReached`** · *host contract* · exception · Deprecated: the engine no longer raises it, because no ceiling is asked inside a cell.
 - **`CostLower`** · *host contract* · model · A clause of a decision rule: the arm must cost less per reply than the control.
-- **`DecisionRule`** · *host contract* · model · When a question's answer switches from the control: typed clauses, never words the engine has to parse.
 - **`DefinitionStore`** · *host contract* · protocol · What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.
 - **`DeliveryRecorder`** · protocol · Captures one asynchronous tool's background work for one cell.
 - **`DeliveryReplay`** · protocol · Serves one asynchronous tool's recorded work for one cell.
@@ -295,6 +295,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvalServiceError`** · *host contract* · exception · Structured error from the eval service layer.
 - **`EvalStorage`** · *host contract* · class · Storage for eval documents over one document store.
 - **`ExternalRateTable`** · dataclass · Operator-declared money per provider unit, resolved once for a whole run.
+- **`Floor`** · *host contract* · model · A line a candidate is warned for crossing on one aspect: a typed clause, read on that aspect's readings.
 - **`JobLeases`** · class · The leases one process holds on its jobs' records, and the task that renews them.
 - **`JobStore`** · *host contract* · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
 - **`MeasureFamily`** · model · One family of measures and who produces its numbers — the engine's six, or one a host declares.
@@ -302,10 +303,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`MetricDescriptor`** · *host contract* · model · What a single measure is, independent of any particular value of it.
 - **`NotFoundError`** · *host contract* · exception · Resource not found (status 404).
 - **`OutOfRunBudget`** · dataclass · The cap one out-of-run unit of work is held to, and the ledger its calls are written to.
+- **`OverriddenBar`** · *host contract* · model · An absolute bar a call's arm missed on one aspect, named as the writer's `bars_missed` names one: the aspect and the bar's measure.
 - **`PlannedCall`** · dataclass · One call an out-of-run unit of work means to make: the prompt pair and the directive it sends.
 - **`PromptDrift`** · dataclass · How one stored prompt reads against the package's shipped default.
 - **`ProviderRefusedError`** · *host contract* · exception · A paid provider call made on the caller's behalf raised (status 502).
-- **`Question`** · *host contract* · model · Something this campaign is trying to find out.
 - **`RateDrop`** · *host contract* · model · A clause of a decision rule: no pass rate may drop by more than `max_points` against the control.
 - **`Recordable`** · protocol · The two members the cassette layer uses on whatever it records: an action result or a delivered payload.
 - **`ReplayedDelivery`** · dataclass · One recorded piece of background work, served in place of running it.
@@ -649,6 +650,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
 - **`AsRecordedReporterKind`** · class · The memo each case's campaign actually got, replayed — the calibration candidate.
+- **`CampaignReadings`** · model · Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's measures; for every kind, each arm against each absolute bar.
+- **`CampaignReport`** · model · A campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then one fold per aspect.
 - **`ChartBlock`** · *host contract* · model · One of the two charts a report draws, with every value it draws, so it prints as a table too.
 - **`EvalSummary`** · *host contract* · model · One run, summarised.
 - **`GateResult`** · dataclass · What a gate read and what it came to.
@@ -816,6 +819,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[JobStatus]`
 - **`campaign_create`** · function · Create a campaign over runs already in the scope, declared as it is created when the definition says so.
   <br>`campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine`
+- **`campaign_record`** · *host contract* · function · Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
+  <br>`campaign_record(host: EvalHost, campaign_id: str, scope_id: str, *, arm: str, called_by: str, reason: str = '', floors_overridden: list[str] | None = None, bars_overridden: list[OverriddenBar] | None = None, analysis_id: str | None = None) -> CampaignCallLine`
 - **`campaigns_list`** · function · The scope's campaigns.
   <br>`campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing`
 - **`case_rename`** · *host contract* · function · Rename a stored case: write its `name`, and nothing else but the seed name drift would have found it by.

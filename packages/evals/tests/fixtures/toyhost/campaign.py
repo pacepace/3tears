@@ -24,7 +24,6 @@ from threetears.evals.kernel import (
     SweptAxis,
 )
 from threetears.evals.kernel.host import HostProfile
-from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -136,11 +135,17 @@ def toyhost_aspect_design(**changes: object) -> AspectDesign:
     :return: The aspect's design.
     :rtype: AspectDesign
     """
-    declared = toyhost_design().model_copy(update=changes)
-    upgraded = upgrade_campaign_v15(
-        {"behavior": "extract_invoice_fields", "run_ids": [], "declared_design": declared.model_dump(mode="json")}
+    campaign = toyhost_campaign_of_one_aspect(
+        declared_design=toyhost_design().model_copy(update=changes),
+        scope_id=TOYHOST_SCOPE,
+        name="toy",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        behavior="extract_invoice_fields",
+        created_by="toyhost",
     )
-    return AspectDesign.model_validate(upgraded["aspects"][0]["design"])
+    (aspect,) = campaign.aspects
+    assert aspect.design is not None
+    return aspect.design
 
 
 #: The version a campaign was stored at while it held one design: its stored read upgrades it.

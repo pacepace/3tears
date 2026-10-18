@@ -863,11 +863,16 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.PriceSource",
         # What a price-catalogue read found, which a host writes its own pricing-outage line from.
         "threetears.evals.providers.PriceRefresh",
-        # A declared question and its decision rule, typed: what a host writes to have the page settle keep or switch.
-        "threetears.evals.kernel.Question",
-        "threetears.evals.kernel.DecisionRule",
+        # A floor's clause, typed: what a host writes to have a page warn when a candidate drops or costs more.
         "threetears.evals.kernel.RateDrop",
         "threetears.evals.kernel.CostLower",
+        # A campaign of aspects: what a host declares one aspect's design and its floors with, and the call a person
+        # records on the campaign's page (the bar a call overrides beside the floors it does).
+        "threetears.evals.kernel.AspectDesign",
+        "threetears.evals.kernel.Floor",
+        "threetears.evals.kernel.CampaignCall",
+        "threetears.evals.kernel.OverriddenBar",
+        "threetears.evals.ops.campaign_record",
     }
 )
 
@@ -948,11 +953,13 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.analysis.assemble_context_bundle",
         "threetears.evals.analysis.campaign_report",
         "threetears.evals.analysis.create_campaign",
+        # The campaign's page and the code-only readings it opens with, which a host serves and reads back.
+        "threetears.evals.analysis.CampaignReport",
+        "threetears.evals.analysis.CampaignReadings",
         "threetears.evals.analysis.frontier",
         "threetears.evals.analysis.gate_verdicts",
         "threetears.evals.kernel.BarOverride",
         "threetears.evals.kernel.CONFUSION_CELL_MEASURE",
-        "threetears.evals.kernel.CampaignDesign",
         "threetears.evals.kernel.ControlDeclaration",
         "threetears.evals.kernel.EvalInsight",
         "threetears.evals.kernel.MATCH_MEASURE",
@@ -1196,7 +1203,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 525  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
+DECLARED_CEILING = 529  # 0.71 (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:

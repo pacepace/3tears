@@ -1278,8 +1278,8 @@
     },
     "threetears.evals.kernel.AspectDesign": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "AspectDesign(axes: list[SweptAxis], bars: list[BarOverride] = list(), guardrail_margins: list[GuardrailMargin] = list(), intended_repetitions: int | None = None, held_fixed: ControlDeclaration, merit_axes: list[MeritAxis] | None = None, merit_priority: list[MeritAxis] = list(), crossing: Literal['full', 'star'] | None = None, skipped_cells: list[dict[str, str]] = list(), measure_latency: bool = False)",
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.AspectSummary": {
       "kind": "model",
@@ -1293,11 +1293,6 @@
     },
     "threetears.evals.kernel.AttributionScope": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.AuthoredAnalysis": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -1408,18 +1403,13 @@
     },
     "threetears.evals.kernel.CampaignCall": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "CampaignCall(arm: str, variant_key: str, reason: str = '', floors_overridden: list[str] = list(), bars_overridden: list[OverriddenBar] = list(), analysis_id: str | None = None, called_at: str = utc_now_iso(), called_by: str)",
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.CampaignDeclaration": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.kernel.CampaignDesign": {
-      "kind": "model",
-      "signature": "CampaignDesign(axes: list[SweptAxis], questions: list[Question] = list(), bars: list[BarOverride] = list(), guardrail_margins: list[GuardrailMargin] = list(), control: str | None = None, control_levers: dict[str, SweepableValue] | None = None, control_identity_version: int | None = None, intended_repetitions: int | None = None, held_fixed: ControlDeclaration, merit_priority: list[MeritAxis] = list(), crossing: Literal['full', 'star'] | None = None, skipped_cells: list[dict[str, str]] = list(), measure_latency: bool = False, declared_at: str = utc_now_iso(), declared_by: str = '')",
-      "tier": "stable"
     },
     "threetears.evals.kernel.CampaignView": {
       "kind": "model",
@@ -1691,20 +1681,10 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.Decision": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.DecisionClause": {
       "kind": "type alias",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.kernel.DecisionRule": {
-      "kind": "model",
-      "signature": "DecisionRule(clauses: tuple[DecisionClause, ...])",
-      "tier": "host-contract"
     },
     "threetears.evals.kernel.DecisionSurface": {
       "kind": "model",
@@ -1993,8 +1973,8 @@
     },
     "threetears.evals.kernel.Floor": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "Floor(aspect: str, clause: DecisionClause, declared_at: str | None = None)",
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.FloorOverride": {
       "kind": "model",
@@ -2443,8 +2423,8 @@
     },
     "threetears.evals.kernel.OverriddenBar": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "OverriddenBar(aspect: str, measure: str)",
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.PassHatPoint": {
       "kind": "typed dict",
@@ -2473,11 +2453,6 @@
     },
     "threetears.evals.kernel.PredictionPoweredReading": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.preregistered_questions": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -2520,16 +2495,6 @@
       "kind": "exception",
       "signature": "ProviderRefusedError(message: str)",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.Question": {
-      "kind": "model",
-      "signature": "Question(id: str = <lambda>(), text: str, decision: DecisionRule | None = None, merit_axes: list[MeritAxis] = list(), asked_at: str = utc_now_iso(), retired_at: str | None = None, supersedes: str | None = None)",
-      "tier": "host-contract"
-    },
-    "threetears.evals.kernel.QuestionAnswer": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.RateDrop": {
       "kind": "model",
@@ -2632,11 +2597,6 @@
       "tier": "provisional"
     },
     "threetears.evals.kernel.resolve_control_arm": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.resolve_declared_control": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -4733,8 +4693,8 @@
     },
     "threetears.evals.analysis.CampaignReadings": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "CampaignReadings(campaign_id: str, alpha: float, control: str | None, control_label: str, aspects: list[str], readings: list[AspectReading], floors: list[FloorStatus], kind: CampaignKind = 'change', pairs: list[PairReading] = list(), bars: list[BarStatus] = list(), measures: list[MeasureReading] = list())",
+      "tier": "stable"
     },
     "threetears.evals.analysis.CampaignReadStore": {
       "kind": "protocol",
@@ -4743,8 +4703,8 @@
     },
     "threetears.evals.analysis.CampaignReport": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None)",
+      "tier": "stable"
     },
     "threetears.evals.analysis.CampaignStore": {
       "kind": "protocol",
@@ -6788,8 +6748,8 @@
     },
     "threetears.evals.ops.campaign_record": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "campaign_record(host: EvalHost, campaign_id: str, scope_id: str, *, arm: str, called_by: str, reason: str = '', floors_overridden: list[str] | None = None, bars_overridden: list[OverriddenBar] | None = None, analysis_id: str | None = None) -> CampaignCallLine",
+      "tier": "host-contract"
     },
     "threetears.evals.ops.campaign_runs_add": {
       "kind": "function",
