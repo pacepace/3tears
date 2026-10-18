@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 
 from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_FAST_MODEL, claude_cli_pool
 from threetears.models.claude_cli_pool import (
@@ -927,6 +928,14 @@ class TestTheOrphanSweep:
                 and getattr(record, "extra_data", {}).get("pid") == child.pid
                 for record in caplog.records
             ), "the CLI was left running without a word"
+            if unknown:
+                # other marked CLIs on this host may be counted too, so at least this one
+                [summary] = [
+                    r for r in caplog.records if r.getMessage().startswith("Orphaned Claude CLI sweep finished")
+                ]
+                assert summary.levelname == "WARNING"
+                assert getattr(summary, "extra_data", {}).get("owner_unknown", 0) >= 1
+                assert (REGISTRY.get_sample_value("claude_cli_sweep_owner_unknown") or 0) >= 1
         finally:
             if child.poll() is None:
                 child.kill()
@@ -955,6 +964,69 @@ class TestTheOrphanSweep:
 
         monkeypatch.setattr(os, "kill", _kill)
         self._assert_left_running(f"{owner}:{_start_ticks(owner) or 0}:another-users-worker", caplog, unknown=False)
+
+    @pytest.mark.parametrize(
+        "hidden",
+        [FileNotFoundError(2, "No such file or directory"), PermissionError(13, "Permission denied")],
+        ids=["hidepid-hides-it", "hidepid-refuses-it"],
+    )
+    def test_an_owner_that_refuses_signal_0_and_hides_its_proc_stat_is_not_read_as_gone(
+        self, hidden: OSError, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """under ``hidepid``, another user's live owner refuses signal 0 AND has no readable ``/proc`` entry."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        owner = os.getpid()
+        ticks = _start_ticks(owner)
+        assert ticks, "this process's start time cannot be read, so it cannot stand in for a live owner"
+        hidden_stat = Path(f"/proc/{owner}/stat")
+        real_kill, real_read_text = os.kill, Path.read_text
+
+        def _kill(pid: int, sig: int) -> None:
+            if pid == owner and sig == 0:
+                raise PermissionError(1, "Operation not permitted")
+            real_kill(pid, sig)
+
+        def _read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self == hidden_stat:
+                raise type(hidden)(hidden.errno, hidden.strerror, str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(os, "kill", _kill)
+        monkeypatch.setattr(Path, "read_text", _read_text)
+        self._assert_left_running(f"{owner}:{ticks}:another-users-worker", caplog)
+
+    def test_an_environment_that_cannot_be_read_is_contained_and_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """an I/O error reading ``/proc/<pid>/environ`` is not "by design"; it is counted, never a kill."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        orphan = self._marked_child(f"{self._dead_pid()}:0:orphaned")
+        unreadable = Path(f"/proc/{orphan.pid}/environ")
+        real_read_bytes = Path.read_bytes
+
+        def _read_bytes(self: Path) -> bytes:
+            if self == unreadable:
+                raise OSError(5, "Input/output error", str(self))
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+        try:
+            with caplog.at_level("WARNING", logger="threetears.models.claude_cli_pool"):
+                sweep_orphaned_claude_clis(grace_seconds=1.0)
+            time.sleep(0.2)
+            assert orphan.poll() is None, "a process whose environment could not be read was killed"
+            assert any(
+                "Could not read a process's environment" in r.getMessage()
+                and getattr(r, "extra_data", {}).get("pid") == orphan.pid
+                and getattr(r, "extra_data", {}).get("contained_site")
+                for r in caplog.records
+            ), "the unreadable environment was not contained"
+        finally:
+            if orphan.poll() is None:
+                orphan.kill()
+            orphan.wait(timeout=5)
 
     def test_an_owner_whose_proc_stat_cannot_be_read_is_not_read_as_gone(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

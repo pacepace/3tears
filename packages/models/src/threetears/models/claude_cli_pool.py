@@ -89,7 +89,7 @@ from threetears.models._claude_sdk_internals import (
     remove_tool_server,
     send_control_request,
 )
-from threetears.observe import BuildOnce, cancel_and_wait, contain, contained, get_logger
+from threetears.observe import BuildOnce, cancel_and_wait, contain, contained, gauge, get_logger
 
 __all__ = [
     "POOL_MARKER_ENV",
@@ -246,9 +246,18 @@ def _process_environ(pid: int) -> dict[str, str]:
     """
     try:
         raw = (_PROC / str(pid) / "environ").read_bytes()
-    except OSError, ValueError:
+    except FileNotFoundError, ProcessLookupError, PermissionError:
         # NOSILENT: another user's or an exited process's environment is unreadable by design; an
         # empty mapping means "carries no pool marker", so the sweep never touches it.
+        return {}
+    except OSError as exc:
+        # any other failure is not by design: still "no marker" (never a kill), but counted
+        contain(
+            exc,
+            log=_logger,
+            what="Could not read a process's environment; the sweep leaves it alone",
+            extra={"pid": pid},
+        )
         return {}
     env: dict[str, str] = {}
     for chunk in raw.split(b"\0"):
@@ -456,7 +465,9 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
     shutdown hook, and the CLIs it started are reparented to init and keep running. A marked CLI
     whose owner is still alive belongs to a sibling worker and is left alone. So is one whose owner
     cannot be shown gone -- an unreadable marker, a failed ``/proc`` read -- with a contained
-    WARNING naming it: killing a live worker's CLI on a guess is worse than leaving one orphan.
+    WARNING naming it: killing a live worker's CLI on a guess is worse than leaving one orphan. Those
+    are counted: the sweep's summary is a WARNING naming how many, and the
+    ``claude_cli_sweep_owner_unknown`` gauge is set to the count.
 
     :param grace_seconds: how long each SIGTERM gets before SIGKILL
     :ptype grace_seconds: float
@@ -470,6 +481,7 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
 
     self_pid = os.getpid()
     killed = 0
+    unknown = 0
     for pid in pids:
         if pid == self_pid:
             continue
@@ -486,6 +498,7 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
                 what="Leaving a pooled Claude CLI running: whether its owner is alive could not be read",
                 extra={"pid": pid},
             )
+            unknown += 1
             continue
         if owned:
             continue
@@ -496,14 +509,27 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
         kill_process_tree(pid, grace_seconds=grace_seconds)
         killed += 1
 
-    if killed:
+    gauge(_OWNER_UNKNOWN_GAUGE, description=_OWNER_UNKNOWN_DESCRIPTION).set(unknown)
+    summary = {"killed": killed, "owner_unknown": unknown, "scanned": len(pids)}
+    if killed or unknown:
         _logger.warning(
-            "Orphaned Claude CLI sweep finished",
-            extra={"extra_data": {"killed": killed, "scanned": len(pids)}},
+            "Orphaned Claude CLI sweep finished: %d killed, %d left running with an owner that could not be read",
+            killed,
+            unknown,
+            extra={"extra_data": summary},
         )
     else:
-        _logger.info("Orphaned Claude CLI sweep found nothing", extra={"extra_data": {"scanned": len(pids)}})
+        _logger.info("Orphaned Claude CLI sweep found nothing", extra={"extra_data": summary})
     return killed
+
+
+#: the gauge the sweep sets to how many marked CLIs it left running because their owner could not be
+#: read -- each may be an orphan the sweep could not prove one, so a value that stays above zero is
+#: for an operator to look at.
+_OWNER_UNKNOWN_GAUGE = "claude_cli_sweep_owner_unknown"
+_OWNER_UNKNOWN_DESCRIPTION = (
+    "pooled Claude CLIs the last orphan sweep left running because whether their owner is alive could not be read"
+)
 
 
 # ---------------------------------------------------------------------------
