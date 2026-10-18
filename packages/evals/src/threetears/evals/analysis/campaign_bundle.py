@@ -841,30 +841,36 @@ def _trials(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, Any]
     for trial in aspect.trials:
         if trial.state == "passed":
             continue
-        trials.append(
-            {
-                "trial": namer.trials[(aspect.aspect, trial.trial_id)],
-                "arm": namer.arm(trial.arm),
-                "case": trial.case_label,
-                "repeat": trial.repeat,
-                "state": trial.state,
-                "cause": trial.cause,
-                "failed_checks": [check.name for check in trial.failed_checks],
-                "judge": [
-                    {"dim": judged.dim, "score": judged.score, "reason": capped_text(judged.reason, WRITER_REASON_CHARS)}
-                    for judged in trial.judge
-                ],
-                "excerpt": _tail(trial.excerpt, WRITER_EXCERPT_CHARS),
-            }
-        )
+        row: dict[str, Any] = {
+            "trial": namer.trials[(aspect.aspect, trial.trial_id)],
+            "arm": namer.arm(trial.arm),
+            "case": trial.case_label,
+            "repeat": trial.repeat,
+            "state": trial.state,
+            "cause": trial.cause,
+            "failed_checks": [check.name for check in trial.failed_checks],
+            "judge": [
+                {"dim": judged.dim, "score": judged.score}
+                | ({"reason": capped_text(judged.reason, WRITER_REASON_CHARS)} if judged.reason else {})
+                for judged in trial.judge
+            ],
+            "excerpt": _tail(trial.excerpt, WRITER_EXCERPT_CHARS),
+        }
+        # What a trial does not carry is left out, not sent empty: a flagged trial is billed on every generation.
+        trials.append({key: value for key, value in row.items() if value not in (None, "", [])})
     return trials
 
 
 def _trim(view: dict[str, Any], budget: int) -> None:
-    """Trim one aspect's part to ``budget`` characters of compact JSON, in place, saying what was left out."""
+    """Trim one aspect's part to ``budget`` characters of compact JSON, in place, saying what was left out.
+
+    The note saying so is counted in the budget: it is written at its longest before anything is trimmed, so the part
+    that carries it fits, then rewritten with the counts that were trimmed, which is never longer.
+    """
     if len(_compact(view)) <= budget:
         return
     left_out = {"excerpts": 0, "trials": 0, "contrasts": 0, "cell readings": 0}
+    view["trimmed"] = _trimmed_note(dict.fromkeys(left_out, 10**6), budget, over=True)
 
     def over() -> bool:
         return len(_compact(view)) > budget
@@ -886,13 +892,19 @@ def _trim(view: dict[str, Any], budget: int) -> None:
             while over() and cell[group]:
                 cell[group].pop(next(reversed(cell[group])))
                 left_out["cell readings"] += 1
+    still_over = over()
+    view["trimmed"] = _trimmed_note(left_out, budget, over=still_over)
+
+
+def _trimmed_note(left_out: Mapping[str, int], budget: int, *, over: bool) -> str:
+    """What an aspect's part says it left out to fit the writer's budget."""
     said = [f"{count} {what}" for what, count in left_out.items() if count]
-    view["trimmed"] = (
-        f"To fit the writer's budget of {budget} characters per aspect, this aspect leaves out: {', '.join(said)}"
-        + (" (the excerpts of flagged trials; flagged trials, last first; contrasts, least separated first; the "
-           "cells' readings, last first)")
-        + ". The page shows all of them."
-        + (" It is still over budget: what is left is never trimmed." if over() else "")
+    return (
+        f"To fit the writer's budget of {budget} characters per aspect, this aspect leaves out: "
+        + (", ".join(said) or "nothing it could trim")
+        + " (the excerpts of flagged trials; flagged trials, last first; contrasts, least separated first; the "
+        "cells' readings, last first). The page shows all of them."
+        + (" It is still over budget: what is left is never trimmed." if over else "")
     )
 
 

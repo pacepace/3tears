@@ -1147,7 +1147,7 @@ def _reject_unaddressed_floors(document: AuthoredCampaignAnalysis, bundle: Campa
     if missing := [floor for floor in broken if floor not in named]:
         reasons = "; ".join(f"{floor}: {broken[floor].reason}" for floor in missing)
         faults.append(
-            f"recommends {arm.label!r}, which broke floor(s) {missing} ({reasons}). A floor only warns, so the arm may "
+            f"names {arm.label!r}, which broke floor(s) {missing} ({reasons}). A floor only warns, so the arm may "
             "still be recommended, but the recommendation names each broken floor in `floors_overridden` with why "
             "breaking it is acceptable here — or recommends another arm"
         )
