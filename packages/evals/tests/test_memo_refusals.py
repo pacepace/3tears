@@ -120,6 +120,8 @@ def _better(bundle: CampaignBundle, level: int) -> AspectReading:
         arm_passed=6,
         arm_trials=6,
         projection=None,
+        reason="the wide width passed every trial the narrow one did and more",
+        confirmatory=True,
     )
 
 

@@ -674,6 +674,8 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
                 "arm_passed": f"{reading.arm_passed} of {reading.arm_trials}",
                 "cases": [reading.control_cases, reading.arm_cases],
                 "cases_to_settle": reading.projection.cases if reading.projection is not None else None,
+                "confirmatory": reading.confirmatory,
+                "why": reading.reason,
             }
             for reading in bundle.readings.on_aspect(label)
         ],

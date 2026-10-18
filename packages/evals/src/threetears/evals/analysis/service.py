@@ -43,12 +43,9 @@ from threetears.evals.analysis.campaign_bundle import (
     build_campaign_bundle,
     build_campaign_user_message,
 )
-from threetears.evals.analysis.campaign_readings import CampaignReadings, FloorStatus
-from threetears.evals.analysis.arms import arm_names
+from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generator import GenerationTally, first_request
-from threetears.evals.analysis.report.decision import evaluate_floor, floor_readings
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
 from threetears.evals.analysis.generator import generate_analysis as _generate_analysis
 from threetears.evals.analysis.numbers import format_number
@@ -99,7 +96,6 @@ if TYPE_CHECKING:
     from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
     from threetears.evals.kernel.campaign import AspectAnalysis, AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
-    from threetears.evals.kernel.declaration import CampaignArm
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -1320,54 +1316,8 @@ def _assembled_campaign_bundle(
         for aspect in campaign.aspects
     ]
     arms = campaign_arms(storage, campaign, profile=profile)
-    return build_campaign_bundle(campaign, bundles, arms=arms, readings=_code_readings(campaign, bundles, arms))
-
-
-def _code_readings(
-    campaign: EvalCampaign, bundles: Sequence[AnalysisContextBundle], arms: Sequence[CampaignArm]
-) -> CampaignReadings:
-    """Code's readings across the campaign's aspects, as far as this build computes them.
-
-    Every floor is read on every candidate against the control, aspect by aspect, by
-    :func:`~threetears.evals.analysis.report.decision.evaluate_floor` at its nominal level, so a broken floor reaches
-    the writer, who must address it. The per-aspect change in pass rate against the control, Holm-adjusted across the
-    aspects, is not computed here (``readings`` is empty): those rows are the campaign readings' own computation, and
-    until they are wired in, the writer reads each aspect's comparisons for the change.
-    """
-    control = next((arm for arm in arms if arm.role == "control"), None)
-    control_label = control.label if control is not None else ""
-    labels = {arm.variant_key: arm.label for arm in arms}
-    statuses: list[FloorStatus] = []
-    for bundle in bundles:
-        declared = bundle.declared
-        realized = bundle.design.control_arm
-        if declared is None or not declared.floors or realized is None:
-            continue
-        earlier = bundle.design.earlier_control.variant_key if bundle.design.earlier_control is not None else None
-        names = arm_names(bundle.variant_index)
-        candidates = [
-            board.variant_key for board in bundle.scoreboard if board.variant_key not in (realized.variant_key, earlier)
-        ]
-        for floor in declared.floors:
-            for key in candidates:
-                statuses.append(
-                    evaluate_floor(
-                        floor,
-                        floor_readings(bundle, realized.variant_key, key),
-                        arm=key,
-                        arm_label=labels.get(key) or names.get(key, key),
-                        control_label=control_label or names.get(realized.variant_key, realized.variant_key),
-                    )
-                )
-    return CampaignReadings(
-        campaign_id=campaign.id,
-        alpha=SIGNIFICANCE_ALPHA,
-        control=control.variant_key if control is not None else None,
-        control_label=control_label,
-        aspects=[aspect.label for aspect in campaign.aspects],
-        readings=[],
-        floors=statuses,
-    )
+    readings = campaign_readings(campaign, {bundle.aspect: bundle for bundle in bundles}, arms=arms)
+    return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings)
 
 
 def assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle:
