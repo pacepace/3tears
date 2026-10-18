@@ -885,6 +885,7 @@ async def load_memory_search_tool(
             try:
                 embedding = await embed_query(embedding_provider, query)
             except EmbeddingUnavailableError as exc:
+                contain(exc, log=log, what="memory_search: the query could not be embedded")
                 return _tool_error("memory_search", "embed", str(exc))
 
         fts_text = query.strip()[:500] if len(query.strip()) >= 3 else None
@@ -1323,6 +1324,7 @@ async def load_memory_recall_tool(
                     try:
                         embedding = await embed_query(embedding_provider, chunk_query)
                     except EmbeddingUnavailableError as exc:
+                        contain(exc, log=log, what="memory_recall: the chunk query could not be embedded")
                         return _tool_error(
                             "memory_recall",
                             "embed",
@@ -2023,6 +2025,7 @@ async def load_memory_add_tool(
         try:
             embedding = await embed_query(embedding_provider, content)
         except EmbeddingUnavailableError as exc:
+            contain(exc, log=log, what="memory_add: the memory could not be embedded")
             return _tool_error("memory_add", "embed", str(exc))
 
         not_kept = ""
@@ -2438,6 +2441,7 @@ async def load_memory_update_tool(
             try:
                 embedding = await embed_query(embedding_provider, text)
             except EmbeddingUnavailableError as exc:
+                contain(exc, log=log, what="memory_update: the revision could not be embedded")
                 return _tool_error("memory_update", "embed", f"{exc}. Nothing was changed.")
         if not embedding:
             return _tool_error("memory_update", "embed", "the memory carries no embedding. Nothing was changed.")
@@ -3007,6 +3011,7 @@ async def load_chunk_search_tool(
         try:
             embedding = await embed_query(embedding_provider, query)
         except EmbeddingUnavailableError as exc:
+            contain(exc, log=log, what="chunk search: the query could not be embedded")
             return f"Passage search is down ({exc}); try memory_search."
 
         # v0.7.5: ``mode`` remaps the semantic/keyword blend so the

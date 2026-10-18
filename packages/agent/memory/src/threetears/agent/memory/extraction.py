@@ -620,13 +620,26 @@ class MemoryExtractor:
         )
         candidates: list[dict[str, Any]] = []
         unembedded: list[EmbeddingUnavailableError] = []
+        failures: list[BaseException] = []
         for outcome in prepared:
             if isinstance(outcome, EmbeddingUnavailableError):
                 unembedded.append(outcome)
             elif isinstance(outcome, BaseException):
-                raise outcome
+                failures.append(outcome)
             else:
                 candidates.append(outcome)
+        if failures:
+            # one is raised -- a cancellation before any error -- and every other is recorded
+            # here, so a second candidate's different fault is not lost behind the first
+            failures.sort(key=lambda failure: isinstance(failure, Exception))
+            for extra in failures[1:]:
+                if isinstance(extra, Exception):
+                    contain(
+                        extra,
+                        log=log,
+                        what=f"memory candidate preparation also failed: {type(extra).__name__}: {extra}",
+                    )
+            raise failures[0]
         if not candidates:
             return ExtractionResult(
                 outcome=ExtractionOutcome.FAILED,
@@ -1041,7 +1054,8 @@ class MemoryExtractor:
         :ptype candidates: list[dict[str, Any]]
         :return: list of validated action dicts
         :rtype: list[dict[str, Any]]
-        :raises ExtractionModelFailedError: when the call or its reply failed
+        :raises ExtractionModelFailedError: when the call or its reply failed, or the reply gave
+            no valid action for a candidate that has a similar memory stored
         """
         has_any_similar = any(c["similar_memories"] for c in candidates)
         if not has_any_similar:
@@ -1109,6 +1123,16 @@ class MemoryExtractor:
                     validated["action"] = "NOOP"
             valid_actions.append(validated)
 
+        # a candidate with a near-duplicate stored is what this call exists to judge; a reply
+        # that gave it no valid action (a bogus action, an index out of range, a non-object)
+        # has not judged it, and ADD would store the duplicate. one with nothing similar is
+        # new whatever the reply says, so it is added.
+        unresolved = [i for i in range(len(candidates)) if i not in seen_indices and candidates[i]["similar_memories"]]
+        if unresolved:
+            raise ExtractionModelFailedError(
+                f"the resolution model's reply gave no valid action for candidate(s) {unresolved}, "
+                "each with a similar memory already stored"
+            )
         for i in range(len(candidates)):
             if i not in seen_indices:
                 valid_actions.append({"index": i, "action": "ADD"})

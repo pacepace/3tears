@@ -1208,9 +1208,7 @@ class TestMemoryRetrieverE2E:
         )
 
         # None is the answer "nothing relevant"; an embedder that is down has not established that
-        with pytest.raises(
-            EmbeddingUnavailableError, match="the embedder failed: RuntimeError: embedding service down"
-        ):
+        with pytest.raises(EmbeddingUnavailableError, match=r"the embedder failed \(RuntimeError\)"):
             await retriever.retrieve(
                 uuid.uuid7(),
                 "hello world",

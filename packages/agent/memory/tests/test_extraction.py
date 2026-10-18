@@ -721,6 +721,26 @@ class TestExtractionResult:
         assert (result.outcome, result.stored) == (ExtractionOutcome.STORED, 1), result
         assert "failed=1" in result.reason, "the candidate that could not be embedded used to vanish from the tally"
 
+    async def test_every_candidate_that_fails_preparation_is_recorded_not_only_the_first(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        pool = _make_pool()
+        pool.fetch = AsyncMock(side_effect=[ConnectionError("first lookup"), TimeoutError("second lookup")])
+        factory = StubChatModelFactory(
+            worthiness_content=json.dumps({"worthy": True}),
+            extraction_content=json.dumps(
+                [{"type": "fact", "content": "Lives in Seattle"}, {"type": "preference", "content": "Prefers Python"}]
+            ),
+        )
+        ext = _make_extractor(permissive_memory_authorizer, pool=pool, factory=factory)
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.memory.extraction"):
+            result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "first lookup" in logged and "second lookup" in logged
+
     async def test_an_unexpected_error_is_a_failure_naming_it(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
@@ -997,7 +1017,7 @@ class TestResolveActions:
 
         class _Factory:
             async def create_chat_model(self, purpose: str = "extraction") -> Any:
-                return _Recording("[]")
+                return _Recording(json.dumps([{"index": 0, "action": "NOOP"}]))
 
         ext = _make_extractor(permissive_memory_authorizer, factory=_Factory())  # type: ignore[arg-type]
         candidates = [
@@ -1039,6 +1059,39 @@ class TestResolveActions:
         ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(resolution_content=reply))
         with pytest.raises(ExtractionModelFailedError, match=why):
             await ext.resolve_actions(_CANDIDATES_WITH_A_NEAR_DUPLICATE)
+
+    async def test_a_near_duplicate_the_reply_gives_no_valid_action_fails_rather_than_being_added(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        reply = json.dumps([{"index": 0, "action": "BOGUS"}])
+        ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(resolution_content=reply))
+        with pytest.raises(ExtractionModelFailedError, match=r"no valid action for candidate\(s\) \[0\]"):
+            await ext.resolve_actions(_CANDIDATES_WITH_A_NEAR_DUPLICATE)
+
+    @pytest.mark.parametrize(
+        "reply",
+        [[{"index": 7, "action": "NOOP"}], ["NOOP"], [{"index": 0, "action": 3}]],
+    )
+    async def test_an_out_of_range_or_malformed_action_for_a_near_duplicate_fails(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        reply: list[Any],
+    ) -> None:
+        factory = StubChatModelFactory(resolution_content=json.dumps(reply))
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
+        with pytest.raises(ExtractionModelFailedError, match="no valid action"):
+            await ext.resolve_actions(_CANDIDATES_WITH_A_NEAR_DUPLICATE)
+
+    async def test_a_new_candidate_the_reply_leaves_out_is_still_added(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        new = {"type": "fact", "content": "Has a dog", "embedding": [1.0], "similar_memories": []}
+        reply = json.dumps([{"index": 0, "action": "NOOP"}])
+        ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(resolution_content=reply))
+        actions = await ext.resolve_actions([*_CANDIDATES_WITH_A_NEAR_DUPLICATE, new])
+        assert actions == [{"index": 0, "action": "NOOP"}, {"index": 1, "action": "ADD"}]
 
     async def test_no_similar_memories_no_llm_call(
         self,
