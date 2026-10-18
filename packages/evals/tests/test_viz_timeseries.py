@@ -24,6 +24,7 @@ from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
 from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
 from threetears.evals.kernel.surface import TimeAxis, TimePosition
+from packages.evals.tests.aspect_support import with_aspect
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_NARROW,
     TOYHOST_WIDE,
@@ -94,7 +95,7 @@ def _timed(
     host = profile if profile is not None else toyhost_profile()
     campaign, _ = toyhost_campaign(profile=host)
     runs, results = timeseries_batches(positions, profile=host)
-    timed = campaign.model_copy(update={"run_ids": run_ids if run_ids is not None else [run.id for run in runs]})
+    timed = with_aspect(campaign, run_ids=run_ids if run_ids is not None else [run.id for run in runs])
     return assemble_context_bundle(timed, storage=ToyhostStorage(runs, results), profile=host)
 
 
@@ -196,7 +197,7 @@ class TestTheBundleEarnsATimeAxis:
         runs, results = timeseries_batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
         for run in runs[2:]:
             results[run.id] = []
-        timed = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
+        timed = with_aspect(campaign, run_ids=[run.id for run in runs])
 
         bundle = assemble_context_bundle(timed, storage=ToyhostStorage(runs, results), profile=host)
 
@@ -207,7 +208,7 @@ class TestTheBundleEarnsATimeAxis:
         host = toyhost_profile()
         campaign, _ = toyhost_campaign(profile=host)
         runs, results = timeseries_batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
-        timed = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
+        timed = with_aspect(campaign, run_ids=[run.id for run in runs])
 
         bundle = assemble_context_bundle(
             timed, storage=ToyhostStorage(runs, {run.id: [] for run in runs}), profile=host
@@ -370,7 +371,7 @@ def _few_cases(cases: int) -> Any:
     runs, results = timeseries_batches([(DAY_ONE, None)], profile=host)
     kept = sorted({result.test_case_id for rows in results.values() for result in rows})[:cases]
     trimmed = {run_id: [r for r in rows if r.test_case_id in kept] for run_id, rows in results.items()}
-    scoped = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
+    scoped = with_aspect(campaign, run_ids=[run.id for run in runs])
     return assemble_context_bundle(scoped, storage=ToyhostStorage(runs, trimmed), profile=host)
 
 
