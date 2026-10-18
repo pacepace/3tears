@@ -12,7 +12,9 @@ from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,
     describe_reported_measure,
+    subject_spend_descriptor,
 )
+from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
@@ -45,7 +47,12 @@ def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> 
         *(cell.measures for cell in _time_axis_cells(bundle)),
     ]
     names = {measure.name for collection in collections for measure in collection.measures}
-    return {name: describe_reported_measure(name, profile.measures) for name in sorted(names)}
+    described = {name: describe_reported_measure(name, profile.measures) for name in sorted(names)}
+    if bundle.subject_kind == JUDGE_KIND:
+        # The judge under test is the subject and the only role billed: its spend is the arm's own, not spend on
+        # measuring it, and the same dollars ``production_replicating_cost`` reads.
+        return {name: subject_spend_descriptor(descriptor) for name, descriptor in described.items()}
+    return described
 
 
 def _time_axis_cells(bundle: AnalysisContextBundle) -> list[CellFacts]:
