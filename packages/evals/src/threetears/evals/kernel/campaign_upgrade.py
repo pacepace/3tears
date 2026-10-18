@@ -71,13 +71,18 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     :ptype document: Mapping[str, Any]
     :return: A new document in the campaign-of-aspects shape, at the version it was read at.
     :rtype: dict[str, Any]
-    :raises ValueError: A live question's ``asked_at`` is not an ISO-8601 time with an offset, so which was asked last
-        cannot be said (:func:`~threetears.evals.kernel.declaration.aware_instant`, as the pre-registration read
-        refuses it).
+    **Total: every stored v15 campaign upgrades.** A step that refused a stored document would make it unreadable, so
+    what v15 never validated is read rather than refused: a run named twice is held once, in first-named order; a
+    live question whose ``asked_at`` is missing or is not an ISO-8601 time with an offset leaves the campaign's
+    question undated (``declared_at`` None), read as asked after the evidence, since which part was asked last cannot
+    be said; a question with no ``id`` or ``text`` is read as having none.
+
+    The aspect's ``asked_at`` is the campaign's ``declared_at``: the one question the aspect is asked, dated as the
+    campaign's was.
     """
     upgraded = copy.deepcopy(dict(document))
     template_id = upgraded.pop("template_id", None)
-    run_ids = upgraded.pop("run_ids", [])
+    run_ids = list(dict.fromkeys(upgraded.pop("run_ids", None) or []))
     design = upgraded.pop("declared_design", None)
     # A label is the first part of a floor's key, which `/` separates, so a behavior holding one is spelled with `-`.
     label = upgraded["behavior"].replace("/", "-")
@@ -100,9 +105,10 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     aspect_design["merit_axes"] = _joined_merit_axes(live) if live else None
     floors = _floor_clauses(clauses)
     aspect.update(margin=_margin(floors), design=aspect_design, declared_at=design.get("declared_at"))
-    upgraded["question"] = QUESTION_SEPARATOR.join(question["text"] for question in live)
+    upgraded["question"] = QUESTION_SEPARATOR.join(str(question.get("text") or "") for question in live)
     upgraded["floors"] = [{"aspect": label, "clause": clause} for clause in floors]
     upgraded["declared_at"] = _last_asked(live) if live else design.get("declared_at")
+    aspect["asked_at"] = upgraded["declared_at"]
     upgraded["declared_by"] = design.get("declared_by", "")
     if design.get("control") is not None:
         upgraded["arms"] = [
@@ -121,7 +127,9 @@ def _live_questions(questions: Sequence[Mapping[str, Any]]) -> list[Mapping[str,
     """The stored questions neither retired nor superseded, in declaration order."""
     superseded = {question.get("supersedes") for question in questions if question.get("supersedes")}
     return [
-        question for question in questions if question.get("retired_at") is None and question["id"] not in superseded
+        question
+        for question in questions
+        if question.get("retired_at") is None and (question.get("id") is None or question["id"] not in superseded)
     ]
 
 
@@ -161,7 +169,15 @@ def _floor_clauses(clauses: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
     return list(kept.values())
 
 
-def _last_asked(live: Sequence[Mapping[str, Any]]) -> str:
-    """The ``asked_at`` of the live question asked last, as stored."""
-    last = max(live, key=lambda question: aware_instant(question["asked_at"], f"question {question['id']}"))
-    return str(last["asked_at"])
+def _last_asked(live: Sequence[Mapping[str, Any]]) -> str | None:
+    """The ``asked_at`` of the live question asked last, as stored; None when one cannot be ordered."""
+    asked: list[tuple[Any, str]] = []
+    for question in live:
+        stamp = question.get("asked_at")
+        if not isinstance(stamp, str):
+            return None
+        try:
+            asked.append((aware_instant(stamp, "a question"), stamp))
+        except ValueError:
+            return None
+    return max(asked)[1]

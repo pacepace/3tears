@@ -161,6 +161,10 @@ the document, so extending one is a major. Each, and why:
   semantics of an analysis design.
 - ``ArmRole`` — which arm of a campaign every other is read against; an arm of a role an older build cannot name
   would be read against nothing, or as the control.
+- The campaign's own rules — unique aspect labels, a run in one aspect at most, floors on its aspects and each key
+  once, at most one control arm and it first — are closed the same way: a minor cannot relax one, since an older
+  build refuses every document it would admit (a campaign holding a run in two aspects, which strata may want, is
+  a major).
 - The decision rule's clause ``kind`` tags (``rate_drop``, ``cost_lower``) — what a declared rule switches on; a new
   clause is a new model, which an older build would have to settle without knowing what it asks.
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
@@ -436,15 +440,22 @@ DURABLE_BASELINE_VERSION: Final[int] = 15
 #: - **v16** — a campaign is durable, and asks one question of one or more aspects (``v0.71.0``): ``eval_campaign``
 #:   left the core with its stored bytes, and its shape is now ``question``, ``arms`` (``CampaignArm``, the control
 #:   first), ``aspects`` (``Aspect``: label, template, margin, design, runs, when its design was declared),
-#:   ``floors`` (``Floor``), ``declared_at`` and ``declared_by`` (when, and by whom, the question was asked in full)
-#:   and ``call`` (``CampaignCall``); ``template_id``, ``run_ids`` and ``declared_design`` are gone. The step
+#:   ``floors`` (``Floor``), ``declared_at`` and ``declared_by`` (when, and by whom, the question was worded as it
+#:   reads) and ``call`` (``CampaignCall``); ``template_id``, ``run_ids`` and ``declared_design`` are gone. What
+#:   decides pre-registration is each aspect's own ``asked_at``, kept from its source when a campaign adopts it; what
+#:   is added later carries its own time (``Aspect.margin_declared_at``, ``Floor.declared_at``,
+#:   ``CampaignArm.named_at``). The campaign's own rules are closed (the closed list above). The step
 #:   (``upgrade_campaign_v15``) reads a v15 campaign, core or durable, as one aspect labelled with its behavior; a
-#:   question's id, lineage and retirement are dropped with it, since the campaign asks one question. Every other
+#:   question's id, lineage and retirement are dropped with it, since the campaign asks one question. The step is
+#:   total: a run named twice is held once, and a question time it cannot order leaves the question undated, read
+#:   as asked after the evidence, rather than refusing the document. Every other
 #:   durable type passes through unchanged but for its number. Costs, recorded rather than avoided: a build before
 #:   this one refuses every durable document this one writes (a durable major is never read back by an older
 #:   build, so a fleet does not roll back past it once it has written); a core baseline reset no longer deletes
-#:   campaigns, which keep naming the runs it deleted; and a host whose ``RoutedDocumentStore`` routes by
-#:   lifecycle or origin finds campaigns placed anew and runs ``RoutedDocumentStore.relocate`` before starting.
+#:   campaigns, which keep naming the runs it deleted, and ``nuke_all_eval_data(include_durable=False)`` keeps them
+#:   too; a host whose ``RoutedDocumentStore`` routes by lifecycle or origin finds campaigns placed anew and runs
+#:   ``RoutedDocumentStore.relocate`` before starting; and during a rolling deploy the older pods refuse every
+#:   durable document the new ones write, templates included.
 DURABLE_SCHEMA_VERSION: int = 16
 """The durable major this build writes, and the newest a read of a durable document accepts."""
 
@@ -593,7 +604,8 @@ def upgrade_document(
     :return: A new document at ``current``; the input is not modified.
     :rtype: dict[str, Any]
     :raises CoreVersionRefused: ``schema_version`` is missing or not an integer, above ``current``, below
-        ``baseline``, or a step the chain needs is not registered.
+        ``baseline``, or a step the chain needs is not registered; or a step failed on the document, whatever it
+        raised, so a stored read meets one refusal type and never a step's own exception.
     """
     version = document.get("schema_version")
     doc_type = document.get("doc_type")
@@ -620,7 +632,15 @@ def upgrade_document(
         if step is None:
             raise CoreVersionRefused(f"no {space} upgrader is registered from v{step_from} to v{step_from + 1}")
         if doc_type in step.doc_types:
-            upgraded = step.upgrade(dict(upgraded))
+            try:
+                upgraded = step.upgrade(dict(upgraded))
+            except CoreVersionRefused:
+                raise
+            except Exception as failed:  # re-raised as the one refusal a stored read meets, never swallowed
+                raise CoreVersionRefused(
+                    f"this {doc_type} document could not be read through the {space} v{step_from} to "
+                    f"v{step_from + 1} step ({step.reason}): {type(failed).__name__}: {failed}"
+                ) from failed
         upgraded["schema_version"] = step_from + 1
     return upgraded
 

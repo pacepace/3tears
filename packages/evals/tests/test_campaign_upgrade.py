@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from packages.evals.tests.factories import minimal_declaration
 from threetears.evals.kernel.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL, upgrade_campaign_v15
@@ -30,7 +31,8 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.values import SweepableValue
-from threetears.evals.schema.versioning import DURABLE_ADDRESSING_FIELDS
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.schema.versioning import DURABLE_ADDRESSING_FIELDS, CoreVersionRefused, upgrade_durable_document
 
 #: The frozen v15 campaign, as the release that shipped the corpus wrote it.
 _FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
@@ -251,20 +253,51 @@ class TestAMultiQuestionCampaign:
         assert design is not None
         assert design.merit_axes is None
 
-    @pytest.mark.parametrize("asked_at", ["last tuesday", "2026-10-02T00:00:00"])
-    def test_an_unorderable_asked_at_is_refused_as_pre_registration_refuses_it(self, asked_at: str) -> None:
+    @pytest.mark.parametrize("asked_at", ["last tuesday", "2026-10-02T00:00:00", None, 7])
+    def test_an_unorderable_asked_at_leaves_the_question_undated_and_the_campaign_readable(self, asked_at: Any) -> None:
+        """v15 never validated a question's time, so the step reads it rather than refusing the document: which part
+        was asked last cannot be said, so the question is undated, read as asked after the evidence. A refusal
+        here would make a stored campaign unreadable, and with it every listing of its scope."""
         stored = _stored(Question(text="Is it kinder?"), Question(text="Is it quicker?"))
         stored["declared_design"]["questions"][0]["asked_at"] = asked_at
         design = minimal_declaration().model_copy(
-            update={"questions": [Question(text="Is it kinder?", asked_at=asked_at)]}
+            update={"questions": [Question(text="Is it kinder?", asked_at="2026-10-02T00:00:00")]}
         )
 
-        with pytest.raises(ValueError, match="question .* is stamped") as upgrading:
-            upgrade_campaign_v15(stored)
-        with pytest.raises(ValueError, match="is stamped") as pre_registering:
+        upgraded = upgrade_campaign_v15(stored)
+        read = EvalCampaign.from_dict({**stored, "schema_version": 15})
+
+        assert (upgraded["declared_at"], _aspect(upgraded).asked_at) == (None, None)
+        assert read.declared_at is None and read.aspects[0].asked_at is None
+        with pytest.raises(ValueError, match="is stamped"):
             preregistered_questions(design, "2026-10-09T00:00:00+00:00")
 
-        assert str(upgrading.value).split(" is stamped ")[1] == str(pre_registering.value).split(" is stamped ")[1]
+    def test_a_question_without_an_id_or_words_is_read_as_having_none(self) -> None:
+        stored = _stored(Question(text="Is it kinder?"))
+        del stored["declared_design"]["questions"][0]["id"], stored["declared_design"]["questions"][0]["text"]
+
+        assert upgrade_campaign_v15(stored)["question"] == ""
+
+
+class TestWhatV15NeverValidated:
+    def test_a_run_named_twice_is_held_once_in_first_named_order(self) -> None:
+        stored = _v15(run_ids=["run-1", "run-2", "run-1"])
+
+        read = EvalCampaign.from_dict({**stored, "schema_version": 15})
+
+        assert _aspect(upgrade_campaign_v15(stored)).run_ids == ["run-1", "run-2"]
+        assert read.run_ids == ["run-1", "run-2"]
+
+    def test_a_document_the_step_cannot_read_is_refused_as_a_version_refusal_never_a_raw_error(self) -> None:
+        stored = _v15()
+        del stored["behavior"]
+
+        with pytest.raises(CoreVersionRefused, match="v15 to v16 step") as refused:
+            upgrade_durable_document({**stored, "schema_version": 15})
+        with pytest.raises(ValidationError, match="schema_version"):
+            EvalCampaign.from_dict({**stored, "schema_version": 15})
+
+        assert isinstance(refused.value.__cause__, KeyError)
 
 
 class TestACampaignWithNoRule:
