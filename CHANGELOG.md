@@ -18,8 +18,8 @@ whole and then matched (`wm_running`), tested against a fake xprop writing past 
 `pipefail` and in every GitHub workflow (a `shell: bash` step runs with `pipefail`; the gate holds every workflow line to it, the safe side). Lines continued by a trailing `\` or `|` are
 joined, comment lines skipped, and a scan that finds no files is refused. `run_grep_q_pipefail_enforcement(
 GrepQPipefailConfig(repo_root=...))` is the one-line pytest shell; 3tears runs it in
-`tests/enforcement/test_no_grep_q_pipeline_under_pipefail.py`. The hub (#643), reports (#60) and geography (#14) carry
-their own copies of this gate and can now share this one.
+`tests/enforcement/test_no_grep_q_pipeline_under_pipefail.py`. Repos that carry their own copy of this gate (the bluelabsio hub,
+reports and geography) can now share this one.
 
 ### core: synchronous callers get a supported bridge and a synchronous lease; TracedHttpClient gets a quiet probe
 
