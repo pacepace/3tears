@@ -43,13 +43,10 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_i
 from threetears.evals.kernel.declaration import (
     CostLower,
     DecisionClause,
-    DecisionRule,
     DesignRefused,
     Floor,
-    Question,
     RateDrop,
     decision_readings,
-    reconcile_question_edits,
     refuse_an_undeclarable_design,
 )
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MetricDescriptor, goal_check_measure
@@ -57,7 +54,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.aspect_support import redeclared
-from packages.evals.tests.factories import minimal_declaration
+from packages.evals.tests.factories import minimal_aspect_design
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.g2_support import G2_FLOORS, G2_QUESTION, g2_ruled_report
@@ -808,12 +805,10 @@ async def test_the_decision_section_names_no_system_word_and_no_arm_by_its_role(
             assert not _ROLE_WORDS.search(section), (door, _ROLE_WORDS.findall(section), section[:400])
 
 
-# --- the stored rule a floor reads back from is typed: built, stored and refused as data, never parsed from words ---
+# --- a floor's clause is typed: built, stored and refused as data, never parsed from words ---
 
 
-def test_a_rule_needs_a_clause_and_a_margin_inside_the_scale() -> None:
-    with pytest.raises(ValidationError, match="clauses"):
-        DecisionRule(clauses=())
+def test_a_clause_needs_a_margin_inside_the_scale() -> None:
     for margin in (0.0, -1.0, 100.0, float("nan")):
         with pytest.raises(ValidationError, match="max_points"):
             RateDrop(max_points=margin)
@@ -821,45 +816,14 @@ def test_a_rule_needs_a_clause_and_a_margin_inside_the_scale() -> None:
         RateDrop(max_points=2, reading="")
 
 
-def test_a_rule_reads_back_from_its_stored_form_clause_by_clause() -> None:
-    rule = DecisionRule(clauses=(RateDrop(max_points=2, reading="tone"), CostLower(), RateDrop(max_points=5)))
-    stored = rule.model_dump(mode="json")
-    assert DecisionRule.model_validate(stored) == rule
-    assert [type(clause) for clause in DecisionRule.model_validate(stored).clauses] == [RateDrop, CostLower, RateDrop]
-
-
-_PROSE = (
-    "Does v2 hold the pass rate at lower cost? Decision rule: switch only if no dimension drops by more than 10 points "
-    "AND the cost per turn is lower; otherwise keep v1."
-)
-
-#: G2's rule as a stored question states it.
-_G2_RULE = DecisionRule(clauses=G2_FLOORS)
-
-
-def test_a_question_declaring_its_rule_as_prose_is_refused_naming_the_field() -> None:
-    prose = Question(id="q-prose", text=_PROSE)
-    design = minimal_declaration().model_copy(update={"questions": [prose]})
-    with pytest.raises(DesignRefused, match=r"Question\.decision") as refused:
-        refuse_an_undeclarable_design(design, behavior="b", template=toyhost_template(), profile=toyhost_profile())
-    assert "q-prose" in refused.value.fault and "Question.decision" in refused.value.remedy
-    # Typed beside the same words, or retired, it is declared.
-    typed = prose.model_copy(update={"decision": _G2_RULE})
-    retired = prose.model_copy(update={"retired_at": "2026-10-14T00:00:00+00:00"})
-    for question in (typed, retired):
-        accepted = design.model_copy(update={"questions": [question]})
-        refuse_an_undeclarable_design(accepted, behavior="b", template=toyhost_template(), profile=toyhost_profile())
-    # A stored question loads as it was written: the refusal is the declaration's, never a read's.
-    stored = design.model_dump(mode="json")
-    assert type(design).model_validate(stored).questions[0].decision is None
-
-
-def test_a_changed_rule_mints_a_new_question_as_changed_words_do() -> None:
-    asked = Question(id="q-1", text="Does v2 hold?", decision=_G2_RULE)
-    looser = asked.model_copy(update={"decision": DecisionRule(clauses=(RateDrop(max_points=20),))})
-    kept, minted = reconcile_question_edits([asked], [looser])
-    assert kept.decision == _G2_RULE and minted.supersedes == "q-1" and minted.decision == looser.decision
-    assert reconcile_question_edits([asked], [asked.model_copy()]) == [asked]
+def test_a_floor_reads_back_from_its_stored_form_clause_by_clause() -> None:
+    floors = [
+        Floor(aspect="tone", clause=clause)
+        for clause in (RateDrop(max_points=2, reading="tone"), CostLower(), RateDrop(max_points=5))
+    ]
+    stored = [floor.model_dump(mode="json") for floor in floors]
+    assert [Floor.model_validate(floor) for floor in stored] == floors
+    assert [type(Floor.model_validate(floor).clause) for floor in stored] == [RateDrop, CostLower, RateDrop]
 
 
 #: The toy host's template's one goal-state check, verbatim.
@@ -867,16 +831,15 @@ _TOY_CHECK = 'call_count("extractor.emit_field") == 4'
 
 
 def _declare(*readings: str | None) -> None:
-    """Declare one question whose rule has a rate clause per reading, through the declaration gate."""
-    rule = DecisionRule(clauses=tuple(RateDrop(max_points=10, reading=reading) for reading in readings))
-    design = minimal_declaration().model_copy(
-        update={"questions": [Question(id="q-scoped", text="Does v2 hold?", decision=rule)]}
+    """Declare one aspect with a rate floor per reading, through the declaration gate."""
+    floors = [Floor(aspect="scoped", clause=RateDrop(max_points=10, reading=reading)) for reading in readings]
+    refuse_an_undeclarable_design(
+        minimal_aspect_design(), floors=floors, behavior="b", template=toyhost_template(), profile=toyhost_profile()
     )
-    refuse_an_undeclarable_design(design, behavior="b", template=toyhost_template(), profile=toyhost_profile())
 
 
 def test_a_reading_the_campaign_does_not_measure_is_refused_naming_what_it_does() -> None:
-    with pytest.raises(DesignRefused, match="question q-scoped names 'tone'") as refused:
+    with pytest.raises(DesignRefused, match="floor scoped/rate_drop/tone names 'tone'") as refused:
         _declare("tone")
     # The remedy lists what the template and the host offer: the check verbatim and the host's pass/fail measures.
     assert repr(_TOY_CHECK) in refused.value.remedy and "'match'" in refused.value.remedy
@@ -1023,10 +986,13 @@ async def test_a_pass_fail_scorer_is_a_reading_a_floor_declares_and_reads() -> N
     comparison = await Eval(cases, arms, [exact_match], k=3, name="scored").run(store=":memory:")
     profile = comparison.host.profile
     named = (RateDrop(max_points=10, reading="exact_match"),)
-    design = minimal_declaration().model_copy(
-        update={"questions": [Question(id="q-g2", text=G2_QUESTION, decision=DecisionRule(clauses=named))]}
+    refuse_an_undeclarable_design(
+        minimal_aspect_design(),
+        floors=[Floor(aspect="scored", clause=clause) for clause in named],
+        behavior="b",
+        template=None,
+        profile=profile,
     )
-    refuse_an_undeclarable_design(design, behavior="b", template=None, profile=profile)
 
     bundle = await _assembled(comparison, G2_FLOORS)
     assert bundle.design.control_arm is not None

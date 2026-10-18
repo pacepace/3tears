@@ -8,6 +8,45 @@ packages (bumped in lock-step).
 
 ## v0.71.0 -- 2026-10-18
 
+### 3tears-evals: a campaign is a campaign of aspects, asking one question
+
+- **One decision is one campaign.** A campaign asks one question of its arms (the control first, then candidates)
+  across one or more aspects, each read on its own runs, with its own template, design and margin. Seven
+  single-template campaigns that served one decision used to produce seven memos; adopted into one campaign
+  (`aspects_from`), they produce one page and one memo. A stored campaign reads as one aspect, so nothing stored
+  needs rewriting; campaigns move to the durable store (durable v16), which a build before 0.71 cannot read.
+- **The kind of campaign follows from its arms, never declared.** One arm is a measurement: each aspect's measures
+  with their intervals and bars. Several arms and no control is a choice: every pair on every aspect, symmetric.
+  A control and candidates is a change: each candidate against the control, shown better, shown worse or unclear
+  against the aspect's margin. A margin or a floor needs a control; without one, declare a bar.
+- **Floors replace the decision rule, and only warn.** A floor (`Floor`: a `RateDrop` or `CostLower` on one
+  aspect) is broken where the old rule would have kept the control. A broken floor, like a missed bar, is the first
+  line of the page; it never picks an arm or rewrites a sentence.
+- Breaking: `CampaignDesign`, `Question`, `DecisionRule` and the 0.70 memo types are removed, and
+  `create_campaign` takes the new shape. The migration notes list every change.
+
+### 3tears-evals: code reports each aspect, one memo recommends, a person records the call
+
+- **The campaign's page** (`CampaignReport`, served by `report_read`, `campaign_report` and `analysis_report`)
+  opens with every missed bar, broken floor and breached guardrail, then the writer's recommendation, a table of
+  every aspect, what would settle each unclear row and the recorded call, then one fold per aspect holding that
+  aspect's page. Arms are named by the page's own words (`hasty (control) vs careful`) at every door.
+- **Readings correct for looking at several aspects.** Each candidate is Holm-corrected across its aspects,
+  separately for gains and drops; a choice corrects across every pair and aspect at once. A row's change and its
+  interval are read on the same per-case values, so the change always lies in its interval, and a one-aspect
+  campaign's floor and reading never disagree.
+- **One memo per campaign** (`AuthoredCampaignAnalysis`): at most one recommendation, which must address every
+  broken floor, missed bar and aspect where another arm is ahead, one short summary per aspect, and next steps. A
+  measurement recommends nothing; a choice may say no clear winner. The writer's prompt is rewritten, so every host
+  pushes the new seed (`eval_prompt_reset`).
+- **The call is recorded** (`campaign_record`): the arm, why, and each broken floor and missed bar it overrides,
+  checked against code's readings (or the named analysis's frozen ones), never the memo's words. The page's call
+  line says which overrides no longer apply and how many runs joined since the call.
+- Breaking: stored analyses, insights and judge profiles are refused (regenerable 12). Run
+  `EvalStorage.drop_derived(scopes)` once before deploying, record the judge profiles it lists again, and generate.
+  `report_read`'s JSON and `campaign_report` are the campaign page, not the evidence bundle
+  (`inspect_campaign_bundle` or `assemble_campaign_bundle` reads that).
+
 ### 3tears-evals: a judge campaign's report no longer labels the subject's own spend measuring spend
 
 - **In a campaign whose every result is judge-kind (`candidate_kind`) the spend measures read as the arm's own spend** (#830). The judge under test is the

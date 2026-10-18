@@ -25,7 +25,7 @@ from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclara
 from threetears.evals.kernel.host.bars import Bar, BarRegistry
 from threetears.evals.kernel.metrics import FRONTIER_RANKING_MEASURE
 from packages.evals.tests.aspect_support import redeclared
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign, toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign, toyhost_aspect_design
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_BARS, toyhost_profile
 
@@ -112,7 +112,7 @@ class TestAJudgedBarNamesItsTier:
 
 def _gate(*bars: BarOverride) -> None:
     campaign, _storage = toyhost_campaign()
-    design = toyhost_design().model_copy(update={"bars": list(bars)})
+    design = toyhost_aspect_design(bars=list(bars))
     refuse_an_undeclarable_design(design, behavior=campaign.behavior, template=None, profile=toyhost_profile())
 
 

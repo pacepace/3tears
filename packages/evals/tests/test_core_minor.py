@@ -689,7 +689,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "JudgeAttributionSource": values(JudgeAttributionSource),
         "DeclaredMeritAxis": values(models.DeclaredMeritAxis),
         "GuardrailDirection": values(GuardrailDirection),
-        "CampaignDesign.crossing": frozenset({"full", "star"}),
+        "AspectDesign.crossing": frozenset({"full", "star"}),
         "ControlDeclaration.stimulus": frozenset({"controlled", "uncontrolled"}),
         "ArmRole": frozenset({"control", "candidate"}),
         "VariationAxis.generator": frozenset({"enum", "sample", "llm"}),

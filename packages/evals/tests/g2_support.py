@@ -100,7 +100,7 @@ def _unlabelled_judge() -> JudgeEvidenceTier:
     )
 
 
-async def _queue(case: Mapping[str, Any]) -> str:
+async def queue_case(case: Mapping[str, Any]) -> str:
     """Queues every request."""
     return "queued"
 
@@ -146,7 +146,7 @@ def g2_bundle(comparison: Result) -> AnalysisContextBundle:
 
 async def g2_report() -> Report:
     """The G2-shaped campaign's code-only report, assembled at a fixed instant."""
-    ev = Eval(CASES, {"v4.1-flash": _queue, "v4-flash": _queue}, ["label"], k=3, name="Kairo queue discipline")
+    ev = Eval(CASES, {"v4.1-flash": queue_case, "v4-flash": queue_case}, ["label"], k=3, name="Kairo queue discipline")
     # The scope the quick path once defaulted to, so the fixture's stored documents are where they were.
     comparison = await ev.run(store=":memory:", scope="quick")
     bundle = off_loop(g2_bundle, comparison)

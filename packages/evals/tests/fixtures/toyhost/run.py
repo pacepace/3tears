@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.kernel import CampaignDesign, EvalCampaign
+from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import (
     DEFAULT_JUDGE_TEMPERATURE,
     ControlEndState,
@@ -89,6 +89,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
     ScriptedExtractionClient,
     ToyExtractorKind,
 )
+from packages.evals.tests.v15_shapes import V15Design
 
 #: The run path's own id namespace, distinct from the corpus's so a run-produced batch and a
 #: hand-built one can never collide on a derived id.
@@ -460,7 +461,7 @@ async def execute_toyhost_run(
     )
 
 
-def toyhost_run_design() -> CampaignDesign:
+def toyhost_run_design() -> V15Design:
     """What the run-path campaign declared before any of it ran.
 
     One nominal axis at two levels — the extractor model, which is the shared core's own lever
@@ -469,9 +470,9 @@ def toyhost_run_design() -> CampaignDesign:
     of the corpus campaign's observational shape and is the reason both exist.
 
     :return: The declaration.
-    :rtype: CampaignDesign
+    :rtype: V15Design
     """
-    return CampaignDesign.model_validate(
+    return V15Design.model_validate(
         {
             "axes": [
                 {
@@ -596,7 +597,7 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
 
     control_key = variant_key_of_run(path.host.storage.query_eval_results_by_run(control.id, control.scope_id))
     assert control_key is not None, "the control batch resolves no variant"
-    design = CampaignDesign.model_validate(
+    design = V15Design.model_validate(
         {
             "axes": [
                 {

@@ -33,7 +33,7 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.errors import SoundnessRefusal
-from threetears.evals.kernel import CampaignDesign, GuardrailMargin, refuse_an_undeclarable_design
+from threetears.evals.kernel import AspectDesign, GuardrailMargin, refuse_an_undeclarable_design
 from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
@@ -489,7 +489,7 @@ class TestTheDeclarationGate:
         )
 
     def _refuse(self, margins: list[GuardrailMargin], template: EvalTemplate | None) -> None:
-        design = CampaignDesign(
+        design = AspectDesign(
             axes=[{"axis_id": "model", "values": [{"content": "a", "display": "a"}], "rationale": "x"}],
             held_fixed={"stimulus": "controlled", "apparatus": "commissioned"},
             guardrail_margins=margins,

@@ -49,12 +49,9 @@ from threetears.evals.kernel.declaration import (
     AspectDesign,
     ArmRole,
     CampaignArm,
-    CampaignDesign,
     DecisionClause,
-    DecisionRule,
     Floor,
     Margin,
-    Question,
     aware_instant,
     resolve_control_arm,
 )
@@ -911,7 +908,8 @@ def _gate_aspect(storage: CampaignStore, campaign: EvalCampaign, aspect: Aspect,
     template = storage.load_template(aspect.template_id, campaign.scope_id) if aspect.template_id else None
     try:
         refuse_an_undeclarable_design(
-            _as_gated(aspect.design, campaign, aspect.label),
+            aspect.design,
+            floors=[floor for floor in campaign.floors if floor.aspect == aspect.label],
             behavior=campaign.behavior,
             template=template,
             profile=profile,
@@ -931,34 +929,6 @@ def _gate_aspect(storage: CampaignStore, campaign: EvalCampaign, aspect: Aspect,
         raise ValidationFailedError(
             f"invalid design on aspect {aspect.label!r}: {e.fault}{ran_note}", remedy=e.remedy
         ) from e
-
-
-#: The words a gated aspect's question carries when the campaign asks none: the gate reads a question's axes and rule.
-_UNWORDED_QUESTION = "(the campaign states no question)"
-
-
-def _as_gated(design: AspectDesign, campaign: EvalCampaign, label: str) -> CampaignDesign:
-    """One aspect's declaration in the shape the authoring gate reads: its design, asked the campaign's question.
-
-    The question carries the aspect's merit axes and its floors' clauses as its rule, so the gate checks the floors'
-    readings and the latency the question asks about exactly as it checks a design's own.
-    """
-    clauses = tuple(floor.clause for floor in campaign.floors if floor.aspect == label)
-    axes = list(design.merit_axes or [])
-    asks = bool(campaign.question or clauses or axes)
-    questions = (
-        [
-            Question(
-                text=campaign.question or _UNWORDED_QUESTION,
-                decision=DecisionRule(clauses=clauses) if clauses else None,
-                merit_axes=axes,
-            )
-        ]
-        if asks
-        else []
-    )
-    shared = {name: getattr(design, name) for name in AspectDesign.model_fields if name != "merit_axes"}
-    return CampaignDesign(**shared, questions=questions)
 
 
 def declarable_axes(profile: HostProfile) -> DeclarableAxes:

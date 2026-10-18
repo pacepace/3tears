@@ -521,7 +521,7 @@ class EarlierControl(EvalDocumentModel):
 
     Stamped keys are never re-derived, so once the identity predicate changes how a lever map is digested, the
     control's runs from before the change carry one key and its runs from after carry another. Both are the
-    declared control (:func:`~threetears.evals.kernel.declaration.resolve_declared_control` names both), but a
+    declared control (:func:`~threetears.evals.kernel.declaration.resolve_control_arm` names both), but a
     cell is one key, so the two sets of cells stay apart: the control ARM is the cells under the build's own
     predicate, and these are the cells under the earlier one. Pooling them would put observations keyed by two
     predicates into one number; contrasting them would compare the control with itself under another digest and

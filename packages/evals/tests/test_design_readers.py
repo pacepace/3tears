@@ -31,9 +31,8 @@ from threetears.evals.analysis import (
     build_code_only_report,
 )
 from threetears.evals.kernel import NotFoundError
-from threetears.evals.kernel.declaration import Question
 from threetears.evals.run import set_campaign_archived
-from packages.evals.tests.factories import make_campaign, memory_storage
+from packages.evals.tests.factories import make_campaign, memory_storage, minimal_aspect_design
 from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, ToyhostStorage
@@ -194,11 +193,11 @@ class TestAMeritRankingNamesEachAxisOnce:
         with pytest.raises(ValueError, match="merit_priority names quality more than once"):
             type(design).model_validate(design.model_dump() | {"merit_priority": ["quality", "quality"]})
 
-    def test_a_question_naming_an_axis_twice_is_refused(self) -> None:
-        Question(id="q", text="accurate and cheap?", merit_axes=["quality", "cost"])
+    def test_an_aspect_naming_a_merit_axis_twice_is_refused(self) -> None:
+        minimal_aspect_design(merit_axes=["quality", "cost"])
 
         with pytest.raises(ValueError, match="merit_axes names quality more than once"):
-            Question(id="q", text="accurate?", merit_axes=["quality", "quality"])
+            minimal_aspect_design(merit_axes=["quality", "quality"])
 
 
 class TestSetCampaignArchived:

@@ -33,7 +33,6 @@ this whole layer exists to avoid — the slot is shared, the word is not.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -438,104 +437,6 @@ def _skipped_by_design(
     return False
 
 
-class DecisionRule(EvalDocumentModel, CoreShapeModel):
-    """When a question's answer switches from the control: typed clauses, never words the engine has to parse.
-
-    The logic is fixed: switch only if every clause settles switch, keep the moment one settles keep, otherwise
-    unsettled. The page states the rule in a sentence code writes from these clauses, with the arms' names.
-    """
-
-    clauses: tuple[DecisionClause, ...] = Field(
-        min_length=1,
-        description=(
-            "The conditions every one of which must hold to switch: `RateDrop` and `CostLower`. At least one: a rule "
-            "with none would switch on nothing."
-        ),
-    )
-
-
-#: What a question's text holds when its author wrote the rule as prose: the engine reads no rule from words.
-PROSE_RULE_MARK = "decision rule:"
-
-
-def states_a_prose_rule(question: Question) -> bool:
-    """Whether a question carries its decision rule in its words and none as :attr:`Question.decision`.
-
-    :param question: The declared question.
-    :ptype question: Question
-    :return: True when its text says ``Decision rule:`` (any case) and it declares no typed rule.
-    :rtype: bool
-    """
-    # prose-canary: allow — Question.text is the question its author declared, not text a model wrote
-    return question.decision is None and PROSE_RULE_MARK in question.text.casefold()
-
-
-class Question(EvalDocumentModel, CoreShapeModel):
-    """Something this campaign is trying to find out.
-
-    Questions live on the campaign; **resolutions live on the analysis**, because a resolution
-    is that analysis's claim over that evidence and a later analysis over more runs may resolve
-    differently. Collapsing the two would make a question's answer look like a property of the
-    question.
-
-    **The text is immutable once resolved.** An edit mints a new question carrying
-    ``supersedes``, and the lineage renders. Editing in place would silently restate what an
-    existing analysis had already answered — the resolution would still point here, now
-    attached to a question nobody asked when it was written.
-
-    A question is **retired, never deleted**, because analyses reference it by id. A retired
-    question stops requiring a resolution from future analyses and keeps its history.
-    """
-
-    id: str = Field(
-        default_factory=lambda: str(uuid.uuid7()),
-        min_length=1,
-        description=(
-            "Stable id. Analyses reference it, which is why a question is retired rather than deleted. "
-            "Minted here when the author does not supply one — an operator writing a question should "
-            "not have to produce a uuid, and the supersession path has to mint one regardless."
-        ),
-    )
-    text: str = Field(
-        min_length=1,
-        description=(
-            "The question, in the operator's words. Immutable once any analysis has resolved it. A decision rule is "
-            "never written here: it is `decision`, and a text saying `Decision rule:` beside no `decision` is refused "
-            "when the design is declared."
-        ),
-    )
-    decision: DecisionRule | None = Field(
-        default=None,
-        description=(
-            "When the answer switches from the control, as typed clauses; None when the question states no rule. "
-            "Part of what was asked: changing it mints a new question, as changing the text does."
-        ),
-    )
-    merit_axes: list[MeritAxis] = Field(
-        default_factory=list,
-        description=(
-            "Which axes an answer would move, when the question is about one. The bundle lists the bars on "
-            "these axes per question (`verdict_order.questions`). Empty means unscoped."
-        ),
-    )
-
-    @field_validator("merit_axes")
-    @classmethod
-    def _each_axis_once(cls, axes: list[MeritAxis]) -> list[MeritAxis]:
-        """Refuse an axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
-        return _each_merit_axis_once(axes)
-
-    asked_at: str = Field(default_factory=utc_now_iso, description="When it was asked (ISO-8601).")
-    retired_at: str | None = Field(
-        default=None,
-        description="When it stopped requiring resolutions. None = live. Retiring keeps history; deleting would orphan every analysis that answered it.",
-    )
-    supersedes: str | None = Field(
-        default=None,
-        description="The question id this one replaces, when an edit minted it. None = originally asked.",
-    )
-
-
 #: The merit axis a judged dimension serves. A judge scores how good an output is, so a capability dimension is
 #: always a quality reading; a boundary dimension is a guardrail and serves no axis.
 JUDGED_MERIT_AXIS: MeritAxis = "quality"
@@ -558,24 +459,6 @@ def axis_in_question_scope(axis: MeritAxis | None, question_axes: Sequence[Merit
     :rtype: bool
     """
     return axis is not None and (not question_axes or axis in question_axes)
-
-
-def exploratory_reading(axis: MeritAxis | None, questions: Sequence[Question]) -> bool:
-    """Whether a reading on ``axis`` lies outside every one of ``questions`` — exploratory, not confirmatory.
-
-    Only meaningful where the campaign declares questions: with none, every reading is exploratory, and that
-    is said once for the campaign rather than on every row (a label that fires on every row is one readers
-    learn to skip). A guardrail is never exploratory: it is held because it was declared one, not because
-    something happened to move.
-
-    :param axis: The reading's merit axis, or None when it serves none.
-    :ptype axis: MeritAxis | None
-    :param questions: The campaign's live questions.
-    :ptype questions: Sequence[Question]
-    :return: True when no question covers the reading.
-    :rtype: bool
-    """
-    return not any(axis_in_question_scope(axis, question.merit_axes) for question in questions)
 
 
 class ControlDeclaration(EvalDocumentModel, CoreShapeModel):
@@ -619,362 +502,6 @@ class ControlDeclaration(EvalDocumentModel, CoreShapeModel):
                 "an uncontrolled stimulus must state what varied instead — a bare 'uncontrolled' discloses nothing"
             )
         return self
-
-
-class CampaignDesign(EvalDocumentModel, CoreShapeModel):
-    """The declaration: what this campaign set out to learn, before it learned anything.
-
-    Operator input throughout. Every field here is a statement of intent, and none of it is
-    derived from observations — that is the realized design's job, and keeping them apart is
-    what makes coverage a comparison against intent rather than a description of whatever ran.
-
-    ``control`` is a **variant key**, not a run id. Curating the control *run* out of a campaign
-    no longer destroys the design if another observation carries the same variant — a state that
-    previously needed its own field because it was a live failure.
-
-    **The key is stored beside its pre-image, as every stored variant key is.** A run keeps
-    ``variant_levers`` beside the keys its results carry, because a digest says which stack and
-    refuses to say what that stack was, and the predicate computing it is designed to move. The
-    control is a key of the same kind on a document that is kept forever, so it keeps the same two
-    things beside it: ``control_levers``, the map it was digested from, and
-    ``control_identity_version``, the predicate that digested it. A read resolves the control through
-    :func:`resolve_declared_control`, never through ``control`` directly, to the keys that name its arm
-    under this build — the stored one, and the one its map re-keys to — so a control declared under one
-    predicate still names its arm's cells under the next.
-
-    **The pre-image is the server's, never the caller's.** ``control_levers`` and
-    ``control_identity_version`` are recorded when the control is addressed from a run, and carried — or
-    cleared, with the key dated this build's — when a typed declaration keeps or changes the key; an
-    authoring surface refuses either one sent with a value it would not store
-    (:func:`~threetears.evals.analysis.campaigns.create_campaign`, ``update_campaign``).
-
-    ``held_fixed`` says what held still while the campaign ran.
-    """
-
-    axes: list[SweptAxis] = Field(
-        min_length=1,
-        description=(
-            "What this campaign set out to vary. At least one: a declaration with no axes declares "
-            "nothing, and the typed-answer validator needs these as its denominator — 'the answer "
-            "addressed every declared axis' is uncheckable without them."
-        ),
-    )
-    questions: list[Question] = Field(
-        default_factory=list,
-        description=(
-            "What it is trying to find out. Empty is a real state — a passive campaign measures without "
-            "asking. UNBOUNDED, and the bound is the operator's: retire-never-delete is load-bearing (an "
-            "analysis resolves a question by id, so removing one orphans its resolution), a text edit MINTS "
-            "a superseding question rather than rewriting, and omitting a stored question from an update is "
-            "refused — so nothing can ever shrink this list. An operator who iterates one question's wording "
-            "ten times carries ten rows forever, and every later update echoes all ten. `live_questions()` "
-            "keeps the LIFECYCLE complete; nothing keeps the SIZE bounded, and that is the cost of resolving "
-            "by id rather than an oversight."
-        ),
-    )
-    bars: list[BarOverride] = Field(
-        default_factory=list,
-        description="Standards this campaign holds itself to, tighter than the registered ones. Empty = the registry's bars apply unchanged.",
-    )
-    guardrail_margins: list[GuardrailMargin] = Field(
-        default_factory=list,
-        description=(
-            "The margin of each judged guardrail (a boundary rubric dimension) this campaign decides, one per "
-            "dimension. Empty = none declared, and every judged guardrail is held at zero change. A measure's "
-            "margin is its descriptor's `materiality_threshold`, never declared here."
-        ),
-    )
-    control: str | None = Field(
-        default=None,
-        description=(
-            "The variant key every other cell is read against — the reference point, not a run id. "
-            "A 64-hex digest over the resolved contestant stack, which is why it is ADDRESSED from an "
-            "observation rather than typed: `control_from_run_id` on campaign_create or campaign_update "
-            "(`set_campaign_control` from Python) takes a run and resolves the key here, the same shape a swept level is "
-            "authored in. None = no control declared, and the analysis says so rather than "
-            "electing one. NOT 'baseline', which is temporal: a control is contemporaneous, same "
-            "apparatus and same campaign. Not `held_fixed` below: this is WHICH CELL is the "
-            "reference; that is WHAT HELD STILL while the campaign ran. Read through "
-            "`control_identity_version` and `control_levers` beside it, never alone."
-        ),
-    )
-    control_levers: dict[str, SweepableValue] | None = Field(
-        default=None,
-        description=(
-            "The control's PRE-IMAGE: the resolved lever map `control` was digested from, recorded from the run "
-            "`control_from_run_id` named — that run's own `variant_levers`, kept here for the reason the run keeps "
-            "them beside its key. A key says which contestant stack and refuses to say what that stack WAS, and "
-            "the predicate computing it is designed to move. So when this build keys variants under a predicate "
-            "other than `control_identity_version`, the control matches the key this map re-keys to as well as the "
-            "stored one: its arm is the cells under this build's predicate wherever any carry the re-keyed key, "
-            "and its cells under the earlier predicate are named beside it (`RealizedDesign.earlier_control`), "
-            "never contrasted and never stale while they are here; and "
-            "whatever happens to the key, the map still says which levels the control ran. Server-owned: "
-            "recorded from the run, carried while a typed declaration keeps the key, never taken from a caller. "
-            "None = the key was TYPED, not addressed from a run (or addressed from one whose observations carry a "
-            "key no map reproduces), so it names only the cells stamped under its own predicate: where none "
-            "carries it under another predicate, the analysis says the control cannot be resolved, and the "
-            "remedy is to re-address it from a run with `control_from_run_id` on campaign_update."
-        ),
-    )
-    control_identity_version: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "Which key-derivation predicate (`IDENTITY_VERSION`) `control` was computed under, stored beside the "
-            "key as every stored variant key's version is. Server-owned, as `control_levers` is: a typed key "
-            "is dated by the build that accepts it, the only predicate it can have been read under, and keeps the "
-            "stored date while an update leaves it unchanged. None exactly when `control` is."
-        ),
-    )
-    intended_repetitions: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "How many repetitions this design intends per cell, counted per case: a cell's least-repeated "
-            "case is what is compared, because it is the cell's weakest replication. "
-            "Named for the slot rather than for one host's word: `k` means iterations per cell to one "
-            "consumer and something else to the next, and an engine-owned field cannot carry one host's "
-            "meaning. The bundle names every cell that falls short (`short_cells`). None = unstated, "
-            "which makes a shortfall undetectable rather than zero."
-        ),
-    )
-    held_fixed: ControlDeclaration = Field(
-        description=(
-            "What held still while the campaign ran — the stimulus, stated `controlled` or "
-            "`uncontrolled`, and the apparatus, stated `commissioned` or `witnessed`; the two take "
-            "different words and neither takes all four. Declared because an absent control is a fact "
-            "rather than a null. Not `control` above, which names WHICH CELL is the reference point; "
-            "this names WHAT WAS HELD STILL. A campaign can declare either without the other."
-        )
-    )
-    merit_priority: list[MeritAxis] = Field(
-        default_factory=list,
-        description=(
-            "Tie-break order when no bar picks a winner, strongest first. The bundle ranks the adjudicated bars "
-            "by it (`verdict_order`). Empty = no stated preference, and the analysis must not invent one."
-        ),
-    )
-    crossing: Literal["full", "star"] | None = Field(
-        default=None,
-        description=(
-            "Which combinations of the declared levels (cells) this design meant to run. full = every combination; "
-            "star = the centre (each axis's FIRST declared level) and every cell differing from it on one axis "
-            "only, the rest skipped by design. None = the design says nothing about combinations, and no cell is "
-            "read as skipped or missing (unless skipped_cells names some, which then reads as full less those)."
-        ),
-    )
-    skipped_cells: list[dict[str, str]] = Field(
-        default_factory=list,
-        description=(
-            "Cells left out on purpose, each naming every declared axis once with one of its declared levels, by "
-            "the level's content_hash or its display. A skipped cell that did not run is skipped by design, never "
-            "a gap. Empty = none beyond what crossing skips."
-        ),
-    )
-    measure_latency: bool = Field(
-        default=False,
-        description=(
-            "Whether latency is under test in this campaign — the declaration a bar, a question or a ranking on "
-            "latency needs (#701). Its runs must then be launched with `measure_latency=True`, which executes their "
-            "cells one at a time with nothing beside them; latency a run read under concurrency is withheld from "
-            "every reading, and the bundle says which. False (the default): latency is not what this campaign asks "
-            "about, so a bar on a latency measure, a question naming the latency axis or `latency` in "
-            "`merit_priority` is refused when the design is declared."
-        ),
-    )
-    declared_at: str = Field(default_factory=utc_now_iso, description="When the declaration was made (ISO-8601).")
-    declared_by: str = Field(default="", description="Who declared it.")
-
-    @model_validator(mode="after")
-    def _questions_do_not_collide_or_dangle(self) -> CampaignDesign:
-        """Question ids are unique and every ``supersedes`` names a question in this design.
-
-        :return: The validated design.
-        :rtype: CampaignDesign
-        :raises ValueError: Two questions share an id, so an analysis resolving one cannot say which
-            it answered; or a question supersedes an id nothing here declares, which renders
-            a lineage with a hole in it.
-        """
-        ids = [q.id for q in self.questions]
-        if duplicates := sorted({qid for qid in ids if ids.count(qid) > 1}):
-            raise ValueError(
-                f"duplicate question ids: {', '.join(duplicates)} — an analysis could not say which it resolved"
-            )
-        known = set(ids)
-        if dangling := sorted({q.supersedes for q in self.questions if q.supersedes and q.supersedes not in known}):
-            raise ValueError(f"questions supersede ids this design does not declare: {', '.join(dangling)}")
-        return self
-
-    @field_validator("control")
-    @classmethod
-    def _a_control_is_a_variant_key(cls, value: str | None) -> str | None:
-        """Refuse a control that is not the shape of a variant key.
-
-        The failure this prevents is silent and expensive: a key that is not a digest joins no
-        observation, so the analysis reports no control resolved while the runs that carry one
-        sit right there — indistinguishable from a campaign that never declared a control at
-        all. It is the same shape as the mistyped swept level
-        :meth:`SweptAxis._content_address_authored_levels` exists to prevent, and it is caught
-        the same way: at authoring time, where the author is still holding the thing they meant.
-
-        A run id is the mistake this most expects, and it is named, because ``control`` held one
-        for the whole of its previous life.
-
-        :param value: The authored control, or None.
-        :ptype value: str | None
-        :return: The validated key, or None.
-        :rtype: str | None
-        :raises ValueError: The value is not a 64-character lowercase hex digest.
-        """
-        if value is None:
-            return None
-        if not _is_variant_key(value):
-            raise ValueError(
-                f"`control` is a variant key — a {_VARIANT_KEY_LENGTH}-character lowercase hex digest over the "
-                f"resolved contestant stack — and '{value}' is not one. A run id is not a control any more: name the run "
-                "with `control_from_run_id` on campaign_create or campaign_update, and the key is resolved for you"
-            )
-        return value
-
-    @model_validator(mode="before")
-    @classmethod
-    def _a_typed_control_is_dated_by_the_build_accepting_it(cls, data: Any) -> Any:
-        """Stamp the identity version beside a control that arrives without one.
-
-        Every stored variant key carries the predicate that computed it, and the control is no
-        exception — without it a read cannot tell a key it can match from one a later predicate
-        has orphaned. A key typed by hand, or a declaration authored with its control and nothing
-        else, states no version; the only predicate it can have been read under is the one of the
-        build accepting it, so that is the version it is given. A version that IS stated is kept as
-        stated, which is what a stored declaration's read needs. An authoring surface never lets a
-        caller state one (:func:`~threetears.evals.analysis.campaigns.update_campaign` carries the
-        stored date of a key it keeps, and refuses any other).
-
-        :param data: The authored or stored fields, before validation.
-        :ptype data: Any
-        :return: The fields, with ``control_identity_version`` stamped where a control has none.
-        :rtype: Any
-        """
-        return _date_an_undated_key(data, "control", "control_identity_version")
-
-    @model_validator(mode="after")
-    def _the_control_s_pre_image_is_its_own(self) -> CampaignDesign:
-        """The control's lever map and version stand only beside its key, and the map digests to it.
-
-        The map is checked against the key only under this build's predicate: a map recorded under
-        another one digested to the key by THAT predicate's arithmetic, and holding it to this one
-        would refuse every control declared before a bump — the exact document the map is kept
-        to rescue.
-
-        :return: The validated design.
-        :rtype: CampaignDesign
-        :raises ValueError: A lever map or an identity version is given with no control, so it
-            describes a key nobody declared; or the map, under this build's predicate, does
-            not digest to the control, so it is some other arm's pre-image and re-keying from
-            it would move the control onto that arm.
-        """
-        if self.control is None:
-            if self.control_levers is not None or self.control_identity_version is not None:
-                raise ValueError(
-                    "`control_levers` and `control_identity_version` describe the declared control's key, and this "
-                    "design declares no control — clear them with it, or name the control "
-                    "(`control_from_run_id`)"
-                )
-            return self
-        if not _pre_image_is_the_key_s(self.control, self.control_levers, self.control_identity_version):
-            raise ValueError(
-                "`control_levers` does not digest to `control` under this build's identity predicate, so it is "
-                "not the control's pre-image — address the control from a run (`control_from_run_id`), which "
-                "records the two together"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _axes_and_bars_are_keyed_too(self) -> CampaignDesign:
-        """One entry per axis, per measure and per ranked merit axis — the same rule the questions already carry.
-
-        A declared axis is the denominator of every coverage number and of the typed-answer
-        validator's "did the answer address every axis"; a duplicate double-counts it. Two bars
-        on one measure is worse: both persist, both read as this campaign's standard, and
-        nothing decides which governs — while the R10 gate's own dict comprehension silently
-        dedupes, so the refusal an operator might expect never comes.
-
-        :return: The validated design.
-        :rtype: CampaignDesign
-        :raises ValueError: An axis id, a measure id, a guardrail margin's dimension or a merit-priority axis appears
-            twice.
-        """
-        _refuse_repeated_design_entries(self.axes, self.bars, self.guardrail_margins, self.merit_priority)
-        return self
-
-    @model_validator(mode="after")
-    def _skipped_cells_name_declared_levels(self) -> CampaignDesign:
-        """Each skipped cell names every declared axis once, at a level that axis declares — or it is refused.
-
-        :return: The validated design.
-        :rtype: CampaignDesign
-        :raises ValueError: A skipped cell names an axis the design does not declare, leaves one out, or names a
-            level its axis does not declare (or that matches more than one of them).
-        """
-        for cell in self.skipped_cells:
-            self.cell_identity(cell)
-        return self
-
-    def cell_identity(self, cell: Mapping[str, str]) -> tuple[str, ...]:
-        """A cell, authored as ``{axis_id: level content_hash or display}``, as its levels' content hashes in axis
-        order.
-
-        :param cell: The cell.
-        :ptype cell: Mapping[str, str]
-        :return: One content hash per declared axis, in the order the axes are declared.
-        :rtype: tuple[str, ...]
-        :raises ValueError: The cell does not name exactly the declared axes, or names a level its axis does not
-            declare, or one that matches more than one declared level.
-        """
-        return _cell_identity(self.axes, cell)
-
-    def declares_cells(self) -> bool:
-        """Whether this design says which combinations of its levels it meant to run."""
-        return self.crossing is not None or bool(self.skipped_cells)
-
-    def skipped_by_design(self, cell: tuple[str, ...]) -> bool:
-        """Whether the design left ``cell`` (one content hash per axis, in axis order) out on purpose.
-
-        :param cell: The combination.
-        :ptype cell: tuple[str, ...]
-        :return: True when ``skipped_cells`` names it, or ``crossing`` is ``star`` and it differs from the centre (each
-            axis's first declared level) on more than one axis.
-        :rtype: bool
-        """
-        return _skipped_by_design(self.axes, self.skipped_cells, self.crossing, cell)
-
-    def question_words(self, question_id: str) -> str:
-        """A declared question as a reader reads it: its text, or — for an id this design does not hold — the id.
-
-        A memo resolves a question by id, which is a uuid for a question an operator declared; a reader needs the
-        words that were asked. The id stands in only where nothing here says what it asked, so a reference that
-        no longer resolves stays citable rather than going blank.
-
-        :param question_id: The id an answer or a comparison family names.
-        :ptype question_id: str
-        :return: The question's text, else the id.
-        :rtype: str
-        """
-        return next((question.text for question in self.questions if question.id == question_id), question_id)
-
-    def live_questions(self) -> list[Question]:
-        """The questions a future analysis still owes a resolution for.
-
-        A retired question keeps its history and its resolutions; what it stops doing is
-        requiring new ones. Superseded questions drop out too — the replacement carries the
-        obligation, and demanding both would have every analysis answer the same thing twice.
-
-        :return: The live questions, in declaration order.
-        :rtype: list[Question]
-        """
-        superseded = {q.supersedes for q in self.questions if q.supersedes}
-        return [q for q in self.questions if q.retired_at is None and q.id not in superseded]
 
 
 #: How a declared control's keys were arrived at. ``undeclared`` — the design names no control. ``current`` — the
@@ -1042,51 +569,8 @@ class ResolvedControl(EvalBaseModel):
         return next((key for key in self.variant_keys if key in carried), None)
 
 
-def resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl:
-    """The keys that name a campaign's declared control under this build — the one place that is decided.
-
-    The control is a variant key, and keys are never re-derived at read: a cell keeps the key it was
-    stamped with, and a run survives an :data:`~threetears.evals.kernel.identity.IDENTITY_VERSION` bump
-    because it keeps its lever map beside it. The control keeps its map too (``control_levers``), and
-    this is where it is read:
-
-    - **The same predicate:** the key as stored, alone. Nothing moved, so nothing is recomputed.
-    - **Another predicate, with a map:** the key recomputed from the map
-      (:func:`~threetears.evals.kernel.identity.compute_variant_key`) — the key a run of the same arm
-      launched on this build carries — AND the stored key, which the arm's cells stamped under the older
-      predicate still carry. A campaign holding only old cells matches the stored key and is never stale;
-      one holding new cells has them as its control arm, with any old cells disclosed beside it.
-    - **Another predicate, without one:** the stored key, alone (``unrekeyable``). It still names every cell
-      stamped under its own predicate, which is the control as it ran; what it cannot name is a run this
-      build stamps. When no cell of the campaign carries it, the bundle says so with the remedy
-      (:attr:`ResolvedControl.stale_disclosure`, read as ``RealizedDesign.control_excluded == "stale"``),
-      rather than reading the campaign as one that declared no control.
-
-    **Recomputing replays the map's arithmetic, not its names or its composition.** The map records the
-    levers as the host named and resolved them when the control was declared. It re-keys the control across
-    a change to how a map is DIGESTED; it does not follow a host that renames a lever, a kind or an overlay
-    field, nor an engine that adds a lever to every map, because the new runs' maps differ from the stored
-    one and no recomputation of the stored one reaches them — just as those runs share no key with the old
-    runs of the same arm. What the map does across such a change is keep the control DESCRIBED (which levels
-    it ran is on the declaration, in the bundle and on every analysis of it), which is what an operator
-    re-addressing it from a run of the changed arm needs.
-
-    A control with no stated version is read as this build's: validation stamps one on every
-    declaration, so an undated key exists only as an in-process copy this build made, and this build's
-    predicate is the only one it can be under.
-
-    :param design: The declaration, or None for a campaign that declares none.
-    :ptype design: CampaignDesign | None
-    :return: The resolved control.
-    :rtype: ResolvedControl
-    """
-    if design is None or design.control is None:
-        return ResolvedControl(variant_keys=[], identity_version=None, source="undeclared")
-    return _resolve_control_key(design.control, design.control_levers, design.control_identity_version)
-
-
 def _resolve_control_key(key: str, levers: Mapping[str, SweepableValue] | None, version: int | None) -> ResolvedControl:
-    """:func:`resolve_declared_control` over a declared control's key, its pre-image and its predicate."""
+    """The keys naming a control declared as ``key``, its pre-image ``levers`` and its predicate ``version``."""
     stored = version if version is not None else IDENTITY_VERSION
     if stored == IDENTITY_VERSION:
         return ResolvedControl(variant_keys=[key], identity_version=stored, source="current")
@@ -1117,12 +601,11 @@ def _resolve_control_key(key: str, levers: Mapping[str, SweepableValue] | None, 
 class AspectDesign(EvalDocumentModel, CoreShapeModel):
     """What one aspect of a campaign set out to vary and hold itself to — the declaration, one aspect's worth.
 
-    An aspect is one part of what a campaign asks, measured on its own runs. Its design is :class:`CampaignDesign`
-    less what belongs to the campaign as a whole: the question (a campaign asks one), the control (the campaign's
-    control :class:`CampaignArm`) and when it was declared (:attr:`Aspect.declared_at`). It gains the merit axes an
-    answer would move here, which were each question's own: None when the campaign asks no question, so nothing
-    read here confirms anything, and an empty list for an unscoped question, which asks about every axis. Every rule
-    the campaign's design is held to, this is held to, by the same code.
+    An aspect is one part of what a campaign asks, measured on its own runs. The question (a campaign asks one), the
+    control (the campaign's control :class:`CampaignArm`) and when it was declared (:attr:`Aspect.declared_at`) belong
+    to the campaign as a whole, not here. The merit axes are the axes an answer would move on this aspect: None when
+    the campaign asks no question, so nothing read here confirms anything, and an empty list for an unscoped question,
+    which asks about every axis.
     """
 
     axes: list[SweptAxis] = Field(
@@ -1367,7 +850,14 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
 
 
 def resolve_control_arm(arm: CampaignArm | None) -> ResolvedControl:
-    """The keys that name a campaign's control arm under this build, by the rule :func:`resolve_declared_control` reads.
+    """The keys that name a campaign's control arm under this build — the one place that is decided.
+
+    The control is a variant key, and keys are never re-derived at read: a cell keeps the key it was stamped with, and
+    a run survives an :data:`~threetears.evals.kernel.identity.IDENTITY_VERSION` bump because it keeps its lever map
+    beside it. The arm keeps its map too (:attr:`CampaignArm.levers`), and this is where it is read. **The same
+    predicate:** the key as stored, alone. **Another predicate, with a map:** the key recomputed from the map AND the
+    stored key, which the arm's cells stamped under the older predicate still carry. **Another predicate, without
+    one:** the stored key alone (``unrekeyable``), with the disclosure a reader is told when no cell carries it.
 
     :param arm: The control arm, or None for a campaign that declares none.
     :ptype arm: CampaignArm | None
@@ -1623,72 +1113,6 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
             spelled = ", ".join(f"{measure} on {aspect}" for aspect, measure in duplicates)
             raise ValueError(f"bars_overridden names {spelled} more than once; name each bar once")
         return bars
-
-
-def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -> list[Question]:
-    """Fold an authored question list onto the stored one without ever rewriting a question.
-
-    A question's text does not change, nor its decision rule, which is part of what was asked. An analysis
-    resolves a question BY ID, so editing either in place would leave that resolution pointing at a sentence nobody
-    asked when it was written — the answer would silently re-attach to a different question. An edit therefore
-    MINTS a replacement carrying ``supersedes``, the original stays exactly as asked, and
-    :meth:`CampaignDesign.live_questions` drops the superseded one so nothing is answered twice.
-
-    **Minting is unconditional, where the direction says "immutable once resolved".** The
-    condition is not evaluable: a resolution is a fact about an analysis, and no analysis records
-    one yet. The choices were to mint always or to allow in-place edits until the resolution
-    record exists — and the second one writes a rule that starts silently mutating history the
-    day it lands. Minting always is the conservative half of the same rule, costs a superseded
-    row nobody has to read, and narrows cleanly if the resolution record ever makes the
-    condition checkable.
-
-    A stored question missing from ``incoming`` is REFUSED rather than dropped, because a
-    question is retired and never deleted — an analysis holds its id. Retiring is an edit like
-    any other: send it back with ``retired_at`` set.
-
-    :param stored: The questions the campaign already carries, in declaration order.
-    :ptype stored: list[Question]
-    :param incoming: The questions the author supplied, which must name every stored id.
-    :ptype incoming: list[Question]
-    :return: The reconciled list — every stored question verbatim or with its non-historical fields
-        updated, the newly authored ones, and one minted replacement per edited text, appended
-        after the originals they supersede.
-    :rtype: list[Question]
-    :raises ValueError: ``incoming`` omits a stored question id, which would delete a question some
-        analysis may already reference. The message names the ids and the way to retire one.
-    """
-    by_id = {q.id: q for q in stored}
-    if dropped := sorted(set(by_id) - {q.id for q in incoming}):
-        raise DesignRefused(
-            f"questions are retired, never deleted — this update omits {', '.join(dropped)}, "
-            "and an analysis may already resolve them by id",
-            remedy="send each one back with `retired_at` set instead",
-        )
-
-    reconciled: list[Question] = []
-    minted: list[Question] = []
-    for question in incoming:
-        prior = by_id.get(question.id)
-        if prior is None:
-            reconciled.append(question)
-        elif question.text == prior.text and question.decision == prior.decision:
-            # `asked_at` and `supersedes` are the question's history, not its content: taking
-            # them from the author would let an edit re-date a question or rewrite its lineage.
-            # Everything else on the row — merit_axes, retired_at — is theirs to change.
-            reconciled.append(question.model_copy(update={"asked_at": prior.asked_at, "supersedes": prior.supersedes}))
-        else:
-            # The original keeps its text, its date and its lineage; `retired_at` is the one
-            # incoming field it still takes, because retiring while rephrasing is one intent and
-            # dropping half of it would discard operator input without saying so. (The superseded
-            # question already falls out of `live_questions`, so this changes no obligation — it
-            # keeps the record saying what the author said.)
-            reconciled.append(prior.model_copy(update={"retired_at": question.retired_at}))
-            minted.append(
-                Question(
-                    text=question.text, decision=question.decision, merit_axes=question.merit_axes, supersedes=prior.id
-                )
-            )
-    return reconciled + minted
 
 
 # ---------------------------------------------------------------------------
@@ -1978,7 +1402,7 @@ def _registered_judged_bar_reading(
 class DesignRefused(RefusedInput):
     """A declaration this host cannot honour, as what is wrong with it and what to declare instead.
 
-    What :func:`refuse_an_undeclarable_design` and :func:`reconcile_question_edits` raise; the authoring surface hands
+    What :func:`refuse_an_undeclarable_design` raises; the authoring surface hands
     its two halves on apart, as every refusal states them.
     """
 
@@ -2000,7 +1424,7 @@ NO_TEMPLATE_REMEDY = (
 )
 
 
-def _refuse_unreadable_guardrail_margins(design: CampaignDesign, template: EvalTemplate | None) -> None:
+def _refuse_unreadable_guardrail_margins(design: AspectDesign, template: EvalTemplate | None) -> None:
     """Refuse a guardrail margin on anything but a boundary dimension of the campaign's template, or wider than its
     scale.
 
@@ -2064,10 +1488,10 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     return [*checks, *dims, *measures]
 
 
-def _refuse_unreadable_rule_readings(
-    design: CampaignDesign, template: EvalTemplate | None, profile: HostProfile
+def _refuse_unreadable_floor_readings(
+    floors: Sequence[Floor], template: EvalTemplate | None, profile: HostProfile
 ) -> None:
-    """Refuse a live question's ``RateDrop`` naming a reading this campaign will not measure as a pass rate.
+    """Refuse a floor's ``RateDrop`` naming a reading this aspect will not measure as a pass rate.
 
     A misspelled reading would otherwise reach the page as a clause that never settles; refused here, it is fixed
     before a run is paid for. A clause reading every pass rate (``reading`` None) names nothing to check.
@@ -2077,18 +1501,18 @@ def _refuse_unreadable_rule_readings(
     """
     offered = decision_readings(template, profile)
     unread = [
-        (question.id, clause.reading)
-        for question in design.live_questions()
-        if question.decision is not None
-        for clause in question.decision.clauses
-        if isinstance(clause, RateDrop) and clause.reading is not None and clause.reading not in offered
+        (floor.key, floor.clause.reading)
+        for floor in floors
+        if isinstance(floor.clause, RateDrop)
+        and floor.clause.reading is not None
+        and floor.clause.reading not in offered
     ]
     if not unread:
         return
-    named = "; ".join(f"question {qid} names {reading!r}" for qid, reading in unread)
+    named = "; ".join(f"floor {key} names {reading!r}" for key, reading in unread)
     where = f"campaign's template and host '{profile.host_id}'" if template is not None else f"host '{profile.host_id}'"
     raise DesignRefused(
-        f"a decision rule's RateDrop must name a pass/fail reading this campaign measures — {named}, which it does not",
+        f"a floor's RateDrop must name a pass/fail reading this aspect measures — {named}, which it does not",
         remedy=(
             f"name one the {where} offer: {', '.join(repr(name) for name in offered) or 'none'}; or leave reading "
             "unset to read every pass rate" + ("" if template is not None else f". {NO_TEMPLATE_REMEDY}")
@@ -2097,8 +1521,9 @@ def _refuse_unreadable_rule_readings(
 
 
 def refuse_an_undeclarable_design(
-    design: CampaignDesign,
+    design: AspectDesign,
     *,
+    floors: Sequence[Floor] = (),
     behavior: str,
     template: EvalTemplate | None,
     profile: HostProfile,
@@ -2154,8 +1579,11 @@ def refuse_an_undeclarable_design(
     validator on the model. A model validator would have to name a registry, and the whole
     contract is that the engine does not know whose registry it is holding.
 
-    :param design: The declaration to check.
-    :ptype design: CampaignDesign
+    :param design: One aspect's declaration to check.
+    :ptype design: AspectDesign
+    :param floors: The floors the campaign declares on that aspect, whose ``RateDrop`` readings are checked; none by
+        default.
+    :ptype floors: Sequence[Floor]
     :param behavior: The campaign's behavior, which is the scope a registered bar is keyed under.
     :ptype behavior: str
     :param template: The campaign's template, whose rubric dimensions and goal-state checks are the
@@ -2173,25 +1601,12 @@ def refuse_an_undeclarable_design(
     :raises ValueError: A bar names nothing a verdict can be given on, naming the bar, why, and every
         set it could have named; a bar is looser than the registered incumbent, quoting the
         registered value; a bar contradicts the declared better-direction of what it names,
-        naming it and which way its descriptor runs; or a bar, a live question or the merit priority
-        asks about latency in a design that does not declare ``measure_latency``, naming each and the
-        setting to turn on; or a live question writes its decision rule as prose (``Decision rule:`` in its
-        text) and declares none as ``Question.decision``; or a ``RateDrop`` names a reading
-        :func:`decision_readings` does not offer.
+        naming it and which way its descriptor runs; or a bar, the aspect's merit axes or the merit
+        priority asks about latency in a design that does not declare ``measure_latency``, naming each and
+        the setting to turn on; or a floor's ``RateDrop`` names a reading :func:`decision_readings` does
+        not offer.
     """
-    # A rule in words is read by nothing: the engine settles only a typed rule. Refused here, where a design is
-    # declared, and never on a read, so a question stored before the rule was typed still loads and reads as having
-    # none.
-    if prose := [question.id for question in design.live_questions() if states_a_prose_rule(question)]:
-        raise DesignRefused(
-            f"question {', '.join(prose)} writes its decision rule as prose in its text, which the engine does not "
-            "read: a rule is declared as Question.decision",
-            remedy=(
-                "declare the rule as Question.decision, a DecisionRule of RateDrop and CostLower clauses, and keep "
-                "the text to the question itself"
-            ),
-        )
-    _refuse_unreadable_rule_readings(design, template, profile)
+    _refuse_unreadable_floor_readings(floors, template, profile)
     # ASK the profile rather than re-deriving from its registry. `HostProfile.controllable` is
     # R10's evaluability map and the design names this gate as its one use — re-deriving
     # `{d.name for d in profile.sweepables.declarations}` here would make two implementations of
@@ -2391,11 +1806,8 @@ def refuse_an_undeclarable_design(
             for override in design.bars
             if isinstance(reading := resolved[override.measure_id], BarName) and is_latency_measure(reading.descriptor)
         ]
-        latency.extend(
-            f"the question {question.text!r}"
-            for question in design.live_questions()
-            if "latency" in question.merit_axes
-        )
+        if "latency" in (design.merit_axes or []):
+            latency.append("latency among the aspect's merit axes")
         if "latency" in design.merit_priority:
             latency.append("latency in merit_priority")
         if latency:
@@ -2410,37 +1822,6 @@ def refuse_an_undeclarable_design(
             )
 
 
-def preregistered_questions(design: CampaignDesign, first_run_at: str | None) -> list[Question]:
-    """The live questions asked no later than the campaign's first run: the ones a reading may confirm.
-
-    **A question asked after the evidence existed may have been asked of it**, so it confirms nothing: a reading it
-    names is a lead, as if no question had named it. The campaign's update path freezes a design once a run has joined
-    (:func:`~threetears.evals.analysis.campaigns.update_campaign`), and this is the backstop that needs no stored field
-    and no trust in that path: it reads each question's own ``asked_at``, which an edit keeps
-    (:func:`reconcile_question_edits`), against the earliest member run's ``created_at``, so a design written by an
-    older build, or edited after every run was removed and re-added, is still read by when its questions were asked.
-    Every reader that scopes a reading by the questions (the comparison families, the reading scope, the verdict
-    order, the exploratory disclosure) reads this, never :meth:`CampaignDesign.live_questions` alone, so none can
-    count a question another treats as post hoc.
-
-    :param design: The campaign's declaration.
-    :ptype design: CampaignDesign
-    :param first_run_at: The earliest ``created_at`` among the campaign's member runs (ISO-8601), or ``None`` when no
-        run's time is to hand: a campaign with no run yet, where nothing can have been asked after one.
-    :ptype first_run_at: str | None
-    :return: The live questions asked at or before ``first_run_at``, in declaration order; every live question when it
-        is ``None``.
-    :rtype: list[Question]
-    :raises ValueError: ``first_run_at`` or a question's ``asked_at`` is not an ISO-8601 time with an offset, so which
-        came first cannot be said.
-    """
-    live = design.live_questions()
-    if first_run_at is None:
-        return live
-    first = aware_instant(first_run_at, "the campaign's first run")
-    return [question for question in live if aware_instant(question.asked_at, f"question {question.id}") <= first]
-
-
 __all__ = [
     "NO_TEMPLATE_REMEDY",
     "Margin",
@@ -2453,17 +1834,13 @@ __all__ = [
     "BarOverride",
     "CampaignArm",
     "CampaignCall",
-    "CampaignDesign",
     "ControlDeclaration",
     "ControlSource",
     "CostLower",
     "DecisionClause",
-    "DecisionRule",
     "Floor",
     "GuardrailMargin",
     "OverriddenBar",
-    "PROSE_RULE_MARK",
-    "Question",
     "RateDrop",
     "ResolvedControl",
     "SweptAxis",
@@ -2474,13 +1851,8 @@ __all__ = [
     "aware_instant",
     "axis_in_question_scope",
     "decision_readings",
-    "exploratory_reading",
     "mechanism_measure_names",
-    "preregistered_questions",
-    "reconcile_question_edits",
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
     "resolve_control_arm",
-    "resolve_declared_control",
-    "states_a_prose_rule",
 ]

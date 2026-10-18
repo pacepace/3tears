@@ -544,13 +544,13 @@ class RealizedDesign(EvalDocumentModel):
     """What kind of experiment this campaign turned out to be — INFERRED from the runs, never declared.
 
     **The derived twin of the declaration, and the two must not share a name.** The declaration
-    (:class:`~threetears.evals.kernel.declaration.CampaignDesign`, on the campaign) says what an
+    (:class:`~threetears.evals.kernel.declaration.AspectDesign`, on the campaign's aspect) says what an
     operator SET OUT to learn; this says what the observations actually show. The delta between
     them is the coverage story — a declared value with no observations is NAMED, ``not_run`` in its
     axis row's ``declared_levels`` (``undetermined`` where some run's level cannot be established),
     where this one can only ever report what happened to run.
 
-    They were briefly both called ``CampaignDesign``, in one package, and the collision silently
+    They were briefly both called ``CampaignDesign`` (the declaration's name until 0.71), in one package, and the collision silently
     renamed a published OpenAPI component: two live classes, one schema name, and whichever the
     generator reached first won.
 

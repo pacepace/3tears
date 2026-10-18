@@ -43,7 +43,6 @@ from threetears.evals.analysis.bundle.schema import UNVERIFIED_FOLD_PREFIX
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel import (
-    CampaignDesign,
     ControlDeclaration,
     SweptAxis,
     resolve_variant_identity,
@@ -75,6 +74,7 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
 from packages.evals.tests.fixtures.toyhost.variant import variant_levers
 from packages.evals.tests.factories import make_campaign
+from packages.evals.tests.v15_shapes import V15Design
 
 if TYPE_CHECKING:
     from threetears.evals.schema import EvalResult
@@ -221,7 +221,7 @@ def _bundle(
     }
     design = None
     if control is not None:
-        design = CampaignDesign(
+        design = V15Design(
             axes=[
                 SweptAxis(
                     axis_id=_EFFORT,
