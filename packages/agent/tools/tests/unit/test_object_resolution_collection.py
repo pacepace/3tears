@@ -261,23 +261,14 @@ class TestRememberAndLookup:
         assert [m.table for m in nats.published] == [OBJECT_RESOLUTIONS_TABLE]
 
 
-class TestAWriteL2RefusedRaises:
-    """L2 is the only tier sibling replicas share a mapping on: a write it refused is not stored."""
+class TestAnL2RefusalDegradesAsACache:
+    """the hub is the mapping's durable source, so L2 here is a cache: a write it refused costs the
+    siblings a round trip, never this replica its mapping."""
 
-    async def test_remember_l2_refused_raises_and_this_replica_does_not_serve_it(self) -> None:
-        nats = _RefusingNats({})
-        collection = _replica({}, nats)
-        with pytest.raises(KvError, match="was not saved"):
-            await collection.remember(_CUSTOMER, _handle())
-        assert await collection.lookup(_CUSTOMER, _OBJECT) is None
-        assert nats.published == [], "no peer is told about a row no store holds"
-
-    async def test_forget_l2_refused_raises_and_siblings_still_hold_it(self) -> None:
-        store: dict[str, bytes] = {}
-        await _replica(store, _RecordingNats(store)).remember(_CUSTOMER, _handle())
-        with pytest.raises(KvError, match="was not deleted"):
-            await _replica(store, _RefusingNats(store)).forget(_CUSTOMER, _OBJECT)
-        assert await _replica(store, _RecordingNats(store)).lookup(_CUSTOMER, _OBJECT) == _handle()
+    async def test_remember_l2_refused_keeps_the_mapping_in_l1(self) -> None:
+        collection = _replica({}, _RefusingNats({}))
+        await collection.remember(_CUSTOMER, _handle())
+        assert await collection.lookup(_CUSTOMER, _OBJECT) == _handle()
 
 
 class _RecordingResolveNats:
@@ -336,16 +327,13 @@ class TestTheResolverUsesTheCollection:
         await resolver.resolve(_OBJECT, customer_id=_OTHER_CUSTOMER, identity_token=_TOKEN)
         assert len(nc.requests) == 2
 
-    async def test_a_cache_that_refuses_the_mapping_does_not_fail_the_resolve(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """the hub has answered, so the handle is right; only the sharing is lost, and said so."""
+    async def test_a_cache_whose_l2_refuses_still_serves_the_repeat_from_l1(self) -> None:
         nc = _RecordingResolveNats(_ok())
         resolver = HubObjectResolver(nc, request_timeout_seconds=5.0, resolution_cache=_replica({}, _RefusingNats({})))  # type: ignore[arg-type]
-        with caplog.at_level("WARNING"):
-            handle = await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
+        handle = await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
+        await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
         assert handle.s3_key == _KEY
-        assert any("was not cached" in record.getMessage() for record in caplog.records)
+        assert len(nc.requests) == 1
 
     async def test_without_a_cache_the_in_process_dict_still_serves(self) -> None:
         """a pod that declared no collection tables keeps the historical behaviour."""

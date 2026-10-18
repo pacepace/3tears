@@ -100,14 +100,9 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
     #: rehydrated to aware-UTC by the framework's L2 codec on every read.
     datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
 
-    @property
-    def l2_is_the_store(self) -> bool:
-        """L2 is the only tier sibling replicas share this mapping on, so a write L2 refused raises.
-
-        :return: ``True``
-        :rtype: bool
-        """
-        return True
+    #: the hub is this mapping's durable source, so L2 is a cache of it: an L2 failure degrades to a
+    #: miss and the next resolve asks the hub again.
+    l2_is_the_store: bool = False
 
     def __init__(
         self,
@@ -274,8 +269,6 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
         :ptype handle: ObjectHandle
         :return: nothing
         :rtype: None
-        :raises KvError: when a KV bucket is configured and L2 refused the mapping; this pod's L1
-            copy is dropped too, and no invalidation is published
         """
         entity_id = self._pk(customer_id, handle.object_id)
         now = datetime.now(UTC)
@@ -309,8 +302,6 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
         :ptype object_id: UUID
         :return: nothing
         :rtype: None
-        :raises KvError: when a KV bucket is configured and L2 refused the delete; sibling
-            replicas still serve the mapping
         """
         entity_id = self._pk(customer_id, object_id)
         if self._l1 is not None:

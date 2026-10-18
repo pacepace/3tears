@@ -3458,6 +3458,9 @@ class ToolServer:
                     error_code=IDENTITY_REFUSED,
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = identity_rejection
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod rejected call: identity unverified",
@@ -3470,8 +3473,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = identity_rejection
                 return
             # the verified identity now rides the re-stamped request; re-bind the log tags so this
             # dispatch's log lines + the baseline audit attribute to the authenticated identity, not
@@ -3493,6 +3494,9 @@ class ToolServer:
                     error_code=assertion_refusal.error_code,
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = assertion_refusal.reason
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod rejected call at the proxy-assertion gate",
@@ -3505,8 +3509,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = assertion_refusal.reason
                 return
 
             owner_rejection = self._foreign_caller_rejection(request)
@@ -3518,6 +3520,9 @@ class ToolServer:
                     error_code="TOOL_CALLER_NOT_OWNER",
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = owner_rejection
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod refused call: the verified caller is not the agent this in-process server belongs to",
@@ -3530,8 +3535,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = owner_rejection
                 return
 
             tool = self._tools.get(tool_key)
@@ -3543,6 +3546,9 @@ class ToolServer:
                     error=f"unknown tool: {tool_key}",
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = f"unknown tool: {tool_key}"
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "unknown tool requested",
@@ -3553,8 +3559,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = f"unknown tool: {tool_key}"
                 return
 
             try:
