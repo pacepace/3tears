@@ -78,7 +78,7 @@ def report_markdown(report: Report) -> str:
 def campaign_report_markdown(report: CampaignReport) -> str:
     """Render a campaign's page as Markdown, in the page's order: every broken floor, the title, the first screen, the
     memo's findings, then each aspect under its own heading with what code read there, its writer's summary and its
-    own page in one ``<details>`` (its title, question and broken floors left out, its headings a level down, its
+    own page in one ``<details>`` (its title, question, broken floors and verdict line left out, its headings a level down, its
     trials' ids prefixed with the aspect's), then the one glossary.
 
     :param report: The campaign's page.
@@ -96,19 +96,11 @@ def campaign_report_markdown(report: CampaignReport) -> str:
         lines += ["", f"## {SECTION_TITLES['memo']}", *_folded(memo)]
     for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
         prefix = f"a-{slug}-"
-        lines += ["", f"## {fold.aspect}", "", f"{_inert(_one_line(fold.shows))}.", ""]
+        lines += ["", f"## {_inert(_one_line(fold.aspect))}", "", f"{_inert(_one_line(fold.shows))}.", ""]
         lines += [f"<details><summary>{html.escape(_one_line(fold.aspect), quote=False)} in full</summary>"]
         lines += _folded(fold.summary, prefix=prefix)
         aspect = fold.report
-        own = [
-            block
-            for block in aspect.blocks
-            if block.section in FIRST_SCREEN
-            and not _repeats_scoreboard(block)
-            and not (
-                isinstance(block, DisclosureBlock) and block.section == "header" and block.source in ("floor", "basis")
-            )
-        ]
+        own = [block for block in fold.head if not _repeats_scoreboard(block)]
         for block in own:
             lines += ["", *_block(block, prefix=prefix)]
         lines += _section_lines(aspect, depth=3, prefix=prefix)
