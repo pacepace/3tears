@@ -236,11 +236,14 @@ def test_two_templates_sharing_a_name_at_revision_one_are_not_two_revisions_and_
         profile=profile,
         exploratory=True,
     )
-    add_runs_to_campaign(storage, alone.id, TOYHOST_SCOPE, ["run-second"])
+    # A run of the other template is refused by the aspect gathered on the first, for its template, never as a
+    # revision: an aspect reads its own template's runs, while a campaign created over both pools them.
+    with pytest.raises(ValidationFailedError, match="is gathered on 'one-name-1'") as refused:
+        add_runs_to_campaign(storage, alone.id, TOYHOST_SCOPE, ["run-second"])
     bundle = assemble_context_bundle(_campaign(["run-first", "run-second"]), storage=storage, profile=profile)
 
+    assert "revision" not in str(refused.value)
     assert created.run_ids == ["run-first", "run-second"]
-    assert storage.load_campaign(alone.id, TOYHOST_SCOPE).run_ids == ["run-first", "run-second"]  # type: ignore[union-attr]
     assert bundle.cells, "the bundle assembles"
 
 

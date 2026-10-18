@@ -1316,7 +1316,6 @@ def add_runs_to_campaign(
         if target is not None
         else _route_by_template(storage, campaign, fresh)
     )
-    _refuse_another_template(storage, campaign, routed)
     aspects = [
         held.model_copy(
             update={"run_ids": [*held.run_ids, *(run_id for run_id in fresh if routed[run_id] == held.label)]}
@@ -1328,6 +1327,7 @@ def add_runs_to_campaign(
             _refuse_pooled_revisions(
                 storage, joined.run_ids, scope_id, what=f"aspect {joined.label!r} of campaign {campaign.name!r}"
             )
+    _refuse_another_template(storage, campaign, routed)
     campaign = campaign.model_copy(update={"aspects": aspects})
     storage.save_campaign(campaign)
     log.info("eval.add_runs_to_campaign campaign=%s attached=%d", campaign_id, len(fresh))

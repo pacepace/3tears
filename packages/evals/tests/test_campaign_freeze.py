@@ -172,7 +172,14 @@ def test_an_update_declaring_aspects_holding_runs_is_refused() -> None:
 def test_a_question_written_past_the_freeze_after_the_first_run_reads_as_post_hoc() -> None:
     """An older build's write: no stored field marks it, and its own time says it came after the evidence."""
     fixture = ops_fixture()
-    late = fixture.campaign.model_copy(update={"question": "is the wider chunk better?", "declared_at": _LATER})
+    (aspect,) = fixture.campaign.aspects
+    late = fixture.campaign.model_copy(
+        update={
+            "question": "is the wider chunk better?",
+            "declared_at": _LATER,
+            "aspects": [aspect.model_copy(update={"asked_at": _LATER})],
+        }
+    )
     fixture.host.eval_host.storage.save_campaign(late)
 
     bundle = _bundle(fixture)
