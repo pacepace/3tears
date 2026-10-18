@@ -186,6 +186,9 @@ def memo_payload(bundle: CampaignBundle | AnalysisContextBundle) -> dict[str, An
     if not isinstance(bundle, CampaignBundle):
         bundle = campaign_bundle(bundle)
     narrow, wide = alias_at(bundle, TOYHOST_NARROW), alias_at(bundle, TOYHOST_WIDE)
+    # A choice's pick of an arm code shows ahead on no pair rests on cost or simplicity, so it is at low confidence.
+    picked = {arm_at(bundle, TOYHOST_NARROW), variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW))}
+    unseparated = bundle.kind == "choice" and not any(pair.ahead in picked for pair in bundle.readings.pairs)
     return {
         "findings": [
             {
@@ -212,7 +215,7 @@ def memo_payload(bundle: CampaignBundle | AnalysisContextBundle) -> dict[str, An
             {
                 "arm": arm_at(bundle, TOYHOST_NARROW),
                 "reasons": ["The narrow chunk width is much faster on every document."],
-                "confidence": "high",
+                "confidence": "low" if unseparated else "high",
                 "rests_on": [0],
                 "floors_overridden": [],
                 "behind_on": [],

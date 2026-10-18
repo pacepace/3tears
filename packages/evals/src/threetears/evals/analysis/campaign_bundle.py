@@ -17,10 +17,17 @@ by its label (:attr:`CampaignBundle.arms`), never by its variant key.
 the bundles dumped: per aspect it carries code's readings, the arms' scoreboard, the design, coverage, the cells'
 readings, the separated contrasts first, guardrails, bars, the flagged trials and every soundness disclosure, compact.
 Each aspect's part is held to :data:`CAMPAIGN_MESSAGE_CHARS_PER_ASPECT`; over it, code trims in a fixed order —
-the flagged trials' excerpts, then the flagged trials, then the contrasts least separated first, then the cells'
-readings, then the runs' configs — and says in the aspect's part what it left out, since the page shows all of it.
+the flagged trials' excerpts, then the flagged trials, then the contrasts least separated first, then the runs'
+configs, then the cells' readings last, since the writer names them in its evidence — and says in the aspect's part
+what it left out, since the page shows all of it.
 Code's own readings across aspects, the floors, the pair readings and the bars are never trimmed, so a part can stay
 over budget; then it says so, and the overshoot is logged as a warning.
+
+**The campaign's own part is bounded by the same budget, and only warned on.** What sits outside every aspect's part
+— the arms, floors, bars, a choice's pair readings and a measurement's measures — is code's adjudication and is never
+trimmed. It grows with arms and aspects (a choice's pairs with the square of its arms: six arms over four aspects read
+60 pairs), so the message is at most one budget per aspect plus that part. When that part alone is over one aspect's
+budget, the overshoot is logged as a warning, so a campaign too wide for its writer is seen, not silently sent.
 
 **The writer is told the campaign's kind** (``kind``, derived from its arms): a measurement recommends nothing, a
 choice reads its pair readings and any missed bars first, and a change reads its floors and readings.
@@ -47,7 +54,8 @@ from threetears.evals.analysis.bundle.schema import (
     refuse_a_bundle_before_aspects,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.campaign_readings import CampaignKind, CampaignReadings, campaign_kind
+from threetears.evals.analysis.campaign_readings import CampaignReadings
+from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
@@ -94,7 +102,8 @@ _KIND_MEANS: dict[str, str] = {
     "measurement": "One arm, measured: there is nothing to choose between, so the memo recommends no arm.",
     "choice": (
         "Several arms and no control: the memo picks the arm the evidence favours, or recommends none when no arm "
-        "stood out (no clear winner). A pick names every aspect another arm is shown ahead on, in `behind_on`."
+        "stood out (no clear winner); a pick of an arm shown ahead on no pair rests on cost or simplicity, at low "
+        "confidence. A pick names every aspect another arm is shown ahead on, in `behind_on`."
     ),
     "change": "A control and candidates: the memo recommends a candidate the evidence separated, or keeps the control.",
 }
@@ -379,7 +388,7 @@ class CampaignBundle(EvalDocumentModel):
 
         A **measurement** has one arm; a **choice** several and no control (nothing is shipped to change from); a
         **change** a control and its candidates. Never declared: read off the arms by
-        :func:`~threetears.evals.analysis.campaign_readings.campaign_kind`.
+        :func:`~threetears.evals.analysis.kinds.campaign_kind`.
         """
         return campaign_kind(self.arms)
 
@@ -615,6 +624,15 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
         )
     if not bundle.declaration.floors:
         view["floors_declared"] = "The campaign declares no floor."
+    shared = len(_compact({key: value for key, value in view.items() if key != "aspects"}))
+    if shared > budget:
+        log.warning(
+            "eval.analysis the writer's campaign-level part (arms, floors, bars, pairs, measures) of campaign %s is %d "
+            "characters over one aspect's budget of %d: it is code's adjudication and is never trimmed",
+            bundle.campaign_id,
+            shared - budget,
+            budget,
+        )
     return view
 
 
@@ -624,8 +642,9 @@ def aspect_view(
     """One aspect's part of the writer's view, trimmed to ``budget`` characters of compact JSON.
 
     Trimmed in a fixed order, each step only as far as it must: the flagged trials' excerpts, last trial first; then
-    the flagged trials themselves; then the contrasts, least separated first; then the cells' readings, last cell's
-    last reading first; then the runs' configs, last run first. What was left out is said in ``trimmed``. Code's
+    the flagged trials themselves; then the contrasts, least separated first; then the runs' configs, last run first;
+    then, last, the cells' readings, last cell's last reading first, since the writer's evidence names them. What was
+    left out is said in ``trimmed``. Code's
     readings, the scoreboard, the design, coverage and the disclosures are never trimmed, so a part can stay over budget
     when they alone exceed it: ``trimmed`` says so, and the overshoot is logged as a warning.
 
@@ -963,7 +982,7 @@ def _trim(view: dict[str, Any], budget: int) -> None:
     """
     if len(_compact(view)) <= budget:
         return
-    left_out = {"excerpts": 0, "trials": 0, "contrasts": 0, "cell readings": 0, "runs' configs": 0}
+    left_out = {"excerpts": 0, "trials": 0, "contrasts": 0, "runs' configs": 0, "cell readings": 0}
     view["trimmed"] = _trimmed_note(dict.fromkeys(left_out, 10**6), budget, over=True)
 
     def over() -> bool:
@@ -981,17 +1000,18 @@ def _trim(view: dict[str, Any], budget: int) -> None:
     while over() and view["contrasts"]:
         view["contrasts"].pop()
         left_out["contrasts"] += 1
-    for cell in reversed(view["cells"]):
-        for group in ("judged", "measures"):
-            while over() and cell[group]:
-                cell[group].pop(next(reversed(cell[group])))
-                left_out["cell readings"] += 1
     for run in reversed(view["runs"]):
         if not over():
             break
         if run.pop("config", None) is not None:
             run.pop("config_provenance", None)
             left_out["runs' configs"] += 1
+    # The cells' readings go last: the writer's evidence rows name them.
+    for cell in reversed(view["cells"]):
+        for group in ("judged", "measures"):
+            while over() and cell[group]:
+                cell[group].pop(next(reversed(cell[group])))
+                left_out["cell readings"] += 1
     still_over = over()
     view["trimmed"] = _trimmed_note(left_out, budget, over=still_over)
     if still_over:
@@ -1011,7 +1031,7 @@ def _trimmed_note(left_out: Mapping[str, int], budget: int, *, over: bool) -> st
         f"To fit the writer's budget of {budget} characters per aspect, this aspect leaves out: "
         + (", ".join(said) or "nothing it could trim")
         + " (the excerpts of flagged trials; flagged trials, last first; contrasts, least separated first; the "
-        "cells' readings, last first; then the runs' configs, last first). The page shows all of them."
+        "runs' configs, last first; then the cells' readings, last first). The page shows all of them."
         + (" It is still over budget: what is left is never trimmed." if over else "")
     )
 

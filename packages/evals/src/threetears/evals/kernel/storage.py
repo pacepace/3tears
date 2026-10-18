@@ -37,6 +37,7 @@ failing the list, as does the operator's scan that names such rows (:meth:`EvalS
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
@@ -2592,15 +2593,18 @@ class EvalStorage:
                 log.warning("drop_all_analyses: dropped %d eval_analysis docs from scope=%s", dropped, scope_id)
         return deleted
 
-    def drop_derived(self, scopes: Iterable[str]) -> dict[str, int]:
+    def drop_derived(self, scopes: Iterable[str]) -> DerivedDropped:
         """Delete every derived document in the scopes named — analyses, insights, judge profiles — and nothing else.
 
         The operator step for a regenerable bump (:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`):
         a document written under the old version is refused on read, and assembling a campaign's evidence reads the
         subject's insight ledger, so one old insight refuses every generation, estimate and code-only report over the
         subject until it is gone. Every derived type regenerates from the kept core — an analysis by generating it
-        again, an insight with the analysis that mints it, a judge profile from its judge's results — so dropping them
-        loses nothing that is not rebuilt. Cassettes, which are regenerable records rather than derived ones, are left
+        again, an insight with the analysis that mints it — so dropping them loses nothing that is not rebuilt. A judge
+        profile is the one that does not come back by itself: it is recorded only when an operator runs
+        ``judge_profiles_record`` over its judge campaign's runs, and until then every campaign that took its judges'
+        tier from it falls back to its own evidence's tier. So each dropped profile's runs are returned
+        (:attr:`DerivedDropped.judge_profiles`), read raw before the delete, to record it again from. Cassettes, which are regenerable records rather than derived ones, are left
         in place: a corpus is re-captured only when the cassette's own format moves. It iterates ids and deletes raw,
         like :meth:`drop_all_analyses`, because the documents it exists to remove are the ones no current model can
         read.
@@ -2609,18 +2613,43 @@ class EvalStorage:
 
         :param scopes: The scopes whose derived documents to drop.
         :ptype scopes: Iterable[str]
-        :return: ``{doc_type: count_deleted}`` for each derived type, summed over the scopes.
-        :rtype: dict[str, int]
+        :return: The count deleted of each derived type, summed over the scopes, and each dropped judge profile's
+            runs.
+        :rtype: DerivedDropped
         """
         derived = sorted(doc_type for doc_type, facts in DOC_TYPE_FACTS.items() if facts.origin == "derived")
         counts: dict[str, int] = dict.fromkeys(derived, 0)
+        profiles: list[DroppedJudgeProfile] = []
         for scope_id in scopes:
             for doc_type in derived:
+                if doc_type == "eval_judge_profile":
+                    profiles += self._judge_profile_runs(scope_id)
                 dropped = self._delete_every(doc_type, scope_id)
                 counts[doc_type] += dropped
                 if dropped:
                     log.warning("drop_derived: dropped %d %s docs from scope=%s", dropped, doc_type, scope_id)
-        return counts
+        if profiles:
+            log.warning(
+                "drop_derived: %d judge profile(s) dropped; each is recorded again only by judge_profiles_record over "
+                "its runs (DerivedDropped.judge_profiles)",
+                len(profiles),
+            )
+        return DerivedDropped(counts=counts, judge_profiles=profiles)
+
+    def _judge_profile_runs(self, scope_id: str) -> list[DroppedJudgeProfile]:
+        """Each judge profile in one scope with the runs it was recorded from, read raw: no current model may read it."""
+        profiles: list[DroppedJudgeProfile] = []
+        for doc_id in list(self._store.iter_by_doc_type("eval_judge_profile", scope_id)):
+            raw = self._store.get(doc_id, scope_id) or {}
+            runs = raw.get("run_ids")
+            profiles.append(
+                DroppedJudgeProfile(
+                    scope_id=scope_id,
+                    profile_id=doc_id,
+                    run_ids=[str(run) for run in runs] if isinstance(runs, list) else [],
+                )
+            )
+        return profiles
 
     def _delete_every(self, doc_type: str, scope_id: str) -> int:
         """Delete every document of one type in one scope, by id, without reading any of them."""
@@ -2629,6 +2658,27 @@ class EvalStorage:
             for doc_id in list(self._store.iter_by_doc_type(doc_type, scope_id))
             if self._store.delete(doc_id, scope_id)
         )
+
+
+@dataclass(frozen=True)
+class DroppedJudgeProfile:
+    """A judge profile :meth:`EvalStorage.drop_derived` deleted, with the runs to record it again from.
+
+    ``run_ids`` are read raw off the deleted document (empty when it named none readable); recording again is
+    ``judge_profiles_record`` over them.
+    """
+
+    scope_id: str
+    profile_id: str
+    run_ids: list[str]
+
+
+@dataclass(frozen=True)
+class DerivedDropped:
+    """What :meth:`EvalStorage.drop_derived` deleted: a count per derived type, and each judge profile with its runs."""
+
+    counts: dict[str, int]
+    judge_profiles: list[DroppedJudgeProfile]
 
 
 if TYPE_CHECKING:
@@ -2667,6 +2717,8 @@ __all__ = [
     "CaseSetStore",
     "CassetteStore",
     "DefinitionStore",
+    "DerivedDropped",
+    "DroppedJudgeProfile",
     "EvalRunScan",
     "EvalStorage",
     "JobRecordStore",

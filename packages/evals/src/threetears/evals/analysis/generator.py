@@ -808,10 +808,12 @@ def _assemble_and_validate(
 
     :raises GenerationError: The provider cut the call short (not repaired).
     :raises SoundnessRefusal: The output does not match the contract, a position, reading or trial points nowhere,
-        the aspect summaries are not one per aspect, the recommendation rests on no finding, names no arm the campaign
-        holds, recommends a candidate in an exploratory campaign or one no reading separated from the control, leaves
-        a broken floor of its arm unaddressed, or a finding's title states a null it established nowhere or names an
-        arm it cites nothing of (repaired once).
+        the aspect summaries are not one per aspect, the recommendation is one the campaign's kind cannot make (a
+        measurement's; none in a change; a choice's unseparated pick above ``low`` confidence), rests on no finding,
+        names no arm the campaign holds, recommends a candidate in an exploratory campaign or one no reading
+        separated from the control, leaves a warning on its arm unaddressed (a broken floor, another arm ahead, a
+        missed bar) or names one code never raised, or a finding's title states a null it established nowhere or
+        names an arm it cites nothing of (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
@@ -988,8 +990,11 @@ def _reject_recommendation_off_kind(document: AuthoredCampaignAnalysis, bundle: 
     arm) compares no arms, so there is nothing to recommend: one is refused. A **change** (a control and its
     candidates) always recommends — a candidate, or keeping the control, which is what a change does when nothing moved
     it. A **choice** (several arms, no control) picks one, or recommends nothing when no arm stood out: no clear winner.
+    A choice may still pick an arm code showed ahead on no pair (on cost or simplicity), but only at ``low``
+    confidence: nothing code read separates it, so the page must not print more certainty than the evidence has.
 
-    :raises SoundnessRefusal: A measurement's memo recommends an arm, or a change's recommends nothing.
+    :raises SoundnessRefusal: A measurement's memo recommends an arm, a change's recommends nothing, or a choice's pick
+        of an arm shown ahead on no pair is above ``low`` confidence.
     """
     recommended = document.recommended()
     kind = bundle.kind
@@ -1006,6 +1011,16 @@ def _reject_recommendation_off_kind(document: AuthoredCampaignAnalysis, bundle: 
             "a candidate the evidence separated from the control, or keeping the control"
             + (f", {control.label!r}" if control is not None else "")
         )
+    if kind == "choice" and recommended is not None and recommended.confidence != "low":
+        arm = bundle.arm(recommended.arm)
+        names = {recommended.arm} | (bundle.arm_keys(arm) if arm is not None else frozenset())
+        if not any(pair.ahead in names for pair in bundle.readings.pairs):
+            raise SoundnessRefusal(
+                f"the recommendation picks {recommended.arm!r} at {recommended.confidence} confidence, and code shows "
+                "it ahead of no arm on any aspect: a pick nothing separated rests on cost or simplicity, so its "
+                "confidence is `low`. Lower it to `low`, pick an arm code shows ahead, or recommend none (no clear "
+                "winner)"
+            )
 
 
 def _reject_unpinned_recommendation(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
@@ -1427,6 +1442,10 @@ def _unestablished_null_titles(
     )
 
 
+#: Labels that name an arm's role, not the arm: read in a title as the role in ordinary prose, never as an arm name.
+_ROLE_WORDS: frozenset[str] = frozenset({"control", "candidate"})
+
+
 def _stray_arm_titles(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> str | None:
     """Account for each finding title naming an arm none of that finding's readings or trials is taken at.
 
@@ -1441,6 +1460,12 @@ def _stray_arm_titles(document: AuthoredCampaignAnalysis, bundle: CampaignBundle
     miss a name the writer shortened rather than refuse a sound title; the reporter eval measures the rest. A title is
     checked against its own finding only.
 
+    **A contrast cites both its arms.** A row at an arm's cell whose measure the bundle compared against the control
+    (a contrast, or a guardrail check) reads that arm against the control, so a finding citing it cites the control
+    too: "Fast cuts cost per reply against the control" over fast's contrast is sound. A label that is only a role's
+    name (an upgraded campaign's control is labelled ``control``) is no arm name at all: the word reads as the role in
+    ordinary prose ("keep the control"), so it is not matched.
+
     Runs after cells are translated from aliases, so it joins on full refs; the refusal names the arm's cells by them,
     and the repair round renders them back into the writer's aliases.
 
@@ -1451,10 +1476,22 @@ def _stray_arm_titles(document: AuthoredCampaignAnalysis, bundle: CampaignBundle
     entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
     # The levels an arm ran, and the labels the writer is told to name arms by.
     vocabulary = arm_vocabulary(list(entries.values())) + label_vocabulary(
-        {arm.label: bundle.arm_keys(arm) for arm in bundle.arms}
+        {arm.label: bundle.arm_keys(arm) for arm in bundle.arms if arm.label.strip().lower() not in _ROLE_WORDS}
     )
     if not vocabulary:
         return None
+    # Each (cell, reading, name) read against the control, with the control's variants it was read against.
+    against: dict[tuple[str, str, str], set[str]] = {}
+    for aspect in bundle.aspects:
+        for family in aspect.multiple_comparisons.families:
+            for comparison in family.comparisons:
+                ref = cell_ref(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id)
+                against.setdefault((ref, comparison.reading, comparison.name), set()).add(
+                    comparison.control.variant_key
+                )
+        for check in aspect.guardrails.checks:
+            ref = cell_ref(check.contrast.variant_key, check.contrast.apparatus_class_id)
+            against.setdefault((ref, check.reading, check.name), set()).add(check.control.variant_key)
     trials = {(aspect.aspect, trial.trial_id): trial.arm for aspect in bundle.aspects for trial in aspect.trials}
     arm_of_trial = {campaign_id: trials[where] for campaign_id, where in bundle.trial_ids().items()}
     cells_of: dict[str, list[str]] = {}
@@ -1468,6 +1505,8 @@ def _stray_arm_titles(document: AuthoredCampaignAnalysis, bundle: CampaignBundle
         cited = {variant for row in finding.evidence if (variant := variant_of_cell_ref(row.cell)) is not None} | {
             arm_of_trial[trial] for trial in finding.trials if trial in arm_of_trial
         }
+        for row in finding.evidence:
+            cited |= against.get((row.cell, row.reading, row.measure_id), set())
         for mention in arm_mentions(finding.title, vocabulary):
             if mention.name.variants & cited:
                 continue
