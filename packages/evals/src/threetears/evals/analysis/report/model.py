@@ -94,7 +94,6 @@ TextRole = Literal[
     "what_changed",
     "how_sure",
     "means",
-    "revisit_when",
     "finding_title",
     "finding_body",
     "caveat",

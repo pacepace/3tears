@@ -258,8 +258,8 @@ identifier passes on its way to a reader. A memo's sentence breaking a rule code
 restating a measured number becomes the table's own row); one saying the evidence cannot confirm a difference a
 floor read broken or held becomes code's counts on that reading, the size of the difference left to more cases, and
 is disclosed in Methods. No floor rewrites a memo's recommendation: a floor only warns, and the page's first line is
-the warning. Where the memo says what to run next (a next step and its `Why`, a question's answer, a deferred
-decision's revisit), it states no sample size or cost of its own: a sentence proposing more cases at a count the `To
+the warning. Where the memo says what to run next (a next step and its `Why`, an aspect summary's
+meaning), it states no sample size or cost of its own: a sentence proposing more cases at a count the `To
 show the floors hold` table does not state, or naming a cost it does not price, becomes code's sentence on the cases
 showing the floors hold needs once and is dropped after
 (a next step it replaces keeps none of the writer's facts, and one with nothing projected goes); each is listed in

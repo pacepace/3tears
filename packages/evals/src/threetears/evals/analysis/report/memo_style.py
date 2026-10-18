@@ -11,8 +11,8 @@ contributes through these steps, in order:
 3. **Measured numbers.** A sentence restating a number the bundle measured (a count ``6 of 12``, a cost, a rate) is
    dropped from a body, the finding's table carrying it; a one-sentence title that does so is replaced by the
    table's own row in words, so a measured fact is stated by code, flatly.
-4. **Sample sizes.** Where the memo says what to run next (a next step's title and ``why``, a question's answer, a
-   deferred decision's ``revisit_when``), it states no sample size or cost of its own (``Expand the suite to 30 cases
+4. **Sample sizes.** Where the memo says what to run next (a next step's title and ``why``, an aspect summary's
+   ``means``), it states no sample size or cost of its own (``Expand the suite to 30 cases
    for $0.40``): the cases showing the floors hold needs are code's
    (:func:`~threetears.evals.analysis.report.decision.floors_projection`),
    and a writer's guess at them understated them by 4-15x (#846). A sentence there that proposes more cases (a count,
@@ -289,7 +289,7 @@ class MemoStyle:
         :param settled: Code's sentence on a reading a floor read broken or held, which replaces a sentence disputing that
             difference (:data:`_HEDGES`); None where no settled clause reads it.
         :ptype settled: str | None
-        :param plans: Whether it says what to run next (a next step's title, a question's answer), so it states no
+        :param plans: Whether it says what to run next (a next step's title, an aspect summary's ``means``), so it states no
             sample size or cost of its own: a sentence that does is replaced by code's sentence on the projected sample,
             or dropped (:meth:`_planned`).
         :ptype plans: bool
@@ -325,8 +325,8 @@ class MemoStyle:
         :param said: What the finding already printed: a disputing sentence is dropped, not replaced, where that holds
             code's sentence already.
         :ptype said: str | None
-        :param plans: Whether it says what to run next (a next step's ``why``, a deferred decision's
-            ``revisit_when``), whose sentences state no sample size or cost of their own: one that does is dropped.
+        :param plans: Whether it says what to run next (a next step's ``why``, an aspect summary's
+            ``means``), whose sentences state no sample size or cost of their own: one that does is dropped.
         :ptype plans: bool
         :return: The kept sentences; a sentence restating a measured number or breaking a fixable rule is dropped.
         :rtype: str
