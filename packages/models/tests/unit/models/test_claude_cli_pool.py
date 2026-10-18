@@ -22,6 +22,7 @@ import time
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -912,6 +913,68 @@ class TestTheOrphanSweep:
             if stale.poll() is None:
                 stale.kill()
                 stale.wait(timeout=5)
+
+    def _assert_left_running(self, marker: str, caplog: pytest.LogCaptureFixture, *, unknown: bool = True) -> None:
+        """the sweep, run over a CLI carrying ``marker``, leaves it running -- saying so when its owner is unknown."""
+        child = self._marked_child(marker)
+        try:
+            with caplog.at_level("WARNING", logger="threetears.models.claude_cli_pool"):
+                sweep_orphaned_claude_clis(grace_seconds=1.0)
+            time.sleep(0.2)
+            assert child.poll() is None, f"the sweep killed a CLI it could not show orphaned ({marker!r})"
+            assert not unknown or any(
+                "Leaving a pooled Claude CLI running" in record.getMessage()
+                and getattr(record, "extra_data", {}).get("pid") == child.pid
+                for record in caplog.records
+            ), "the CLI was left running without a word"
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+    @pytest.mark.parametrize("marker", ["garbage", "not-a-pid:0:x", "12:not-ticks:x"])
+    def test_a_marker_that_names_no_owner_is_left_running(self, marker: str, caplog: pytest.LogCaptureFixture) -> None:
+        """an unreadable marker read as an owner gone, and the CLI and its tree were killed."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        self._assert_left_running(marker, caplog)
+
+    def test_an_owner_this_user_may_not_signal_is_not_read_as_gone(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``kill(pid, 0)`` refused with EPERM means the owner exists; it read as "gone"."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        owner = os.getpid()
+        real_kill = os.kill
+
+        def _kill(pid: int, sig: int) -> None:
+            if pid == owner and sig == 0:
+                raise PermissionError(1, "Operation not permitted")
+            real_kill(pid, sig)
+
+        monkeypatch.setattr(os, "kill", _kill)
+        self._assert_left_running(f"{owner}:{_start_ticks(owner) or 0}:another-users-worker", caplog, unknown=False)
+
+    def test_an_owner_whose_proc_stat_cannot_be_read_is_not_read_as_gone(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a failed ``/proc/<owner>/stat`` read had no start time to match, and the live owner's CLI was killed."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        owner = os.getpid()
+        ticks = _start_ticks(owner)
+        assert ticks, "this process's start time cannot be read, so it cannot stand in for a live owner"
+        unreadable = Path(f"/proc/{owner}/stat")
+        real_read_text = Path.read_text
+
+        def _read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self == unreadable:
+                raise OSError(5, "Input/output error", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _read_text)
+        self._assert_left_running(f"{owner}:{ticks}:mine", caplog)
 
     def test_killing_a_cli_takes_its_children_with_it(self) -> None:
         if not os.path.isdir("/proc"):
