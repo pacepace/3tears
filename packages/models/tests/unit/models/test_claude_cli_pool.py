@@ -16,9 +16,11 @@ import contextvars
 import gc
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
+import uuid
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -896,6 +898,68 @@ class TestTheOrphanSweep:
         finally:
             bystander.kill()
             bystander.wait(timeout=5)
+
+    def test_it_leaves_a_cli_in_another_pid_namespace_alone(self) -> None:
+        """A host's sweep sees a container's CLIs, and the owner pid in their marker names nothing
+        there: a dead owner, read from another namespace, is no evidence. The sweep is told which
+        child lives elsewhere; the orphan beside it, told local, still dies, and nothing else on the
+        machine is judged local, so a run on a host signals no one else's CLI."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        dead = self._dead_pid()
+        elsewhere = self._marked_child(f"{dead}:0:in-a-container")
+        local = self._marked_child(f"{dead}:0:orphaned")
+        try:
+            assert sweep_orphaned_claude_clis(grace_seconds=1.0, elsewhere=lambda pid: pid != local.pid) == 1
+            local.wait(timeout=5)
+            assert elsewhere.poll() is None, "the sweep killed a CLI in another pid namespace"
+        finally:
+            for child in (elsewhere, local):
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=5)
+
+    def test_by_default_it_leaves_a_cli_in_a_real_child_pid_namespace_alone(self) -> None:
+        """The default check against a real namespace, made unprivileged with ``unshare``: the CLI
+        inside has a dead owner in its marker and is still left alone. Only the process inside the
+        namespace carries the marker, so ``unshare`` itself is not an orphan here."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("the sweep needs /proc")
+        unshare = shutil.which("unshare")
+        if unshare is None:
+            pytest.skip("no unshare to make a pid namespace with")
+        command = [unshare, "--user", "--map-root-user", "--pid", "--kill-child"]
+        probe = subprocess.run([*command, "true"], capture_output=True, timeout=10, check=False)
+        if probe.returncode != 0:
+            pytest.skip(f"this host cannot make an unprivileged pid namespace: {probe.stderr.decode().strip()}")
+        marker = f"{self._dead_pid()}:0:in-a-namespace-{uuid.uuid4().hex}"
+        outer = subprocess.Popen([*command, "env", f"{POOL_MARKER_ENV}={marker}", "sleep", "60"])
+        try:
+            inner = self._pid_marked(marker)
+            sweep_orphaned_claude_clis(grace_seconds=1.0)
+            time.sleep(0.2)
+            assert os.path.exists(f"/proc/{inner}"), "the sweep killed a CLI in a child pid namespace"
+        finally:
+            outer.kill()
+            outer.wait(timeout=5)
+
+    @staticmethod
+    def _pid_marked(marker: str) -> int:
+        """The pid, numbered here, of the one process whose marker is ``marker``, as the sweep reads it."""
+        needle = f"{POOL_MARKER_ENV}={marker}".encode()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/environ", "rb") as environ:
+                        if needle in environ.read().split(b"\0"):
+                            return int(entry)
+                except OSError:
+                    continue
+            time.sleep(0.05)
+        raise AssertionError("the process in the namespace never showed its marker, so the sweep could not see it")
 
     def test_a_recycled_pid_does_not_make_a_stale_cli_look_owned(self) -> None:
         """A marker naming a LIVE pid with a start time that is not that process's is an orphan: the

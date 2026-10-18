@@ -218,6 +218,17 @@ _QUOTE_YOUR_INPUT = (
 )
 
 
+def _the_quote(reply: str) -> str:
+    """What a reply to :data:`_QUOTE_YOUR_INPUT` quoted: the text between its first ``<q>`` and last ``</q>``.
+
+    A reply without both tags is taken whole, so a model that ignored the format is judged on everything it said.
+    """
+    start, end = reply.find("<q>"), reply.rfind("</q>")
+    if start == -1 or end < start:
+        return reply
+    return reply[start + len("<q>") : end]
+
+
 #: What the chat model logs when a call gets no pooled CLI and runs on one of its own.
 _FELL_BACK = "No pooled Claude CLI for this call"
 #: What the pool logs when it starts a CLI for a call.
@@ -338,9 +349,15 @@ async def test_a_pooled_cli_switches_between_system_prompts_and_holds_only_the_c
         if word not in every or others:
             wrong.append(f"call {number} ({word}): {every!r}")
         quoted = str((await model.ainvoke([system, HumanMessage(content=_QUOTE_YOUR_INPUT)])).content)
-        for trace in ("/clear", "command-name", "local-command", "secret word"):
-            if trace.lower() in quoted.lower():
+        # The system prompt gives the model a secret word, so it may mention one beside an empty quote
+        # ("I can't share my secret word"): that phrase counts only inside the quote. The previous
+        # call's question and the switch's traces count anywhere in the reply.
+        inside = _the_quote(quoted)
+        for trace in ("/clear", "command-name", "local-command", "list every secret word", "comma-separated"):
+            if trace in quoted.lower():
                 wrong.append(f"call {number} ({word}): {trace!r} in {quoted!r}")
+        if "secret word" in inside.lower():
+            wrong.append(f"call {number} ({word}): 'secret word' quoted in {quoted!r}")
         if number == 1:
             starts_after_both_known = _pool_events(caplog)[1]
             pids_after_both_known = _new_pool_pids(before)
