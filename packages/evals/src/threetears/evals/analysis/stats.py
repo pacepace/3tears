@@ -376,6 +376,34 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     return _wilson_bounds(n_true / n, n, z)
 
 
+def pooled_rate_interval(passed: int, trials: int, *, cases: int) -> tuple[float, float] | None:
+    """The Wilson score interval at :data:`INTERVAL_LEVEL` on ``passed`` of ``trials``, with the cases as the
+    independent draws: the rate is the trials', the effective size the cases'.
+
+    For a pass rate known only as its count over trials that may repeat a case. Repeats of a case are not independent
+    draws, so the interval is read on as many observations as there are cases, never more: wider than the trials
+    would give where repeats differ, :func:`wilson_interval` exactly where each case ran once.
+
+    :param passed: Trials that passed.
+    :ptype passed: int
+    :param trials: Trials.
+    :ptype trials: int
+    :param cases: Distinct cases the trials ran.
+    :ptype cases: int
+    :return: ``(low, high)`` containing ``passed / trials``, or ``None`` with no trials or fewer than two cases.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: ``passed`` is negative or above ``trials``, or ``cases`` is above ``trials``.
+    """
+    if not 0 <= passed <= trials:
+        raise ValueError(f"a pass rate needs 0 <= passed <= trials; got passed={passed}, trials={trials}")
+    if cases > trials:
+        raise ValueError(f"a case runs at least one trial; got cases={cases}, trials={trials}")
+    if trials == 0 or cases < 2:
+        return None
+    z = NormalDist().inv_cdf(1 - (1 - INTERVAL_LEVEL) / 2)
+    return _wilson_bounds(passed / trials, cases, z)
+
+
 def _require_aligned(values: Sequence[object], cases: Sequence[Hashable]) -> None:
     if len(values) != len(cases):
         raise ValueError(f"every observation needs its case; got {len(values)} observations and {len(cases)} cases")
@@ -2826,6 +2854,7 @@ __all__ = [
     "pairing_correlation",
     "PredictionPoweredMean",
     "prediction_powered_mean",
+    "pooled_rate_interval",
     "proportion_interval",
     "separation_p",
     "separation_test",

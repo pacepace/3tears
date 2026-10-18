@@ -1776,6 +1776,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.DerivedDropped": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.DerivedVariantIdentity": {
       "kind": "model",
       "signature": "",
@@ -1803,6 +1808,11 @@
     },
     "threetears.evals.kernel.DROPPED_TOOL_CALLS_KEY": {
       "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.DroppedJudgeProfile": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

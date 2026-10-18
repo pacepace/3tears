@@ -97,7 +97,8 @@ class RateReading:
     ``confidence`` (the nominal :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`), computed from ``samples``;
     None where the bundle carries no per-case values for the rate. ``measure`` is the measure's key, None for the
     trials' own pass rate. ``samples`` are the control's and the arm's per-case values, higher better, which a
-    projection reads again at more cases (:func:`project_rate`); ``paired`` whether they are one-to-one.
+    projection reads again at more cases (:func:`project_rate`); ``paired`` whether they are one-to-one; ``rig`` the
+    test setup (apparatus class) they were read under, None with no per-case values.
     """
 
     name: str
@@ -112,6 +113,7 @@ class RateReading:
     samples: tuple[tuple[float, ...], tuple[float, ...]] | None = None
     paired: bool = True
     confidence: float | None = None
+    rig: str | None = None
 
     def drop_bounds(self) -> tuple[float, float]:
         """The arm's drop from the control in points, at best and at worst for the arm."""
@@ -615,6 +617,7 @@ def _read_on(
         samples=(tuple(control), tuple(contrast)),
         paired=paired,
         confidence=confidence,
+        rig=comparison.control.apparatus_class_id,
     )
 
 

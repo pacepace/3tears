@@ -28,6 +28,7 @@ from threetears.evals.analysis import (
     report_html,
     serialize_report,
 )
+from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
@@ -693,3 +694,138 @@ async def test_a_recorded_call_names_each_missed_bar_it_overrides_and_each_it_do
     overrides = first.index(f"The call overrides a missed bar on tone: {missed['tone'].reason}.")
     silent = first.index(f"The call does not name the missed bar on billing as overridden: {missed['billing'].reason}.")
     assert called < overrides < silent
+
+
+async def test_a_why_for_an_overridden_floor_answers_only_the_arm_the_memo_recommends() -> None:
+    def both(readings: CampaignReadings) -> CampaignReadings:
+        (status,) = readings.floors
+        other = status.model_copy(update={"arm": "c" * 64, "arm_label": "v3"})
+        return readings.model_copy(update={"floors": [status, other]})
+
+    memo = _memo()
+    over = FloorOverride(floor="billing/rate_drop/*", why="Billing refunds are rare this quarter.")
+    recommended = memo.recommended()
+    assert recommended is not None
+    recommendation = recommended.model_copy(update={"arm": CANDIDATE_LABEL, "floors_overridden": [over]})
+    page = await _page(
+        "billing", "tone", memo=memo.model_copy(update={"recommendation": [recommendation]}), readings=both
+    )
+    header = [block for block in page.blocks if block.section == "header"]
+    kinds = [
+        "why" if isinstance(block, TextBlock) and block.role == "override" else block.text
+        for block in header
+        if isinstance(block, TextBlock)
+        and block.role == "override"
+        or isinstance(block, DisclosureBlock)
+        and block.source == "floor"
+    ]
+    # v2's warning, its why, then v3's warning with none: the why answers v2 breaking the floor, not v3.
+    assert len(kinds) == 3 and kinds[1] == "why"
+    assert kinds[0].startswith(f"Floor broken on billing: {CANDIDATE_LABEL}'s") and kinds[2].startswith(
+        "Floor broken on billing: v3's"
+    )
+
+
+async def test_a_fold_of_a_choice_names_the_arms_by_the_campaign_s_labels() -> None:
+    tone = await _kind("tone")
+    arms = [arm.model_copy(update={"label": arm.label.upper()}) for arm in tone.arms()]
+    read = campaign_readings(tone.campaign, {"tone": tone.bundle}, arms=arms)
+    assert read.arm_labels() == {tone.keys["alpha"]: "ALPHA", tone.keys["beta"]: "BETA"}
+    report = build_code_only_report(
+        tone.bundle, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+    )
+    page = build_campaign_report(tone.campaign, read, {"tone": report}, None)
+    fold = campaign_report_markdown(page).split("\n## tone", 1)[1]
+    assert "| ALPHA |" in fold and "| alpha |" not in fold
+
+
+def _frontier(
+    tone: MeasuredKind, decision: FrontierCostDecision, tied: bool
+) -> Callable[[AnalysisContextBundle], AnalysisContextBundle]:
+    """The tone bundle with its frontier reading alpha as clearing the bar, by ``decision``, beta beside it when tied."""
+
+    def change(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        ties = (
+            [
+                FrontierCostTie(
+                    variant_key=tone.keys["beta"],
+                    model="beta",
+                    variant_identity_version=1,
+                    production_replicating_cost=0.0005,
+                )
+            ]
+            if tied
+            else []
+        )
+        verdict = FrontierVerdict(
+            variant_key=tone.keys["alpha"],
+            model="alpha",
+            pass_hat_k=0.95,
+            variant_identity_version=1,
+            cost_decision=decision,
+            tied_with=ties,
+        )
+        (subject,) = bundle.frontier.subjects
+        frontier = bundle.frontier.model_copy(update={"subjects": [subject.model_copy(update={"verdict": verdict})]})
+        return bundle.model_copy(update={"frontier": frontier})
+
+    return change
+
+
+@pytest.mark.parametrize(
+    ("decision", "tied", "said"),
+    [
+        (
+            "not_separated",
+            True,
+            "Arms shown to clear the bar on tone: alpha and beta; none is shown cheaper than the rest.",
+        ),
+        (
+            "untested",
+            True,
+            "Arms shown to clear the bar on tone: alpha and beta; too few priced cases to show any of them cheaper.",
+        ),
+        (
+            "shown_cheapest",
+            False,
+            "Cheapest arm shown to clear the bar on tone: alpha, shown cheaper than every other that cleared.",
+        ),
+        ("only_cleared", False, "Only arm shown to clear the bar on tone at a known cost: alpha."),
+    ],
+)
+async def test_the_frontier_line_says_what_the_frontier_read_and_names_every_tied_arm(
+    decision: FrontierCostDecision, tied: bool, said: str
+) -> None:
+    tone = await _kind("tone")
+    page = await _kind_page("tone", bundle=_frontier(tone, decision, tied))
+    lines = [
+        block.text for block in page.blocks if isinstance(block, DisclosureBlock) and "clear the bar" in block.text
+    ]
+    assert lines == [said]
+
+
+async def test_a_change_whose_control_alone_ran_says_its_margin_and_floors_wait_for_a_candidate() -> None:
+    campaign, (billing,) = await _campaign("billing")
+    control = campaign.control
+    assert control is not None
+    read = campaign_readings(campaign, {"billing": billing.bundle}, arms=[control])
+    assert read.kind == "measurement"
+    report = build_code_only_report(billing.bundle, assembled_at=ASSEMBLED_AT, campaign_name="support")
+    page = build_campaign_report(campaign, read, {"billing": report}, None)
+    said = f"Only the control, {CONTROL_LABEL}, has run, so the margin on billing and 1 floor are read once a candidate runs."
+    assert said in _first_screen_markdown(page)
+
+
+async def test_a_measurement_states_its_pass_rate_as_a_count_and_each_rig_apart() -> None:
+    def two_rigs(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        moved = [cell.model_copy(update={"apparatus_class_id": "f" * 64}) for cell in bundle.cell_measures]
+        return bundle.model_copy(update={"cell_measures": [*bundle.cell_measures, *moved]})
+
+    one = await _kind_page("solo")
+    table = next(block for block in one.blocks if isinstance(block, TableBlock) and block.name == "measures")
+    assert "setup" not in {column.key for column in table.columns}
+    assert table.rows[0]["value"].text == "45 of 60" and table.rows[0]["interval"].text.endswith("%]")
+    page = await _kind_page("solo", bundle=two_rigs)
+    table = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures")
+    setups = [row["setup"].text for row in table.rows]
+    assert setups[0] == "every setup" and len(set(setups[1:])) == 2

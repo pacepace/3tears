@@ -497,7 +497,8 @@ async def test_a_memo_titling_an_arm_its_readings_omit_fails_its_case_naming_the
     """
     fixture = off_loop(reporter_fixture)
     host = fixture.host.eval_host
-    bundle = off_loop(assemble_context_bundle, fixture.campaign, storage=host.storage, profile=host.profile)
+    # The campaign bundle, not one aspect's: only it carries the readings whose missed bars the recommendation must name.
+    bundle = off_loop(assemble_campaign_bundle, host, fixture.campaign.id, fixture.campaign.scope_id)
     payload = memo_payload(bundle)
     payload["findings"][0] |= {
         "title": "The 1024tok chunk is the slower one",
