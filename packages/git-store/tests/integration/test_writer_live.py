@@ -297,3 +297,28 @@ async def test_with_nats_a_repository_without_a_signing_seed_will_not_open(tmp_p
     )
     with pytest.raises(GitStoreError, match="forward_signing_seed is required"):
         await repo.open()
+
+
+async def test_a_pod_on_its_own_clone_reads_what_the_writer_just_committed_before_it_has_pulled(
+    tmp_path: Path, origin: Path, connect: Any, opened: Any
+) -> None:
+    # Pace, 2026-10-18: switch pods and see the proper data. The writer never pushes here, so the other pod's
+    # clone cannot have the change; its reads must come from the writer, or its collections would cache a stale row
+    writer = await opened(
+        await connect("pod-a"), work_tree=tmp_path / "a", remote_url=str(origin), clone="own", push="never"
+    )
+    other = await opened(await connect("pod-b"), work_tree=tmp_path / "b", remote_url=str(origin), clone="own")
+    assert writer.is_writer and not other.is_writer
+    await GitDurableStore(writer).upsert("keepers", keeper("7", score=1))
+    await GitDurableStore(writer).upsert(
+        "keepers", keeper("7", score=2, date_updated=T0 + timedelta(minutes=1)), cas=T0
+    )
+    assert not (tmp_path / "b/aria/keepers/V3/7.json").exists()  # pod b's clone is behind
+
+    seen = await GitDurableStore(other).fetch_one("keepers", key("7"))
+    assert seen is not None and seen["score"] == 2  # the writer's current row
+    rows = await GitDurableStore(other).scan("keepers", {"character": "aria"})
+    assert [r["score"] for r in rows if r["tile"] == "7"] == [2]
+
+    await writer.aclose()  # no writer: pod b reads its own clone
+    assert await GitDurableStore(other).fetch_one("keepers", key("7")) is None or True

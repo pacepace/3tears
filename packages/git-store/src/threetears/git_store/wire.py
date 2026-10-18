@@ -32,7 +32,18 @@ from threetears.git_store.errors import (
 )
 from threetears.git_store.git import Author
 
-__all__ = ["ForwardedRequest", "decode_reply", "decode_request", "encode_failure", "encode_request", "encode_result"]
+__all__ = [
+    "ForwardedRequest",
+    "decode_read",
+    "decode_reply",
+    "decode_request",
+    "decode_rows",
+    "encode_failure",
+    "encode_read",
+    "encode_request",
+    "encode_result",
+    "encode_rows",
+]
 
 #: the operations a writer runs for another process.
 Operation = Literal["commit", "commit_paths", "push"]
@@ -263,3 +274,55 @@ def decode_reply(data: bytes) -> CommitResult:
     if kind == "not_writer":
         raise NotTheWriterError(str(error["message"]))
     raise GitStoreError(str(error.get("message", "the writer refused the change")))
+
+
+def encode_read(kind: str, table: str, key: Mapping[str, Any] | None) -> bytes:
+    """a read a pod that isn't the writer asks the writer for (``kind``: ``"fetch"`` by key, ``"scan"`` by filters).
+
+    :param kind: ``"fetch"`` or ``"scan"``
+    :ptype kind: str
+    :param table: the table
+    :ptype table: str
+    :param key: the key (fetch) or the equality filters (scan)
+    :ptype key: Mapping[str, Any] | None
+    :return: the request
+    :rtype: bytes
+    """
+    return json.dumps({"kind": kind, "table": table, "key": _tag(dict(key or {}))}).encode()
+
+
+def decode_read(data: bytes) -> tuple[str, str, dict[str, Any]]:
+    """the read a request asks for.
+
+    :param data: the request
+    :ptype data: bytes
+    :return: ``(kind, table, key or filters)``
+    :rtype: tuple[str, str, dict[str, Any]]
+    :raises ValueError: for a request that isn't a read
+    """
+    body = json.loads(data)
+    if body.get("kind") not in ("fetch", "scan") or not isinstance(body.get("table"), str):
+        raise ValueError("not a git-store read request")
+    return body["kind"], body["table"], _untag(body.get("key") or {})
+
+
+def encode_rows(rows: list[dict[str, Any]]) -> bytes:
+    """rows, as the writer answers a read.
+
+    :param rows: the rows
+    :ptype rows: list[dict[str, Any]]
+    :return: the reply
+    :rtype: bytes
+    """
+    return json.dumps([_tag(row) for row in rows]).encode()
+
+
+def decode_rows(data: bytes) -> list[dict[str, Any]]:
+    """the rows a read's reply carries.
+
+    :param data: the reply
+    :ptype data: bytes
+    :return: the rows
+    :rtype: list[dict[str, Any]]
+    """
+    return [_untag(row) for row in json.loads(data)]

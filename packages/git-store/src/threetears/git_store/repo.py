@@ -59,13 +59,17 @@ from threetears.git_store.git import Author, CommitEntry, FileChange, Git, GitEr
 from threetears.git_store.layout import Layout, locate
 from threetears.git_store.wire import (
     ForwardedRequest,
+    decode_read,
     decode_reply,
     decode_request,
+    decode_rows,
     encode_failure,
+    encode_read,
     encode_request,
     encode_result,
+    encode_rows,
 )
-from threetears.git_store.writer import COMMIT_HANDLER, WriterRole
+from threetears.git_store.writer import COMMIT_HANDLER, READ_HANDLER, WriterRole
 from threetears.nats.errors import NatsClientError
 from threetears.nats.forward import ForwardedHandlerError, ForwardHandler, NoOwnerError
 from threetears.observe import PeriodicTask, get_logger, retry_bounded
@@ -392,6 +396,7 @@ class GitRepo:
                 log_extra=self._log,
             )
             await self._role.serve(COMMIT_HANDLER, self._handle_forwarded)
+            await self._role.serve(READ_HANDLER, self._handle_read)
             if self.config.seek_writer:
                 await self._role.claim()
             if self.config.clone == "own":
@@ -770,6 +775,144 @@ class GitRepo:
                 )
             return await local()
         return decode_reply(reply)
+
+    def read_local(self, table: str, pk: Mapping[str, Any]) -> dict[str, Any] | None:
+        """a row as this process's working tree holds it now. BLOCKING.
+
+        :param table: the table
+        :ptype table: str
+        :param pk: the key
+        :ptype pk: Mapping[str, Any]
+        :return: the row, or ``None``
+        :rtype: dict[str, Any] | None
+        """
+        root = self.config.work_tree
+        path = locate(self.layout, root, table, pk)
+        if path is None:
+            return None
+        target = root / path.as_posix()
+        if not target.is_file():
+            return None
+        return self.layout.decode(table, path, target.read_bytes())
+
+    def scan_local(self, table: str, filters: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+        """every row of ``table`` matching ``filters`` in this process's working tree. BLOCKING.
+
+        :param table: the table
+        :ptype table: str
+        :param filters: equality filters
+        :ptype filters: Mapping[str, Any] | None
+        :return: the rows, in path order
+        :rtype: list[dict[str, Any]]
+        """
+        layout = self.layout
+        root = self.config.work_tree
+        wanted = dict(filters or {})
+        rows: list[dict[str, Any]] = []
+        for candidate in sorted(root.glob(layout.candidates(table, wanted))):
+            if not candidate.is_file():
+                continue
+            relative = PurePosixPath(candidate.relative_to(root).as_posix())
+            data = candidate.read_bytes()
+            found = layout.identify(relative, data if layout.reads_content else None)
+            if found is None or found[0] != table:
+                continue
+            row = layout.decode(table, relative, data)
+            if all(column in row and row[column] == value for column, value in wanted.items()):
+                rows.append(row)
+        return rows
+
+    def _reads_from_writer(self) -> bool:
+        """whether this process's reads go to the writer: a clone of its own that isn't the writer.
+
+        Its working tree lags the writer's until it fetches, so a read there could return a row the writer has
+        already changed, and a collection would cache it. With every such read answered by the writer, the git tier
+        is one current copy from every process's view, as a shared database is, and 3tears' collections (evict on
+        every commit, re-read on a miss) show current data on every pod (Pace, 2026-10-18: switch pods and see the
+        proper data). A shared working tree is the writer's own files, so it reads them directly.
+
+        :return: ``True`` to ask the writer
+        :rtype: bool
+        """
+        return self.config.clone == "own" and self._role is not None and not self.is_writer
+
+    async def _read_via_writer(
+        self, kind: str, table: str, key: Mapping[str, Any] | None
+    ) -> list[dict[str, Any]] | None:
+        """the writer's answer to a read, or ``None`` when no writer serves (this process then reads its own tree).
+
+        :param kind: ``"fetch"`` or ``"scan"``
+        :ptype kind: str
+        :param table: the table
+        :ptype table: str
+        :param key: the key or the filters
+        :ptype key: Mapping[str, Any] | None
+        :return: the rows, or ``None``
+        :rtype: list[dict[str, Any]] | None
+        :raises GitStoreError: when the writer failed the read, or NATS could not be reached (a read from this
+            process's own clone could be stale, so it isn't offered in its place)
+        """
+        assert self._role is not None
+        try:
+            reply = await self._role.forward(READ_HANDLER, encode_read(kind, table, key))
+        except NoOwnerError:
+            return None  # no writer: nobody is changing the repository, so this clone is as current as any
+        except ForwardedHandlerError as exc:
+            raise GitStoreError(
+                f"the writer of {self.config.lease_key} failed a read: {exc.type_name}: {exc.message}"
+            ) from exc
+        except NatsClientError as exc:
+            raise GitStoreError(
+                f"the writer of {self.config.lease_key} could not be reached for a read ({type(exc).__name__}: {exc})"
+            ) from exc
+        return decode_rows(reply)
+
+    async def read_row(self, table: str, pk: Mapping[str, Any]) -> dict[str, Any] | None:
+        """the current row with key ``pk``: this working tree's, or the writer's when this clone may lag.
+
+        :param table: the table
+        :ptype table: str
+        :param pk: the key
+        :ptype pk: Mapping[str, Any]
+        :return: the row, or ``None``
+        :rtype: dict[str, Any] | None
+        """
+        if self._reads_from_writer():
+            rows = await self._read_via_writer("fetch", table, pk)
+            if rows is not None:
+                return rows[0] if rows else None
+        return await asyncio.to_thread(self.read_local, table, pk)
+
+    async def read_rows(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+        """the current rows of ``table`` matching ``filters``: this working tree's, or the writer's.
+
+        :param table: the table
+        :ptype table: str
+        :param filters: equality filters; ``None`` for every row
+        :ptype filters: Mapping[str, Any] | None
+        :return: the rows
+        :rtype: list[dict[str, Any]]
+        """
+        if self._reads_from_writer():
+            rows = await self._read_via_writer("scan", table, filters)
+            if rows is not None:
+                return rows
+        return await asyncio.to_thread(self.scan_local, table, filters)
+
+    async def _handle_read(self, payload: bytes) -> bytes:
+        """answer another process's read, on the writer, from the writer's working tree.
+
+        :param payload: the read
+        :ptype payload: bytes
+        :return: the rows
+        :rtype: bytes
+        """
+        self._require_writer()
+        kind, table, key = decode_read(payload)
+        if kind == "fetch":
+            row = await asyncio.to_thread(self.read_local, table, key)
+            return encode_rows([] if row is None else [row])
+        return encode_rows(await asyncio.to_thread(self.scan_local, table, key))
 
     async def _handle_forwarded(self, payload: bytes) -> bytes:
         """run another process's operation, on the writer, and answer with its result or refusal.

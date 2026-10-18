@@ -97,6 +97,14 @@ consumer can pass a `CollectionReplayAnchor` as `GitRepo(replay_anchor=...)`), s
 restart doesn't refuse its first requests. The receiver's sender posture is `signed-envelope`; the open allowlist
 row it was added under is gone.
 
+**git-store: every pod reads current data.** A process on a clone of its own that isn't the writer now has its
+durable reads (`fetch_one`, `scan`) answered by the writer (a sealed `read` request on the forward family), because
+its own clone lags the writer's until it fetches and a collection would have cached the stale row. So the git tier
+is one current copy from every process's view, as a shared database is, and 3tears' collections (evict on every
+commit, re-read on a miss) show current data on whichever pod serves the request. A shared working tree, the writer
+itself, and a clone with no writer running read their own files. `GitRepo.read_row` / `read_rows` route the read;
+`read_local` / `scan_local` read this process's tree.
+
 **Fixed (git-store):** a work tree inside another git repository was used as if it were one, so commits landed in
 the outer repository; `open()` now refuses it (`GitStoreError`). A nested repository of its own still works.
 

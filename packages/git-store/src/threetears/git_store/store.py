@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from pathlib import PurePosixPath
 from typing import Any
 
 from threetears.git_store.change import Change, ChangeSet, OnConflict, same_version
@@ -83,25 +82,6 @@ class GitDurableStore:
 
     # ------------------------------------------------------------------ reads
 
-    def _read(self, table: str, pk: Mapping[str, Any]) -> dict[str, Any] | None:
-        """a row as its file holds it now. BLOCKING.
-
-        :param table: the table
-        :ptype table: str
-        :param pk: the key
-        :ptype pk: Mapping[str, Any]
-        :return: the row, or ``None``
-        :rtype: dict[str, Any] | None
-        """
-        root = self.repo.config.work_tree
-        path = locate(self.repo.layout, root, table, pk)
-        if path is None:
-            return None
-        target = root / path.as_posix()
-        if not target.is_file():
-            return None
-        return self.repo.layout.decode(table, path, target.read_bytes())
-
     async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
         """the row with key ``pk``, or ``None``.
 
@@ -119,34 +99,7 @@ class GitDurableStore:
             pending = change_set.pending(table, pk)
             if pending is not None:
                 return None if pending.row is None else dict(pending.row)
-        return await asyncio.to_thread(self._read, table, pk)
-
-    def _scan(self, table: str, filters: Mapping[str, Any] | None) -> list[dict[str, Any]]:
-        """every row of ``table`` matching ``filters``. BLOCKING.
-
-        :param table: the table
-        :ptype table: str
-        :param filters: equality filters
-        :ptype filters: Mapping[str, Any] | None
-        :return: the rows, in path order
-        :rtype: list[dict[str, Any]]
-        """
-        layout = self.repo.layout
-        root = self.repo.config.work_tree
-        wanted = dict(filters or {})
-        rows: list[dict[str, Any]] = []
-        for candidate in sorted(root.glob(layout.candidates(table, wanted))):
-            if not candidate.is_file():
-                continue
-            relative = PurePosixPath(candidate.relative_to(root).as_posix())
-            data = candidate.read_bytes()
-            found = layout.identify(relative, data if layout.reads_content else None)
-            if found is None or found[0] != table:
-                continue
-            row = layout.decode(table, relative, data)
-            if all(column in row and row[column] == value for column, value in wanted.items()):
-                rows.append(row)
-        return rows
+        return await self.repo.read_row(table, pk)
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """every row matching the equality ``filters``; a filter on a path column narrows the files read.
@@ -158,7 +111,7 @@ class GitDurableStore:
         :return: the rows
         :rtype: list[dict[str, Any]]
         """
-        return await asyncio.to_thread(self._scan, table, filters)
+        return await self.repo.read_rows(table, filters)
 
     async def history(self, table: str, pk: Mapping[str, Any], *, limit: int = 50) -> list[CommitEntry]:
         """the commits that changed a row's file, newest first.
@@ -206,7 +159,7 @@ class GitDurableStore:
             ``on_conflict="ignore"`` means "skip it"
         :rtype: ConflictedRow | None
         """
-        stored = self._read(change.table, change.pk)
+        stored = self.repo.read_local(change.table, change.pk)
         if change.cas is not None:
             column = self.repo.layout.version_column(change.table)
             if stored is None:

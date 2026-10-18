@@ -41,6 +41,9 @@ FORWARD_FAMILY: Final[str] = "git-store"
 #: the name of the handler that runs change sets; product handlers take other names.
 COMMIT_HANDLER: Final[str] = "commit"
 
+#: the name of the handler that answers reads for clones of their own that aren't the writer (GitRepo.read_row)
+READ_HANDLER: Final[str] = "read"
+
 
 class WriterRole:
     """this process's claim on being a repository's writer.
