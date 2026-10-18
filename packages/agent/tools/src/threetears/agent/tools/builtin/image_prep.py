@@ -22,6 +22,7 @@ from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolR
 from threetears.observe import contain, get_logger
 
 __all__ = [
+    "ImagePrepError",
     "ImagePrepTool",
     "prepare_image_for_vision",
 ]
@@ -40,6 +41,32 @@ _JPEG_QUALITY = 85
 _SIZE_THRESHOLD = 512 * 1024
 
 
+class ImagePrepError(RuntimeError):
+    """an image that needed resizing or re-encoding could not be.
+
+    raised in place of handing the original bytes back as though they were prepared: the
+    original is exactly what the vision API was going to refuse, so a caller that sends it
+    anyway has to know it is doing so. the cause (Pillow absent, a corrupt or unsupported
+    image) is chained as ``__cause__``.
+
+    :param mime_type: the image's declared MIME type
+    :ptype mime_type: str
+    :param size_bytes: the image's size
+    :ptype size_bytes: int
+    :param detail: why, as ``"<Type>: <message>"``
+    :ptype detail: str
+    """
+
+    def __init__(self, mime_type: str, size_bytes: int, detail: str) -> None:
+        self.mime_type = mime_type
+        self.size_bytes = size_bytes
+        self.detail = detail
+        super().__init__(
+            f"the image ({mime_type}, {size_bytes} bytes) could not be resized or re-encoded "
+            f"for a vision model: {detail}"
+        )
+
+
 def prepare_image_for_vision(
     data: bytes,
     mime_type: str,
@@ -55,6 +82,8 @@ def prepare_image_for_vision(
     :param mime_type: original MIME type (e.g. ``image/jpeg``, ``image/heic``)
     :ptype mime_type: str
     :return: tuple of ``(bytes, mime_type)`` ready for base64 encoding
+    :raises ImagePrepError: the image needed processing and it failed (Pillow not
+        installed, or the bytes are not an image Pillow reads)
     """
     # Small images in web-safe formats: pass through unchanged
     if len(data) <= _SIZE_THRESHOLD and mime_type in (
@@ -110,18 +139,8 @@ def prepare_image_for_vision(
 
         return result, "image/jpeg"
 
-    except Exception as exc:
-        contain(
-            exc,
-            log=_log,
-            what="Image preprocessing failed, sending original",
-            extra={
-                "error": str(exc),
-                "mime_type": mime_type,
-                "size_bytes": len(data),
-            },
-        )
-        return data, mime_type
+    except Exception as exc:  # noqa: BLE001 -- any failure is refused by name; the caller decides whether to send the original
+        raise ImagePrepError(mime_type, len(data), f"{type(exc).__name__}: {exc}") from exc
 
 
 class ImagePrepTool(TearsTool):
@@ -183,7 +202,16 @@ class ImagePrepTool(TearsTool):
             )
             return result
 
-        processed_bytes, effective_mime = prepare_image_for_vision(raw_bytes, mime_type)
+        try:
+            processed_bytes, effective_mime = prepare_image_for_vision(raw_bytes, mime_type)
+        except ImagePrepError as exc:
+            contain(exc, log=_log, what="image could not be prepared for a vision model")
+            result = ToolResult(
+                success=False,
+                content="",
+                error=f"{exc}; nothing was resized, and the original image is unchanged",
+            )
+            return result
         processed_base64 = base64.b64encode(processed_bytes).decode("ascii")
 
         content = json.dumps(

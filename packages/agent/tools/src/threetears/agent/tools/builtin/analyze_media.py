@@ -1047,6 +1047,7 @@ class AnalyzeMediaTool(TearsTool):
             return await self._handle_vision_by_reference(resolved, acfg.vision, question, analyzer_name)
 
         from threetears.agent.tools.builtin.image_prep import (
+            ImagePrepError,
             prepare_image_for_vision,
         )
 
@@ -1054,6 +1055,8 @@ class AnalyzeMediaTool(TearsTool):
         # MAX_VISION_IMAGE_BYTES. one image over the bound refuses the whole
         # analysis: an answer about the others would read as an answer about all.
         image_parts: list[tuple[bytes, str]] = []
+        #: images sent as they were stored because preparing them failed, one sentence each
+        unprepared: list[str] = []
         for mid_str in media_ids:
             mid = UUID(mid_str)
             info = media_info.get(mid_str)
@@ -1079,10 +1082,23 @@ class AnalyzeMediaTool(TearsTool):
 
             data, mime_type = dl
             # Preprocess — resize large images, re-encode HEIC, etc.
-            processed_data, processed_mime = prepare_image_for_vision(
-                data,
-                mime_type,
-            )
+            try:
+                processed_data, processed_mime = prepare_image_for_vision(
+                    data,
+                    mime_type,
+                )
+            except ImagePrepError as exc:
+                # The original may still be one the vision model takes (Pillow is an optional
+                # extra, and a large JPEG is often within the provider's own limit), so it is
+                # sent -- but as the original, and the result says so.
+                contain(
+                    exc,
+                    log=_log,
+                    what="image could not be prepared for vision; sending the original",
+                    extra={"media_id": mid_str},
+                )
+                processed_data, processed_mime = data, mime_type
+                unprepared.append(f"{mid_str} was sent as stored, not resized: {exc}.")
             image_parts.append((processed_data, processed_mime))
 
         if not image_parts:
@@ -1119,10 +1135,13 @@ class AnalyzeMediaTool(TearsTool):
                 },
                 level="error",
             )
-            return _tool_error("vision model invocation", str(exc))
+            return _tool_error("vision model invocation", " ".join([str(exc), *unprepared]))
 
         # Persist description for single-media analysis
-        return await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
+        finalized = await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
+        if unprepared:
+            finalized = "\n".join(["Note: " + note for note in unprepared]) + "\n\n" + finalized
+        return finalized
 
     async def _handle_vision_by_reference(
         self,

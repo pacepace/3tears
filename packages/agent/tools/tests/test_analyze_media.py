@@ -708,6 +708,27 @@ class TestVisionImageSizeLimit:
         assert vision.analyze_calls == [], "an analysis of the other images would read as an analysis of all of them"
 
 
+class TestVisionImagePrepFailure:
+    """an image that could not be prepared is sent as stored, and the result says so."""
+
+    @pytest.mark.asyncio
+    async def test_an_image_that_could_not_be_resized_is_named_in_the_result(self):
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider("Something unreadable.")
+        mid = uuid4()
+        # labelled HEIC, so it is always re-encoded -- and the bytes are not an image Pillow reads
+        corrupt = b"not an image at all"
+        storage.add_media(mid, MediaInfo(mid, "image", "image/heic"), corrupt, "image/heic")
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe", "analyzer": "TestVision"})
+
+        assert vision.analyze_calls[0][:2] == (corrupt, "image/heic"), "the original is what was sent"
+        assert result.startswith(f"Note: {mid} was sent as stored, not resized: the image (image/heic, ")
+        assert "could not be resized or re-encoded for a vision model" in result
+        assert "Something unreadable." in result
+
+
 class TestAudioVideoRouting:
     """Audio/video should route through transcription."""
 
