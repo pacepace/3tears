@@ -78,6 +78,7 @@ from threetears.evals.analysis.lenses.program_budget import compute_program_budg
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
+from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.declaration import CampaignDesign, RateDrop, resolve_declared_control
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
@@ -744,7 +745,11 @@ def assemble_context_bundle(
         earlier_control=design.earlier_control,
         names=names,
     )
-    bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
+    # A campaign of judge-kind results only: the judge under test is the subject and the only role billed, so its
+    # spend is the arm's own and not spend on measuring it. Decided from the results' candidate_kind, as the cost
+    # measure is; a mixed campaign keeps the measuring-spend label.
+    judge_kind = bool(results) and all(result.candidate_kind == JUDGE_KIND for result in results)
+    bundle.measure_catalog = _measure_catalog(bundle, profile=profile, judge_kind=judge_kind)
     bundle.run_margins, bundle.run_margins_withheld = _run_margins(runs)
     bundle.launch_declarations = launch_declarations
     # After the catalog, which says each measure's better direction and axis: a family is the readings a

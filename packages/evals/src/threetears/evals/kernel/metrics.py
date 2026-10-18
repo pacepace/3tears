@@ -304,10 +304,22 @@ def subject_spend_descriptor(descriptor: MetricDescriptor) -> MetricDescriptor:
     :rtype: MetricDescriptor
     """
     renamed = SUBJECT_SPEND_READER_NAMES.get(descriptor.name)
-    return descriptor if renamed is None else descriptor.model_copy(update={"reader_name": renamed})
+    if renamed is None:
+        return descriptor
+    return descriptor.model_copy(
+        update={
+            "reader_name": renamed,
+            "subject_spend": True,
+            "description": (
+                f"{descriptor.description} In a judge campaign the judge under test is the subject and the only role "
+                "billed, so this is the arm's own spend, the dollars production_replicating_cost reads, and not spend "
+                "on measuring it."
+            ),
+        }
+    )
 
 
-def measure_title(name: str, reader_name: str | None = None) -> str:
+def measure_title(name: str, reader_name: str | None = None, *, subject_spend: bool = False) -> str:
     """A measure as a chart or column heads it: by its reader-facing name, and a measuring-spend measure says it is one.
 
     The reader-facing name (:attr:`MetricDescriptor.reader_name`) when the measure has one, and the key only when
@@ -319,16 +331,16 @@ def measure_title(name: str, reader_name: str | None = None) -> str:
     :ptype name: str
     :param reader_name: Its reader-facing name, when it has one.
     :ptype reader_name: str | None
+    :param subject_spend: Whether the campaign reads the measure as the subject's own spend
+        (:attr:`MetricDescriptor.subject_spend`), which is not measuring spend.
+    :ptype subject_spend: bool
     :return: The reader-facing name, else the key, with ``, measuring spend`` after it for a
-        :data:`MEASURING_SPEND_MEASURES` member whose title does not already say so.
+        :data:`MEASURING_SPEND_MEASURES` member whose title does not already say so and which is not the subject's own
+        spend.
     :rtype: str
     """
     title = reader_name or name
-    if (
-        name in MEASURING_SPEND_MEASURES
-        and "measuring spend" not in title.casefold()
-        and reader_name not in SUBJECT_SPEND_READER_NAMES.values()
-    ):
+    if name in MEASURING_SPEND_MEASURES and "measuring spend" not in title.casefold() and not subject_spend:
         return f"{title}, measuring spend"
     return title
 
@@ -520,6 +532,15 @@ class MetricDescriptor(EvalBaseModel):
             "directionless numeric measure reaches the analysis surfaces only when it says this: one that does "
             "not is a raw count, and a raw count stays out. Requires `higher_is_better` to be None, since a "
             "direction is exactly what would let a ranking read the diagnostic as a merit."
+        ),
+    )
+
+    subject_spend: bool = Field(
+        default=False,
+        description=(
+            "True where a spend measure is read in a campaign whose every result is a judge-kind one: the judge under "
+            "test is the subject and the only role billed, so these dollars are the arm's own spend and not spend on "
+            "measuring it. A surface then does not title the measure measuring spend."
         ),
     )
 

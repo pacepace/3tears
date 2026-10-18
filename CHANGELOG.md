@@ -10,7 +10,7 @@ packages (bumped in lock-step).
 
 ### 3tears-evals: a judge campaign's report no longer labels the subject's own spend measuring spend
 
-- **In a judge-kind campaign the spend measures read as the arm's own spend** (#830). The judge under test is the
+- **In a campaign whose every result is judge-kind (`candidate_kind`) the spend measures read as the arm's own spend** (#830). The judge under test is the
   subject and the only role billed, so `cost_usd` is the same dollars as `production_replicating_cost`, and the
   report showed them as both "Production cost" and "Measuring spend, all roles". There `cost_usd`, `program_cost`,
   `total_cost_usd` and `mean_cost_usd` read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per

@@ -2313,7 +2313,7 @@
     },
     "threetears.evals.kernel.MetricDescriptor": {
       "kind": "model",
-      "signature": "MetricDescriptor(name: str, reader_name: str | None = None, data_type: MetricDataType | None = None, family: MetricFamily | None = None, transferability_class: TransferabilityClass, attribution_scope: AttributionScope, description: str, higher_is_better: bool | None = None, value_range: tuple[float, float] | None = None, nonnegative: bool = False, categories: tuple[str, ...] | None = None, unit: str | None = None, materiality_threshold: float | None = None, formula: str | None = None, reader_prose: str | None = None, merit_axis: MeritAxis | None = None, population: MeasurePopulation | None = None, scale: MeasureScale | None = None, contained_by: str | None = None, diagnostic: bool = False, guardrail: bool = False, pass_fail: bool = False)",
+      "signature": "MetricDescriptor(name: str, reader_name: str | None = None, data_type: MetricDataType | None = None, family: MetricFamily | None = None, transferability_class: TransferabilityClass, attribution_scope: AttributionScope, description: str, higher_is_better: bool | None = None, value_range: tuple[float, float] | None = None, nonnegative: bool = False, categories: tuple[str, ...] | None = None, unit: str | None = None, materiality_threshold: float | None = None, formula: str | None = None, reader_prose: str | None = None, merit_axis: MeritAxis | None = None, population: MeasurePopulation | None = None, scale: MeasureScale | None = None, contained_by: str | None = None, diagnostic: bool = False, subject_spend: bool = False, guardrail: bool = False, pass_fail: bool = False)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.MetricFamily": {
