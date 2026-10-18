@@ -20,9 +20,12 @@ import pytest
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, POST_HOC_EXPLORATORY
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
-from packages.evals.tests.v15_shapes import V15Question
 from threetears.evals.kernel.errors import ConflictError
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign_of_one_aspect, toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import (
+    TOYHOST_QUESTION,
+    toyhost_campaign_of_one_aspect,
+    toyhost_aspect_design,
+)
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, ops_fixture
 
 #: A moment after every corpus run was created.
@@ -203,12 +206,12 @@ def test_a_late_question_beside_an_early_one_makes_the_campaign_s_one_question_p
     """A campaign asks one question, its live questions' words joined, asked when the last of them was: a question
     added after the first run makes the whole question post hoc (until aspects, the early one still confirmed)."""
     fixture = ops_fixture()
-    design = toyhost_design()
-    late = V15Question(id="q-post", text="does the wider chunk cut the error rate?", asked_at=_LATER)
-    both = design.model_copy(update={"questions": [*design.questions, late]})
+    late = "does the wider chunk cut the error rate?"
     (aspect,) = fixture.campaign.aspects
     stored = toyhost_campaign_of_one_aspect(
-        declared_design=both,
+        design=toyhost_aspect_design(),
+        question=f"{TOYHOST_QUESTION}\n\n{late}",
+        asked_at=_LATER,
         id=fixture.campaign.id,
         scope_id=fixture.campaign.scope_id,
         name=fixture.campaign.name,

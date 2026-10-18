@@ -18,7 +18,7 @@ from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.schema import RubricDim
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run, make_template
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 _SCOPE = "campaign-template"
@@ -43,10 +43,9 @@ def _store(templates: dict[str, str]) -> EvalStorage:
 
 
 def _definition(run_ids: list[str], **extra: object) -> dict[str, object]:
-    design = toyhost_design().model_copy(
+    design = toyhost_aspect_design().model_copy(
         update={"bars": [BarOverride(measure_id=_DIM, threshold=3, direction="higher_is_better")]}
     )
-    moved = {"declared_at", "declared_by", "questions", "control", "control_levers", "control_identity_version"}
     return {
         "name": "a bar on the template's rubric",
         "subject_id": "subject-1",
@@ -55,7 +54,7 @@ def _definition(run_ids: list[str], **extra: object) -> dict[str, object]:
             {
                 "label": "extraction",
                 "run_ids": run_ids,
-                "design": design.model_dump(mode="json", exclude=moved),
+                "design": design.model_dump(mode="json"),
                 **extra,
             }
         ],

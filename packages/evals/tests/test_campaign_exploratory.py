@@ -25,7 +25,7 @@ from threetears.evals.analysis.campaigns import create_campaign, set_campaign_co
 from threetears.evals.kernel import EvalCampaign
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import CampaignLine
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
 
@@ -37,8 +37,7 @@ def evals() -> MountedTool:
 
 def _design() -> dict[str, Any]:
     """The toy host's declaration as one aspect's design: no question, control or date — the campaign's own."""
-    moved = {"declared_at", "declared_by", "questions", "control", "control_levers", "control_identity_version"}
-    return toyhost_design().model_dump(mode="json", exclude=moved)
+    return toyhost_aspect_design().model_dump(mode="json")
 
 
 def _aspects(fixture: OpsFixture, *, declared: bool, runs: bool = True) -> list[dict[str, Any]]:
