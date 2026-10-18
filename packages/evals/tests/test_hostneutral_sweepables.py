@@ -189,6 +189,18 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 58/13: that rule counts the arms that observed the lever, not the results. A shape-only bump again.
+    (
+        (58, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 
