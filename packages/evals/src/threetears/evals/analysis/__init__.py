@@ -101,6 +101,11 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
+from threetears.evals.analysis.campaign_bundle import (
+    CAMPAIGN_MESSAGE_CHARS_PER_ASPECT,
+    CampaignBundle,
+    build_campaign_user_message,
+)
 from threetears.evals.analysis.campaign_readings import (
     AspectReading,
     CampaignReadings,
@@ -231,6 +236,7 @@ from threetears.evals.analysis.service import (
     BudgetedGenerator,
     PreparedGeneration,
     analysis_report,
+    assemble_campaign_bundle,
     campaign_report,
     campaign_verdicts,
     describe_insight_id_filters,
@@ -404,6 +410,11 @@ __all__ = [
     "ShownReading",
     "aspect_view",
     "aspect_views",
+    # What the writer of a campaign's one memo reads: every aspect's evidence, the floors and code's readings.
+    "CAMPAIGN_MESSAGE_CHARS_PER_ASPECT",
+    "CampaignBundle",
+    "assemble_campaign_bundle",
+    "build_campaign_user_message",
     # The cases an unclear reading would need to settle, which a campaign's readings carry per row.
     "CasesNeeded",
     "NeedKind",

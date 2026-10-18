@@ -234,18 +234,23 @@ def cell_arm_labels(surface: DecisionSurface, variant_index: Sequence[VariantInd
 
 
 def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
-    """Name the arm a cell reference points at, as :func:`cell_arm_labels` names it.
+    """Name the arm a cell reference points at, as :func:`cell_arm_labels` names it, over every aspect's cells.
 
-    A reference naming a variant the analysis's surface does not hold is named by the variant index's labeller,
-    in its own words, rather than printed as the reference.
+    One arm under one rig is one ``cell_ref`` in every aspect it ran in, and is named alike in each. A reference naming
+    a variant no aspect's surface holds is named by the variant indexes' labeller, in its own words, rather than
+    printed as the reference.
 
     :param analysis: The analysis whose references to name.
     :ptype analysis: EvalAnalysis
     :return: A function from a cell reference to its arm's name.
     :rtype: Callable[[str], str]
     """
-    labels = cell_arm_labels(analysis.decision_surface, analysis.variant_index)
-    names = arm_names(analysis.variant_index)
+    index = list({entry.variant_key: entry for aspect in analysis.aspects for entry in aspect.variant_index}.values())
+    labels: dict[str, str] = {}
+    for aspect in analysis.aspects:
+        for ref, label in cell_arm_labels(aspect.decision_surface, index).items():
+            labels.setdefault(ref, label)
+    names = arm_names(index)
 
     def name(ref: str) -> str:
         if ref in labels:
@@ -273,8 +278,8 @@ def evidence_rows(
 ) -> list[dict[str, TableCell]]:
     """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
 
-    A measure's value and spread are stated on its one ruler for the report
-    (:func:`~threetears.evals.analysis.report.figures.analysis_rulers`): a share on 0–1 as a percent, a cost per
+    Each row is read on the aspect it was resolved on (``EvidenceRow.aspect``). A measure's value and spread are stated
+    on its one ruler for the report (:func:`~threetears.evals.analysis.report.figures.analysis_rulers`): a share on 0–1 as a percent, a cost per
     reply on the scale its heading names; a judged score on its dimension's; a goal check's
     pass rate is its count (``11 of 12``), as the scoreboard counts.
 
@@ -287,11 +292,10 @@ def evidence_rows(
     :return: One row per evidence row, in order.
     :rtype: list[dict[str, TableCell]]
     """
-    surface = analysis.decision_surface
-    rulers = analysis_rulers(analysis)
     rows: list[dict[str, TableCell]] = []
     for row in evidence:
-        ruler = rulers.of(row.measure_id, row.reading)
+        surface = analysis.aspect(row.aspect).decision_surface
+        ruler = analysis_rulers(analysis, row.aspect).of(row.measure_id, row.reading)
         values: dict[str, CellValue] = {
             "arm": arm(row.cell_ref),
             "measure": ruler.scaled(reading_heading(surface, row.measure_id, row.reading)),
@@ -322,7 +326,7 @@ def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, ruler: MeasureRul
     """An evidence row's spread on its value's ruler: as stored where nothing is restated, else re-read off the surface."""
     if ruler.factor == 1.0:
         return row.dispersion
-    surface = analysis.decision_surface
+    surface = analysis.aspect(row.aspect).decision_surface
     try:
         resolved = resolve_reading(surface, row.cell_ref, row.measure_id, row.reading)
     except UnresolvableReference:

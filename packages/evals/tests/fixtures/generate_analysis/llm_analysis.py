@@ -1,7 +1,7 @@
 """Can a model write a campaign's analysis from a frozen copy of the evidence?
 
-A model writes the analysis from one input, the campaign's **analysis bundle**: every number code computed,
-frozen into one JSON file with a sha256 fingerprint. The model never types a figure. It names a reading, code
+A model writes the campaign's one memo from one input, its **campaign bundle**: every number code computed, for
+every aspect, frozen into one JSON file with a sha256 fingerprint. The model never types a figure. It names a reading, code
 fills the number in, and a reading the bundle lacks is refused and sent back for repair. New here:
 ``generate_analysis``. Only the cited readings are checked, not the prose around them, so a conclusion can still
 overclaim: hold it against the code's verdict, printed first. The bundle: ``docs/concepts.md#analysis-bundle``.
@@ -35,9 +35,9 @@ from typing import Any
 from threetears.evals import Eval
 from threetears.evals.analysis import (
     EVAL_ANALYSIS_GEN_DEFAULT,
-    AnalysisContextBundle,
+    CampaignBundle,
+    assemble_campaign_bundle,
     generate_analysis,
-    inspect_campaign_bundle,
 )
 from threetears.evals.kernel import EvalAnalysis
 from threetears.evals.providers import Model
@@ -170,17 +170,17 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
 
     # Freeze: assemble the bundle once and save it. The fingerprint is a sha256 of its canonical JSON.
     # A store read, so it runs off the event loop.
-    inspected = await run_blocking(
+    assembled = await run_blocking(
         comparison.host.blocking_executor,
-        inspect_campaign_bundle,
+        assemble_campaign_bundle,
         comparison.host,
         comparison.campaign_id,
         comparison.scope_id,
     )
     frozen = out_dir / "bundle.json"
     out_dir.mkdir(parents=True, exist_ok=True)
-    frozen.write_text(inspected.bundle.to_json(indent=2), encoding="utf-8")
-    print(f"Froze the evidence into {frozen}, fingerprint {inspected.bundle.fingerprint()}")
+    frozen.write_text(assembled.to_json(indent=2), encoding="utf-8")
+    print(f"Froze the evidence into {frozen}, fingerprint {assembled.fingerprint()}")
 
     prompt = EVAL_ANALYSIS_GEN_DEFAULT
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -195,7 +195,7 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
     elif os.environ.get("RECORD") == "1":
         shutil.copyfile(frozen, RECORDED_BUNDLE)  # the bundle a replay will hand the writer
         RECORDED_PROMPT.write_text(EVAL_ANALYSIS_GEN_DEFAULT, encoding="utf-8")  # and the prompt
-    bundle = AnalysisContextBundle.from_json(frozen.read_text(encoding="utf-8"))  # the writer reads only the file
+    bundle = CampaignBundle.from_json(frozen.read_text(encoding="utf-8"))  # the writer reads only the file
 
     try:
         analysis, _insights = await generate_analysis(
@@ -211,8 +211,8 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
         await llm.aclose()
     for finding in analysis.document.findings:
         print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code
-    for decision in analysis.document.decisions:  # checked: adopting an arm needs a reading that separated
-        print(f"  decision ({decision.disposition}): {decision.proposal}")
+    recommended = analysis.document.recommendation  # checked: recommending a candidate needs a separated reading
+    print(f"  recommends {recommended.arm} ({recommended.confidence}): {' '.join(recommended.reasons)}")
     made = analysis.generation  # provenance: the bundle it read, the prompt's version, the cost, any repair
     print(
         f"\nRead bundle {made.bundle_fingerprint[:12]} under prompt {made.prompt_version[:12]}, for ${made.token_cost:.4f}"

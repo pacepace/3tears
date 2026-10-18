@@ -27,8 +27,8 @@ from typing import Any, Literal, Self, get_args
 
 from pydantic import Field, computed_field, field_validator, model_validator
 
-from threetears.evals.kernel.authored import AuthoredAnalysis, Confidence
-from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, CampaignDesign, Floor
+from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Confidence
+from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, Floor
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
@@ -578,8 +578,12 @@ class EvidenceRow(EvalDocumentModel):
     so the figure a reader sees is the one computed, never a transcription of it. ``n`` and
     ``dispersion`` are REQUIRED for the reason :class:`LeverCoverage` requires them — a point estimate
     rendered without its sample size and spread is a rendering bug.
+
+    ``aspect`` says which aspect's surface the reading was resolved on: one arm under one rig is the same cell in
+    every aspect it ran in, so the ``cell_ref`` alone does not say which aspect's evidence it is.
     """
 
+    aspect: str = Field(min_length=1, description="The label of the aspect whose surface the reading resolved on.")
     cell_ref: str = Field(
         min_length=1,
         description="The cell the reading sits at — `<variant_key>:<apparatus_class_id>`, as `cells.cell_ref` mints it.",
@@ -812,6 +816,76 @@ class FindingResolution(EvalDocumentModel):
         return evidence_tier_of([row.judged_tier for row in self.evidence])
 
 
+class CampaignDeclaration(EvalDocumentModel):
+    """What a campaign declared, as of one generation: its question, arms, aspects and floors.
+
+    A snapshot rather than a reference because a declaration can change after an analysis was written (an aspect
+    added, a floor tightened, an arm named), and an analysis written against one declaration must not later read as
+    written against another. Every campaign declares at least its aspects, so every analysis carries one; an aspect
+    whose ``design`` is None declared nothing about its arms, and its memo reads as exploratory there.
+    """
+
+    question: str = Field(description="The campaign's one question, in its words; empty when it asks none.")
+    declared_at: str | None = Field(description="When the question's wording was declared (ISO-8601); None = never.")
+    declared_by: str | None = Field(description="Who declared it; None when nobody did.")
+    arms: list[CampaignArm] = Field(description="The arms a person named, the control first.")
+    aspects: list[Aspect] = Field(min_length=1, description="Every aspect, as declared, in the campaign's order.")
+    floors: list[Floor] = Field(description="Every floor, on the aspect it names.")
+
+    @classmethod
+    def of(cls, campaign: EvalCampaign) -> CampaignDeclaration:
+        """Snapshot what ``campaign`` declares now.
+
+        :param campaign: The campaign.
+        :ptype campaign: EvalCampaign
+        :return: Its declaration.
+        :rtype: CampaignDeclaration
+        """
+        return cls(
+            question=campaign.question,
+            declared_at=campaign.declared_at,
+            declared_by=campaign.declared_by,
+            arms=list(campaign.arms),
+            aspects=list(campaign.aspects),
+            floors=list(campaign.floors),
+        )
+
+
+class AspectAnalysis(EvalDocumentModel):
+    """One aspect of an analysed campaign: the evidence bundle the memo was written over there, and what code read.
+
+    Frozen at generation, never resolved at read: an analysis must keep saying what each aspect's arms and numbers
+    WERE, whatever anyone archives or curates afterwards.
+    """
+
+    label: str = Field(min_length=1, description="The aspect's label.")
+    bundle: VerbatimJsonObject = Field(
+        description=(
+            "The aspect's evidence bundle, frozen at generation as its canonical dump "
+            "(`AnalysisContextBundle.to_dict()`): the report renders every count, verdict, chart and disclosure of "
+            "this aspect from it. Read back with `AnalysisContextBundle.from_dict`."
+        )
+    )
+    bundle_fingerprint: str = Field(min_length=1, description="The frozen bundle's fingerprint.")
+    decision_surface: DecisionSurface = Field(
+        description=(
+            "The aspect's per-cell numbers, as code computed them, copied from its bundle at generation; every "
+            "evidence value resolved on this aspect was filled from it."
+        )
+    )
+    variant_index: list[VariantIndexEntry] = Field(
+        default_factory=list,
+        description=(
+            "One entry per variant observed in this aspect — the coordinate table that places a cell on the declared "
+            "axes. The dimension table, never the report: the arm table's rows are derived at render."
+        ),
+    )
+    run_index: list[RunIndexEntry] = Field(default_factory=list, description="Per-run config + key metrics index.")
+    coverage: CoverageLens = Field(
+        default_factory=CoverageLens, description="The coverage lens: per-lever measurement summaries."
+    )
+
+
 class EvalAnalysis(EvalDocumentModel):
     """A generated, stored analysis of one campaign — the productized "Analysis" lens.
 
@@ -820,13 +894,14 @@ class EvalAnalysis(EvalDocumentModel):
     requires it be non-empty — that the campaign actually EXISTS is a service
     concern checked at generate time, not a model validator.
 
-    **What the generator authored is kept as written in** ``document`` — the findings, recommendations
-    (``decisions``), question answers and next steps, in the shape it was asked for
-    (:mod:`threetears.evals.kernel.authored`) — except that each figure reference in its prose is
-    replaced by the value code read (:mod:`threetears.evals.analysis.prose_refs`). **Everything else
-    code filled sits beside it**: ``resolutions`` holds, per finding by position, the numbers its readings resolved
-    to, and ``bundle`` the whole evidence bundle it was written over, frozen, which the report renders every count,
-    verdict and chart from. Links inside the document are positions, and :meth:`check_positions` refuses one that
+    **One memo per campaign.** Code reports, the writer recommends, a person decides: ``document`` is the writer's one
+    memo over every aspect — findings across them, one recommendation, a short summary per aspect and next steps
+    (:class:`~threetears.evals.kernel.authored.AuthoredCampaignAnalysis`) — kept as written, except that each figure
+    reference in its prose is replaced by the value code read (:mod:`threetears.evals.analysis.prose_refs`).
+    **Everything else code filled sits beside it**: ``resolutions`` holds, per finding by position, the numbers its
+    readings resolved to (each row naming its aspect); ``aspects`` holds each aspect's frozen bundle and what code read
+    off it; and ``campaign_bundle`` what the campaign adds over its aspects — its question, arms, floors and code's
+    readings across aspects. Links inside the document are positions, and :meth:`check_positions` refuses one that
     points nowhere or makes the ``invalidates`` relation cycle.
     """
 
@@ -853,66 +928,40 @@ class EvalAnalysis(EvalDocumentModel):
     )
     observation_refs: list[str] = Field(
         default_factory=list,
-        description="Observations this analysis summarises.",
+        description="Observations this analysis summarises: every aspect's runs.",
     )
     model_versions: dict[str, str] = Field(default_factory=dict, description="Model ids in play at analysis time.")
     generation: GenerationProvenance = Field(description="How the analysis was generated (provenance).")
-    design_snapshot: CampaignDesign | None = Field(
-        default=None,
+    design_snapshot: CampaignDeclaration = Field(
         description=(
-            "What the campaign DECLARED, as of this generation. A snapshot rather than a reference because a "
-            "declaration can gain a question after an analysis was written, and an analysis validated against "
-            "four axes must not later read as having been validated against five. None for a campaign that "
-            "declared nothing, whose memo says so and whose completeness is read against what actually ran."
+            "What the campaign DECLARED, as of this generation: its question, arms, aspects and floors. A snapshot "
+            "rather than a reference because a declaration can change after an analysis was written, and an "
+            "analysis written against one declaration must not later read as written against another."
         ),
     )
-    document: AuthoredAnalysis = Field(
+    document: AuthoredCampaignAnalysis = Field(
         description="What the generator authored, as written, with each figure reference in its prose rendered by code."
     )
     judged_tier_rule: JudgedTierRule = Field(
         default="interval_lower_bound",
         description=(
-            "The rule the judged evidence tiers in `resolutions` and `decision_surface` were decided by. "
-            "`interval_lower_bound`: each criterion on confidence bounds for its agreement against the bar."
+            "The rule the judged evidence tiers in `resolutions` and each aspect's `decision_surface` were decided "
+            "by. `interval_lower_bound`: each criterion on confidence bounds for its agreement against the bar."
         ),
     )
     resolutions: list[FindingResolution] = Field(
         default_factory=list,
         description="What code filled for each finding, by position in `document.findings`: its numbers.",
     )
-    coverage: CoverageLens = Field(
-        default_factory=CoverageLens, description="The coverage lens: per-lever measurement summaries."
+    aspects: list[AspectAnalysis] = Field(
+        min_length=1, description="Each aspect's frozen evidence and what code read off it, in the campaign's order."
     )
-    run_index: list[RunIndexEntry] = Field(default_factory=list, description="Per-run config + key metrics index.")
-    variant_index: list[VariantIndexEntry] = Field(
-        default_factory=list,
+    campaign_bundle: VerbatimJsonObject = Field(
         description=(
-            "One entry per variant observed under this campaign — the coordinate table that lets a "
-            "reader place a cell on the declared axes. Frozen at generation from the cells the bundle "
-            "built, and a peer of `run_index` at the coordinate the cell algebra actually uses. It is "
-            "the DIMENSION table and never the report: the arm table's rows, their statuses and their "
-            "order are derived at render, because persisting those is what would cost the pivot. Empty "
-            "only for an analysis with no observation at all. An empty index yields no rows at all unless a control is "
-            "declared, so what the arm "
-            "table says in that case is that it derived nothing — and, beside it, every coordinate the "
-            "memo's answer named that the join could not place. The disclosures do not ride on there "
-            "being rows; an empty table is when the answer is most likely to have stranded."
-        ),
-    )
-    decision_surface: DecisionSurface = Field(
-        description=(
-            "The campaign's per-cell numbers, as code computed them — each cell's measures, judged scores, "
-            "replication and run notes, and every bar adjudicated against every cell. Copied from the "
-            "bundle at generation and never authored by the model; every other number on the analysis — its "
-            "evidence values — was filled from it."
-        ),
-    )
-    bundle: VerbatimJsonObject = Field(
-        description=(
-            "The evidence bundle the analysis was written over, frozen at generation as its canonical dump "
-            "(`AnalysisContextBundle.to_dict()`, which `generation.bundle_fingerprint` digests): the report renders "
-            "every count, verdict, chart and disclosure from it, so an analysis reads as it was written whatever is "
-            "archived or re-run afterwards. Read back with `AnalysisContextBundle.from_dict`."
+            "What the campaign adds over its aspects' bundles, frozen at generation (`CampaignBundle.frame()`): its "
+            "question, arms, floors and code's readings across every aspect, and each aspect's bundle fingerprint. "
+            "Read back, with `aspects`' bundles, by `CampaignBundle.from_frame`. "
+            "`generation.bundle_fingerprint` is the fingerprint of the whole."
         )
     )
     archived: bool = Field(default=False)
@@ -939,16 +988,36 @@ class EvalAnalysis(EvalDocumentModel):
             raise ValueError(f"doc_type must be 'eval_analysis', got '{v}'")
         return v
 
+    def aspect(self, label: str) -> AspectAnalysis:
+        """The aspect of this analysis with ``label``.
+
+        :param label: The aspect's label.
+        :ptype label: str
+        :return: The aspect.
+        :rtype: AspectAnalysis
+        :raises KeyError: No aspect of this analysis has that label.
+        """
+        for aspect in self.aspects:
+            if aspect.label == label:
+                return aspect
+        raise KeyError(f"analysis {self.id} has no aspect {label!r}; its aspects are {[a.label for a in self.aspects]}")
+
     @model_validator(mode="after")
     def check_positions(self) -> EvalAnalysis:
         """Refuse a link that points nowhere, a resolution that does not match its finding, or a gating cycle.
 
+        Also refuses aspects that are not one each, a resolved row or an aspect summary naming an aspect the analysis
+        does not hold, and an aspect summarised twice.
+
         :return: This analysis, unchanged.
         :rtype: EvalAnalysis
         :raises ValueError: A position is out of range, a finding invalidates itself, the ``invalidates``
-            relation cycles, ``resolutions`` does not have one entry per finding, or a resolution's
-            rows are not the readings its finding names.
+            relation cycles, ``resolutions`` does not have one entry per finding, a resolution's
+            rows are not the readings its finding names, or an aspect is unknown or repeated.
         """
+        labels = [aspect.label for aspect in self.aspects]
+        if repeated := sorted({label for label in labels if labels.count(label) > 1}):
+            raise ValueError(f"aspects {repeated} appear more than once; one entry per aspect")
         findings = self.document.findings
         count = len(findings)
         if self.resolutions and len(self.resolutions) != count:
@@ -963,6 +1032,13 @@ class EvalAnalysis(EvalDocumentModel):
                     f"resolutions[{index}].evidence resolves {resolved} and findings[{index}] names {named}; "
                     "one resolved row per named reading, in order"
                 )
+            if stray := sorted({row.aspect for row in resolution.evidence} - set(labels)):
+                raise ValueError(f"resolutions[{index}].evidence names aspect(s) {stray}, which this analysis lacks")
+        summarised = [summary.aspect for summary in self.document.aspect_summaries]
+        if twice := sorted({label for label in summarised if summarised.count(label) > 1}):
+            raise ValueError(f"aspect_summaries summarise {twice} more than once; one summary per aspect")
+        if unknown := sorted(set(summarised) - set(labels)):
+            raise ValueError(f"aspect_summaries name {unknown}, which this analysis's aspects ({labels}) do not hold")
 
         def in_range(where: str, positions: list[int]) -> None:
             bad = [position for position in positions if not 0 <= position < count]
@@ -971,10 +1047,7 @@ class EvalAnalysis(EvalDocumentModel):
                     f"{where} names finding position(s) {bad}, and there are {count} findings (0-{count - 1})"
                 )
 
-        for index, decision in enumerate(self.document.decisions):
-            in_range(f"decisions[{index}].rests_on", decision.rests_on)
-        for index, answer in enumerate(self.document.questions):
-            in_range(f"questions[{index}].rests_on", answer.rests_on)
+        in_range("recommendation.rests_on", self.document.recommendation.rests_on)
         for index, finding in enumerate(findings):
             in_range(f"findings[{index}].invalidates", finding.invalidates)
             if index in finding.invalidates:
@@ -1322,6 +1395,8 @@ __all__ = [
     "CampaignView",
     "CampaignWindow",
     "CoverageLens",
+    "AspectAnalysis",
+    "CampaignDeclaration",
     "EvalAnalysis",
     "EvalAnalysisAttempt",
     "EvalCampaign",
