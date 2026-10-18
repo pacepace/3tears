@@ -272,6 +272,14 @@ class TestRevocationGuard:
         assert await guard.is_revoked_before("sub:p1", moment=_NOW - timedelta(minutes=5)) is True
 
     @pytest.mark.asyncio
+    async def test_with_no_l3_an_l2_outage_refuses_the_revocation_rather_than_dropping_it(self) -> None:
+        # with no L3 (identity-edge), L2 is the only store: a revocation it refused is not recorded,
+        # and only an error tells offboarding to try again rather than leave the session alive.
+        guard = _guard(_registry(_FailingNats()))
+        with pytest.raises(KvError, match="was not saved: L2 is this collection's only store"):
+            await guard.record_revocation("sub:p1", revoked_at=_NOW)
+
+    @pytest.mark.asyncio
     async def test_an_l3_failure_propagates_so_the_caller_denies(self) -> None:
         # the failure that does matter: without L3 there is no answer, and "no answer" must never
         # read as "not revoked".

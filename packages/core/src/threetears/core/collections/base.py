@@ -2253,13 +2253,49 @@ class BaseCollection(ABC, Generic[EntityT]):
                 raise CorruptCacheEntry(self.table_name, "absent-marker generation", raw) from exc
         return self.decode_row(raw)
 
+    @property
+    def l2_is_the_store(self) -> bool:
+        """whether L2 is the only store this collection's rows have, rather than a cache of one.
+
+        ``False`` by default: a durable tier stands behind L2 -- an L3 pool, a structured
+        :class:`~threetears.core.backends.protocol.DurableStore`, an object store -- and an L2
+        write it refused costs a cache miss, not the row. A collection with no durable tier
+        (heartbeats, presence, a coordination table on a deployment with no L3) answers ``True``,
+        and then a write or delete L2 refused raises :class:`KvError` from :meth:`save_entity`,
+        :meth:`delete` and the L2 helpers its own write paths call, instead of reporting the
+        row stored or gone. ``l3_pool`` alone cannot say this: several collections keep their
+        durable tier somewhere else and leave it ``None``.
+
+        :return: ``True`` when L2 is the store
+        :rtype: bool
+        """
+        return False
+
     async def _save_to_l2(self, entity_id: Any, data: dict[str, Any]) -> bool:
         """write entity payload to the L2 NATS KV bucket.
 
-        narrow exception scope: only :class:`KvError` degrades to
-        ``False``. programming errors propagate. bucket resolution
-        (:meth:`_ensure_kv`) is covered by this same catch -- see
+        narrow exception scope: only :class:`KvError` is caught. programming errors propagate.
+        bucket resolution (:meth:`_ensure_kv`) is covered by this same catch -- see
         :meth:`_get_from_l2`'s docstring for why.
+
+        **What a refused write does depends on whether L2 is a cache or the store**
+        (:attr:`l2_is_the_store`). Where a durable tier stands behind L2, it is the record and L2
+        a cache of it: the failure degrades to a warning and ``False``, and the next read goes to
+        that tier. Where L2 is the only store other replicas read, a write it refused is a write
+        that did not happen: this pod's L1 copy of the key is dropped (it would otherwise serve a
+        row no store holds) and :class:`KvError` is raised, so every save built on this -- the
+        base :meth:`save_entity` and the L1+L2-only collections that write L2 themselves -- fails
+        where the write did not land, as :meth:`l2_cas_mutate` already does.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param data: the row to write
+        :ptype data: dict[str, Any]
+        :return: ``True`` when L2 took the row; ``False`` when there is no bucket, or when a
+            bucket that only caches a durable tier refused it
+        :rtype: bool
+        :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
+            the write
         """
         try:
             kv = await self._ensure_kv()
@@ -2276,6 +2312,12 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 await kv.put(key=key, value=value, ttl=lifetime)
         except KvError as exc:
+            if self.l2_is_the_store:
+                self._evict_l1(entity_id)
+                raise KvError(
+                    f"{self.table_name} row {entity_id!s} was not saved: L2 is this collection's only store "
+                    f"and refused the write ({type(exc).__name__}: {exc})"
+                ) from exc
             log.warning(
                 "L2 cache write failed",
                 extra={
@@ -2319,10 +2361,22 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def _delete_from_l2(self, entity_id: Any) -> bool:
         """delete entity payload from the L2 NATS KV bucket.
 
-        narrow exception scope: only :class:`KvError` degrades to
-        ``False``. programming errors propagate. bucket resolution
-        (:meth:`_ensure_kv`) is covered by this same catch -- see
+        narrow exception scope: only :class:`KvError` is caught. programming errors propagate.
+        bucket resolution (:meth:`_ensure_kv`) is covered by this same catch -- see
         :meth:`_get_from_l2`'s docstring for why.
+
+        As for :meth:`_save_to_l2`: where L2 caches a durable tier a refused delete degrades to a
+        warning and ``False``; where L2 is the store (:attr:`l2_is_the_store`), the row is still
+        there for every other replica, and :class:`KvError` is raised so the delete does not
+        report a row gone that is not.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: whether the key was deleted; ``False`` when there is no bucket, or when a bucket
+            that only caches a durable tier refused the delete
+        :rtype: bool
+        :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
+            the delete
         """
         try:
             kv = await self._ensure_kv()
@@ -2330,6 +2384,11 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return False
             return await kv.delete(key=self.l2_key(entity_id))
         except KvError as exc:
+            if self.l2_is_the_store:
+                raise KvError(
+                    f"{self.table_name} row {entity_id!s} was not deleted: L2 is this collection's only store "
+                    f"and refused the delete ({type(exc).__name__}: {exc})"
+                ) from exc
             log.warning(
                 "L2 cache delete failed",
                 extra={
@@ -2892,7 +2951,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._l1_fence.changed(self._fence_key(entity_id))
             if self._l1 is not None:
                 self._l1_upsert(data, self.primary_key_columns)
-            await self._save_to_l2(entity_id, data)
+            try:
+                await self._save_to_l2(entity_id, data)
+            except KvError as exc:
+                self._contain_lost_background_write(exc, entity_id)
+                return
             # no advance here: the row is not in L3 until the flush, which advances for it.
             await self._announce_row(entity_id, row=data)
             await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(data))
@@ -2954,10 +3017,36 @@ class BaseCollection(ABC, Generic[EntityT]):
             if stored is None:
                 await self._withdraw_from_caches(entity_id, bump=bump, row=data)
                 return
-            await self._cache_committed_row(entity_id, stored, before, ticket)
+            try:
+                await self._cache_committed_row(entity_id, stored, before, ticket)
+            except KvError as exc:
+                self._contain_lost_background_write(exc, entity_id)
+                return
 
         # Signal other pods to evict stale L1
         await self._announce_row(entity_id, bump=bump, row=stored)
+
+    def _contain_lost_background_write(self, exc: KvError, entity_id: Any) -> None:
+        """record a subscript write that L2, this collection's only store, refused.
+
+        :meth:`_save_to_l2` raises this only where :attr:`l2_is_the_store`, and has already dropped
+        the row from this pod's L1. The write is fire-and-forget, so there is no caller to raise
+        it to: it is recorded here, at ERROR, instead.
+
+        :param exc: the refusal
+        :ptype exc: KvError
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        contain(
+            exc,
+            log=log,
+            what="Background write was refused by L2, this collection's only store; the row is lost",
+            extra={"entity_id": str(entity_id), "table": self.table_name},
+            level="error",
+        )
 
     def __contains__(self, entity_id: Any) -> bool:
         """Check if entity is in L1 cache."""
@@ -3247,6 +3336,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :raises GenerationUnavailableError: when a collection that caches absences, or one switched
             on to carry a write generation (:attr:`write_generation`), committed the write but
             could not advance its write generation; retry the save
+        :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
+            the row; no tier keeps it and the entity keeps its unsaved edits
         """
         self._set_span_table()
         data = entity.to_dict()
@@ -3320,7 +3411,12 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._l1_fence.changed(self._fence_key(entity_id))
             if self._l1 is not None:
                 self._l1_upsert(data, self.primary_key_columns)
-            await self._save_to_l2(entity_id, data)
+            try:
+                await self._save_to_l2(entity_id, data)
+            except KvError:
+                # raised only where L2 is the store (l2_is_the_store): no tier took the row
+                self._withdraw_unstored(entity, entity_id, working)
+                raise
             assert self._write_buffer is not None
             await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(data))
             entity.mark_clean()
@@ -3364,17 +3460,25 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # the database may have filled in columns the row did not name; what every tier
                 # and the handle keep is the row L3 holds, never the row as sent.
                 stored = await self._stored_row(entity_id, data)
-                entity.mark_clean()
                 announced = data if stored is None else stored
                 if stored is None:
+                    entity.mark_clean()
                     # committed, but not readable back: nothing caches it, and the handle keeps
                     # what it sent until it is reloaded.
                     entity.original_date_updated = data.get("date_updated")
                     await self._drop_unread_row(entity_id)
                     entity.hold_row(data)
                 else:
+                    try:
+                        await self._cache_committed_row(entity_id, stored, before, ticket)
+                    except KvError:
+                        # raised only where L2 is the store (l2_is_the_store): the row
+                        # was written nowhere another replica reads, so the handle keeps its
+                        # unsaved edits, as for an L3 write that did not land.
+                        self._withdraw_unstored(entity, entity_id, working)
+                        raise
+                    entity.mark_clean()
                     entity.original_date_updated = stored.get("date_updated")
-                    await self._cache_committed_row(entity_id, stored, before, ticket)
                     # a key the stored row does not carry is one this table does not hold: the
                     # caller's own, which a read back cannot speak to. the handle keeps it; the
                     # tiers do not, since they hold what an L3 read gives.
@@ -3440,7 +3544,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity.hold_row(data)
 
     def _withdraw_unstored(self, entity: BaseEntity, entity_id: Any, working: dict[str, Any]) -> None:
-        """take an entity's working copy out of L1 after its L3 write did not land.
+        """take an entity's working copy out of L1 after its write did not land.
+
+        the write is L3's, or L2's on a collection whose L2 is the store (:attr:`l2_is_the_store`).
 
         an entity is a proxy onto its L1 row: construction writes the row and every attribute
         set writes through, so by the time :meth:`save_entity` reaches L3 the working copy is
@@ -3469,7 +3575,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._evict_l1(entity_id)
         entity.hold_row(working)
         log.info(
-            "L3 write did not land; its working copy was withdrawn from L1",
+            "a save did not land; its working copy was withdrawn from L1",
             extra={"extra_data": {"table": self.table_name, "entity_id": str(entity_id)}},
         )
 
@@ -3694,6 +3800,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :ptype entity_id: Any
         :return: always ``True`` (delete is idempotent across tiers)
         :rtype: bool
+        :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
+            the delete; the row is still there for every other replica
         :raises GenerationUnavailableError: when a switched-on collection
             (:attr:`write_generation`) deleted the row and could not advance
             its write generation; the row is gone from every tier and the

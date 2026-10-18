@@ -188,6 +188,18 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         """
         return self._write_buffer
 
+    @property
+    def l2_is_the_store(self) -> bool:
+        """whether this deployment keeps coordination state on L2 alone, with no L3 behind it.
+
+        Then a write L2 refused is a write that did not happen (:meth:`save_to_store` has nothing
+        to write to), so :meth:`save_entity` raises it rather than reporting the row stored.
+
+        :return: ``True`` when this collection has no L3 pool
+        :rtype: bool
+        """
+        return self.l3_pool is None
+
     async def l2_cas_mutate(
         self,
         entity_id: Any,

@@ -1125,6 +1125,94 @@ class TestL2BucketResolutionDegradesGracefully:
             await coll.get("e1")
 
 
+class _L2StoreCollection(StubCollection):
+    """the stub with no durable tier behind L2: L2 is where its rows live."""
+
+    @property
+    def l2_is_the_store(self) -> bool:
+        return True
+
+
+class TestAnL2WriteRefusedFailsTheSaveOnlyWhereL2IsTheStore:
+    """a write L2 refused is a lost row where L2 is the store, and a cache miss where a durable
+    tier stands behind it. the first must fail the save; the second must not."""
+
+    @pytest.mark.asyncio
+    async def test_a_save_l2_refused_raises_where_l2_is_the_store(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        nats = _make_nats_mock()
+        nats.bucket.put = AsyncMock(side_effect=KvError("broker unreachable"))
+        coll = _L2StoreCollection(registry, config_always, nats_client=nats)
+
+        entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
+        with pytest.raises(KvError, match="was not saved: L2 is this collection's only store"):
+            await coll.save_entity(entity)
+
+        assert entity.is_dirty is True, "the handle keeps the edits that did not land"
+        assert entity.name == "Alice"
+        assert coll.get_row_sync("e1") is None, "this pod's L1 must not serve a row no store holds"
+        nats.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_delete_l2_refused_raises_where_l2_is_the_store(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        nats = _make_nats_mock()
+        coll = _L2StoreCollection(registry, config_always, nats_client=nats)
+        await coll.save_entity(coll.create({"id": "e1", "name": "Alice", "score": 10}))
+        nats.bucket.delete = AsyncMock(side_effect=KvError("broker unreachable"))
+
+        with pytest.raises(KvError, match="was not deleted: L2 is this collection's only store"):
+            await coll.delete("e1")
+
+        assert nats.store, "the row is still in L2 for every other replica"
+
+    @pytest.mark.asyncio
+    async def test_a_subscript_write_l2_refused_is_recorded_and_withdrawn_where_l2_is_the_store(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """fire-and-forget has no caller to raise to: the loss is logged at ERROR instead."""
+        nats = _make_nats_mock()
+        nats.bucket.put = AsyncMock(side_effect=KvError("broker unreachable"))
+        coll = _L2StoreCollection(registry, config_always, nats_client=nats)
+
+        with caplog.at_level("ERROR"):
+            coll["e1"] = {"id": "e1", "name": "Alice", "score": 10}
+            pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+            await asyncio.gather(*pending)
+
+        assert coll.get_row_sync("e1") is None
+        assert any("only store; the row is lost" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_with_no_bucket_an_l2_store_collection_keeps_its_rows_in_l1(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        coll = _L2StoreCollection(registry, config_always, nats_client=None)
+
+        await coll.save_entity(coll.create({"id": "e1", "name": "Alice", "score": 10}))
+
+        assert coll.get_row_sync("e1") is not None
+        assert await coll.delete("e1") is True
+
+    @pytest.mark.asyncio
+    async def test_a_save_l2_refused_still_succeeds_where_a_durable_tier_holds_the_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """the decision for three-tier collections: L3 is the durable record, so the save landed."""
+        nats = _make_nats_mock()
+        nats.bucket.put = AsyncMock(side_effect=KvError("broker unreachable"))
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
+        await coll.save_entity(entity)
+
+        assert "e1" in l3_rows
+        assert entity.is_dirty is False
+
+
 # ---------------------------------------------------------------------------
 # IMPROVEMENT 2 — l2_cas_mutate (generic L1+L2 atomic read-modify-write)
 # ---------------------------------------------------------------------------
