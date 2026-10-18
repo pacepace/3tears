@@ -414,6 +414,26 @@ class TestPdfs:
         assert seen["ocr_config"].enabled is False
         assert seen["max_pages"] == 100
 
+    @pytest.mark.asyncio
+    async def test_a_part_of_the_pdf_that_could_not_be_read_is_named_in_the_notes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A page whose tables would not extract used to read as a page with no tables."""
+
+        def _broken_tables(page: Any, *, merge_wrapped_rows: bool = False) -> str:
+            raise RuntimeError("table finder broke")
+
+        monkeypatch.setattr("threetears.agent.tools.document._extract_pdf_tables", _broken_tables)
+
+        read = await pdf_reader().read(_fixture("otter-survey.pdf"))
+
+        assert read.text, "the pages' own text is still read"
+        assert any(
+            note.startswith("Parts of the PDF could not be read: page 1: tables could not be extracted")
+            and "RuntimeError: table finder broke" in note
+            for note in read.notes
+        ), read.notes
+
     def test_the_fixture_is_the_recording_it_claims_to_be(self) -> None:
         assert _fixture("otter-survey.pdf").startswith(b"%PDF-")
         assert json.loads(_fixture("searxng-otters.json"))["results"]
