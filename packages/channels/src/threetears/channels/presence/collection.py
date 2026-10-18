@@ -85,6 +85,15 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
     #: datetime columns the L2 codec must rehydrate to aware-UTC.
     datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
 
+    @property
+    def l2_is_the_store(self) -> bool:
+        """L2 is where presence lives: no L3 stands behind it, so a write L2 refused raises.
+
+        :return: ``True``
+        :rtype: bool
+        """
+        return True
+
     def __init__(
         self,
         registry: CollectionRegistry,
@@ -158,6 +167,8 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :ptype conn: Any
         :return: nothing
         :rtype: None
+        :raises KvError: when a KV bucket is configured and L2 refused the row; this pod's L1 copy
+            is dropped, no invalidation is published, and the entity keeps its unsaved edits
         """
         del conn  # never threaded through the L1+L2-only path
         data = entity.to_dict()
@@ -180,8 +191,10 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
 
         :param entity_id: primary key value
         :ptype entity_id: Any
-        :return: ``True`` unconditionally — deletes are idempotent
+        :return: ``True`` — deletes are idempotent
         :rtype: bool
+        :raises KvError: when a KV bucket is configured and L2 refused the delete; the row is
+            still there for every other replica
         """
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)

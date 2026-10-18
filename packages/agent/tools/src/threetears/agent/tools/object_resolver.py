@@ -46,7 +46,8 @@ from threetears.media.contracts import ObjectHandle
 from threetears.core.security.delegated_token import OBJECT_RESOLVE_DOOR
 from threetears.core.security.door_request import OBJECT_RESOLVE_OP, DoorCredential, ProvenDoorRequest
 from threetears.nats import NatsClient, RequestError, Subjects
-from threetears.observe import get_logger
+from threetears.nats.errors import KvError
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "HubObjectResolver",
@@ -161,6 +162,7 @@ class ObjectResolutionCache(Protocol):
         :ptype handle: ObjectHandle
         :return: nothing
         :rtype: None
+        :raises KvError: when the shared tier refused the mapping
         """
         ...
 
@@ -344,6 +346,11 @@ class HubObjectResolver:
     async def _remember(self, customer_id: UUID, handle: ObjectHandle) -> None:
         """record a freshly-resolved handle in whichever cache this pod has.
 
+        A shared cache that refuses the mapping (:class:`KvError` from
+        :meth:`ObjectResolutionCache.remember`) does not fail the resolve: the hub is the
+        mapping's source of truth and has just answered, so the handle is right. What is lost is
+        only that sibling replicas, and this one, ask the hub again; that is recorded here.
+
         :param customer_id: the VERIFIED owning customer
         :ptype customer_id: UUID
         :param handle: the resolved handle
@@ -352,7 +359,15 @@ class HubObjectResolver:
         :rtype: None
         """
         if self._resolution_cache is not None:
-            await self._resolution_cache.remember(customer_id, handle)
+            try:
+                await self._resolution_cache.remember(customer_id, handle)
+            except KvError as exc:
+                contain(
+                    exc,
+                    log=_log,
+                    what="resolved object handle was not cached; replicas will ask the hub for it again",
+                    extra={"object_id": str(handle.object_id)},  # convert at border: log extra_data field
+                )
             return
         self._cache_put((customer_id, handle.object_id), handle)
 

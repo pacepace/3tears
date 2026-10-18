@@ -24,6 +24,7 @@ from sqlalchemy import Column, MetaData, String, Table
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.media.contracts import ObjectHandle
+from threetears.nats.errors import KvError
 
 from threetears.agent.tools.l1_cache import create_tool_pod_l1_backend
 from threetears.agent.tools.object_resolution_collection import (
@@ -83,6 +84,26 @@ class _RecordingNats:
 
     async def publish(self, *, subject: Any, message: Any) -> None:
         self.published.append(message)
+
+
+class _RefusingKvBucket(_InMemoryKvBucket):
+    """a bucket whose broker is unreachable for writes: every put and delete raises."""
+
+    async def put(self, *, key: str, value: bytes) -> int:
+        del key, value
+        raise KvError("broker unreachable")
+
+    async def delete(self, *, key: str) -> bool:
+        del key
+        raise KvError("broker unreachable")
+
+
+class _RefusingNats(_RecordingNats):
+    """hands out a bucket that refuses writes, over the same shared store."""
+
+    async def kv_bucket(self, *, name: str, create_if_missing: bool) -> _InMemoryKvBucket:
+        del name, create_if_missing
+        return _RefusingKvBucket(self.store)
 
 
 def _replica(store: dict[str, bytes], nats: _RecordingNats) -> ObjectResolutionCollection:
@@ -240,6 +261,25 @@ class TestRememberAndLookup:
         assert [m.table for m in nats.published] == [OBJECT_RESOLUTIONS_TABLE]
 
 
+class TestAWriteL2RefusedRaises:
+    """L2 is the only tier sibling replicas share a mapping on: a write it refused is not stored."""
+
+    async def test_remember_l2_refused_raises_and_this_replica_does_not_serve_it(self) -> None:
+        nats = _RefusingNats({})
+        collection = _replica({}, nats)
+        with pytest.raises(KvError, match="was not saved"):
+            await collection.remember(_CUSTOMER, _handle())
+        assert await collection.lookup(_CUSTOMER, _OBJECT) is None
+        assert nats.published == [], "no peer is told about a row no store holds"
+
+    async def test_forget_l2_refused_raises_and_siblings_still_hold_it(self) -> None:
+        store: dict[str, bytes] = {}
+        await _replica(store, _RecordingNats(store)).remember(_CUSTOMER, _handle())
+        with pytest.raises(KvError, match="was not deleted"):
+            await _replica(store, _RefusingNats(store)).forget(_CUSTOMER, _OBJECT)
+        assert await _replica(store, _RecordingNats(store)).lookup(_CUSTOMER, _OBJECT) == _handle()
+
+
 class _RecordingResolveNats:
     """records resolve requests and returns one queued reply."""
 
@@ -295,6 +335,17 @@ class TestTheResolverUsesTheCollection:
         await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
         await resolver.resolve(_OBJECT, customer_id=_OTHER_CUSTOMER, identity_token=_TOKEN)
         assert len(nc.requests) == 2
+
+    async def test_a_cache_that_refuses_the_mapping_does_not_fail_the_resolve(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the hub has answered, so the handle is right; only the sharing is lost, and said so."""
+        nc = _RecordingResolveNats(_ok())
+        resolver = HubObjectResolver(nc, request_timeout_seconds=5.0, resolution_cache=_replica({}, _RefusingNats({})))  # type: ignore[arg-type]
+        with caplog.at_level("WARNING"):
+            handle = await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
+        assert handle.s3_key == _KEY
+        assert any("was not cached" in record.getMessage() for record in caplog.records)
 
     async def test_without_a_cache_the_in_process_dict_still_serves(self) -> None:
         """a pod that declared no collection tables keeps the historical behaviour."""

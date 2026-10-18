@@ -381,5 +381,7 @@ class HeartbeatSubscriber:
             )
             to_remove.append(pod_id)
         for pod_id in to_remove:
-            self._known_pod_ids.discard(pod_id)
+            # delete first: a delete L2 refused raises out of the sweep with the pod still known,
+            # so the next sweep tries it again instead of forgetting a row every peer still reads
             await self._collection.delete(pod_id)
+            self._known_pod_ids.discard(pod_id)
