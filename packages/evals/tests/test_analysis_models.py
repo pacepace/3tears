@@ -40,6 +40,8 @@ from threetears.evals.kernel.campaign import (
     RunIndexEntry,
 )
 from threetears.evals.kernel.declaration import Aspect
+from threetears.evals.kernel.storage import DroppedJudgeProfile
+from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
 
 # Reuse the campaign tests' in-memory evals-repo stand-in + storage wiring.
 from packages.evals.tests.factories import (
@@ -715,9 +717,42 @@ def test_drop_derived_clears_analyses_and_insights_and_keeps_the_campaign():
     campaign = make_campaign(scope_id="uni-1")
     storage.save_campaign(campaign)
 
-    counts = storage.drop_derived(["uni-1"])
+    dropped = storage.drop_derived(["uni-1"])
 
-    assert counts == {"eval_analysis": 1, "eval_insight": 1, "eval_judge_profile": 0}
+    assert dropped.counts == {"eval_analysis": 1, "eval_insight": 1, "eval_judge_profile": 0}
+    assert dropped.judge_profiles == []
     assert storage.load_analysis(analysis.id, "uni-1") is None
     assert storage.query_insights("uni-1") == []
     assert storage.load_campaign(campaign.id, "uni-1") is not None
+
+
+def test_drop_derived_returns_each_dropped_judge_profile_s_runs_to_record_it_again_from():
+    """A judge profile is recorded only by an operator, so the drop hands back the runs it was recorded from."""
+    storage, store = memory_storage()
+    old = {
+        "id": "jp-1",
+        "doc_type": "eval_judge_profile",
+        "scope_id": "uni-1",
+        "schema_version": REGENERABLE_SCHEMA_VERSION - 1,
+        "run_ids": ["judge-run-a", "judge-run-b"],
+    }
+    store.upsert(old)
+
+    dropped = storage.drop_derived(["uni-1"])
+
+    assert dropped.counts["eval_judge_profile"] == 1
+    assert dropped.judge_profiles == [
+        DroppedJudgeProfile(scope_id="uni-1", profile_id="jp-1", run_ids=["judge-run-a", "judge-run-b"])
+    ]
+    assert store.get("jp-1", "uni-1") is None
+
+
+def test_an_insight_from_before_the_bump_refuses_the_ledger_read_naming_the_operator_step():
+    """Assembly reads the subject's ledger through this read, so one old insight refuses every generation over it."""
+    storage, store = memory_storage()
+    insight = _make_insight()
+    store.upsert({**insight.to_dict(), "schema_version": REGENERABLE_SCHEMA_VERSION - 1})
+
+    with pytest.raises(ValidationError, match=r"EvalStorage\.drop_derived\(scopes\)") as refused:
+        storage.query_insights("uni-1", subject_id=insight.subject_id)
+    assert "judge_profiles_record over that profile's run_ids" in str(refused.value)

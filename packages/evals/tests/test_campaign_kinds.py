@@ -196,7 +196,7 @@ class TestAChoicePicksOrFindsNoClearWinner:
     async def test_picking_an_arm_shown_behind_without_saying_why_is_refused(self) -> None:
         bundle = _choice(pairs=[_pair(_choice(), ahead=TOYHOST_WIDE)])
         with pytest.raises(SoundnessRefusal) as refused:
-            await _generate(bundle, _recommending(bundle, TOYHOST_NARROW))
+            await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, confidence="low"))
         message = str(refused.value)
         assert f"which is shown behind another arm on ['{bundle.labels[0]}/{arm_at(bundle, TOYHOST_WIDE)}']" in message
         assert "`behind_on`" in message
@@ -204,9 +204,33 @@ class TestAChoicePicksOrFindsNoClearWinner:
     async def test_picking_an_arm_shown_behind_with_why_is_kept(self) -> None:
         bundle = _choice(pairs=[_pair(_choice(), ahead=TOYHOST_WIDE)])
         behind = {"aspect": bundle.labels[0], "ahead_arm": arm_at(bundle, TOYHOST_WIDE), "why": "It costs a third."}
-        analysis = await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, behind_on=[behind]))
+        analysis = await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, behind_on=[behind], confidence="low"))
         (said,) = analysis.document.recommendation[0].behind_on
         assert said.why == "It costs a third."
+
+    async def test_a_behind_on_named_twice_is_refused(self) -> None:
+        bundle = _choice(pairs=[_pair(_choice(), ahead=TOYHOST_WIDE)])
+        behind = {"aspect": bundle.labels[0], "ahead_arm": arm_at(bundle, TOYHOST_WIDE), "why": "It costs a third."}
+        with pytest.raises(SoundnessRefusal, match="more than once in `behind_on`; once each"):
+            await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, behind_on=[behind, behind], confidence="low"))
+
+    async def test_a_behind_on_with_no_reason_is_refused(self) -> None:
+        bundle = _choice(pairs=[_pair(_choice(), ahead=TOYHOST_WIDE)])
+        behind = {"aspect": bundle.labels[0], "ahead_arm": arm_at(bundle, TOYHOST_WIDE), "why": "   "}
+        with pytest.raises(SoundnessRefusal, match="gives no reason in `behind_on`"):
+            await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, behind_on=[behind], confidence="low"))
+
+    async def test_a_pick_nothing_separated_is_held_to_low_confidence(self) -> None:
+        bundle = _choice(pairs=[_pair(_choice(), ahead=None)])
+        with pytest.raises(SoundnessRefusal, match="code shows it ahead of no arm on any aspect"):
+            await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, confidence="high"))
+        analysis = await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, confidence="low"))
+        assert analysis.recommended_variant_key == _variant(bundle, TOYHOST_NARROW)
+
+    async def test_a_pick_of_the_arm_shown_ahead_may_be_confident(self) -> None:
+        bundle = _choice(pairs=[_pair(_choice(), ahead=TOYHOST_WIDE)])
+        analysis = await _generate(bundle, _recommending(bundle, TOYHOST_WIDE, confidence="high"))
+        assert analysis.document.recommendation[0].confidence == "high"
 
     async def test_a_behind_on_naming_no_pair_code_read_is_refused(self) -> None:
         bundle = _choice(pairs=[_pair(_choice(), ahead=None)])
@@ -214,7 +238,7 @@ class TestAChoicePicksOrFindsNoClearWinner:
         with pytest.raises(
             SoundnessRefusal, match="in `behind_on`, by aspect and arm, and code raised no such warning"
         ):
-            await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, behind_on=[behind]))
+            await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, behind_on=[behind], confidence="low"))
 
     async def test_a_pick_resting_on_no_finding_is_refused(self) -> None:
         bundle = _choice(pairs=[_pair(_choice(), ahead=TOYHOST_WIDE)])
@@ -247,6 +271,21 @@ class TestAChangeAlwaysRecommends:
         assert bundle.kind == "change"
         with pytest.raises(SoundnessRefusal, match="compares candidates against a control, so it recommends one"):
             await _generate(bundle, _recommending(bundle, None))
+
+    async def test_keeping_a_control_below_a_bar_must_address_it(self) -> None:
+        bare = campaign_bundle(_aspect(control=True))
+        bundle = campaign_bundle(_aspect(control=True), bars=[_bar(bare, TOYHOST_NARROW)])
+        control = bundle.control()
+        assert control is not None and control.variant_key == _variant(bundle, TOYHOST_NARROW)
+        payload = memo_payload(bundle)
+        payload["recommendation"][0] = {**payload["recommendation"][0], "arm": control.label, "bars_missed": []}
+        key = f"{bundle.labels[0]}/field_accuracy"
+        with pytest.raises(SoundnessRefusal, match=rf"which missed bar\(s\) \['{key}'\]"):
+            await _generate(bundle, payload)
+        missed = {"aspect": bundle.labels[0], "measure": "field_accuracy", "why": "Nothing on offer clears it."}
+        payload["recommendation"][0]["bars_missed"] = [missed]
+        analysis = await _generate(bundle, payload)
+        assert analysis.document.recommendation[0].bars_missed[0].why == "Nothing on offer clears it."
 
     async def test_a_switch_shown_better_only_on_an_aspect_asked_late_is_refused(self) -> None:
         """Aspect A asked its question in time and B after its runs; the candidate is better only on B."""
@@ -333,6 +372,42 @@ async def test_a_title_naming_an_arm_by_its_person_given_label_is_held_to_its_ev
     assert payload["recommendation"][0]["arm"] == "baseline", wide
     with pytest.raises(SoundnessRefusal, match=r'findings\[0\]\.title names "fast"'):
         await _generate(bundle, payload)
+
+
+async def test_a_title_against_the_control_is_sound_over_a_contrast_citing_only_the_candidate() -> None:
+    """A contrast reads the candidate against the control, so it cites the control's label too (finding 1, kinds)."""
+    aspect = _aspect(control=True)
+    narrow = _variant(aspect, TOYHOST_NARROW)
+    named = [
+        arm.model_copy(update={"label": "baseline" if arm.variant_key == narrow else "fast"})
+        for arm in arms_of([aspect])
+    ]
+    bundle = campaign_bundle(aspect, arms=named)
+    (contrast, *_) = [
+        comparison for family in aspect.multiple_comparisons.families for comparison in family.comparisons
+    ]
+    payload = memo_payload(bundle)
+    payload["findings"][0]["title"] = "fast moves total time against baseline"
+    payload["findings"][0]["evidence"] = [
+        {"cell": alias_at(bundle, TOYHOST_WIDE), "measure_id": contrast.name, "reading": contrast.reading}
+    ]
+    analysis = await _generate(bundle, payload)
+    assert analysis.document.findings[0].title == "fast moves total time against baseline"
+
+
+async def test_a_control_labelled_control_reads_as_the_role_in_a_title() -> None:
+    """An upgraded campaign's control is labelled ``control``: "keep the control" names the role, not a stray arm."""
+    aspect = _aspect(control=True)
+    arms = [arm.model_copy(update={"label": "control"}) if arm.role == "control" else arm for arm in arms_of([aspect])]
+    bundle = campaign_bundle(aspect, arms=arms)
+    payload = memo_payload(bundle)
+    payload["recommendation"][0]["arm"] = "control"
+    payload["findings"][0]["title"] = "The wider width is slower than the control"
+    payload["findings"][0]["evidence"] = [
+        {"cell": alias_at(bundle, TOYHOST_WIDE), "measure_id": "total_ms", "reading": "measure"}
+    ]
+    analysis = await _generate(bundle, payload)
+    assert analysis.document.findings[0].title == "The wider width is slower than the control"
 
 
 # --- the page's fingerprint is the bundle served beside it ---------------------------------------------------------

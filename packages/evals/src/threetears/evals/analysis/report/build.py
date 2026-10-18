@@ -52,6 +52,7 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.kinds import campaign_kind
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.references import cell_index, resolve_reading
 from threetears.evals.analysis.report.figures import (
@@ -1242,8 +1243,6 @@ def _recommendation_blocks(
     arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
     recommended = analysis.document.recommended()
     if recommended is None:
-        from threetears.evals.analysis.campaign_readings import campaign_kind  # that module reads this package
-
         kind = campaign_kind(arms)
         return [DisclosureBlock(section="memo", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
     chosen = next((arm for arm in arms if arm.label == recommended.arm), None)

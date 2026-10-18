@@ -40,6 +40,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report.decision import (
     FloorReadings,
@@ -89,30 +90,9 @@ ShownReading = Literal["better", "worse", "unclear"]
 #: shows the candidate within it. ``unclear``: neither, the reason saying why.
 FloorState = Literal["broken", "held", "unclear"]
 
-#: What a campaign is, derived from its arms and never declared. ``measurement``: one arm, read on its own against
-#: absolute bars. ``choice``: two or more arms and no control (nothing is shipped), read pair by pair. ``change``: a
-#: control and one or more candidates, each read against the control.
-CampaignKind = Literal["measurement", "choice", "change"]
-
 #: Where one arm stands against one absolute bar. ``met``: its whole interval is on the good side of the bar, less
 #: the measure's margin. ``missed``: on the bad side. ``unclear``: neither, or nothing to read; the reason says which.
 BarState = Literal["met", "missed", "unclear"]
-
-
-def campaign_kind(arms: Sequence[CampaignArm]) -> CampaignKind:
-    """What a campaign is, from its arms (the named and the derived, as
-    :func:`~threetears.evals.analysis.campaigns.campaign_arms` reads them): one arm a measurement, a control with any
-    candidate a change, two or more arms with no control a choice. Arms are counted by variant key.
-
-    :param arms: The campaign's arms.
-    :ptype arms: Sequence[CampaignArm]
-    :return: The kind.
-    :rtype: CampaignKind
-    """
-    keys = {arm.variant_key for arm in arms}
-    if len(keys) <= 1:
-        return "measurement"
-    return "change" if any(arm.role == "control" for arm in arms) else "choice"
 
 
 class AspectReading(EvalDocumentModel):

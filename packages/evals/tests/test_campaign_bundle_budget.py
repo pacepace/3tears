@@ -13,6 +13,7 @@ last. Code's own readings and the floors are never trimmed.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -30,7 +31,7 @@ from threetears.evals.analysis import (
     build_campaign_user_message,
     generate_analysis,
 )
-from threetears.evals.analysis.campaign_bundle import aspect_view
+from threetears.evals.analysis.campaign_bundle import aspect_view, writer_view
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_aliases
@@ -62,6 +63,10 @@ def _two_aspects() -> CampaignBundle:
 
 #: Room for the note an aspect's part carries when it was trimmed, which the budget counts.
 _NOTE = 600
+
+
+def _without_config(run: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in run.items() if key not in ("config", "config_provenance")}
 
 
 def _size(view: dict[str, Any]) -> int:
@@ -165,7 +170,7 @@ class TestEachAspectIsHeldToItsBudget:
         assert "excerpts" in said and "trials," not in said and "contrasts" not in said
         assert "The page shows all of them" in view["trimmed"]
 
-    def test_then_the_trials_then_the_contrasts_then_the_cells_readings(self) -> None:
+    def test_then_the_trials_then_the_contrasts_then_the_configs_then_the_cells_readings(self) -> None:
         bundle = campaign_bundle(_flagged(_aspect()))
         whole = aspect_view(bundle, 0, budget=10**9)
         no_trials = {**whole, "trials": []}
@@ -179,9 +184,16 @@ class TestEachAspectIsHeldToItsBudget:
         assert view["trials"] == [] and len(kept) < len(whole["contrasts"])
         assert kept == whole["contrasts"][: len(kept)] and view["cells"] == whole["cells"]
         assert [row["verdict"] for row in whole["contrasts"]][: len(kept)] == [row["verdict"] for row in kept]
+        # Less still: the runs' configs go next, the last run's first, and the cells' readings are kept.
+        no_configs = {**no_contrasts, "runs": [_without_config(run) for run in whole["runs"]]}
+        assert no_configs["runs"] != whole["runs"], "the toy runs carry configs to trim"
+        view = aspect_view(bundle, 0, budget=_size(no_configs) + _NOTE)
+        assert view["contrasts"] == [] and view["cells"] == whole["cells"]
+        assert "config" not in view["runs"][-1] and "runs' configs" in view["trimmed"].split("(")[0]
         # Less still: the cells' readings go last, the last cell's first.
-        view = aspect_view(bundle, 0, budget=_size(no_contrasts) - 50)
+        view = aspect_view(bundle, 0, budget=_size(no_configs) - 50)
         assert view["contrasts"] == [] and view["trials"] == []
+        assert all("config" not in run for run in view["runs"])
         assert view["cells"][0] == whole["cells"][0]
 
         def readings(cell: dict[str, Any]) -> int:
@@ -197,6 +209,16 @@ class TestEachAspectIsHeldToItsBudget:
         assert view["readings"] == whole["readings"] and view["scoreboard"] == whole["scoreboard"]
         assert view["disclosures"] == whole["disclosures"]
         assert "It is still over budget: what is left is never trimmed." in view["trimmed"]
+
+    def test_a_campaign_part_over_one_aspect_s_budget_is_warned_on_never_trimmed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        bundle = _two_aspects()
+        whole = writer_view(bundle, budget=10**9)
+        with caplog.at_level(logging.WARNING):
+            view = writer_view(bundle, budget=100)
+        assert view["arms"] == whole["arms"] and view["floors"] == whole["floors"]
+        assert any("campaign-level part" in record.getMessage() for record in caplog.records)
 
     def test_the_message_holds_each_aspect_within_its_budget(self) -> None:
         bundle = _two_aspects()
