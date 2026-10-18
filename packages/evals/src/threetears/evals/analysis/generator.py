@@ -91,7 +91,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from threetears.evals.analysis.arm_mentions import arm_mentions, arm_vocabulary
+from threetears.evals.analysis.arm_mentions import arm_mentions, arm_vocabulary, label_vocabulary
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
@@ -1273,17 +1273,36 @@ def _reject_unaddressed_warnings(document: AuthoredCampaignAnalysis, bundle: Cam
 def _behind(bundle: CampaignBundle, keys: frozenset[str]) -> dict[str, str]:
     """Each aspect a choice's pair readings show another arm ahead of the arm ``keys`` name, keyed ``aspect/ahead``.
 
+    A pair reading is symmetric: it names the arm shown ahead, if either is. Read off ``CampaignReadings.pairs``.
+
     :return: ``"<aspect>/<ahead arm's label>" -> code's reason``; empty outside a choice.
     """
-    return {}
+    behind: dict[str, str] = {}
+    for pair in bundle.readings.pairs:
+        if pair.ahead is None or not ({pair.first, pair.second} & keys):
+            continue
+        mine = pair.first_label if pair.first in keys else pair.second_label
+        if pair.ahead == mine:
+            continue
+        behind.setdefault(
+            f"{pair.aspect}/{pair.ahead}", pair.reason or f"{pair.ahead} is shown ahead of {mine} on {pair.aspect}"
+        )
+    return behind
 
 
 def _missed_bars(bundle: CampaignBundle, keys: frozenset[str]) -> dict[str, str]:
     """Each absolute bar code read the arm ``keys`` name as below, keyed ``aspect/measure``.
 
+    Read off ``CampaignReadings.bars``; a bar read ``unclear`` is not missed and needs no word.
+
     :return: ``"<aspect>/<measure>" -> code's reason``; empty where it missed none.
     """
-    return {}
+    return {
+        f"{status.aspect}/{status.measure}": status.reason
+        or f"{status.arm_label} is below the bar of {status.bar} on {status.measure}"
+        for status in bundle.readings.missed_bars()
+        if status.arm in keys
+    }
 
 
 def _addressed(
@@ -1416,7 +1435,8 @@ def _stray_arm_titles(document: AuthoredCampaignAnalysis, bundle: CampaignBundle
 
     **Structural, with one question read off the words.** The arms a finding cites are the variants of its evidence
     rows' cells and the arms of the trials it names. Which arms its title names is read off the words by the names the
-    campaign's variant indexes give each arm (:func:`~threetears.evals.analysis.arm_mentions.arm_vocabulary`), which
+    campaign's variant indexes give each arm (:func:`~threetears.evals.analysis.arm_mentions.arm_vocabulary`) and the
+    labels the writer is told to call them by (:func:`~threetears.evals.analysis.arm_mentions.label_vocabulary`), which
     miss a name the writer shortened rather than refuse a sound title; the reporter eval measures the rest. A title is
     checked against its own finding only.
 
@@ -1428,7 +1448,10 @@ def _stray_arm_titles(document: AuthoredCampaignAnalysis, bundle: CampaignBundle
     :rtype: str | None
     """
     entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
-    vocabulary = arm_vocabulary(list(entries.values()))
+    # The levels an arm ran, and the labels the writer is told to name arms by.
+    vocabulary = arm_vocabulary(list(entries.values())) + label_vocabulary(
+        {arm.label: bundle.arm_keys(arm) for arm in bundle.arms}
+    )
     if not vocabulary:
         return None
     trials = {(aspect.aspect, trial.trial_id): trial.arm for aspect in bundle.aspects for trial in aspect.trials}

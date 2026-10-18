@@ -181,13 +181,15 @@ class TestACaveatSaysWhichClassOfQualificationItIs:
         finding = _finding(caveats=[Caveat(kind=kind, text="Two raters only.")])
         return {
             "findings": [finding.model_dump()],
-            "recommendation": {
+            "recommendation": [{
                 "arm": "control",
                 "reasons": [],
                 "confidence": "low",
                 "rests_on": [0],
                 "floors_overridden": [],
-            },
+                "behind_on": [],
+                "bars_missed": [],
+            }],
             "aspect_summaries": [],
             "next": [],
         }

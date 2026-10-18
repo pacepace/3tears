@@ -97,6 +97,14 @@ EVIDENCE_TIER_WORDS = worded(
 )
 
 
+#: What a page says where the memo recommends no arm, by the campaign's kind (a change always recommends one).
+NO_RECOMMENDATION_WORDS: dict[str, str] = {
+    "measurement": "This campaign measures one arm, so there is no arm to recommend.",
+    "choice": "No clear winner: the writer recommends no arm.",
+    "change": "The writer recommends no arm.",
+}
+
+
 def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
     """What a finding stands on, as a reader says it.
 
@@ -346,6 +354,7 @@ def counted(n: int, of: int, what: str) -> str:
 
 
 __all__ = [
+    "NO_RECOMMENDATION_WORDS",
     "BAR_DECISION_WORDS",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",

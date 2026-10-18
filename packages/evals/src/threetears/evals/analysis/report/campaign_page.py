@@ -50,7 +50,7 @@ from threetears.evals.analysis.report.model import (
     interval_text,
     table_row,
 )
-from threetears.evals.analysis.report.words import CONFIDENCE_WORDS
+from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, NO_RECOMMENDATION_WORDS
 from threetears.evals.analysis.style import code, humanize
 from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -102,7 +102,7 @@ def build_campaign_report(
         blocks.append(
             DisclosureBlock(section="header", source="basis", text=f'"{" ".join(campaign.question.split())}"')
         )
-    blocks += _recommendation_blocks(memo)
+    blocks += _recommendation_blocks(memo, readings.kind)
     blocks += _table_blocks(campaign, readings, reports)
     blocks += _settle_blocks(readings)
     blocks += _call_blocks(campaign, readings, call)
@@ -128,7 +128,7 @@ def build_campaign_report(
         aspects=folds,
         readings=readings,
         call=call,
-        recommendation=memo.recommendation if memo is not None else None,
+        recommendation=memo.recommended() if memo is not None else None,
     )
 
 
@@ -234,11 +234,13 @@ def _points(value: float) -> str:
     return format_number(round(value, 1))
 
 
-def _recommendation_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlock]:
+def _recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> list[ReportBlock]:
     """The writer's recommendation, the arm and how sure, then each reason in its words; one line with no memo."""
     if memo is None:
         return [DisclosureBlock(section="header", source="memo", text=NO_RECOMMENDATION)]
-    recommendation = memo.recommendation
+    recommendation = memo.recommended()
+    if recommendation is None:
+        return [DisclosureBlock(section="header", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
     return [
         TextBlock(
             section="header",

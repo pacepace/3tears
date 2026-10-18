@@ -232,7 +232,7 @@ class AnalysisLine(EvalBaseModel):
         )
     )
     findings: int = Field(ge=0, description="How many findings the memo holds.")
-    recommendations: int = Field(ge=0, description="How many recommendations it makes.")
+    recommendations: int = Field(ge=0, le=1, description="How many recommendations it makes: one, or none for a measurement or a choice with no clear winner.")
     generator_model: str
     generated_at: str
     archived: bool
@@ -523,7 +523,7 @@ def _analysis_line(analysis: EvalAnalysis) -> AnalysisLine:
         campaign_id=analysis.campaign_id,
         verdict=analysis_verdict(analysis),
         findings=len(analysis.document.findings),
-        recommendations=1,  # one memo per campaign: one recommendation
+        recommendations=0 if analysis.document.recommended() is None else 1,
         generator_model=analysis.generation.generator_model,
         generated_at=analysis.generation.generated_at,
         archived=analysis.archived,

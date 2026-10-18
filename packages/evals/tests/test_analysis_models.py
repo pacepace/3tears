@@ -64,7 +64,7 @@ def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overri
 
 def _recommendation(**overrides: Any) -> Recommendation:
     """An authored recommendation of the control, resting on nothing unless a caller says otherwise."""
-    fields: dict[str, Any] = dict(arm="control", reasons=[], confidence="medium", rests_on=[], floors_overridden=[])
+    fields: dict[str, Any] = dict(arm="control", reasons=[], confidence="medium", rests_on=[], floors_overridden=[], behind_on=[], bars_missed=[])
     fields.update(overrides)
     return Recommendation(**fields)
 
@@ -106,7 +106,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
     findings = list(authored_findings or default_findings)
     document = AuthoredCampaignAnalysis(
         findings=findings,
-        recommendation=overrides.pop(
+        recommendation=[overrides.pop(
             "recommendation",
             _recommendation(
                 arm="alpha-2",
@@ -116,7 +116,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
                     FloorOverride(floor="planning/cost_lower/*", why="Cost is not this team's concern.")
                 ],
             ),
-        ),
+        )],
         aspect_summaries=overrides.pop("aspect_summaries", [_summary()]),
         next=overrides.pop(
             "next",
@@ -182,6 +182,9 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             aspects=[Aspect(label="planning")],
             floors=[],
         ),
+        recommended_variant_key=(
+            None if document.recommended() is None else f"variant-of-{document.recommendation[0].arm}"
+        ),
         aspects=[aspect],
         campaign_bundle={
             "schema_version": 1,
@@ -232,8 +235,8 @@ def test_analysis_model_round_trip_preserves_every_field():
         Caveat(kind="sampling", text="k=1 on this template is noise-dominated.")
     ]
     assert reloaded.document.findings[1].invalidates == [0]
-    assert reloaded.document.recommendation.rests_on == [0]
-    assert reloaded.document.recommendation.floors_overridden[0].floor == "planning/cost_lower/*"
+    assert reloaded.document.recommendation[0].rests_on == [0]
+    assert reloaded.document.recommendation[0].floors_overridden[0].floor == "planning/cost_lower/*"
     assert reloaded.document.aspect_summaries[0].aspect == "planning"
     assert reloaded.document.next[0].leverage == "high"
     assert reloaded.resolutions[0].evidence[0].aspect == "planning"
@@ -408,7 +411,7 @@ class TestPositionsMustResolve:
             recommendation=_recommendation(rests_on=[0, 2]),
         )
         assert [finding.invalidates for finding in analysis.document.findings] == [[], [0], [0, 1]]
-        assert analysis.document.recommendation.rests_on == [0, 2]
+        assert analysis.document.recommendation[0].rests_on == [0, 2]
 
     @pytest.mark.parametrize("bad", [2, -1], ids=["past-the-end", "negative"])
     def test_a_recommendation_resting_on_a_missing_position_is_refused(self, bad):
@@ -461,12 +464,12 @@ class TestPositionsMustResolve:
     def test_the_positions_survive_the_from_dict_reload_path(self):
         analysis = _make_analysis()
         reloaded = EvalAnalysis.from_dict(analysis.to_dict())
-        assert reloaded.document.recommendation.rests_on == [0]
+        assert reloaded.document.recommendation[0].rests_on == [0]
         assert reloaded.document.findings[1].invalidates == [0]
 
     def test_a_stored_document_with_a_bad_position_is_refused_on_load(self):
         stored = _make_analysis().to_dict()
-        stored["document"]["recommendation"]["rests_on"] = [5]
+        stored["document"]["recommendation"][0]["rests_on"] = [5]
         with pytest.raises(ValidationError, match="names finding position"):
             EvalAnalysis.from_dict(stored)
 

@@ -102,7 +102,7 @@ def _with_verdicts(
 def _memo(bundle: CampaignBundle, level: int) -> str:
     """The toy memo recommending the arm at ``level``."""
     payload = memo_payload(bundle)
-    payload["recommendation"]["arm"] = arm_at(bundle, level)
+    payload["recommendation"][0]["arm"] = arm_at(bundle, level)
     return json.dumps(payload)
 
 
@@ -138,7 +138,7 @@ class TestAnAdoptionTheStatisticsSupportIsAccepted:
 
         analysis = await _adopt(bundle, TOYHOST_WIDE)
 
-        assert analysis.document.recommendation.arm == arm_at(campaign_bundle(bundle), TOYHOST_WIDE)
+        assert analysis.document.recommendation[0].arm == arm_at(campaign_bundle(bundle), TOYHOST_WIDE)
 
     async def test_an_arm_separated_only_on_cost_is_adopted(self):
         """Cheaper, and not separated on quality: a trade-off a reader may take."""
@@ -146,7 +146,7 @@ class TestAnAdoptionTheStatisticsSupportIsAccepted:
             _toy_bundle(control=True), {"production_replicating_cost": "improved"}, otherwise="not_separated"
         )
         analysis = await _adopt(bundle, TOYHOST_WIDE)
-        assert analysis.document.recommendation.arm == arm_at(campaign_bundle(bundle), TOYHOST_WIDE)
+        assert analysis.document.recommendation[0].arm == arm_at(campaign_bundle(bundle), TOYHOST_WIDE)
 
     async def test_adopting_the_control_needs_no_separation(self):
         bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="not_separated")
@@ -161,7 +161,7 @@ class TestAnAdoptionNoReadingSeparatedIsRefused:
         message = str(refused.value)
         assert f"the recommendation names {arm_at(campaign_bundle(bundle), TOYHOST_WIDE)!r}, but" in message
         assert "no reading separated it from the control" in message
-        assert f"recommend the control, {arm_at(campaign_bundle(bundle), TOYHOST_NARROW)!r}," in message
+        assert f"Recommend the control, {arm_at(campaign_bundle(bundle), TOYHOST_NARROW)!r}," in message
 
     async def test_an_arm_separated_only_by_regressing_is_refused(self):
         """Its only separation is evidence against it: there is no upside a trade-off could buy."""
@@ -182,7 +182,7 @@ class TestAnAdoptionNoReadingSeparatedIsRefused:
         assert analysis.generation.repair_attempts == 1 and refusal is not None
         assert f"the recommendation names {arm_at(bundle, TOYHOST_WIDE)!r}" in refusal
         assert refusal in client.calls[1]["user"]
-        assert analysis.document.recommendation.arm == arm_at(bundle, TOYHOST_NARROW)
+        assert analysis.document.recommendation[0].arm == arm_at(bundle, TOYHOST_NARROW)
 
 
 class TestAnArmNoTestCouldReachHasNoSeparationToAdoptOn:
@@ -195,7 +195,7 @@ class TestAnArmNoTestCouldReachHasNoSeparationToAdoptOn:
         campaign = campaign_bundle(bundle)
         assert campaign.control() is None
         analysis = await _adopt(bundle, TOYHOST_NARROW)
-        assert analysis.document.recommendation.arm == arm_at(campaign, TOYHOST_NARROW)
+        assert analysis.document.recommendation[0].arm == arm_at(campaign, TOYHOST_NARROW)
 
     async def test_an_arm_whose_every_comparison_is_untested_is_refused_with_why(self):
         bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="untested")

@@ -90,7 +90,7 @@ async def _generate(bundle: CampaignBundle, payload: dict[str, Any]) -> EvalAnal
 
 def _recommending(bundle: CampaignBundle, level: int) -> dict[str, Any]:
     payload = memo_payload(bundle)
-    payload["recommendation"]["arm"] = arm_at(bundle, level)
+    payload["recommendation"][0]["arm"] = arm_at(bundle, level)
     return payload
 
 
@@ -137,13 +137,13 @@ class TestAnExploratoryCampaignKeepsTheControl:
     async def test_keeping_the_control_in_an_exploratory_campaign_is_kept(self) -> None:
         bundle = _exploratory(_bundle())
         analysis = await _generate(bundle, _recommending(bundle, TOYHOST_NARROW))
-        assert analysis.document.recommendation.arm == arm_at(bundle, TOYHOST_NARROW)
+        assert analysis.document.recommendation[0].arm == arm_at(bundle, TOYHOST_NARROW)
 
     async def test_with_a_question_declared_before_the_run_the_control_may_be_kept(self) -> None:
         bundle = _bundle()
         assert bundle.aspects[0].reading_scope.questions_declared
         analysis = await _generate(bundle, _recommending(bundle, TOYHOST_NARROW))
-        assert analysis.document.recommendation.arm == arm_at(bundle, TOYHOST_NARROW)
+        assert analysis.document.recommendation[0].arm == arm_at(bundle, TOYHOST_NARROW)
 
 
 class TestACandidateNeedsASeparatedUpside:
@@ -154,24 +154,24 @@ class TestACandidateNeedsASeparatedUpside:
         message = str(refused.value)
         assert f"the recommendation names {arm_at(bundle, TOYHOST_WIDE)!r}, but" in message
         assert "it separated from the control only by being worse" in message
-        assert "code's reading shows it better on no aspect" in message
-        assert "recommend the control" in message
+        assert "on the aspects asked in time" in message and "better on none of them" in message
+        assert "Recommend the control" in message
 
     async def test_a_candidate_that_improved_on_a_comparison_is_kept_as_a_trade_off(self) -> None:
         bundle = _bundle()
         analysis = await _generate(bundle, _recommending(bundle, TOYHOST_WIDE))
-        assert analysis.document.recommendation.arm == arm_at(bundle, TOYHOST_WIDE)
+        assert analysis.document.recommendation[0].arm == arm_at(bundle, TOYHOST_WIDE)
 
     async def test_a_candidate_code_reads_better_is_kept(self) -> None:
         bundle = _without_gains(_bundle())
         bundle = _without_gains(_bundle(readings=[_better(bundle, TOYHOST_WIDE)]))
         analysis = await _generate(bundle, _recommending(bundle, TOYHOST_WIDE))
-        assert analysis.document.recommendation.arm == arm_at(bundle, TOYHOST_WIDE)
+        assert analysis.document.recommendation[0].arm == arm_at(bundle, TOYHOST_WIDE)
 
     async def test_an_arm_the_campaign_does_not_hold_is_refused_naming_the_arms(self) -> None:
         bundle = _bundle()
         payload = memo_payload(bundle)
-        payload["recommendation"]["arm"] = "the fast one"
+        payload["recommendation"][0]["arm"] = "the fast one"
         with pytest.raises(SoundnessRefusal) as refused:
             await _generate(bundle, payload)
         message = str(refused.value)
@@ -183,7 +183,7 @@ class TestTheRecommendationIsPinned:
     async def test_a_switch_resting_on_no_finding_is_refused(self) -> None:
         bundle = _bundle()
         payload = _recommending(bundle, TOYHOST_WIDE)
-        payload["recommendation"]["rests_on"] = []
+        payload["recommendation"][0]["rests_on"] = []
         with pytest.raises(
             SoundnessRefusal, match=r"names the findings it rests on.*recommendation\.rests_on is empty"
         ):
@@ -192,14 +192,14 @@ class TestTheRecommendationIsPinned:
     async def test_keeping_the_control_may_rest_on_no_finding(self) -> None:
         bundle = _bundle()
         payload = _recommending(bundle, TOYHOST_NARROW)
-        payload["recommendation"]["rests_on"] = []
+        payload["recommendation"][0]["rests_on"] = []
         analysis = await _generate(bundle, payload)
-        assert analysis.document.recommendation.rests_on == []
+        assert analysis.document.recommendation[0].rests_on == []
 
     async def test_a_recommendation_resting_on_a_finding_that_is_not_there_is_refused(self) -> None:
         bundle = _bundle()
         payload = memo_payload(bundle)
-        payload["recommendation"]["rests_on"] = [3]
+        payload["recommendation"][0]["rests_on"] = [3]
         with pytest.raises(SoundnessRefusal, match=r"recommendation\.rests_on names finding position\(s\) \[3\]"):
             await _generate(bundle, payload)
 
