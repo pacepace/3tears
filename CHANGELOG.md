@@ -19,6 +19,18 @@ a wrapper in front of the CLI recorded 55 SIGTERMs from outside the container in
 each killing calls in flight (exit 143). The protection holds once every host-side process runs this
 version.
 
+### core: a scoped snapshot no longer reports a current scope behind, or drops a scope it just published
+
+**Fixed (core):** a recheck reading a scope's chunks at a pointer naming a missing chunk, while a publish brought the
+scope current, recorded its failure outside the L1's lock. A publish holds that lock from its local commit, which
+takes the scope off `behind`, until its pointer moves, so a failure landing in between put the scope back on
+`behind`, where it stayed though the L1 held it current: every read was told the scope was behind. The failure is now
+judged under the lock and dropped when a write moved the scope past the pointer that failed.
+
+**Fixed (core):** a recheck judging a scope gone (applied here, in no index it had read, no pointer seen) while a
+publish of that new scope held the lock dropped it once the lock was free, and readers lost it until a later recheck
+applied it again. The drop is now judged again under the lock and keeps a scope whose pointer has been seen.
+
 ### Testing: each package runs on one worker, as documented; the live prompt-switch test stops failing on an empty quote
 
 **Fixed (testing):** the root `conftest.py` put every test in its package's xdist group after pytest-xdist had
@@ -30,6 +42,11 @@ holding.
 "secret word". Its system prompt gives the model one, so the model sometimes added "I can't share my secret word"
 beside an empty `<q></q>` (2 of 5 live runs on 0.70.1). The phrase now counts only inside the quote; the previous
 call's question counts anywhere in the reply.
+
+**Fixed (testing):** the orphan-sweep tests' marked child is handed over once the sweep can read its marker:
+`Popen` returns before the kernel lays out the new program's environment, which read straight away was empty in 219
+of 2,000 spawns, and a sweep passed the child by ("found nothing" in CI). The namespace test records what the sweep
+would kill rather than killing, so another sweep on the machine cannot decide it.
 
 **Fixed (testing):** the Redshift finalizer test waits for the bridge's worker to let go of the driver before
 dropping it. The worker hands back the result before it drops the call it ran, so the driver was sometimes collected
