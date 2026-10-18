@@ -54,7 +54,8 @@ dev-dependencies = [
     # the major it is tested against.
     "opentelemetry-api>=1.40,<2",
     "opentelemetry-sdk>=1.40,<2",
-    "opentelemetry-exporter-otlp>=1.40,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.40,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.40,<2",
     "opentelemetry-instrumentation-logging>=0.61b0,<1",
     "opentelemetry-instrumentation>=0.61b0,<1",
     "duckdb>=1.0",

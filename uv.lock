@@ -105,7 +105,8 @@ dev = [
     { name = "nats-py", specifier = ">=2.10" },
     { name = "nkeys", specifier = ">=0.2" },
     { name = "opentelemetry-api", specifier = ">=1.40,<2" },
-    { name = "opentelemetry-exporter-otlp", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.40,<2" },
     { name = "opentelemetry-instrumentation", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-sdk", specifier = ">=1.40,<2" },
@@ -990,7 +991,15 @@ asgi = [
 ]
 otel = [
     { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-instrumentation-logging" },
+    { name = "opentelemetry-sdk" },
+]
+otel-http = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation" },
     { name = "opentelemetry-instrumentation-logging" },
     { name = "opentelemetry-sdk" },
@@ -999,13 +1008,19 @@ otel = [
 [package.metadata]
 requires-dist = [
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
-    { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-api", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
     { name = "opentelemetry-instrumentation", marker = "extra == 'otel'", specifier = ">=0.61b0,<1" },
+    { name = "opentelemetry-instrumentation", marker = "extra == 'otel-http'", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-instrumentation-logging", marker = "extra == 'otel'", specifier = ">=0.61b0,<1" },
+    { name = "opentelemetry-instrumentation-logging", marker = "extra == 'otel-http'", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
     { name = "uuid-utils", marker = "extra == 'asgi'" },
 ]
-provides-extras = ["otel", "asgi"]
+provides-extras = ["otel", "otel-http", "asgi"]
 
 [[package]]
 name = "3tears-registry"
@@ -3553,19 +3568,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ae/cc/e4c9584181f86494df0f6bdec1a4f3280c50db44704dc2a407e994fc87bb/opentelemetry_api-1.43.0.tar.gz", hash = "sha256:107d0d03857ea8fc7c5fcbbbd83f800c281f0d560553d61c1d675fccfd1761c1", size = 73476, upload-time = "2026-06-24T15:19:55.323Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/17/83/6dba32b85f31868400440dc7ad2ca1eab94cbbf3a7b0459ed39f8311a9e2/opentelemetry_api-1.43.0-py3-none-any.whl", hash = "sha256:20acf45e9b21851926835292e4045d290acade1edd2ff3de86d2f069687ba1fd", size = 61912, upload-time = "2026-06-24T15:19:35.434Z" },
-]
-
-[[package]]
-name = "opentelemetry-exporter-otlp"
-version = "1.43.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ee/47/b77366bcbe719373a8cac2b4e8ad01f8ff3c9f2c223374d77ece280aae6f/opentelemetry_exporter_otlp-1.43.0.tar.gz", hash = "sha256:65aded6c50ee7dd2b9948c9d0e59ddb4ed4eea6e8532fba95cbe6a4a64a566ba", size = 6086, upload-time = "2026-06-24T15:19:58.003Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/26/d28cc854d2eb779f91351216c51ed0d54886f89f2dd56db9d493ba9fd429/opentelemetry_exporter_otlp-1.43.0-py3-none-any.whl", hash = "sha256:70f3fe740a64596d4157588a2ee7e4fd37d2acc0c0f522a2882b8c29316cd0f0", size = 6726, upload-time = "2026-06-24T15:19:38.437Z" },
 ]
 
 [[package]]

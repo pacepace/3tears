@@ -33,6 +33,22 @@ An app that imported `threetears.core`, `threetears.epoch` or `threetears.nats` 
 only on `3tears-mcp` must now declare those itself. Every import path is unchanged. This ships in a
 minor release.
 
+### observe: traces can export over OTLP/HTTP, and the otel-http extra installs no gRPC
+
+**Added (observe):** `TelemetryConfig.protocol`, `"grpc"` (the default, unchanged) or
+`"http/protobuf"`, which posts spans to `<endpoint>/v1/traces`. A new `otel-http` extra carries the
+`otel` extra's OpenTelemetry packages with the HTTP exporter in place of the exporter metapackage,
+so it installs no grpcio: about 10 MB against the `otel` extra's 49. Log export was already
+OTLP/HTTP. The `otel` extra is unchanged. With `protocol="grpc"` and no gRPC exporter installed,
+`init_telemetry` raises `ImportError` naming the extra to install.
+
+### Testing: the cross-process cancel test takes job_cancel's documented answer
+
+**Fixed (testing):** `test_a_generation_another_process_runs_reads_running_and_is_cancelled_from_there` required
+`job_cancel` from another process to read `running`. Its contract allows `cancelled` when the holder's next renewal
+lands before the read-back, which a 0.3 s lease makes likely on a loaded machine (the v0.70.1 release run). It now
+takes either; the checks that the holder ended it, with the reason, while it was held, are unchanged.
+
 ## v0.70.1 -- 2026-10-18
 
 ### models: the orphan sweep leaves a Claude CLI in another pid namespace alone
