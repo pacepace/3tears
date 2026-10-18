@@ -1311,7 +1311,6 @@ page decides for the person reading it.
 definition = {
     "name": "support v2", "subject_id": "support", "behavior": "support",
     "question": "Should v2 replace v1 for support?",
-    "arms": [{"label": "v1", "role": "control", "from_run_ids": [v1_routing_run]}],
     "aspects": [
         {"label": "routing", "template_id": "routing", "margin": 5.0, "design": routing_design},
         {"label": "replies", "template_id": "replies", "margin": 2.0, "design": replies_design},
@@ -1323,9 +1322,11 @@ definition = {
 }
 ```
 
-- **The arms are variants, addressed from runs.** An arm names one or more runs it ran (`from_run_ids`), and the
-  server reads its variant key and lever map from the first; runs of one arm carrying two keys are refused, naming
-  each. The control comes first. A candidate nobody names is read off the runs, one per other variant.
+- **The arms are variants, addressed from runs.** An arm names one or more member runs it ran (`arms[].from_run_ids`
+  at creation, over runs its aspects already hold; or `set_campaign_control` once the control's run has joined), and
+  the server reads its variant key and lever map from the first; runs of one arm carrying two keys are refused,
+  naming each. The control comes first. A candidate nobody names is read off the runs, one per other variant. A
+  control named after an aspect's first run makes that aspect's comparisons post hoc.
 - **Each aspect holds its own runs.** A run joins one aspect of a campaign, by its template, or by the aspect
   `add_runs_to_campaign` (`campaign_runs_add`) names; a run another template ran, or one two aspects could take,
   is refused naming them.
