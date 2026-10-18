@@ -70,7 +70,9 @@ from threetears.evals.analysis.bundle.schema import (
     ComparisonVerdict,
     asks_a_question,
     exploratory_disclosure,
+    FLOOR_COST_MEASURE,
     FamilyComparison,
+    FloorContrast,
     PairingCorrelation,
     JudgedMeasure,
     MultipleComparisons,
@@ -646,8 +648,9 @@ def _multiple_comparisons(
     contended: Collection[_CellKey] = frozenset(),
     first_run_at: str | None,
     rubric_threshold: int,
-) -> tuple[MultipleComparisons, GuardrailReadings]:
-    """Test each contrast against the control in the aspect's one family, and decide every guardrail.
+) -> tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]:
+    """Test each contrast against the control in the aspect's one family, decide every guardrail, and carry what the
+    floors read.
 
     The aspect's family is every comparison its question could draw a verdict from: each contrast cell against
     the control cell under the same rig (a contrast across rigs differs by its instrument too, so it is
@@ -659,11 +662,15 @@ def _multiple_comparisons(
     The guardrails are read over the same pairs and the same per-case values, and kept out of every
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
-    **The overall pass rate joins the family whenever the aspect declares a margin**: the margin is how far the pass
-    rate may fall, so the pass rate is a hypothesis the aspect asks and its family grows by one, every adjusted p in it
-    moving with it. With no margin it is compared nowhere: it is the scoreboard's count, exploratory. Each case's value
-    is the share of its usable trials that passed (:func:`_trial_pass_values`), tested and bounded as a check's pass
-    rate is, on its 0-1 range.
+    **The overall pass rate joins the question's family when the question was asked before the first run and the aspect
+    declares a margin**: the margin is how far the pass rate may fall, so the pass rate is a hypothesis the question
+    asks and its family grows by one, every adjusted p in it moving with it. It never joins the exploratory family,
+    whose size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
+    (:func:`_trial_pass_values`), tested and bounded as a check's pass rate is, on its 0-1 range.
+
+    **The floors read their own values, whatever the family compares** (:class:`FloorContrast`): each arm against the
+    control under each rig, on the overall pass rate and on the cost per reply, per case, so a floor's interval, read
+    at its own level, never depends on which readings the question asked about.
 
     :param aspect: The aspect's label, which keys its question's family.
     :ptype aspect: str
@@ -700,21 +707,27 @@ def _multiple_comparisons(
     :ptype rubric_threshold: int
     :return: The aspect's question's family; the exploratory family over every reading when no question was asked
         in time; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
-        against the control.
-    :rtype: tuple[MultipleComparisons, GuardrailReadings]
+        against the control, and the floors' per-case values (none with no control).
+    :rtype: tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]
     """
     guardrail_readings = _guardrail_readings(catalog, judged_measures, declared.design if declared else None)
     if realized.control_arm is None:
-        return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST), _guardrails_of(
-            guardrail_readings,
+        return (
+            MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST),
+            _guardrails_of(
+                guardrail_readings,
+                [],
+                withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
+            ),
             [],
-            withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
         )
     axes_asked = question_axes(declared, first_run_at)
     # An aspect that asked nothing (or only once its results existed) is not thereby licensed to report chance
     # differences: its family is every comparison it holds, on every reading, corrected as one.
     scopes: list[tuple[str | None, list[MeritAxis]]] = [(aspect, axes_asked) if axes_asked is not None else (None, [])]
-    margined = declared is not None and declared.margin is not None
+    # The pass rate is a hypothesis only of a question asked in time with a margin to fall by (never the exploratory
+    # family's: it would move every other reading's adjusted p there over unchanged runs).
+    pass_rate_asked = axes_asked is not None and declared is not None and declared.margin is not None
     control_variant = realized.control_arm.variant_key
     # The control's cells under an earlier identity predicate are the control, not a rival arm: compared with the
     # control they would read the control against itself under another digest, so they are in no pair.
@@ -753,7 +766,7 @@ def _multiple_comparisons(
     families = []
     for family_aspect, axes in scopes:
         readings = _family_readings(axes, catalog, judged_measures)
-        if margined:
+        if pass_rate_asked and family_aspect is not None:
             readings[("trial", TRIAL_PASS_NAME)] = True
         tested: list[_Tested] = []
         for reading in sorted(readings):
@@ -806,7 +819,55 @@ def _multiple_comparisons(
         for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
         if values[control_key].get(reading) or values[contrast_key].get(reading)
     ]
-    return MultipleComparisons(families=families), _guardrails_of(guardrail_readings, checks)
+    floor_contrasts = [
+        _floor_contrast(
+            reading,
+            (control_key, values[control_key].get(reading, {})),
+            (contrast_key, values[contrast_key].get(reading, {})),
+        )
+        for reading in (("trial", TRIAL_PASS_NAME), ("measure", FLOOR_COST_MEASURE))
+        for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
+        if values[control_key].get(reading) and values[contrast_key].get(reading)
+    ]
+    return (
+        MultipleComparisons(families=families),
+        _guardrails_of(guardrail_readings, checks),
+        [contrast for contrast in floor_contrasts if contrast is not None],
+    )
+
+
+def _floor_contrast(
+    reading: tuple[ComparisonReading, str],
+    control: tuple[_CellKey, dict[str, float]],
+    contrast: tuple[_CellKey, dict[str, float]],
+) -> FloorContrast | None:
+    """One arm against the control under one rig on a reading a floor reads, its samples as a comparison's would be
+    (:func:`_test_samples`); None where a side has fewer than two cases, which no interval reads."""
+    (control_key, control_values), (contrast_key, contrast_values) = control, contrast
+    a, b, paired = _test_samples(control_values, contrast_values)
+    if len(a) < 2 or len(b) < 2:
+        return None
+    kind, name = reading
+    return FloorContrast(
+        reading="trial" if kind == "trial" else "measure",
+        name=name,
+        control=ComparedCell(
+            variant_key=control_key[0],
+            apparatus_class_id=control_key[1],
+            n_cases=len(a),
+            mean=sum(a) / len(a),
+            n_left_out=len(control_values) - len(a),
+        ),
+        contrast=ComparedCell(
+            variant_key=contrast_key[0],
+            apparatus_class_id=contrast_key[1],
+            n_cases=len(b),
+            mean=sum(b) / len(b),
+            n_left_out=len(contrast_values) - len(b),
+        ),
+        test="paired" if paired else "unpaired",
+        case_values=(list(a), list(b)),
+    )
 
 
 def _reading_scope(
