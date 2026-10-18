@@ -16,6 +16,7 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 from pydantic import ValidationError
 
 from threetears.agent.acl import AclCache
@@ -177,7 +178,20 @@ class TestToolError:
         """a tool failure reads ``[TOOL ERROR] <tool>: <action> failed — <reason>``."""
         msg = await _log(_RaisingEmbedder(), _FakeIntentions(), "want")
         assert msg.startswith("[TOOL ERROR] intention_log: embed failed")
-        assert "the embedder failed: RuntimeError: upstream embedding outage" in msg
+        assert "the embedder failed (RuntimeError)" in msg
+        assert "upstream embedding outage" not in msg
+
+    async def test_an_embedding_outage_is_counted_and_its_provider_text_never_reaches_the_reply(self) -> None:
+        class _KeyLeaking(_RaisingEmbedder):
+            async def aembed_query(self, text: str) -> list[float]:
+                raise ValueError("Incorrect API key provided: sk-proj-FAKE1234567890")
+
+        site = "threetears.agent.intention.tools:load_intention_log_tool.<locals>.intention_log"
+        labels = {"site": site, "exc_type": "EmbeddingUnavailableError"}
+        before = REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0
+        msg = await _log(_KeyLeaking(), _FakeIntentions(), "want")
+        assert "sk-proj" not in msg
+        assert (REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0) == before + 1
 
 
 class TestEmbeddingSoftFail:
@@ -202,7 +216,8 @@ class TestEmbeddingSoftFail:
         collection = _FakeIntentionsDedupDown()
         msg = await _log(_OkEmbedder(), collection, "want")
         assert msg.startswith("[TOOL ERROR] intention_log: dedup failed")
-        assert "ConnectionError: l3 timeout" in msg
+        assert "(ConnectionError)" in msg
+        assert "l3 timeout" not in msg, "a store's own message stays in the log, out of the reply"
         assert "nothing was written down" in msg
         assert collection.saved == [], "a want stored without its dedup check is the duplicate this exists to stop"
 

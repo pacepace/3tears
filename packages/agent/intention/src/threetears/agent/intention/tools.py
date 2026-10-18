@@ -255,7 +255,9 @@ async def load_intention_log_tool(
         try:
             embedding = await embed_query(embedding_provider, text)
         except EmbeddingUnavailableError as exc:
-            log.warning("intention_log: embedding failed: %s", exc)
+            # contained, with the provider's own text on the cause; the reply carries only the
+            # refusal's fixed words and the provider's exception class
+            contain(exc, log=log, what="intention_log: the want could not be embedded")
             return _tool_error("intention_log", "embed", str(exc))
 
         # dedup against the user's OPEN wants: refresh the near-duplicate
@@ -272,11 +274,12 @@ async def load_intention_log_tool(
                 threshold=0.0,
             )
         except Exception as exc:
-            contain(exc, log=log, what="intention_log: dedup lookup failed, nothing stored", extra={"error": str(exc)})
+            contain(exc, log=log, what="intention_log: dedup lookup failed, nothing stored")
+            # the reply names the exception class only: a store's message can carry SQL or a URL
             return _tool_error(
                 "intention_log",
                 "dedup",
-                f"your open wants could not be read to check this one against them ({type(exc).__name__}: {exc}); "
+                f"your open wants could not be read to check this one against them ({type(exc).__name__}); "
                 "nothing was written down, try again",
             )
 
