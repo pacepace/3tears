@@ -37,6 +37,7 @@ from threetears.core.security import DecryptionError, open_secret, seal
 __all__ = [
     "BACKUP_CODE_COUNT",
     "DecryptionError",
+    "TotpSecretError",
     "generate_backup_codes",
     "generate_seed",
     "hash_backup_code",
@@ -52,6 +53,16 @@ BACKUP_CODE_COUNT: Final[int] = 10
 
 #: Steps of clock skew tolerated either side of now (one step is 30 seconds).
 _VALID_WINDOW: Final[int] = 1
+
+
+class TotpSecretError(ValueError):
+    """The STORED TOTP secret is not usable base32, so no code can ever verify against it.
+
+    Not a wrong code: the user's second factor is broken until it is re-enrolled, and read
+    as a wrong code it looks like a user who keeps mistyping. The caller denies the attempt
+    as it would a wrong code, and tells its operator -- never its user -- which enrolment is
+    broken. A ``ValueError`` so a caller already treating a bad secret as one still does.
+    """
 
 
 def generate_seed() -> str:
@@ -79,16 +90,32 @@ def provisioning_uri(secret_b32: str, *, account_name: str, issuer_name: str) ->
 def verify_code(secret_b32: str, code: str) -> bool:
     """Verify a live TOTP code.
 
-    Never raises: a malformed code -- non-numeric, wrong length, empty -- is an
-    authentication failure, not an exception, so no rejection reason is distinguishable by
-    exception shape.
+    A malformed code -- non-numeric, wrong length, empty -- is an authentication failure,
+    not an exception, so no rejection reason about the CODE is distinguishable by exception
+    shape. A malformed stored SECRET raises :class:`TotpSecretError`: it used to read as a
+    wrong code, so a broken enrolment locked its user out with nothing to say why.
+
+    :param secret_b32: the stored base32 seed
+    :ptype secret_b32: str
+    :param code: the code the user typed
+    :ptype code: str
+    :return: whether the code verifies
+    :rtype: bool
+    :raises TotpSecretError: the stored seed is not base32, or decodes to nothing; deny the
+        attempt and report the broken enrolment to the operator
     """
+    totp = pyotp.TOTP(secret_b32)
+    try:
+        # Decoded on its own, before the code is looked at, so the only failure classified as
+        # the secret's is the secret's own decoding.
+        key = totp.byte_secret()
+    except ValueError as exc:  # binascii.Error, the base32 decoder's, is a ValueError
+        raise TotpSecretError(f"the stored TOTP secret is not valid base32 ({exc}); the enrolment needs redoing") from exc
+    if not key:
+        raise TotpSecretError("the stored TOTP secret is empty; the enrolment needs redoing")
     if not code:
         return False
-    try:
-        return bool(pyotp.TOTP(secret_b32).verify(code, valid_window=_VALID_WINDOW))
-    except TypeError, ValueError:
-        return False
+    return bool(totp.verify(code, valid_window=_VALID_WINDOW))
 
 
 def generate_backup_codes(count: int = BACKUP_CODE_COUNT) -> list[str]:

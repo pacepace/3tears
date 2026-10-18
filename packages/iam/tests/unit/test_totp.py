@@ -11,6 +11,7 @@ from pydantic import SecretStr
 from threetears.iam.totp import (
     BACKUP_CODE_COUNT,
     DecryptionError,
+    TotpSecretError,
     generate_backup_codes,
     generate_seed,
     hash_backup_code,
@@ -53,6 +54,20 @@ def test_malformed_codes_fail_closed_without_raising(code: str) -> None:
     # A malformed code is an authentication failure, not an exception -- otherwise the
     # exception shape distinguishes rejection reasons.
     assert not verify_code(generate_seed(), code)
+
+
+@pytest.mark.parametrize("secret", ["not base32!!", "A", "0189", ""])
+@pytest.mark.parametrize("code", ["123456", ""])
+def test_a_malformed_stored_secret_raises_rather_than_reading_as_a_wrong_code(secret: str, code: str) -> None:
+    """A broken enrolment used to read as a wrong code, so its user was locked out silently."""
+    with pytest.raises(TotpSecretError, match="enrolment needs redoing"):
+        verify_code(secret, code)
+
+
+def test_a_malformed_secret_is_still_a_value_error() -> None:
+    """A caller already treating a bad secret as a ``ValueError`` keeps doing so."""
+    with pytest.raises(ValueError):
+        verify_code("not base32!!", "123456")
 
 
 def test_one_step_of_skew_is_tolerated_each_side() -> None:
