@@ -25,7 +25,7 @@
   ],
   "recommendation": [
     {
-      "arm": "control",
+      "arm": "baseline",
       "reasons": [
         "Nothing separated the arms, so keep what is there."
       ],
