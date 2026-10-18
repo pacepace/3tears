@@ -201,7 +201,7 @@ class _L3:
 
 
 def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
-    pointers, store = _Pointers(), options.pop("store", None) or _Store()
+    pointers, store = options.pop("pointers", None) or _Pointers(), options.pop("store", None) or _Store()
     l3 = _L3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
 
     l3.epochs = {"TX": 1, "DE": 1}
@@ -1079,6 +1079,122 @@ async def test_a_read_during_a_long_write_neither_waits_for_it_nor_is_told_its_s
     with snapshot.read_with_behind() as (cursor, behind):
         assert "TX" not in behind
         assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(5,)]
+    await snapshot.stop()
+
+
+class _GatedStore(_Store):
+    """a store whose next read of a missing chunk, and whose writes of one scope's epoch, each wait for a release."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.missing_read = asyncio.Event()
+        self.release_missing = asyncio.Event()
+        self.hold_missing = False
+        self.writing = asyncio.Event()
+        self.release_writes = asyncio.Event()
+        self.hold_prefix: str | None = None
+
+    async def get(self, name: str) -> bytes:
+        if self.hold_missing and name not in self.objects:
+            self.hold_missing = False
+            self.missing_read.set()
+            await self.release_missing.wait()
+        return await super().get(name)
+
+    async def put(self, name: str, data: bytes) -> None:
+        if self.hold_prefix is not None and name.startswith(self.hold_prefix):
+            self.writing.set()
+            await self.release_writes.wait()
+        await super().put(name, data)
+
+
+async def test_a_failed_read_of_a_pointer_a_publish_moved_on_from_does_not_put_the_scope_behind_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a recheck reads TX's chunks at a pointer naming a missing chunk while a publish brings TX current: the publish
+    commits locally (taking TX off ``behind``), then writes its chunks and moves the pointer, all under the L1's lock.
+    The read fails in that window. Recorded outside the lock, the failure put TX back on ``behind`` after the publish
+    took it off, and nothing took it off again: TX stayed behind though it was current (CI, 2026-10-18)."""
+    caplog.set_level(logging.WARNING, logger="threetears.core.collections.scoped_snapshot")
+    store = _GatedStore()
+    snapshot, pointers, _, _ = _snapshot(store=store)
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.put_now("enr.rebuild", b"another replica")
+    _point_at_a_missing_chunk(pointers)
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX behind")
+
+    store.hold_missing = True
+    await _until(store.missing_read.is_set, what="a recheck reading the missing chunk")
+    store.hold_prefix = "enr/TX/2/"
+    publishing = asyncio.create_task(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 5}]})
+    )
+    await _until(store.writing.is_set, what="the publish writing its chunks, its local commit done")
+    assert "TX" not in snapshot.status().behind, "the publish's local commit took TX off behind"
+
+    failures = caplog.text.count("could not be applied")
+    store.release_missing.set()
+    await _until(lambda: caplog.text.count("could not be applied") > failures, what="the recheck's read failing")
+    store.release_writes.set()
+    await publishing
+
+    assert snapshot.applied_epoch("TX") == 2
+    await _until(lambda: "TX" not in snapshot.status().behind, what="TX current", timeout=2.0)
+    with snapshot.read_with_behind() as (cursor, behind):
+        assert "TX" not in behind
+        assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(5,)]
+    await snapshot.stop()
+
+
+class _HeldPointerCreate(_Pointers):
+    """a pointer bucket whose first write of one new key waits for a release."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__()
+        self.key = key
+        self.creating = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
+        if key == self.key and not self.release.is_set():
+            self.creating.set()
+            await self.release.wait()
+        return await super().create(key=key, value=value, ttl=ttl)
+
+
+async def test_a_recheck_during_a_publish_of_a_new_scope_does_not_drop_it() -> None:
+    """a publish of a new scope (NV) holds the L1's lock from its local commit, which lists NV as applied, until its
+    pointer moves. A recheck in that window saw NV applied, in no index it had read and with no pointer seen, and judged
+    it gone; it dropped NV once the publish let the lock go, so NV, published here, was not held (CI, 2026-10-17). The
+    publish is held at its pointer's first write for ten recheck intervals, so a recheck runs in the window, and
+    once a later recheck applied NV again from its pointer it was held again: the loss is the gap between."""
+    pointers = _HeldPointerCreate("enr.s.NV")
+    snapshot, _, _, _ = _snapshot(pointers=pointers)
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    # TX behind on a chunk that is not there keeps the recheck passing; another replica holds the rebuild claim
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.put_now("enr.rebuild", b"another replica")
+    _point_at_a_missing_chunk(pointers, "TX")
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX behind")
+    publishing = asyncio.create_task(
+        snapshot.publish("NV", 1, {"results": [{"county": "c9", "state": "NV", "votes": 9}]})
+    )
+    await _until(pointers.creating.is_set, what="the publish moving NV's pointer, its local commit done")
+    await asyncio.sleep(0.5)  # ten recheck intervals: the window the drop needs, not a wait for work
+    pointers.release.set()
+    await publishing
+
+    # the drop landed once the lock was free and a later recheck applied NV again from its pointer, so what a
+    # reader lost is a window: NV must be held at every look from the publish's return
+    missing = 0
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        missing += snapshot.applied_epochs().get("NV") != 1
+        await asyncio.sleep(0.005)
+    assert missing == 0, f"NV, published here, was not held at {missing} looks after its publish returned"
     await snapshot.stop()
 
 
