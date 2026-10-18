@@ -52,6 +52,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_documents, embed_query
 from threetears.observe.text_block import under
 from threetears.observe import contain, get_logger
 from threetears.tool_schema.self_contained import declared_type
@@ -217,45 +218,14 @@ class ToolRelevanceIndex:
         # latency ceiling cancels a caller's wait and not the work: a catalog that takes longer
         # than the ceiling to embed still lands in the cache for the next turn, and turns that
         # arrive together share one embedding call.
-        self._inflight: dict[str, asyncio.Task[dict[str, list[float]] | None]] = {}
+        self._inflight: dict[str, asyncio.Task[dict[str, list[float]]]] = {}
 
-    async def _safe_aembed_query(self, text: str) -> list[float] | None:
-        """Soft-fail single-text embed. ``None`` on any failure or empty input."""
-        if not text:
-            return None
-        try:
-            result = await self._embedder.aembed_query(text)
-        except Exception as exc:
-            contain(exc, log=_log, what="tool-relevance query embedding failed (soft-fail)", extra={"error": str(exc)})
-            return None
-        if not result:
-            return None
-        return result
-
-    async def _safe_aembed_documents(self, texts: list[str]) -> list[list[float]] | None:
-        """Soft-fail batch embed. ``None`` on any failure or a mismatched result length."""
-        if not texts:
-            return []
-        try:
-            result = await self._embedder.aembed_documents(texts)
-        except Exception as exc:
-            contain(
-                exc,
-                log=_log,
-                what="tool-relevance batch embedding failed (soft-fail)",
-                extra={"error": str(exc), "text_count": len(texts)},
-            )
-            return None
-        if not result or len(result) != len(texts):
-            return None
-        return result
-
-    async def _embed_tool_set(self, tools: list[BaseTool]) -> dict[str, list[float]] | None:
+    async def _embed_tool_set(self, tools: list[BaseTool]) -> dict[str, list[float]]:
         """Return ``{tool_name: vector}`` for ``tools``, via cache when possible.
 
-        ``None`` propagates a soft-fail from the batch embed call up to the
-        caller, which must fall back to the full catalog -- this method never
-        returns a partial/smaller mapping.
+        Never a partial/smaller mapping: a batch embed that fails raises
+        :class:`EmbeddingUnavailableError` (already recorded by
+        :meth:`_embed_and_cache`), and the caller falls back to the full catalog.
         """
         content_hash = _tool_set_content_hash(tools)
         cached = self._cache.get(content_hash)
@@ -270,16 +240,34 @@ class ToolRelevanceIndex:
             task.add_done_callback(functools.partial(self._forget_inflight, content_hash))
         return await asyncio.shield(task)
 
-    def _forget_inflight(self, content_hash: str, _done: asyncio.Future[Any]) -> None:
-        """Drop a finished embedding's task handle; its result, if any, is in the cache."""
-        self._inflight.pop(content_hash, None)
+    def _forget_inflight(self, content_hash: str, done: asyncio.Future[Any]) -> None:
+        """Drop a finished embedding's task handle; its result, if any, is in the cache.
 
-    async def _embed_and_cache(self, content_hash: str, tools: list[BaseTool]) -> dict[str, list[float]] | None:
-        """Embed one tool set and cache it; ``None`` on a soft-failed embed (nothing cached)."""
+        A failed embedding was recorded where it failed (:meth:`_embed_and_cache`), and a
+        caller that outlived the latency ceiling is no longer awaiting it, so its exception
+        is marked retrieved here rather than reported again by the event loop.
+        """
+        self._inflight.pop(content_hash, None)
+        if not done.cancelled():
+            done.exception()
+
+    async def _embed_and_cache(self, content_hash: str, tools: list[BaseTool]) -> dict[str, list[float]]:
+        """Embed one tool set and cache it; nothing is cached when the embed fails.
+
+        :raises EmbeddingUnavailableError: the batch could not be embedded; it is recorded here,
+            once per embedding call, however many turns were waiting on it
+        """
         texts = [f"{t.name}: {t.description or ''}" for t in tools]
-        vectors = await self._safe_aembed_documents(texts)
-        if vectors is None:
-            return None
+        try:
+            vectors = await embed_documents(self._embedder, texts)
+        except EmbeddingUnavailableError as exc:
+            contain(
+                exc,
+                log=_log,
+                what="tool-relevance batch embedding failed; ranking falls back",
+                extra={"text_count": len(texts)},
+            )
+            raise
 
         embeddings = {t.name: vec for t, vec in zip(tools, vectors)}
         self._cache[content_hash] = embeddings
@@ -302,11 +290,15 @@ class ToolRelevanceIndex:
         the ranked list is empty and the caller substitutes the full catalog
         -- this helper never invents a partial ranking.
         """
-        tool_embeddings = await self._embed_tool_set(tools)
-        if tool_embeddings is None:
+        try:
+            tool_embeddings = await self._embed_tool_set(tools)
+        except EmbeddingUnavailableError:
+            # recorded where the batch failed; the reason travels in the fallback
             return [], "embedder_error"
-        query_vec = await self._safe_aembed_query(query)
-        if query_vec is None:
+        try:
+            query_vec = await embed_query(self._embedder, query)
+        except EmbeddingUnavailableError as exc:
+            contain(exc, log=_log, what="tool-relevance query embedding failed; ranking falls back")
             return [], "embedder_error"
 
         scored: list[tuple[BaseTool, float]] = [
