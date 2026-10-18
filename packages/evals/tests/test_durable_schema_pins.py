@@ -61,7 +61,7 @@ PINNED_DURABLE_SCHEMA_MINOR = 0
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
     "calibration_rating": "eba355b7d100ad86fc1b3cd0b29af82393a8bd049a0a8fe2fe45a1f149d3c055",
     "case_set": "0bff3e60a900a9f3439007960fd15ad66b7e0081c6a1d60ca95fe17cfe6c4633",
-    "eval_campaign": "497d0c7efdef144fbc92acef3f95facafcf71d3d370305b580dfe3b58e5efb6a",
+    "eval_campaign": "b4fc15e63e7993a540fb493b2bf08323d6abb2569601fda034ca033d690e79df",
     "eval_template": "c288c8eaf42ce174839c0e795918bef339752462af56203ce6269eece3211191",
     "eval_test_case": "03cd7a0d17c6da66c76234972cce33e9bfae14de0c8e825230073030fa95c493",
     "judge_config": "4c87095eeee288755adaf9aa34b35c0bfcdc2bc0246070e5452575197160a5a4",
@@ -116,7 +116,7 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v15/rubric_dim_tombstone.json": "da3fb751ac55bf182f339faf233fc65aeeb0d467044c78ee9709844761042cef",
     "v16/calibration_rating.json": "085d1e7f28b15a7b6fffc850dca73c88bb7afcc543169367fd42bb1b21ee775c",
     "v16/case_set.json": "cae61566ce663fc6eff2ddb4604e6b5a066e4b347bd998ea391647e2dcb7730c",
-    "v16/eval_campaign.json": "ab9796d1031d859adda87b69ca99d3e9e25a1a6bd7f3e0d3e341a8697280d24a",
+    "v16/eval_campaign.json": "ef1a1bd6927cd884cfdcce5b0b0d68c0f784863dfff7280001ffb4dba70d5ef8",
     "v16/eval_template.json": "0ffbc44743965bd0786cf8d8ad0d2482cc0c96a8a0628bd93ab82cca6dcdd113",
     "v16/eval_test_case.json": "11c704d4c76a2ad0fa591720bf388b7c489484c4ab29182085a8e50fe6610e77",
     "v16/judge_config.json": "62d655a09e85d57fd1142bc3ea3e2241f7293718e7300d4f53ced8406bbb36a9",

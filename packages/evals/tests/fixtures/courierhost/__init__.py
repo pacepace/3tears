@@ -51,7 +51,6 @@ from threetears.evals.kernel import (
     CellCassettes,
     CellSink,
     CellSpanWindow,
-    Aspect,
     EvalCampaign,
     EvalStorage,
     ValidationFailedError,
@@ -430,14 +429,18 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
         )
         runs.append(run.model_copy(update={"status": "completed"}))
         await run_blocking(host.blocking_executor, host.storage.save_eval_run, runs[-1])
-    campaign = EvalCampaign(
-        scope_id=COURIER_SCOPE,
-        name="planner model bake-off",
-        subject_id=subject.subject_id,
-        subject_kind="route_planner_config",
-        behavior="plan_delivery_round",
-        aspects=[Aspect(label="plan_delivery_round", template_id=template.id, run_ids=[run.id for run in runs])],
-        created_by="test:fixture",
+    campaign = EvalCampaign.model_validate(
+        {
+            "scope_id": COURIER_SCOPE,
+            "name": "planner model bake-off",
+            "subject_id": subject.subject_id,
+            "subject_kind": "route_planner_config",
+            "behavior": "plan_delivery_round",
+            "aspects": [
+                {"label": "plan_delivery_round", "template_id": template.id, "run_ids": [run.id for run in runs]}
+            ],
+            "created_by": "test:fixture",
+        }
     )
     await run_blocking(host.blocking_executor, host.storage.save_campaign, campaign)
     return campaign

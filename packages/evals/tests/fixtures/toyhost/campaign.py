@@ -24,7 +24,6 @@ from threetears.evals.kernel import (
     Question,
     SweptAxis,
 )
-from threetears.evals.kernel.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -128,12 +127,16 @@ def toyhost_design() -> CampaignDesign:
     )
 
 
+#: The version a campaign was stored at while it held one design: its stored read upgrades it.
+_ONE_DESIGN_VERSION = 15
+
+
 def toyhost_campaign_of_one_aspect(*, declared_design: CampaignDesign, **fields: object) -> EvalCampaign:
     """A toy-host campaign of one aspect, labelled with its behavior, declared by one design.
 
-    The toy host's designs ask their questions, and name their control, as one design does; the campaign holds them
-    as the one aspect such a design reads as (``upgrade_campaign_v15``), so the question, the control arm, the margin
-    and the floors are the ones every stored campaign of that design reads with.
+    The toy host's designs ask their questions, and name their control, as one design does, so the campaign is read
+    as a campaign stored with that design is (its stored read upgrades it to the one aspect it reads as): the question,
+    the control arm, the margin and the floors are the ones every stored campaign of that design reads with.
 
     :param declared_design: The design, its questions and control included.
     :ptype declared_design: CampaignDesign
@@ -142,9 +145,13 @@ def toyhost_campaign_of_one_aspect(*, declared_design: CampaignDesign, **fields:
     :return: The campaign.
     :rtype: EvalCampaign
     """
-    return EvalCampaign.model_validate(
-        upgrade_campaign_v15({**fields, "declared_design": declared_design.model_dump(mode="json")})
-    )
+    stored = {
+        **fields,
+        "doc_type": "eval_campaign",
+        "schema_version": _ONE_DESIGN_VERSION,
+        "declared_design": declared_design.model_dump(mode="json"),
+    }
+    return EvalCampaign.from_dict(stored)
 
 
 def toyhost_campaign(

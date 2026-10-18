@@ -81,9 +81,10 @@
     "called_at": "2026-10-19T00:00:00+00:00",
     "called_by": "test:fixture",
     "floors_overridden": [],
-    "reason": "held"
+    "reason": "held",
+    "variant_key": "ca7f329820cf3b5c33c650c26f43238834a75c4b1a85ca0987c2fe2b18b6f203"
   },
-  "created_at": "2026-10-18T02:27:38.432712+00:00",
+  "created_at": "2026-10-18T03:06:56.287013+00:00",
   "created_by": "test:fixture",
   "declared_at": "2026-10-18T00:00:00+00:00",
   "declared_by": "test:fixture",
@@ -108,7 +109,7 @@
       "key": "conversation/cost_lower/*"
     }
   ],
-  "id": "01a14cd6-0b40-70ec-9ec8-60d308e3d93e",
+  "id": "01a14cfa-059e-77f8-9159-db907a294159",
   "name": "campaign",
   "question": "Does GLM hold up across both behaviors?",
   "run_ids": [
