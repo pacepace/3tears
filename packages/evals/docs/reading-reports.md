@@ -58,6 +58,8 @@ A change of two aspects, one regressing past its floor and one improving, opens:
 # support queue
 "Does the candidate answer support requests as well as production?"
 
+No recommendation was written: no analysis has been generated over this campaign.
+
 **By aspect**
 
 | Aspect | Arm | Cases | ▸ production | Arm passed | Change (pts) | Interval (pts) | Margin (pts) | Reading |
@@ -89,8 +91,11 @@ level its row was tested at, so a reading and its interval never disagree, and a
 would show the candidate no worse than the margin, if no difference and if as observed, with the cost; it is the
 floor projection below, per aspect.
 
-**The call** is the last line: who decided, which arm, why, and each broken floor and missed bar it overrides, or
-`No call is recorded yet: a person decides, over the readings above.`
+**The call** is the last line: who decided, which arm, when and why (where runs joined after it, the line counts
+them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it overrides,
+and each it leaves unnamed. An override the readings no longer support is kept and marked `(no longer broken)`. In a
+choice, each pair where another arm is shown ahead of the decided one is a warning beside the call, never a refusal.
+With no call: `No call is recorded yet: a person decides, over the readings above.`
 ([recording one](adopting-a-host.md#recording-the-call)).
 
 **The folds.** Each aspect follows as a fold: one line of its reading, then that aspect's page in full, laid out as
@@ -98,7 +103,9 @@ the rest of this guide describes, its arms named by the campaign's labels. A cam
 
 ### An aspect's first screen
 
-Each fold opens on its aspect's first screen. The invoices example (rung 3) renders this, verbatim:
+In a fold, the campaign's first screen holds the title, the question and the warnings, so the fold opens on its
+reading (`v2 unclear, a lead.`), then the arms line and the scoreboard. Laid out alone (`result.report`), an aspect's
+page opens on its own first screen; the invoices example (rung 3) renders this, verbatim:
 
 ```markdown
 # invoices: does v2 do better than v1?
@@ -393,7 +400,7 @@ cannot hide a loss here.
 | Decision | Means | Do |
 |---|---|---|
 | held | the whole interval is on the good side of the margin, and the reading declares its range | nothing; the arm did not get worse by more than you tolerate |
-| breached | the whole interval is beyond the margin | do not adopt the arm, whatever it gained; the analysis writer is refused if it tries |
+| breached | the whole interval is beyond the margin | it warns: the writer is refused if it recommends the arm, whatever it gained; the person decides |
 | undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe; the contrasts open with a line naming the arm, and the verdict line says it. To decide it, add cases, declare a margin, or declare the reading's range |
 
 The margin is the measure's `materiality_threshold`, and a judged dimension's is the one its campaign declares
