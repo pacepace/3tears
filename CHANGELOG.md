@@ -15,7 +15,7 @@ whole and then matched (`wm_running`), tested against a fake xprop writing past 
 
 **Added (enforcement): `threetears.enforcement.grep_q_pipefail`.** Refuses a pipe (`|` or `|&`, not `||`) into
 `grep`, `egrep` or `fgrep` running quiet (`-q` in any flag position, `--quiet`, `--silent`) in every `*.sh` that sets
-`pipefail` and in every GitHub workflow (whose bash steps run with it). Lines continued by a trailing `\` or `|` are
+`pipefail` and in every GitHub workflow (a `shell: bash` step runs with `pipefail`; the gate holds every workflow line to it, the safe side). Lines continued by a trailing `\` or `|` are
 joined, comment lines skipped, and a scan that finds no files is refused. `run_grep_q_pipefail_enforcement(
 GrepQPipefailConfig(repo_root=...))` is the one-line pytest shell; 3tears runs it in
 `tests/enforcement/test_no_grep_q_pipeline_under_pipefail.py`. The hub (#643), reports (#60) and geography (#14) carry
