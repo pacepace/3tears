@@ -32,7 +32,14 @@ from uuid import UUID, uuid4, uuid7
 import pytest
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
-from threetears.agent.workspace.materialize import WatchChanges, bind, recover, watch_disk_changes
+from threetears.agent.workspace.materialize import (
+    CaptureBackFailedError,
+    DiskRootChangedError,
+    WatchChanges,
+    bind,
+    recover,
+    watch_disk_changes,
+)
 from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
@@ -425,7 +432,51 @@ async def test_bind_body_deletes_file_emits_delete_journal(
     assert len(delete_head) == 1
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 directory, so it cannot be made unreadable")
+_ROOT_READS_EVERYTHING = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root reads a mode-000 directory, so it cannot be made unreadable"
+)
+
+
+def _deletes(harness: dict[str, Any]) -> list[tuple[str, tuple[Any, ...], bool]]:
+    """every head-row delete the bind issued."""
+    return [e for e in harness["pool"].conn.executions if "DELETE FROM workspace_files" in e[0]]
+
+
+class _RootOnAnotherDevice:
+    """``Path.stat`` that reports ``root`` on another device once :attr:`moved` is set -- a volume
+    unmounted mid-window leaves its empty mount point at the same path."""
+
+    def __init__(self, root: Path, *, after_calls: int | None = None) -> None:
+        self._root = root
+        self._real = Path.stat
+        self._after_calls = after_calls
+        self._root_calls = 0
+        self.moved = False
+
+    def __call__(self, path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        found = self._real(path, follow_symlinks=follow_symlinks)
+        if path != self._root:
+            return found
+        self._root_calls += 1
+        if self._after_calls is not None and self._root_calls > self._after_calls:
+            self.moved = True
+        if not self.moved:
+            return found
+        fields = list(found)
+        fields[2] = found.st_dev + 1
+        return os.stat_result(fields)
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> _RootOnAnotherDevice:
+        """put this in place of ``Path.stat`` for the rest of the test."""
+
+        def _stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            return self(path, follow_symlinks=follow_symlinks)
+
+        monkeypatch.setattr(Path, "stat", _stat)
+        return self
+
+
+@_ROOT_READS_EVERYTHING
 @pytest.mark.asyncio
 async def test_bind_exit_keeps_the_row_of_a_file_it_cannot_read(tmp_path: Path) -> None:
     """a directory the body leaves unreadable fails capture-back; its files' L3 rows are not deleted."""
@@ -436,8 +487,8 @@ async def test_bind_exit_keeps_the_row_of_a_file_it_cannot_read(tmp_path: Path) 
     )
     unreadable = None
     try:
-        with pytest.raises(PermissionError):
-            async with await _call_bind(harness) as disk_root:
+        with pytest.raises(CaptureBackFailedError) as failed:
+            async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
                 assert (disk_root / "sub" / "kept.txt").read_bytes() == content
                 unreadable = disk_root / "sub"
                 unreadable.chmod(0)
@@ -445,10 +496,103 @@ async def test_bind_exit_keeps_the_row_of_a_file_it_cannot_read(tmp_path: Path) 
         if unreadable is not None:
             unreadable.chmod(0o755)
 
-    executions = harness["pool"].conn.executions
-    assert [e for e in executions if "DELETE FROM workspace_files" in e[0]] == []
-    assert _journal(executions, "sub/kept.txt") == []
+    assert failed.value.path == unreadable
+    assert isinstance(failed.value.__cause__, PermissionError)
+    assert "recover" in (CaptureBackFailedError.__doc__ or "")
+    assert _deletes(harness) == []
+    assert _journal(harness["pool"].conn.executions, "sub/kept.txt") == []
     assert harness["lease"].handles[0].released is True
+
+
+@pytest.mark.asyncio
+async def test_bind_exit_refuses_a_root_that_is_gone(tmp_path: Path) -> None:
+    """a missing root read as an empty one, and capture-back deleted every row."""
+    import shutil
+
+    content = b"still here"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+
+    with pytest.raises(CaptureBackFailedError) as failed:
+        async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
+            shutil.rmtree(disk_root)
+
+    assert failed.value.path == disk_root
+    assert isinstance(failed.value.__cause__, FileNotFoundError)
+    assert _deletes(harness) == []
+
+
+@pytest.mark.asyncio
+async def test_bind_exit_refuses_a_root_now_on_another_device(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """an unmounted volume leaves an empty mount point at the root; capture-back refuses it rather than delete all."""
+    content = b"on the volume"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    disk_root = harness["bind_root"] / harness["workspace"].name
+    stat = _RootOnAnotherDevice(disk_root).install(monkeypatch)
+
+    with pytest.raises(CaptureBackFailedError) as failed:
+        async with await _call_bind(harness, watch_changes=ScriptedWatch()) as bound:
+            (bound / "a.txt").unlink()  # what the empty mount point shows
+            stat.moved = True
+
+    assert failed.value.path == disk_root
+    assert isinstance(failed.value.__cause__, DiskRootChangedError)
+    assert _deletes(harness) == []
+
+
+@pytest.mark.asyncio
+async def test_bind_exit_still_deletes_every_file_the_body_removed(tmp_path: Path) -> None:
+    """the guards refuse an unreadable or replaced root, never a body that deleted every file."""
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[_FakeFile("a.txt", b"a", _sha(b"a"), 1), _FakeFile("sub/b.txt", b"b", _sha(b"b"), 1)],
+    )
+    async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
+        (disk_root / "a.txt").unlink()
+        (disk_root / "sub" / "b.txt").unlink()
+
+    assert sorted(e[1][1] for e in _deletes(harness)) == ["a.txt", "sub/b.txt"]
+
+
+@_ROOT_READS_EVERYTHING
+@pytest.mark.asyncio
+async def test_a_disk_wins_seed_keeps_the_rows_of_a_directory_it_cannot_read(tmp_path: Path) -> None:
+    """the DISK_WINS seed deletes every L3 row missing from disk; an unreadable directory fails it instead."""
+    content = b"still here"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("sub/kept.txt", content, _sha(content), 2)])
+    disk_root = harness["bind_root"] / harness["workspace"].name
+    (disk_root / "sub").mkdir(parents=True)
+    (disk_root / "sub" / "kept.txt").write_bytes(content)
+    (disk_root / "sub").chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            async with await _call_bind(
+                harness, on_conflict=BindConflictPolicy.DISK_WINS, watch_changes=ScriptedWatch()
+            ):
+                pass
+    finally:
+        (disk_root / "sub").chmod(0o755)
+
+    assert _deletes(harness) == []
+    assert _journal(harness["pool"].conn.executions, "sub/kept.txt") == []
+
+
+@pytest.mark.asyncio
+async def test_a_disk_wins_seed_refuses_a_root_on_another_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """the device recorded when the window opens is checked again before the seed reads disk."""
+    content = b"on the volume"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    disk_root = harness["bind_root"] / harness["workspace"].name
+    disk_root.mkdir(parents=True)
+    # the first stat of the root records its device; every later one finds it elsewhere
+    _RootOnAnotherDevice(disk_root, after_calls=1).install(monkeypatch)
+
+    with pytest.raises(DiskRootChangedError):
+        async with await _call_bind(harness, on_conflict=BindConflictPolicy.DISK_WINS, watch_changes=ScriptedWatch()):
+            pass
+
+    assert _deletes(harness) == []
 
 
 @pytest.mark.asyncio

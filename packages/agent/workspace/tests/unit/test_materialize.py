@@ -319,6 +319,70 @@ async def test_a_directory_removed_from_disk_reads_as_its_files_gone(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_a_missing_root_fails_the_snapshot_rather_than_reading_as_empty(tmp_path: Path) -> None:
+    """``Path.walk`` hands the root's own FileNotFoundError to on_error, which read it as an empty workspace."""
+    with pytest.raises(FileNotFoundError):
+        await materialize_module.snapshot_disk(tmp_path / "never-made")
+
+
+@pytest.mark.asyncio
+async def test_a_root_on_another_device_than_recorded_fails_the_snapshot(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "ok.txt").write_bytes(b"inside")
+    recorded = root.stat().st_dev
+    with pytest.raises(materialize_module.DiskRootChangedError):
+        await materialize_module.snapshot_disk(root, root_device=recorded + 1)
+    assert set(await materialize_module.snapshot_disk(root, root_device=recorded)) == {"ok.txt"}
+
+
+@pytest.mark.asyncio
+async def test_a_file_removed_between_listing_and_reading_reads_as_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """consistent with a vanished directory: it is gone, so capture-back deleting its row is right."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "ok.txt").write_bytes(b"inside")
+    (root / "lstat-gone.txt").write_bytes(b"x")
+    (root / "read-gone.txt").write_bytes(b"x")
+    real_lstat, real_read_bytes = Path.lstat, Path.read_bytes
+
+    def _lstat(self: Path) -> os.stat_result:
+        if self.name == "lstat-gone.txt":
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_lstat(self)
+
+    def _read_bytes(self: Path) -> bytes:
+        if self.name == "read-gone.txt":
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "lstat", _lstat)
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+    assert set(await materialize_module.snapshot_disk(root)) == {"ok.txt"}
+
+
+@pytest.mark.asyncio
+async def test_an_in_root_symlink_whose_target_cannot_be_stated_fails_the_snapshot(tmp_path: Path) -> None:
+    """``is_file()`` read a looping symlink as "not a file", so capture-back deleted its row."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "loop").symlink_to(root / "loop")
+    with pytest.raises(OSError):
+        await materialize_module.snapshot_disk(root)
+
+
+@pytest.mark.asyncio
+async def test_a_dangling_in_root_symlink_names_no_file(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "ok.txt").write_bytes(b"inside")
+    (root / "dangling").symlink_to(root / "missing.txt")
+    assert set(await materialize_module.snapshot_disk(root)) == {"ok.txt"}
+
+
+@pytest.mark.asyncio
 async def testsnapshot_disk_includes_in_root_symlink(tmp_path: Path) -> None:
     """symlink whose resolved target stays inside the root is still read."""
     root = tmp_path / "root"
