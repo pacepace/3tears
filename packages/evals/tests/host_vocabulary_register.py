@@ -84,6 +84,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "storage/sqlite.py": {},
     "storage/async_bridge.py": {},
     "analysis/aspects.py": {},
+    "analysis/campaign_bundle.py": {},
     "analysis/campaign_readings.py": {},
     "analysis/campaigns.py": {},
     "analysis/cells.py": {},
