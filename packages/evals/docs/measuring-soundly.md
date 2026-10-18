@@ -94,15 +94,14 @@ print(design.shape, [arm.moved for arm in design.contrasts])  # one_factor_at_a_
 ```
 
 **On your own host, declare it when you create the campaign.** Call `create_campaign` (the `campaign_create`
-action takes the same fields). Pass `declared_design`, and name the control by one of its runs with
-`control_from_run_id`. The engine resolves that run's variant key, so you never type a digest. A campaign you
-create without a design is one you say is exploratory (`exploratory=True`); creating one that says neither is
-refused, so no campaign is exploratory by accident. To change the control later, call `update_campaign` with
-`control_from_run_id` (the `campaign_update` action), or `set_campaign_control`. A design that names an axis your
-host cannot vary, or a bar looser than the registered one, is refused when the campaign is created. So create it
-before you launch, with no runs, then add each run with `add_runs_to_campaign` (the `campaign_runs_add` action)
-and name the control from one of them; a run can be
-named as the control before it has any results. This declares the runs above by hand:
+action takes the same fields). Give the campaign its one `question`, its `arms` (name the control by one of its
+runs with `from_run_ids`, so you never type a digest) and its `aspects`, each with its template's runs, a `margin`
+and a `design`. A campaign you create without a design is one you say is exploratory (`exploratory=True`);
+creating one that says neither is refused, so no campaign is exploratory by accident. To name the control later,
+call `set_campaign_control`; a control named after an aspect's first run makes that aspect's readings post hoc. A
+design that names an axis your host cannot vary, or a bar looser than the registered one, is refused when the
+campaign is created. So create it before you launch, with no runs, then add each run with `add_runs_to_campaign`
+(the `campaign_runs_add` action). This declares the runs above by hand:
 
 ```python
 from threetears.evals.analysis import create_campaign
@@ -114,15 +113,22 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
     create_campaign,
     comparison.host.storage,
     {
-        "name": "triage v2", "subject_id": "triage", "behavior": "routing", "run_ids": list(runs.values()),
-        "declared_design": {
-            "axes": [{"axis_id": "candidate", "values": levels}],
-            "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
-            "intended_repetitions": 3,
-            "questions": [{"text": "Does v2 route more tickets right?", "merit_axes": ["quality"]}],
-        },
+        "name": "triage v2", "subject_id": "triage", "behavior": "routing",
+        "question": "Does v2 route more tickets right?",
+        "arms": [{"label": "v1", "role": "control", "from_run_ids": [runs["v1"]]}],
+        "aspects": [
+            {
+                "label": "routing", "run_ids": list(runs.values()), "margin": 5.0,
+                "design": {
+                    "axes": [{"axis_id": "candidate", "values": levels}],
+                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                    "intended_repetitions": 3,
+                    "merit_axes": ["quality"],
+                },
+            }
+        ],
     },
-    control_from_run_id=runs["v1"], scope_id="triage", created_by="you", profile=comparison.host.profile,
+    scope_id="triage", created_by="you", profile=comparison.host.profile,
 )
 ```
 

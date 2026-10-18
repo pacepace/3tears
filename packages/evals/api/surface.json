@@ -4971,6 +4971,16 @@
       "signature": "first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]",
       "tier": "stable"
     },
+    "threetears.evals.analysis.FloorContrast": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.FloorContrastReading": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.FloorState": {
       "kind": "literal",
       "signature": "",

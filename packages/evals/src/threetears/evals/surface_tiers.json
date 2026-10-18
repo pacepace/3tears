@@ -995,6 +995,8 @@
 "threetears.evals.analysis.FailCause": "provisional",
 "threetears.evals.analysis.FamilyComparison": "provisional",
 "threetears.evals.analysis.first_request": "stable",
+"threetears.evals.analysis.FloorContrast": "provisional",
+"threetears.evals.analysis.FloorContrastReading": "provisional",
 "threetears.evals.analysis.FloorState": "provisional",
 "threetears.evals.analysis.FloorStatus": "provisional",
 "threetears.evals.analysis.format_number": "host-contract",
