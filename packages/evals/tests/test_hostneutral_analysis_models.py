@@ -6,10 +6,10 @@ corpus is not used, because these are the stored models' own rules.
 
 Pinned here, from ``kernel/campaign.py`` and ``kernel/authored.py``:
 
-- confidence is a tier, on the authored finding and decision alike; an evidence row names the
-  reading it resolved; the analysis keeps the evidence bundle it was written over.
-- a decision whose proposal opens with a negation is stored as written — polarity lives in
-  ``disposition``.
+- confidence is a tier, on the authored finding and recommendation alike; an evidence row names the
+  aspect and the reading it resolved; the analysis keeps each aspect's evidence bundle it was written over.
+- a recommendation whose reason opens with a negation is stored as written — which arm it recommends lives in
+  ``arm``.
 """
 
 from __future__ import annotations
@@ -21,19 +21,20 @@ from pydantic import ValidationError
 
 from threetears.evals.kernel import authored
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import AuthoredAnalysis, Decision, Finding
+from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Finding, Recommendation
 from threetears.evals.kernel.campaign import (
     CONFIDENCE_TIERS,
+    CampaignDeclaration,
     EvalAnalysis,
     EvidenceRow,
     FindingResolution,
     GenerationProvenance,
 )
-from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.kernel.declaration import Aspect
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
-from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, empty_bundle
+from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, analysed_aspect, empty_bundle
 
 
 AXIS = "extractor_model"
@@ -81,18 +82,11 @@ def _surface() -> DecisionSurface:
     )
 
 
-def _decision(proposal: str = "Adopt model-b.", *, confidence: Any = "high", disposition: str = "adopted") -> Decision:
-    return Decision(
-        proposal=proposal,
-        disposition=disposition,
-        cells=[f"{CHALLENGER}:{RIG}"],
-        confidence=confidence,
-        rests_on=[0],
-        revisit_when="",
-    )
+def _recommendation(reason: str = "model-b is faster.", *, confidence: Any = "high") -> Recommendation:
+    return Recommendation(arm="model-b", reasons=[reason], confidence=confidence, rests_on=[0], floors_overridden=[])
 
 
-def _analysis(*, confidence: Any = "high", decision: Decision | None = None, **fields: Any) -> EvalAnalysis:
+def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None = None, **fields: Any) -> EvalAnalysis:
     finding = Finding(
         title="model-b extracts faster.",
         body="",
@@ -104,11 +98,15 @@ def _analysis(*, confidence: Any = "high", decision: Decision | None = None, **f
         invalidates=[],
         durable="",
     )
-    document = AuthoredAnalysis(
+    document = AuthoredCampaignAnalysis(
         findings=[finding],
-        decisions=[decision or _decision()],
-        questions=[],
+        recommendation=recommendation or _recommendation(),
+        aspect_summaries=[],
         next=[],
+    )
+    aspect = analysed_aspect(
+        empty_bundle(campaign_id="camp-invoices", behavior="extraction", aspect="extraction"),
+        decision_surface=_surface(),
     )
     return EvalAnalysis(
         scope_id="uni-1",
@@ -133,22 +131,26 @@ def _analysis(*, confidence: Any = "high", decision: Decision | None = None, **f
         ),
         document=document,
         resolutions=[FindingResolution()],
-        bundle=empty_bundle(campaign_id="camp-invoices", behavior="extraction").to_dict(),
-        design_snapshot=CampaignDesign(
-            axes=[SweptAxis(axis_id=AXIS, values=[_level("model-a"), _level("model-b")])],
-            control=BASELINE,
-            held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+        aspects=[aspect],
+        campaign_bundle={"schema_version": 1, "aspects": [{"aspect": "extraction", "fingerprint": aspect.bundle_fingerprint}]},
+        design_snapshot=CampaignDeclaration(
+            question="Which extractor model?",
+            declared_at=None,
+            declared_by=None,
+            arms=[],
+            aspects=[Aspect(label="extraction")],
+            floors=[],
         ),
-        **{"decision_surface": DecisionSurface(), **fields},
+        **fields,
     )
 
 
 class TestConfidenceIsATier:
     @pytest.mark.parametrize("tier", CONFIDENCE_TIERS)
     def test_every_tier_is_accepted(self, tier: str) -> None:
-        analysis = _analysis(confidence=tier, decision=_decision(confidence=tier))
+        analysis = _analysis(confidence=tier, recommendation=_recommendation(confidence=tier))
         assert analysis.document.findings[0].confidence == tier
-        assert analysis.document.decisions[0].confidence == tier
+        assert analysis.document.recommendation.confidence == tier
 
     def test_the_tiers_are_the_four_named_ones_in_order(self) -> None:
         assert CONFIDENCE_TIERS == ("very_high", "high", "medium", "low")
@@ -164,13 +166,14 @@ class TestConfidenceIsATier:
         with pytest.raises(ValidationError):
             _analysis(confidence=bad)
         with pytest.raises(ValidationError):
-            _decision(confidence=bad)
+            _recommendation(confidence=bad)
 
 
 class TestTheReferenceFieldsAreStored:
     def test_an_evidence_row_says_which_reading_it_is(self) -> None:
         # No default: the finding's evidence tier is read off this field, so a default would decide it.
         row = {
+            "aspect": "extraction",
             "cell_ref": f"{BASELINE}:{RIG}",
             "measure_id": "extract_ms",
             "value": 900.0,
@@ -186,22 +189,24 @@ class TestTheReferenceFieldsAreStored:
         with pytest.raises(ValidationError):
             EvidenceRow.model_validate({**row, "reading": "guessed"})
 
-    def test_the_analysis_keeps_the_bundle_it_was_written_over(self) -> None:
+    def test_the_analysis_keeps_each_aspect_s_bundle_it_was_written_over(self) -> None:
         analysis = _analysis()
-        assert EvalAnalysis.model_validate(analysis.model_dump(mode="json")).bundle == analysis.bundle
-        # Every stored analysis was written over a bundle, so an analysis without one is refused.
+        reread = EvalAnalysis.model_validate(analysis.model_dump(mode="json"))
+        assert reread.aspects[0].bundle == analysis.aspects[0].bundle
+        assert reread.campaign_bundle == analysis.campaign_bundle
+        # Every stored analysis was written over its aspects' bundles, so an aspect without one is refused.
         without = analysis.model_dump(mode="json")
-        del without["bundle"]
+        del without["aspects"][0]["bundle"]
         with pytest.raises(ValidationError, match=r"bundle\s+Field required"):
             EvalAnalysis.model_validate(without)
 
 
-class TestADecisionsWordingIsNotRefused:
-    """Polarity lives in ``disposition``; what the proposal says in prose is the reporter eval's to judge."""
+class TestARecommendationsWordingIsNotRefused:
+    """Which arm is recommended lives in ``arm``; what its reasons say in prose is the reporter eval's to judge."""
 
     @pytest.mark.parametrize(
-        "proposal", ["Do not adopt model-b.", "Never ship model-a to the intake queue.", "Don't widen the sweep."]
+        "reason", ["Do not keep model-a.", "Never ship model-a to the intake queue.", "Don't widen the sweep."]
     )
-    def test_a_proposal_that_opens_with_a_negation_is_stored_as_written(self, proposal: str) -> None:
-        analysis = _analysis(decision=_decision(proposal, disposition="rejected"))
-        assert analysis.document.decisions[0].proposal == proposal
+    def test_a_reason_that_opens_with_a_negation_is_stored_as_written(self, reason: str) -> None:
+        analysis = _analysis(recommendation=_recommendation(reason))
+        assert analysis.document.recommendation.reasons == [reason]
