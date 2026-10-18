@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### mcp: an MCP server no longer installs nats, sqlalchemy or the rest of the family
+
+**Changed (mcp):** `3tears-mcp`'s hard dependencies are now `mcp`, `3tears-observe`, httpx, starlette
+and uvicorn. The grant store -- `LocalGrantAuthorizer`, `threetears.mcp.rbac`,
+`threetears.mcp.migrations` -- moved to a new `grants` extra with `3tears`, `3tears-epoch`,
+`3tears-nats`, sqlalchemy and uuid-utils. Before, every server installed 44 packages (nats-py,
+asyncpg, sqlalchemy among them) and loaded core, epoch and nats on `import threetears.mcp`, though
+only the grant store uses them. A server with its own `Authorizer` now installs about what the `mcp`
+SDK does.
+
+**Breaking:** an app that uses the grant store must depend on `3tears-mcp[grants]`; without it,
+building a `LocalGrantAuthorizer` or reaching an rbac name raises `ImportError` naming the extra.
+An app that imported `threetears.core`, `threetears.epoch` or `threetears.nats` while depending
+only on `3tears-mcp` must now declare those itself. Every import path is unchanged. This ships in a
+minor release.
+
 ## v0.70.1 -- 2026-10-18
 
 ### models: the orphan sweep leaves a Claude CLI in another pid namespace alone

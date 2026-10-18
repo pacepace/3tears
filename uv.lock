@@ -838,31 +838,36 @@ name = "3tears-mcp"
 version = "0.70.1"
 source = { editable = "packages/mcp" }
 dependencies = [
-    { name = "3tears" },
-    { name = "3tears-epoch" },
-    { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "httpx" },
     { name = "mcp" },
-    { name = "pydantic" },
     { name = "starlette" },
-    { name = "uuid-utils" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+grants = [
+    { name = "3tears" },
+    { name = "3tears-epoch" },
+    { name = "3tears-nats" },
+    { name = "sqlalchemy" },
+    { name = "uuid-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
-    { name = "3tears-epoch", editable = "packages/epoch" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears", marker = "extra == 'grants'", editable = "packages/core" },
+    { name = "3tears-epoch", marker = "extra == 'grants'", editable = "packages/epoch" },
+    { name = "3tears-nats", marker = "extra == 'grants'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.27" },
-    { name = "pydantic", specifier = ">=2" },
+    { name = "sqlalchemy", marker = "extra == 'grants'" },
     { name = "starlette", specifier = ">=0.40" },
-    { name = "uuid-utils" },
+    { name = "uuid-utils", marker = "extra == 'grants'" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
+provides-extras = ["grants"]
 
 [[package]]
 name = "3tears-media-contracts"

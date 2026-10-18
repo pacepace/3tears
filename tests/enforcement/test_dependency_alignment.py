@@ -44,6 +44,18 @@ _DEPENDENCY_FLOORS = (
         ),
     ),
     DependencyFloor(
+        package="packages/mcp",
+        allowed=("3tears-observe", "mcp", "httpx", "starlette", "uvicorn"),
+        rationale=(
+            "owner ruling 2026-10-17: a host that wants an MCP server -- testament, which is outside "
+            "the family's platform -- takes the server, the tools, identity and PlatformHttpClient and "
+            "nothing else. The grant store (LocalGrantAuthorizer, rbac, migrations) is heavily used by "
+            "other apps but is the only part that needs core, epoch, nats and sqlalchemy, so it rides "
+            "the [grants] extra; as a hard dependency it put nats-py, asyncpg and sqlalchemy into every "
+            "server, though a server with its own Authorizer loads none of them"
+        ),
+    ),
+    DependencyFloor(
         package="packages/evals",
         allowed=("httpx", "pydantic"),
         rationale=(

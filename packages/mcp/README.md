@@ -2,6 +2,17 @@
 
 Shared MCP (Model Context Protocol) framework. Per-product MCP servers compose this framework instead of reimplementing stdio transport, JWT auth, error mapping, and per-tool RBAC.
 
+## Install
+
+```bash
+pip install 3tears-mcp           # server, tools, identity, PlatformHttpClient
+pip install "3tears-mcp[grants]" # plus the Postgres-backed grant store
+```
+
+The base depends on the `mcp` SDK, `3tears-observe`, httpx, starlette and uvicorn only. Everything
+below that needs the rest of the family -- `LocalGrantAuthorizer`, `rbac`, `migrations/` -- is the
+`grants` extra. Bring your own `Authorizer` and the base is all you install.
+
 ## What's in here
 
 | Module | Responsibility |
