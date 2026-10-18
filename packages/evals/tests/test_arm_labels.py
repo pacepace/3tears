@@ -437,15 +437,17 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
                     "durable": "",
                 }
             ],
-            "recommendation": [{
-                "arm": "control",
-                "reasons": ["Keep the current assistant prompt."],
-                "confidence": "high",
-                "rests_on": [0],
-                "floors_overridden": [],
-                "behind_on": [],
-                "bars_missed": [],
-            }],
+            "recommendation": [
+                {
+                    "arm": "control",
+                    "reasons": ["Keep the current assistant prompt."],
+                    "confidence": "high",
+                    "rests_on": [0],
+                    "floors_overridden": [],
+                    "behind_on": [],
+                    "bars_missed": [],
+                }
+            ],
             "aspect_summaries": [],
             "next": [],
         }

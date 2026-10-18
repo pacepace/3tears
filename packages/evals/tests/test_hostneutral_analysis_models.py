@@ -83,7 +83,15 @@ def _surface() -> DecisionSurface:
 
 
 def _recommendation(reason: str = "model-b is faster.", *, confidence: Any = "high") -> Recommendation:
-    return Recommendation(arm="model-b", reasons=[reason], confidence=confidence, rests_on=[0], floors_overridden=[], behind_on=[], bars_missed=[])
+    return Recommendation(
+        arm="model-b",
+        reasons=[reason],
+        confidence=confidence,
+        rests_on=[0],
+        floors_overridden=[],
+        behind_on=[],
+        bars_missed=[],
+    )
 
 
 def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None = None, **fields: Any) -> EvalAnalysis:

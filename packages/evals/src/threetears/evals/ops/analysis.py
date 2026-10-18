@@ -232,7 +232,11 @@ class AnalysisLine(EvalBaseModel):
         )
     )
     findings: int = Field(ge=0, description="How many findings the memo holds.")
-    recommendations: int = Field(ge=0, le=1, description="How many recommendations it makes: one, or none for a measurement or a choice with no clear winner.")
+    recommendations: int = Field(
+        ge=0,
+        le=1,
+        description="How many recommendations it makes: one, or none for a measurement or a choice with no clear winner.",
+    )
     generator_model: str
     generated_at: str
     archived: bool

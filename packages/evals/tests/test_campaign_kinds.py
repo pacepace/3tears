@@ -22,7 +22,16 @@ from packages.evals.tests.aspect_support import with_control
 from packages.evals.tests.campaign_bundle_support import arms_of, campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, alias_at, arm_at, cell_at, memo_payload
+from packages.evals.tests.toyhost_memo import (
+    MODEL,
+    PROMPT,
+    PROMPT_ID,
+    FixturedClient,
+    alias_at,
+    arm_at,
+    cell_at,
+    memo_payload,
+)
 from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle, assemble_context_bundle, generate_analysis
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from threetears.evals.analysis.campaign_readings import AspectReading, BarStatus, PairReading
@@ -196,7 +205,9 @@ class TestAChoicePicksOrFindsNoClearWinner:
     async def test_a_behind_on_naming_no_pair_code_read_is_refused(self) -> None:
         bundle = _choice(pairs=[_pair(_choice(), ahead=None)])
         behind = {"aspect": bundle.labels[0], "ahead_arm": arm_at(bundle, TOYHOST_WIDE), "why": "It costs a third."}
-        with pytest.raises(SoundnessRefusal, match="in `behind_on`, by aspect and arm, and code raised no such warning"):
+        with pytest.raises(
+            SoundnessRefusal, match="in `behind_on`, by aspect and arm, and code raised no such warning"
+        ):
             await _generate(bundle, _recommending(bundle, TOYHOST_NARROW, behind_on=[behind]))
 
     async def test_a_pick_resting_on_no_finding_is_refused(self) -> None:

@@ -32,7 +32,7 @@ from packages.evals.tests.toyhost_memo import (
     cell_at,
     memo_payload,
 )
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_bundle_support import arms_of, campaign_bundle
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -188,14 +188,17 @@ class TestAnAdoptionNoReadingSeparatedIsRefused:
 class TestAnArmNoTestCouldReachHasNoSeparationToAdoptOn:
     """No family, no comparison naming the arm, or only untested ones: nothing separated it, so it is refused."""
 
-    async def test_a_campaign_naming_no_control_compared_nothing_and_its_recommendation_is_not_refused(self):
-        """With no control there is no arm to keep and no switch from one: nothing could be tested either way."""
+    async def test_a_measurement_refuses_a_recommendation(self):
+        """One arm alone compares nothing: no control to keep and no arm to switch to, so nothing is recommended."""
         bundle = _toy_bundle(control=False)
         assert bundle.multiple_comparisons.withheld is not None
-        campaign = campaign_bundle(bundle)
-        assert campaign.control() is None
-        analysis = await _adopt(bundle, TOYHOST_NARROW)
-        assert analysis.document.recommendation[0].arm == arm_at(campaign, TOYHOST_NARROW)
+        (narrow,) = [
+            arm for arm in arms_of([bundle]) if arm.variant_key == variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW))
+        ]
+        campaign = campaign_bundle(bundle, arms=[narrow])
+        assert campaign.kind == "measurement"
+        with pytest.raises(SoundnessRefusal, match="measures one arm, so there is no arm to choose"):
+            await _generate(campaign, FixturedClient(_memo(campaign, TOYHOST_NARROW)))
 
     async def test_an_arm_whose_every_comparison_is_untested_is_refused_with_why(self):
         bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="untested")

@@ -42,7 +42,13 @@ from threetears.evals.kernel.campaign import (
 from threetears.evals.kernel.declaration import Aspect
 
 # Reuse the campaign tests' in-memory evals-repo stand-in + storage wiring.
-from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, analysed_aspect, empty_bundle, memory_storage
+from packages.evals.tests.factories import (
+    CURRENT_BUNDLE_SHAPE,
+    analysed_aspect,
+    empty_bundle,
+    make_campaign,
+    memory_storage,
+)
 
 
 def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overrides: Any) -> Finding:
@@ -64,7 +70,9 @@ def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overri
 
 def _recommendation(**overrides: Any) -> Recommendation:
     """An authored recommendation of the control, resting on nothing unless a caller says otherwise."""
-    fields: dict[str, Any] = dict(arm="control", reasons=[], confidence="medium", rests_on=[], floors_overridden=[], behind_on=[], bars_missed=[])
+    fields: dict[str, Any] = dict(
+        arm="control", reasons=[], confidence="medium", rests_on=[], floors_overridden=[], behind_on=[], bars_missed=[]
+    )
     fields.update(overrides)
     return Recommendation(**fields)
 
@@ -106,17 +114,19 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
     findings = list(authored_findings or default_findings)
     document = AuthoredCampaignAnalysis(
         findings=findings,
-        recommendation=[overrides.pop(
-            "recommendation",
-            _recommendation(
-                arm="alpha-2",
-                reasons=["Much faster at equal quality."],
-                rests_on=[0],
-                floors_overridden=[
-                    FloorOverride(floor="planning/cost_lower/*", why="Cost is not this team's concern.")
-                ],
-            ),
-        )],
+        recommendation=[
+            overrides.pop(
+                "recommendation",
+                _recommendation(
+                    arm="alpha-2",
+                    reasons=["Much faster at equal quality."],
+                    rests_on=[0],
+                    floors_overridden=[
+                        FloorOverride(floor="planning/cost_lower/*", why="Cost is not this team's concern.")
+                    ],
+                ),
+            )
+        ],
         aspect_summaries=overrides.pop("aspect_summaries", [_summary()]),
         next=overrides.pop(
             "next",
@@ -694,3 +704,20 @@ def test_a_stored_analysis_carrying_an_unknown_key_is_refused_at_either_level(le
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
         EvalAnalysis.from_dict(stored)
+
+
+def test_drop_derived_clears_analyses_and_insights_and_keeps_the_campaign():
+    """The operator step after a regenerable bump: every derived document goes, every kept and durable one stays."""
+    storage, _ = memory_storage()
+    analysis, insight = _make_analysis(), _make_insight()
+    storage.save_analysis(analysis)
+    storage.save_insight(insight)
+    campaign = make_campaign(scope_id="uni-1")
+    storage.save_campaign(campaign)
+
+    counts = storage.drop_derived(["uni-1"])
+
+    assert counts == {"eval_analysis": 1, "eval_insight": 1, "eval_judge_profile": 0}
+    assert storage.load_analysis(analysis.id, "uni-1") is None
+    assert storage.query_insights("uni-1") == []
+    assert storage.load_campaign(campaign.id, "uni-1") is not None

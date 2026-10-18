@@ -137,7 +137,9 @@ class TestABrokenFloorMustBeAddressed:
 
     async def test_a_floor_the_arm_did_not_break_is_refused_in_floors_overridden(self) -> None:
         bundle = _bundle(_key(_bundle()), status="held")
-        with pytest.raises(SoundnessRefusal, match=r"by floor, and code raised no such warning on .* \(it raised: none\)"):
+        with pytest.raises(
+            SoundnessRefusal, match=r"by floor, and code raised no such warning on .* \(it raised: none\)"
+        ):
             await _generate(bundle, _recommending_wide(bundle, {"floor": _key(bundle), "why": "Accuracy matters."}))
 
     async def test_a_floor_broken_on_another_arm_needs_no_word_when_that_arm_is_not_recommended(self) -> None:

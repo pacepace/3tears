@@ -208,15 +208,17 @@ def memo_payload(bundle: CampaignBundle | AnalysisContextBundle) -> dict[str, An
                 "durable": "",
             }
         ],
-        "recommendation": [{
-            "arm": arm_at(bundle, TOYHOST_NARROW),
-            "reasons": ["The narrow chunk width is much faster on every document."],
-            "confidence": "high",
-            "rests_on": [0],
-            "floors_overridden": [],
-            "behind_on": [],
-            "bars_missed": [],
-        }],
+        "recommendation": [
+            {
+                "arm": arm_at(bundle, TOYHOST_NARROW),
+                "reasons": ["The narrow chunk width is much faster on every document."],
+                "confidence": "high",
+                "rests_on": [0],
+                "floors_overridden": [],
+                "behind_on": [],
+                "bars_missed": [],
+            }
+        ],
         "aspect_summaries": [
             {
                 "aspect": bundle.labels[0],

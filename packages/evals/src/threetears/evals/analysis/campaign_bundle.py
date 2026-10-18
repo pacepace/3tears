@@ -543,7 +543,10 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
                 "p_holm": _figure(pair.p_holm),
                 "ahead": pair.ahead,
                 "confirmatory": pair.confirmatory,
-                "passed": [f"{pair.first_passed} of {pair.first_trials}", f"{pair.second_passed} of {pair.second_trials}"],
+                "passed": [
+                    f"{pair.first_passed} of {pair.first_trials}",
+                    f"{pair.second_passed} of {pair.second_trials}",
+                ],
                 "why": pair.reason,
             }
             for pair in bundle.readings.pairs
