@@ -3207,14 +3207,14 @@ def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBund
     if factor.results == 0 or not factor.arms:
         where = "the arm" if arms <= 1 else "either arm" if arms == 2 else "any arm"
         return f"{name}: no {call} was made on {where}."
-    if arms <= 1:
-        return f"{name}: one {call} was made in all its trials, too few to read a level from."
     others = "the other arm" if arms == 2 else "the other arms"
     if factor.results > 1:
         return (
             f"{name}: {factor.results} results made {call}s, all on {arm(factor.arms[0])}, and none on {others}, "
             "so it was observed in one arm only and is not a level."
         )
+    if arms <= 1:
+        return f"{name}: one {call} was made in all its trials, too few to read a level from."
     return f"{name}: one {call} was made, on {arm(factor.arms[0])}, and none on {others}, so it is not a level."
 
 

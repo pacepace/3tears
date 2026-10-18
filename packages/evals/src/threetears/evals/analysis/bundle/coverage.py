@@ -535,7 +535,7 @@ def _coverage_map(
     levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged) - unexercised
     # A recovered lever a run never observed is unknown there, not a level of its own: its records leave that lever's
     # levels, cells and k rather than sitting at the inherited default beside the arms that did observe it.
-    effective_by_run = _with_unobserved_unknown(effective_by_run, profile=profile)
+    effective_by_run = _with_unobserved_unknown(effective_by_run, profile=profile, exempt=axes)
 
     coverage: list[LeverCoverageInput] = []
     declared_axes = {axis.axis_id: axis for axis in declared_design.axes} if declared_design else {}
@@ -554,11 +554,14 @@ def _coverage_map(
         # / n=0 / unswept, which is the honest reading — nothing here measured it.
         cohort_records = [record for record in records if record.run_id in cohort]
         composite_records = [r for r in cohort_records if r.metric == METRIC_COMPOSITE and r.value is not None]
-        n_distinct_results = len({record.result_id for record in cohort_records})
         levels = sorted(
             {level for record in cohort_records if (level := _lever_value(record, lever, effective_by_run)) is not None}
         )
         cells = len(levels)
+        # Over the records that sit at a level: a run that never observed a recovered lever is not measured on it.
+        n_distinct_results = len(
+            {r.result_id for r in cohort_records if _lever_value(r, lever, effective_by_run) is not None}
+        )
         # The same records the levels were read from, so a mechanism is compared over exactly the
         # levels and cohort every other number on the row describes.
         result_ids_by_level: dict[str, set[str]] = {}
