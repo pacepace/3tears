@@ -13,7 +13,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from packages.evals.tests.g2_support import CASES, _queue
+from packages.evals.tests.g2_support import CASES, queue_case
 from packages.evals.tests.off_loop import off_loop
 from threetears.evals import Eval, Result
 from threetears.evals.analysis import (
@@ -33,7 +33,7 @@ _SPEND = "cost_usd"
 
 
 async def _run() -> Result:
-    return await Eval(CASES, {"a": _queue, "b": _queue}, ["label"], k=1, name="Judge spend").run(
+    return await Eval(CASES, {"a": queue_case, "b": queue_case}, ["label"], k=1, name="Judge spend").run(
         store=":memory:", scope="quick"
     )
 

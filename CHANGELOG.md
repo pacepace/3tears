@@ -28,8 +28,9 @@ packages (bumped in lock-step).
 ### 3tears-evals: code reports each aspect, one memo recommends, a person records the call
 
 - **The campaign's page** (`CampaignReport`, served by `report_read`, `campaign_report` and `analysis_report`)
-  opens with every missed bar and broken floor, then the writer's recommendation, a table of every aspect, what
-  would settle each unclear row and the recorded call, then one fold per aspect holding that aspect's page.
+  opens with every missed bar, broken floor and breached guardrail, then the writer's recommendation, a table of
+  every aspect, what would settle each unclear row and the recorded call, then one fold per aspect holding that
+  aspect's page. Arms are named by the page's own words (`hasty (control) vs careful`) at every door.
 - **Readings correct for looking at several aspects.** Each candidate is Holm-corrected across its aspects,
   separately for gains and drops; a choice corrects across every pair and aspect at once. A row's change and its
   interval are read on the same per-case values, so the change always lies in its interval, and a one-aspect
@@ -39,10 +40,12 @@ packages (bumped in lock-step).
   measurement recommends nothing; a choice may say no clear winner. The writer's prompt is rewritten, so every host
   pushes the new seed (`eval_prompt_reset`).
 - **The call is recorded** (`campaign_record`): the arm, why, and each broken floor and missed bar it overrides,
-  checked against code's readings, never the memo's words.
+  checked against code's readings (or the named analysis's frozen ones), never the memo's words. The page's call
+  line says which overrides no longer apply and how many runs joined since the call.
 - Breaking: stored analyses, insights and judge profiles are refused (regenerable 12). Run
   `EvalStorage.drop_derived(scopes)` once before deploying, record the judge profiles it lists again, and generate.
-  `report_read`'s JSON is the campaign page's, not the bundle (`inspect_campaign_bundle` reads that).
+  `report_read`'s JSON and `campaign_report` are the campaign page, not the evidence bundle
+  (`inspect_campaign_bundle` or `assemble_campaign_bundle` reads that).
 
 ### 3tears-evals: a judge campaign's report no longer labels the subject's own spend measuring spend
 

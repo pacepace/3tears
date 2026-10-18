@@ -1403,7 +1403,7 @@
     },
     "threetears.evals.kernel.CampaignCall": {
       "kind": "model",
-      "signature": "CampaignCall(arm: str, variant_key: str, reason: str = '', floors_overridden: list[str] = list(), bars_overridden: list[OverriddenBar] = list(), analysis_id: str | None = None, called_at: str = utc_now_iso(), called_by: str)",
+      "signature": "CampaignCall(arm: str, variant_key: str, reason: str = '', floors_overridden: list[str] = list(), bars_overridden: list[OverriddenBar] = list(), analysis_id: str | None = None, run_ids: list[str] = list(), called_at: str = utc_now_iso(), called_by: str)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.CampaignDeclaration": {
