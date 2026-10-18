@@ -438,3 +438,23 @@ async def test_a_products_own_operation_runs_on_the_writer_or_here_when_nobody_i
     with pytest.raises(NotTheWriterError):
         await other.forward("rename", b"z", local=runner("other"))
     assert ran == ["cli", "worker"]
+
+
+async def test_a_pull_from_a_pod_that_is_not_the_writer_runs_on_the_writer(
+    tmp_path: Path, origin: Path, connect: Any, opened: Any
+) -> None:
+    writer = await opened(await connect("pod-a"), work_tree=tmp_path / "a", remote_url=str(origin), clone="own")
+    other = await opened(await connect("pod-b"), work_tree=tmp_path / "b", remote_url=str(origin), clone="own")
+    await writer.commit_files({"a.md": b"a\n"}, "first")
+    outside = tmp_path / "outside"
+    subprocess.run(["git", "clone", "-q", str(origin), str(outside)], check=True)
+    (outside / "b.md").write_text("b\n")
+    for args in (["add", "-A"], ["commit", "-qm", "from outside"], ["push", "-q", "origin", "HEAD:main"]):
+        subprocess.run(
+            ["git", "-c", "user.name=P", "-c", "user.email=p@example.org", "-c", "commit.gpgsign=false", *args],
+            cwd=outside,
+            check=True,
+        )
+    result = await other.pull()  # forwarded: the writer fetches and fast-forwards
+    assert result.paths == ("b.md",)
+    assert (tmp_path / "a/b.md").read_text() == "b\n"

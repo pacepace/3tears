@@ -13,6 +13,7 @@ import pytest
 
 from threetears.git_store import (
     CommitResult,
+    DivergedError,
     GitRepo,
     GitStoreError,
     OpLogTail,
@@ -358,3 +359,74 @@ def test_git_and_value_failures_keep_their_type_across_the_wire() -> None:
     assert failed.value.returncode == 128 and failed.value.git_args == ("commit", "-q") and failed.value.index_locked
     with pytest.raises(ValueError, match="not a path inside"):
         decode_reply(encode_failure(ValueError("'../x' is not a path inside the working tree")))
+
+
+def outside_push(origin: Path, tmp_path: Path, git_cli: Any, files: dict[str, str], name: str = "outside") -> str:
+    """someone pushes to origin from a clone of their own (a desktop editor, a merged PR)."""
+    clone = tmp_path / name
+    if not clone.exists():
+        git_cli(tmp_path, "clone", "-q", str(origin), str(clone))
+    git_cli(clone, "pull", "-q", "--ff-only")
+    for path, text in files.items():
+        (clone / path).parent.mkdir(parents=True, exist_ok=True)
+        (clone / path).write_text(text)
+    git_cli(clone, "add", "-A")
+    git_cli(clone, "commit", "-qm", "from outside")
+    git_cli(clone, "push", "-q", "origin", "HEAD:main")
+    return git_cli(clone, "rev-parse", "HEAD").strip()
+
+
+async def test_a_pull_takes_an_outside_push_and_reports_its_rows(
+    make_repo: Any, git_cli: Any, origin: Path, tmp_path: Path
+) -> None:
+    repo = await make_repo(remote_url=str(origin))
+    await repo.commit_files({"stories/one/scene.md": b"start\n"}, "a story")
+    one = tail(MemoryLog())
+    await repo.add_tail(one)
+    await one.save(repo, payload=op("stories/one/scene.md", add="saved"), op_id="a")
+    seen: list[Any] = []
+
+    async def record(rows: list[Any]) -> None:
+        seen.extend(rows)
+
+    repo.on_rows_changed(record)
+    pushed = outside_push(
+        origin,
+        tmp_path,
+        git_cli,
+        {"aria/keepers/V3/1.json": '{"date_updated": null}\n', "stories/one/scene.md": "start\nby hand\n"},
+    )
+
+    result = await repo.pull()
+    assert result.sha == pushed == repo.git.head()
+    assert set(result.paths) == {"aria/keepers/V3/1.json", "stories/one/scene.md"}
+    assert any(row.table == "keepers" and row.pk["tile"] == "1" and not row.local for row in seen)
+    # the saved edit is rebuilt on the pulled text
+    assert (repo.config.work_tree / "stories/one/scene.md").read_text() == "start\nby hand\nsaved\n"
+    assert (await repo.pull()).paths == ()  # nothing more to take
+
+
+async def test_a_pull_refuses_a_branch_that_diverged_and_changes_nothing(
+    make_repo: Any, git_cli: Any, origin: Path, tmp_path: Path
+) -> None:
+    repo = await make_repo(remote_url=str(origin), push="never")
+    await repo.commit_files({"a.md": b"a\n"}, "first")
+    await repo.push()
+    await repo.commit_files({"b.md": b"b\n"}, "local, not pushed")
+    outside_push(origin, tmp_path, git_cli, {"c.md": "c\n"})
+    head = repo.git.head()
+    with pytest.raises(DivergedError):
+        await repo.pull()
+    assert repo.git.head() == head and not (repo.config.work_tree / "c.md").exists()
+
+
+async def test_a_pull_without_an_origin_is_refused(make_repo: Any) -> None:
+    repo = await make_repo()
+    with pytest.raises(GitStoreError, match="no origin"):
+        await repo.pull()
+
+
+def test_a_diverged_refusal_crosses_the_wire() -> None:
+    with pytest.raises(DivergedError) as refused:
+        decode_reply(encode_failure(DivergedError("main", "a" * 40, "b" * 40)))
+    assert refused.value.head == "a" * 40 and "both moved on" in str(refused.value)

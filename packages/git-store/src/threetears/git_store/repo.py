@@ -60,6 +60,7 @@ from threetears.git_store.errors import (
     FileConflictError,
     ChangeConflictError,
     ConflictedRow,
+    DivergedError,
     GitStoreError,
     HandEditPendingError,
     NotTheWriterError,
@@ -1177,6 +1178,61 @@ class GitRepo:
         request = ForwardedRequest(op="commit_files", files=checked, base=base, message=full, author=author)
         return await self._as_writer(request, lambda: self._commit_files_local(checked, full, author, base))
 
+    async def pull(self) -> CommitResult:
+        """take what origin has that this branch lacks, now (someone pushed from outside), on the writer.
+
+        Fetch; fast-forward when this branch is only behind. A pending tail's saved edits are put aside for
+        the fast-forward and rebuilt on the new HEAD. The rows the new commits changed are reported, so every
+        cache drops them. A branch only ahead of origin is pushed instead.
+
+        :return: ``sha``: HEAD after it; ``paths``: the files the pulled commits changed (none when there was
+            nothing to take)
+        :rtype: CommitResult
+        :raises GitStoreError: when the repository has no origin
+        :raises DivergedError: when the branch and origin have both moved on; nothing changed
+        :raises GitError: when origin could not be fetched
+        :raises NotTheWriterError: when no writer could take it
+        """
+        return await self._as_writer(ForwardedRequest(op="pull"), self._pull_local)
+
+    async def _pull_local(self) -> CommitResult:
+        """fetch and fast-forward, on the writer, under the lock.
+
+        :return: the result
+        :rtype: CommitResult
+        """
+        if self.config.remote_url is None:
+            raise GitStoreError(f"{self.config.key} has no origin to pull from")
+        branch = self.config.branch
+        async with self._lock:
+            self._require_writer()
+            await self._notice_head()
+            await asyncio.to_thread(self.git.fetch)
+            remote = await asyncio.to_thread(self.git.rev_parse, f"origin/{branch}")
+            head = await asyncio.to_thread(self.git.head)
+            if remote is None or remote == head:
+                return CommitResult(sha=head)
+            if head is not None and await asyncio.to_thread(self.git.is_ancestor, remote, head):
+                pushed = await self._push_locked(explicit=False)  # only ahead: origin is what lags
+                return CommitResult(sha=head, pushed=pushed)
+            if head is not None and not await asyncio.to_thread(self.git.is_ancestor, head, remote):
+                raise DivergedError(branch, head, remote)
+            for scope in list(self._tails):
+                await asyncio.to_thread(self._restore_scope, scope)
+            try:
+                await asyncio.to_thread(self.git.merge_ff_only, f"origin/{branch}")
+            finally:
+                for scope in list(self._tails):  # rebuilt on whatever HEAD is now
+                    await self._replay_tail(scope)
+            changes = await asyncio.to_thread(self.git.changed, head, remote)
+            await self._notice_head()
+            self._push_blocked = None
+        log.info(
+            "git_store.pull: origin's new commits were taken",
+            extra={"extra_data": {**self._log, "old": head, "head": remote, "files": len(changes)}},
+        )
+        return CommitResult(sha=remote, paths=tuple(sorted(change.path for change in changes)))
+
     async def push(self) -> bool:
         """push to origin now, even after a refusal stopped automatic pushes.
 
@@ -1392,6 +1448,8 @@ class GitRepo:
                 result = await self._commit_files_local(
                     dict(request.files or {}), request.message, request.author, request.base
                 )
+            elif request.op == "pull":
+                result = await self._pull_local()
             elif request.op == "commit_intent":
                 idle = None if request.idle is None else timedelta(seconds=request.idle)
                 result = await self._commit_intent_local(request.scope, request.message, request.author, idle)

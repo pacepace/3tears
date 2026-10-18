@@ -12,6 +12,7 @@ from threetears.core.exceptions import ConcurrentModificationError
 __all__ = [
     "ChangeConflictError",
     "ConflictedRow",
+    "DivergedError",
     "FileConflictError",
     "GitStoreError",
     "HandEditPendingError",
@@ -115,6 +116,36 @@ class FileConflictError(GitStoreError):
         self.paths = tuple(paths)
         super().__init__(
             f"files changed since the commit they were based on, nothing was written: {', '.join(self.paths)}"
+        )
+
+
+class DivergedError(GitStoreError):
+    """the branch and origin have both moved on; this store never merges or forces, so a person reconciles them.
+
+    Nothing changed. Raised by an explicit :meth:`~threetears.git_store.repo.GitRepo.pull`; on its own the
+    writer only stops pushing (``RepoStatus.push_blocked``).
+
+    :ivar head: this repository's commit
+    :ivar origin: origin's commit
+    """
+
+    def __init__(self, branch: str, head: str, origin: str) -> None:
+        """name the two commits.
+
+        :param branch: the branch
+        :ptype branch: str
+        :param head: this repository's commit
+        :ptype head: str
+        :param origin: origin's commit
+        :ptype origin: str
+        :return: None
+        :rtype: None
+        """
+        self.head = head
+        self.origin = origin
+        super().__init__(
+            f"{branch} ({head[:12]}) and origin/{branch} ({origin[:12]}) have both moved on; nothing was pulled. "
+            f"A person must reconcile them (this store never merges or forces)"
         )
 
 

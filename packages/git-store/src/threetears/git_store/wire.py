@@ -27,6 +27,7 @@ from threetears.git_store.change import Change, CommitResult, OnConflict
 from threetears.git_store.errors import (
     ChangeConflictError,
     ConflictedRow,
+    DivergedError,
     FileConflictError,
     GitStoreError,
     HandEditPendingError,
@@ -48,7 +49,7 @@ __all__ = [
 ]
 
 #: the operations a writer runs for another process.
-Operation = Literal["commit", "commit_paths", "commit_files", "commit_intent", "push"]
+Operation = Literal["commit", "commit_paths", "commit_files", "commit_intent", "pull", "push"]
 
 
 def _tag(value: Any) -> Any:
@@ -197,7 +198,7 @@ def decode_request(data: bytes) -> ForwardedRequest:
     """
     body = json.loads(data.decode("utf-8"))
     op = body["op"]
-    if op not in ("commit", "commit_paths", "commit_files", "commit_intent", "push"):
+    if op not in ("commit", "commit_paths", "commit_files", "commit_intent", "pull", "push"):
         raise ValueError(f"a git-store writer does not run {op!r}")
     changes = tuple(
         Change(
@@ -260,6 +261,8 @@ def encode_failure(error: GitStoreError | ChangeConflictError | GitError | Value
         }
     elif isinstance(error, HandEditPendingError):
         detail = {"type": "hand_edit", "paths": list(error.paths)}
+    elif isinstance(error, DivergedError):
+        detail = {"type": "diverged", "message": str(error), "head": error.head, "origin": error.origin}
     elif isinstance(error, FileConflictError):
         detail = {"type": "file_conflict", "paths": list(error.paths)}
     elif isinstance(error, NotTheWriterError):
@@ -283,6 +286,7 @@ def decode_reply(data: bytes) -> CommitResult:
     :raises ChangeConflictError: when the writer found rows changed since they were read
     :raises HandEditPendingError: when uncommitted hand edits were in the way
     :raises FileConflictError: when files sent to be committed changed since their base
+    :raises DivergedError: when a pull found the branch and origin both moved on
     :raises NotTheWriterError: when the process that answered was no longer the writer
     :raises GitError: when git failed on the writer
     :raises ValueError: when the writer found the request invalid (a path outside the tree, a bad trailer)
@@ -306,6 +310,10 @@ def decode_reply(data: bytes) -> CommitResult:
         raise ChangeConflictError(rows)
     if kind == "hand_edit":
         raise HandEditPendingError([str(path) for path in error["paths"]])
+    if kind == "diverged":
+        raised = DivergedError("", str(error["head"]), str(error["origin"]))
+        raised.args = (str(error["message"]),)
+        raise raised
     if kind == "file_conflict":
         raise FileConflictError([str(path) for path in error["paths"]])
     if kind == "not_writer":

@@ -18,6 +18,7 @@ from threetears.git_store.envelope import ForwardRefusedError, new_signing_seed
 from threetears.git_store.errors import (
     ChangeConflictError,
     ConflictedRow,
+    DivergedError,
     FileConflictError,
     GitStoreError,
     HandEditPendingError,
@@ -41,6 +42,7 @@ __all__ = [
     "Committed",
     "ConflictedRow",
     "DirtyFile",
+    "DivergedError",
     "FileConflictError",
     "ForwardRefusedError",
     "GitDurableStore",

@@ -134,6 +134,11 @@ it can't), as `commit` does. A forwarded commit that fails on the writer with a 
 raises `GitError` / `ValueError` on the sender, not a generic `GitStoreError`. `new_signing_seed()` makes a
 `forward_signing_seed`. Asked for by scriob, whose ~20 operations ride `forward`.
 
+**git-store: pull on request (`GitRepo.pull`).** Takes what someone pushed to origin from outside (a desktop
+editor, a merged PR), on the writer (forwarded from any other process): fetch, fast-forward when only behind,
+report the changed rows so every cache drops them, rebuild pending tails on the new HEAD. A branch that diverged
+raises the new `DivergedError` and changes nothing; one only ahead is pushed. Asked for by scriob (its Pull button).
+
 **Fixed (git-store):** a work tree inside another git repository was used as if it were one, so commits landed in
 the outer repository; `open()` now refuses it (`GitStoreError`). A nested repository of its own still works.
 
