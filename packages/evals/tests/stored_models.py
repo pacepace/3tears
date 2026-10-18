@@ -253,6 +253,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                 variant_key=compute_variant_key(_CONTROL_LEVERS),
                 levers=_CONTROL_LEVERS,
                 identity_version=IDENTITY_VERSION,
+                named_at="2026-10-18T00:00:00+00:00",
             )
         ],
         aspects=[
@@ -263,12 +264,14 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                 design=minimal_aspect_design(merit_axes=["quality"]),
                 run_ids=["run-1"],
                 declared_at="2026-10-18T00:00:00+00:00",
+                asked_at="2026-10-18T00:00:00+00:00",
+                margin_declared_at="2026-10-18T06:00:00+00:00",
             ),
             Aspect(label="tool selection", template_id="t-2", run_ids=["run-2"]),
         ],
         floors=[
             Floor(aspect="conversation", clause=RateDrop(max_points=5.0)),
-            Floor(aspect="conversation", clause=CostLower()),
+            Floor(aspect="conversation", clause=CostLower(), declared_at="2026-10-18T06:00:00+00:00"),
         ],
         declared_at="2026-10-18T00:00:00+00:00",
         declared_by="test:fixture",

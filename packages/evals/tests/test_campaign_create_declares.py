@@ -152,7 +152,11 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
             "which no aspect of the campaign holds",
             id="an-arm-from-a-run-outside-the-campaign",
         ),
-        pytest.param({"margin": None}, "declares a design and no margin", id="a-declared-aspect-with-no-margin"),
+        pytest.param(
+            {"margin": None, "question": _QUESTION},
+            "declares a design and no margin",
+            id="a-declared-aspect-with-no-margin-under-a-question",
+        ),
         pytest.param({"design": {"axes": []}}, "axes", id="no-axes"),
     ],
 )
@@ -161,7 +165,7 @@ async def test_a_design_the_host_cannot_honour_is_refused_naming_why(
 ) -> None:
     fixture = off_loop(ops_fixture)
     run = fixture.campaign.run_ids[0]
-    campaign_level = {key: arguments[key] for key in ("exploratory", "campaign_arms") if key in arguments}
+    campaign_level = {key: arguments[key] for key in ("exploratory", "campaign_arms", "question") if key in arguments}
     for arm in campaign_level.get("campaign_arms", []):
         arm["from_run_ids"] = [run_id.format(run=run) for run_id in arm["from_run_ids"]]
     changes = {key: value for key, value in arguments.items() if key not in campaign_level}

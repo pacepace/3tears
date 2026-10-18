@@ -32,7 +32,8 @@ form; a new campaign carries the amended declaration (``aspects_from`` adopts th
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
+from datetime import datetime
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Protocol
 
 from pydantic import Field, ValidationError
 
@@ -48,9 +49,11 @@ from threetears.evals.kernel.declaration import (
     ArmRole,
     CampaignArm,
     CampaignDesign,
+    DecisionClause,
     DecisionRule,
     Floor,
     Question,
+    aware_instant,
     resolve_control_arm,
 )
 from threetears.evals.kernel.identity import compute_variant_key
@@ -200,6 +203,33 @@ class AspectDefinition(EvalBaseModel):
     run_ids: list[str] = Field(default_factory=list, description="The aspect's runs, each in the campaign's scope.")
 
 
+#: A margin as a caller states one: points of a 0-100 pass rate, strictly between the ends and finite.
+Margin = Annotated[float, Field(gt=0.0, lt=100.0, allow_inf_nan=False)]
+
+
+class FloorDefinition(EvalBaseModel):
+    """A floor as a caller declares one: the aspect it is read on and its clause. When it was declared is the server's."""
+
+    aspect: str = Field(min_length=1, description="The label of the aspect whose readings the floor is read on.")
+    clause: DecisionClause = Field(
+        description="`{kind: rate_drop, max_points, reading?}` or `{kind: cost_lower}`: the line a candidate is warned for crossing."
+    )
+
+
+class AspectSource(EvalBaseModel):
+    """A campaign whose aspects a create adopts, and, for a campaign of one aspect, the label it is adopted under."""
+
+    campaign_id: str = Field(min_length=1, description="The campaign of this scope whose aspects are adopted.")
+    label: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The label its one aspect is adopted under, its floors with it, where its own would collide with another "
+            "aspect's. Omitted, the aspect keeps its label."
+        ),
+    )
+
+
 class CampaignAuthoring(EvalBaseModel):
     """What a create may say, as :func:`create_campaign` validates it: the campaign's names, its question, arms,
     aspects and floors, and the margins of the aspects it adopts."""
@@ -213,8 +243,8 @@ class CampaignAuthoring(EvalBaseModel):
     question: str = ""
     arms: list[ArmDefinition] = Field(default_factory=list)
     aspects: list[AspectDefinition] = Field(default_factory=list)
-    floors: list[Floor] = Field(default_factory=list)
-    margins: dict[str, float] = Field(default_factory=dict)
+    floors: list[FloorDefinition] = Field(default_factory=list)
+    margins: dict[str, Margin] = Field(default_factory=dict)
 
 
 class _AddressedArm(NamedTuple):
@@ -233,30 +263,32 @@ def create_campaign(
     created_by: str,
     profile: HostProfile,
     exploratory: bool = False,
-    aspects_from: Sequence[str] = (),
-    margin_optional: bool = False,
+    aspects_from: Sequence[str | Mapping[str, Any]] = (),
 ) -> EvalCampaign:
     """Create and persist a campaign: one question, its arms, its aspects and its floors.
 
     ``definition`` names ``name``, ``subject_id`` and ``behavior`` (required), and optionally ``subject_kind``,
     ``description``, ``question``, ``arms`` (:class:`ArmDefinition`), ``aspects`` (:class:`AspectDefinition`),
-    ``floors`` (:class:`~threetears.evals.kernel.declaration.Floor`) and ``margins`` (an adopted aspect's label to its
-    margin). A name it does not declare is refused; server-owned fields (:data:`CAMPAIGN_SERVER_FIELDS`) are ignored.
+    ``floors`` (:class:`FloorDefinition`) and ``margins`` (an adopted aspect's label to its margin). A name it does
+    not declare is refused; server-owned fields (:data:`CAMPAIGN_SERVER_FIELDS`) are ignored.
 
     **Each aspect is a template and its runs.** Its template is the one it names, else the one every run it holds
     ran, else none; its runs must live in ``scope_id`` and may not span two revisions of one template. A declared
-    aspect (one with a design) declares its margin too, and is dated now.
+    aspect (one with a design) declares its margin where the campaign asks a question, and is asked it now.
 
-    **Adoption.** ``aspects_from`` names campaigns of this scope whose aspects this one adopts whole — template,
-    runs, design, margin and when the design was declared — with their floors. A source's arms are carried when
-    ``definition`` names none of the same role; an arm ``definition`` names must be the source's arm of the same
-    label or role, by key, or the create is refused, naming both keys. Whatever is added at adoption — a question, a
-    floor, a margin — is the campaign's declaration, dated now; with nothing added, the campaign is dated by its
-    latest source, and asks their questions, each once.
+    **Adoption keeps what it adopts, and dates what it adds.** ``aspects_from`` names campaigns of this scope (each a
+    campaign id, or :class:`AspectSource` to relabel a campaign's one aspect) whose aspects this one adopts whole —
+    template, runs, design, margin, when its design was declared and when its question was asked (``asked_at``) —
+    with their floors and arms. An adopted aspect's readings stay as confirmatory as they were: nothing added here
+    re-dates it. What is added is dated now, by itself: a margin (``Aspect.margin_declared_at``), a floor
+    (``Floor.declared_at``), a control or candidate arm not already the source's (``CampaignArm.named_at``), and a
+    question (the campaign's ``declared_at``). With no question given, the sources' questions are joined, each once.
+    Two adopted aspects under one label, or a run two sources hold, are refused naming them.
 
     **Arms are addressed from runs** (:class:`ArmDefinition`): the variant key and lever map are the server's, read
     from the arm's first run, and every other run named for it must carry the same key, or the create is refused,
-    naming each run and its key. The control comes first.
+    naming each run and its key. An arm an adopted aspect already names must be the same stack, or the create is
+    refused naming both keys. The control comes first.
 
     **A campaign is declared or exploratory, and the caller says which.** It is declared when an aspect, its own or
     an adopted one, declares a design; ``exploratory=True`` says none does, and is refused beside one, as a campaign
@@ -274,21 +306,18 @@ def create_campaign(
     :ptype profile: HostProfile
     :param exploratory: True to create the campaign with no design, saying so.
     :ptype exploratory: bool
-    :param aspects_from: Campaigns of this scope whose aspects this one adopts, in order.
-    :ptype aspects_from: Sequence[str]
-    :param margin_optional: True lets a declared aspect state no margin, so its readings are shown better or unclear
-        and never shown worse, and its page says no margin was declared. For a caller that declares a design on its
-        user's behalf and assumes no margin (the quick API); every authoring surface a person reaches leaves it
-        False, so a margin is declared with every design.
-    :ptype margin_optional: bool
+    :param aspects_from: The campaigns whose aspects this one adopts, in order: each an id, or an
+        :class:`AspectSource` (or its fields) relabelling a campaign's one aspect.
+    :ptype aspects_from: Sequence[str | Mapping[str, Any]]
     :return: The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
     :rtype: EvalCampaign
     :raises NotFoundError: A source campaign, or a template an aspect names, is not in the scope.
     :raises ValidationFailedError: The definition fails validation; names no aspect and adopts none; holds a run
-        outside the scope, in two aspects, or of two revisions of one template in one aspect; declares an aspect with
-        no margin, a margin for an aspect it did not adopt, or a floor on an aspect that declares no design; says
-        neither declared nor exploratory, or both; names an arm from a run no aspect holds, from runs carrying two
-        keys, or one an adopted aspect knows under another key; or declares a design this host cannot honour.
+        outside the scope, in two aspects, or of two revisions of one template in one aspect; adopts two aspects under
+        one label, or a run two sources hold; asks a question and declares an aspect with no margin; gives a margin
+        for an aspect it did not adopt, or a floor on an aspect that declares no design; says neither declared nor
+        exploratory, or both; names an arm from a run no aspect holds, from runs carrying two keys, or one an adopted
+        aspect knows under another key; or declares a design this host cannot honour.
     :raises LeverCoordinateError: An arm's run recorded no lever map, and the host's variant map disagrees with its
         own registry.
     :raises StorageError: The campaign failed to persist.
@@ -298,33 +327,25 @@ def create_campaign(
         authored = CampaignAuthoring.model_validate(
             {key: value for key, value in definition.items() if key not in CAMPAIGN_SERVER_FIELDS}
         )
+        named_sources = [
+            AspectSource(campaign_id=source) if isinstance(source, str) else AspectSource.model_validate(source)
+            for source in aspects_from
+        ]
     except ValidationError as e:
         raise ValidationFailedError(f"invalid campaign definition: {e}", remedy=SCHEMA_REMEDY) from e
     now = utc_now_iso()
-    sources = _sources(storage, aspects_from, scope_id)
-    adopted = [aspect for source in sources for aspect in source.aspects]
-    own = [
-        _declared_aspect(storage, scope_id, aspect, at=now, margin_optional=margin_optional)
-        for aspect in authored.aspects
-    ]
+    sources = _sources(storage, named_sources, scope_id)
+    question = authored.question or QUESTION_SEPARATOR.join(
+        dict.fromkeys(source.question for source in sources if source.question)
+    )
+    adopted = _adopted_aspects(sources, authored.margins, at=now)
+    own = [_declared_aspect(storage, scope_id, aspect, at=now, asks=bool(question)) for aspect in authored.aspects]
     if not adopted and not own:
         raise ValidationFailedError(
             "a campaign measures its question on at least one aspect, and this create names none and adopts none",
             remedy="name one in aspects ({label, template_id?, margin, design?, run_ids}) or adopt one with aspects_from",
         )
-    labels = {aspect.label for aspect in adopted}
-    if stray := sorted(set(authored.margins) - labels):
-        raise ValidationFailedError(
-            f"margins names {', '.join(map(repr, stray))}, which is no adopted aspect: a margin given beside aspects "
-            "is for an aspect this create adopts",
-            remedy=f"declare an own aspect's margin on it; adopted aspects: {', '.join(map(repr, sorted(labels))) or 'none'}",
-        )
-    adopted = [
-        aspect.model_copy(update={"margin": authored.margins[aspect.label]})
-        if aspect.label in authored.margins
-        else aspect
-        for aspect in adopted
-    ]
+    _refuse_collisions(sources, own)
     aspects = [*adopted, *own]
     declared = any(aspect.design is not None for aspect in aspects)
     _refuse_an_unsaid_kind(declared=declared, exploratory=exploratory)
@@ -334,17 +355,22 @@ def create_campaign(
             "design, and no aspect of this one declares a design",
             remedy="declare a design on an aspect, or leave question, arms, floors and margins out",
         )
-    floors = _floors(sources, authored.floors)
+    adopted_labels = {aspect.label for aspect in adopted}
+    floors = _floors(
+        sources,
+        [
+            Floor(aspect=floor.aspect, clause=floor.clause, declared_at=now if floor.aspect in adopted_labels else None)
+            for floor in authored.floors
+        ],
+    )
     _refuse_floors_on_undeclared_aspects(floors, aspects)
-    added = bool(
-        authored.question or authored.floors or authored.margins or any(aspect.design is not None for aspect in own)
-    )
-    question = authored.question or QUESTION_SEPARATOR.join(
-        dict.fromkeys(source.question for source in sources if source.question)
-    )
     aspects = _merit_axes_follow_the_question(aspects, question, own={aspect.label for aspect in own})
-    declared_at, declared_by = _when_declared(sources, added=added and declared, now=now, by=created_by)
-    arms = _resolve_arms(storage, scope_id, aspects, authored.arms, sources, profile=profile) if declared else []
+    declared_at, declared_by = _when_declared(
+        sources, added=bool(authored.question) or any(a.design is not None for a in own), now=now, by=created_by
+    )
+    arms = (
+        _resolve_arms(storage, scope_id, aspects, authored.arms, sources, at=now, profile=profile) if declared else []
+    )
     try:
         campaign = EvalCampaign(
             scope_id=scope_id,
@@ -369,10 +395,9 @@ def create_campaign(
     # aspect's design was gated when its source declared it, so it is gated again only when this create adds a
     # floor on it, which is read against its template.
     floored = {floor.aspect for floor in authored.floors}
+    own_labels = {aspect.label for aspect in own}
     for aspect in campaign.aspects:
-        if aspect.design is not None and (
-            aspect.label in {own_aspect.label for own_aspect in own} or aspect.label in floored
-        ):
+        if aspect.design is not None and (aspect.label in own_labels or aspect.label in floored):
             _gate_aspect(storage, campaign, aspect, profile=profile)
 
     storage.save_campaign(campaign)
@@ -418,8 +443,8 @@ def _merit_axes_follow_the_question(aspects: Sequence[Aspect], question: str, *,
     """``aspects`` with each design's merit axes the question's: a list when there is one, None when there is not.
 
     A declared aspect's ``merit_axes`` say what the question asks about there, so when the campaign asks one, an
-    aspect that names none is asked about every axis (``[]``, unscoped), the question being dated with the campaign;
-    and when it asks none, an aspect of the caller's naming merit axes asks about something nobody asked.
+    aspect that names none is asked about every axis (``[]``, unscoped); and when it asks none, an aspect of the
+    caller's naming merit axes asks about something nobody asked.
 
     :raises ValidationFailedError: The campaign asks no question and an aspect the caller declares names merit axes.
     """
@@ -439,43 +464,116 @@ def _merit_axes_follow_the_question(aspects: Sequence[Aspect], question: str, *,
     ]
 
 
-def _sources(storage: CampaignStore, campaign_ids: Sequence[str], scope_id: str) -> list[EvalCampaign]:
-    """The campaigns a create adopts aspects from, each once, in order.
+def _sources(storage: CampaignStore, named: Sequence[AspectSource], scope_id: str) -> list[EvalCampaign]:
+    """The campaigns a create adopts aspects from, each once, in order, each relabelled as named.
 
-    :raises ValidationFailedError: A campaign is named twice.
+    :raises ValidationFailedError: A campaign is named twice, or relabelled while holding several aspects.
     :raises NotFoundError: One is not in the scope.
     """
-    if repeated := sorted({campaign_id for campaign_id in campaign_ids if list(campaign_ids).count(campaign_id) > 1}):
+    ids = [source.campaign_id for source in named]
+    if repeated := sorted({campaign_id for campaign_id in ids if ids.count(campaign_id) > 1}):
         raise ValidationFailedError(
             f"aspects_from names {', '.join(map(repr, repeated))} more than once", remedy="name each campaign once"
         )
-    return [get_campaign(storage, campaign_id, scope_id) for campaign_id in campaign_ids]
+    found: list[EvalCampaign] = []
+    for source in named:
+        campaign = get_campaign(storage, source.campaign_id, scope_id)
+        if source.label is not None:
+            if len(campaign.aspects) != 1:
+                raise ValidationFailedError(
+                    f"aspects_from relabels campaign {campaign.id!r}, which has {len(campaign.aspects)} aspects, so "
+                    "which one the label names is not implied",
+                    remedy="relabel only a campaign of one aspect, or adopt this one under its own labels",
+                )
+            (aspect,) = campaign.aspects
+            campaign = campaign.model_copy(
+                update={
+                    "aspects": [aspect.model_copy(update={"label": source.label})],
+                    "floors": [floor.model_copy(update={"aspect": source.label}) for floor in campaign.floors],
+                }
+            )
+        found.append(campaign)
+    return found
+
+
+def _adopted_aspects(sources: Sequence[EvalCampaign], margins: Mapping[str, float], *, at: str) -> list[Aspect]:
+    """Every source's aspects, whole, with a margin given at adoption set and dated ``at``.
+
+    Rebuilt through validation, so a margin the caller gave is held to the bounds every stored margin is.
+
+    :raises ValidationFailedError: A margin names no adopted aspect.
+    """
+    adopted = [aspect for source in sources for aspect in source.aspects]
+    labels = {aspect.label for aspect in adopted}
+    if stray := sorted(set(margins) - labels):
+        raise ValidationFailedError(
+            f"margins names {', '.join(map(repr, stray))}, which is no adopted aspect: a margin given beside aspects "
+            "is for an aspect this create adopts",
+            remedy=f"declare an own aspect's margin on it; adopted aspects: {', '.join(map(repr, sorted(labels))) or 'none'}",
+        )
+    return [
+        Aspect.model_validate({**aspect.model_dump(), "margin": margins[aspect.label], "margin_declared_at": at})
+        if aspect.label in margins
+        else aspect
+        for aspect in adopted
+    ]
+
+
+def _refuse_collisions(sources: Sequence[EvalCampaign], own: Sequence[Aspect]) -> None:
+    """Refuse two aspects under one label, or a run two of them hold, naming where each came from.
+
+    :raises ValidationFailedError: Naming the label or the run, and the campaigns (or this create) holding it.
+    """
+    placed = [(aspect, f"campaign {source.id!r}") for source in sources for aspect in source.aspects]
+    placed.extend((aspect, "this create") for aspect in own)
+    seen: dict[str, str] = {}
+    holder: dict[str, str] = {}
+    for aspect, where in placed:
+        if aspect.label in seen:
+            raise ValidationFailedError(
+                f"two aspects would be labelled {aspect.label!r}: {seen[aspect.label]}'s and {where}'s",
+                remedy=(
+                    "adopt one under another label (aspects_from: [{campaign_id, label}]), or label your own aspect "
+                    "otherwise"
+                ),
+            )
+        seen[aspect.label] = where
+        for run_id in aspect.run_ids:
+            held_by = f"{where} (aspect {aspect.label!r})"
+            if run_id in holder:
+                raise ValidationFailedError(
+                    f"run {run_id!r} is held by {holder[run_id]} and by {held_by}, and a run belongs to one aspect",
+                    remedy="adopt only one of the aspects holding it, or remove the run from one of them first",
+                )
+            holder[run_id] = held_by
 
 
 def _declared_aspect(
-    storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, at: str, margin_optional: bool = False
+    storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, at: str, asks: bool
 ) -> Aspect:
     """An aspect a caller declares, its runs held to the scope and to one revision, its template resolved.
 
     :raises ValidationFailedError: A run is outside the scope or of another revision of a template it holds, or the
-        aspect declares a design and no margin.
+        aspect declares a design and no margin while the campaign asks a question.
     :raises NotFoundError: The template it names is not in the scope.
     """
-    if defined.design is not None and defined.margin is None and not margin_optional:
+    if defined.design is not None and defined.margin is None and asks:
         raise ValidationFailedError(
-            f"aspect {defined.label!r} declares a design and no margin, so nothing would say how far a candidate may "
-            "fall below the control there before it is shown worse",
+            f"aspect {defined.label!r} declares a design and no margin, and the campaign asks a question, so nothing "
+            "would say how far a candidate may fall below the control there before it is shown worse",
             remedy=f"declare margin on aspect {defined.label!r}: {_MARGIN_DESCRIPTION}",
         )
     _refuse_runs_outside_scope(storage, defined.run_ids, scope_id)
     _refuse_pooled_revisions(storage, defined.run_ids, scope_id, what=f"aspect {defined.label!r}")
+    declares = defined.design is not None
     return Aspect(
         label=defined.label,
         template_id=_aspect_template(storage, scope_id, defined.template_id, defined.run_ids),
         margin=defined.margin,
         design=defined.design,
         run_ids=list(dict.fromkeys(defined.run_ids)),
-        declared_at=at if defined.design is not None else None,
+        declared_at=at if declares else None,
+        asked_at=at if declares else None,
     )
 
 
@@ -531,18 +629,29 @@ def _refuse_floors_on_undeclared_aspects(floors: Sequence[Floor], aspects: Seque
         )
 
 
-def _when_declared(sources: Sequence[EvalCampaign], *, added: bool, now: str, by: str) -> tuple[str | None, str]:
-    """When, and by whom, a created campaign's question was declared in full.
+def _instant_or_none(stamp: str | None) -> datetime | None:
+    """``stamp`` as an aware instant, or None when it is absent or cannot be ordered."""
+    if stamp is None:
+        return None
+    try:
+        return aware_instant(stamp, "a declaration")
+    except ValueError:
+        return None
 
-    Now, by its creator, when the create adds anything to what it declares; else the latest of its sources'
-    declarations, since the questions it joins were asked in full only once the last was.
+
+def _when_declared(sources: Sequence[EvalCampaign], *, added: bool, now: str, by: str) -> tuple[str | None, str]:
+    """When, and by whom, a created campaign's question, as it is worded, was declared in full.
+
+    Now, by its creator, when the create words a question or declares an aspect of its own; else the latest of its
+    sources' declarations, since the questions it joins were all asked only once the last was. This dates the words,
+    never an adopted aspect: each keeps its own ``asked_at``.
     """
     if added or not sources:
         return now, by
-    dated = [source for source in sources if source.declared_at is not None]
+    dated = [(instant, source) for source in sources if (instant := _instant_or_none(source.declared_at)) is not None]
     if not dated:
         return None, ""
-    latest = max(dated, key=lambda source: source.declared_at or "")
+    latest = max(dated, key=lambda pair: pair[0])[1]
     return latest.declared_at, latest.declared_by
 
 
@@ -553,26 +662,30 @@ def _resolve_arms(
     defined: Sequence[ArmDefinition],
     sources: Sequence[EvalCampaign],
     *,
+    at: str,
     profile: HostProfile,
 ) -> list[CampaignArm]:
     """The arms a create names, each addressed from its runs, held to the arms its adopted aspects already name.
+
+    An arm named here that is a source's arm keeps the source's ``named_at``: naming it again changes nothing that
+    was read against it. Every other arm named here is named ``at``.
 
     :raises ValidationFailedError: An arm's run is in no aspect, its runs carry two keys, or an adopted aspect names
         an arm of the same label or role under another key; or two adopted aspects disagree about one.
     """
     holder = {run_id: aspect.label for aspect in aspects for run_id in aspect.run_ids}
-    named = [_arm_from_runs(storage, scope_id, arm, holder, profile=profile) for arm in defined]
+    named = [_arm_from_runs(storage, scope_id, arm, holder, at=at, profile=profile) for arm in defined]
     for source in sources:
         for other in source.arms:
-            same = next(
+            index, same = next(
                 (
-                    arm
-                    for arm in named
+                    (index, arm)
+                    for index, arm in enumerate(named)
                     if arm.label == other.label or arm.role == other.role == "control" or _one_arm(arm, other)
                 ),
-                None,
+                (None, None),
             )
-            if same is None:
+            if same is None or index is None:
                 named.append(other)
             elif not _one_arm(same, other):
                 raise ValidationFailedError(
@@ -585,6 +698,8 @@ def _resolve_arms(
                         "agree about it"
                     ),
                 )
+            elif same.named_at == at:
+                named[index] = same.model_copy(update={"named_at": other.named_at})
     return sorted(named, key=lambda arm: arm.role != "control")
 
 
@@ -597,9 +712,15 @@ def _one_arm(arm: CampaignArm, other: CampaignArm) -> bool:
 
 
 def _arm_from_runs(
-    storage: CampaignStore, scope_id: str, defined: ArmDefinition, holder: Mapping[str, str], *, profile: HostProfile
+    storage: CampaignStore,
+    scope_id: str,
+    defined: ArmDefinition,
+    holder: Mapping[str, str],
+    *,
+    at: str,
+    profile: HostProfile,
 ) -> CampaignArm:
-    """One arm addressed from its runs: the first run's key and pre-image, every other run carrying the same key.
+    """One arm addressed from its runs, named ``at``: the first run's key and pre-image, every other run's the same.
 
     :raises ValidationFailedError: A run is held by no aspect, or the runs carry more than one key, naming each.
     """
@@ -629,6 +750,7 @@ def _arm_from_runs(
         variant_key=first.key,
         levers=first.levers,
         identity_version=first.identity_version,
+        named_at=at,
     )
 
 
@@ -908,23 +1030,28 @@ def update_campaign(
     )
     changes: dict[str, Any] = {key: updates[key] for key in ("name", "description") if key in updates}
     now = utc_now_iso()
+    question = updates["question"] if "question" in updates else campaign.question
+    if not isinstance(question, str):
+        raise ValidationFailedError("invalid campaign update: question is a string", remedy=SCHEMA_REMEDY)
     try:
         aspects = (
             [
-                _updated_aspect(storage, scope_id, AspectDefinition.model_validate(item), at=now)
+                _updated_aspect(storage, scope_id, AspectDefinition.model_validate(item), at=now, asks=bool(question))
                 for item in updates["aspects"]
             ]
             if "aspects" in updates
             else list(campaign.aspects)
         )
         floors = (
-            [Floor.model_validate(item) for item in updates["floors"]] if "floors" in updates else list(campaign.floors)
+            [
+                Floor(aspect=floor.aspect, clause=floor.clause)
+                for floor in (FloorDefinition.model_validate(item) for item in updates["floors"])
+            ]
+            if "floors" in updates
+            else list(campaign.floors)
         )
     except (ValidationError, TypeError) as e:
         raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
-    question = updates["question"] if "question" in updates else campaign.question
-    if not isinstance(question, str):
-        raise ValidationFailedError("invalid campaign update: question is a string", remedy=SCHEMA_REMEDY)
     declared = any(aspect.design is not None for aspect in aspects)
     if exploratory and declared:
         raise ValidationFailedError(
@@ -948,7 +1075,14 @@ def update_campaign(
     _refuse_floors_on_undeclared_aspects(floors, aspects)
     if writes:
         declared_here = {aspect.label for aspect in aspects} if "aspects" in updates else set()
-        aspects = _merit_axes_follow_the_question(aspects, question, own=declared_here)
+        # A declaration written anew is asked anew: before any run, so nothing it re-dates was read yet.
+        aspects = [
+            aspect.model_copy(update={"asked_at": now, "margin_declared_at": None})
+            if aspect.design is not None
+            else aspect
+            for aspect in _merit_axes_follow_the_question(aspects, question, own=declared_here)
+        ]
+        floors = [floor.model_copy(update={"declared_at": None}) for floor in floors]
         changes.update(
             question=question,
             aspects=aspects,
@@ -993,7 +1127,7 @@ def update_campaign(
     return updated
 
 
-def _updated_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, at: str) -> Aspect:
+def _updated_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, at: str, asks: bool) -> Aspect:
     """An aspect an update declares: no runs (they join through :func:`add_runs_to_campaign`), dated now.
 
     :raises ValidationFailedError: The aspect names runs, or declares a design and no margin.
@@ -1004,7 +1138,7 @@ def _updated_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefini
             "update would skip",
             remedy="leave run_ids out of the update, then add the runs with campaign_runs_add naming the aspect",
         )
-    return _declared_aspect(storage, scope_id, defined, at=at)
+    return _declared_aspect(storage, scope_id, defined, at=at, asks=asks)
 
 
 def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> EvalCampaign:
@@ -1132,8 +1266,9 @@ def add_runs_to_campaign(
     """Attach runs to one aspect of a campaign each (de-duplicated, order-preserving) and persist.
 
     **Each run joins one aspect.** ``aspect`` names it for every run; None routes each run by its template: the one
-    aspect of the campaign gathered on the template the run ran takes it, and a campaign of one aspect takes every
-    run. A run no aspect or several aspects could take is refused, naming the run, its template and the aspects.
+    aspect of the campaign gathered on the template the run ran takes it, and a campaign of one aspect takes it. A
+    run no aspect or several aspects could take is refused, naming the run, its template and the aspects; so is a run
+    of another template joining an aspect that names one, routed or named.
 
     A run the campaign already holds in the aspect it would join is ignored; one it holds in another aspect is
     refused, since a run belongs to one aspect. A run that does not resolve in the campaign's scope is refused, as at
@@ -1181,6 +1316,7 @@ def add_runs_to_campaign(
         if target is not None
         else _route_by_template(storage, campaign, fresh)
     )
+    _refuse_another_template(storage, campaign, routed)
     aspects = [
         held.model_copy(
             update={"run_ids": [*held.run_ids, *(run_id for run_id in fresh if routed[run_id] == held.label)]}
@@ -1196,6 +1332,32 @@ def add_runs_to_campaign(
     storage.save_campaign(campaign)
     log.info("eval.add_runs_to_campaign campaign=%s attached=%d", campaign_id, len(fresh))
     return campaign
+
+
+def _refuse_another_template(storage: CampaignStore, campaign: EvalCampaign, routed: Mapping[str, str]) -> None:
+    """Refuse a run joining an aspect gathered on another template: the aspect's bars and floors read its own.
+
+    An aspect that names no template takes a run of any; one that names a template takes only that template's runs,
+    whether it was named or is the campaign's lone aspect.
+
+    :raises ValidationFailedError: Naming each such run, the template it ran and the aspect's.
+    """
+    strays = []
+    for run_id, label in routed.items():
+        aspect = campaign.aspect(label)
+        if aspect is None or not aspect.template_id:
+            continue
+        run = storage.load_eval_run(run_id, campaign.scope_id)
+        ran = run.template_id if run is not None else None
+        if ran != aspect.template_id:
+            strays.append(
+                f"run {run_id!r} ran {f'template {ran!r}' if ran else 'no template'}, and aspect {label!r} is gathered on {aspect.template_id!r}"
+            )
+    if strays:
+        raise ValidationFailedError(
+            f"{'; '.join(strays)} — an aspect reads its own template's runs, so nothing was attached",
+            remedy="add the run to the aspect gathered on its template, or to a new campaign's aspect over it",
+        )
 
 
 def _named_aspect(campaign: EvalCampaign, label: str | None) -> Aspect | None:
@@ -1390,7 +1552,11 @@ def _with_control(
     *,
     profile: HostProfile,
 ) -> list[CampaignArm]:
-    """``arms`` with the control addressed from a member run first, or with no control.
+    """``arms`` with the control addressed from a member run first, named now, or with no control.
+
+    When it is named is recorded on the arm (``named_at``): a control named after an aspect's first run was chosen
+    once the evidence existed, so that aspect's comparisons read as post hoc
+    (:func:`~threetears.evals.analysis.aspects.aspect_view` dates the aspect's question no earlier than it).
 
     :raises ValidationFailedError: The run is not a member of the campaign.
     """
@@ -1410,6 +1576,7 @@ def _with_control(
         variant_key=addressed.key,
         levers=addressed.levers,
         identity_version=addressed.identity_version,
+        named_at=utc_now_iso(),
     )
     return [control, *candidates]
 
@@ -1457,6 +1624,11 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
     campaign's variants differ (:func:`~threetears.evals.analysis.arms.arm_names`), its digest beside the label where
     two would read alike, and a ``(2)``, ``(3)`` … where a label is still taken. Derived on every read and never
     stored, so a person naming the arms later replaces them whole.
+
+    **A derived label is not an identity.** It is read over the variants the runs carry now, so a variant joining
+    the campaign can change the levers the variants differ on, and with them every derived label. Whatever names a
+    derived arm durably names it by its ``variant_key``: a recorded call (``CampaignCall``) is matched to its arm by
+    ``variant_key``, never by ``arm``, which is the label it was read under.
 
     :param storage: The campaign store.
     :ptype storage: CampaignStore
@@ -1586,7 +1758,10 @@ __all__ = [
     "CAMPAIGN_SERVER_FIELDS",
     "ArmDefinition",
     "AspectDefinition",
+    "AspectSource",
     "CampaignAuthoring",
+    "FloorDefinition",
+    "Margin",
     "CampaignStore",
     "DeclarableAxes",
     "OpenAxisFamily",

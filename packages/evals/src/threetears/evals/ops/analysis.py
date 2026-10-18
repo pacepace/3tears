@@ -24,6 +24,7 @@ from pydantic import Field
 from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import (
+    Margin,
     add_runs_to_campaign,
     create_campaign,
     list_campaigns,
@@ -128,7 +129,8 @@ ASPECTS_DESCRIPTION = (
     "(required when uncontrolled), apparatus: commissioned|witnessed}), and optionally merit_axes, bars "
     "([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and "
     "intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control "
-    "there before it is shown worse, and a declared aspect states one. template_id omitted is the one template every "
+    "there before it is shown worse, which a declared aspect states when the campaign asks a question. template_id "
+    "omitted is the one template every "
     "run of the aspect ran. Labels are unique, and a run belongs to one aspect."
 )
 
@@ -141,15 +143,17 @@ FLOORS_DESCRIPTION = (
 
 #: What a margin given at adoption is, said once.
 MARGINS_DESCRIPTION = (
-    "An adopted aspect's label to its margin, in points of a 0-100 pass rate: a margin declared at adoption, dated with "
-    "the campaign's question."
+    "An adopted aspect's label to its margin, in points of a 0-100 pass rate, more than 0 and less than 100: a margin "
+    "declared at adoption, carrying the time it was added."
 )
 
 #: What adopting another campaign's aspects means, said once.
 ASPECTS_FROM_DESCRIPTION = (
-    "Campaigns of this scope whose aspects this one adopts whole — template, runs, design, margin and when the design "
-    "was declared — with their floors and arms. What this campaign adds to them (question, floors, margins) is dated "
-    "now; with nothing added, it is dated by its latest source and asks their questions."
+    "Campaigns of this scope whose aspects this one adopts whole — template, runs, design, margin, and when its design "
+    "was declared and its question asked — with their floors and arms: each a campaign id, or {campaign_id, label} to "
+    "adopt a campaign's one aspect under another label. An adopted aspect keeps its readings' standing; what this "
+    "campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. Two aspects under one "
+    "label, or one run in two of them, are refused."
 )
 
 #: What saying a campaign is exploratory means, said once for the operations and the actions that take it.
@@ -192,8 +196,8 @@ class CampaignDefinition(EvalBaseModel):
     arms: list[dict[str, Any]] = Field(default_factory=list, description=ARMS_DESCRIPTION)
     aspects: list[dict[str, Any]] = Field(default_factory=list, description=ASPECTS_DESCRIPTION)
     floors: list[dict[str, Any]] = Field(default_factory=list, description=FLOORS_DESCRIPTION)
-    margins: dict[str, float] = Field(default_factory=dict, description=MARGINS_DESCRIPTION)
-    aspects_from: list[str] = Field(default_factory=list, description=ASPECTS_FROM_DESCRIPTION)
+    margins: dict[str, Margin] = Field(default_factory=dict, description=MARGINS_DESCRIPTION)
+    aspects_from: list[str | dict[str, str]] = Field(default_factory=list, description=ASPECTS_FROM_DESCRIPTION)
     exploratory: bool = Field(default=False, description=EXPLORATORY_DESCRIPTION)
 
 

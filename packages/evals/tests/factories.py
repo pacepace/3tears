@@ -620,6 +620,7 @@ def make_aspect_campaign(
                 design=aspect_design,
                 run_ids=list(run_ids),
                 declared_at=now,
+                asked_at=now,
             )
         ],
         floors=[Floor(aspect=label, clause=clause) for clause in floors],

@@ -4803,7 +4803,7 @@
     },
     "threetears.evals.analysis.create_campaign": {
       "kind": "function",
-      "signature": "create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str] = (), margin_optional: bool = False) -> EvalCampaign",
+      "signature": "create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = ()) -> EvalCampaign",
       "tier": "stable"
     },
     "threetears.evals.analysis.CriterionDrift": {
@@ -6663,7 +6663,7 @@
     },
     "threetears.evals.ops.CampaignDefinition": {
       "kind": "model",
-      "signature": "CampaignDefinition(name: str, subject_id: str, behavior: str, description: str = '', question: str = '', arms: list[dict[str, Any]] = list(), aspects: list[dict[str, Any]] = list(), floors: list[dict[str, Any]] = list(), margins: dict[str, float] = dict(), aspects_from: list[str] = list(), exploratory: bool = False)",
+      "signature": "CampaignDefinition(name: str, subject_id: str, behavior: str, description: str = '', question: str = '', arms: list[dict[str, Any]] = list(), aspects: list[dict[str, Any]] = list(), floors: list[dict[str, Any]] = list(), margins: dict[str, Margin] = dict(), aspects_from: list[str | dict[str, str]] = list(), exploratory: bool = False)",
       "tier": "stable"
     },
     "threetears.evals.ops.CampaignLine": {

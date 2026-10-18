@@ -142,6 +142,7 @@ from threetears.evals.ops import (
     runs_bisected_text,
     runs_compared_text,
 )
+from threetears.evals.analysis.campaigns import Margin
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
@@ -417,8 +418,10 @@ class CampaignCreateParams(EvalBaseModel):
     )
     aspects: Annotated[list[dict[str, Any]], CampaignDefinition.model_fields["aspects"]] = Field(default_factory=list)
     floors: Annotated[list[dict[str, Any]], CampaignDefinition.model_fields["floors"]] = Field(default_factory=list)
-    margins: Annotated[dict[str, float], CampaignDefinition.model_fields["margins"]] = Field(default_factory=dict)
-    aspects_from: Annotated[list[str], CampaignDefinition.model_fields["aspects_from"]] = Field(default_factory=list)
+    margins: Annotated[dict[str, Margin], CampaignDefinition.model_fields["margins"]] = Field(default_factory=dict)
+    aspects_from: Annotated[list[str | dict[str, str]], CampaignDefinition.model_fields["aspects_from"]] = Field(
+        default_factory=list
+    )
     exploratory: Annotated[bool, CampaignDefinition.model_fields["exploratory"]] = False
 
 

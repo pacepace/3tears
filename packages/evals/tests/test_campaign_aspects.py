@@ -26,11 +26,13 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis.aspects import aspect_view, aspect_views
+from threetears.evals.analysis.bundle.schema import asked_in_time
 from threetears.evals.analysis.campaigns import (
     add_runs_to_campaign,
     campaign_arms,
     create_campaign,
     remove_runs_from_campaign,
+    set_campaign_control,
 )
 from threetears.evals.kernel import EvalCampaign, EvalStorage, IDENTITY_VERSION
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CostLower, Floor, RateDrop
@@ -59,6 +61,11 @@ _FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents"
 #: When the adopted campaigns here declared what they declared: before any create in this file.
 _LONG_AGO = "2026-01-01T00:00:00+00:00"
 
+#: When each template's runs ran, and when each source campaign asked its question: each before its own runs, the
+#: tools campaign's after the tone campaign's runs, so dating either aspect by the other's time would read it wrong.
+_RAN = {"tpl-tone": "2026-01-10T00:00:00+00:00", "tpl-tools": "2026-02-10T00:00:00+00:00"}
+_ASKED = {"tpl-tone": _LONG_AGO, "tpl-tools": "2026-02-01T00:00:00+00:00"}
+
 
 def _levers(model: str) -> dict[str, SweepableValue]:
     return {"model": SweepableValue.of(model, display=model.upper())}
@@ -82,6 +89,7 @@ def _store() -> tuple[EvalStorage, InMemoryDocumentStore]:
                     candidate_model=model,
                     variant_levers=_levers(model),
                     identity_version=IDENTITY_VERSION,
+                    created_at=_RAN[template_id],
                 )
             )
     return storage, store
@@ -195,7 +203,7 @@ def test_a_run_leaves_the_aspect_holding_it_and_a_wrong_aspect_is_refused() -> N
     assert [aspect.run_ids for aspect in left.aspects] == [[], ["tpl-tools-a"]]
 
 
-def test_one_aspect_takes_every_run_whatever_it_ran() -> None:
+def test_one_aspect_naming_no_template_takes_every_run_whatever_it_ran() -> None:
     storage, _ = _store()
     campaign = _create(storage, aspects=[{"label": "everything"}], exploratory=True)
 
@@ -204,21 +212,39 @@ def test_one_aspect_takes_every_run_whatever_it_ran() -> None:
     assert joined.aspects[0].run_ids == ["tpl-tone-a", "tpl-tools-b"]
 
 
+@pytest.mark.parametrize("named", [False, True], ids=["the-lone-aspect", "named"])
+def test_an_aspect_naming_a_template_refuses_a_run_of_another(named: bool) -> None:
+    """Its bars, floors and gate read its own template, so a run of another would be read against the wrong one."""
+    storage, _ = _store()
+    campaign = _create(storage, aspects=[{"label": "tone", "template_id": "tpl-tone"}], exploratory=True)
+
+    with pytest.raises(ValidationFailedError, match="'tpl-tools-b' ran template 'tpl-tools', and aspect 'tone'"):
+        add_runs_to_campaign(
+            storage, campaign.id, _SCOPE, ["tpl-tone-b", "tpl-tools-b"], aspect="tone" if named else None
+        )
+
+    assert storage.load_campaign(campaign.id, _SCOPE) == campaign, "nothing was attached"
+
+
 def test_each_aspect_infers_its_own_template_and_refuses_a_declared_design_with_no_margin() -> None:
     storage, _ = _store()
     inferred = _create(storage, aspects=[{"label": "tone", "run_ids": ["tpl-tone-a", "tpl-tone-b"]}], exploratory=True)
 
-    with pytest.raises(ValidationFailedError, match="declares a design and no margin"):
-        _create(storage, aspects=[_aspect("tone", "tpl-tone", margin=None)])
+    with pytest.raises(ValidationFailedError, match="declares a design and no margin, and the campaign asks"):
+        _create(storage, question="Is b as good as a?", aspects=[_aspect("tone", "tpl-tone", margin=None)])
+    unasked = _create(storage, aspects=[_aspect("tone", "tpl-tone", margin=None)])
 
     assert inferred.aspects[0].template_id == "tpl-tone"
+    assert unasked.aspects[0].margin is None, "a campaign asking nothing reads no drop, so it needs no margin"
 
 
 # --- adoption --------------------------------------------------------------------------------------------------------
 
 
 def _source(storage: EvalStorage, label: str, template_id: str, control: str | None = "a") -> EvalCampaign:
-    """A campaign of one aspect declared long ago, holding its two runs, its control model ``control``'s run."""
+    """A campaign of one aspect asked its question before its runs, holding its two runs, its control model
+    ``control``'s run, named when the question was asked."""
+    asked = _ASKED[template_id]
     arms = (
         [
             CampaignArm(
@@ -227,6 +253,7 @@ def _source(storage: EvalStorage, label: str, template_id: str, control: str | N
                 variant_key=_key(control),
                 levers=_levers(control),
                 identity_version=IDENTITY_VERSION,
+                named_at=asked,
             )
         ]
         if control is not None
@@ -246,11 +273,12 @@ def _source(storage: EvalStorage, label: str, template_id: str, control: str | N
                 margin=4.0,
                 design=minimal_aspect_design(merit_axes=[]),
                 run_ids=[f"{template_id}-a", f"{template_id}-b"],
-                declared_at=_LONG_AGO,
+                declared_at=asked,
+                asked_at=asked,
             )
         ],
         floors=[Floor(aspect=label, clause=RateDrop(max_points=4.0))],
-        declared_at=_LONG_AGO,
+        declared_at=asked,
         declared_by="author",
         created_by="author",
     )
@@ -258,7 +286,34 @@ def _source(storage: EvalStorage, label: str, template_id: str, control: str | N
     return source
 
 
-def test_adopted_aspects_keep_when_they_were_declared_and_what_is_added_is_dated_now() -> None:
+def _confirms(campaign: EvalCampaign, label: str) -> bool:
+    """Whether the aspect's question was asked before its first run, as every per-aspect reader decides it."""
+    (template_id,) = {aspect.template_id for aspect in campaign.aspects if aspect.label == label}
+    return asked_in_time(aspect_view(campaign, label).declared, _RAN[str(template_id)])
+
+
+def _after_the_runs(stamp: str | None, label: str, campaign: EvalCampaign) -> bool:
+    (template_id,) = {aspect.template_id for aspect in campaign.aspects if aspect.label == label}
+    return stamp is not None and stamp > _RAN[str(template_id)]
+
+
+def test_adopted_aspects_keep_their_own_times_so_each_stays_confirmatory() -> None:
+    """Each source asked its question before its own runs; the tools source's time is after the tone source's runs,
+    so dating the adoption by its latest source would turn the tone aspect post hoc."""
+    storage, _ = _store()
+    tone, tools = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools")
+
+    adopted = _create(storage, aspects_from=(tone.id, tools.id))
+
+    assert [aspect.asked_at for aspect in adopted.aspects] == [_ASKED["tpl-tone"], _ASKED["tpl-tools"]]
+    assert _confirms(adopted, "tone") and _confirms(adopted, "tools")
+    assert [aspect.run_ids for aspect in adopted.aspects] == [tone.run_ids, tools.run_ids]
+    assert adopted.question == f"{tone.question}\n\n{tools.question}", "the sources' questions, joined"
+    assert (adopted.declared_at, adopted.declared_by) == (_ASKED["tpl-tools"], "author"), "the words: the latest"
+    assert storage.load_campaign(tone.id, _SCOPE) == tone, "a source is read, never written"
+
+
+def test_what_is_added_at_adoption_is_dated_now_by_itself_and_the_adopted_aspects_stay_confirmatory() -> None:
     storage, _ = _store()
     tone, tools = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools")
 
@@ -267,48 +322,111 @@ def test_adopted_aspects_keep_when_they_were_declared_and_what_is_added_is_dated
         aspects_from=(tone.id, tools.id),
         question="Is b as good as a, across both?",
         floors=[{"aspect": "tools", "clause": {"kind": "cost_lower"}}],
+        margins={"tone": 2.5},
     )
 
-    assert [aspect.label for aspect in adopted.aspects] == ["tone", "tools"]
-    assert [aspect.declared_at for aspect in adopted.aspects] == [_LONG_AGO, _LONG_AGO], "each keeps its own time"
-    assert [aspect.run_ids for aspect in adopted.aspects] == [tone.run_ids, tools.run_ids]
-    assert [aspect.margin for aspect in adopted.aspects] == [4.0, 4.0]
-    assert adopted.declared_at is not None and adopted.declared_at > _LONG_AGO, "what is added is dated now"
+    assert _confirms(adopted, "tone") and _confirms(adopted, "tools"), "nothing added re-dates an adopted aspect"
+    tools_view = aspect_view(adopted, "tools").declared
+    assert tools_view is not None
+    added = {floor.key: floor.declared_at for floor in tools_view.floors}
+    assert added["tools/rate_drop/*"] is None, "the source's floor was declared with its question"
+    assert _after_the_runs(added["tools/cost_lower/*"], "tools", adopted), "the added floor reads post hoc"
+    tone_view = aspect_view(adopted, "tone").declared
+    assert tone_view is not None and tone_view.margin == 2.5
+    assert _after_the_runs(tone_view.margin_declared_at, "tone", adopted), "the added margin reads post hoc"
+    assert _after_the_runs(tone_view.question_declared_at, "tone", adopted), "the new words read post hoc"
+    assert tone_view.asked_at == _ASKED["tpl-tone"]
     assert adopted.declared_by == "op"
-    assert [floor.key for floor in adopted.floors] == ["tone/rate_drop/*", "tools/rate_drop/*", "tools/cost_lower/*"]
-    assert adopted.control is not None and adopted.control.variant_key == _key("a")
-    assert storage.load_campaign(tone.id, _SCOPE) == tone, "a source is read, never written"
 
 
-def test_a_margin_added_at_adoption_is_the_campaign_s_and_one_for_an_aspect_it_did_not_adopt_is_refused() -> None:
+def test_a_margin_for_an_aspect_not_adopted_or_off_the_scale_is_refused_and_nothing_unreadable_is_stored() -> None:
     storage, _ = _store()
     tone = _source(storage, "tone", "tpl-tone")
 
-    adopted = _create(storage, aspects_from=(tone.id,), margins={"tone": 2.5})
     with pytest.raises(ValidationFailedError, match="'tools', which is no adopted aspect"):
         _create(storage, aspects_from=(tone.id,), margins={"tools": 2.5})
+    for margin in (0, 100, 150, float("nan"), float("inf")):
+        with pytest.raises(ValidationFailedError, match="margins"):
+            _create(storage, aspects_from=(tone.id,), margins={"tone": margin})
 
-    assert adopted.aspects[0].margin == 2.5
-    assert adopted.aspects[0].declared_at == _LONG_AGO
-    assert adopted.declared_at is not None and adopted.declared_at > _LONG_AGO
+    assert [campaign.id for campaign in storage.list_campaigns(_SCOPE)] == [tone.id], "the scope still lists"
 
 
-def test_with_nothing_added_an_adoption_is_dated_by_its_latest_source_and_asks_their_questions() -> None:
+def test_a_campaign_whose_document_would_not_read_back_is_never_written() -> None:
+    """A copy skips validation, so the write is held to the stored read: no write can refuse a scope's listing."""
     storage, _ = _store()
-    tone, tools = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools")
+    tone = _source(storage, "tone", "tpl-tone")
+    (aspect,) = tone.aspects
+    broken = tone.model_copy(update={"id": "broken", "aspects": [aspect.model_copy(update={"margin": 0.0})]})
 
-    adopted = _create(storage, aspects_from=(tone.id, tools.id))
+    with pytest.raises(ValidationFailedError, match="would be stored as a document its own read refuses"):
+        storage.save_campaign(broken)
 
-    assert (adopted.declared_at, adopted.declared_by) == (_LONG_AGO, "author")
-    assert adopted.question == f"{tone.question}\n\n{tools.question}"
+    assert storage.load_campaign("broken", _SCOPE) is None
+    assert [campaign.id for campaign in storage.list_campaigns(_SCOPE)] == [tone.id]
 
 
-def test_an_adoption_holding_a_run_in_two_aspects_is_refused() -> None:
+def test_two_adopted_aspects_under_one_label_are_refused_naming_both_and_one_may_be_relabelled() -> None:
+    storage, _ = _store()
+    tone = _source(storage, "tone", "tpl-tone")
+    other = _source(storage, "tools", "tpl-tools").model_copy(update={"id": "tools-as-tone", "behavior": "tone"})
+    (aspect,) = other.aspects
+    other = other.model_copy(
+        update={
+            "aspects": [aspect.model_copy(update={"label": "tone"})],
+            "floors": [floor.model_copy(update={"aspect": "tone"}) for floor in other.floors],
+        }
+    )
+    storage.save_campaign(other)
+
+    with pytest.raises(ValidationFailedError, match="two aspects would be labelled 'tone'") as refused:
+        _create(storage, aspects_from=(tone.id, other.id))
+    relabelled = _create(storage, aspects_from=(tone.id, {"campaign_id": other.id, "label": "tools"}))
+
+    assert repr(tone.id) in str(refused.value) and repr(other.id) in str(refused.value)
+    assert "aspects_from: [{campaign_id, label}]" in refused.value.remedy
+    assert [aspect.label for aspect in relabelled.aspects] == ["tone", "tools"]
+    assert [floor.key for floor in relabelled.floors] == ["tone/rate_drop/*", "tools/rate_drop/*"]
+    assert relabelled.aspect("tools").asked_at == _ASKED["tpl-tools"]  # type: ignore[union-attr]
+
+
+def test_an_adoption_holding_a_run_in_two_aspects_is_refused_naming_both() -> None:
     storage, _ = _store()
     tone = _source(storage, "tone", "tpl-tone")
 
-    with pytest.raises(ValidationFailedError, match="held by aspects 'tone' and 'again'"):
+    with pytest.raises(ValidationFailedError, match=rf"'tpl-tone-a' is held by campaign {tone.id!r} \(aspect 'tone'\)"):
         _create(storage, aspects_from=(tone.id,), aspects=[_aspect("again", "tpl-tone", "tpl-tone-a")])
+
+
+# --- when the control was named --------------------------------------------------------------------------------------
+
+
+def test_a_control_named_after_the_first_run_turns_the_aspect_s_readings_post_hoc() -> None:
+    """Choosing what is read against once the evidence exists makes the reading post hoc, whatever the question."""
+    storage, _ = _store()
+    tone = _source(storage, "tone", "tpl-tone", control=None)
+    assert _confirms(tone, "tone")
+
+    controlled = set_campaign_control(storage, tone.id, _SCOPE, "tpl-tone-a", set_by="op", profile=_HOST)
+
+    assert controlled.control is not None and _after_the_runs(controlled.control.named_at, "tone", controlled)
+    assert not _confirms(controlled, "tone")
+    assert controlled.aspects[0].asked_at == _ASKED["tpl-tone"], "the question's own time is kept"
+
+
+def test_an_arm_named_at_adoption_is_dated_now_and_one_the_source_already_named_keeps_its_time() -> None:
+    storage, _ = _store()
+    tone, untold = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools", control=None)
+
+    kept = _create(
+        storage, aspects_from=(tone.id,), arms=[{"label": "a", "role": "control", "from_run_ids": ["tpl-tone-a"]}]
+    )
+    named = _create(
+        storage, aspects_from=(untold.id,), arms=[{"label": "a", "role": "control", "from_run_ids": ["tpl-tools-a"]}]
+    )
+
+    assert kept.control is not None and kept.control.named_at == _ASKED["tpl-tone"] and _confirms(kept, "tone")
+    assert named.control is not None and not _confirms(named, "tools"), "a control chosen after the runs"
 
 
 # --- an arm is one contestant stack ----------------------------------------------------------------------------------

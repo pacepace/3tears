@@ -14,12 +14,14 @@
           }
         }
       },
+      "named_at": "2026-10-18T00:00:00+00:00",
       "role": "control",
       "variant_key": "ca7f329820cf3b5c33c650c26f43238834a75c4b1a85ca0987c2fe2b18b6f203"
     }
   ],
   "aspects": [
     {
+      "asked_at": "2026-10-18T00:00:00+00:00",
       "declared_at": "2026-10-18T00:00:00+00:00",
       "design": {
         "axes": [
@@ -56,6 +58,7 @@
       },
       "label": "conversation",
       "margin": 5.0,
+      "margin_declared_at": "2026-10-18T06:00:00+00:00",
       "run_ids": [
         "run-1"
       ],
@@ -63,10 +66,12 @@
       "template_id": "t-1"
     },
     {
+      "asked_at": null,
       "declared_at": null,
       "design": null,
       "label": "tool selection",
       "margin": null,
+      "margin_declared_at": null,
       "run_ids": [
         "run-2"
       ],
@@ -84,7 +89,7 @@
     "reason": "held",
     "variant_key": "ca7f329820cf3b5c33c650c26f43238834a75c4b1a85ca0987c2fe2b18b6f203"
   },
-  "created_at": "2026-10-18T03:06:56.287013+00:00",
+  "created_at": "2026-10-18T03:49:05.509260+00:00",
   "created_by": "test:fixture",
   "declared_at": "2026-10-18T00:00:00+00:00",
   "declared_by": "test:fixture",
@@ -99,6 +104,7 @@
         "max_points": 5.0,
         "reading": null
       },
+      "declared_at": null,
       "key": "conversation/rate_drop/*"
     },
     {
@@ -106,10 +112,11 @@
       "clause": {
         "kind": "cost_lower"
       },
+      "declared_at": "2026-10-18T06:00:00+00:00",
       "key": "conversation/cost_lower/*"
     }
   ],
-  "id": "01a14cfa-059e-77f8-9159-db907a294159",
+  "id": "01a14d20-9d65-70af-b413-1bb0be295883",
   "name": "campaign",
   "question": "Does GLM hold up across both behaviors?",
   "run_ids": [
