@@ -227,7 +227,7 @@ class RunnerOptions:
     # What the cell order is derived from when it must be shared with other runs: ``None`` — every run launched on its
     # own, and every caller building its own options — derives it from the run's id. An interleaved launch
     # (:data:`~threetears.evals.schema.models.ArmSchedule`) sets its launch group's id on every arm's run, so every
-    # arm plays the cases it shares with its siblings in one order and the same case runs on every arm at once
+    # arm plays the cases it shares with its siblings in one order and the same case runs on every arm close together
     # (:func:`cell_execution_order`). Recorded by construction, as the run's own id is: the run carries
     # ``launch_group_id`` and ``arm_schedule``.
     cell_order_seed: str | None = None

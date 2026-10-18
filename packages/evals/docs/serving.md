@@ -307,13 +307,14 @@ overlays and apparatus settings, and every arm shares the template, subject, `k`
 Every arm is refused up front if its launch would be. How the arms share time is `arm_schedule`, the launch's own
 argument (below). By default they are interleaved: every arm is prepared, then all start as one launch. `sequential`
 launches one arm after another and `concurrent` launches them all at once, each its own launch. To compare latency,
-also declare `measure_latency`, which every arm's launch takes and which runs the arms sequential. Each run joins the
-named campaign
-as it is created. That campaign is created exploratory, since a sweep takes no design: declare what the arms were
+also declare `measure_latency`, which every arm's launch takes and which runs the arms sequential. Launched one after
+another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
+the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design: declare what the arms were
 swept to learn with `campaign_update` once they are known. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
-the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the first arm's resolved
-ones hold for the rest, so a role default that moves mid-sweep cannot split the arms.
+the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
+once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a
+role default that moves mid-sweep cannot split the arms.
 
 On a host that enforces its ceilings (`LaunchSettings.enforcement_enabled`), every spend operation is bounded
 in dollars before it spends: a launch by the per-run ceiling and its case generation by the host's out-of-run

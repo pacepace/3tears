@@ -9,7 +9,9 @@ but each arm meets the provider at another time, so a bad minute lands on whiche
 **Interleaved** (``interleaved``, the default) runs every arm at once and takes their cells in turn, case by case
 (case 1 on every arm, then case 2), under ONE width shared by the whole launch: the widest any of its runs executes
 at alone. A provider's bad minute then lands on every arm alike, the launch loads its providers no more than one of
-its runs would alone, and pairing the arms by case also pairs them in time. Every arm plays its cases in one order,
+its runs would alone, and the arms' same cases run close together in time (exactly side by side at a width of 1,
+within a few cells of each other wider). The width is one launch's: separate launches still load their providers
+side by side. Every arm plays its cases in one order,
 derived from the launch's id (:func:`~threetears.evals.run.runner.cell_execution_order`).
 
 A launch declaring latency under test runs its arms one after another, the only schedule that reads latency with
@@ -211,6 +213,8 @@ class CellInterleaver:
         self._settle(lane)
         self._dispatch()
         try:
+            # Only a signal that the lane settled, never its outcome: an exception parked on a future the cancel
+            # below abandons would never be retrieved, and a cancel a cell raised would read as this caller's own.
             await done
         except asyncio.CancelledError:
             # The run was cancelled: none of its cells starts after this, and the ones running are cancelled and
@@ -225,6 +229,8 @@ class CellInterleaver:
             raise
         finally:
             lane.closed = True
+        if lane.error is not None:
+            raise lane.error
 
     def _ready(self) -> bool:
         return self._sealed and all(lane.registered or lane.withdrawn for lane in self._lanes.values())
@@ -252,7 +258,16 @@ class CellInterleaver:
 
     def _cell_ended(self, lane: _Lane, task: asyncio.Task[None]) -> None:
         lane.running.discard(task)
-        if not task.cancelled() and (error := task.exception()) is not None and lane.error is None:
+        error: BaseException | None = None
+        if task.cancelled():
+            # This interleaver cancels a lane's cells only once the lane has failed or closed. A cell that ended
+            # cancelled otherwise raised the cancel itself (the runner re-raises one it recorded, a kind's scope or a
+            # host's pool can raise one), and its run must stop on it as a run executing alone would.
+            if not lane.closed and lane.error is None:
+                error = asyncio.CancelledError(f"a cell of run lane {lane.index} ended cancelled")
+        else:
+            error = task.exception()
+        if error is not None and lane.error is None:
             # The run's first failure: none of its cells starts after it, and its cells in flight are cancelled.
             lane.error = error
             lane.pending.clear()
@@ -265,10 +280,7 @@ class CellInterleaver:
         """End the run's wait once none of its cells is left to start or still running."""
         if lane.closed or lane.pending or lane.running or lane.done is None or lane.done.done():
             return
-        if lane.error is not None:
-            lane.done.set_exception(lane.error)
-        else:
-            lane.done.set_result(None)
+        lane.done.set_result(None)
 
 
 async def _run_cell(cell: CellWork, executor: CellExecutor | None) -> None:

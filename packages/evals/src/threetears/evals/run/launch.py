@@ -76,6 +76,7 @@ from threetears.evals.run.case_sets import resolve_case_set
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
 from threetears.evals.kernel.cassettes import CassetteMode
 from threetears.evals.run.jobs import (
+    JOB_TIMEOUT_CAP_S,
     MAX_CONCURRENT_JOBS,
     EvalJobManager,
     RunEndHook,
@@ -890,7 +891,10 @@ class LaunchGroup:
 
         An interleaved group of more than one member shares its time between them, so each member's budget is the
         whole group's (the sum of every member's): a member's cells wait their turn behind its siblings', and a
-        budget sized to its own matrix alone would cut it off with its cells each within their own deadline.
+        budget sized to its own matrix alone would cut it off with its cells each within their own deadline. The sum
+        is held to the engine's cap on one job (:data:`~threetears.evals.run.jobs.JOB_TIMEOUT_CAP_S`), the backstop
+        every run's budget is clamped to, so N arms do not each get N caps: a launch whose arms together need longer
+        is cut there, and runs its arms ``sequential`` instead, each under its own budget from its own start.
 
         :return: Each member's run, work function and job budget, in the order added.
         :rtype: list[tuple[EvalRun, WorkFn, float]]
@@ -899,7 +903,13 @@ class LaunchGroup:
         self._interleaver.seal()
         if not self._interleaving:
             return list(self.members)
-        shared_budget_s = sum(job_timeout_s for _, _, job_timeout_s in self.members)
+        shared_budget_s = min(JOB_TIMEOUT_CAP_S, sum(job_timeout_s for _, _, job_timeout_s in self.members))
+        log.info(
+            "eval.launch_group group=%s interleaves %d runs under one shared job budget of %.0fs",
+            self.id,
+            len(self.members),
+            shared_budget_s,
+        )
         return [(run, work, shared_budget_s) for run, work, _ in self.members]
 
     def member_ended(self, run_id: str) -> None:
@@ -915,7 +925,7 @@ class LaunchGroup:
 
         An interleaved group of more than one member hands each member's cells to the group's turns (through the
         member's own executor, when it has one) and orders every member's cells by the group's id, so the same case
-        runs on every arm at once. Any other group leaves the options as they are.
+        runs on every arm close together in time. Any other group leaves the options as they are.
 
         :param run_id: The member's run.
         :ptype run_id: str
@@ -4089,7 +4099,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         n_results = len(test_cases) * run.k_runs
         job_timeout_s = adaptive_job_timeout_s(n_results, per_result_s=options.cell_timeout_s)
         log.info(
-            "eval.start_run run=%s group=%s job_timeout=%.0fs (%d results × %.0fs/result cell ceiling)",
+            "eval.start_run run=%s group=%s own job_timeout=%.0fs (%d results × %.0fs/result cell ceiling; an "
+            "interleaved launch's runs share their summed budget, logged as the group starts)",
             run.id,
             launch_group.id,
             job_timeout_s,

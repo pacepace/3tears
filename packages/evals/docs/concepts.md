@@ -288,7 +288,9 @@ provider rationing one arm's calls shrinks that arm's sample and not the other's
 as a difference between arms. Running them one after another (`sequential`) puts a provider's bad minute on whichever
 arm was running. So by default the arms are `interleaved`: every arm runs at once, their cells taken in turn, case by
 case, under one width shared by the launch, and every arm plays its cases in one order, so a bad minute lands on every
-arm alike and pairing the arms by case also pairs them in time. Latency under test runs the arms `sequential`, the
+arm alike and the arms' same cases run close together in time (exactly side by side at a width of 1). The shared
+width holds within one launch: separate launches are separate widths, so arms launched apart still load their
+providers side by side. Latency under test runs the arms `sequential`, the
 only schedule it takes. Each run records the schedule it ran under (`arm_schedule`), and a campaign whose arms were
 run one after another or side by side says so beside its readings. It is a disclosure, never part of a run's identity.
 
