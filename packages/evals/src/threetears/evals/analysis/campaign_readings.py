@@ -58,6 +58,8 @@ from threetears.evals.analysis.stats import (
     bounded_difference_interval,
     holm_adjust,
 )
+from threetears.evals.analysis.style import measure_name
+from threetears.evals.kernel.analysis_measures import BarVerdict
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, Floor, RateDrop
 from threetears.evals.kernel.errors import RefusedInput
@@ -576,12 +578,23 @@ def _checked_bundles(
     return {label: bundles[label] for label in labels}
 
 
-def _candidates(campaign: EvalCampaign, arms: Sequence[CampaignArm] | None) -> list[CampaignArm]:
+def _distinct(arms: Sequence[CampaignArm]) -> list[CampaignArm]:
+    """The arms, each once by variant key, the first naming it kept, in the order given."""
+    seen: set[str] = set()
+    found: list[CampaignArm] = []
+    for arm in arms:
+        if arm.variant_key not in seen:
+            seen.add(arm.variant_key)
+            found.append(arm)
+    return found
+
+
+def _candidates(campaign: EvalCampaign, arms: Sequence[CampaignArm]) -> list[CampaignArm]:
     """The candidate arms, each once by variant key, in the order given; never the control."""
     control = campaign.control
     seen = {control.variant_key} if control is not None else set()
     found: list[CampaignArm] = []
-    for arm in campaign.arms if arms is None else arms:
+    for arm in arms:
         if arm.role == "candidate" and arm.variant_key not in seen:
             seen.add(arm.variant_key)
             found.append(arm)
@@ -652,10 +665,13 @@ def campaign_readings(
         reads another aspect than the one it is keyed by.
     """
     checked = _checked_bundles(campaign, bundles)
-    control = campaign.control
+    every = _distinct(campaign.arms if arms is None else arms)
+    kind = campaign_kind(every)
     alpha = SIGNIFICANCE_ALPHA
     labels = [aspect.label for aspect in campaign.aspects]
-    if control is None:
+    bars = _bar_statuses(campaign, checked, every)
+    control = campaign.control or next((arm for arm in every if arm.role == "control"), None)
+    if kind != "change" or control is None:
         return CampaignReadings(
             campaign_id=campaign.id,
             alpha=alpha,
@@ -664,8 +680,12 @@ def campaign_readings(
             aspects=labels,
             readings=[],
             floors=[],
+            kind=kind,
+            pairs=_pair_readings(campaign, checked, every, alpha) if kind == "choice" else [],
+            bars=bars,
+            measures=_measure_readings(campaign, checked, every) if kind == "measurement" else [],
         )
-    candidates = _candidates(campaign, arms)
+    candidates = _candidates(campaign, every)
     rows: list[_Row] = []
     for aspect in campaign.aspects:
         bundle = checked[aspect.label]
@@ -766,7 +786,265 @@ def campaign_readings(
         aspects=labels,
         readings=readings,
         floors=floors,
+        kind=kind,
+        bars=bars,
     )
+
+
+# =============================================================================
+# A choice, its bars and a measurement
+# =============================================================================
+
+
+@dataclass
+class _Pair:
+    """One pair of a choice on one aspect while it is read: the two arms in the campaign's order, and the pass rate
+    as the bundle carries it, the arm first in variant-key order its ``control``."""
+
+    aspect: str
+    first: CampaignArm
+    second: CampaignArm
+    flipped: bool
+    base: FloorReadings
+    rate: RateReading
+    confirmatory: bool
+    levels: dict[float, RateReading]
+
+    def at(self, confidence: float) -> RateReading:
+        """The pass rate's bounded interval at ``confidence``, computed once per level."""
+        if confidence == self.rate.confidence or self.rate.samples is None:
+            return self.rate
+        if confidence not in self.levels:
+            control, contrast = self.rate.samples
+            interval = bounded_difference_interval(
+                control, contrast, paired=self.rate.paired, value_range=_RATE_RANGE, confidence=confidence
+            )
+            self.levels[confidence] = replace(self.rate, interval=interval, confidence=confidence)
+        return self.levels[confidence]
+
+    def leader(self, confidence: float) -> CampaignArm | None:
+        """The arm shown ahead at ``confidence``, by the rules a candidate's gain is read by, either way round: every
+        arm at the case floor, the interval wholly one side of zero, and still so with every lost trial given its
+        worst outcome for the arm ahead. None where neither is."""
+        rate = self.at(confidence)
+        fewest = self.base.fewest_cases()
+        if rate.interval is None or fewest is None or fewest < _CASE_FLOOR:
+            return None
+        least, most = rate.drop_bounds()
+        # The rate reads the arm second in key order minus the first.
+        later, earlier = (self.first, self.second) if self.flipped else (self.second, self.first)
+        if rate.interval[0] > 0 and most < 0:
+            return later
+        if rate.interval[1] < 0 and least > 0:
+            return earlier
+        return None
+
+
+def _pair_readings(
+    campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm], alpha: float
+) -> list[PairReading]:
+    """Every pair of a choice's arms on every aspect both ran on: the difference, its interval and which arm is shown
+    ahead, by one step-down over every pair × aspect (a pair has no direction, so one family, not two)."""
+    pairs: list[_Pair] = []
+    for aspect in campaign.aspects:
+        bundle = bundles[aspect.label]
+        ran = {board.variant_key for board in bundle.scoreboard}
+        present = [arm for arm in arms if arm.variant_key in ran]
+        for index, first in enumerate(present):
+            for second in present[index + 1 :]:
+                flipped = first.variant_key > second.variant_key
+                low, high = (second, first) if flipped else (first, second)
+                rate = aspect_pass_rate(bundle, low.variant_key, high.variant_key)
+                if rate is None:
+                    continue
+                pairs.append(
+                    _Pair(
+                        aspect=aspect.label,
+                        first=first,
+                        second=second,
+                        flipped=flipped,
+                        base=floor_readings(bundle, low.variant_key, high.variant_key),
+                        rate=rate,
+                        confirmatory=bundle.question_declared,
+                        levels={},
+                    )
+                )
+    family = [index for index, pair in enumerate(pairs) if pair.rate.interval is not None]
+    decided = _step_down(family, lambda index, level: pairs[index].leader(level) is not None, alpha)
+    adjusted = dict(zip(family, holm_adjust([decided[index].p for index in family]), strict=True))
+    read: list[PairReading] = []
+    for index, pair in enumerate(pairs):
+        decision = decided.get(index)
+        rate = pair.at(decision.level) if decision is not None else pair.rate
+        leader = pair.leader(decision.level) if decision is not None and decision.shown else None
+        sign = -1.0 if pair.flipped else 1.0
+        # The rate reads the arm second in key order minus the first; the pair reads its first arm minus its second.
+        interval = (
+            None
+            if rate.interval is None
+            else tuple(sorted((-sign * 100 * rate.interval[0], -sign * 100 * rate.interval[1])))
+        )
+        firsts = (rate.candidate_passed, rate.candidate_n) if pair.flipped else (rate.control_passed, rate.control_n)
+        seconds = (rate.control_passed, rate.control_n) if pair.flipped else (rate.candidate_passed, rate.candidate_n)
+        cases = (pair.base.control_cases or 0, pair.base.candidate_cases or 0)
+        first_cases, second_cases = (cases[1], cases[0]) if pair.flipped else cases
+        read.append(
+            PairReading(
+                aspect=pair.aspect,
+                first=pair.first.variant_key,
+                first_label=pair.first.label,
+                second=pair.second.variant_key,
+                second_label=pair.second.label,
+                change=sign * rate.point_drop(),
+                interval=None if interval is None else (interval[0], interval[1]),
+                confidence=decision.level if decision is not None else None,
+                p=decision.p if decision is not None else None,
+                p_holm=adjusted.get(index),
+                ahead=leader.label if leader is not None else None,
+                reason=_pair_reason(pair, leader, rate),
+                confirmatory=pair.confirmatory,
+                first_cases=first_cases,
+                second_cases=second_cases,
+                first_passed=firsts[0],
+                first_trials=firsts[1],
+                second_passed=seconds[0],
+                second_trials=seconds[1],
+            )
+        )
+    return read
+
+
+def _pair_reason(pair: _Pair, leader: CampaignArm | None, rate: RateReading) -> str:
+    """Why a pair reads as it does, in one sentence naming both arms."""
+    first, second = pair.first.label, pair.second.label
+    if leader is not None:
+        behind = second if leader is pair.first else first
+        return f"{leader.label} is ahead of {behind}: the whole interval on the difference is one side of zero"
+    fewest = pair.base.fewest_cases()
+    if rate.interval is None:
+        return "no interval could be read: a side has fewer than two cases with a usable trial"
+    if fewest is not None and fewest < _CASE_FLOOR:
+        return f"{fewest} cases are too few: an interval is read only from {_CASE_FLOOR} independent cases"
+    if rate.interval[0] > 0 or rate.interval[1] < 0:
+        return f"the interval between {first} and {second} clears zero, but the lost trials could still close it"
+    return f"no separation: the interval between {first} and {second} reaches zero"
+
+
+#: What each bar decision reads as, and why.
+_BAR_STATES: dict[str, tuple[BarState, str]] = {
+    "cleared": ("met", "its whole interval is on the good side of the bar"),
+    "missed": ("missed", "its whole interval is on the bad side of the bar"),
+    "undecided": ("unclear", "its interval straddles the bar"),
+    "no_interval": ("unclear", "too few observations for an interval"),
+    "no_data": ("unclear", "no observation of it"),
+}
+
+
+#: How a bar's reason says where an arm stands.
+_BAR_VERBS: dict[BarState, str] = {"met": "meets", "missed": "misses", "unclear": "is unclear on"}
+
+
+def _bar_statuses(
+    campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
+) -> list[BarStatus]:
+    """Every arm against every absolute bar on every aspect, as the bundle adjudicated it (``bar_adjudications``),
+    never computed again. An arm read under several rigs misses a bar where any rig misses it, meets it where every
+    rig meets it, and is otherwise unclear."""
+    labels = {arm.variant_key: arm.label for arm in arms}
+    statuses: list[BarStatus] = []
+    for aspect in campaign.aspects:
+        for bar in bundles[aspect.label].bar_adjudications:
+            if bar.state != "adjudicated":
+                continue
+            by_arm: dict[str, list[BarVerdict]] = {}
+            for verdict in bar.verdicts:
+                by_arm.setdefault(verdict.variant_key, []).append(verdict)
+            order = [arm.variant_key for arm in arms if arm.variant_key in by_arm]
+            order += [key for key in by_arm if key not in order]
+            descriptor = bundles[aspect.label].measure_catalog.get(bar.measure_id)
+            heading = measure_name(bar.measure_id, descriptor.reader_name if descriptor is not None else None)
+            for key in order:
+                verdicts = by_arm[key]
+                decisions = [verdict.decision for verdict in verdicts]
+                decided = (
+                    "missed"
+                    if "missed" in decisions
+                    else "cleared"
+                    if all(decision == "cleared" for decision in decisions)
+                    else next(decision for decision in decisions if decision != "cleared")
+                )
+                shown = next(verdict for verdict in verdicts if verdict.decision == decided)
+                status, why = _BAR_STATES[decided]
+                label = labels.get(key, f"arm {key[:12]}")
+                statuses.append(
+                    BarStatus(
+                        aspect=aspect.label,
+                        arm=key,
+                        arm_label=label,
+                        measure=bar.measure_id,
+                        bar=bar.threshold,
+                        direction=bar.direction,
+                        status=status,
+                        value=shown.value,
+                        interval=(shown.ci_low, shown.ci_high)
+                        if shown.ci_low is not None and shown.ci_high is not None
+                        else None,
+                        margin=shown.margin,
+                        reason=f"{label} {_BAR_VERBS[status]} the bar on {heading}: {why}",
+                    )
+                )
+    return statuses
+
+
+def _measure_readings(
+    campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
+) -> list[MeasureReading]:
+    """A measurement's measures on every aspect: each arm's pass rate (the scoreboard's count, which carries no
+    interval), then each measure its cells summarise with an interval, the summary's own."""
+    labels = {arm.variant_key: arm.label for arm in arms}
+    found: list[MeasureReading] = []
+    for aspect in campaign.aspects:
+        bundle = bundles[aspect.label]
+        for board in bundle.scoreboard:
+            label = labels.get(board.variant_key, f"arm {board.variant_key[:12]}")
+            found.append(
+                MeasureReading(
+                    aspect=aspect.label,
+                    arm=board.variant_key,
+                    arm_label=label,
+                    measure="passed",
+                    name="pass rate",
+                    value=board.passed / board.usable if board.usable else None,
+                    interval=None,
+                    cases=board.usable_cases,
+                    higher_is_better=True,
+                )
+            )
+            for cell in bundle.cell_measures:
+                if cell.variant_key != board.variant_key:
+                    continue
+                for summary in cell.measures.measures:
+                    value = summary.rate if summary.rate is not None else summary.mean
+                    # A figure with no interval is a derived one (an f1 over the cells), not a reading to report.
+                    if value is None or summary.ci_low is None or summary.ci_high is None:
+                        continue
+                    descriptor = bundle.measure_catalog.get(summary.name)
+                    found.append(
+                        MeasureReading(
+                            aspect=aspect.label,
+                            arm=board.variant_key,
+                            arm_label=label,
+                            measure=summary.name,
+                            name=measure_name(summary.name, descriptor.reader_name if descriptor else None),
+                            value=value,
+                            interval=(summary.ci_low, summary.ci_high)
+                            if summary.ci_low is not None and summary.ci_high is not None
+                            else None,
+                            cases=summary.n_independent,
+                            higher_is_better=summary.higher_is_better,
+                        )
+                    )
+    return found
 
 
 def _holm(rows: Sequence[_Row], keep: Callable[[_Row], bool], decided: Mapping[int, _Decision]) -> dict[int, float]:

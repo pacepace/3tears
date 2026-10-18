@@ -1872,7 +1872,9 @@ FloorContrastReading = Literal["trial", "measure"]
 
 
 class FloorContrast(EvalDocumentModel):
-    """One arm against the control under one rig, on a reading a floor or an aspect's reading reads per case.
+    """One arm against the control under one rig, on a reading a floor or an aspect's reading reads per case; with no
+    control (a choice), one pair of arms on the overall pass rate, ``control`` then the arm first in variant-key
+    order, a position and never a role.
 
     Carried whatever the aspect's family compares, so a floor on the overall pass rate or the cost per reply, and the
     aspect's pass-rate reading, never depend on which readings a question asked about: each reads its own interval,
@@ -2695,7 +2697,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "Each arm against the control under each rig, on the overall pass rate and on the cost per reply, with "
             "the per-case values a floor reads: carried whatever the family compares, so neither a floor nor the "
-            "aspect's pass-rate reading depends on which readings the question asked about. Empty with no control."
+            "aspect's pass-rate reading depends on which readings the question asked about. With no control, each "
+            "pair of arms under one rig on the overall pass rate alone: what a choice's pairwise readings read."
         ),
     )
     multiple_comparisons: MultipleComparisons = Field(

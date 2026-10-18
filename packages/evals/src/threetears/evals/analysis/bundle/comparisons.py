@@ -707,7 +707,8 @@ def _multiple_comparisons(
     :ptype rubric_threshold: int
     :return: The aspect's question's family; the exploratory family over every reading when no question was asked
         in time; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
-        against the control, and the floors' per-case values (none with no control).
+        against the control, and the floors' per-case values; with no control, each pair of arms' pass rate per case
+        instead (:func:`_choice_contrasts`), what a choice reads.
     :rtype: tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]
     """
     guardrail_readings = _guardrail_readings(catalog, judged_measures, declared.design if declared else None)
@@ -719,7 +720,7 @@ def _multiple_comparisons(
                 [],
                 withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
             ),
-            [],
+            _choice_contrasts(results_by_cell, rubric_threshold=rubric_threshold, catalog=catalog),
         )
     axes_asked = question_axes(declared, first_run_at)
     # An aspect that asked nothing (or only once its results existed) is not thereby licensed to report chance
@@ -834,6 +835,29 @@ def _multiple_comparisons(
         _guardrails_of(guardrail_readings, checks),
         [contrast for contrast in floor_contrasts if contrast is not None],
     )
+
+
+def _choice_contrasts(
+    results_by_cell: dict[_CellKey, list[EvalResult]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
+) -> list[FloorContrast]:
+    """With no control, every pair of arms under one rig on the overall pass rate, per case: what a choice's pairwise
+    readings read. The pair's ``control`` is the arm first in variant-key order, a position and never a role.
+
+    :return: One contrast per pair of cells under one rig with two cases a side, in variant-key order.
+    :rtype: list[FloorContrast]
+    """
+    values = {
+        key: _trial_pass_values(members, rubric_threshold=rubric_threshold, catalog=catalog)
+        for key, members in results_by_cell.items()
+    }
+    keys = sorted(values)
+    contrasts = [
+        _floor_contrast(("trial", TRIAL_PASS_NAME), (first, values[first]), (second, values[second]))
+        for index, first in enumerate(keys)
+        for second in keys[index + 1 :]
+        if first[1] == second[1] and values[first] and values[second]
+    ]
+    return [contrast for contrast in contrasts if contrast is not None]
 
 
 def _floor_contrast(
