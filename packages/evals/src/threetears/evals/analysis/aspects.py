@@ -37,11 +37,18 @@ class AspectDeclaration(EvalDocumentModel):
     )
     asked_at: str | None = Field(
         description=(
-            "When the question was asked in full (ISO-8601): a reading confirms only what was asked before the "
-            "evidence existed. None when the campaign records no time."
+            "When the question was asked in full (ISO-8601): when its last part was asked, since a reading confirms "
+            "only what was asked before the evidence existed. Never a time a later edit of the design re-stamps. When "
+            "the campaign asks no question, the time its design was declared; None when it records no time."
         )
     )
-    design: AspectDesign = Field(description="What this aspect set out to vary and hold itself to.")
+    design: AspectDesign = Field(
+        description=(
+            "What this aspect set out to vary and hold itself to. Its `merit_axes` say what the question asks about "
+            "here: None when the campaign asks no question, so every reading is exploratory though a design is "
+            "declared; empty for an unscoped question, which asks about every axis."
+        )
+    )
     control: CampaignArm | None = Field(
         description="The campaign's control arm, every candidate read against it. None = no control declared, and the analysis says so rather than electing one."
     )

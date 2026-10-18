@@ -140,7 +140,12 @@ class Recommendation(_Authored):
     a recommendation like any other, named by the control's label.
     """
 
-    arm: str = Field(description="The label of the arm to adopt; the control's label to keep it.")
+    arm: str = Field(
+        description=(
+            "The arm to adopt, by its label as the campaign bundle names it; the control's label to keep it. Code "
+            "resolves the label to the arm's variant key when the memo is saved."
+        )
+    )
     reasons: list[ModelProse] = Field(
         description="Why, one reason each, strongest first; every broken floor on the arm addressed by name."
     )

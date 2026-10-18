@@ -7,6 +7,8 @@ clause; and a stored campaign reads, through :func:`aspect_views`, as the one as
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,6 +16,7 @@ from pydantic import ValidationError
 
 from packages.evals.tests.factories import make_aspect_campaign, make_campaign, minimal_aspect_design
 from threetears.evals.analysis import AspectReading, CampaignReadings, aspect_view, aspect_views
+from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.campaign_upgrade import UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.declaration import (
     Aspect,
@@ -34,6 +37,9 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.schema.values import SweepableValue
+
+#: The frozen v15 campaign: a design declaring a control and asking no question.
+_FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "core_documents" / "v15" / "eval_campaign.json"
 
 _LEVERS = {"model": SweepableValue.of("glm", display="GLM")}
 _KEY = compute_variant_key(_LEVERS)
@@ -124,6 +130,10 @@ class TestTheAspectDesign:
         with pytest.raises(ValidationError, match="merit_axes names quality more than once"):
             minimal_aspect_design(merit_axes=["quality", "quality"])
 
+    def test_no_question_is_not_an_unscoped_one(self) -> None:
+        assert minimal_aspect_design().merit_axes is None
+        assert minimal_aspect_design(merit_axes=[]).merit_axes == []
+
 
 class TestTheArm:
     def test_an_undated_key_is_dated_by_this_build(self) -> None:
@@ -183,12 +193,20 @@ class TestTheFloor:
         assert floor.key == key
         assert Floor.model_validate(floor.model_dump()) == floor
 
+    def test_a_reading_spelled_as_the_wildcard_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match=r"reading '\*' is what its key writes"):
+            Floor(aspect="tone", clause=RateDrop(max_points=5, reading="*"))
+
 
 class TestTheAspect:
     @pytest.mark.parametrize("margin", [0.0, 100.0, -1.0, float("nan")])
     def test_a_margin_off_the_scale_is_refused(self, margin: float) -> None:
         with pytest.raises(ValidationError, match="margin"):
             Aspect(label="tone", margin=margin)
+
+    def test_a_label_holding_the_key_separator_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="holds '/'"):
+            Aspect(label="tone/warmth")
 
     def test_it_reads_every_stratum(self) -> None:
         with pytest.raises(ValidationError, match="stratum"):
@@ -198,7 +216,16 @@ class TestTheAspect:
 class TestUniqueLabels:
     def test_a_call_names_each_overridden_floor_once(self) -> None:
         with pytest.raises(ValidationError, match="floors_overridden names tone/cost_lower/\\* more than once"):
-            CampaignCall(arm="candidate", floors_overridden=["tone/cost_lower/*"] * 2, called_by="web:someone")
+            CampaignCall(
+                arm="candidate", variant_key=_KEY, floors_overridden=["tone/cost_lower/*"] * 2, called_by="web:someone"
+            )
+
+    def test_a_call_names_the_decided_arm_s_key(self) -> None:
+        call = CampaignCall(arm="candidate", variant_key=_KEY, called_by="web:someone")
+
+        assert (call.arm, call.variant_key) == ("candidate", _KEY)
+        with pytest.raises(ValidationError, match="64-character lowercase hex digest"):
+            CampaignCall(arm="candidate", variant_key="candidate", called_by="web:someone")
 
     def test_readings_name_each_aspect_once(self) -> None:
         with pytest.raises(ValidationError, match="aspects names tone more than once"):
@@ -218,8 +245,10 @@ class TestUniqueLabels:
             arm=_KEY,
             arm_label="GLM",
             change=4.0,
-            interval=(-1.0, 9.0),
-            confidence=0.95,
+            gain_interval=(-1.0, 9.0),
+            gain_confidence=0.95,
+            drop_interval=None,
+            drop_confidence=None,
             gain_p=0.2,
             gain_p_holm=0.4,
             drop_p=None,
@@ -288,6 +317,26 @@ class TestAspectViews:
 
     def test_a_campaign_with_no_design_is_exploratory(self) -> None:
         assert aspect_view(make_campaign(run_ids=["run-1"])).declared is None
+
+    def test_a_design_asking_no_question_reads_as_asking_about_nothing(self) -> None:
+        frozen = EvalCampaign.from_dict(json.loads(_FROZEN_V15.read_text(encoding="utf-8")))
+
+        declared = aspect_view(frozen).declared
+
+        assert declared is not None
+        assert (declared.question, declared.design.merit_axes) == ("", None)
+
+    def test_the_factory_refuses_a_margin_its_stored_shape_would_change(self) -> None:
+        with pytest.raises(ValueError, match="pass margin=5.0"):
+            make_aspect_campaign(
+                question="Is it kinder?", design=minimal_aspect_design(merit_axes=[]), floors=[RateDrop(max_points=5)]
+            )
+        with pytest.raises(ValueError, match="pass margin=None"):
+            make_aspect_campaign(question="Is it kinder?", design=minimal_aspect_design(merit_axes=[]), margin=5.0)
+
+    def test_the_factory_refuses_a_question_without_its_axes(self) -> None:
+        with pytest.raises(ValueError, match="merit_axes are its question's"):
+            make_aspect_campaign(question="Is it kinder?")
 
     def test_an_aspect_the_campaign_does_not_hold_is_refused_by_name(self) -> None:
         with pytest.raises(RefusedInput, match="no aspect 'speed'") as refused:

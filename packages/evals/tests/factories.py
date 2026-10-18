@@ -567,7 +567,9 @@ def make_aspect_campaign(
 
     A per-aspect test builds its campaign here and reads it through ``aspect_view``, so it never depends on how a
     campaign holds its aspects. The campaign's ``behavior`` defaults to ``label``; a declared aspect and the
-    campaign's question are dated now, an exploratory one (``design`` None) is dated never.
+    campaign's question are dated now, an exploratory one (``design`` None) is dated never. A declared design's
+    ``merit_axes`` are the question's: None exactly when there is no question, a list (empty for an unscoped
+    question) when there is one.
 
     :param label: The aspect's label.
     :ptype label: str
@@ -589,10 +591,16 @@ def make_aspect_campaign(
     :ptype overrides: Any
     :return: The campaign.
     :rtype: EvalCampaign
+    :raises ValueError: A declared design's ``merit_axes`` disagree with whether there is a question.
     """
     aspect_design = minimal_aspect_design() if design is _MINIMAL_DESIGN else design
     if aspect_design is not None and not isinstance(aspect_design, AspectDesign):
         raise TypeError(f"design is an AspectDesign or None, not {type(aspect_design).__name__}")
+    if aspect_design is not None and (aspect_design.merit_axes is None) != (not question):
+        raise ValueError(
+            "a design's merit_axes are its question's: None with no question, a list with one (empty for an unscoped "
+            f"question); this one has {aspect_design.merit_axes!r} and question={question!r}"
+        )
     now = utc_now_iso() if aspect_design is not None else None
     fields: dict[str, Any] = dict(
         behavior=label,

@@ -1120,8 +1120,9 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
     An aspect is one part of what a campaign asks, measured on its own runs. Its design is :class:`CampaignDesign`
     less what belongs to the campaign as a whole: the question (a campaign asks one), the control (the campaign's
     control :class:`CampaignArm`) and when it was declared (:attr:`Aspect.declared_at`). It gains the merit axes an
-    answer would move here, which were each question's own. Every rule the campaign's design is held to, this is
-    held to, by the same code.
+    answer would move here, which were each question's own: None when the campaign asks no question, so nothing
+    read here confirms anything, and an empty list for an unscoped question, which asks about every axis. Every rule
+    the campaign's design is held to, this is held to, by the same code.
     """
 
     axes: list[SweptAxis] = Field(
@@ -1159,11 +1160,12 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
             "reference; this names WHAT WAS HELD STILL."
         )
     )
-    merit_axes: list[MeritAxis] = Field(
-        default_factory=list,
+    merit_axes: list[MeritAxis] | None = Field(
+        default=None,
         description=(
             "Which axes the campaign's question would move on this aspect. The bundle lists the bars on these axes "
-            "(`verdict_order`). Empty means unscoped: the question asks about every axis."
+            "(`verdict_order`). None = the campaign asks no question, so every reading here is exploratory and none "
+            "confirms anything. Empty = an unscoped question, which asks about every axis."
         ),
     )
     merit_priority: list[MeritAxis] = Field(
@@ -1201,9 +1203,9 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
 
     @field_validator("merit_axes")
     @classmethod
-    def _each_axis_once(cls, axes: list[MeritAxis]) -> list[MeritAxis]:
+    def _each_axis_once(cls, axes: list[MeritAxis] | None) -> list[MeritAxis] | None:
         """Refuse an axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
-        return _each_merit_axis_once(axes)
+        return None if axes is None else _each_merit_axis_once(axes)
 
     @model_validator(mode="after")
     def _axes_and_bars_are_keyed_too(self) -> AspectDesign:
@@ -1374,7 +1376,10 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
 
     label: str = Field(
         min_length=1,
-        description="What a reader calls this aspect: unique within its campaign. A campaign stored before aspects existed reads as one aspect labelled with its behavior.",
+        description=(
+            "What a reader calls this aspect: unique within its campaign, and never holding a `/`, which separates a "
+            "floor key's parts. A campaign stored before aspects existed reads as one aspect labelled with its behavior."
+        ),
     )
     template_id: str | None = Field(
         default=None,
@@ -1408,19 +1413,53 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         default=None, description="When this aspect's design was declared (ISO-8601); None when it declares none."
     )
 
+    @field_validator("label")
+    @classmethod
+    def _a_label_holds_no_key_separator(cls, label: str) -> str:
+        """Refuse a label holding ``/``: a floor's key joins its aspect, kind and reading with it.
+
+        :param label: The aspect's label.
+        :ptype label: str
+        :return: The label.
+        :rtype: str
+        :raises ValueError: The label holds ``/``, so a floor key on it could be read as another aspect's.
+        """
+        if "/" in label:
+            raise ValueError(
+                f"aspect label {label!r} holds '/', which separates a floor key's aspect, kind and reading; name it "
+                "without one"
+            )
+        return label
+
 
 class Floor(EvalDocumentModel, CoreShapeModel):
     """A line a candidate is warned for crossing on one aspect: a typed clause, read on that aspect's readings.
 
     A floor only WARNS, and loudly: a broken floor is the first thing on the campaign's page, the writer must address
     it, and a recorded call that adopts the arm anyway names it as overridden (:attr:`CampaignCall.floors_overridden`).
-    It never blocks. A stored decision rule reads back as floors on its one aspect, one per clause.
+    It never blocks. A stored decision rule reads back as floors on its one aspect, one per clause. A floor's
+    :attr:`key` is unique within its campaign, which the campaign holding the floors enforces.
     """
 
     aspect: str = Field(min_length=1, description="The label of the aspect whose readings this floor is read on.")
     clause: DecisionClause = Field(
         description="The line: a `RateDrop` (no pass rate may drop by more than `max_points`) or a `CostLower` (the arm must cost less per reply)."
     )
+
+    @model_validator(mode="after")
+    def _a_reading_is_not_the_wildcard(self) -> Floor:
+        """Refuse a rate floor whose reading is ``*``, which its key spells for every pass rate.
+
+        :return: The validated floor.
+        :rtype: Floor
+        :raises ValueError: The clause names the reading ``*``, so its key could not be told from the all-rates floor's.
+        """
+        if isinstance(self.clause, RateDrop) and self.clause.reading == "*":
+            raise ValueError(
+                "a floor's reading '*' is what its key writes for every pass rate; name the reading, or leave it out "
+                "to read every pass rate"
+            )
+        return self
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
@@ -1443,7 +1482,14 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
     """
 
     arm: str = Field(
-        min_length=1, description="The label of the arm decided on; the control's label keeps the control."
+        min_length=1,
+        description="The decided arm's label, as the page showed it; the control's label keeps the control.",
+    )
+    variant_key: str = Field(
+        description=(
+            "The decided arm's variant key, which is what the call decided: a label names an arm for a reader, and "
+            "this says which contestant stack it was."
+        )
     )
     reason: str = Field(
         default="", description="Why, in the decider's words. Optional, and the first thing a later reader wants."
@@ -1464,6 +1510,24 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
         min_length=1,
         description="Who made the call, as the recording surface knows them. Server-owned, as `created_by` is.",
     )
+
+    @field_validator("variant_key")
+    @classmethod
+    def _a_call_is_on_a_variant_key(cls, value: str) -> str:
+        """Refuse a key that is not the shape of a variant key.
+
+        :param value: The decided arm's key.
+        :ptype value: str
+        :return: The key.
+        :rtype: str
+        :raises ValueError: The value is not a 64-character lowercase hex digest.
+        """
+        if not _is_variant_key(value):
+            raise ValueError(
+                f"a call's `variant_key` is a {_VARIANT_KEY_LENGTH}-character lowercase hex digest, and '{value}' is "
+                "not one; record the decided arm's own key"
+            )
+        return value
 
     @field_validator("floors_overridden")
     @classmethod
@@ -2293,12 +2357,22 @@ def preregistered_questions(design: CampaignDesign, first_run_at: str | None) ->
     live = design.live_questions()
     if first_run_at is None:
         return live
-    first = _instant(first_run_at, "the campaign's first run")
-    return [question for question in live if _instant(question.asked_at, f"question {question.id}") <= first]
+    first = aware_instant(first_run_at, "the campaign's first run")
+    return [question for question in live if aware_instant(question.asked_at, f"question {question.id}") <= first]
 
 
-def _instant(stamp: str, what: str) -> datetime:
-    """``stamp`` as an aware instant, refused by name when it is not one."""
+def aware_instant(stamp: str, what: str) -> datetime:
+    """``stamp`` as an aware instant, refused by name when it is not one: the one reading of a declaration's times.
+
+    :param stamp: The stored time.
+    :ptype stamp: str
+    :param what: What carries it, as the refusal names it.
+    :ptype what: str
+    :return: The instant.
+    :rtype: datetime
+    :raises ValueError: ``stamp`` is not an ISO-8601 time, or carries no offset, so which of two came first cannot be
+        said.
+    """
     try:
         instant = datetime.fromisoformat(stamp)
     except ValueError as unreadable:
@@ -2336,6 +2410,7 @@ __all__ = [
     "UndeclarableAxisError",
     "UnreadableBarName",
     "JUDGED_MERIT_AXIS",
+    "aware_instant",
     "axis_in_question_scope",
     "decision_readings",
     "exploratory_reading",

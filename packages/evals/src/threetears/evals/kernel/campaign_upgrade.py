@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping, Sequence
-from datetime import datetime
 from typing import Any
+
+from threetears.evals.kernel.declaration import aware_instant
 
 __all__ = ["QUESTION_SEPARATOR", "UPGRADED_CONTROL_LABEL", "upgrade_campaign_v15"]
 
@@ -43,13 +44,15 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     ``archived``, ``created_at``) and every field below not named here pass through untouched; ``schema_version`` is
     the chain's to set, never a step's.
 
-    - **One aspect**, labelled with ``behavior``: the campaign's ``template_id`` and ``run_ids``, ``stratum`` None,
+    - **One aspect**, labelled with ``behavior`` (each ``/`` in it read as ``-``, since an aspect label is the first
+      part of a floor's key and takes no ``/``): the campaign's ``template_id`` and ``run_ids``, ``stratum`` None,
       and its design — the stored design less its questions, its control and when and by whom it was declared, plus
-      ``merit_axes``: the live questions' axes, each once in the order first named, or none when a live question
-      names none (an unscoped question asks about every axis, so the joined one does too). ``declared_at`` is the
-      design's. With no stored design the aspect has none, and the campaign declares nothing.
-    - **The margin** is the ``max_points`` of the first live clause that reads every pass rate (a ``rate_drop``
-      with no ``reading``), in question order then clause order; None when there is none.
+      ``merit_axes``: the live questions' axes, each once in the order first named; empty when a live question
+      names none (an unscoped question asks about every axis, so the joined one does too); None when no question is
+      live, since a design that asks nothing confirms nothing. ``declared_at`` is the design's. With no stored design
+      the aspect has none, and the campaign declares nothing.
+    - **The margin** is the ``max_points`` of the floor that reads every pass rate (below), so the margin a drop is
+      tested against and the floor a candidate is warned on are one number; None when there is no such floor.
     - **The arms**: the declared control alone, labelled :data:`UPGRADED_CONTROL_LABEL`, carrying the stored key,
       lever map and predicate as they are; none when the design declares no control.
     - **The question**: the live questions' texts in declaration order, joined by :data:`QUESTION_SEPARATOR`; empty
@@ -57,20 +60,27 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     - **The floors**: every clause of every live question's rule, on the one aspect, in order. Two clauses on the
       same reading of the same kind are one floor: the tighter ``max_points`` of two rate drops, since dropping the
       tighter would loosen what its author asked to be warned of, and one cost floor.
-    - **When it was declared**: the latest of the design's ``declared_at`` and the live questions' ``asked_at``,
-      since the campaign's question is asked in full only once its last part was; ``declared_by`` the design's.
-      None and empty with no design. **The call** is None: no v15 campaign recorded one.
+    - **When it was declared**: the latest live question's ``asked_at``, since the campaign's question is asked in full
+      only once its last part was, and a reading confirms only what was asked before the evidence existed. Never the
+      design's ``declared_at``, which every later write of the design re-stamps (naming the control after runs joined,
+      among them), so reading it would turn a pre-registered question post hoc. The design's time stands only when no
+      question is live. ``declared_by`` is the design's. None and empty with no design. **The call** is None: no v15
+      campaign recorded one.
 
     :param document: The stored v15 campaign, as the store returned it.
     :ptype document: Mapping[str, Any]
     :return: A new document in the campaign-of-aspects shape, at the version it was read at.
     :rtype: dict[str, Any]
+    :raises ValueError: A live question's ``asked_at`` is not an ISO-8601 time with an offset, so which was asked last
+        cannot be said (:func:`~threetears.evals.kernel.declaration.aware_instant`, as the pre-registration read
+        refuses it).
     """
     upgraded = copy.deepcopy(dict(document))
     template_id = upgraded.pop("template_id", None)
     run_ids = upgraded.pop("run_ids", [])
     design = upgraded.pop("declared_design", None)
-    label = upgraded["behavior"]
+    # A label is the first part of a floor's key, which `/` separates, so a behavior holding one is spelled with `-`.
+    label = upgraded["behavior"].replace("/", "-")
     aspect: dict[str, Any] = {
         "label": label,
         "template_id": template_id,
@@ -87,11 +97,12 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     live = _live_questions(design.get("questions") or [])
     clauses = [clause for question in live for clause in (question.get("decision") or {}).get("clauses") or []]
     aspect_design = {key: value for key, value in design.items() if key not in _MOVED_TO_THE_CAMPAIGN}
-    aspect_design["merit_axes"] = _joined_merit_axes(live)
-    aspect.update(margin=_margin(clauses), design=aspect_design, declared_at=design.get("declared_at"))
+    aspect_design["merit_axes"] = _joined_merit_axes(live) if live else None
+    floors = _floor_clauses(clauses)
+    aspect.update(margin=_margin(floors), design=aspect_design, declared_at=design.get("declared_at"))
     upgraded["question"] = QUESTION_SEPARATOR.join(question["text"] for question in live)
-    upgraded["floors"] = [{"aspect": label, "clause": clause} for clause in _floor_clauses(clauses)]
-    upgraded["declared_at"] = _latest(design.get("declared_at"), [question.get("asked_at") for question in live])
+    upgraded["floors"] = [{"aspect": label, "clause": clause} for clause in floors]
+    upgraded["declared_at"] = _last_asked(live) if live else design.get("declared_at")
     upgraded["declared_by"] = design.get("declared_by", "")
     if design.get("control") is not None:
         upgraded["arms"] = [
@@ -125,13 +136,13 @@ def _joined_merit_axes(live: Sequence[Mapping[str, Any]]) -> list[str]:
     return joined
 
 
-def _margin(clauses: Sequence[Mapping[str, Any]]) -> float | None:
-    """The ``max_points`` of the first clause reading every pass rate, or None."""
+def _margin(floors: Sequence[Mapping[str, Any]]) -> float | None:
+    """The ``max_points`` of the floor reading every pass rate, or None."""
     return next(
         (
             float(clause["max_points"])
-            for clause in clauses
-            if clause.get("kind") == "rate_drop" and clause.get("reading") is None
+            for clause in floors
+            if clause.get("kind", "rate_drop") == "rate_drop" and clause.get("reading") is None
         ),
         None,
     )
@@ -150,21 +161,7 @@ def _floor_clauses(clauses: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
     return list(kept.values())
 
 
-def _latest(declared_at: str | None, asked_at: Sequence[str | None]) -> str | None:
-    """The latest of the design's declaration time and the questions' asked times, as stored.
-
-    A time that is not an ISO-8601 instant with an offset cannot be ordered and is passed over; with none
-    orderable, the design's own time stands.
-    """
-    stamps = [stamp for stamp in (declared_at, *asked_at) if stamp is not None]
-    ordered = [(instant, stamp) for stamp in stamps if (instant := _instant(stamp)) is not None]
-    return max(ordered)[1] if ordered else declared_at
-
-
-def _instant(stamp: str) -> datetime | None:
-    """``stamp`` as an aware instant, or None when it is not one."""
-    try:
-        instant = datetime.fromisoformat(stamp)
-    except TypeError, ValueError:
-        return None
-    return instant if instant.tzinfo is not None else None
+def _last_asked(live: Sequence[Mapping[str, Any]]) -> str:
+    """The ``asked_at`` of the live question asked last, as stored."""
+    last = max(live, key=lambda question: aware_instant(question["asked_at"], f"question {question['id']}"))
+    return str(last["asked_at"])

@@ -40,22 +40,40 @@ class AspectReading(EvalDocumentModel):
 
     Every figure is the candidate minus the control, in points of a 0-100 pass rate, so a positive change is a
     candidate passing more.
+
+    **The reading is decided per direction.** The gain and the drop are two Holm families, so each direction has its
+    own p values and its own interval, read at the level that direction's Holm step tested it at: ``better`` is the
+    gain shown (its interval wholly above zero), ``worse`` the drop past the margin shown (its interval wholly below
+    minus the margin). ``unclear`` is neither, and a page showing one shows both intervals, so a reader sees how far
+    each side is from settling.
     """
 
     aspect: str = Field(description="The aspect's label.")
     arm: str = Field(description="The candidate's variant key.")
     arm_label: str = Field(description="What a reader calls the candidate: its arm's label, else its variant's name.")
     change: float = Field(description="The candidate's pass rate minus the control's, in points (positive = better).")
-    interval: tuple[float, float] | None = Field(
+    gain_interval: tuple[float, float] | None = Field(
         description=(
-            "The change's interval in points, low then high, at `confidence`. None when the arms' cases cannot "
-            "bound it."
+            "The change's interval in points, low then high, at `gain_confidence`: what `better` is read on. None "
+            "when the arms' cases cannot bound it."
         )
     )
-    confidence: float | None = Field(
+    gain_confidence: float | None = Field(
         description=(
-            "The level `interval` is read at: one minus the α this row's Holm step tested it at, so the interval and "
-            "the reading never contradict. None with no interval."
+            "The level `gain_interval` is read at: one minus the α this row's step in the gains' Holm family tested "
+            "it at, so the interval and the gain reading never contradict. None with no interval."
+        )
+    )
+    drop_interval: tuple[float, float] | None = Field(
+        description=(
+            "The change's interval in points, low then high, at `drop_confidence`: what `worse` is read on, against "
+            "the margin. None when the arms' cases cannot bound it, or the aspect declares no margin."
+        )
+    )
+    drop_confidence: float | None = Field(
+        description=(
+            "The level `drop_interval` is read at: one minus the α this row's step in the drops' Holm family tested "
+            "it at. None with no interval."
         )
     )
     gain_p: float | None = Field(
@@ -85,8 +103,9 @@ class AspectReading(EvalDocumentModel):
     arm_trials: int = Field(ge=0, description="Trials the candidate was measured on.")
     projection: SampleProjection | None = Field(
         description=(
-            "For an `unclear` row: the cases that would settle it, read against the aspect's margin. None for a "
-            "settled row, or where nothing can be projected."
+            "For an `unclear` row, the drop side only: the cases that would show the candidate no worse than the "
+            "control by more than the aspect's margin. None for a settled row, for an aspect with no margin, or "
+            "where nothing can be projected. No gain is projected."
         )
     )
 
@@ -99,6 +118,14 @@ class FloorStatus(EvalDocumentModel):
     arm: str = Field(description="The candidate's variant key.")
     arm_label: str = Field(description="What a reader calls the candidate.")
     status: FloorState = Field(description="`broken`, `held` or `unclear`.")
+    reading: str | None = Field(
+        description=(
+            "The rate that decided the status, named as a clause names a reading (a check's verbatim text, a "
+            "measure's or judged dimension's key): for a floor reading every pass rate, the one that broke it, or "
+            "held or unclear the one nearest breaking; for a floor on one reading, that reading. None for a cost "
+            "floor, and for the trials' own pass rate, which no clause names; the floor key says which kind it is."
+        )
+    )
     interval: tuple[float, float] | None = Field(
         description=(
             "The interval the status was read on, low then high, in the clause's units: points of pass rate for a "
