@@ -127,8 +127,8 @@ Glossary start folded, and a nav link opens the one it lands on.
   interval at the nominal 95%, wider than the t interval the Contrasts table prints: it holds its error rate on a
   few coarse cases, where the t interval does not
   ([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)). So a floor can read unclear beside a
-  contrast that is not separated. With no floor declared, the section is one line: `No floor was declared on
-  routing.`
+  contrast that is not separated. A campaign that asks a question and declares no floor gets one line, `No floor
+  was declared on routing.`; an exploratory comparison, which asks nothing and so declares no floor, gets none.
   **An unclear floor says what would show it holds**, computed, never the memo's guess: a `To show the floors hold`
   table gives each unclear floor's two counts with their cost, `If no difference` and `If as observed` (`121 cases,
   $3.1`; `none would` where the observed drop is at or past the margin; `re-run the lost trials` where the interval
