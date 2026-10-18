@@ -59,7 +59,7 @@ from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.values import SweepableValue
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, toyhost_aspect_design
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
@@ -75,8 +75,7 @@ def evals() -> MountedTool:
 
 
 def _design(**changes: Any) -> dict[str, Any]:
-    moved = {"declared_at", "declared_by", "questions", "control", "control_levers", "control_identity_version"}
-    design = toyhost_design().model_dump(mode="json", exclude=moved)
+    design = toyhost_aspect_design().model_dump(mode="json")
     design.update(changes)
     return design
 

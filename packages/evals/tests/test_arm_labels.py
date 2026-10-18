@@ -58,7 +58,7 @@ from threetears.evals.kernel.host import HostProfile, KindContract
 from threetears.evals.schema import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.models import EvalRun
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design, toyhost_campaign_of_one_aspect
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
@@ -70,7 +70,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.factories import analysed_aspect, make_analysis, make_campaign
+from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.report_support import toy_campaign_host
 
 #: Three rigs, by their apparatus class ids.
@@ -273,7 +273,7 @@ def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
             batch, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8, layout_fidelity=3
         ):
             host.storage.save_eval_result(result)
-    campaign = make_campaign(
+    campaign = toyhost_campaign_of_one_aspect(
         id="7b0e2c55-5d0f-4c8e-9a3c-1f2e3d4c5b6a",
         scope_id=TOYHOST_SCOPE,
         name="arm labels",
@@ -282,7 +282,7 @@ def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
         behavior="extract_invoice_fields",
         template_id="",
         run_ids=[batch.id for batch in batches],
-        declared_design=toyhost_design(),
+        design=toyhost_aspect_design(),
         created_by="test:fixture",
     )
     host.storage.save_campaign(campaign)

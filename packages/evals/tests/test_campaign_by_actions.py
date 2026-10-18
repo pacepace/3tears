@@ -27,7 +27,7 @@ from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG
 from threetears.evals.ops import CampaignLine, JudgeConfigListing
 from threetears.evals.schema.models import JudgeConfig
 from packages.evals.tests.factories import make_eval_run
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
 
@@ -38,8 +38,7 @@ def evals() -> MountedTool:
 
 
 def _design(**changes: Any) -> dict[str, Any]:
-    moved = {"declared_at", "declared_by", "questions", "control", "control_levers", "control_identity_version"}
-    design = toyhost_design().model_dump(mode="json", exclude=moved)
+    design = toyhost_aspect_design().model_dump(mode="json")
     design.update(changes)
     return design
 

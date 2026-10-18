@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.kernel import EvalCampaign
+from threetears.evals.kernel import AspectDesign, EvalCampaign
 from threetears.evals.schema import (
     DEFAULT_JUDGE_TEMPERATURE,
     ControlEndState,
@@ -89,7 +89,6 @@ from packages.evals.tests.fixtures.toyhost.kind import (
     ScriptedExtractionClient,
     ToyExtractorKind,
 )
-from packages.evals.tests.v15_shapes import V15Design
 
 #: The run path's own id namespace, distinct from the corpus's so a run-produced batch and a
 #: hand-built one can never collide on a derived id.
@@ -122,8 +121,8 @@ EVERY_FIELD_EMITTED = f'call_count("{EXTRACTOR_TOOL}.{EMIT_FIELD_ACTION}") == {l
 HOLD_FIRED = f'fired("{PAYMENT_HOLD}")'
 HOLD_IN_FORCE = f'state.{PAYMENT_HOLD} == "held"'
 
-#: The question this campaign declares, by id.
-RUN_QUESTION_ID = "q-extractor-model"
+#: The one question this campaign asks of its arms.
+RUN_QUESTION = "is the dearer extractor worth what it costs per document?"
 
 
 def toyhost_template() -> EvalTemplate:
@@ -461,7 +460,7 @@ async def execute_toyhost_run(
     )
 
 
-def toyhost_run_design() -> V15Design:
+def toyhost_run_design() -> AspectDesign:
     """What the run-path campaign declared before any of it ran.
 
     One nominal axis at two levels — the extractor model, which is the shared core's own lever
@@ -470,10 +469,11 @@ def toyhost_run_design() -> V15Design:
     of the corpus campaign's observational shape and is the reason both exist.
 
     :return: The declaration.
-    :rtype: V15Design
+    :rtype: AspectDesign
     """
-    return V15Design.model_validate(
+    return AspectDesign.model_validate(
         {
+            "merit_axes": [],
             "axes": [
                 {
                     "axis_id": CANDIDATE_MODEL_LEVER,
@@ -487,14 +487,6 @@ def toyhost_run_design() -> V15Design:
                     "rationale": "does the dearer extractor earn its price on the fields it is graded on",
                 }
             ],
-            "questions": [
-                {
-                    "id": RUN_QUESTION_ID,
-                    "text": "is the dearer extractor worth what it costs per document?",
-                    "asked_at": TOYHOST_INSTANT,
-                }
-            ],
-            "declared_at": TOYHOST_INSTANT,
             "intended_repetitions": RUN_K,
             # The opposite of the corpus campaign's pair on BOTH axes, which is why both
             # fixtures exist: three fixed invoices every arm saw is a controlled stimulus, and a
@@ -526,7 +518,8 @@ def toyhost_run_campaign(path: ToyhostRunPath) -> EvalCampaign:
         behavior="extract_invoice_fields",
         template_id=path.template.id,
         run_ids=[run.id for run in path.runs],
-        declared_design=toyhost_run_design(),
+        design=toyhost_run_design(),
+        question=RUN_QUESTION,
         created_by="test:fixture",
     )
 
@@ -597,7 +590,7 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
 
     control_key = variant_key_of_run(path.host.storage.query_eval_results_by_run(control.id, control.scope_id))
     assert control_key is not None, "the control batch resolves no variant"
-    design = V15Design.model_validate(
+    design = AspectDesign.model_validate(
         {
             "axes": [
                 {
@@ -606,8 +599,6 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
                     "rationale": "does reranking deeper earn its latency",
                 }
             ],
-            "declared_at": TOYHOST_INSTANT,
-            "control": control_key,
             "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
         }
     )
@@ -620,7 +611,9 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
         behavior="extract_invoice_fields",
         template_id=path.template.id,
         run_ids=[run.id for run in members],
-        declared_design=design,
+        design=design,
+        question="",
+        control_key=control_key,
         created_by="test:fixture",
     )
 
@@ -636,7 +629,7 @@ __all__ = [
     "RUN_DOCUMENTS",
     "RUN_K",
     "RUN_MODELS",
-    "RUN_QUESTION_ID",
+    "RUN_QUESTION",
     "RUN_RETRIEVER_TOP_K",
     "ToyhostArm",
     "ToyhostRunPath",

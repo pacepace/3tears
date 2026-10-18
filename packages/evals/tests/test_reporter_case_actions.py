@@ -510,5 +510,5 @@ async def test_a_memo_titling_an_arm_its_readings_omit_fails_its_case_naming_the
     assert result.turns_delivered == 2, "refused once, repaired once, refused again"
     error = result.candidate_error
     assert error is not None and result.infra_error is None
-    assert 'findings[0].title names "1024tok" (the arm chunk_tokens=1024tok at cell(s) ' in error
+    assert 'findings[0].title names "1024tok" (the arm 1024tok at cell(s) ' in error
     assert "none of that finding's evidence rows or trials is taken at that arm" in error
