@@ -64,7 +64,14 @@ from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, NO_RECOMMEN
 from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, measure_name, sentences
 from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import CampaignCall, CostLower, Floor, RateDrop, aware_instant
+from threetears.evals.kernel.declaration import (
+    CampaignCall,
+    CostLower,
+    Floor,
+    RateDrop,
+    aware_instant,
+    resolve_control_arm,
+)
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = ["BAR_WORDS", "CHOICE_NOTE", "NO_CALL", "NO_RECOMMENDATION", "READING_WORDS", "build_campaign_report"]
@@ -631,29 +638,53 @@ def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
 
 
 def _call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: CampaignCall | None) -> list[ReportBlock]:
-    """The person's call, who made it and when, their reason quoted, and every broken floor and missed bar it
-    overrides; a line saying none is recorded while none is."""
+    """The person's call, who made it and when, their reason quoted, and every floor and bar it overrides; a line
+    saying none is recorded while none is.
+
+    Every override the call stored is said, as stored, whatever the readings on this page now say of it: one that no
+    longer warns is marked so, never dropped. Beside them, a floor broken or a bar missed here that the call does not
+    override, and in a choice each pair where another arm is shown ahead of the decided one. The decided arm is read
+    by every key it resolves to (:func:`~threetears.evals.kernel.declaration.resolve_control_arm`), as recording read
+    it, so a control stored under an older identity predicate is still found."""
     if call is None:
         return [DisclosureBlock(section="header", source="call", text=NO_CALL)]
-    verb = "keep" if call.variant_key == readings.control else "adopt"
-    lines = [f"Called: {verb} {call.arm}, by {call.called_by} on {_date(call.called_at)}."]
+    named = next((arm for arm in campaign.arms if arm.variant_key == call.variant_key), None)
+    keys = {call.variant_key, *(resolve_control_arm(named).variant_keys if named is not None else [])}
+    verb = "keep" if readings.control in keys else "adopt"
+    head = f"Called: {verb} {call.arm}, by {call.called_by} on {_date(call.called_at)}"
+    if call.run_ids and (added := [run for run in campaign.run_ids if run not in set(call.run_ids)]):
+        over = len(call.run_ids)
+        head += f", over {over} run{'' if over == 1 else 's'}; {len(added)} added since"
+    lines = [f"{head}."]
     if call.reason.strip():
         lines.append(f'Reason: "{" ".join(call.reason.split())}"')
-    broken = [status for status in readings.broken_floors() if status.arm == call.variant_key]
-    for status in broken:
-        said = _floor_words(_floor_of(campaign, status.floor), status)
-        if status.floor in call.floors_overridden:
-            lines.append(f"The call overrides a broken floor: {said}.")
+    floors = [status for status in readings.floors if status.arm in keys]
+    for key in call.floors_overridden:
+        broken = next((status for status in floors if status.floor == key and status.status == "broken"), None)
+        if broken is not None:
+            lines.append(f"The call overrides a broken floor: {_floor_words(_floor_of(campaign, key), broken)}.")
         else:
-            lines.append(f"The call does not name the broken floor as overridden: {said}.")
+            lines.append(f"The call overrides the floor {code(key)} (no longer broken).")
+    unanswered: dict[str, FloorStatus] = {}
+    for status in floors:
+        if status.status == "broken" and status.floor not in call.floors_overridden:
+            unanswered.setdefault(status.floor, status)
+    for key, status in unanswered.items():
+        said = _floor_words(_floor_of(campaign, key), status)
+        lines.append(f"The call does not name the broken floor as overridden: {said}.")
+    missed = {(bar.aspect, bar.measure): bar for bar in readings.missed_bars() if bar.arm in keys}
     overridden = {(bar.aspect, bar.measure) for bar in call.bars_overridden}
-    for missed in readings.missed_bars():
-        if missed.arm != call.variant_key:
-            continue
-        if (missed.aspect, missed.measure) in overridden:
-            lines.append(f"The call overrides a missed bar on {missed.aspect}: {missed.reason}.")
+    for bar in call.bars_overridden:
+        if (still := missed.get((bar.aspect, bar.measure))) is not None:
+            lines.append(f"The call overrides a missed bar on {bar.aspect}: {still.reason}.")
         else:
-            lines.append(f"The call does not name the missed bar on {missed.aspect} as overridden: {missed.reason}.")
+            lines.append(f"The call overrides the bar on {code(bar.measure)} on {bar.aspect} (no longer missed).")
+    for (aspect, measure), unnamed in missed.items():
+        if (aspect, measure) not in overridden:
+            lines.append(f"The call does not name the missed bar on {aspect} as overridden: {unnamed.reason}.")
+    for pair in readings.pairs:
+        if pair.ahead is not None and pair.ahead not in keys and keys & {pair.first, pair.second}:
+            lines.append(f"{pair.ahead_label or pair.ahead} is shown ahead of {call.arm} on {pair.aspect}.")
     return [DisclosureBlock(section="header", source="call", text=line) for line in lines]
 
 
