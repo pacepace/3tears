@@ -74,3 +74,16 @@ def test_a_write_claim_key_is_recognised_and_nothing_else() -> None:
     assert not any(
         is_write_claim_key(key) for key in ("enr.s.TX", "enr.index", "enr.rebuild", "enr.w.x.a", "enr.w.17", "w.1.a.b")
     )
+
+
+def test_an_unparseable_recorded_mtime_is_warned_with_the_object_named(caplog: pytest.LogCaptureFixture) -> None:
+    """failure injection: the writer recorded a time that is not ISO-8601; None must not read as 'never recorded'."""
+    from types import SimpleNamespace
+
+    from threetears.nats.object_store import _public_info
+
+    raw = SimpleNamespace(name="a/b", size=1, chunks=1, digest="d", nuid="n", mtime="yesterday-ish", description=None)
+    with caplog.at_level("WARNING"):
+        info = _public_info(raw)  # type: ignore[arg-type]
+    assert info.mtime is None
+    assert any("a/b" in r.getMessage() and "does not parse" in r.getMessage() for r in caplog.records)

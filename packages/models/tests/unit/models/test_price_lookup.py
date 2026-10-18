@@ -29,7 +29,7 @@ from threetears.models import (
     match_price,
     register_price_source,
 )
-from threetears.models.price_lookup import parse_voyage_pricing
+from threetears.models.price_lookup import PricePageUnreadable, parse_voyage_pricing
 
 _VOYAGE_FIXTURE = (Path(__file__).parent / "_voyage_pricing_fixture.html").read_text(encoding="utf-8")
 
@@ -123,7 +123,23 @@ def test_unknown_model_returns_empty() -> None:
         cost_per_1m_input=None,
         cost_per_1m_output=None,
         context_window_tokens=None,
+        unpriced_reason="no catalogue entry matches openai/gpt-9-ultra",
     )
+
+
+def test_a_listed_model_with_an_unparseable_price_says_so_instead_of_reading_as_unpriced(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """failure injection: the upstream price encoding changed. None used to be the whole answer."""
+    catalogue = [{"id": "openai/gpt-4o", "pricing": {"prompt": "two-fifty", "completion": "0.00001"}}]
+    with caplog.at_level("WARNING"):
+        result = match_price(catalogue, provider="openai", api_name="gpt-4o")
+    assert result.cost_per_1m_input is None
+    assert result.cost_per_1m_output == Decimal("10")
+    assert result.unpriced_reason is not None and "prompt price" in result.unpriced_reason
+    assert any("did not parse" in r.getMessage() for r in caplog.records)
+    option = list_provider_models(catalogue, provider="openai")[0]
+    assert option.unpriced_reason == result.unpriced_reason
 
 
 def test_discovery_openrouter_lists_every_slug_as_api_name() -> None:
@@ -233,14 +249,17 @@ def test_voyage_parse_splits_multi_model_cell() -> None:
     assert prices["voyage-code-2"] == Decimal("0.12")
 
 
-def test_voyage_parse_malformed_body_returns_empty() -> None:
-    # no "body" hydration field at all → no guessing, empty map.
-    assert parse_voyage_pricing("<html><body>no hydration blob here</body></html>") == {}
-    # a "body" field whose JSON string doesn't decode → empty (fail-safe).
-    assert parse_voyage_pricing('{"body":"\\uXXXX broken escape"}') == {}
-    # a well-formed body with NO per-million-tokens table → empty (never a wrong column).
+def test_voyage_parse_malformed_page_raises_rather_than_reading_as_no_prices() -> None:
+    # no "body" hydration field at all
+    with pytest.raises(PricePageUnreadable, match="no .body. hydration"):
+        parse_voyage_pricing("<html><body>no hydration blob here</body></html>")
+    # a "body" field whose JSON string doesn't decode
+    with pytest.raises(PricePageUnreadable, match="not a JSON string"):
+        parse_voyage_pricing('{"body":"\\uXXXX broken escape"}')
+    # a well-formed body with NO per-million-tokens table: the column label changed
     no_table = '{"body":"<table><thead><tr><th>Model</th><th>Price per pixel</th></tr></thead><tbody><tr><td><code>voyage-x</code></td><td>$9</td></tr></tbody></table>"}'
-    assert parse_voyage_pricing(no_table) == {}
+    with pytest.raises(PricePageUnreadable, match="per million tokens"):
+        parse_voyage_pricing(no_table)
 
 
 async def test_voyage_source_lookup_matches_fixture_model() -> None:
@@ -273,16 +292,24 @@ async def test_voyage_source_no_match_returns_all_none() -> None:
     assert result.source_url == VOYAGE_PRICING_URL
 
 
-async def test_voyage_source_malformed_page_fails_safe_not_raises() -> None:
+async def test_voyage_source_malformed_page_is_a_failed_lookup_not_an_empty_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     client = _FakeClient(text="<html>not the pricing page</html>")
-    result = await VoyagePriceSource().lookup(client, provider="voyage", api_name="voyage-4")
-    assert result.matched_id is None
-    assert result.cost_per_1m_input is None
+    with caplog.at_level("WARNING"), pytest.raises(PricePageUnreadable):
+        await VoyagePriceSource().lookup(client, provider="voyage", api_name="voyage-4")
+    assert any("could not be read" in r.getMessage() for r in caplog.records)
+
+
+async def test_voyage_source_unlisted_model_is_empty_with_a_reason() -> None:
+    client = _FakeClient(text=_VOYAGE_FIXTURE)
+    result = await VoyagePriceSource().lookup(client, provider="voyage", api_name="voyage-nonexistent")
+    assert result.matched_id is None and result.cost_per_1m_input is None
+    assert result.unpriced_reason is not None and "not listed" in result.unpriced_reason
 
 
 async def test_voyage_source_transport_error_propagates() -> None:
-    # a fetch (transport) error must propagate, like the OpenRouter path — only PARSE misses are
-    # swallowed into all-None.
+    # a fetch (transport) error must propagate, like the OpenRouter path — an unreadable page raises too.
     class _BoomClient:
         async def get(self, url: str) -> Any:
             raise RuntimeError("connection reset")

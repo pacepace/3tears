@@ -25,6 +25,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.geo.bands import AggregateSpec, FeatureSpec
 from threetears.geo.collection import LayerDefinition, TileCollection, ViewportRequest
 from threetears.geo.features import FeatureCache
+from threetears.geo.geometry import UndecodableGeometry, decode_geometry
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.object_store.filesystem import FilesystemObjectStore
 
@@ -112,6 +113,34 @@ class TestLayerDefinition:
             latitude_column="latitude",
         )
         assert layer.geometry_of({"longitude": None, "latitude": None}) is None
+
+
+class TestUnreadableGeometry:
+    def test_a_corrupt_blob_raises_rather_than_reading_as_no_geometry(self) -> None:
+        with pytest.raises(UndecodableGeometry):
+            decode_geometry(b"\x01\x02junk")
+
+    def test_absent_and_empty_are_still_none(self) -> None:
+        assert decode_geometry(None) is None
+        assert decode_geometry(b"") is None
+
+    def test_a_non_numeric_coordinate_raises_rather_than_reading_as_no_point(self) -> None:
+        layer = LayerDefinition(
+            name="locations",
+            feature_id_column="id",
+            longitude_column="longitude",
+            latitude_column="latitude",
+        )
+        with pytest.raises(UndecodableGeometry, match="not numbers"):
+            layer.geometry_of({"longitude": "west", "latitude": 33.4})
+
+    def test_an_unexpected_error_type_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(_: bytes) -> None:
+            raise RuntimeError("not a decode error")
+
+        monkeypatch.setattr("threetears.geo.geometry.shapely_wkb.loads", _boom)
+        with pytest.raises(RuntimeError):
+            decode_geometry(b"\x01\x02")
 
 
 class TestQuantization:
@@ -211,6 +240,23 @@ class TestBuild:
         built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
         assert built is not None
         assert len(mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]) == 2
+
+    async def test_an_undecodable_row_is_counted_and_warned_not_passed_off_as_absent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """failure injection: one row's WKB is corrupt. The tile still builds without it, but says so."""
+        tile = TileId(z=12, x=812, y=1620)
+        bounds = tile_bounds(tile)
+        good = _tract_row("good", lon=bounds.min_lon + 0.001, lat=bounds.min_lat + 0.001)
+        bad = {**_tract_row("bad", lon=bounds.min_lon + 0.002, lat=bounds.min_lat + 0.002), "geometry_wkb": b"\x01junk"}
+        collection, _ = _make_collection(tmp_path, rows=[good, bad])
+
+        with caplog.at_level("WARNING"):
+            built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+
+        assert built is not None
+        assert len(mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]) == 1
+        assert any("could not be read" in r.getMessage() and "1 source rows" in r.getMessage() for r in caplog.records)
 
     async def test_undeclared_layer_is_a_miss_not_an_error(self, tmp_path: Path) -> None:
         collection, _ = _make_collection(tmp_path)

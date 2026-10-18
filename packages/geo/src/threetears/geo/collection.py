@@ -40,7 +40,7 @@ from threetears.geo.mvt import encode_tile
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
 from threetears.media.contracts.keys import build_object_key
-from threetears.observe import get_logger, traced
+from threetears.observe import counter, get_logger, traced
 from shapely.geometry.base import BaseGeometry
 
 __all__ = ["LayerDefinition", "TileEntity", "TileCollection", "ViewportRequest"]
@@ -360,6 +360,19 @@ class TileCollection(DerivedCollection[TileEntity]):
         band = self._build_band(rows, tile=tile, definition=definition)
         payload = encode_tile({layer_name: band.features}, tile)
 
+        if band.undecodable:
+            counter(
+                "geo_undecodable_rows_total",
+                description="source rows left out of a tile because their geometry could not be read",
+                label_names=("layer",),
+            ).labels(layer=layer_name).inc(band.undecodable)
+            log.warning(
+                "tile %s/%s left out %d source rows whose geometry could not be read",
+                layer_name,
+                tile,
+                band.undecodable,
+                extra={"extra_data": {"layer": layer_name, "undecodable": band.undecodable}},
+            )
         if band.truncated:
             log.info(
                 "tile %s/%s dropped %d features to the per-tile cap",

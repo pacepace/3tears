@@ -13,6 +13,7 @@ import pytest
 from shapely.geometry import Point, Polygon
 
 from threetears.geo.attributes import coerce_attributes
+from threetears.geo.geometry import UndecodableGeometry
 from threetears.geo.bands import (
     AggregateSpec,
     FeatureSpec,
@@ -39,6 +40,36 @@ class TestSimplificationTolerance:
 
     def test_tighter_at_higher_zoom(self) -> None:
         assert simplification_tolerance(14) < simplification_tolerance(4)
+
+
+def _raising_point_of(row: dict[str, Any]) -> Point | None:
+    if row.get("bad"):
+        raise UndecodableGeometry("corrupt")
+    return _point_of(row)
+
+
+class TestUndecodableRows:
+    def test_feature_band_counts_the_rows_it_could_not_read(self) -> None:
+        rows = _rows(2) + [{"id": 9, "lon": 0, "lat": 0, "bad": True}]
+        result = feature_band(
+            rows,
+            tile=TileId(z=12, x=100, y=200),
+            spec=FeatureSpec(attributes=("id",), feature_id_column="id"),
+            geometry_of=_raising_point_of,
+            attributes_of=coerce_attributes,
+        )
+        assert len(result.features) == 2
+        assert result.undecodable == 1
+
+    def test_aggregate_band_counts_the_rows_it_could_not_read(self) -> None:
+        rows = _rows(2) + [{"id": 9, "lon": 0, "lat": 0, "bad": True}]
+        result = aggregate_band(
+            rows,
+            tile=TileId(z=5, x=6, y=12),
+            spec=AggregateSpec(rollup_column="state"),
+            geometry_of=_raising_point_of,
+        )
+        assert result.undecodable == 1
 
 
 class TestFeatureBand:
