@@ -38,7 +38,7 @@ from typing import Any
 
 import pytest
 
-from threetears.observe import BuildOnce, contain, get_logger
+from threetears.observe import BuildOnce, get_logger
 
 log = get_logger(__name__)
 
@@ -133,28 +133,64 @@ def check_docker_available() -> bool:
     developer checkout (docker desktop not running) and we want
     the check to be cheap when N integration tests all gate on it.
 
-    :return: True when docker is reachable, False otherwise
+    ``False`` -- which skips every docker-backed test -- is the answer only for docker that is
+    genuinely not there: the docker SDK is not installed, the daemon's socket does not exist, or
+    nothing is listening on it. any other probe failure (a socket this user may not open, a
+    ``DOCKER_HOST`` that does not resolve, a daemon that answers with an error) raises, so a
+    broken docker fails the tests that need it instead of skipping them and leaving CI green.
+
+    :return: True when docker is reachable, False when docker is not installed or not running
     :rtype: bool
+    :raises Exception: the probe's own error, for any failure other than docker being absent
     """
     return _PROBES.get(_DOCKER, _ping_docker)
+
+
+def _docker_is_absent(exc: BaseException) -> bool:
+    """whether a probe failure says docker is not running, rather than that it is broken.
+
+    the docker SDK wraps the socket error under a ``DockerException`` / ``requests`` error, so the
+    whole cause chain is read: no socket file (:class:`FileNotFoundError`) or nothing listening
+    (:class:`ConnectionRefusedError`) is absence; a :class:`PermissionError` anywhere in it is a
+    docker that runs and this user may not reach.
+
+    :param exc: the probe's error
+    :ptype exc: BaseException
+    :return: True when the error means the daemon is not there
+    :rtype: bool
+    """
+    causes: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in causes:
+        causes.append(current)
+        current = current.__cause__ or current.__context__
+    if any(isinstance(cause, PermissionError) for cause in causes):
+        return False
+    return any(isinstance(cause, FileNotFoundError | ConnectionRefusedError) for cause in causes)
 
 
 def _ping_docker() -> bool:
     """ping the docker daemon once.
 
-    :return: True when docker is reachable, False otherwise
+    :return: True when docker is reachable, False when it is not installed or not running
     :rtype: bool
+    :raises Exception: any other probe failure; see :func:`check_docker_available`
     """
     try:
         import docker  # noqa: PLC0415
-
+    except ImportError:
+        log.info("the docker SDK is not installed; treating docker as unavailable")
+        return False
+    try:
         client = docker.from_env()  # type: ignore[attr-defined]
         client.ping()
-        result = True
-    except Exception as exc:
-        contain(exc, log=log, what="docker daemon ping failed; treating docker as unreachable")
-        result = False
-    return result
+    except (docker.errors.DockerException, OSError) as exc:  # type: ignore[attr-defined]
+        # requests' errors are OSErrors; the SDK wraps them in DockerException when it reads the version
+        if not _docker_is_absent(exc):
+            raise
+        log.info("docker daemon is not running; treating docker as unavailable: %s", exc)
+        return False
+    return True
 
 
 def nats_reachable(
