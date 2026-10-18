@@ -462,7 +462,11 @@ def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings) -> list[st
 
 def _read_on(readings: CampaignReadings, aspect: str) -> bool:
     """Whether code read anything on ``aspect``: a row, a pair or a measure."""
-    return any(item.aspect == aspect for item in (*readings.readings, *readings.pairs, *readings.measures))
+    return (
+        any(row.aspect == aspect for row in readings.readings)
+        or any(pair.aspect == aspect for pair in readings.pairs)
+        or any(measure.aspect == aspect for measure in readings.measures)
+    )
 
 
 def _after(stamp: str | None, first_result: str | None, what: str) -> bool:

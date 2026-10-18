@@ -53,7 +53,7 @@ from threetears.evals.analysis.generator import (
 from threetears.evals.analysis.report.serialize_md import markdown_table
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
-    EVIDENCE_COLUMNS,
+    evidence_columns,
     arm_namer,
     evidence_rows,
     positions,
@@ -992,8 +992,8 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
             if resolution is not None and resolution.evidence:
                 rows = evidence_rows(analysis, resolution.evidence, arm)
                 table = markdown_table(
-                    [header for _, header in EVIDENCE_COLUMNS],
-                    [[row[key].text for key, _ in EVIDENCE_COLUMNS] for row in rows],
+                    [header for _, header in evidence_columns(analysis)],
+                    [[row[key].text for key, _ in evidence_columns(analysis)] for row in rows],
                 )
                 findings += ["", "Evidence:", "", *table]
             if finding.caveats:

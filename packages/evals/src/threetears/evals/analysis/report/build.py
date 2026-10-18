@@ -82,6 +82,7 @@ from threetears.evals.analysis.report.model import (
     TableCell,
     TableColumn,
     TextBlock,
+    TextRole,
     TrialBlock,
     Verdict,
     VerdictReason,
@@ -1140,6 +1141,14 @@ def _memo_blocks(
     for summary in document.aspect_summaries:
         if summary.aspect != held.label:
             continue
+        # What changed and how sure, then what it means: the writer's three parts, each through the style pass.
+        parts: tuple[tuple[TextRole, str], ...] = (
+            ("what_changed", summary.what_changed),
+            ("how_sure", summary.how_sure),
+        )
+        for role, said in parts:
+            if part := style.prose(said):
+                blocks.append(TextBlock(section="memo", role=role, body=part))
         proposed = len(style.proposed)
         body = style.sentence(summary.means, plans=True)
         if not body and len(style.proposed) > proposed:
@@ -1244,13 +1253,13 @@ def _recommendation_blocks(
             Fact(
                 name="Floors overridden",
                 value="; ".join(
-                    f"{override.floor}: {' '.join(override.why.split())}" for override in recommended.floors_overridden
+                    f"{override.floor}: {style.prose(override.why)}" for override in recommended.floors_overridden
                 ),
             )
         )
     # The findings a recommendation rests on are the ones printed just above it: its block carries them for a
     # program (``rests_on``), and the page does not cite them again.
-    if cases := _cases_of(bundle, recommended.rests_on, analysis.document.findings):
+    if cases := _cases_of(bundle, recommended.rests_on, analysis.document.findings, analysis):
         facts.append(Fact(name="See", value=", ".join(cases)))
     blocks: list[ReportBlock] = [
         TextBlock(
@@ -1390,9 +1399,59 @@ def _guardrail_standing(keys: Sequence[str], bundle: AnalysisContextBundle, arm:
     return " | ".join(parts) or None
 
 
-def _cases_of(bundle: AnalysisContextBundle, rests_on: Sequence[int], findings: Sequence[Finding]) -> list[str]:
-    """The cases the trials of the named findings show, each as the cases table names it, in case order."""
-    named = {trial for position in rests_on if 0 <= position < len(findings) for trial in findings[position].trials}
+def _campaign_trials(analysis: EvalAnalysis, aspect: str) -> dict[str, str]:
+    """The writer's trial ids that name a trial of ``aspect``, each to that trial's id in the aspect's bundle.
+
+    The writer names trials across the campaign, ``T1`` … ``TN`` aspect after aspect, as its campaign bundle numbers
+    them (:meth:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.trial_ids`); a page lays out one aspect's
+    bundle, whose trials carry their own ids, so every id the memo names is read through this before the page links
+    or counts it.
+    """
+    found: dict[str, str] = {}
+    count = 0
+    for held in analysis.aspects:
+        listed = held.bundle.get("trials")
+        for trial in listed if isinstance(listed, list) else []:
+            count += 1
+            trial_id = trial.get("trial_id") if isinstance(trial, Mapping) else None
+            if held.label == aspect and isinstance(trial_id, str):
+                found[f"T{count}"] = trial_id
+    return found
+
+
+def _bundle_trials(analysis: EvalAnalysis | None, bundle: AnalysisContextBundle, trials: Sequence[str]) -> list[str]:
+    """``trials``, as the writer named them, read as the ids of this page's bundle; a campaign id naming another
+    aspect's trial is left out, and an id no map holds is kept as written."""
+    if analysis is None:
+        return list(trials)
+    mapped = _campaign_trials(analysis, bundle.aspect)
+    others = {f"T{index + 1}" for index in range(sum(_trial_counts(analysis)))} - set(mapped)
+    return [mapped.get(trial, trial) for trial in trials if trial not in others]
+
+
+def _trial_counts(analysis: EvalAnalysis) -> list[int]:
+    """How many trials each aspect's frozen bundle carries, in the campaign's order."""
+    counts = []
+    for held in analysis.aspects:
+        listed = held.bundle.get("trials")
+        counts.append(len(listed) if isinstance(listed, list) else 0)
+    return counts
+
+
+def _cases_of(
+    bundle: AnalysisContextBundle,
+    rests_on: Sequence[int],
+    findings: Sequence[Finding],
+    analysis: EvalAnalysis | None = None,
+) -> list[str]:
+    """The cases the trials of the named findings show, each as the cases table names it, in case order; the
+    writer's trial ids read as the bundle's (:func:`_bundle_trials`)."""
+    named = {
+        trial
+        for position in rests_on
+        if 0 <= position < len(findings)
+        for trial in _bundle_trials(analysis, bundle, findings[position].trials)
+    }
     numbers = _case_numbers(bundle)
     case_name = _case_namer(bundle)
     cases = sorted({trial.case_id for trial in bundle.trials if trial.trial_id in named}, key=numbers.__getitem__)
@@ -1426,14 +1485,15 @@ def _finding_blocks(
         facts.append(Fact(name="Based on", value=stands_on_words(analysis, resolution.evidence_tier)))
     if finding.axes:
         facts.append(Fact(name="Lever", value=", ".join(finding.axes)))
-    if finding.trials:
-        facts.append(Fact(name="Trials", value=", ".join(finding.trials)))
+    if trials := _bundle_trials(analysis, bundle, finding.trials) if bundle is not None else list(finding.trials):
+        facts.append(Fact(name="Trials", value=", ".join(trials)))
     if finding.invalidates:
         facts.append(Fact(name="Overturns", value=_cited(headlines, finding.invalidates)))
     table = _evidence_table(analysis, position, resolution, arm, charts) if resolution and resolution.evidence else None
     fallback = settled = None
-    if table is not None and len(table.columns) > 2:
-        reading = table.columns[1]
+    readings = [column for column in table.columns if column.key.startswith("reading_")] if table is not None else []
+    if table is not None and readings:
+        reading = readings[0]
         values = [(str(row["arm"].value), row[reading.key].text) for row in table.rows]
         settled = _settled_sentence(bundle, names or {}, resolution, values, style)
         fallback = (
@@ -1629,11 +1689,15 @@ def _evidence_table(
     rows = evidence_rows(analysis, resolution.evidence, arm)
     readings = list(dict.fromkeys(str(row["measure"].value) for row in rows))
     keys = {reading: f"reading_{index}" for index, reading in enumerate(readings)}
-    by_arm: dict[str, dict[str, TableCell]] = {}
+    # With several aspects, one arm on two aspects is two rows, each led by its aspect.
+    by_aspect = len(analysis.aspects) > 1
+    by_arm: dict[tuple[str, str], dict[str, TableCell]] = {}
     for row, evidence in zip(rows, resolution.evidence, strict=True):
         name = str(row["arm"].value)
+        lead = {"aspect": TableCell(value=evidence.aspect)} if by_aspect else {}
         line = by_arm.setdefault(
-            name, {"arm": TableCell(value=name), **{key: TableCell(value=None) for key in keys.values()}}
+            (evidence.aspect if by_aspect else "", name),
+            {**lead, "arm": TableCell(value=name), **{key: TableCell(value=None) for key in keys.values()}},
         )
         line[keys[str(row["measure"].value)]] = _with_interval(
             row["value"], analysis, evidence, charts, str(row["measure"].value)
@@ -1649,6 +1713,7 @@ def _evidence_table(
         name="evidence",
         title="Readings",
         columns=[
+            *([TableColumn(key="aspect", header="Aspect", term="aspect")] if by_aspect else []),
             TableColumn(key="arm", header="Arm"),
             *(TableColumn(key=key, header=reading) for reading, key in keys.items()),
             TableColumn(key="cases", header="Cases", term="cases"),
