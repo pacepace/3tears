@@ -33,10 +33,8 @@ from threetears.models.claude_cli_pool import (
     ClaudeCliPoolExhausted,
     ClaudeCliSessionError,
     PooledCliSession,
-    _in_another_pid_namespace,
-    _nested_pids,
-    _pid_namespace,
     agent_name,
+    in_another_pid_namespace,
     kill_process_tree,
     launch_key,
     sweep_orphaned_claude_clis,
@@ -900,54 +898,43 @@ class TestTheOrphanSweep:
             bystander.kill()
             bystander.wait(timeout=5)
 
-    def test_it_leaves_a_cli_in_another_pid_namespace_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_it_leaves_a_cli_in_another_pid_namespace_alone(self) -> None:
         """A host's sweep sees a container's CLIs, and the owner pid in their marker names nothing
         there: a dead owner, read from another namespace, is no evidence. Another namespace cannot
-        be made here, so the child's namespace link is read as a different one."""
+        be made here, so the sweep is told the child lives in one."""
         if not os.path.isdir("/proc"):
             pytest.skip("the sweep needs /proc")
         elsewhere = self._marked_child(f"{self._dead_pid()}:0:in-a-container")
-        monkeypatch.setattr(
-            "threetears.models.claude_cli_pool._pid_namespace",
-            lambda pid: "pid:[4026500000]" if pid == elsewhere.pid else _pid_namespace(pid),
-        )
         try:
-            sweep_orphaned_claude_clis(grace_seconds=1.0)
+            sweep_orphaned_claude_clis(
+                grace_seconds=1.0, elsewhere=lambda pid: pid == elsewhere.pid or in_another_pid_namespace(pid)
+            )
             time.sleep(0.2)
             assert elsewhere.poll() is None, "the sweep killed a CLI in another pid namespace"
         finally:
             elsewhere.kill()
             elsewhere.wait(timeout=5)
 
-    def test_without_the_namespace_link_a_nested_pid_still_says_elsewhere(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_different_namespace_link_says_elsewhere(self) -> None:
+        links = {"self": "pid:[4026531836]", 7: "pid:[4026500000]", 8: "pid:[4026531836]"}
+        assert in_another_pid_namespace(7, read_namespace=links.get, read_nested=lambda pid: None)
+        assert not in_another_pid_namespace(8, read_namespace=links.get, read_nested=lambda pid: None)
+
+    def test_without_the_link_a_nested_pid_still_says_elsewhere(self) -> None:
         """The link needs ptrace access; the ``NSpid`` line does not, and a process with more than
         one id on it lives in a namespace below this one."""
-        if not os.path.isdir("/proc"):
-            pytest.skip("the sweep needs /proc")
-        elsewhere = self._marked_child(f"{self._dead_pid()}:0:in-a-container")
-        monkeypatch.setattr("threetears.models.claude_cli_pool._pid_namespace", lambda pid: None)
-        monkeypatch.setattr(
-            "threetears.models.claude_cli_pool._nested_pids",
-            lambda pid: 2 if pid == elsewhere.pid else _nested_pids(pid),
-        )
-        try:
-            sweep_orphaned_claude_clis(grace_seconds=1.0)
-            time.sleep(0.2)
-            assert elsewhere.poll() is None, "the sweep killed a CLI an NSpid line placed elsewhere"
-        finally:
-            elsewhere.kill()
-            elsewhere.wait(timeout=5)
+        assert in_another_pid_namespace(7, read_namespace=lambda pid: None, read_nested=lambda pid: 2)
+        assert not in_another_pid_namespace(7, read_namespace=lambda pid: None, read_nested=lambda pid: 1)
+        assert not in_another_pid_namespace(7, read_namespace=lambda pid: None, read_nested=lambda pid: None)
 
     def test_this_process_and_its_children_are_in_its_own_namespace(self) -> None:
-        """The real reads, unpatched: what keeps the sweep working where nothing is nested."""
+        """The real reads: what keeps the sweep working where nothing is nested."""
         if not os.path.isdir("/proc"):
             pytest.skip("the sweep needs /proc")
         child = subprocess.Popen(["sleep", "60"])
         try:
-            assert not _in_another_pid_namespace(child.pid)
-            assert _nested_pids(child.pid) is not None
+            assert not in_another_pid_namespace(child.pid)
+            assert not in_another_pid_namespace(child.pid, read_namespace=lambda pid: None)
         finally:
             child.kill()
             child.wait(timeout=5)

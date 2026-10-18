@@ -103,6 +103,7 @@ __all__ = [
     "claude_cli_pool",
     "close_claude_cli_pool",
     "configure_claude_cli_pool",
+    "in_another_pid_namespace",
     "kill_process_tree",
     "launch_fingerprint",
     "bind_tool_server_to_context",
@@ -293,7 +294,12 @@ def _nested_pids(pid: int) -> int | None:
     return None
 
 
-def _in_another_pid_namespace(pid: int) -> bool:
+def in_another_pid_namespace(
+    pid: int,
+    *,
+    read_namespace: Callable[[int | str], str | None] = _pid_namespace,
+    read_nested: Callable[[int], int | None] = _nested_pids,
+) -> bool:
     """Whether ``pid`` lives in a pid namespace other than this process's.
 
     A marker names its owner by pid and start time as the owner's own namespace numbers them. A
@@ -304,13 +310,17 @@ def _in_another_pid_namespace(pid: int) -> bool:
 
     :param pid: the process to check
     :ptype pid: int
+    :param read_namespace: reads a process's namespace link (``"self"`` for this one)
+    :ptype read_namespace: Callable[[int | str], str | None]
+    :param read_nested: reads how many ids a process's ``NSpid`` line gives it
+    :ptype read_nested: Callable[[int], int | None]
     :return: ``True`` when it is known to live elsewhere
     :rtype: bool
     """
-    own, theirs = _pid_namespace("self"), _pid_namespace(pid)
+    own, theirs = read_namespace("self"), read_namespace(pid)
     if own is not None and theirs is not None:
         return own != theirs
-    nested = _nested_pids(pid)
+    nested = read_nested(pid)
     return nested is not None and nested > 1
 
 
@@ -472,17 +482,21 @@ def _owner_is_alive(marker: str) -> bool:
     return _process_start_ticks(owner_pid) == owner_ticks
 
 
-def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
+def sweep_orphaned_claude_clis(
+    *, grace_seconds: float = 2.0, elsewhere: Callable[[int], bool] = in_another_pid_namespace
+) -> int:
     """Kill pooled CLIs whose owning process is gone. A host runs this at startup.
 
     The mechanism that actually saves a host: a crash, an OOM kill or a container kill skips every
     shutdown hook, and the CLIs it started are reparented to init and keep running. A marked CLI
     whose owner is still alive belongs to a sibling worker and is left alone, and so is one in
     another pid namespace, whose marker's owner cannot be judged from here
-    (:func:`_in_another_pid_namespace`).
+    (``elsewhere``, :func:`in_another_pid_namespace`).
 
     :param grace_seconds: how long each SIGTERM gets before SIGKILL
     :ptype grace_seconds: float
+    :param elsewhere: whether a process lives in another pid namespace
+    :ptype elsewhere: Callable[[int], bool]
     :return: how many orphaned CLI processes were killed
     :rtype: int
     """
@@ -497,7 +511,7 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
         if pid == self_pid:
             continue
         marker = _process_environ(pid).get(POOL_MARKER_ENV)
-        if not marker or _in_another_pid_namespace(pid) or _owner_is_alive(marker):
+        if not marker or elsewhere(pid) or _owner_is_alive(marker):
             continue
         _logger.warning(
             "Killing an orphaned Claude CLI left by a previous process",
