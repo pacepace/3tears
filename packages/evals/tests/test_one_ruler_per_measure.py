@@ -138,8 +138,9 @@ class TestWordsAndEvidenceReadOnTheRuler:
         surface = _surface(threshold=1500.0)
         # What evidence_rows reads of an analysis: the decision surface it was resolved under, and the frozen
         # bundle's catalog, which says which measures are shares (none here).
+        # evidence_columns counts the aspects (one here, so no aspect column).
         held = SimpleNamespace(decision_surface=surface, bundle={})
-        subject = SimpleNamespace(aspect=lambda label: held)
+        subject = SimpleNamespace(aspect=lambda label: held, aspects=[held])
         slow = next(c for c in surface.cells if c.variant_key == entry(CANDIDATE).variant_key)
         row = EvidenceRow(
             aspect="conversation",
@@ -162,7 +163,7 @@ class TestWordsAndEvidenceReadOnTheRuler:
     def test_a_goal_check_s_pass_rate_is_stated_as_its_count(self) -> None:
         surface = _surface(threshold=1500.0)
         held = SimpleNamespace(decision_surface=surface, bundle={})
-        subject = SimpleNamespace(aspect=lambda label: held)
+        subject = SimpleNamespace(aspect=lambda label: held, aspects=[held])
         cell = surface.cells[0]
         row = EvidenceRow(
             aspect="conversation",

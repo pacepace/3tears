@@ -17,6 +17,7 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor
 from threetears.evals.kernel.errors import RefusedInput
@@ -156,7 +157,7 @@ def aspect_view(campaign: EvalCampaign, aspect: str | None = None) -> AspectView
 
 def _unread_without_control(label: str, margin: float | None, floors: Sequence[Floor]) -> str:
     """The sentence a page says of a margin and floors stored on an aspect of a campaign naming no control."""
-    terms = [f"a margin of {margin:g} points"] if margin is not None else []
+    terms = [f"a margin of {format_number(margin)} points"] if margin is not None else []
     terms += [f"floor {floor.key}" for floor in floors]
     return (
         f"The campaign names no control, so {' and '.join(terms)} declared on {label} "
