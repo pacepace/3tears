@@ -14,8 +14,9 @@ packages (bumped in lock-step).
   both arms side by side, each at its own width; the pinned upstream rationed one model's calls, and that arm lost
   6 to 20 cells per campaign to HTTP 429s while the other lost none. The default schedule is now `interleaved`:
   every arm runs at once, their cells are taken in turn (case 1 on every arm, then case 2) under one width shared by
-  the launch, and every arm plays its cases in one order, so pairing by case also pairs in time. A launch of N arms
-  loads its providers as one run would, and takes about N times as long.
+  the launch, and every arm plays its cases in one order, so the arms' same cases run close together in time:
+  exactly side by side at a width of 1, within a few cells of each other wider. A launch of N arms loads its
+  providers as one run would, and takes about N times as long; separate launches still load them side by side.
 - **One definition of the schedule** (`arm_schedule`: `interleaved`, `sequential` or `concurrent`), declared on
   `LaunchArguments` and read by `sweep_launch` from there, so the two cannot drift. `concurrent` keeps the old
   side-by-side launch; latency under test (`measure_latency`) runs the arms `sequential` and refuses the others.
