@@ -143,11 +143,11 @@ class RateReading:
         measure's by its key."""
         return self.measure is not None and reading in (self.measure, goal_check_of(self.measure))
 
-    def reading(self) -> str:
-        """The rate as a floor names it: a check by its verbatim text, any other measure by its key, the trials' own
-        pass rate as ``passed``."""
+    def reading(self) -> str | None:
+        """The rate as a floor's clause names it: a check by its verbatim text, any other measure by its key; None for
+        the trials' own pass rate, which no clause names."""
         if self.measure is None:
-            return TRIAL_PASS_NAME
+            return None
         return goal_check_of(self.measure) or self.measure
 
 
@@ -329,6 +329,7 @@ def evaluate_floor(
         arm=arm,
         arm_label=arm_label,
         status=verdict.outcome,
+        reading=verdict.rate.reading() if verdict.rate is not None else None,
         interval=verdict.interval(),
         reason=verdict.reason,
     )
