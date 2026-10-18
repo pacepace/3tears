@@ -211,8 +211,9 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
         await llm.aclose()
     for finding in analysis.document.findings:
         print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code
-    recommended = analysis.document.recommendation  # checked: recommending a candidate needs a separated reading
-    print(f"  recommends {recommended.arm} ({recommended.confidence}): {' '.join(recommended.reasons)}")
+    recommended = analysis.document.recommended()  # checked: recommending a candidate needs a separated reading
+    if recommended is not None:
+        print(f"  recommends {recommended.arm} ({recommended.confidence}): {' '.join(recommended.reasons)}")
     made = analysis.generation  # provenance: the bundle it read, the prompt's version, the cost, any repair
     print(
         f"\nRead bundle {made.bundle_fingerprint[:12]} under prompt {made.prompt_version[:12]}, for ${made.token_cost:.4f}"
