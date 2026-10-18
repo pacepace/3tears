@@ -89,6 +89,7 @@ TextRole = Literal[
     "answer",
     "recommendation",
     "reason",
+    "override",
     "what_changed",
     "how_sure",
     "means",
@@ -116,9 +117,11 @@ TextRole = Literal[
 #: ``scope``: which readings no declared question asked about. ``not_tested``: something the campaign could not
 #: speak to. ``calibration``: a judge not yet calibrated against people's labels — a state with its next step, never a
 #: failure. ``generation``: how the report itself was made. ``call``: on a campaign's page, the person's call, or that
-#: none is recorded yet, and every broken floor it overrides.
+#: none is recorded yet, and every broken floor it overrides. ``bar``: on a campaign's page, a bar an arm misses, a
+#: line as loud as a broken floor's and as early.
 DisclosureSource = Literal[
     "arms",
+    "bar",
     "call",
     "caveat",
     "basis",

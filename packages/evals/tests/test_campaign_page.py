@@ -28,7 +28,7 @@ from threetears.evals.analysis import (
     report_html,
     serialize_report,
 )
-from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
+from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
     CampaignAspectFold,
@@ -42,11 +42,12 @@ from threetears.evals.kernel.authored import (
     AspectSummary,
     AuthoredCampaignAnalysis,
     Finding,
+    FloorOverride,
     NextStep,
     Recommendation,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import CampaignCall, RateDrop
+from threetears.evals.kernel.declaration import BarOverride, CampaignCall, RateDrop
 
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
@@ -54,8 +55,11 @@ from packages.evals.tests.campaign_support import (
     CONTROL_LABEL,
     QUESTION,
     MeasuredAspect,
+    MeasuredKind,
     arms_of,
+    joined,
     measured_aspect,
+    measured_kind,
 )
 
 _MEASURED: dict[str, MeasuredAspect] = {}
@@ -484,3 +488,143 @@ async def test_a_fold_s_markdown_heading_is_inert() -> None:
         floors=[],
     )
     assert "\n## \\# billing\n" in campaign_report_markdown(page)
+
+
+# =============================================================================
+# A choice and a measurement
+# =============================================================================
+
+_KINDS: dict[str, MeasuredKind] = {}
+
+#: No reply may cost more than a tenth of a cent; alpha costs two tenths a reply, so it misses this bar everywhere.
+_COST_BAR = BarOverride(measure_id="cost_usd", threshold=0.001, direction="lower_is_better")
+
+
+async def _kind(label: str) -> MeasuredKind:
+    """Each fixture aspect of the other two kinds, measured once: on tone alpha passes nineteen cases to beta's six,
+    on billing ten to nine, on refunds ten to ten; solo is alpha alone."""
+    if label not in _KINDS:
+        shapes: dict[str, tuple[dict[str, int], bool]] = {
+            "tone": ({"alpha": 19, "beta": 6}, False),
+            "billing": ({"alpha": 10, "beta": 9}, False),
+            "refunds": ({"alpha": 10, "beta": 10}, False),
+            "solo": ({"alpha": 15}, True),
+        }
+        arms, control = shapes[label]
+        _KINDS[label] = await measured_kind(label, arms, control=control, bars=[_COST_BAR], costs={"beta": 0.0005})
+    return _KINDS[label]
+
+
+async def _kind_page(
+    *labels: str,
+    memo: AuthoredCampaignAnalysis | None = None,
+    bundle: Callable[[AnalysisContextBundle], AnalysisContextBundle] = lambda bundle: bundle,
+) -> CampaignReport:
+    measured = [await _kind(label) for label in labels]
+    campaign = joined(measured)
+    bundles = {one.bundle.aspect: bundle(one.bundle) for one in measured}
+    read = campaign_readings(campaign, bundles, arms=measured[0].arms())
+    reports = {
+        label: build_code_only_report(
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+        )
+        for label, evidence in bundles.items()
+    }
+    return build_campaign_report(campaign, read, reports, memo)
+
+
+def _choice_memo(arm: str = "beta") -> AuthoredCampaignAnalysis:
+    memo = _memo()
+    recommendation = memo.recommendation.model_copy(update={"arm": arm, "reasons": ["beta costs a quarter as much."]})
+    return memo.model_copy(update={"recommendation": recommendation, "aspect_summaries": []})
+
+
+async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_another() -> None:
+    page = await _kind_page("tone", "billing", memo=_choice_memo())
+    assert page.readings.kind == "choice"
+    table = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "pairs")
+    assert [(row["aspect"].text, row["ahead"].text) for row in table.rows] == [
+        ("tone", "alpha"),
+        ("billing", "no separation"),
+    ]
+    first = _first_screen_markdown(page)
+    assert CHOICE_NOTE in first
+    # The pairs, then the writer's recommendation; no control-based table.
+    assert first.index("**By aspect, pair by pair**") < first.index("**Recommended:** beta (high confidence)")
+    assert "**By aspect**\n" not in first
+    markdown = campaign_report_markdown(page)
+    assert "alpha ahead of beta." in markdown and "alpha and beta not separated." in markdown
+
+
+async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:
+    page = await _kind_page("billing", "refunds")
+    table = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "pairs")
+    assert {row["ahead"].text for row in table.rows} == {"no separation"}
+    assert all(pair.ahead is None for pair in page.readings.pairs)
+
+
+async def test_a_measurement_s_missed_bar_is_first_on_the_page_and_no_arm_is_recommended() -> None:
+    page = await _kind_page("solo", memo=_choice_memo("alpha"))
+    assert page.readings.kind == "measurement"
+    first = _first_screen_markdown(page)
+    assert first.startswith("**Bar missed on solo: alpha misses the bar on ")
+    header = _header_html(page)
+    assert header.index('role="alert"') < header.index("<h1>")
+    assert "Recommended" not in first and page.recommendation is None
+    assert json.loads(serialize_report(page, "json"))["recommendation"] is None
+    measures = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures")
+    assert measures.rows[0]["measure"].text == "pass rate"
+    bars = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "bars")
+    assert [(row["arm"].text, row["status"].text) for row in bars.rows] == [("alpha", "missed")]
+    assert NO_CALL not in first
+
+
+async def test_a_missed_bar_warns_first_on_a_choice_too() -> None:
+    first = _first_screen_markdown(await _kind_page("tone"))
+    assert first.startswith("**Bar missed on tone: alpha misses the bar on ")
+
+
+async def test_the_writer_s_why_for_an_overridden_floor_sits_beside_its_warning() -> None:
+    memo = _memo()
+    over = FloorOverride(floor="billing/rate_drop/*", why="Billing refunds are rare this quarter.")
+    recommendation = memo.recommendation.model_copy(update={"arm": CANDIDATE_LABEL, "floors_overridden": [over]})
+    page = await _page("billing", "tone", memo=memo.model_copy(update={"recommendation": recommendation}))
+    first = _first_screen_markdown(page)
+    warning = first.index("**Floor broken on billing")
+    why = first.index("**The memo recommends v2 over it:** Billing refunds are rare this quarter.")
+    assert warning < why < first.index("# support queue")
+    header = _header_html(page)
+    assert header.index('role="alert"') < header.index('data-role="override"') < header.index("<h1>")
+
+
+async def test_the_writer_s_words_go_through_the_style_pass_and_what_it_drops_is_counted_in_methods() -> None:
+    memo = _memo()
+    # 54 of 60 is billing's measured count for production: a sentence restating it is dropped, the tables say it.
+    finding = memo.findings[0].model_copy(update={"body": "Production passed 54 of 60 billing trials. Tone gains."})
+    page = await _page("billing", "tone", memo=memo.model_copy(update={"findings": [finding]}))
+    body = next(block for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_body")
+    assert body.body == "Tone gains."
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert any("restated a measured number" in text for text in methods)
+    assert "## Methods" in campaign_report_markdown(page)
+
+
+_UNREAD = (
+    "The campaign names no control, so a margin of 5 points and floor tone/rate_drop/* declared on tone are read "
+    "against nothing and not read; its arms are held to its bars."
+)
+
+
+def _unread(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+    assert bundle.declared is not None
+    return bundle.model_copy(
+        update={"declared": bundle.declared.model_copy(update={"unread_without_control": _UNREAD})}
+    )
+
+
+async def test_a_margin_and_floors_stored_without_a_control_are_said_unread_on_both_pages() -> None:
+    page = await _kind_page("tone", bundle=_unread)
+    assert _UNREAD in _first_screen_markdown(page)
+    (fold,) = page.aspects
+    decision = [block for block in fold.report.blocks if block.section == "decision"]
+    assert [block.text for block in decision if isinstance(block, DisclosureBlock)] == [_UNREAD]

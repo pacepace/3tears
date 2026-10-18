@@ -908,6 +908,11 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     """
     control = _control_key(bundle)
     read = _floor_verdicts(bundle, arm)
+    declared = bundle.declared
+    if declared is not None and declared.unread_without_control:
+        # A margin or floors stored on an aspect of a campaign naming no control are read against nothing: said once,
+        # where the floors would have been.
+        return [DisclosureBlock(section="decision", source="floor", text=declared.unread_without_control)]
     if control is None or not _candidates(bundle):
         return []
     if not read:
