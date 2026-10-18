@@ -14,11 +14,16 @@ import random
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.lenses.frontier import compute_frontier
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import RubricScore
 from threetears.evals.schema.models import GoalStateOutcome, RoleUsage
 from threetears.evals.kernel.scoring import NO_PASS_CRITERION_REASON, compute_pass_hat_k, has_pass_criterion
-from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_eval_result,
+    make_eval_run,
+    minimal_declaration,
+    make_campaign,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -114,7 +119,7 @@ def test_the_frontier_point_has_no_pass_k_and_no_cost_per_acceptable_outcome() -
 
 def test_the_bundle_the_writer_reads_carries_the_reason() -> None:
     classifier, judged, results = _arms(2688)
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=classifier.scope_id,
         name="classifier beside a judged arm",
         subject_id=classifier.subject_snapshot.subject_id,

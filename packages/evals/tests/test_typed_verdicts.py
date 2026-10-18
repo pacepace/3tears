@@ -269,7 +269,7 @@ class TestTheCommandLineGate:
                 "name": "no control",
                 "subject_id": "no control",
                 "behavior": "score",
-                "run_ids": [summary.run_id for summary in comparison.arms.values()],
+                "aspects": [{"label": "score", "run_ids": [summary.run_id for summary in comparison.arms.values()]}],
             },
             scope_id=comparison.scope_id,
             created_by="test",

@@ -173,7 +173,9 @@ def test_a_run_held_by_another_aspect_is_refused_and_one_held_by_its_own_is_igno
     storage, _ = _store()
     campaign = _two_aspects(storage)
 
-    with pytest.raises(ValidationFailedError, match=r"'tpl-tone-a' \(held by aspect 'tone'\) cannot join aspect 'tools'"):
+    with pytest.raises(
+        ValidationFailedError, match=r"'tpl-tone-a' \(held by aspect 'tone'\) cannot join aspect 'tools'"
+    ):
         add_runs_to_campaign(storage, campaign.id, _SCOPE, ["tpl-tone-a"], aspect="tools")
     again = add_runs_to_campaign(storage, campaign.id, _SCOPE, ["tpl-tone-a"])
 

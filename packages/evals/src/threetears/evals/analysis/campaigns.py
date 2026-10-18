@@ -132,7 +132,9 @@ class CampaignStore(Protocol):
 #: ``created_by`` is here rather than in the authoring vocabulary because authorship a
 #: caller can type is not authorship: the surface knows who it is talking to and the caller does not have to be
 #: trusted about it, so the surface says. ``declared_at`` and ``declared_by`` are stamped on every write of the
-#: declaration for the same reason; ``call`` is recorded by its own write; ``run_ids`` and ``exploratory`` are derived.
+#: declaration for the same reason; ``call`` is recorded by its own write. The derived ``run_ids`` and
+#: ``exploratory`` are not here: a create naming either is refused, since runs belong to aspects and whether a
+#: campaign is exploratory is said beside the definition, never inside it.
 CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
@@ -144,8 +146,6 @@ CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
     "declared_at",
     "declared_by",
     "call",
-    "run_ids",
-    "exploratory",
 )
 
 #: What an operator may change on a campaign after it exists. Membership and the control have their own write paths
@@ -200,8 +200,9 @@ class AspectDefinition(EvalBaseModel):
     run_ids: list[str] = Field(default_factory=list, description="The aspect's runs, each in the campaign's scope.")
 
 
-class _CampaignAuthoring(EvalBaseModel):
-    """What a create may say, as :func:`create_campaign` validates it."""
+class CampaignAuthoring(EvalBaseModel):
+    """What a create may say, as :func:`create_campaign` validates it: the campaign's names, its question, arms,
+    aspects and floors, and the margins of the aspects it adopts."""
 
     name: str = Field(min_length=1)
     subject_id: str = Field(min_length=1)
@@ -292,9 +293,9 @@ def create_campaign(
         own registry.
     :raises StorageError: The campaign failed to persist.
     """
-    reject_unknown_authoring_fields("create_campaign", definition, _CampaignAuthoring, CAMPAIGN_SERVER_FIELDS)
+    reject_unknown_authoring_fields("create_campaign", definition, CampaignAuthoring, CAMPAIGN_SERVER_FIELDS)
     try:
-        authored = _CampaignAuthoring.model_validate(
+        authored = CampaignAuthoring.model_validate(
             {key: value for key, value in definition.items() if key not in CAMPAIGN_SERVER_FIELDS}
         )
     except ValidationError as e:
@@ -1581,6 +1582,7 @@ __all__ = [
     "CAMPAIGN_SERVER_FIELDS",
     "ArmDefinition",
     "AspectDefinition",
+    "CampaignAuthoring",
     "CampaignStore",
     "DeclarableAxes",
     "OpenAxisFamily",

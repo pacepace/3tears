@@ -13,13 +13,18 @@ import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import RubricScore
 from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, BarRegistry, PassThreshold, pass_threshold_label
 from threetears.evals.kernel.host.bars import BarRegistrationError
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
 from threetears.evals.schema.models import GoalStateOutcome
-from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_eval_result,
+    make_eval_run,
+    minimal_declaration,
+    make_campaign,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_BARS, toyhost_profile
 
@@ -64,7 +69,7 @@ def _bundle(behavior: str, threshold: int, *, score: int = 4):
             )
             for case in range(4)
         ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=runs[0].scope_id,
         name="threshold",
         subject_id=runs[0].subject_snapshot.subject_id,

@@ -140,7 +140,10 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
             id="an-axis-the-host-does-not-declare",
         ),
         pytest.param(
-            {"exploratory": True, "campaign_arms": [{"label": "control", "role": "control", "from_run_ids": ["{run}"]}]},
+            {
+                "exploratory": True,
+                "campaign_arms": [{"label": "control", "role": "control", "from_run_ids": ["{run}"]}],
+            },
             "declares no question, arm",
             id="an-arm-on-an-exploratory-campaign",
         ),

@@ -197,7 +197,11 @@ async def test_withdrawing_a_declaration_without_saying_exploratory_is_refused(e
     before = _stored(fixture, campaign_id)
 
     outcome = await _call(
-        evals, fixture, "campaign_update", campaign_id=campaign_id, aspects=_aspects(fixture, declared=False, runs=False)
+        evals,
+        fixture,
+        "campaign_update",
+        campaign_id=campaign_id,
+        aspects=_aspects(fixture, declared=False, runs=False),
     )
 
     assert outcome.is_error and "exploratory: true" in outcome.text, outcome.text
@@ -271,9 +275,11 @@ async def test_an_update_changes_only_what_it_is_sent(evals: MountedTool) -> Non
     assert not outcome.is_error, outcome.text
     after = _stored(fixture, campaign_id)
     assert after.name == "renamed" and outcome.structured["name"] == "renamed"
-    assert (after.aspects, after.question, after.declared_at) == (before.aspects, before.question, before.declared_at), (
-        "an omitted declaration is left as it is"
-    )
+    assert (after.aspects, after.question, after.declared_at) == (
+        before.aspects,
+        before.question,
+        before.declared_at,
+    ), "an omitted declaration is left as it is"
     assert after.description == before.description and after.run_ids == before.run_ids
 
 

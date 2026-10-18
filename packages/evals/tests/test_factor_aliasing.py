@@ -20,9 +20,8 @@ from typing import Any
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
 from threetears.evals.analysis.bundle.schema import INTERACTION_ALIASING_UNCHECKED
 from threetears.evals.analysis.report import DisclosureBlock
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema.models import RoleUsage
-from packages.evals.tests.factories import memory_storage, minimal_declaration
+from packages.evals.tests.factories import memory_storage, minimal_declaration, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -43,7 +42,7 @@ def _bundle(batches: Sequence[dict[str, Any]]) -> AnalysisContextBundle:
         for result in toyhost_measurements(run, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8):
             storage.save_eval_result(result)
         runs.append(run)
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="aliasing",
         scope_id=TOYHOST_SCOPE,
         name="aliasing",
@@ -185,7 +184,7 @@ def _observed_bundle(calls: dict[int, dict[int, str]], *, declared: bool = False
                 result = result.model_copy(update={"usage": [*result.usage, usage]})
             storage.save_eval_result(result)
         runs.append(run)
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="observed",
         scope_id=TOYHOST_SCOPE,
         name="observed",
@@ -312,7 +311,7 @@ def _arms_bundle(
                 result = result.model_copy(update={"usage": [*result.usage, usage]})
             storage.save_eval_result(result)
         saved.append(run)
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="observed-arms",
         scope_id=TOYHOST_SCOPE,
         name="observed-arms",
