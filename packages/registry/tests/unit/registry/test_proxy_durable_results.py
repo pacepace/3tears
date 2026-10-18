@@ -34,6 +34,7 @@ from threetears.nats import (
     Subjects,
     set_default_namespace,
 )
+from threetears.registry.auth import INSUFFICIENT_CREDITS, DenyAllLimitGuard, LimitDecision
 from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallAccepted, ProxyCallResponse
 
@@ -49,6 +50,20 @@ _SHORT = 5.0
 @pytest.fixture(autouse=True)
 def _bind_namespace() -> None:
     set_default_namespace(_NS)
+
+
+class _UnreachableLimitGuard:
+    """# parity-with: threetears.registry.auth.LimitGuard"""
+
+    async def check(
+        self,
+        agent_id: str,
+        user_id: str | None,
+        customer_id: str | None,
+        tool_name: str,
+        tool_version: str,
+    ) -> LimitDecision:
+        raise RuntimeError("counter backend unreachable")
 
 
 class _Waiter:
@@ -452,6 +467,34 @@ class TestDeliveringToTheAgent:
 
         assert len(nats.published) == 1
         assert json.loads(nats.published[0][1])["error_code"] == "TOOL_UNAVAILABLE"
+
+    @pytest.mark.asyncio
+    async def test_a_spend_denial_travels_the_delivery_route_too(self) -> None:
+        """it went to the inbox, so a call acknowledged for delivery waited out its timeout."""
+        catalog = await _registered_catalog(_LONG)
+        nats = _Nats(delivered=_pod_answer())
+        subject = Subjects.tools_reply(DEFAULT_AGENT_ID, "call-1").path
+        proxy = make_proxy(catalog, namespace=_NS, limit_guard=DenyAllLimitGuard())
+        await _dispatch(proxy, nats, self._long_request(result_subject=subject))
+
+        assert nats.request_raw_calls == [], "a spend-denied call reached the pod"
+        assert len(nats.published) == 1
+        published_subject, payload = nats.published[0]
+        assert published_subject == subject
+        assert json.loads(payload)["error_code"] == INSUFFICIENT_CREDITS
+        assert not [reply for reply in nats.replies if isinstance(reply, ProxyCallResponse)]
+
+    @pytest.mark.asyncio
+    async def test_a_limit_guard_outage_travels_the_delivery_route_too(self) -> None:
+        catalog = await _registered_catalog(_LONG)
+        nats = _Nats(delivered=_pod_answer())
+        subject = Subjects.tools_reply(DEFAULT_AGENT_ID, "call-1").path
+        proxy = make_proxy(catalog, namespace=_NS, limit_guard=_UnreachableLimitGuard())
+        await _dispatch(proxy, nats, self._long_request(result_subject=subject))
+
+        assert nats.request_raw_calls == []
+        assert len(nats.published) == 1
+        assert json.loads(nats.published[0][1])["error_code"] == "TOOL_AUTHORIZATION_UNAVAILABLE"
 
     @pytest.mark.asyncio
     async def test_an_unknown_tool_travels_the_delivery_route_too(self) -> None:

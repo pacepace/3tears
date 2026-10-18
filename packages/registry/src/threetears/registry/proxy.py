@@ -1093,11 +1093,10 @@ class CallProxy:
                     error_code=limit_decision.error_code,
                     context=request.context,
                 )
-                if msg.reply_subject is not None:
-                    await self._nc.publish_reply(
-                        reply_subject=msg.reply_subject,
-                        message=response,
-                    )
+                # through `_answer`, like every other branch: a call already acknowledged for
+                # durable delivery listens on its result subject, and a denial published on the
+                # inbox instead left it waiting out its whole timeout.
+                await self._answer(msg, response, delivery_subject)
                 log.warning(
                     "tool call denied by limit guard",
                     extra={
