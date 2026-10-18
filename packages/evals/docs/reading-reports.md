@@ -136,15 +136,18 @@ Glossary start folded, and a nav link opens the one it lands on.
   ([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases only a sweep settles a
   10-point clause. A run that shows neither is unsettled ("the cost difference did not separate"); a bundle shaped
   before 55 reads "(this bundle predates the interval a switch needs)". **An unsettled rule says what would settle
-  it**, computed, never the memo's guess: the verdict line adds `A switch needs about 107 independent cases if the
-  arms do not differ, 205 if they differ as observed; only new cases count, not repeats.`, and a `To switch` table
-  under the clauses gives each open clause's two counts with their cost (`107 cases, $2.7`; `none would` where the
-  observed drop is at or past the margin). Each count scales the interval the clause was read on by one over the
-  square root of the cases: repeats of a case add no independent case, so more repeats change nothing. Scaled from
-  a few cases the bounded interval errs high, so the line under the table calls each count about, and where every
-  count is past the cases the template holds it says so: `This template has 12 cases; a switch needs about 107 to
-  205, so new cases must be written.` Only a switch is projected, since keep is the default; a settled clause, or a
-  settled rule, projects nothing. A question stored with its rule written as
+  it**, computed, never the memo's guess: the verdict line adds `A switch needs about 121 independent cases if the
+  arms do not differ, about 223 if they differ as observed; it counts cases, not repeats.`, and a `To switch` table
+  under the clauses gives each open clause's two counts with their cost (`121 cases, $3.1`; `none would` where the
+  observed drop is at or past the margin; `re-run the lost trials` where the interval already clears and only lost
+  trials keep it open; a cost clause's no-difference cell blank, since arms that do not differ are never shown
+  cheaper). A rate's count is the bounded interval computed again over this run's cases repeated to that many, so it
+  keeps their spread and the interval's small-sample excess; scaled as one over the square root of the cases, a
+  dozen cases' bounded interval would overstate the need by up to about twice. It assumes new cases vary as these
+  did, so the line under the table calls each count about. It counts cases: repeats of a case narrow an interval only
+  by steadying each case's share, far less than new cases do. A count is always more than the run had, and where
+  every count is, the line says so: `This run used 12 cases; a switch needs about 121 to 223, more than it ran.`
+  Only a switch is projected, since keep is the default; a settled clause, or a settled rule, projects nothing. A question stored with its rule written as
   prose in its words, and none typed, opens the section with `This question's rule was written as prose, which is no
   longer read; declare it as a rule.`, and its verdict is exploratory: no rule was applied.
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
@@ -196,10 +199,12 @@ header over three words, and the declared question only on its own quoted line. 
 identifier passes on its way to a reader. A memo's sentence breaking a rule code can fix is dropped or replaced (a title
 restating a measured number becomes the table's own row); one contradicting a settled decision rule becomes the
 verdict line's sentence, and one saying the evidence cannot confirm a difference a settled clause decided becomes
-code's counts on that reading, the size of the difference left to more cases; both are disclosed in Methods. A next
-step states no sample size of its own: a numeral beside cases that the `To switch` table does not render, or a cost
-beside one, becomes code's sentence on the cases a switch needs (or the step goes, where none was projected), and
-such a sentence goes from its `Why`; each is listed in Methods. What
+code's counts on that reading, the size of the difference left to more cases; both are disclosed in Methods. Where the
+memo says what to run next (a next step and its `Why`, a question's answer, a deferred decision's revisit), it states
+no sample size or cost of its own: a sentence proposing more cases at a count the `To switch` table does not state,
+or naming a cost it does not price, becomes code's sentence on the cases a switch needs once and is dropped after
+(a next step it replaces keeps none of the writer's facts, and one with nothing projected goes); each is listed in
+Methods. A count the run itself reached (`the 3 cases the candidate missed`) is a fact, not a proposal. What
 is left is counted there (`style: N violations`) and listed.
 
 ### The marks
