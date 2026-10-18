@@ -13,8 +13,11 @@ time a view is taken every campaign holds its aspects, and the view reads them a
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pydantic import Field
 
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor
 from threetears.evals.kernel.errors import RefusedInput
@@ -83,6 +86,14 @@ class AspectDeclaration(EvalDocumentModel):
     )
     declared_at: str | None = Field(description="When this aspect's design was declared (ISO-8601).")
     declared_by: str = Field(description="Who declared the campaign; empty when unrecorded.")
+    unread_without_control: str | None = Field(
+        default=None,
+        description=(
+            "Why a margin or floors stored on this aspect are not read: the campaign names no control, which each is "
+            "read against, so `margin` is None and `floors` empty here and the page says this sentence once. None "
+            "when nothing stored was left unread."
+        ),
+    )
 
 
 class AspectView(EvalDocumentModel):
@@ -144,8 +155,29 @@ def aspect_view(campaign: EvalCampaign, aspect: str | None = None) -> AspectView
     return found
 
 
+def _unread_without_control(label: str, margin: float | None, floors: Sequence[Floor]) -> str:
+    """The sentence a page says of a margin and floors stored on an aspect of a campaign naming no control."""
+    terms = [f"a margin of {format_number(margin)} points"] if margin is not None else []
+    terms += [f"floor {floor.key}" for floor in floors]
+    return (
+        f"The campaign names no control, so {' and '.join(terms)} declared on {label} "
+        f"{'is' if len(terms) == 1 else 'are'} read against nothing and not read; its arms are held to its bars."
+    )
+
+
 def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
-    """One aspect's view over the campaign it belongs to."""
+    """One aspect's view over the campaign it belongs to.
+
+    A campaign naming no control reads no margin and no floor: each is read against the control, so a stored one
+    (a v15 campaign whose design declared a rule and no control) is left out of the declaration and named in
+    :attr:`AspectDeclaration.unread_without_control`, never refused.
+    """
+    floors = [floor for floor in campaign.floors if floor.aspect == aspect.label]
+    margin = aspect.margin
+    unread = None
+    if campaign.control is None and (margin is not None or floors):
+        unread = _unread_without_control(aspect.label, margin, floors)
+        margin, floors = None, []
     declared = (
         None
         if aspect.design is None
@@ -153,13 +185,14 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
             question=campaign.question,
             asked_at=aspect.asked_at,
             question_declared_at=campaign.declared_at,
-            margin_declared_at=(aspect.margin_declared_at or aspect.asked_at) if aspect.margin is not None else None,
+            margin_declared_at=(aspect.margin_declared_at or aspect.asked_at) if margin is not None else None,
             design=aspect.design,
             control=campaign.control,
-            margin=aspect.margin,
-            floors=[floor for floor in campaign.floors if floor.aspect == aspect.label],
+            margin=margin,
+            floors=floors,
             declared_at=aspect.declared_at,
             declared_by=campaign.declared_by,
+            unread_without_control=unread,
         )
     )
     return AspectView(

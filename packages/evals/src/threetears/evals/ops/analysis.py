@@ -129,7 +129,8 @@ ASPECTS_DESCRIPTION = (
     "(required when uncontrolled), apparatus: commissioned|witnessed}), and optionally merit_axes, bars "
     "([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and "
     "intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control "
-    "there before it is shown worse, which a declared aspect states when the campaign asks a question. template_id "
+    "there before it is shown worse, which a declared aspect states when the campaign asks a question and names a "
+    "control, and a campaign naming no control never states (it holds its arms to bars). template_id "
     "omitted is the one template every "
     "run of the aspect ran. Labels are unique, and a run belongs to one aspect."
 )
@@ -138,7 +139,8 @@ ASPECTS_DESCRIPTION = (
 FLOORS_DESCRIPTION = (
     "Lines a candidate is warned for crossing, each {aspect, clause}: clause {kind: rate_drop, max_points, reading?} "
     "(no pass rate, or the named one, may drop by more than max_points) or {kind: cost_lower} (it must cost less per "
-    "reply). A floor only warns, on an aspect that declares a design; each aspect, kind and reading once."
+    "reply). A floor only warns, on an aspect that declares a design, of a campaign that names a control: without "
+    "one a floor is read against nothing, and a bar is declared instead. Each aspect, kind and reading once."
 )
 
 #: What a margin given at adoption is, said once.

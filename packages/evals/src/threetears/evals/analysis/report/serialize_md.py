@@ -92,8 +92,14 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _warns(block)]
     for index, block in enumerate(head):
         lines += [*([] if index == 0 else [""]), *_block(block)]
-    if memo := [block for block in report.blocks if block.section not in FIRST_SCREEN]:
-        lines += ["", f"## {SECTION_TITLES['memo']}", *_folded(memo)]
+    present = [
+        section
+        for section in SECTION_TITLES
+        if section not in FIRST_SCREEN and section != "glossary" and any(b.section == section for b in report.blocks)
+    ]
+    # What the memo says reads before the folds; how the page was made (the methods) after them.
+    for section in [section for section in present if section == "memo"]:
+        lines += ["", f"## {SECTION_TITLES[section]}", *_folded([b for b in report.blocks if b.section == section])]
     for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
         prefix = f"a-{slug}-"
         lines += ["", f"## {_inert(_one_line(fold.aspect))}", "", f"{_inert(_one_line(fold.shows))}.", ""]
@@ -105,6 +111,8 @@ def campaign_report_markdown(report: CampaignReport) -> str:
             lines += ["", *_block(block, prefix=prefix)]
         lines += _section_lines(aspect, depth=3, prefix=prefix)
         lines += ["", "</details>"]
+    for section in [section for section in present if section != "memo"]:
+        lines += ["", f"## {SECTION_TITLES[section]}", *_folded([b for b in report.blocks if b.section == section])]
     lines += _glossary_lines(report.terms)
     return "\n".join(lines) + "\n"
 
@@ -132,8 +140,13 @@ def _glossary_lines(terms: Sequence[str]) -> list[str]:
 
 
 def _warns(block: ReportBlock) -> bool:
-    """Whether ``block`` is a broken floor's warning, which opens the page above its title."""
-    return isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "floor"
+    """Whether ``block`` opens the page above its title: a broken floor's or a missed bar's warning, or the writer's
+    why for a floor its recommendation is made over, which sits beside the warning it answers."""
+    if block.section != "header":
+        return False
+    if isinstance(block, TextBlock):
+        return block.role == "override"
+    return isinstance(block, DisclosureBlock) and block.source in ("floor", "bar")
 
 
 #: The failure causes the scoreboard gives a column of their own, as an outcome bar labels them.
@@ -206,6 +219,11 @@ def _text(block: TextBlock) -> list[str]:
         disposition = facts.get("Disposition", "")
         sure = f" ({facts['Confidence']} confidence)" if "Confidence" in facts else ""
         return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}{sure}" if disposition else _inert(body + sure)]
+    if block.role == "override":
+        over = (
+            f"The memo recommends {facts['Arm']} over {facts.get('Over', 'it')}" if "Arm" in facts else "The memo's why"
+        )
+        return [f"**{over}:** {body}"]
     if block.role in SUMMARY_LEADS:
         return [f"**{SUMMARY_LEADS[block.role]}** {body}"]
     if block.role == "reason":
@@ -223,7 +241,7 @@ def _text(block: TextBlock) -> list[str]:
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
     """Something code had to say: the verdict and a broken floor's warning in bold, every other line plain."""
-    if block.source == "verdict" or (block.section == "header" and block.source == "floor"):
+    if block.source == "verdict" or (block.section == "header" and block.source in ("floor", "bar")):
         return [f"**{_one_line(block.text)}**"]
     return [_inert(_one_line(block.text))]
 
