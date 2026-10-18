@@ -18,7 +18,7 @@ import pytest
 from threetears.evals.analysis.bundle import trials as trials_module
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from threetears.evals.analysis.campaign_bundle import WRITER_EXCERPT_CHARS, build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema import EvalResult, EvalTrace, GoalStateOutcome, JudgedArtifact, JudgeEvidence
@@ -228,12 +228,16 @@ def test_the_trials_are_capped_with_the_lost_and_failed_kept_first(monkeypatch: 
     assert bundle.scoreboard[0].ran == 6, "the census counts every trial, kept or not"
 
 
-def test_the_writer_reads_the_trials_without_what_a_reader_drills_into() -> None:
-    payload = json.loads(_writer_message(_bundle(RESULTS)).removeprefix("CONTEXT BUNDLE (JSON):\n"))
-    assert "package_version" not in payload
-    for trial in payload["trials"]:
-        assert not {"first_input", "excerpt", "error_words"} & trial.keys()
-        assert {"trial_id", "state", "cause", "failed_checks"} <= trial.keys()
+def test_the_writer_reads_the_flagged_trials_and_only_the_tail_of_what_their_judge_saw() -> None:
+    bundle = _bundle(RESULTS)
+    payload = json.loads(_writer_message(bundle).removeprefix("CAMPAIGN BUNDLE (JSON):\n"))
+    assert "package_version" not in json.dumps(payload)
+    (aspect,) = payload["aspects"]
+    assert [trial["state"] for trial in aspect["trials"]] == [trial.state for trial in bundle.trials if trial.state != "passed"]
+    for trial in aspect["trials"]:
+        assert not {"first_input", "error_words", "result_id"} & trial.keys()
+        assert {"trial", "state", "cause"} <= trial.keys()
+        assert len(trial.get("excerpt", "")) <= WRITER_EXCERPT_CHARS + 1
 
 
 def test_the_build_is_carried_and_left_out_of_the_fingerprint() -> None:

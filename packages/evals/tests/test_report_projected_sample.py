@@ -552,7 +552,7 @@ def test_with_no_projection_a_sample_size_of_its_own_is_not_printed() -> None:
 
 async def _memo(comparison: Result, bundle: AnalysisContextBundle, memo: dict[str, Any]) -> Report:
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=FixturedClient(json.dumps(memo)),

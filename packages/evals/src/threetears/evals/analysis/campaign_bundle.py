@@ -527,6 +527,8 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
         "prior_insights": [
             {"statement": insight.statement, "confidence": insight.confidence} for insight in first.prior_insights
         ],
+        # Stated so a short list is not read as the whole ledger.
+        "prior_insights_omitted": first.prior_insights_omitted,
         "aspects": [_aspect_part(bundle, index, budget, namer) for index in range(len(bundle.aspects))],
     }
     if broken := [status for status in floors if status.status == "broken"]:

@@ -258,9 +258,8 @@ async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: 
     assert "never called declared" in EVAL_ANALYSIS_GEN_DEFAULT
 
     memo = memo_payload(bundle)
-    memo["questions"] = []  # the toy memo answers the toy campaign's question; this one declares none
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=FixturedClient(json.dumps(memo)),
@@ -270,7 +269,7 @@ async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: 
     )
     report = build_report(analysis)
 
-    assert analysis.design_snapshot is None
+    assert [aspect.design for aspect in analysis.design_snapshot.aspects] == [None], "it declared nothing"
     (said,) = _exploratory_said(report)
     assert said.text.startswith(_EXPLORATORY_BASIS) and said.source == "verdict"
     assert report.blocks.index(said) == 1 and said.section == "header"

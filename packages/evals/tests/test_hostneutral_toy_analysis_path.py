@@ -88,7 +88,7 @@ async def _generate(
     )
     profile = toyhost_profile()
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -398,7 +398,7 @@ class TestAGenerationFreezesTheBundlesSurface:
         bundle = _bundle()
         analysis, _client = await _generate(bundle)
 
-        surface = analysis.decision_surface
+        surface = analysis.aspects[0].decision_surface
         assert surface is not None
         assert surface.cells == bundle.cell_measures
         assert surface.bars == bundle.bar_adjudications
@@ -415,7 +415,7 @@ class TestAGenerationFreezesTheBundlesSurface:
 
         analysis, _client = await _generate(controlled)
 
-        assert analysis.decision_surface.control_variant_key == narrow_key
+        assert analysis.aspects[0].decision_surface.control_variant_key == narrow_key
 
 
 class TestTheGeneratorsReadersArePublished:
@@ -432,7 +432,7 @@ class TestTheGeneratorsReadersArePublished:
         assert _writer_message(bundle) == call["user"]
 
     def test_a_bundle_with_one_describable_arm_is_not_refused(self) -> None:
-        refuse_an_undescribable_arm_table(_bundle())
+        refuse_an_undescribable_arm_table(campaign_bundle(_bundle()))
 
     def test_a_bundle_whose_every_arm_is_undescribable_is_refused_before_any_call(self) -> None:
         bundle = _bundle()
@@ -442,7 +442,7 @@ class TestTheGeneratorsReadersArePublished:
         ]
 
         with pytest.raises(GenerationError, match=r"has no describable arm") as raised:
-            refuse_an_undescribable_arm_table(bundle.model_copy(update={"variant_index": opaque}))
+            refuse_an_undescribable_arm_table(campaign_bundle(bundle.model_copy(update={"variant_index": opaque})))
         assert not isinstance(raised.value, SoundnessRefusal)
 
 
@@ -454,7 +454,7 @@ class TestThePromptVersionIsWhatTheModelWasTold:
         analysis, client = await _generate(_bundle())
 
         (call,) = client.calls
-        _, _, sent = first_request(_bundle(), PROMPT, toyhost_profile())
+        _, _, sent = first_request(campaign_bundle(_bundle()), PROMPT, toyhost_profile())
         contract = json.dumps(sent, sort_keys=True, separators=(",", ":"))
         told = hashlib.sha256((call["system"] + "\n" + contract).encode("utf-8")).hexdigest()[:12]
         assert analysis.generation.prompt_version == told
@@ -463,7 +463,7 @@ class TestThePromptVersionIsWhatTheModelWasTold:
 
     def test_the_one_derivation_agrees_with_what_the_generator_sends(self) -> None:
         profile = toyhost_profile()
-        system, _, contract = first_request(_bundle(), PROMPT, profile)
+        system, _, contract = first_request(campaign_bundle(_bundle()), PROMPT, profile)
         told = system + "\n" + json.dumps(contract, sort_keys=True, separators=(",", ":"))
         assert _bundle().time_axis is None, "the toy campaign runs on one day under no build label"
         assert prompt_content_version(PROMPT, profile) == hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]

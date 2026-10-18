@@ -33,6 +33,7 @@ from threetears.evals.kernel.host.sweepables import RegistrationError
 from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
 from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
 from threetears.evals import Answer, Eval
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import as_listed, make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -223,7 +224,7 @@ class TestEverySurfaceThatShowsTheFigureCarriesIt:
 
     async def _key_metrics(self, bundle: AnalysisContextBundle) -> list[dict[str, Any]]:
         analysis, _insights = await generate_analysis(
-            bundle,
+            campaign_bundle(bundle),
             prompt=PROMPT,
             model=MODEL,
             client=FixturedClient(json.dumps(memo_payload(bundle))),

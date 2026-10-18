@@ -321,7 +321,7 @@ class TestTheReleaseLabelIsARegisteredLabel:
 async def _generate(bundle: Any, payload: dict[str, Any]) -> Any:
     client = FixturedClient(json.dumps(payload))
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,

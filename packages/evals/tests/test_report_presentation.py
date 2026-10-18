@@ -35,6 +35,7 @@ from threetears.evals.kernel.declaration import Floor
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
 from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.g2_support import (
     CANDIDATE,
     CASES,
@@ -663,7 +664,7 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     }
     client = FixturedClient(json.dumps(memo))
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,

@@ -25,7 +25,8 @@ from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_WIDE,
 )
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
-from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, CampaignBundle
+from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, AnalysisContextBundle, CampaignBundle
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.references import cell_aliases
 
 __all__ = [
@@ -169,19 +170,21 @@ def arm_at(bundle: CampaignBundle, level: int) -> str:
     return bundle.label_of(variant)
 
 
-def memo_payload(bundle: CampaignBundle) -> dict[str, Any]:
+def memo_payload(bundle: CampaignBundle | AnalysisContextBundle) -> dict[str, Any]:
     """A well-formed memo in the toy host's vocabulary and nobody else's.
 
     One finding carrying the evidence, a summary of the one aspect and a recommendation to keep the narrow width,
     resting on that finding by position. Every reading names a cell and a measure and carries no number -- code
     fills it.
 
-    :param bundle: The campaign bundle, of one aspect. Its cells are the only ones a reading may name, and its arms
-        the only ones the recommendation may.
-    :ptype bundle: CampaignBundle
+    :param bundle: The campaign bundle, of one aspect, or that aspect's bundle, read as a campaign of it. Its cells
+        are the only ones a reading may name, and its arms the only ones the recommendation may.
+    :ptype bundle: CampaignBundle | AnalysisContextBundle
     :return: The payload.
     :rtype: dict[str, Any]
     """
+    if not isinstance(bundle, CampaignBundle):
+        bundle = campaign_bundle(bundle)
     narrow, wide = alias_at(bundle, TOYHOST_NARROW), alias_at(bundle, TOYHOST_WIDE)
     return {
         "findings": [

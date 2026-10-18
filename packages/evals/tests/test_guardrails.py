@@ -161,7 +161,7 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
 
     def test_the_writer_sees_the_guardrails_by_cell_alias(self):
         message = _writer_message(two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST)))
-        assert '"guardrails"' in message and '"decision": "breached"' in message
+        assert '"guardrails"' in message and '"decision":"breached"' in message
 
 
 # --- a measure may be a guardrail too ------------------------------------------------------------------------

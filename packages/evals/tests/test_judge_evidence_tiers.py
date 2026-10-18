@@ -75,6 +75,7 @@ from threetears.evals.kernel.evidence_tiers import (
 )
 from threetears.evals.schema.models import EvalResult, JudgeRepeat, RepeatedScore, RubricScore, utc_now_iso
 from threetears.evals.run import rate_result
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
@@ -983,7 +984,7 @@ class TestAFindingStandsOnTheTierItsCellsCarry:
             {"cell": alias_at(bundle, TOYHOST_NARROW), "measure_id": TOYHOST_JUDGED_DIMENSION, "reading": "judged"}
         )
         analysis, _ = await generate_analysis(
-            bundle,
+            campaign_bundle(bundle),
             prompt=PROMPT,
             model=MODEL,
             client=FixturedClient(json.dumps(payload)),
@@ -1009,7 +1010,7 @@ class TestAStoredTierSaysWhichRuleDecidedIt:
     async def test_a_generated_analysis_records_the_interval_rule(self) -> None:
         bundle = _bundle()
         analysis, _ = await generate_analysis(
-            bundle,
+            campaign_bundle(bundle),
             prompt=PROMPT,
             model=MODEL,
             client=FixturedClient(json.dumps(memo_payload(bundle))),

@@ -39,6 +39,7 @@ from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disc
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.style import LABEL_CLAIMS, lint_page, lint_prose
 from threetears.evals.kernel.declaration import Floor
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_FLOORS, G2_QUESTION, PRODUCTION, answering, declaring
 from packages.evals.tests.off_loop import off_loop
@@ -123,7 +124,7 @@ async def _memo_page(
         "next": [],
     }
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=FixturedClient(json.dumps(memo)),

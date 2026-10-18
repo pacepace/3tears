@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import (
@@ -178,7 +179,7 @@ def _memo(
 
 async def _generate(bundle: AnalysisContextBundle, client: FixturedClient) -> EvalAnalysis:
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -204,7 +205,7 @@ class TestANullItsFindingDidNotEstablishIsRefused:
         message = str(refused.value)
         assert 'findings[1].title says "does not change"' in message
         assert "that finding cites no reading the bundle established alike" in message
-        assert "`equivalent` in `multiple_comparisons`, or a guardrail reading `held`" in message
+        assert "`equivalent` in an aspect's `contrasts`, or a guardrail reading `held`" in message
         assert "is unresolved, not unchanged (rule 4)" in message
         assert "a reworded null is the same claim" in message
         assert "The bundle does establish" not in message, "it establishes nothing, so nothing is offered"
@@ -231,8 +232,9 @@ class TestANullItsFindingDidNotEstablishIsRefused:
 
         refusal = analysis.generation.repaired_refusal
         assert refusal is not None
-        assert f"The bundle does establish total_ms at cell {wide} (equivalent to the control; cited by finding " in (
-            refusal
+        assert (
+            f"The bundle does establish total_ms at cell {wide} on aspect {bundle.aspect} (equivalent to the control; "
+            "cited by finding " in refusal
         ), "named in the writer's own alias"
         assert "position(s) [0])" in refusal and "cite that reading in the finding's evidence" in refusal
         assert len(client.calls) == 2 and refusal in client.calls[1]["user"]

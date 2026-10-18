@@ -53,7 +53,7 @@ from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 
 from packages.evals.tests.aspect_support import redeclared
-from packages.evals.tests.factories import make_analysis
+from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.off_loop import off_loop
 
 #: The aspect's floors: no pass rate drops by more than 10 points, and the candidate costs less per reply.
@@ -359,7 +359,7 @@ async def test_the_aspect_pass_rate_is_read_at_the_level_it_is_asked_for() -> No
 # =============================================================================
 
 #: A bundle the engine stored at shape 54: before a bundle read one aspect, it holds the campaign's ``declared_design``.
-_STORED_AT_54 = Path(__file__).parent / "fixtures" / "generate_analysis" / "recordings" / "llm_analysis.bundle.json"
+_STORED_AT_54 = Path(__file__).parent / "fixtures" / "stored_bundles" / "bundle_shape_54.json"
 
 
 def test_an_analysis_over_a_bundle_from_before_aspects_is_refused_with_its_remedy() -> None:
@@ -367,7 +367,7 @@ def test_an_analysis_over_a_bundle_from_before_aspects_is_refused_with_its_remed
     declaration is one this build cannot read, so the analysis holding it is refused, saying what to do."""
     stored = json.loads(_STORED_AT_54.read_text(encoding="utf-8"))
     assert stored["schema_version"] == 54 and "declared_design" in stored
-    analysis = make_analysis(bundle=stored)
+    analysis = make_analysis(aspects=[analysed_aspect().model_copy(update={"bundle": stored})])
     with pytest.raises(RefusedInput, match="shape 54, from before a bundle read one aspect") as refused:
         analysis_bundle(analysis)
     assert "analysis_generate" in refused.value.remedy

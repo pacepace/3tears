@@ -42,6 +42,7 @@ from threetears.evals import Eval, Judge, Result, grader
 from threetears.evals.quick import as_host
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.one_call import callable_host
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
 
@@ -226,7 +227,7 @@ class TestABreachedArmIsNeverRecommended:
         adopting = _adopting_writer()
         with pytest.raises(SoundnessRefusal, match="breached the guardrail no_leak"):
             await generate_analysis(
-                bundle,
+                campaign_bundle(bundle),
                 prompt=EVAL_ANALYSIS_GEN_DEFAULT,
                 model="offline-writer",
                 client=adopting,

@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.toyhost_memo import (
@@ -205,15 +206,15 @@ class TestACaveatSaysWhichClassOfQualificationItIs:
 class TestEvidenceRowsCarryTheirBasis:
     def test_a_row_with_no_cell_is_refused(self):
         with pytest.raises(ValidationError, match="cell_ref"):
-            EvidenceRow(measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+            EvidenceRow(aspect="conversation", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
 
     def test_a_cell_keyed_row_is_legitimate(self):
-        row = EvidenceRow(cell_ref="v:a", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+        row = EvidenceRow(aspect="conversation", cell_ref="v:a", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
         assert row.cell_ref == "v:a"
 
     def test_an_empty_cell_ref_is_refused_rather_than_passing_for_a_coordinate(self):
         with pytest.raises(ValidationError):
-            EvidenceRow(cell_ref="", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+            EvidenceRow(aspect="conversation", cell_ref="", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
 
     @pytest.mark.parametrize("missing", ["n", "dispersion", "reading"])
     def test_n_dispersion_and_the_reading_kind_are_required(self, missing):
@@ -262,7 +263,7 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
         payload["findings"] = [finding, {**copy.deepcopy(finding), "evidence": list(rows)}]
         profile = toyhost_profile()
         analysis, _insights = await generate_analysis(
-            bundle,
+            campaign_bundle(bundle),
             prompt=PROMPT,
             model=MODEL,
             client=FixturedClient(json.dumps(payload)),

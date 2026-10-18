@@ -15,13 +15,17 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, FloorStatus
 from threetears.evals.kernel.campaign import CampaignDeclaration
-from threetears.evals.kernel.declaration import Aspect, CampaignArm, Floor
+from threetears.evals.kernel.declaration import Aspect, CampaignArm, Floor, resolve_control_arm
 
 __all__ = ["arms_of", "campaign_bundle", "label_of"]
 
 
 def arms_of(bundles: Sequence[AnalysisContextBundle]) -> list[CampaignArm]:
     """Every arm the bundles index, the control first, each labelled as the arm table names it.
+
+    The control is the one the aspect declares, which names its cells under every identity predicate (the earlier
+    one's included); with none declared, the arm the realized design matched; every other indexed variant is a
+    candidate.
 
     :param bundles: The aspects' bundles.
     :ptype bundles: Sequence[AnalysisContextBundle]
@@ -30,17 +34,32 @@ def arms_of(bundles: Sequence[AnalysisContextBundle]) -> list[CampaignArm]:
     """
     entries = {entry.variant_key: entry for bundle in bundles for entry in bundle.variant_index}
     names = arm_names(list(entries.values()))
-    controls = {bundle.design.control_arm.variant_key for bundle in bundles if bundle.design.control_arm is not None}
-    ordered = sorted(entries, key=lambda key: key not in controls)
-    return [
-        CampaignArm(
-            label=names.get(key, key[:12]),
-            role="control" if key in controls else "candidate",
-            variant_key=key,
-            levers=dict(entries[key].levers) if entries[key].levels_unavailable is None else None,
+    declared = next(
+        (bundle.declared.control for bundle in bundles if bundle.declared is not None and bundle.declared.control),
+        None,
+    )
+    realized = next(
+        (bundle.design.control_arm.variant_key for bundle in bundles if bundle.design.control_arm is not None), None
+    )
+    arms: list[CampaignArm] = []
+    covered: set[str] = set()
+    if declared is not None:
+        keys = {declared.variant_key, *resolve_control_arm(declared).variant_keys}
+        shown = realized if realized in keys else declared.variant_key
+        arms.append(declared.model_copy(update={"label": names.get(shown, declared.label)}))
+        covered |= keys
+    for key, entry in entries.items():
+        if key in covered:
+            continue
+        arms.append(
+            CampaignArm(
+                label=names.get(key, key[:12]),
+                role="control" if declared is None and key == realized else "candidate",
+                variant_key=key,
+                levers=dict(entry.levers) if entry.levels_unavailable is None else None,
+            )
         )
-        for key in ordered
-    ]
+    return sorted(arms, key=lambda arm: arm.role != "control")
 
 
 def label_of(bundle: CampaignBundle, variant_key: str) -> str:
