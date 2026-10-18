@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 
 import pyotp
 import pytest
@@ -11,7 +12,7 @@ from pydantic import SecretStr
 from threetears.iam.totp import (
     BACKUP_CODE_COUNT,
     DecryptionError,
-    TotpSecretError,
+    TotpVerifyResult,
     generate_backup_codes,
     generate_seed,
     hash_backup_code,
@@ -36,38 +37,64 @@ def test_generated_seeds_are_base32_and_unique() -> None:
 
 def test_a_current_code_verifies() -> None:
     seed = generate_seed()
-    assert verify_code(seed, pyotp.TOTP(seed).now())
+    assert verify_code(seed, pyotp.TOTP(seed).now()).matched
 
 
 def test_a_wrong_code_does_not_verify() -> None:
     seed = generate_seed()
     wrong = "000000" if pyotp.TOTP(seed).now() != "000000" else "111111"
-    assert not verify_code(seed, wrong)
+    assert not verify_code(seed, wrong).matched
 
 
 def test_a_code_from_another_seed_does_not_verify() -> None:
-    assert not verify_code(generate_seed(), pyotp.TOTP(generate_seed()).now())
+    assert not verify_code(generate_seed(), pyotp.TOTP(generate_seed()).now()).matched
 
 
 @pytest.mark.parametrize("code", ["", "abcdef", "12345", "1234567", "  ", "!!!!!!"])
 def test_malformed_codes_fail_closed_without_raising(code: str) -> None:
     # A malformed code is an authentication failure, not an exception -- otherwise the
     # exception shape distinguishes rejection reasons.
-    assert not verify_code(generate_seed(), code)
+    assert not verify_code(generate_seed(), code).matched
 
 
-@pytest.mark.parametrize("secret", ["not base32!!", "A", "0189", ""])
+_SECRET_MARKER = "QQQQSECRETQQ!!"
+
+
+@pytest.mark.parametrize("secret", ["not base32!!", "A", "0189", "", _SECRET_MARKER])
 @pytest.mark.parametrize("code", ["123456", ""])
-def test_a_malformed_stored_secret_raises_rather_than_reading_as_a_wrong_code(secret: str, code: str) -> None:
-    """A broken enrolment used to read as a wrong code, so its user was locked out silently."""
-    with pytest.raises(TotpSecretError, match="enrolment needs redoing"):
-        verify_code(secret, code)
+def test_a_malformed_stored_secret_is_named_not_read_as_a_wrong_code(
+    secret: str, code: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A broken enrolment used to read as a wrong code, so its user was locked out silently.
+
+    Denied without raising, so the response cannot tell an attacker which accounts are broken;
+    named on the result and logged at ERROR, without the secret, so the operator can tell.
+    """
+    with caplog.at_level(logging.ERROR, logger="threetears.iam.totp"):
+        result = verify_code(secret, code)
+    assert result.matched is False
+    assert result.secret_fault is not None
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert errors, "a broken enrolment reached no operator"
+    formatter = logging.Formatter("%(message)s %(exc_text)s")
+    for record in errors:
+        rendered = formatter.format(record) + repr(record.__dict__)
+        if secret:
+            assert secret not in rendered, "the log carried the stored secret"
+    if secret:
+        assert secret not in result.secret_fault
 
 
-def test_a_malformed_secret_is_still_a_value_error() -> None:
-    """A caller already treating a bad secret as a ``ValueError`` keeps doing so."""
-    with pytest.raises(ValueError):
-        verify_code("not base32!!", "123456")
+def test_a_wrong_code_against_a_good_secret_names_no_fault() -> None:
+    seed = generate_seed()
+    wrong = "000000" if pyotp.TOTP(seed).now() != "000000" else "111111"
+    assert verify_code(seed, wrong) == TotpVerifyResult(matched=False)
+
+
+def test_the_result_refuses_to_be_read_as_a_bool() -> None:
+    """It used to be a bool, and an object is always true: ``if verify_code(...)`` would admit anyone."""
+    with pytest.raises(TypeError, match="read .matched"):
+        bool(verify_code(generate_seed(), "000000"))
 
 
 def test_one_step_of_skew_is_tolerated_each_side() -> None:
@@ -78,9 +105,9 @@ def test_one_step_of_skew_is_tolerated_each_side() -> None:
     import time as _time
 
     now = int(_time.time())
-    assert verify_code(seed, totp.at(now - 30))
-    assert verify_code(seed, totp.at(now + 30))
-    assert not verify_code(seed, totp.at(now - 120))
+    assert verify_code(seed, totp.at(now - 30)).matched
+    assert verify_code(seed, totp.at(now + 30)).matched
+    assert not verify_code(seed, totp.at(now - 120)).matched
 
 
 def test_provisioning_uri_names_the_issuer_and_account() -> None:

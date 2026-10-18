@@ -247,6 +247,13 @@ def verify_password(password: str, stored_hash: str) -> PasswordVerifyResult:
         return _verify_argon2(normalized, stored_hash)
     if stored_hash.startswith(_BCRYPT_PREFIXES):
         return _verify_bcrypt_and_upgrade(normalized, stored_hash)
+    if not stored_hash:
+        # No password is set: an SSO-only account, or one never given a password. Denied and
+        # named like any other unusable hash, but not an ERROR -- nothing is broken, and an
+        # operator paged for every password attempt on an SSO account would learn to ignore it.
+        fault = "no password is set for this account (the stored hash is empty)"
+        log.info("password verify: %s; denied", fault)
+        return PasswordVerifyResult(matched=False, stored_hash_fault=fault)
     fault = "the stored hash is neither argon2id nor a migrated bcrypt hash"
     log.error("password verify: %s; denied, and the credential needs resetting", fault)
     return PasswordVerifyResult(matched=False, stored_hash_fault=fault)

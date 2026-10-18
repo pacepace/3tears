@@ -60,7 +60,6 @@ def test_normalize_password_is_nfkc() -> None:
 @pytest.mark.parametrize(
     "stored",
     [
-        "",
         "not-a-hash",
         "$argon2id$truncated",
         "$2b$not-really-bcrypt",
@@ -83,6 +82,17 @@ def test_malformed_stored_hash_is_a_failure_not_an_exception(stored: str, caplog
     assert errors, "a corrupt credential reached no operator"
     if stored:
         assert all(stored not in record.getMessage() for record in errors), "the log quoted the stored hash"
+
+
+def test_an_empty_stored_hash_is_named_but_not_an_error(caplog: pytest.LogCaptureFixture) -> None:
+    """An SSO-only account has no password; trying one is denied and named, but nothing is broken."""
+    with caplog.at_level(logging.DEBUG, logger="threetears.iam.passwords"):
+        result = verify_password(_GOOD, "")
+    assert not result.matched
+    assert result.stored_hash_fault is not None
+    assert "no password is set" in result.stored_hash_fault
+    assert caplog.records, "the denial was not logged at all"
+    assert all(record.levelno < logging.ERROR for record in caplog.records)
 
 
 def test_a_wrong_password_against_a_readable_hash_names_no_fault() -> None:

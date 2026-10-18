@@ -27,17 +27,19 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from typing import Final
+from dataclasses import dataclass
+from typing import Final, NoReturn
 
 import pyotp
 from pydantic import SecretStr
 
 from threetears.core.security import DecryptionError, open_secret, seal
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "BACKUP_CODE_COUNT",
     "DecryptionError",
-    "TotpSecretError",
+    "TotpVerifyResult",
     "generate_backup_codes",
     "generate_seed",
     "hash_backup_code",
@@ -54,15 +56,33 @@ BACKUP_CODE_COUNT: Final[int] = 10
 #: Steps of clock skew tolerated either side of now (one step is 30 seconds).
 _VALID_WINDOW: Final[int] = 1
 
+log = get_logger(__name__)
 
-class TotpSecretError(ValueError):
-    """The STORED TOTP secret is not usable base32, so no code can ever verify against it.
 
-    Not a wrong code: the user's second factor is broken until it is re-enrolled, and read
-    as a wrong code it looks like a user who keeps mistyping. The caller denies the attempt
-    as it would a wrong code, and tells its operator -- never its user -- which enrolment is
-    broken. A ``ValueError`` so a caller already treating a bad secret as one still does.
+@dataclass(frozen=True, slots=True)
+class TotpVerifyResult:
+    """The outcome of :func:`verify_code`, shaped like :class:`~threetears.iam.passwords.PasswordVerifyResult`.
+
+    :ivar matched: whether the code verified. Always ``False`` when :attr:`secret_fault` is set.
+    :ivar secret_fault: set when the STORED secret is unusable -- not base32, or empty --
+        saying which, never quoting the secret. Not a wrong code: the user's second factor is
+        broken until it is re-enrolled, and read as a wrong code it looks like a user who keeps
+        mistyping. For the operator, not the user: the attempt is denied exactly as a wrong code
+        is, so the response does not tell an attacker which accounts hold a broken enrolment.
     """
+
+    matched: bool
+    secret_fault: str | None = None
+
+    def __bool__(self) -> NoReturn:
+        """Refuse truthiness: this used to be a ``bool``, and an object is always true.
+
+        A caller still writing ``if verify_code(...)`` would otherwise accept every code. Read
+        :attr:`matched` instead.
+
+        :raises TypeError: always
+        """
+        raise TypeError("TotpVerifyResult has no truth value; read .matched (and .secret_fault)")
 
 
 def generate_seed() -> str:
@@ -87,37 +107,57 @@ def provisioning_uri(secret_b32: str, *, account_name: str, issuer_name: str) ->
     return pyotp.TOTP(secret_b32).provisioning_uri(name=account_name, issuer_name=issuer_name)
 
 
-def verify_code(secret_b32: str, code: str) -> bool:
+def verify_code(secret_b32: str, code: str) -> TotpVerifyResult:
     """Verify a live TOTP code.
 
-    A malformed code -- non-numeric, wrong length, empty -- is an authentication failure,
-    not an exception, so no rejection reason about the CODE is distinguishable by exception
-    shape. A malformed stored SECRET raises :class:`TotpSecretError`: it used to read as a
+    Never raises for a malformed code or a malformed stored secret: both deny with
+    ``matched=False``, so no rejection reason is distinguishable by exception shape or by
+    status code. A malformed SECRET also sets :attr:`TotpVerifyResult.secret_fault`, logs at
+    ERROR without the secret, and counts on ``contained_errors_total``: it used to read as a
     wrong code, so a broken enrolment locked its user out with nothing to say why.
 
     :param secret_b32: the stored base32 seed
     :ptype secret_b32: str
     :param code: the code the user typed
     :ptype code: str
-    :return: whether the code verifies
-    :rtype: bool
-    :raises TotpSecretError: the stored seed is not base32, or decodes to nothing; deny the
-        attempt and report the broken enrolment to the operator
+    :return: the outcome, naming a broken stored secret when there is one
+    :rtype: TotpVerifyResult
     """
     totp = pyotp.TOTP(secret_b32)
+    fault: str | None = None
     try:
         # Decoded on its own, before the code is looked at, so the only failure classified as
         # the secret's is the secret's own decoding.
         key = totp.byte_secret()
     except ValueError as exc:  # binascii.Error, the base32 decoder's, is a ValueError
-        raise TotpSecretError(
-            f"the stored TOTP secret is not valid base32 ({exc}); the enrolment needs redoing"
-        ) from exc
-    if not key:
-        raise TotpSecretError("the stored TOTP secret is empty; the enrolment needs redoing")
+        # The type only: the fault travels to callers, which should never carry decoder text.
+        fault = f"the stored TOTP secret is not valid base32 ({type(exc).__name__})"
+        _report_secret_fault(exc, fault)
+    else:
+        if not key:
+            fault = "the stored TOTP secret is empty"
+            _report_secret_fault(ValueError(fault), fault)
+    if fault is not None:
+        return TotpVerifyResult(matched=False, secret_fault=fault)
     if not code:
-        return False
-    return bool(totp.verify(code, valid_window=_VALID_WINDOW))
+        return TotpVerifyResult(matched=False)
+    return TotpVerifyResult(matched=bool(totp.verify(code, valid_window=_VALID_WINDOW)))
+
+
+def _report_secret_fault(exc: Exception, fault: str) -> None:
+    """Log and count a broken stored secret, for the operator. Never the secret itself.
+
+    The base32 decoder's messages ("Non-base32 digit found", "Incorrect padding") do not
+    quote their input, and nothing here passes the secret to the log.
+
+    :param exc: the decoder's error, or one built for an empty secret
+    :ptype exc: Exception
+    :param fault: what is wrong, as the result names it
+    :ptype fault: str
+    :return: nothing
+    :rtype: None
+    """
+    contain(exc, log=log, what=f"totp verify: {fault}; denied, and the enrolment needs redoing", level="error")
 
 
 def generate_backup_codes(count: int = BACKUP_CODE_COUNT) -> list[str]:
