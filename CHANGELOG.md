@@ -42,20 +42,24 @@ packages (bumped in lock-step).
 ### 3tears-evals: an unsettled rule states the cases that would settle it, and a memo no longer guesses them
 
 - **An unsettled decision rule says the independent cases a switch needs, computed** (#846). For each clause left
-  open, code scales the bounded interval the clause was read on by 1/sqrt(n) over independent cases: the cases that
-  would show it holds if the arms do not differ (the optimistic bound) and if they differ as observed. The verdict
-  line says it once (`A switch needs about 107 independent cases if the arms do not differ, 205 if they differ as
-  observed; only new cases count, not repeats.`), and the Decision section tables each clause's counts with their
-  cost (`To switch`), then says each is about, and, where every count is past what the template holds, that new
-  cases must be written. A drop at or past the margin says no number of cases would show it within. Repeats never
-  enter a count. A settled clause, or a settled rule, projects nothing.
-- **A memo's next step may not state a sample size of its own.** Discodon's character campaign (12 cases, a 10-point
-  margin) proposed "30 cases ... would formally settle question q1 for roughly $0.40"; its own interval needed about
-  107 cases with no true difference, so the writer had understated the cost by 4-15x. A next step's numeral beside
-  cases that the projection does not render, or a cost beside one, is now replaced by code's sentence (dropped from
-  its `why`) and listed in the methods.
-- Breaking for a host matching on the unsettled verdict line or the Decision section's blocks: the migration notes
-  give the strings.
+  open, code computes the bounded interval the clause was read on again over the run's own cases repeated to each
+  count, and finds the fewest at which it would show the clause holds: if the arms do not differ (the optimistic
+  bound) and if they differ as observed. The verdict line says it once (`A switch needs about 121 independent cases
+  if the arms do not differ, about 223 if they differ as observed; it counts cases, not repeats.`), and the Decision
+  section tables each clause's counts with their cost (`To switch`), then says each is about and, where a switch
+  needs more cases than the run used, that it does. A count is always more than the run had; a clause the lost
+  trials alone keep open says re-running them, not more cases, would settle it; a drop at or past the margin says
+  no number of cases would show it within. A settled clause, or a settled rule, projects nothing.
+- **The count is the bounded interval's, computed, not scaled.** Scaling a dozen cases' bounded interval as 1/sqrt(n)
+  overstates its need by up to about twice, and the issue's "about 107" scaled the contrasts table's t interval,
+  which never settles a clause; on a character-shaped run the code says 121 and 223. The bundle moves to shape 58
+  to carry the per-case values each bounded interval read.
+- **The memo may not state a sample size or cost of its own** where it says what to run next: a next step, a
+  question's answer, a deferred decision's revisit. Discodon's character campaign proposed "30 cases ... would
+  formally settle question q1 for roughly $0.40". Such a sentence is now replaced by code's and listed in the
+  methods, and the seeded writer prompt no longer asks for a rough cost.
+- Breaking for a host matching on the unsettled verdict line, the Decision section's blocks or a memo's next steps:
+  the migration notes give the strings.
 
 ### 3tears-evals: a decision rule's rate clause reads keep only on a drop shown past its margin
 

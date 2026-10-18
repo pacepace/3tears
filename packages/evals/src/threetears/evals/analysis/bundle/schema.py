@@ -1675,6 +1675,15 @@ class FamilyComparison(EvalDocumentModel):
             "no range, and in a bundle before shape 55."
         ),
     )
+    case_values: tuple[list[float], list[float]] | None = Field(
+        default=None,
+        description=(
+            "The control's and the contrast's per-case values the bounded test read, aligned case by case when "
+            "`test` is `paired`: carried wherever `bounded_interval` is, so a decision rule's projection can compute "
+            "that interval again at more cases. Left out of what the writer is shown. None where `bounded_interval` "
+            "is None, and in a bundle before shape 58."
+        ),
+    )
     hedges_g: float | None = Field(
         default=None,
         description=(
@@ -2220,6 +2229,8 @@ class AnalysisContextBundle(EvalDocumentModel):
     # 58: that rule counts the ARMS that observed the lever, not the results, so a lever one arm observed in any number
     # of results is unexercised too (`UnexercisedFactor.results` is no longer capped at 1), and a run that never
     # observed a recovered lever is unknown in the coverage map, not a level of its own.
+    # Also 58: each family comparison's `case_values`, the per-case values its bounded interval read, which a decision
+    # rule's projection computes that interval again from at more cases.
     schema_version: int = Field(
         default=58, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )

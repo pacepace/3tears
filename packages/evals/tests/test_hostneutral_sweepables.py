@@ -189,7 +189,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
-    # 58/13: that rule counts the arms that observed the lever, not the results. A shape-only bump again.
+    # 58/13: a lever's level counts the arms that observed it, not the results; and each family comparison carries
+    # the per-case values its bounded interval read (`case_values`), which a decision rule's projection reads again.
+    # A shape-only bump: the apparatus set and the cell model hold.
     (
         (58, 13),
         _CORE_V24

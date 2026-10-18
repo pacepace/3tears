@@ -1404,6 +1404,8 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
             del comparison["equivalence_p_raw"]
             # The interval a decision rule's switch reads, which the page states; the writer quotes `interval`.
             del comparison["bounded_interval"]
+            # What that interval read, for code's projection of the cases a switch needs: the page states it.
+            del comparison["case_values"]
     for divergence in payload["scope_divergences"]:
         del divergence["p_raw"]
     # The trials without what a reader drills into: enough to name a failure mode (its state, cause, failed checks and

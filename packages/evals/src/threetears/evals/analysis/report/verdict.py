@@ -442,8 +442,8 @@ def rule_sentence(
     (:func:`~threetears.evals.analysis.style.lint_prose`): the decision table below carries every clause.
 
     An unsettled rule then says the cases a switch needs, computed
-    (:func:`~threetears.evals.analysis.report.decision.rule_projection`): ``A switch needs about 107 independent cases
-    if the arms do not differ, 205 if they differ as observed; only new cases count, not repeats.``, then what each more
+    (:func:`~threetears.evals.analysis.report.decision.rule_projection`): ``A switch needs about 121 independent cases
+    if the arms do not differ, about 223 if they differ as observed; it counts cases, not repeats.``, then what each more
     case costs. No memo states a sample size of its own: a next step's is replaced by this sentence
     (:class:`~threetears.evals.analysis.report.memo_style.MemoStyle`).
 
