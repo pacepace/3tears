@@ -27,7 +27,6 @@ import pytest
 
 from threetears.evals.analysis import MeasureMovement, ScopeDivergence, assemble_context_bundle
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, holm_adjust, level_difference
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import EvalResult, EvalRun, LatencyMetrics
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_DOCUMENTS,
@@ -39,6 +38,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.simulation_support import at_most, within
+from packages.evals.tests.factories import make_campaign
 
 #: Written values: ``(measure, level label) -> {case: value}``, one observation per case.
 _Written = dict[tuple[str, str], dict[str, float]]
@@ -79,7 +79,7 @@ def _sweep(rng: random.Random, *, n_cases: int, whole_shift: float) -> tuple[lis
             written.setdefault(("tool_ms", label), {})[result.test_case_id] = tool
             members.append(result.model_copy(update={"latency": LatencyMetrics(total_ms=total, tool_ms=tool)}))
         results[batch.id] = members
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="7c2d9e41-5b3a-4f68-9d17-8e4a2c6b0f35",
         scope_id=TOYHOST_SCOPE,
         name="divergence",

@@ -34,7 +34,6 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import assemble_context_bundle, run_summary
-from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
 from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,
@@ -63,7 +62,7 @@ from threetears.evals.kernel.scoring import (
     summarize_completeness,
 )
 from threetears.evals.kernel.identity import IDENTITY_VERSION
-from packages.evals.tests.factories import make_eval_result, make_eval_run, make_scored_result
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_scored_result, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.factories import result_capture_defaults
@@ -169,7 +168,7 @@ def _bundle_percentiles(costs: list[float]) -> tuple[float, float]:
         )
         for i, cost in enumerate(costs)
     ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="c",
         subject_id=run.subject_snapshot.subject_id,

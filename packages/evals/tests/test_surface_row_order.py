@@ -29,6 +29,7 @@ from threetears.evals.analysis.report import build_code_only_report, report_mark
 from threetears.evals.analysis.report.model import TableBlock
 from threetears.evals.analysis.arms import arm_label
 from threetears.evals.analysis.style import humanize
+from packages.evals.tests.aspect_support import with_control
 
 
 def _label(variant_key: str, names: dict[str, str]) -> str:
@@ -41,12 +42,8 @@ def _bundle(*, control: int | None) -> AnalysisContextBundle:
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(profile=profile)
     bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
-    assert campaign.declared_design is not None, "the toy campaign declares a design"
     chosen = variant_of_cell_ref(cell_at(bundle, control)) if control is not None else None
-    design = campaign.declared_design.model_copy(update={"control": chosen})
-    return assemble_context_bundle(
-        campaign.model_copy(update={"declared_design": design}), storage=storage, profile=profile
-    )
+    return assemble_context_bundle(with_control(campaign, chosen), storage=storage, profile=profile)
 
 
 def _table(bundle: AnalysisContextBundle, name: str) -> TableBlock:

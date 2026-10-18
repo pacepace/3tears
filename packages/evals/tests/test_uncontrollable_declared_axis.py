@@ -18,6 +18,7 @@ from threetears.evals.kernel import SweptAxis
 from threetears.evals.schema import SweepableValue
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.aspect_support import with_aspect
 
 #: An apparatus input of the toy host — the OCR engine is the rig, not a knob.
 _APPARATUS = "ocr_engine_version"
@@ -28,7 +29,7 @@ def _bundle(*, with_apparatus_axis: bool) -> AnalysisContextBundle:
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(profile=profile)
     if with_apparatus_axis:
-        design = campaign.declared_design
+        design = campaign.aspects[0].design
         assert design is not None
         axis = SweptAxis(
             axis_id=_APPARATUS,
@@ -36,9 +37,7 @@ def _bundle(*, with_apparatus_axis: bool) -> AnalysisContextBundle:
             rationale="does the newer OCR engine read the totals line more often",
         )
         # Written past the authoring gate, as a design stored before it was.
-        campaign = campaign.model_copy(
-            update={"declared_design": design.model_copy(update={"axes": [*design.axes, axis]})}
-        )
+        campaign = with_aspect(campaign, design={"axes": [*design.axes, axis]})
     return assemble_context_bundle(campaign, storage=storage, profile=profile)
 
 

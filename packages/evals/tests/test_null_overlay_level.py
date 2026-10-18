@@ -24,7 +24,6 @@ from dataclasses import replace
 
 from threetears.evals.analysis import AnalysisContextBundle, RunSummary, assemble_context_bundle
 from threetears.evals.analysis.reporting import NULL_LEVEL, lever_level
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema.models import RoleUsage
@@ -36,6 +35,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.factories import make_campaign
 
 #: The swept knob, as its lever name.
 _KNOB = "retrieval.rerank_depth"
@@ -76,7 +76,7 @@ def _bundle(profile: HostProfile, *, inner_models: tuple[str, ...] = ()) -> tupl
     for batch, accuracy in ((valued, 0.9), (nulled, 0.8)):
         measured = toyhost_measurements(batch, profile=profile, cost_usd=0.002, total_ms=900.0, field_accuracy=accuracy)
         results[batch.id] = _with_inner_agent(measured, inner_models) if inner_models else measured
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="5f1c7a92-3e84-4b0d-a6c2-9d17e8b40f55",
         scope_id=TOYHOST_SCOPE,
         name="rerank depth: a value against null",

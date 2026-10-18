@@ -40,6 +40,7 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.aspect_support import with_aspect
 
 CONTROL = "control-model"
 CONTRAST = "contrast-model"
@@ -240,10 +241,7 @@ class TestTheScopeLenses:
 class TestACampaignDeclaringLatencyUnderTest:
     def test_its_runs_read_under_concurrency_are_named_with_the_remedy(self) -> None:
         campaign, runs, results = _campaign([(CONTROL, "serial", 0.0), (CONTRAST, "concurrent", 0.0)])
-        assert campaign.declared_design is not None
-        declared = campaign.model_copy(
-            update={"declared_design": campaign.declared_design.model_copy(update={"measure_latency": True})}
-        )
+        declared = with_aspect(campaign, design={"measure_latency": True})
 
         bundle = assemble_context_bundle(declared, storage=ToyhostStorage(runs, results), profile=_PROFILE)
 

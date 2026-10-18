@@ -43,6 +43,7 @@ from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock, 
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailDecision, GuardrailReadings
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.schema.models import utc_now_iso
+from packages.evals.tests.aspect_support import with_aspect, with_control
 
 _UNTESTED_REASON = "fewer than two cases carry this reading on a side"
 
@@ -68,13 +69,8 @@ def _toy_bundle(*, control: bool) -> AnalysisContextBundle:
     bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
     if not control:
         return bundle
-    assert campaign.declared_design is not None, "the toy campaign declares a design; this check adds its control"
-    design = campaign.declared_design.model_copy(
-        update={"control": variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW))}
-    )
-    return assemble_context_bundle(
-        campaign.model_copy(update={"declared_design": design}), storage=storage, profile=profile
-    )
+    controlled = with_control(campaign, variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW)))
+    return assemble_context_bundle(controlled, storage=storage, profile=profile)
 
 
 def _with_verdicts(
@@ -382,10 +378,7 @@ def _toy_bundle_asking(axes: list[str]) -> AnalysisContextBundle:
     """The toy campaign's bundle, its one question scoped to ``axes``."""
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(profile=profile)
-    assert campaign.declared_design is not None
-    design = campaign.declared_design
-    questions = [question.model_copy(update={"merit_axes": axes}) for question in design.questions]
-    campaign = campaign.model_copy(update={"declared_design": design.model_copy(update={"questions": questions})})
+    campaign = with_aspect(campaign, design={"merit_axes": axes})
     return assemble_context_bundle(campaign, storage=storage, profile=profile)
 
 

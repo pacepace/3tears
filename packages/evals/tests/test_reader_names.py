@@ -36,6 +36,7 @@ from packages.evals.tests.fixtures.toyhost.campaign import (
 )
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.report_support import toy_report
+from packages.evals.tests.aspect_support import with_aspect
 
 
 @pytest.fixture
@@ -110,8 +111,6 @@ async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_rea
 def _named_design(names: list[tuple[int, str]]) -> Any:
     """The toy design, its swept levels declared under ``names`` — the same content, so the same hashes."""
     campaign, storage = toyhost_campaign()
-    design = campaign.declared_design
-    assert design is not None
     axis = SweptAxis(
         axis_id=TOYHOST_AXIS,
         values=[
@@ -119,7 +118,7 @@ def _named_design(names: list[tuple[int, str]]) -> Any:
             for level, name in names
         ],
     )
-    return campaign.model_copy(update={"declared_design": design.model_copy(update={"axes": [axis]})}), storage
+    return with_aspect(campaign, design={"axes": [axis]}), storage
 
 
 def test_a_declared_level_name_labels_the_arm_on_every_surface_and_moves_no_key() -> None:

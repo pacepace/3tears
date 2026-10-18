@@ -24,6 +24,7 @@ from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.schema.models import utc_now_iso
+from packages.evals.tests.aspect_support import with_control
 
 
 def _bundle() -> AnalysisContextBundle:
@@ -31,13 +32,9 @@ def _bundle() -> AnalysisContextBundle:
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(profile=profile)
     bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
-    assert campaign.declared_design is not None
     control = variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW))
-    # Validated, not copied: a control is stamped with the identity version it was addressed under.
-    design = type(campaign.declared_design).model_validate(
-        {**campaign.declared_design.model_dump(), "control": control}
-    )
-    campaign = campaign.model_copy(update={"declared_design": design})
+    # Validated, not copied: a control arm is stamped with the identity version it was addressed under.
+    campaign = with_control(campaign, control)
     return assemble_context_bundle(campaign, storage=storage, profile=profile)
 
 

@@ -17,7 +17,7 @@ from threetears.evals.analysis import prepare_analysis_generation, run_analysis_
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.insights import superseding_insights
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.kernel.campaign import EvalCampaign, EvalInsight
+from threetears.evals.kernel.campaign import EvalInsight
 from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -31,6 +31,7 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.factories import make_campaign
 
 _CLAIM = "A wider chunk is slower per document on this corpus."
 
@@ -251,7 +252,7 @@ def _many_half_recorded_arms() -> Any:
                 run, profile=profile, cost_usd=0.02, total_ms=900.0 + level, field_accuracy=0.8
             )
     base, _storage = toyhost_campaign()
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="b0e1c6a2-5a2d-4c84-9c55-3f0a7e2c1d10",
         scope_id=TOYHOST_SCOPE,
         name="many widths, half the graders unrecorded",

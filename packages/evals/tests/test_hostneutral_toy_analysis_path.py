@@ -47,6 +47,7 @@ from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclara
 from threetears.evals.kernel.metrics import WITHHELD_PARTITION_INCOMPLETE
 from threetears.evals.schema.models import LatencyMetrics, RunCompleteness, utc_now_iso
 from packages.evals.tests.fixtures.toyhost.campaign import (
+    toyhost_design,
     TOYHOST_NARROW,
     TOYHOST_WIDE,
     toyhost_bundle,
@@ -68,6 +69,7 @@ from packages.evals.tests.toyhost_memo import (
     cell_at,
     memo_payload,
 )
+from packages.evals.tests.aspect_support import with_control
 
 
 def _bundle() -> Any:
@@ -372,7 +374,7 @@ class TestARefusedBarIsQuotedAsDeclared:
     def test_the_threshold_is_echoed_exactly_as_the_author_declared_it(self) -> None:
         profile = toyhost_profile()
         campaign, _storage = toyhost_campaign()
-        design = campaign.declared_design.model_copy(
+        design = toyhost_design().model_copy(
             update={
                 "bars": [BarOverride(measure_id="extraction_vibes", threshold=12345678.5, direction="higher_is_better")]
             }
@@ -408,11 +410,7 @@ class TestAGenerationFreezesTheBundlesSurface:
         profile = toyhost_profile()
         campaign, storage = toyhost_campaign(profile=profile)
         narrow_key = cell_at(_bundle(), TOYHOST_NARROW).split(":")[0]
-        assert campaign.declared_design is not None
-        declared = campaign.declared_design.model_copy(update={"control": narrow_key})
-        controlled = assemble_context_bundle(
-            campaign.model_copy(update={"declared_design": declared}), storage=storage, profile=profile
-        )
+        controlled = assemble_context_bundle(with_control(campaign, narrow_key), storage=storage, profile=profile)
 
         analysis, _client = await _generate(controlled)
 
