@@ -16,7 +16,8 @@ from typing import Any
 from threetears.evals.analysis import prepare_analysis_generation, run_analysis_generation
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.insights import superseding_insights
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel.campaign import EvalInsight
 from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
@@ -214,7 +215,7 @@ class TestTheWriterIsNotBilledForTheEnginesBookkeeping:
     def test_neither_the_trigger_nor_the_declarations_digest_reaches_the_writer(self) -> None:
         bundle = _bundle_over([_insight(1).model_copy(update={"invalidation_trigger": "Retracted if X."})])
 
-        message = build_user_message(bundle)
+        message = _writer_message(bundle)
 
         assert "invalidation_trigger" not in message
         assert "host_declarations_digest" not in message
@@ -290,3 +291,8 @@ class TestRefusedMergesAndNextExperimentsAreBounded:
         bundle = _bundle_over([])
 
         assert (bundle.refused_merges_omitted, bundle.next_experiments_omitted) == (0, 0)
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

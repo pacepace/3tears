@@ -116,7 +116,8 @@ async def test_a_start_returns_its_job_without_assembling_the_bundle(monkeypatch
     assert (running.state, running.done) == ("running", False)
     release.set()
     assert (await settled(fixture.host, job.job_id)).state == "completed"
-    assert assembling == [fixture.campaign.id]
+    # The job assembled it; the fixtured writer assembles it again to write its memo over it.
+    assert assembling and set(assembling) == {fixture.campaign.id}
 
 
 async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_lens_and_action() -> None:
@@ -159,7 +160,7 @@ async def test_the_logged_input_size_is_a_ballpark_over_the_exact_first_request_
 
     (writer,) = [each for each in fixture.writers if each.calls]
     sent, response_format = writer.calls[0], writer.response_formats[0]
-    assert sent["user"].startswith("CONTEXT BUNDLE (JSON):") and response_format is not None
+    assert sent["user"].startswith("CAMPAIGN BUNDLE (JSON):") and response_format is not None
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("eval.generate_analysis campaign=")]
     logged = int(line.split("approx_input_tokens=")[1].split(" ", 1)[0])
 

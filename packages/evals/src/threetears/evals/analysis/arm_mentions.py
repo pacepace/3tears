@@ -41,7 +41,7 @@ never written in a title. A lever every arm carried at one level names none of t
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from threetears.evals.analysis.arms import LABEL_LEVEL_CHARS, applicable_levers, distinguishing_axes
@@ -206,6 +206,25 @@ def arm_vocabulary(entries: Sequence[VariantIndexEntry]) -> list[ArmName]:
     ]
 
 
+def label_vocabulary(labels: Mapping[str, frozenset[str]]) -> list[ArmName]:
+    """The names a campaign's arms carry as labels — the names the writer is told to call them by — as title names.
+
+    A person names an arm (``baseline``, ``fast``) and the writer is asked to name arms by those labels, so a title
+    naming an arm by its label names it as surely as one naming a level it ran.
+
+    :param labels: Each arm's label, with every variant key that names its cells.
+    :ptype labels: Mapping[str, frozenset[str]]
+    :return: One :class:`ArmName` per label that holds a word, in the order given.
+    :rtype: list[ArmName]
+    """
+    names: list[ArmName] = []
+    for label, variants in labels.items():
+        words = tuple(word.lower() for word in _WORDS.findall(label))
+        if words:
+            names.append(ArmName(label, variants, _pattern(words, unspaced_unit=False)))
+    return names
+
+
 def arm_mentions(text: str, vocabulary: Sequence[ArmName]) -> list[ArmMention]:
     """The arm names ``text`` carries, in the order they appear, the longer winning where two overlap.
 
@@ -224,4 +243,4 @@ def arm_mentions(text: str, vocabulary: Sequence[ArmName]) -> list[ArmMention]:
     return [ArmMention(text[start:end], name) for start, end, name in sorted(kept, key=lambda hit: hit[0])]
 
 
-__all__ = ["ArmMention", "ArmName", "arm_mentions", "arm_vocabulary"]
+__all__ = ["ArmMention", "ArmName", "arm_mentions", "arm_vocabulary", "label_vocabulary"]

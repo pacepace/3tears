@@ -23,7 +23,28 @@
       "trials": []
     }
   ],
-  "decisions": [],
-  "questions": [],
+  "recommendation": [
+    {
+      "arm": "control",
+      "reasons": [
+        "Nothing separated the arms, so keep what is there."
+      ],
+      "confidence": "low",
+      "rests_on": [
+        0
+      ],
+      "floors_overridden": [],
+      "behind_on": [],
+      "bars_missed": []
+    }
+  ],
+  "aspect_summaries": [
+    {
+      "aspect": "classify",
+      "what_changed": "The tested arm checks the queues in a different order.",
+      "how_sure": "Not sure: the arms did not separate.",
+      "means": "No reason to switch yet."
+    }
+  ],
   "next": []
 }

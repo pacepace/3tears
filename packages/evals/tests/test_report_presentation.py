@@ -35,6 +35,8 @@ from threetears.evals.kernel.declaration import Floor
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
 from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from packages.evals.tests.g2_support import (
     CANDIDATE,
     CASES,
@@ -650,20 +652,19 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
                 "durable": "",
             },
         ],
-        "decisions": [],
-        "questions": [
-            {
-                "question_id": bundle.aspect,
-                "resolution": "unanswerable",
-                "answer": "Unanswerable because four cases leave the pass rates statistically unresolved.",
-                "rests_on": [0],
-            }
-        ],
-        "next": [],
+        **{
+            key: value
+            for key, value in authored_memo(
+                bundle,
+                [{}],
+                means="Unanswerable because four cases leave the pass rates statistically unresolved.",
+            ).items()
+            if key != "findings"
+        },
     }
     client = FixturedClient(json.dumps(memo))
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -683,10 +684,8 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     assert " usd" not in markdown
     assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
     assert "The candidate skipped the queue." in markdown
-    # A floor decides nothing, so the memo's answer is printed as written (until floors, a settled rule replaced it).
-    assert (
-        "**Unanswerable.** Unanswerable because four cases leave the pass rates statistically unresolved." in markdown
-    )
+    # A floor decides nothing, so the memo's summary is printed as written (until floors, a settled rule replaced it).
+    assert "Unanswerable because four cases leave the pass rates statistically unresolved." in markdown
     assert "See the decision rule above." not in markdown and "Keep production: " not in markdown
     assert not any("“Unanswerable because" in b.text for b in report.blocks if isinstance(b, DisclosureBlock))
     # What code could not fix is kept, counted in the methods table and listed in a fold.

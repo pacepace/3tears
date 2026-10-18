@@ -24,8 +24,9 @@ from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_NARROW,
     TOYHOST_WIDE,
 )
-from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
+from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, AnalysisContextBundle, CampaignBundle
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.references import cell_aliases
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "FixturedClient",
     "FixturedCompletion",
     "alias_at",
+    "arm_at",
     "cell_at",
     "memo_payload",
 ]
@@ -125,13 +127,14 @@ def cell_at(bundle: Any, level: int) -> str:
     Joined through the arm's run, because the run summary is where the width is recorded and the
     cell is where the run was pooled.
 
-    :param bundle: The assembled context.
+    :param bundle: The assembled context, or a campaign bundle of one aspect.
     :ptype bundle: Any
     :param level: The chunk width, in tokens.
     :ptype level: int
     :return: The cell's ``<variant_key>:<apparatus_class_id>``.
     :rtype: str
     """
+    bundle = bundle.aspects[0] if isinstance(bundle, CampaignBundle) else bundle
     (run_id,) = [summary.run_id for summary in bundle.run_summaries if summary.config[TOYHOST_AXIS] == str(level)]
     (cell,) = [cell for cell in bundle.cell_measures if run_id in cell.run_ids]
     return cell_ref(cell.variant_key, cell.apparatus_class_id)
@@ -147,23 +150,45 @@ def alias_at(bundle: Any, level: int) -> str:
     :return: The cell's alias, which the generator stores as :func:`cell_at`'s ``cell_ref``.
     :rtype: str
     """
-    (alias,) = [alias for alias, ref in cell_aliases(bundle.cell_measures).items() if ref == cell_at(bundle, level)]
+    aspect = bundle.aspects[0] if isinstance(bundle, CampaignBundle) else bundle
+    (alias,) = [alias for alias, ref in cell_aliases(aspect.cell_measures).items() if ref == cell_at(aspect, level)]
     return alias
 
 
-def memo_payload(bundle: Any) -> dict[str, Any]:
+def arm_at(bundle: CampaignBundle, level: int) -> str:
+    """The label the campaign bundle names the arm at one chunk width by -- what a recommendation carries.
+
+    :param bundle: The campaign bundle, of one aspect.
+    :ptype bundle: CampaignBundle
+    :param level: The chunk width, in tokens.
+    :ptype level: int
+    :return: The arm's label.
+    :rtype: str
+    """
+    variant = variant_of_cell_ref(cell_at(bundle, level))
+    assert variant is not None
+    return bundle.label_of(variant)
+
+
+def memo_payload(bundle: CampaignBundle | AnalysisContextBundle) -> dict[str, Any]:
     """A well-formed memo in the toy host's vocabulary and nobody else's.
 
-    One finding carrying the evidence, an answer to the declared question and a recommendation, each
-    resting on that finding by position. Every reading names a cell and a measure and carries no
-    number -- code fills it.
+    One finding carrying the evidence, a summary of the one aspect and a recommendation to keep the narrow width,
+    resting on that finding by position. Every reading names a cell and a measure and carries no number -- code
+    fills it.
 
-    :param bundle: The assembled context. Its cells are the only ones a reading or a decision may name.
-    :ptype bundle: Any
+    :param bundle: The campaign bundle, of one aspect, or that aspect's bundle, read as a campaign of it. Its cells
+        are the only ones a reading may name, and its arms the only ones the recommendation may.
+    :ptype bundle: CampaignBundle | AnalysisContextBundle
     :return: The payload.
     :rtype: dict[str, Any]
     """
+    if not isinstance(bundle, CampaignBundle):
+        bundle = campaign_bundle(bundle)
     narrow, wide = alias_at(bundle, TOYHOST_NARROW), alias_at(bundle, TOYHOST_WIDE)
+    # A choice's pick of an arm code shows ahead on no pair rests on cost or simplicity, so it is at low confidence.
+    picked = {arm_at(bundle, TOYHOST_NARROW), variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW))}
+    unseparated = bundle.kind == "choice" and not any(pair.ahead in picked for pair in bundle.readings.pairs)
     return {
         "findings": [
             {
@@ -186,23 +211,32 @@ def memo_payload(bundle: Any) -> dict[str, Any]:
                 "durable": "",
             }
         ],
-        "decisions": [
+        "recommendation": [
             {
-                "proposal": "Keep the narrow chunk width in the extraction pipeline.",
-                "disposition": "deferred",
-                "cells": [narrow],
-                "confidence": "high",
+                "arm": arm_at(bundle, TOYHOST_NARROW),
+                "reasons": ["The narrow chunk width is much faster on every document."],
+                "confidence": "low" if unseparated else "high",
                 "rests_on": [0],
-                "revisit_when": "a run that declares the narrow width the control, so the wide one is tested against it",
+                "floors_overridden": [],
+                "behind_on": [],
+                # Every bar code read the narrow width missing, each addressed, as a recommendation over one must be.
+                "bars_missed": [
+                    {
+                        "aspect": status.aspect,
+                        "measure": status.measure,
+                        "why": "The narrow width is recommended for its speed; this bar is the next run's work.",
+                    }
+                    for status in bundle.readings.missed_bars()
+                    if status.arm_label == arm_at(bundle, TOYHOST_NARROW)
+                ],
             }
         ],
-        "questions": [
+        "aspect_summaries": [
             {
-                # The aspect's one question is answered by the aspect's label (bundle shape 59).
-                "question_id": bundle.aspect,
-                "resolution": "answered",
-                "answer": "both widths were measured over the same documents and the wider one is slower by a wide margin",
-                "rests_on": [0],
+                "aspect": bundle.labels[0],
+                "what_changed": "The wide chunk width slowed every document down.",
+                "how_sure": "Sure of the direction; the gap is wide.",
+                "means": "Both widths were measured over the same documents and the wider one is slower by a wide margin.",
             }
         ],
         "next": [

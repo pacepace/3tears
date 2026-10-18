@@ -74,6 +74,7 @@ from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import list_results
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
+    analysed_aspect,
     fixture_variant_key,
     make_analysis,
     make_campaign,
@@ -533,9 +534,11 @@ class TestAnArmWhereNoResultTookATurn:
     def test_a_stored_analysis_counts_it_from_its_frozen_bundle_alone(self) -> None:
         bundle = _bundle()
         analysis = make_analysis(
-            decision_surface=bundle_decision_surface(bundle),
-            variant_index=bundle.variant_index,
-            bundle=bundle.to_dict(),
+            aspects=[
+                analysed_aspect(
+                    bundle, decision_surface=bundle_decision_surface(bundle), variant_index=bundle.variant_index
+                )
+            ],
         )
         storage = EvalStorage(InMemoryDocumentStore())
         storage.save_analysis(analysis)

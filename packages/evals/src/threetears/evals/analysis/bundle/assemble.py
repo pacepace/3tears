@@ -45,7 +45,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
 from typing import TYPE_CHECKING, Protocol
 
-from threetears.evals.analysis.aspects import aspect_view
+from threetears.evals.analysis.aspects import AspectDeclaration, aspect_view
 from threetears.evals.analysis.agreement import (
     judge_agreement,
     judge_self_agreement,
@@ -80,7 +80,7 @@ from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
-from threetears.evals.kernel.declaration import resolve_control_arm
+from threetears.evals.kernel.declaration import aware_instant, resolve_control_arm
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,
@@ -319,6 +319,37 @@ def _schedule_disclosure(runs: Collection[EvalRun]) -> str | None:
     return None
 
 
+def _dated_by_its_control(declared: AspectDeclaration | None, scored_at: Sequence[str]) -> AspectDeclaration | None:
+    """``declared`` with its question dated when its control was named, where that was after the first result.
+
+    :param declared: What the aspect declared, as its view reads it.
+    :ptype declared: AspectDeclaration | None
+    :param scored_at: When each of the aspect's results was written.
+    :ptype scored_at: Sequence[str]
+    :return: ``declared`` unchanged, unless its control was named after the earliest of ``scored_at``; then with
+        ``asked_at`` the control's ``named_at``. A time that cannot be ordered leaves the question undated (None),
+        read as asked after the evidence.
+    :rtype: AspectDeclaration | None
+    """
+    if declared is None or declared.control is None or declared.control.named_at is None or not scored_at:
+        return declared
+    try:
+        first = min(aware_instant(stamp, "a result") for stamp in scored_at)
+        named_late = aware_instant(declared.control.named_at, "the control") > first
+    except ValueError:
+        return declared.model_copy(update={"asked_at": None})
+    return declared.model_copy(update={"asked_at": declared.control.named_at}) if named_late else declared
+
+
+def _first_result_at(scored_at: Sequence[str]) -> str | None:
+    """The earliest of ``scored_at``, as stored; None with none, or where a time cannot be ordered against another."""
+    try:
+        return min(scored_at, key=lambda stamp: aware_instant(stamp, "a result"), default=None)
+    except ValueError:
+        # NOSILENT: an unorderable stamp leaves the evidence undated, which reads nothing as declared after it
+        return None
+
+
 def assemble_context_bundle(
     campaign: EvalCampaign,
     *,
@@ -426,6 +457,12 @@ def assemble_context_bundle(
     for result in storage.query_eval_results_by_runs(list(every_result), scope_id):
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
+    # A control chosen once the aspect's evidence existed was chosen with it in view: the aspect's question is then
+    # dated no earlier than the control was named, so every reader that asks `asked_in_time` reads it post hoc. The
+    # evidence is the aspect's first result (`EvalResult.scored_at`), never a run's creation: a control named after
+    # its arms were launched and before any result landed was named before anything could be seen.
+    scored_at = [result.scored_at for run_results in every_result.values() for result in run_results]
+    declared = _dated_by_its_control(declared, scored_at)
     results_by_run: dict[str, list[EvalResult]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
@@ -819,6 +856,9 @@ def assemble_context_bundle(
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then
     # on), and a question asked after that instant confirms nothing (`asked_in_time`): the same instant.
     bundle.design_frozen_at = first_run_at
+    # When the aspect's evidence could first be seen: what a margin, a floor or the question's wording added later is
+    # read against on the campaign's page, by the rule its control is read by (`_dated_by_its_control`).
+    bundle.first_result_at = _first_result_at(scored_at)
     # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
     bundle.exclusions = _arm_exclusions(results_by_cell)
     bundle.differential_exclusions = _differential_exclusions(bundle.exclusions)

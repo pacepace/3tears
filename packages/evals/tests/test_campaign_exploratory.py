@@ -47,7 +47,7 @@ def _aspects(fixture: OpsFixture, *, declared: bool, runs: bool = True) -> list[
     if runs:
         aspect["run_ids"] = list(fixture.campaign.run_ids)
     if declared:
-        aspect.update(design=_design(), margin=5)
+        aspect.update(design=_design())
     return [aspect]
 
 

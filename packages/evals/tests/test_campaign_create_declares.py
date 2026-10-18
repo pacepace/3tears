@@ -30,7 +30,9 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
-from threetears.evals.analysis.generator import build_user_message, generate_analysis
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from threetears.evals.analysis.generator import generate_analysis
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import DisclosureBlock, Report
 from threetears.evals.schema.models import utc_now_iso
@@ -59,11 +61,10 @@ def _design(fixture: OpsFixture, **changes: Any) -> dict[str, Any]:
 
 
 def _aspect(fixture: OpsFixture, *, design: dict[str, Any] | None = None, **changes: Any) -> dict[str, Any]:
-    """The toy campaign's one aspect, its runs and a margin, declaring ``design`` (the toy host's by default)."""
+    """The toy campaign's one aspect and its runs, declaring ``design`` (the toy host's by default)."""
     aspect: dict[str, Any] = {
         "label": fixture.campaign.behavior,
         "run_ids": list(fixture.campaign.run_ids),
-        "margin": 5,
         "design": _design(fixture) if design is None else design,
     }
     aspect.update(changes)
@@ -92,7 +93,7 @@ async def test_a_campaign_created_with_a_design_carries_it_stamped_by_the_caller
     )
     assert stored is not None and not stored.exploratory
     (aspect,) = stored.aspects
-    assert aspect.design is not None and aspect.margin == 5
+    assert aspect.design is not None and aspect.margin is None, "a campaign naming no control declares no margin"
     assert [axis.axis_id for axis in aspect.design.axes] == [TOYHOST_AXIS]
     assert aspect.design.held_fixed == fixture.campaign.aspects[0].design.held_fixed  # type: ignore[union-attr]
     assert aspect.design.merit_axes == [], "a question naming no axes asks about every one"
@@ -153,9 +154,18 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
             id="an-arm-from-a-run-outside-the-campaign",
         ),
         pytest.param(
-            {"margin": None, "question": _QUESTION},
-            "declares a design and no margin",
-            id="a-declared-aspect-with-no-margin-under-a-question",
+            {
+                "margin": None,
+                "question": _QUESTION,
+                "campaign_arms": [{"label": "control", "role": "control", "from_run_ids": ["{run}"]}],
+            },
+            "declare a design and no margin",
+            id="a-declared-aspect-with-no-margin-under-a-question-of-a-control",
+        ),
+        pytest.param(
+            {"margin": 5},
+            "declare an absolute bar instead",
+            id="a-margin-on-a-campaign-naming-no-control",
         ),
         pytest.param({"design": {"axes": []}}, "axes", id="no-axes"),
     ],
@@ -231,7 +241,7 @@ async def test_the_bundle_calls_an_undeclared_campaign_exploratory_once(evals: M
     assert "inferred from the runs" in NO_DESIGN_EXPLORATORY and "confirm nothing" in NO_DESIGN_EXPLORATORY
 
 
-async def test_the_code_only_report_says_so_once_straight_after_its_opening_line(evals: MountedTool) -> None:
+async def test_the_code_only_report_says_so_once_on_its_first_screen(evals: MountedTool) -> None:
     fixture, campaign_id, _bundle = await _exploratory(evals)
 
     read = await evals.call(
@@ -240,25 +250,26 @@ async def test_the_code_only_report_says_so_once_straight_after_its_opening_line
 
     assert not read.is_error, read.text
     page = read.structured["body"]
-    # At the top: the verdict line, straight under the title and the arms, and nowhere else on the page.
-    lines = page.splitlines()
-    assert lines[0].startswith("# ") and lines[2] == ""
-    assert lines[3].startswith(f"**{_EXPLORATORY_BASIS}")
-    assert page.count(_EXPLORATORY_BASIS) == 1
+    # On the first screen, under the title and above the aspect's fold, and nowhere else on the page: the fold leaves
+    # out the aspect page's own exploratory verdict line, which the campaign's first screen carries once.
+    title = next(index for index, line in enumerate(page.splitlines()) if line.startswith("# "))
+    first_screen = page.split("\n## ", 1)[0]
+    lead = "No question was declared, so every reading is a lead."
+    assert page.count(lead) == 1 and first_screen.index(lead) > first_screen.index(page.splitlines()[title])
+    assert _EXPLORATORY_BASIS not in page
 
 
 async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: MountedTool) -> None:
     fixture, _campaign_id, bundle = await _exploratory(evals)
 
-    message = build_user_message(bundle)
+    message = _writer_message(bundle)
     assert message.count(NO_DESIGN_EXPLORATORY) == 1, "the writer's view carries the line once"
     assert "the design inferred from the runs (`design`" in EVAL_ANALYSIS_GEN_DEFAULT
     assert "never called declared" in EVAL_ANALYSIS_GEN_DEFAULT
 
     memo = memo_payload(bundle)
-    memo["questions"] = []  # the toy memo answers the toy campaign's question; this one declares none
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=FixturedClient(json.dumps(memo)),
@@ -268,7 +279,7 @@ async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: 
     )
     report = build_report(analysis)
 
-    assert analysis.design_snapshot is None
+    assert [aspect.design for aspect in analysis.design_snapshot.aspects] == [None], "it declared nothing"
     (said,) = _exploratory_said(report)
     assert said.text.startswith(_EXPLORATORY_BASIS) and said.source == "verdict"
     assert report.blocks.index(said) == 1 and said.section == "header"
@@ -285,3 +296,8 @@ async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(e
     bundle = off_loop(assemble_context_bundle, stored, storage=eval_host.storage, profile=eval_host.profile)
 
     assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY, "a declared design is not called undeclared"
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

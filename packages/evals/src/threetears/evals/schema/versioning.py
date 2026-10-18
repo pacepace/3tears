@@ -310,7 +310,23 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   ``FindingResolution`` lose them) and each finding names the trials it is drawn from (``Finding.trials``). A v10
 #:   analysis is refused on read and regenerated. A stored bundle is read at its own ``schema_version``, so a later
 #:   bundle shape bumps this version too.
-REGENERABLE_SCHEMA_VERSION: int = 11
+#: - **v12** — one memo per campaign (from ``0.71.0``): an analysis covers every aspect of its campaign
+#:   (``EvalAnalysis.aspects``, each with its own frozen bundle, decision surface, variant and run indexes and
+#:   coverage), and freezes what the campaign adds over them (``EvalAnalysis.campaign_bundle``: question, arms,
+#:   floors, code's readings across aspects). Its memo is ``AuthoredCampaignAnalysis``: findings across aspects, one
+#:   recommendation (an arm, reasons, confidence, the findings it rests on, every broken floor it is made over), a
+#:   short summary per aspect and next steps; ``decisions`` and ``questions`` are gone. Each resolved evidence row
+#:   names its aspect (``EvidenceRow.aspect``), and ``design_snapshot`` is the campaign's declaration
+#:   (``CampaignDeclaration``), always present. The bump refuses every regenerable document but the cassette: a v11
+#:   analysis, insight and judge profile are refused on read. Assembling a campaign's evidence reads the subject's
+#:   insight ledger, so a store holding a v11 insight refuses ``analysis_generate``, ``analysis_estimate`` and a
+#:   code-only ``report_read`` over that subject until it is cleared: the operator step is
+#:   ``EvalStorage.drop_derived(scopes)``, which deletes the analyses, insights and judge profiles of the named scopes
+#:   and leaves cassettes and every kept and durable document in place. An analysis and its insights regenerate by
+#:   generating again; a judge profile only when the operator runs ``judge_profiles_record`` over its runs, which the
+#:   drop returns (``DerivedDropped.judge_profiles``) — until then a campaign that took its judges' tier from it reads
+#:   its own evidence's tier. The refusal of an old document names this step.
+REGENERABLE_SCHEMA_VERSION: int = 12
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
 A bump is a drop: regenerable documents written under the old version are refused on read

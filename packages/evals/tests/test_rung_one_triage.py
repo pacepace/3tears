@@ -112,9 +112,13 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     assert "stored in .evals/evals.sqlite, scope 'emails'" in printed
     assert (triage_dir / ".evals" / "reports" / "emails" / "report.html").is_file()
     page = (triage_dir / ".evals" / "reports" / "emails" / "report.md").read_text(encoding="utf-8")
-    # One arm's verdict is how its cases came out, first, under the title and the arm.
-    assert re.fullmatch(r"\*\*emails: \d+/\d+ cases passed; \d+ misses: .+\*\*", page.splitlines()[3])
-    assert lint_page(page, names={page.splitlines()[1].split(" · ")[0]}) == []
+    # One arm's verdict is how its cases came out: once, first in its aspect's fold, under the arm.
+    lines = page.splitlines()
+    (verdict,) = [index for index, line in enumerate(lines) if line.startswith("**emails: ")]
+    assert re.fullmatch(r"\*\*emails: \d+/\d+ cases passed; \d+ misses: .+\*\*", lines[verdict])
+    arm = lines[verdict - 2]
+    assert " · " in arm
+    assert lint_page(page, names={arm.split(" · ")[0]}) == []
 
 
 def test_the_toml_file_runs_from_another_directory_and_its_symmetric_field_misses_what_escalates_forgives(

@@ -19,7 +19,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from threetears.evals.analysis.generator import generate_analysis
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
 from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
@@ -241,7 +243,7 @@ class TestTheBundleEarnsATimeAxis:
     def test_every_measure_on_the_axis_is_described_on_the_frozen_surface(self) -> None:
         """A surface's facts cover every name in its cells — the axis's included."""
         analysis = _generated(_two_days())
-        surface = analysis.decision_surface
+        surface = analysis.aspects[0].decision_surface
         named = {m.name for p in surface.time_axis.positions for cell in p.cells for m in cell.measures.measures}
         assert named <= set(surface.measures)
 
@@ -321,7 +323,7 @@ class TestTheReleaseLabelIsARegisteredLabel:
 async def _generate(bundle: Any, payload: dict[str, Any]) -> Any:
     client = FixturedClient(json.dumps(payload))
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -349,13 +351,12 @@ def _generated(bundle: Any) -> Any:
 class TestTheGenerationFreezesTheAxis:
     def test_a_bundle_with_one_freezes_it_on_the_decision_surface(self) -> None:
         bundle = _two_days()
-        assert _generated(bundle).decision_surface.time_axis == bundle.time_axis
+        assert _generated(bundle).aspects[0].decision_surface.time_axis == bundle.time_axis
 
     def test_the_writer_sees_the_axis_by_alias(self) -> None:
-        from threetears.evals.analysis.generator import build_user_message
 
-        message = json.loads(build_user_message(_two_days()).split("\n", 1)[1])
-        cells = message["time_axis"]["positions"][0]["cells"]
+        message = json.loads(_writer_message(_two_days()).split("\n", 1)[1])
+        cells = message["aspects"][0]["time_axis"]["positions"][0]["cells"]
         assert all("cell" in cell and "variant_key" not in cell for cell in cells)
 
 
@@ -395,3 +396,8 @@ class TestASmallCellRecordsItsCases:
         for cell in bundle.cell_measures:
             assert all(m.case_means is None for m in cell.measures.measures)
             assert all(j.case_means is None for j in cell.judged)
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

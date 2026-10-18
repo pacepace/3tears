@@ -59,7 +59,7 @@
 
 [[release]]
 version = "0.71.0"
-since = "v0.70.0"
+since = "v0.70.1"
 summary = """
 The first release after 3tears-evals joined the family: the burndown of Discodon's 0.70.0 adoption findings. No
 public name left a root; the breaking changes are signatures and behaviour, listed in `notes`.
@@ -77,6 +77,14 @@ notes = [
     "Every run records the schedule its arms ran under (`EvalRun.arm_schedule`, also on `EvalLaunch`, `EvalSweep`, `EvalSummary` and the run summary; core v15.5, additive; `ArmSchedule` in `threetears.evals.schema`). It is in no identity, context key or cell. A campaign whose runs were launched together but ran one arm after another, or side by side, says so in the bundle's `launch_disclosure`.",
     "An unsettled decision rule now states the independent cases a switch needs, computed (#846). Its verdict line gains one sentence between the reason and the cost per case: `A switch needs about 121 independent cases if the arms do not differ, about 223 if they differ as observed; it counts cases, not repeats.` (with `and none would if they differ as observed` where the observed drop is at or past the margin, its mirror where a cost clause needs a true difference, `this run's 60 cases` where the run already has enough with no difference, `more than 10000` past the search's cap, and `This run's interval already keeps the drop within the margin as observed: re-running its lost trials, not more cases, would settle it.` where only lost trials keep the clause open). A count is always more than the run had. The Decision section gains a `To switch` table (`TableBlock.name` `projection`: `Clause`, `Arm` with several arms, `If no difference`, `If as observed`, each cell `121 cases, $3.1`, `this run's 60 cases`, `re-run the lost trials`, `more than 10000 cases` or `none would`, a cost clause's no-difference cell blank) and a line under it saying each count is about and assumes new cases vary as these did, that repeats narrow an interval far less than new cases, and, where a switch needs more cases than the run used on every side, `This run used 12 cases; a switch needs about 121 to 223, more than it ran.` A rate's count is the bounded interval computed again over the run's cases repeated to that many (`threetears.evals.analysis.stats.bounded_cases_to_clear`, the median over five seeded orders, searched by doubling then bisection to `PROJECTION_CASE_CAP`, 10,000), not the t interval the contrasts table prints: the issue's `about 107` scaled that one, which never settles a clause. A cost clause's count scales its t interval as 1/sqrt(n). The bundle moves to shape 58: each family comparison carries `case_values`, the per-case values its bounded interval read, which the writer is not shown; a stored analysis's bundle re-assembled under 58 reads as a shape change, not moved evidence. What the memo says to run next (a next step's title and why, a question's answer, a deferred decision's `revisit_when`) may no longer state a sample size or a cost of its own: a sentence proposing more cases (a count, a number word, `double`, `3x`, `a 50-case suite`, `k to 10`, beside a word for getting more) at a count above what the run reached that no projection states, or naming a cost no projection prices and the run did not measure, is replaced by the projection's sentence once and otherwise dropped; a next step whose title is replaced keeps none of the writer's facts or why, one with nothing projected is not printed, and each is listed in the methods (`The memo said “…”, a sample size or cost no code computed, so the page does not print it.`). The seeded `eval_analysis_gen` prompt no longer asks an unanswerable answer or a next step for a rough cost (rules 11 and 12 point at the To switch table): a writer prompt, not judge wording, so no judge identity moves, but a deployment's stored preset keeps the old wording until an operator pushes the new seed, and until then a failed generation's summary notes the prompt is not the in-repo default. A host matching on the unsettled verdict line, the Decision section's blocks or a memo's next steps updates its match.",
 ]
+
+[[release]]
+version = "0.70.1"
+since = "v0.70.0"
+summary = """
+A models fix only. No public name of 3tears-evals moved or was removed, and no judge wording changed.
+"""
+notes = []
 
 [[release]]
 version = "0.70.0"

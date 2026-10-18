@@ -1872,7 +1872,9 @@ FloorContrastReading = Literal["trial", "measure"]
 
 
 class FloorContrast(EvalDocumentModel):
-    """One arm against the control under one rig, on a reading a floor or an aspect's reading reads per case.
+    """One arm against the control under one rig, on a reading a floor or an aspect's reading reads per case; with no
+    control (a choice), one pair of arms on the overall pass rate, ``control`` then the arm first in variant-key
+    order, a position and never a role.
 
     Carried whatever the aspect's family compares, so a floor on the overall pass rate or the cost per reply, and the
     aspect's pass-rate reading, never depend on which readings a question asked about: each reads its own interval,
@@ -2695,7 +2697,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "Each arm against the control under each rig, on the overall pass rate and on the cost per reply, with "
             "the per-case values a floor reads: carried whatever the family compares, so neither a floor nor the "
-            "aspect's pass-rate reading depends on which readings the question asked about. Empty with no control."
+            "aspect's pass-rate reading depends on which readings the question asked about. With no control, each "
+            "pair of arms under one rig on the overall pass rate alone: what a choice's pairwise readings read."
         ),
     )
     multiple_comparisons: MultipleComparisons = Field(
@@ -2779,6 +2782,16 @@ class AnalysisContextBundle(EvalDocumentModel):
             "When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs "
             "included, after which a design edit is refused and a question asked confirms nothing "
             "(`reading_scope.question_post_hoc`). None when the campaign holds no run yet."
+        ),
+    )
+    first_result_at: str | None = Field(
+        default=None,
+        description=(
+            "When the aspect's evidence could first be seen (ISO-8601): the earliest `scored_at` among its member "
+            "runs' results, the instant a control named later is read against. A margin, a floor or the question's "
+            "wording declared later than it is declared after the evidence, and the campaign's page says so. None "
+            "when no result has landed, or a bundle assembled before it was carried. Left out of `fingerprint()`: "
+            "when a result was written is not what it measured."
         ),
     )
     package_version: str | None = Field(
@@ -3188,8 +3201,9 @@ class AnalysisContextBundle(EvalDocumentModel):
         return evidence_digest(self.to_dict())
 
 
-#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, not what it read.
-_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version"})
+#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, and when its results
+#: were written, not what it read.
+_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version", "first_result_at"})
 
 
 def evidence_digest(document: Mapping[str, Any]) -> str:
@@ -3227,9 +3241,10 @@ class BundleInspection(EvalDocumentModel):
     **Which is why the fingerprint is compared rather than assumed.** A bundle
     re-assembled today is not automatically the bundle a generation ran over
     months ago: a member run can have been archived, or results deleted, since.
-    Addressed by analysis id, this therefore carries the recorded
-    ``generation.bundle_fingerprint`` beside the freshly computed one and states
-    whether they agree. A ``False`` is itself the finding, not a failure of the read.
+    Addressed by analysis id, this therefore carries the fingerprint the analysis
+    recorded for this aspect's bundle (``AspectAnalysis.bundle_fingerprint``; the
+    generation's own ``bundle_fingerprint`` is the whole campaign bundle's) beside
+    the freshly computed one and states whether they agree. A ``False`` is itself the finding, not a failure of the read.
 
     **An insight minted after the generation is NOT one of those moves.** The re-assembly
     reads prior insights as of the instant the generation's bundle was assembled
@@ -3267,8 +3282,9 @@ class BundleInspection(EvalDocumentModel):
     recorded_fingerprint: str | None = Field(
         default=None,
         description=(
-            "The addressed analysis's stored generation.bundle_fingerprint — what the paid call actually "
-            "ran over. None when addressed by campaign, since no generation is being spoken about."
+            "The fingerprint the addressed analysis stored for this aspect's bundle (`AspectAnalysis.bundle_fingerprint`) "
+            "— what the paid call read of this aspect; the generation's own `bundle_fingerprint` is the whole campaign "
+            "bundle's. None when addressed by campaign, since no generation is being spoken about."
         ),
     )
     reproduces_generation: bool | None = Field(

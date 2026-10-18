@@ -39,6 +39,8 @@ from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disc
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.style import LABEL_CLAIMS, lint_page, lint_prose
 from threetears.evals.kernel.declaration import Floor
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_FLOORS, G2_QUESTION, PRODUCTION, answering, declaring
 from packages.evals.tests.off_loop import off_loop
@@ -116,14 +118,9 @@ async def _memo_page(
     comparison: Result, bundle: AnalysisContextBundle, findings: list[dict[str, Any]], answer: str
 ) -> Report:
     """The page a stored analysis of ``findings`` and one answer to the G2 question renders."""
-    memo = {
-        "findings": findings,
-        "decisions": [],
-        "questions": [{"question_id": bundle.aspect, "resolution": "answered", "answer": answer, "rests_on": [0]}],
-        "next": [],
-    }
+    memo = authored_memo(bundle, findings, means=answer)
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=FixturedClient(json.dumps(memo)),
@@ -168,7 +165,7 @@ async def test_a_broken_floor_never_replaces_the_memo_s_answer() -> None:
     (answer,) = _answers(report)
     assert answer.body == "Keep production."
     markdown = report_markdown(report)
-    assert "**Answered.** Keep production." in markdown
+    assert "Keep production." in markdown
     assert "See the decision rule above." not in markdown and "Still open" not in markdown
     (warning,) = _warnings(report)
     assert warning.startswith(f"Floor broken on {bundle.aspect}: ")

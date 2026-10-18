@@ -47,8 +47,10 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Mapping
-from typing import Literal, get_args
+from collections.abc import Callable, Mapping
+from typing import Literal, TypeVar, get_args
+
+from pydantic import BaseModel
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import ABSENT, format_number
@@ -56,7 +58,6 @@ from threetears.evals.analysis.references import cell_aliases, cell_of_alias, re
 from threetears.evals.analysis.report.figures import MeasureRuler, report_rulers
 from threetears.evals.analysis.quantities import UNSPACED_UNITS, is_money
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel.campaign import ReadingKind
 from threetears.evals.kernel.metrics import MetricDescriptor, goal_check_measure, goal_check_of
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
@@ -172,10 +173,35 @@ def parse_reference(inner: str) -> tuple[str, str, str, str]:
     return cell, measure_id, reading, stat
 
 
+#: Where a writer's cell alias points: the surface holding the cell, the cell's ``cell_ref`` on it, and that surface's
+#: ``measure_catalog`` (None reads the engine's own descriptions alone). Raises
+#: :class:`~threetears.evals.analysis.errors.UnresolvableReference` for an alias that names no cell. A campaign's
+#: lookup spans its aspects, each cell on its own aspect's surface; :func:`surface_lookup` is one surface's.
+CellLookup = Callable[[str], tuple[DecisionSurface, str, Mapping[str, MetricDescriptor] | None]]
+
+
+def surface_lookup(surface: DecisionSurface, catalog: Mapping[str, MetricDescriptor] | None = None) -> CellLookup:
+    """The lookup of one surface's cells, by the aliases :func:`~threetears.evals.analysis.references.cell_aliases`
+    mints over it.
+
+    :param surface: The surface.
+    :ptype surface: DecisionSurface
+    :param catalog: Its measure catalog, or None for the engine's own descriptions.
+    :ptype catalog: Mapping[str, MetricDescriptor] | None
+    :return: The lookup.
+    :rtype: CellLookup
+    """
+
+    def lookup(alias: str) -> tuple[DecisionSurface, str, Mapping[str, MetricDescriptor] | None]:
+        return surface, cell_of_alias(surface, alias), catalog
+
+    return lookup
+
+
 def render_reference(
     surface: DecisionSurface, inner: str, catalog: Mapping[str, MetricDescriptor] | None = None
 ) -> str:
-    """Resolve one reference against the surface and state its value.
+    """Resolve one reference against one surface and state its value (:func:`render_looked_up`, on that surface).
 
     :param surface: The analysis's decision surface.
     :ptype surface: DecisionSurface
@@ -185,13 +211,27 @@ def render_reference(
         (:func:`~threetears.evals.analysis.report.figures.report_rulers`); None reads the engine's own
         descriptions alone.
     :ptype catalog: Mapping[str, MetricDescriptor] | None
+    :return: The value as a reader sees it.
+    :rtype: str
+    :raises UnresolvableReference: The reference is malformed, or names nothing the surface holds.
+    """
+    return render_looked_up(inner, surface_lookup(surface, catalog))
+
+
+def render_looked_up(inner: str, lookup: CellLookup) -> str:
+    """Resolve one reference through ``lookup`` and state its value.
+
+    :param inner: The text between the braces.
+    :ptype inner: str
+    :param lookup: Where each cell alias points (:data:`CellLookup`).
+    :ptype lookup: CellLookup
     :return: The value as a reader sees it: a count bare, a check's pass rate as ``<passed> of <evaluated>``,
         anything else in its display unit (:func:`state_in_prose`).
     :rtype: str
     :raises UnresolvableReference: The reference is malformed, or names nothing the surface holds.
     """
     cell, measure_id, reading, stat = parse_reference(inner)
-    cell_ref = cell_of_alias(surface, cell)
+    surface, cell_ref, catalog = lookup(cell)
     ruler = report_rulers(surface, catalog).of(measure_id, reading)
     if reading == "measure":
         counts = _category_counts(surface, inner, cell_ref, measure_id, stat)
@@ -261,35 +301,49 @@ def _category_counts(surface: DecisionSurface, inner: str, cell_ref: str, measur
 
 
 def render_text(
-    surface: DecisionSurface, text: str, *, where: str, catalog: Mapping[str, MetricDescriptor] | None = None
+    surface: DecisionSurface | None,
+    text: str,
+    *,
+    where: str,
+    catalog: Mapping[str, MetricDescriptor] | None = None,
+    lookup: CellLookup | None = None,
 ) -> str:
     """Replace every figure reference in one piece of prose with its value.
 
-    :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
+    :param surface: The decision surface its references resolve against; None when ``lookup`` says where each cell is.
+    :ptype surface: DecisionSurface | None
     :param text: The prose as the model wrote it.
     :ptype text: str
     :param where: Where it sits in the document, for the refusal.
     :ptype where: str
-    :param catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it.
+    :param catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it; ignored with ``lookup``.
     :ptype catalog: Mapping[str, MetricDescriptor] | None
+    :param lookup: Where each cell alias points, across a campaign's aspects; None reads ``surface`` alone.
+    :ptype lookup: CellLookup | None
     :return: The prose with each reference rendered.
     :rtype: str
     :raises UnresolvableReference: A reference in it is malformed or names nothing the surface holds.
+    :raises ValueError: Neither ``surface`` nor ``lookup`` is given.
     """
+    if lookup is None:
+        if surface is None:
+            raise ValueError("render_text needs a surface or a lookup to resolve its references against")
+        lookup = surface_lookup(surface, catalog)
+    looked_up = lookup
 
     def render(match: re.Match[str]) -> str:
         try:
-            return render_reference(surface, match.group(1), catalog)
+            return render_looked_up(match.group(1), looked_up)
         except UnresolvableReference as unresolved:
             raise UnresolvableReference(f"{where}: {unresolved}") from unresolved
 
     return FIGURE_REFERENCE.sub(render, text)
 
 
-def render_prose_figures(
-    document: AuthoredAnalysis, surface: DecisionSurface, catalog: Mapping[str, MetricDescriptor] | None = None
-) -> AuthoredAnalysis:
+_Document = TypeVar("_Document", bound=BaseModel)
+
+
+def render_prose_figures(document: _Document, lookup: CellLookup) -> _Document:
     """Render every figure reference in the document, or refuse the first that names nothing.
 
     Every string in the document is walked, not a list of prose fields: a list would silently skip
@@ -297,26 +351,24 @@ def render_prose_figures(
     so rendering it is a no-op.
 
     :param document: The validated authored document.
-    :ptype document: AuthoredAnalysis
-    :param surface: The decision surface its references resolve against.
-    :ptype surface: DecisionSurface
-    :param catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it.
-    :ptype catalog: Mapping[str, MetricDescriptor] | None
-    :return: The document with every reference replaced by its value.
-    :rtype: AuthoredAnalysis
+    :ptype document: _Document
+    :param lookup: Where each cell alias its references name points, across the campaign's aspects.
+    :ptype lookup: CellLookup
+    :return: The document with every reference replaced by its value, as its own type.
+    :rtype: _Document
     :raises UnresolvableReference: A reference is malformed or names nothing the surface holds.
     """
 
     def walk(value: object, where: str) -> object:
         if isinstance(value, str):
-            return render_text(surface, value, where=where, catalog=catalog)
+            return render_text(None, value, where=where, lookup=lookup)
         if isinstance(value, dict):
             return {key: walk(item, f"{where}.{key}" if where else key) for key, item in value.items()}
         if isinstance(value, list):
             return [walk(item, f"{where}[{index}]") for index, item in enumerate(value)]
         return value
 
-    return AuthoredAnalysis.model_validate(walk(document.model_dump(mode="python"), ""))
+    return type(document).model_validate(walk(document.model_dump(mode="python"), ""))
 
 
 #: The heading the grammar section opens with — the name the seed prompt points the writer at.
@@ -413,8 +465,8 @@ def reference_grammar() -> str:
     return (
         f"{GRAMMAR_HEADING}. This section is written by the code that reads your references, so it is current: where "
         "anything above describes naming a cell or writing a reference differently, follow this section.\n"
-        f"Name a cell by its `cell` ({', '.join(f'`{alias}`' for alias in aliases[:2])}, …) wherever you name one — in evidence, in a chart, "
-        "in a decision and in a reference. "
+        f"Name a cell by its `cell` ({', '.join(f'`{alias}`' for alias in aliases[:2])}, …) wherever you name one — in evidence "
+        "and in a reference. "
         f"Where your prose needs a number, write a figure reference in its place: `{REFERENCE_FORM}`, where `<reading>` is "
         f"{_backticked(READINGS)}, and `<stat>` is {statistics}. "
         f'For example, "{sentence}" reads "{render_text(surface, sentence, where="the grammar example")}": '
@@ -433,11 +485,14 @@ __all__ = [
     "JUDGED_STATS",
     "MEASURE_STATS",
     "REFERENCE_FORM",
+    "CellLookup",
     "parse_reference",
     "prose_number",
     "reference_grammar",
     "render_prose_figures",
+    "render_looked_up",
     "render_reference",
     "render_text",
+    "surface_lookup",
     "state_in_prose",
 ]

@@ -10,13 +10,15 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   for every rank (plain Bonferroni); removing the out-of-range refusal.
 - ``_multiple_comparisons``: reading the verdict off ``p_raw`` instead of ``p_adjusted``; correcting
   over each comparison alone (``holm_adjust([p])``); dropping the control-variant filter on pairs.
-- ``build_user_message``: removing the ``p_raw`` deletion.
+- ``build_campaign_user_message``: sending a raw p.
 - ``_compare`` (through the bundle): disabling the paired no-spread branch, so a deterministic gap is named as a
   shortage of cases; reading the gap by the t-test's refusal instead of ``separation_p``, so a constant
   shift over twelve cases reads untested.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import random
 from collections.abc import Sequence
@@ -30,7 +32,8 @@ from threetears.evals.analysis import (
     ComparisonFamily,
     assemble_context_bundle,
 )
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.stats import (
     UNIFORM_MOVE_NEEDS_RANGE,
     bounded_separation_p,
@@ -232,17 +235,18 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
         borderline = next(c for c in _family(bundle).comparisons if c.name == "extraction.d0")
         assert borderline.p_raw is not None and borderline.p_adjusted is not None
 
-        message = build_user_message(bundle)
+        message = _writer_message(bundle)
 
         assert "p_raw" not in message
-        assert repr(borderline.p_raw) not in message, "the raw figure must not reach the writer under any key"
-        assert repr(borderline.p_adjusted) in message
+        # The writer's view keeps four significant figures of every figure it shows.
+        assert repr(float(f"{borderline.p_raw:.4g}")) not in message, "the raw figure must not reach the writer"
+        assert repr(float(f"{borderline.p_adjusted:.4g}")) in message
         assert bundle.multiple_comparisons.families[0].comparisons[0].p_raw is not None, (
             "the raw p stays on the bundle for audit; only the writer's view drops it"
         )
 
     def test_the_prompt_tells_the_writer_to_quote_only_the_adjusted_p(self) -> None:
-        assert "`multiple_comparisons`" in EVAL_ANALYSIS_GEN_DEFAULT
+        assert "`contrasts`" in EVAL_ANALYSIS_GEN_DEFAULT
         assert "quote only its `p_adjusted`" in EVAL_ANALYSIS_GEN_DEFAULT
         assert "`family_size`" in EVAL_ANALYSIS_GEN_DEFAULT
 
@@ -367,12 +371,10 @@ class TestWhatAFamilyCovers:
             EVAL_ANALYSIS_GEN_DEFAULT
         )
         assert (
-            "Where the bundle carries no family (`multiple_comparisons.withheld` says why), no comparison between arms is separated"
-            in (EVAL_ANALYSIS_GEN_DEFAULT)
+            "Where an aspect carries no contrast family (`contrasts_withheld` says why), no comparison between arms is "
+            "separated" in (EVAL_ANALYSIS_GEN_DEFAULT)
         )
-        assert "with no question declared, on every merit-axis reading as one campaign-wide family" in (
-            EVAL_ANALYSIS_GEN_DEFAULT
-        )
+        assert "with no question asked, on every merit-axis reading as one family" in (EVAL_ANALYSIS_GEN_DEFAULT)
 
     def test_a_contrast_is_paired_with_the_control_on_its_own_rig_only(self) -> None:
         """Two rigs: each contrast cell meets the control cell of its rig, never the other's."""
@@ -489,7 +491,7 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
         in row["verdict"]
     )
     assert "materiality threshold" not in row["verdict"], "the reader's words: the margin they declared"
-    assert '"materiality":"immaterial"' in build_user_message(bundle).replace(" ", "")
+    assert '"materiality":"immaterial"' in _writer_message(bundle).replace(" ", "")
 
 
 def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> None:
@@ -552,7 +554,7 @@ def test_equivalent_is_claimed_only_by_the_equivalence_test_against_a_declared_m
         assert (
             comparison.interval is not None and -threshold < comparison.interval[0] < comparison.interval[1] < threshold
         )
-        assert "equivalence_p_raw" not in build_user_message(
+        assert "equivalence_p_raw" not in _writer_message(
             _bundle([], accuracy=_ALIKE, cases=24, profile=_accuracy_threshold(threshold))
         )
     else:
@@ -713,3 +715,8 @@ class TestPairingCorrelation:
     def test_samples_of_different_lengths_are_refused(self) -> None:
         with pytest.raises(ValueError, match="case by case"):
             pairing_correlation([1.0, 2.0, 3.0], [1.0, 2.0])
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

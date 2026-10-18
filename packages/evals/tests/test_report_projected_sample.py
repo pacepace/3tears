@@ -33,7 +33,9 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import ArmScoreboard, MultipleComparisons
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.analysis.report.decision import (
@@ -52,8 +54,11 @@ from threetears.evals.analysis.report.decision import (
     read_floor,
 )
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
+from threetears.evals.analysis import stats
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
+    PROJECTION_ORDERS,
+    UNPAIRED_PROJECTION_CAP,
     bounded_cases_to_clear,
     bounded_difference_interval,
     cases_to_clear,
@@ -422,7 +427,7 @@ async def test_the_bundle_carries_what_the_bounded_interval_read_and_the_writer_
     assert sorted(control) == sorted(CONTROL) and sorted(contrast) == sorted(CANDIDATE)
     again = bounded_difference_interval(control, contrast, paired=True, value_range=(0.0, 1.0), confidence=LEVEL)
     assert again == passed.bounded_interval
-    assert '"case_values"' not in build_user_message(bundle)
+    assert '"case_values"' not in _writer_message(bundle)
 
 
 async def test_an_unclear_page_tables_the_cases_holding_needs_with_their_cost_at_the_nominal_level() -> None:
@@ -551,7 +556,7 @@ def test_with_no_projection_a_sample_size_of_its_own_is_not_printed() -> None:
 
 async def _memo(comparison: Result, bundle: AnalysisContextBundle, memo: dict[str, Any]) -> Report:
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=FixturedClient(json.dumps(memo)),
@@ -581,28 +586,13 @@ async def test_a_thirty_case_next_step_and_answer_do_not_survive_the_style_gate_
         "invalidates": [],
         "durable": "",
     }
-    memo = {
-        "findings": [finding],
-        "decisions": [
-            {
-                "proposal": "Switch to candidate.",
-                "disposition": "deferred",
-                "confidence": "low",
-                "cells": [],
-                "rests_on": [0],
-                "revisit_when": "After 30 more cases. When the drop is shown either way.",
-            }
-        ],
-        "questions": [
-            {
-                "question_id": bundle.aspect,
-                "resolution": "unanswerable",
-                "answer": "Too few cases to tell. Thirty more cases would settle it for $0.40.",
-                "rests_on": [],
-            }
-        ],
-        "next": [_next(THIRTY, "At least 30 independent test cases would settle it. It also tells the arms apart.")],
-    }
+    memo = authored_memo(
+        bundle,
+        [finding],
+        means="Too few cases to tell. Thirty more cases would settle it for $0.40.",
+        reasons=["After 30 more cases. When the drop is shown either way."],
+        next=[_next(THIRTY, "At least 30 independent test cases would settle it. It also tells the arms apart.")],
+    )
     report = await _memo(comparison, bundle, memo)
     said = projection_sentence(
         SampleProjection(cases=12, if_none=CasesNeeded("more", NOMINAL[0]), if_observed=CasesNeeded("more", NOMINAL[1]))
@@ -614,8 +604,8 @@ async def test_a_thirty_case_next_step_and_answer_do_not_survive_the_style_gate_
     # The writer's why and facts were about the step it replaced: they go with its title.
     assert not [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step_why"]
     assert not [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "next_step_facts"]
-    (revisit,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "revisit_when"]
-    assert revisit.body == "When the drop is shown either way."
+    (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
+    assert recommendation.body == "When the drop is shown either way."
     page = report_markdown(report).split("## Methods")
     assert "30 cases" not in page[0] and "$0.40" not in page[0] and "Thirty" not in page[0]
     assert "a sample size or cost no code computed" in page[1]
@@ -632,14 +622,38 @@ async def test_with_two_candidates_a_next_step_may_cite_either_arm_s_projected_c
     report = await _memo(
         comparison,
         bundle,
-        {
-            "findings": [],
-            "decisions": [],
-            "questions": [
-                {"question_id": bundle.aspect, "resolution": "unanswerable", "answer": "Too few cases.", "rests_on": []}
-            ],
-            "next": [_next(title)],
-        },
+        authored_memo(bundle, [], means="Too few cases.", next=[_next(title)]),
     )
     (step,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step"]
     assert step.body == title
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))
+
+
+def test_an_unpaired_rate_s_projection_reads_no_interval_past_its_cap_and_says_more_than_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Twenty production cases against twenty-three of the candidate's, alike in pass rate: no count under the
+    unpaired cap shows them within ten points, so the projection reads "more than 500" — and never reads an interval
+    over more cases than that, which is what kept a page of such rows from taking half a minute."""
+    read_over: list[int] = []
+
+    def counted(a: Sequence[float], b: Sequence[float], **kwargs: Any) -> tuple[float, float] | None:
+        read_over.append(max(len(a), len(b)))
+        return bounded_difference_interval(a, b, **kwargs)
+
+    monkeypatch.setattr(stats, "bounded_difference_interval", counted)
+    # Values no other test reads, so no interval is a cached one.
+    control = tuple(float(index % 5 < 3) for index in range(20))
+    candidate = tuple(float(index % 23 < 13) for index in range(23))
+    rate = RateReading("the pass rate", 12, 20, 13, 23, samples=(control, candidate), paired=False, confidence=0.975)
+
+    projection = project_rate(rate, cases=20, margin=10.0)
+
+    assert projection is not None and projection.if_none == CasesNeeded("beyond", UNPAIRED_PROJECTION_CAP)
+    assert read_over and max(read_over) <= UNPAIRED_PROJECTION_CAP
+    assert len(read_over) <= 2 * PROJECTION_ORDERS * 10, "two searches, each a few doublings up to the cap"
+    assert f"more than {UNPAIRED_PROJECTION_CAP}" in projected_cell(projection, projection.if_none)

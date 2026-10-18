@@ -27,12 +27,13 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
-from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_context_bundle
+from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_campaign_bundle, assemble_context_bundle
 from threetears.evals.analysis.reporter_kind import REPORTER_CASE_KEY, LabelCriterion, reporter_case_of
 from threetears.evals.schema import EvalResult
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.kernel import NotFoundError, ValidationFailedError, delivered_a_turn
 from threetears.evals.schema.models import EvalTestCase
+from threetears.evals.kernel.declaration import Aspect
 from threetears.evals.ops import (
     FrozenReporterCase,
     ReporterCaseListing,
@@ -78,6 +79,21 @@ def _tools() -> dict[str, Any]:
 # =============================================================================
 
 
+def test_a_campaign_of_several_aspects_is_refused_a_freeze_with_its_remedy() -> None:
+    """A reporter case freezes the campaign bundle a writer reads, and in this build only a campaign of one aspect."""
+    fixture = reporter_fixture()
+    storage = fixture.host.eval_host.storage
+    campaign = fixture.campaign.model_copy(update={"aspects": [*fixture.campaign.aspects, Aspect(label="second")]})
+    storage.save_campaign(campaign)
+
+    with pytest.raises(ValidationFailedError, match="has 2 aspects") as refused:
+        freeze_corpus_campaign(fixture)
+
+    assert "a reporter case freezes a campaign of one aspect only" in str(refused.value)
+    assert "campaign_create" in (refused.value.remedy or "")
+    assert _stored_cases(fixture, reporter_template().id) == []
+
+
 def test_a_freeze_without_an_analysis_pins_the_bundle_alone() -> None:
     fixture = reporter_fixture()
     eval_host = fixture.host.eval_host
@@ -87,7 +103,7 @@ def test_a_freeze_without_an_analysis_pins_the_bundle_alone() -> None:
     assert receipt.test_case_id == stored.id and stored.scope_id == TOYHOST_SCOPE
     case = reporter_case_of(stored)
     assert case is not None
-    bundle = assemble_context_bundle(fixture.campaign, storage=eval_host.storage, profile=eval_host.profile)
+    bundle = assemble_campaign_bundle(eval_host, fixture.campaign.id, fixture.campaign.scope_id)
     assert bundle.run_ids, "a bundle resolving no runs is refused, so the fixture must carry some"
     assert receipt.bundle_fingerprint == case.bundle_fingerprint == bundle.fingerprint()
     assert receipt.limits == case.limits
@@ -481,7 +497,8 @@ async def test_a_memo_titling_an_arm_its_readings_omit_fails_its_case_naming_the
     """
     fixture = off_loop(reporter_fixture)
     host = fixture.host.eval_host
-    bundle = off_loop(assemble_context_bundle, fixture.campaign, storage=host.storage, profile=host.profile)
+    # The campaign bundle, not one aspect's: only it carries the readings whose missed bars the recommendation must name.
+    bundle = off_loop(assemble_campaign_bundle, host, fixture.campaign.id, fixture.campaign.scope_id)
     payload = memo_payload(bundle)
     payload["findings"][0] |= {
         "title": "The 1024tok chunk is the slower one",

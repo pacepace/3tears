@@ -217,6 +217,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/versioning.py",
     "analysis/bundle/assemble.py",
     "analysis/gen_prompt.py",
+    # What the writer of a campaign's one memo reads: every host's campaign is rendered through it alike.
+    "analysis/campaign_bundle.py",
     # The gen package's public root, its exports scanned. Declared module by module, like
     # `kernel/__init__.py`, because `gen/` was classified module by module while it held a
     # host-coupled module, and the list stays the record of each one's move.

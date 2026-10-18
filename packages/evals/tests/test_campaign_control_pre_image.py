@@ -48,7 +48,6 @@ from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.lenses.frontier import compute_frontier
-from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.kernel import EvalCampaign, IDENTITY_VERSION
 from threetears.evals.kernel.declaration import (
@@ -62,12 +61,13 @@ from threetears.evals.kernel.identity import compute_variant_key, resolve_varian
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.values import SweepableValue
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import minimal_declaration
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, toyhost_design
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, alias_at, cell_at, memo_payload
+from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, arm_at, cell_at, memo_payload
 
 #: The predicate before this build's, which every "declared under another predicate" document here is stamped with.
 _EARLIER = IDENTITY_VERSION - 1
@@ -87,7 +87,7 @@ def _design(**changes: Any) -> dict[str, Any]:
 
 def _aspects(fixture: OpsFixture, *, runs: bool = True) -> list[dict[str, Any]]:
     """The toy campaign's one aspect as an author declares it, holding its runs or none."""
-    aspect: dict[str, Any] = {"label": fixture.campaign.behavior, "margin": 5, "design": _design()}
+    aspect: dict[str, Any] = {"label": fixture.campaign.behavior, "design": _design()}
     if runs:
         aspect["run_ids"] = list(fixture.campaign.run_ids)
     return [aspect]
@@ -408,18 +408,9 @@ async def test_the_adoption_check_and_the_report_name_the_arm_the_realized_desig
     assert bundle.declared is not None and bundle.declared.control is not None
     assert bundle.declared.control.variant_key != expected
     payload = memo_payload(bundle)
-    payload["decisions"] = [
-        {
-            "proposal": "Keep the chunk width the pipeline runs today.",
-            "disposition": "adopted",
-            "cells": [alias_at(bundle, TOYHOST_NARROW)],
-            "confidence": "medium",
-            "rests_on": [0],
-            "revisit_when": "",
-        }
-    ]
-    # Every reading unseparated: adopting any arm but the control is refused, so acceptance proves the check exempted
-    # the arm the realized design matched — not the declaration's own key, which no cell here carries.
+    payload["recommendation"][0]["arm"] = arm_at(campaign_bundle(bundle), TOYHOST_NARROW)
+    # Every reading unseparated: recommending any arm but the control is refused, so acceptance proves the check
+    # exempted the arm the realized design matched — not the declaration's own key, which no cell here carries.
     families = [
         family.model_copy(
             update={"comparisons": [c.model_copy(update={"verdict": "not_separated"}) for c in family.comparisons]}
@@ -432,7 +423,7 @@ async def test_the_adoption_check_and_the_report_name_the_arm_the_realized_desig
     client = FixturedClient(json.dumps(payload))
 
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -442,7 +433,7 @@ async def test_the_adoption_check_and_the_report_name_the_arm_the_realized_desig
     )
 
     assert len(client.calls) == 1, "adopting the control needs no separation"
-    assert analysis.decision_surface.control_variant_key == expected
+    assert analysis.aspects[0].decision_surface.control_variant_key == expected
     report = build_report(analysis)
     (scoreboard,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "scoreboard"]
     assert sum(str(row["arm"]).startswith("▸ ") for row in scoreboard.values()) == 1
@@ -761,13 +752,13 @@ async def test_keeping_the_control_under_the_earlier_predicate_needs_no_separati
     payload = memo_payload(
         bundle.model_copy(update={"run_summaries": [s for s in bundle.run_summaries if s.run_id != rerun]})
     )
-    (decision,) = payload["decisions"]
-    assert [variant_of_cell_ref(cell_aliases(bundle.cell_measures)[decision["cells"][0]])] == [stored_key]
-    payload["decisions"] = [{**decision, "disposition": "adopted", "revisit_when": ""}]
+    assert campaign_bundle(bundle).label_of(stored_key) == payload["recommendation"][0]["arm"], (
+        "the earlier cells are named as the control is"
+    )
     client = FixturedClient(json.dumps(payload))
 
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -777,6 +768,7 @@ async def test_keeping_the_control_under_the_earlier_predicate_needs_no_separati
     )
 
     assert len(client.calls) == 1, "the earlier cells are the control: adopting them is keeping it, never checked"
-    assert analysis.decision_surface.earlier_control == bundle.design.earlier_control
-    assert analysis.decision_surface.earlier_control is not None
-    assert analysis.decision_surface.earlier_control.variant_key == stored_key
+    surface = analysis.aspects[0].decision_surface
+    assert surface.earlier_control == bundle.design.earlier_control
+    assert surface.earlier_control is not None
+    assert surface.earlier_control.variant_key == stored_key

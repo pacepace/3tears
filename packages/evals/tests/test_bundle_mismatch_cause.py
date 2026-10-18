@@ -70,10 +70,15 @@ async def _generated(host: EvalHost, campaign_id: str, scope_id: str) -> EvalAna
 
 
 def _restored(host: EvalHost, analysis: EvalAnalysis, **generation: Any) -> None:
-    """Store the analysis again with its provenance altered — what an older build would have written."""
-    host.storage.save_analysis(
-        analysis.model_copy(update={"generation": analysis.generation.model_copy(update=generation)})
-    )
+    """Store the analysis again with its provenance altered — what an older build would have written.
+
+    A recorded ``bundle_fingerprint`` is the aspect's: each aspect's bundle is fingerprinted where it is frozen.
+    """
+    update: dict[str, Any] = {"generation": analysis.generation.model_copy(update=generation)}
+    if "bundle_fingerprint" in generation:
+        (aspect,) = analysis.aspects
+        update["aspects"] = [aspect.model_copy(update={"bundle_fingerprint": generation["bundle_fingerprint"]})]
+    host.storage.save_analysis(analysis.model_copy(update=update))
 
 
 class TestTheDigestIsDerivedFromTheDeclarations:

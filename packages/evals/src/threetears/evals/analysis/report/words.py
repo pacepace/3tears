@@ -97,6 +97,14 @@ EVIDENCE_TIER_WORDS = worded(
 )
 
 
+#: What a page says where the memo recommends no arm, by the campaign's kind (a change always recommends one).
+NO_RECOMMENDATION_WORDS: dict[str, str] = {
+    "measurement": "This campaign measures one arm, so there is no arm to recommend.",
+    "choice": "No clear winner: the writer recommends no arm.",
+    "change": "The writer recommends no arm.",
+}
+
+
 def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
     """What a finding stands on, as a reader says it.
 
@@ -234,18 +242,23 @@ def cell_arm_labels(surface: DecisionSurface, variant_index: Sequence[VariantInd
 
 
 def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
-    """Name the arm a cell reference points at, as :func:`cell_arm_labels` names it.
+    """Name the arm a cell reference points at, as :func:`cell_arm_labels` names it, over every aspect's cells.
 
-    A reference naming a variant the analysis's surface does not hold is named by the variant index's labeller,
-    in its own words, rather than printed as the reference.
+    One arm under one rig is one ``cell_ref`` in every aspect it ran in, and is named alike in each. A reference naming
+    a variant no aspect's surface holds is named by the variant indexes' labeller, in its own words, rather than
+    printed as the reference.
 
     :param analysis: The analysis whose references to name.
     :ptype analysis: EvalAnalysis
     :return: A function from a cell reference to its arm's name.
     :rtype: Callable[[str], str]
     """
-    labels = cell_arm_labels(analysis.decision_surface, analysis.variant_index)
-    names = arm_names(analysis.variant_index)
+    index = list({entry.variant_key: entry for aspect in analysis.aspects for entry in aspect.variant_index}.values())
+    labels: dict[str, str] = {}
+    for aspect in analysis.aspects:
+        for ref, label in cell_arm_labels(aspect.decision_surface, index).items():
+            labels.setdefault(ref, label)
+    names = arm_names(index)
 
     def name(ref: str) -> str:
         if ref in labels:
@@ -268,13 +281,25 @@ EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
+def evidence_columns(analysis: EvalAnalysis) -> tuple[tuple[str, str], ...]:
+    """A finding's evidence table's columns for this analysis: :data:`EVIDENCE_COLUMNS`, led by the aspect each row
+    was read on where the campaign holds more than one.
+
+    :param analysis: The analysis.
+    :ptype analysis: EvalAnalysis
+    :return: Column key → header, in display order.
+    :rtype: tuple[tuple[str, str], ...]
+    """
+    return (("aspect", "Aspect"), *EVIDENCE_COLUMNS) if len(analysis.aspects) > 1 else EVIDENCE_COLUMNS
+
+
 def evidence_rows(
     analysis: EvalAnalysis, evidence: Sequence[EvidenceRow], arm: Callable[[str], str]
 ) -> list[dict[str, TableCell]]:
-    """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
+    """A finding's evidence as table rows, keyed by :func:`evidence_columns` — each reading by what a reader calls it.
 
-    A measure's value and spread are stated on its one ruler for the report
-    (:func:`~threetears.evals.analysis.report.figures.analysis_rulers`): a share on 0–1 as a percent, a cost per
+    Each row is read on the aspect it was resolved on (``EvidenceRow.aspect``). A measure's value and spread are stated
+    on its one ruler for the report (:func:`~threetears.evals.analysis.report.figures.analysis_rulers`): a share on 0–1 as a percent, a cost per
     reply on the scale its heading names; a judged score on its dimension's; a goal check's
     pass rate is its count (``11 of 12``), as the scoreboard counts.
 
@@ -287,12 +312,12 @@ def evidence_rows(
     :return: One row per evidence row, in order.
     :rtype: list[dict[str, TableCell]]
     """
-    surface = analysis.decision_surface
-    rulers = analysis_rulers(analysis)
     rows: list[dict[str, TableCell]] = []
     for row in evidence:
-        ruler = rulers.of(row.measure_id, row.reading)
+        surface = analysis.aspect(row.aspect).decision_surface
+        ruler = analysis_rulers(analysis, row.aspect).of(row.measure_id, row.reading)
         values: dict[str, CellValue] = {
+            "aspect": row.aspect,
             "arm": arm(row.cell_ref),
             "measure": ruler.scaled(reading_heading(surface, row.measure_id, row.reading)),
             # Cases, never trials: the count every interval is read over.
@@ -303,7 +328,7 @@ def evidence_rows(
         cells["value"] = TableCell(value=row.value * ruler.factor, unit=ruler.unit)
         if (passed := _passed_of(row)) is not None:
             cells["value"] = TableCell(value=passed)
-        rows.append({key: cells[key] for key, _ in EVIDENCE_COLUMNS})
+        rows.append({key: cells[key] for key, _ in evidence_columns(analysis)})
     return rows
 
 
@@ -322,7 +347,7 @@ def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, ruler: MeasureRul
     """An evidence row's spread on its value's ruler: as stored where nothing is restated, else re-read off the surface."""
     if ruler.factor == 1.0:
         return row.dispersion
-    surface = analysis.decision_surface
+    surface = analysis.aspect(row.aspect).decision_surface
     try:
         resolved = resolve_reading(surface, row.cell_ref, row.measure_id, row.reading)
     except UnresolvableReference:
@@ -342,11 +367,13 @@ def counted(n: int, of: int, what: str) -> str:
 
 
 __all__ = [
+    "NO_RECOMMENDATION_WORDS",
     "BAR_DECISION_WORDS",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
     "ENGINE_WORDS",
     "EVIDENCE_COLUMNS",
+    "evidence_columns",
     "EVIDENCE_TIER_WORDS",
     "FIRST_SCREEN_BANNED",
     "GUARDRAIL_DECISION_WORDS",

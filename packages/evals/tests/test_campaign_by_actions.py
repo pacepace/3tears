@@ -48,7 +48,7 @@ def _aspects(fixture: OpsFixture, run_ids: list[str], *, declared: bool) -> list
     """The toy campaign's one aspect, holding ``run_ids``, declaring its design and a margin or exploratory."""
     aspect: dict[str, Any] = {"label": fixture.campaign.behavior, "run_ids": run_ids}
     if declared:
-        aspect.update(design=_design(), margin=5)
+        aspect.update(design=_design())
     return [aspect]
 
 

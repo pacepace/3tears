@@ -40,6 +40,7 @@ from threetears.evals.ops import (
     BarProposals,
     CampaignChanges,
     CampaignDefinition,
+    CampaignCallLine,
     CampaignLine,
     CampaignListing,
     LaunchEstimate,
@@ -89,6 +90,7 @@ from threetears.evals.ops import (
     bars_propose,
     campaign_archive,
     campaign_create,
+    campaign_record,
     campaign_runs_add,
     campaign_runs_remove,
     campaign_update,
@@ -142,7 +144,7 @@ from threetears.evals.ops import (
     runs_bisected_text,
     runs_compared_text,
 )
-from threetears.evals.kernel.declaration import Margin
+from threetears.evals.kernel.declaration import Margin, OverriddenBar
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
@@ -448,6 +450,38 @@ class CampaignRunsParams(EvalBaseModel):
     campaign_id: CampaignId
     run_ids: RunIds
     aspect: Annotated[str | None, Field(min_length=1, description=MEMBERSHIP_ASPECT_DESCRIPTION)] = None
+
+
+class CampaignRecordParams(EvalBaseModel):
+    """``campaign_record``."""
+
+    campaign_id: CampaignId
+    arm: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="The decided arm, by the label the campaign's page shows it under or by its variant key.",
+        ),
+    ]
+    call_reason: Annotated[str, Field(description="Why the call was made, in the decider's words.")] = ""
+    floors_overridden: Annotated[
+        list[str],
+        Field(description="The key of each broken floor of the decided arm the call overrides, as the page names it."),
+    ] = []
+    bars_overridden: Annotated[
+        list[str],
+        Field(
+            description=(
+                "Each absolute bar the decided arm missed that the call overrides, as `<aspect>/<measure>` (an aspect "
+                "label holds no slash), the aspect and measure the page's bars table names it by."
+            )
+        ),
+    ] = []
+    # The analysis whose memo the call was made over; omitted for a call on code's readings alone. One name, one
+    # meaning across the tool: described as every other action's analysis_id is.
+    analysis_id: Annotated[
+        str | None, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")
+    ] = None
 
 
 class JudgeConfigsListParams(EvalBaseModel):
@@ -961,6 +995,34 @@ async def _campaign_runs_remove(host: OpsHost, caller: Caller, params: CampaignR
         eval_host,
         params.campaign_id,
         params.run_ids,
+        caller.scope_id,
+    )
+
+
+async def _campaign_record(host: OpsHost, caller: Caller, params: CampaignRecordParams) -> CampaignCallLine:
+    eval_host = host.eval_host
+    bars = []
+    for named in params.bars_overridden:
+        aspect, slash, measure = named.partition("/")
+        if not (aspect and slash and measure):
+            raise ValidationFailedError(
+                f"bars_overridden names {named!r}, which is not `<aspect>/<measure>`",
+                remedy="name each overridden bar by its aspect's label and its measure, joined by one slash",
+            )
+        bars.append(OverriddenBar(aspect=aspect, measure=measure))
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            campaign_record,
+            arm=params.arm,
+            called_by=caller.identity,
+            reason=params.call_reason,
+            floors_overridden=params.floors_overridden,
+            bars_overridden=bars,
+            analysis_id=params.analysis_id,
+        ),
+        eval_host,
+        params.campaign_id,
         caller.scope_id,
     )
 
@@ -1798,6 +1860,27 @@ def engine_actions() -> tuple[Action, ...]:
                 "Membership only: nothing is deleted. Each run leaves the aspect holding it. A run the campaign (or "
                 "the named aspect) does not hold is refused, and then none is removed. An arm is a variant, not a "
                 "run, so it stays named; where no remaining run carries it, the report says the arm is unobserved."
+            ),
+        ),
+        Action(
+            name="campaign_record",
+            summary="Record a person's call on a campaign: the arm decided, why, and each warning it overrides.",
+            workflow=ANALYSE,
+            permission="write",
+            params=CampaignRecordParams,
+            result=CampaignCallLine,
+            handler=_campaign_record,
+            render=render.render_model,
+            example={"campaign_id": campaign_id, "arm": "v2", "call_reason": "Tone matters more this quarter."},
+            detail=(
+                "Code reports, the writer recommends, a person decides: this records the decision, beside code's "
+                "readings, never in place of them. The arm is matched by its variant key, which is what is recorded. "
+                "It is read against code's readings of the evidence as it stands, never the memo's words: an arm "
+                "with a broken floor is recorded only when floors_overridden names each such floor's key, and an arm "
+                "that missed an absolute bar only when bars_overridden names each such bar; naming one the arm did "
+                "not break or miss is refused. A measurement (one arm) has nothing to decide, so it is refused. A "
+                "new call replaces the earlier one; the campaign's page states the call, who made it and when, and "
+                "every warning it overrides. call_reason is recorded as the call's reason."
             ),
         ),
         Action(

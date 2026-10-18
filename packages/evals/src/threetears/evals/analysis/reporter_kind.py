@@ -38,14 +38,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.bundle.schema import (
-    AnalysisContextBundle,
-    evidence_digest,
-    refuse_a_bundle_before_aspects,
+from threetears.evals.analysis.campaign_bundle import (
+    CampaignBundle,
+    build_campaign_user_message,
+    campaign_evidence_digest,
 )
 from threetears.evals.analysis.errors import GenerationError
 from threetears.evals.analysis.generator import (
-    build_user_message,
     first_request,
     generate_analysis,
     refuse_an_undescribable_arm_table,
@@ -54,7 +53,7 @@ from threetears.evals.analysis.generator import (
 from threetears.evals.analysis.report.serialize_md import markdown_table
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
-    EVIDENCE_COLUMNS,
+    evidence_columns,
     arm_namer,
     evidence_rows,
     positions,
@@ -220,7 +219,9 @@ class ReporterCase(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    bundle: dict[str, Any] = Field(description="The campaign's bundle, frozen: ``AnalysisContextBundle.to_dict()``.")
+    bundle: dict[str, Any] = Field(
+        description="The campaign's bundle, frozen whole, every aspect in it: ``CampaignBundle.to_dict()``."
+    )
     bundle_fingerprint: str = Field(
         description="The frozen bundle's fingerprint, so a case can be matched and re-checked."
     )
@@ -411,8 +412,8 @@ def _clipped(value: Any) -> str:
     return shown if len(shown) <= 80 else shown[:77] + "..."
 
 
-def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
-    """Rebuild the frozen bundle, refusing one that did not survive the round-trip intact.
+def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
+    """Rebuild the frozen campaign bundle, refusing one that did not survive the round-trip intact.
 
     A case frozen under an older bundle shape could hand the generator and the judge a bundle
     that is not the one the case pins. Three checks make that loud:
@@ -423,9 +424,9 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
       every stored read;
     - every frozen value must survive the rebuild unchanged — none altered by validation.
 
-    **A bundle frozen before shape 59 is refused**, before any of this: it holds the campaign's declaration as a
-    ``CampaignDesign``, which a bundle that reads one aspect no longer carries, so no rebuild can keep its values, and
-    the case is frozen again from its campaign instead.
+    **A bundle frozen before one memo covered a campaign is refused**, before any of this: a case frozen over one
+    aspect's bundle (before 0.71), or over a bundle of a shape before 59, holds no campaign bundle, so no rebuild can
+    hand the writer what it now reads, and the case is frozen again from its campaign instead.
 
     **From shape 59 on, a field the bundle model gained after the freeze is NOT a loss, and that tolerance is
     deliberate** — the one place a read here accepts an older shape. The frozen bundle is the
@@ -440,25 +441,24 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
     :param case: The case whose frozen bundle to rebuild.
     :ptype case: ReporterCase
     :return: The bundle, carrying every frozen value.
-    :rtype: AnalysisContextBundle
-    :raises RefusedInput: The frozen bundle's shape is from before a bundle read one aspect (59).
+    :rtype: CampaignBundle
+    :raises RefusedInput: The frozen bundle is not a campaign bundle of this build's shape, or an aspect's bundle in it
+        is of a shape from before a bundle read one aspect (59).
     :raises ValueError: The frozen bundle does not validate, no longer digests to the recorded
         fingerprint, or loses or changes a frozen value in the round-trip.
     """
-    frozen_digest = evidence_digest(case.bundle)
+    frozen = case.bundle
+    what = f"the reporter case frozen over bundle {case.bundle_fingerprint}"
+    remedy = "freeze the case again from its campaign, so its bundle is the campaign bundle its writer now reads"
+    CampaignBundle.refuse_another_shape(frozen, what=what, remedy=remedy)
+    frozen_digest = campaign_evidence_digest(frozen)
     if frozen_digest != case.bundle_fingerprint:
         raise ValueError(
             f"the case's frozen bundle digests to {frozen_digest} and the case recorded "
             f"{case.bundle_fingerprint} — the case does not hold the bundle it names, so neither the "
             "generator nor the judge would see the bundle this case pins"
         )
-    frozen = case.bundle
-    refuse_a_bundle_before_aspects(
-        frozen,
-        what=f"the reporter case frozen over bundle {case.bundle_fingerprint}",
-        remedy="freeze the case again from its campaign, so its bundle reads the campaign's aspect",
-    )
-    bundle = AnalysisContextBundle.from_dict(frozen)
+    bundle = CampaignBundle.from_dict(frozen, what=what, remedy=remedy)
     added: list[str] = []
     losses = _losses(frozen, bundle.to_dict(), "bundle", added)
     if losses:
@@ -486,7 +486,7 @@ def render_case_material(case: ReporterCase) -> str:
     """The case's frozen bundle rendered by this build — byte-identical to what a generator is sent over it.
 
     One renderer, two readers: this is the generator's own
-    :func:`~threetears.evals.analysis.generator.build_user_message` over the rebuilt bundle, never
+    :func:`~threetears.evals.analysis.campaign_bundle.build_campaign_user_message` over the rebuilt bundle, never
     a copy of it, so the judge cannot ground against a bundle the generator was not given. Which
     memo is judged against this render and which against the case's frozen writer message is
     decided in one place, :func:`judge_case_material`.
@@ -497,10 +497,10 @@ def render_case_material(case: ReporterCase) -> str:
     :rtype: str
     :raises ValueError: The frozen bundle cannot be rebuilt intact (see :func:`rebuild_bundle`).
     """
-    return build_user_message(rebuild_bundle(case))
+    return build_campaign_user_message(rebuild_bundle(case))
 
 
-def judge_case_material(case: ReporterCase, *, generated_over: AnalysisContextBundle | None) -> str:
+def judge_case_material(case: ReporterCase, *, generated_over: CampaignBundle | None) -> str:
     """The evidence the judge scores a memo against: what that memo's own writer read — the one place it is decided.
 
     - **A generated memo** is judged against the message its generator was sent: this build's render
@@ -514,14 +514,14 @@ def judge_case_material(case: ReporterCase, *, generated_over: AnalysisContextBu
     :param case: The cell's case.
     :ptype case: ReporterCase
     :param generated_over: The bundle a generated memo was written over, or ``None`` for the recorded memo.
-    :ptype generated_over: AnalysisContextBundle | None
+    :ptype generated_over: CampaignBundle | None
     :return: The judge's case material.
     :rtype: str
     :raises ValueError: ``generated_over`` is ``None`` and the case pins no recorded memo, so there is no
         memo, and no message its writer read, to judge.
     """
     if generated_over is not None:
-        return build_user_message(generated_over)
+        return build_campaign_user_message(generated_over)
     if case.writer_message is None:
         raise ValueError(
             "this reporter case pins no recorded memo, so there is no writer message to judge one against; only "
@@ -565,7 +565,7 @@ def _unusable_bundle(test_case: EvalTestCase, exc: ValueError) -> str:
     return f"apparatus: test case {test_case.id}'s frozen bundle cannot be used: {exc}"
 
 
-def _generation_input(test_case: EvalTestCase) -> tuple[ReporterCase, AnalysisContextBundle] | str:
+def _generation_input(test_case: EvalTestCase) -> tuple[ReporterCase, CampaignBundle] | str:
     """The case and the bundle a cell generates over, or the infra error that excludes it with no call made.
 
     The one reading of a case a generator is sent, shared by :meth:`ReporterKind.invoke`, which generates over it,
@@ -576,7 +576,7 @@ def _generation_input(test_case: EvalTestCase) -> tuple[ReporterCase, AnalysisCo
     :param test_case: The cell's stored case.
     :ptype test_case: EvalTestCase
     :return: ``(case, bundle)``, or the infra error to report.
-    :rtype: tuple[ReporterCase, AnalysisContextBundle] | str
+    :rtype: tuple[ReporterCase, CampaignBundle] | str
     """
     case = _read_case(test_case)
     if isinstance(case, str):
@@ -926,13 +926,13 @@ REPLAY_NOTES_HEADING = "# NOTES ON THIS EVIDENCE — not seen by the memo's auth
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
     """The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
 
-    Markdown, in the order a reader acts on it: where each declared question stands, the recommendations, the
-    findings in the order the model wrote them, and what to run next — each section omitted when the model wrote
-    nothing for it. Findings are numbered ``F1`` onward, and every link the model made by position is printed that
-    way, a finding's trials by their ids. The memo has no headline, summary or chart: the report's first screen is
-    code's, so the judge scores what the writer wrote. Arms are named by
-    :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
-        :func:`~threetears.evals.analysis.numbers.format_number`.
+    Markdown, in the order a reader acts on it: the recommendation (its arm, reasons, confidence, the findings it
+    rests on and every broken floor it is made over), each aspect's summary, the findings in the order the model wrote
+    them, and what to run next — each list section omitted when the model wrote nothing for it. Findings are numbered
+    ``F1`` onward, and every link the model made by position is printed that way, a finding's trials by their ids.
+    The memo has no headline, summary or chart: the report's first screen is code's, so the judge scores what the
+    writer wrote. Arms are named by :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
+    :func:`~threetears.evals.analysis.numbers.format_number`.
 
     The numbers code resolved from the model's own readings are printed beside them, because they are what the
     model's claims are about. Deterministic: one analysis renders to one string.
@@ -949,30 +949,40 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     )
     sections: list[list[str]] = []
 
-    if document.questions:
-        questions = ["## Declared questions", ""]
-        declared = AnalysisContextBundle.from_dict(dict(analysis.bundle)).declared
-        for answer in document.questions:
-            rests = f" (rests on {positions(answer.rests_on)})" if answer.rests_on else ""
-            asked = (
-                analysis.design_snapshot.question_words(answer.question_id)
-                if analysis.design_snapshot is not None
-                else (declared.question if declared is not None and declared.question else answer.question_id)
+    question = analysis.design_snapshot.question
+    recommended = document.recommended()
+    recommendation = ["## Recommendation", ""]
+    if question:
+        recommendation += [f"Question: {one_line(question)}", ""]
+    if recommended is None:
+        recommendation.append("- None: the memo recommends no arm.")
+    else:
+        rests = f" Rests on {positions(recommended.rests_on)}." if recommended.rests_on else ""
+        recommendation.append(
+            f"- **{one_line(recommended.arm)}** — confidence {_confidence(recommended.confidence)}.{rests}"
+        )
+        for reason in recommended.reasons:
+            recommendation += under(reason, "    ", first="  - ")
+        for override in recommended.floors_overridden:
+            recommendation += under(override.why, "    ", first=f"  - Over the broken floor {override.floor}: ")
+        for behind in recommended.behind_on:
+            recommendation += under(
+                behind.why, "    ", first=f"  - Though {behind.ahead_arm} is ahead on {behind.aspect}: "
             )
-            questions.append(f"- {one_line(asked)} — {answer.resolution}: {one_line(answer.answer)}{rests}")
-        sections.append(questions)
+        for missed in recommended.bars_missed:
+            recommendation += under(
+                missed.why, "    ", first=f"  - Below the bar on {missed.measure} ({missed.aspect}): "
+            )
+    sections.append(recommendation)
 
-    if document.decisions:
-        decisions = ["## Recommendations", ""]
-        for decision in document.decisions:
-            rests = f" Rests on {positions(decision.rests_on)}." if decision.rests_on else ""
-            decisions.append(
-                f"- **{one_line(decision.proposal)}** — {decision.disposition}; "
-                f"confidence {_confidence(decision.confidence)}.{rests}"
-            )
-            if decision.revisit_when:
-                decisions += under(decision.revisit_when, "    ", first="  - Revisit when: ")
-        sections.append(decisions)
+    if document.aspect_summaries:
+        aspects = ["## Aspects"]
+        for summary in document.aspect_summaries:
+            aspects += ["", f"### {one_line(summary.aspect)}", ""]
+            aspects += under(summary.what_changed, "  ", first="- What changed: ")
+            aspects += under(summary.how_sure, "  ", first="- How sure: ")
+            aspects += under(summary.means, "  ", first="- What it means: ")
+        sections.append(aspects)
 
     if document.findings:
         findings = ["## Findings"]
@@ -993,8 +1003,8 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
             if resolution is not None and resolution.evidence:
                 rows = evidence_rows(analysis, resolution.evidence, arm)
                 table = markdown_table(
-                    [header for _, header in EVIDENCE_COLUMNS],
-                    [[row[key].text for key, _ in EVIDENCE_COLUMNS] for row in rows],
+                    [header for _, header in evidence_columns(analysis)],
+                    [[row[key].text for key, _ in evidence_columns(analysis)] for row in rows],
                 )
                 findings += ["", "Evidence:", "", *table]
             if finding.caveats:
@@ -1014,8 +1024,6 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
                 steps += under(step.why, "     ", first="   - Why: ")
         sections.append(steps)
 
-    if not sections:
-        return "(the memo is empty: no finding, recommendation, answer or next step)\n"
     return "\n\n".join("\n".join(section) for section in sections) + "\n"
 
 

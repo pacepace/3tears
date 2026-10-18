@@ -1,8 +1,8 @@
 """``grader(fn, guard=...)``: a guardrail, and every arm of a comparison reads held, breached or undecided.
 
 A guardrail is declared with its margin, never assumed, and every grade is higher-is-better, so its direction is
-never stated; it joins no contrast; an arm that breached one is named above the contrasts as not adopted, and the
-analysis writer cannot adopt it. A judged dimension is guarded on the :class:`~threetears.evals.Judge`
+never stated; it joins no contrast; an arm that breached one is named above the contrasts as breached (a warning: code
+picks no arm), and the analysis writer cannot adopt it. A judged dimension is guarded on the :class:`~threetears.evals.Judge`
 (``guard={"dimension": margin}``), its margin declared on the campaign.
 
 Mutations that turn this file red: declaring a guardrail grader on a merit axis, or dropping its margin; reading a
@@ -42,6 +42,7 @@ from threetears.evals import Eval, Judge, Result, grader
 from threetears.evals.quick import as_host
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.one_call import callable_host
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
 
@@ -152,13 +153,13 @@ class TestAScorerGuardrail:
         for outcome in ("held", "breached", "undecided"):
             assert f"| {outcome}: " in markdown
         breach, undecided = _standing(comparison)
-        assert breach == "leaky breached the guardrail No leak score, so it is not adopted."
+        assert breach == "leaky breached the guardrail No leak score."
         assert undecided == "slip is not known to be safe on the guardrail No leak score."
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
         (gain,) = [row for row in comparison.contrasts("correct") if row["arm"] == "leaky"]
-        assert gain["verdict"] == "leaky better than current", "the breached arm gained, and is still not adopted"
+        assert gain["verdict"] == "leaky better than current", "the breached arm gained, and its breach is still named"
 
     async def test_with_every_scorer_a_guardrail_the_breach_is_named_once_above_the_guardrails_table(self) -> None:
         comparison = await _compare(graders=[grader(no_leak, guard=NO_LEAK)])
@@ -168,7 +169,7 @@ class TestAScorerGuardrail:
             i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breached")
         ]
         assert len(named) == 1 and blocks[named[0]].section == "contrasts"
-        assert blocks[named[0]].text.endswith("so it is not adopted.")
+        assert blocks[named[0]].text == "leaky breached the guardrail No leak score."
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "guardrails")
         assert named[0] < table and all(b.section == "contrasts" for b in blocks[named[0] : table + 1])
 
@@ -226,7 +227,7 @@ class TestABreachedArmIsNeverRecommended:
         adopting = _adopting_writer()
         with pytest.raises(SoundnessRefusal, match="breached the guardrail no_leak"):
             await generate_analysis(
-                bundle,
+                campaign_bundle(bundle),
                 prompt=EVAL_ANALYSIS_GEN_DEFAULT,
                 model="offline-writer",
                 client=adopting,
@@ -243,14 +244,11 @@ def _adopting_writer() -> Any:
 
     async def generate(*, system: str, user: str, response_format: dict | None = None) -> Any:
         writer.drafts += 1
-        evidence, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
-        tested = next(
-            comparison
-            for family in evidence["multiple_comparisons"]["families"]
-            for comparison in family["comparisons"]
-            if comparison["verdict"] == "improved"
-        )
-        arm, control = tested["contrast"]["cell"], tested["control"]["cell"]
+        view, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
+        (aspect,) = view["aspects"]
+        tested = next(comparison for comparison in aspect["contrasts"] if comparison["verdict"] == "improved")
+        arm, control = tested["cell"], tested["control"]
+        label = next(cell["arm"] for cell in aspect["cells"] if cell["cell"] == arm)
         cite = {cell: "{{" + f"{cell}|{tested['name']}|measure|mean" + "}}" for cell in (arm, control)}
         finding = {
             "title": "Correct score by arm",
@@ -263,15 +261,17 @@ def _adopting_writer() -> Any:
             "invalidates": [],
             "durable": "",
         }
-        decision = {
-            "proposal": "Ship the arm that answers more cases correctly.",
-            "disposition": "adopted",
-            "cells": [arm],
+        recommendation = {
+            "arm": label,
+            "reasons": ["Ship the arm that answers more cases correctly."],
             "confidence": "medium",
             "rests_on": [0],
-            "revisit_when": "",
+            "floors_overridden": [],
+            "behind_on": [],
+            "bars_missed": [],
         }
-        memo = {"findings": [finding], "decisions": [decision], "questions": [], "next": []}
+        summary = {"aspect": aspect["aspect"], "what_changed": "", "how_sure": "", "means": ""}
+        memo = {"findings": [finding], "recommendation": [recommendation], "aspect_summaries": [summary], "next": []}
         return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
 
     writer.generate = generate
