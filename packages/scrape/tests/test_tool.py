@@ -2061,6 +2061,29 @@ class TestSsrfGuard:
         assert "10.0.0.5" in (result.error or "")
         assert driver.render_calls == []
 
+    async def test_blocks_hostname_with_an_unparseable_resolved_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One record parses as public, the other does not parse at all: the host is refused.
+
+        Skipping the unparseable record let the fetch through on the public record's word, and
+        the connect step could then dial the record nobody classified.
+        """
+        fake = [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 80)),
+            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("not-an-ip", 80, 0, 0)),
+        ]
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: fake)
+        # Fails if reached, so a guard that lets the host through stops at the render rather
+        # than going on to the extraction model.
+        driver = _FakeDriver(_SINGLE_HTML, raise_exc=RuntimeError("stop after the fetch"))
+
+        result = await self._guarded_tool(driver).execute(
+            url="http://mixed.example.com/", field_schema={"employer": "str"}
+        )
+
+        assert (result.error or "").startswith("refused: ")
+        assert "not-an-ip" in (result.error or "")
+        assert driver.render_calls == []
+
     @pytest.mark.asyncio
     async def test_execute_refuses_a_blocked_target(self) -> None:
         recipe_collection, extraction_collection = _collections()

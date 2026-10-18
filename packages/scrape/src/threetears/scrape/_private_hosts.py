@@ -92,7 +92,8 @@ def ssrf_block_reason(url: str) -> str | None:
     Refuses any non-http(s) scheme and any host that RESOLVES to a private, loopback,
     link-local, reserved, multicast or unspecified address. Every address the name resolves to
     is checked, so a public-looking hostname with an internal address among its records is
-    refused even when its other records are public.
+    refused even when its other records are public. An address that does not parse as an IP
+    is refused too: it cannot be shown public, so it is not let through on its siblings' word.
 
     It does not catch DNS rebinding: this resolves the name once, and the client resolves it
     again when it connects, so a name that answers with a public address here and an internal
@@ -120,10 +121,11 @@ def ssrf_block_reason(url: str) -> str | None:
         ip_text = info[4][0]
         try:
             ip = ipaddress.ip_address(ip_text)
-        except ValueError:
-            # NOSILENT: a getaddrinfo entry that isn't a parseable IP literal can't be
-            # range-classified; skip it and check the remaining resolved addresses.
-            continue
+        except ValueError as exc:
+            # Fail closed: an address that cannot be range-classified cannot be shown to be
+            # public, and skipping it would let the fetch dial whatever it is whenever another
+            # record of the same name happened to be public.
+            return f"host {host!r} resolves to {ip_text!r}, which cannot be classified as public ({exc})"
         if (
             ip.is_private
             or ip.is_loopback
