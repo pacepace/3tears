@@ -27,6 +27,7 @@ from threetears.nats.forward import ForwardHandler, forward, serve_owner
 from threetears.observe import get_logger, spawn_background
 
 if TYPE_CHECKING:
+    from threetears.git_store.envelope import ForwardEnvelope
     from threetears.nats import NatsClient
 
 __all__ = ["FORWARD_FAMILY", "WriterRole"]
@@ -58,6 +59,7 @@ class WriterRole:
         takeover: Callable[[], Awaitable[None]],
         forward_timeout: timedelta,
         log_extra: dict[str, str] | None = None,
+        envelope: ForwardEnvelope,
     ) -> None:
         """describe the lease; nothing is claimed until :meth:`claim`.
 
@@ -77,10 +79,13 @@ class WriterRole:
         :ptype forward_timeout: timedelta
         :param log_extra: context for every log line
         :ptype log_extra: dict[str, str] | None
+        :param envelope: seals what this process forwards and admits only sealed requests when it serves
+        :ptype envelope: ForwardEnvelope
         :return: None
         :rtype: None
         """
         self.lease_key = lease_key
+        self._envelope = envelope
         self._nats = nats
         self._lease = KVLease(nats, bucket_name=bucket)
         self._ttl = ttl
@@ -159,8 +164,15 @@ class WriterRole:
         :return: None
         :rtype: None
         """
-        # sender-posture: unauthenticated open N1 -- a connection granted the git-store forward family may commit
-        await stack.enter_async_context(serve_owner(self._nats, self.subject_key(name), handler, family=FORWARD_FAMILY))
+        envelope = self._envelope
+
+        async def admitted(data: bytes) -> bytes:
+            return await handler(await envelope.open(name, data))
+
+        # sender-posture: signed-envelope -- the deployment's Ed25519 seal, pinned key, single-use id (envelope.py)
+        await stack.enter_async_context(
+            serve_owner(self._nats, self.subject_key(name), admitted, family=FORWARD_FAMILY)
+        )
 
     async def forward(self, name: str, payload: bytes) -> bytes:
         """send a request to the writer's ``name`` handler and return its reply.
@@ -175,7 +187,11 @@ class WriterRole:
         :raises ForwardedHandlerError: when the handler raised
         """
         return await forward(
-            self._nats, self.subject_key(name), payload, timeout=self._forward_timeout, family=FORWARD_FAMILY
+            self._nats,
+            self.subject_key(name),
+            self._envelope.seal(name, payload),
+            timeout=self._forward_timeout,
+            family=FORWARD_FAMILY,
         )
 
     async def claim(self) -> bool:
@@ -202,6 +218,7 @@ class WriterRole:
             # this process counts as the writer only once takeover has made the working tree current
             # and forwarded changes are being served; until then a change here still forwards or waits
             try:
+                await self._envelope.bind()
                 await self._takeover()
                 stack = AsyncExitStack()
                 try:

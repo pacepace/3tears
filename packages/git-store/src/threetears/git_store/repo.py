@@ -45,6 +45,7 @@ from pydantic import SecretStr
 
 from threetears.core.collections import CallerTransaction
 from threetears.core.utils.atomic_write import atomic_write_sync
+from threetears.git_store.envelope import DEFAULT_ISSUER, ForwardEnvelope, GitDirReplayAnchor
 from threetears.git_store.advanced import AdvancedListener, RepoAdvanced, publish_advanced
 from threetears.git_store.change import Change, ChangeSet, CommitResult, same_version
 from threetears.git_store.errors import (
@@ -70,6 +71,7 @@ from threetears.nats.forward import ForwardedHandlerError, ForwardHandler, NoOwn
 from threetears.observe import PeriodicTask, get_logger, retry_bounded
 
 if TYPE_CHECKING:
+    from threetears.core.coordination import ReplayAnchor
     from threetears.nats import NatsClient
 
 __all__ = ["DirtyFile", "GitRepo", "GitRepoConfig", "RepoStatus", "RowChange", "RowsChanged"]
@@ -119,6 +121,11 @@ class GitRepoConfig:
     :ivar lease_renew: how often the holder renews it
     :ivar watch_interval: how often the writer looks for hand commits, a clone follows origin, and a
         process seeking the lease tries for it
+    :ivar forward_signing_seed: the deployment's Ed25519 seed (32 bytes, base64) every forwarded request is sealed
+        with and the writer admits by (envelope.py); required with NATS, the same in every process of a deployment,
+        never logged
+    :ivar forward_issuer: the sending service's name in the seal, the same in every process of a deployment
+    :ivar envelope_bucket: the KV bucket the writer spends each request's single-use id in
     :ivar forward_timeout: how long a forwarded change waits for the writer's answer (a commit and
         its push)
     """
@@ -140,6 +147,9 @@ class GitRepoConfig:
     lease_renew: timedelta = timedelta(seconds=10)
     watch_interval: timedelta = timedelta(seconds=10)
     forward_timeout: timedelta = timedelta(seconds=30)
+    forward_signing_seed: SecretStr | None = None
+    forward_issuer: str = DEFAULT_ISSUER
+    envelope_bucket: str = "git-store-envelopes"
 
     def __post_init__(self) -> None:
         """refuse a key or branch that cannot name a lease.
@@ -301,6 +311,7 @@ class GitRepo:
         *,
         nats: NatsClient | None,
         listener: AdvancedListener | None = None,
+        replay_anchor: ReplayAnchor | None = None,
     ) -> None:
         """describe the repository; nothing on disk or on NATS changes until :meth:`open`.
 
@@ -311,6 +322,9 @@ class GitRepo:
         :param nats: the connected client the writer lease, forwards and broadcasts use; ``None``
             makes this process always the writer, with no forwarding and no broadcast
         :ptype nats: NatsClient | None
+        :param replay_anchor: where the forward seal's replay ledger remembers its first existence; ``None`` keeps
+            it in the repository's git directory (:class:`~threetears.git_store.envelope.GitDirReplayAnchor`)
+        :ptype replay_anchor: ReplayAnchor | None
         :param listener: the process's shared broadcast listener (:class:`GitRepos` passes one);
             ``None`` makes one for this repository when it needs it
         :ptype listener: AdvancedListener | None
@@ -322,6 +336,7 @@ class GitRepo:
         self.git = Git(config.work_tree, deploy_key=config.deploy_key)
         self._nats = nats
         self._listener = listener
+        self._replay_anchor = replay_anchor
         self._lock = asyncio.Lock()
         self._seen_head: str | None = None
         self._listeners: list[RowsChanged] = []
@@ -353,8 +368,21 @@ class GitRepo:
         if self._nats is None:
             await self._takeover()
         else:
+            if self.config.forward_signing_seed is None:
+                # forwarding unsigned would let any connection on the forward family commit (envelope.py)
+                raise GitStoreError(
+                    f"git-store repository {self.config.key!r}: forward_signing_seed is required with NATS"
+                )
             self._role = WriterRole(
                 self._nats,
+                envelope=ForwardEnvelope(
+                    self._nats,
+                    seed=self.config.forward_signing_seed,
+                    audience=self.config.lease_key,
+                    issuer=self.config.forward_issuer,
+                    bucket=self.config.envelope_bucket,
+                    anchor=self._replay_anchor or GitDirReplayAnchor(self.git.git_path("git-store")),
+                ),
                 lease_key=self.config.lease_key,
                 bucket=self.config.lease_bucket,
                 ttl=self.config.lease_ttl,

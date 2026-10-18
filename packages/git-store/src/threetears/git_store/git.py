@@ -287,7 +287,7 @@ class Git:
             return None
         try:
             out = self.run("rev-parse", "--show-toplevel").strip()
-        except GitError:
+        except GitError:  # NOSILENT: git's "not a git repository" is the answer None, not a failure
             return None
         return Path(out).resolve() if out else None
 

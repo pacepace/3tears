@@ -34,6 +34,10 @@ What it guarantees:
   and every other commit (hand commits, commits pulled from origin) through `bind_collections`.
 - **One writer per repository**, by a NATS lease (`KVLease.hold`). Other processes forward their
   change sets to it. Without NATS (`nats=None`) the process is always the writer.
+- **Forwarded changes are sealed.** A request forwarded to the writer carries 3tears' service envelope, signed
+  with the deployment's `forward_signing_seed` (required with NATS) and spent once in a `ReplayGuard`; the writer
+  refuses anything else (`ForwardRefusedError`). Every process of a deployment shares the seed; grant the
+  principal the `envelope_bucket` KV bucket alongside the lease bucket.
 - **Origin is never forced.** Pushes are plain; a refused push stops pushing and shows in
   `repo.status()` until a person reconciles.
 - **A crash mid-change is recovered**: a journal in the git directory names the files being written,

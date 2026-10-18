@@ -12,7 +12,9 @@ Uses the session-scoped ``nats_container`` fixture; a checkout without docker sk
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import os
 import subprocess
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -22,6 +24,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
+from pydantic import SecretStr
 
 from threetears.core.testing.tcp_proxy import StallingTcpProxy
 from threetears.git_store import (
@@ -30,6 +33,7 @@ from threetears.git_store import (
     GitDurableStore,
     GitRepo,
     GitRepoConfig,
+    GitStoreError,
     HandEditPendingError,
     NotTheWriterError,
     RowChange,
@@ -47,6 +51,8 @@ FAST = {
     "lease_renew": timedelta(milliseconds=500),
     "watch_interval": timedelta(milliseconds=200),
     "forward_timeout": timedelta(seconds=10),
+    # the deployment's forward seal (envelope.py): the same in every process of the test's deployment
+    "forward_signing_seed": SecretStr(base64.b64encode(os.urandom(32)).decode()),
 }
 
 
@@ -227,3 +233,67 @@ async def test_a_writer_cut_off_from_nats_loses_the_lease_and_commits_nothing_af
         assert not (tree / "aria/keepers/V3/2.json").exists()
     finally:
         await proxy.stop()
+
+
+async def test_a_forward_signed_with_another_deployments_seed_is_refused(
+    tmp_path: Path, connect: Any, opened: Any
+) -> None:
+    # Pace chose the signed forward (2026-10-17): a connection on the forward family can't commit without the seal
+    tree = tmp_path / "shared"
+    writer = await opened(await connect("worker"), work_tree=tree)
+    stranger = await opened(
+        await connect("stranger"),
+        work_tree=tree,
+        seek_writer=False,
+        forward_signing_seed=SecretStr(base64.b64encode(os.urandom(32)).decode()),
+    )
+    before = writer.git.head()
+    with pytest.raises(Exception, match="refused"):
+        await stranger.commit([Change("keepers", key("9"), keeper("9"))], "not ours")
+    assert writer.git.head() == before  # nothing was committed
+
+
+async def test_a_sealed_request_replayed_is_refused_and_the_first_ones_after_a_fresh_start_pass(
+    tmp_path: Path, connect: Any, opened: Any
+) -> None:
+    # the first requests after the ledger's bucket is created used to be refused as possibly replayed (no anchor);
+    # the repository's git directory now anchors it, so they pass at once, and a captured request still can't be
+    # sent twice
+    from threetears.git_store.writer import COMMIT_HANDLER, FORWARD_FAMILY
+    from threetears.nats.forward import forward
+
+    tree = tmp_path / "shared"
+    writer = await opened(await connect("worker"), work_tree=tree)
+    cli = await opened(await connect("cli"), work_tree=tree, seek_writer=False)
+    for n in ("1", "2", "3"):  # at once after start, as samhla's test did
+        result = await cli.commit([Change("keepers", key(n), keeper(n))], f"save {n}")
+        assert result.sha == writer.git.head()
+
+    # a captured request, sealed with the deployment's seed exactly as a forwarder seals it, sent twice
+    from threetears.git_store.envelope import ForwardEnvelope, GitDirReplayAnchor
+
+    nats = await connect("replayer")
+    lease_key = writer.config.lease_key
+    sealer = ForwardEnvelope(
+        nats,
+        seed=FAST["forward_signing_seed"],
+        audience=lease_key,
+        bucket="unused-by-a-sender",
+        anchor=GitDirReplayAnchor(tmp_path / "sender-anchor"),
+    )
+    captured = sealer.seal(COMMIT_HANDLER, b"{}")
+    subject = f"{lease_key}#{COMMIT_HANDLER}"
+    with contextlib.suppress(Exception):  # the first may be admitted (its payload is no change set)
+        await forward(nats, subject, captured, timeout=timedelta(seconds=10), family=FORWARD_FAMILY)
+    head = writer.git.head()
+    with pytest.raises(Exception, match="refused"):
+        await forward(nats, subject, captured, timeout=timedelta(seconds=10), family=FORWARD_FAMILY)
+    assert writer.git.head() == head
+
+
+async def test_with_nats_a_repository_without_a_signing_seed_will_not_open(tmp_path: Path, connect: Any) -> None:
+    repo = GitRepo(
+        GitRepoConfig(key="characters", work_tree=tmp_path / "x"), TemplateLayout([]), nats=await connect("x")
+    )
+    with pytest.raises(GitStoreError, match="forward_signing_seed is required"):
+        await repo.open()

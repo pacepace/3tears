@@ -85,6 +85,21 @@ each row cached in L1 only while no write or eviction of the collection overtook
 
 **Added (nats):** `Subjects.git_store_advanced()`, `{ns}.git-store.advanced`.
 
+**Security (git-store): a forwarded change proves it comes from the repository's own deployment.** Every request
+a process forwards to a repository's writer is sealed in 3tears' service envelope (Ed25519 over exactly the body,
+addressed to that repository's door and handler, alive for at most a minute, a single-use id spent in a shared
+`ReplayGuard`); the writer's door is born requiring it, so an unsigned, foreign, stale or replayed request is refused
+and reaches the sender as `ForwardRefusedError`. The deployment's processes share one seed,
+`GitRepoConfig.forward_signing_seed` (32 bytes, base64; required with NATS, else `open()` raises), with
+`forward_issuer` and `envelope_bucket` beside it; the public half is pinned at the writer, so no key server is
+needed. The ledger's first existence is anchored in the repository's git directory (`GitDirReplayAnchor`; a
+consumer can pass a `CollectionReplayAnchor` as `GitRepo(replay_anchor=...)`), so a fresh deployment or a NATS
+restart doesn't refuse its first requests. The receiver's sender posture is `signed-envelope`; the open allowlist
+row it was added under is gone.
+
+**Fixed (git-store):** a work tree inside another git repository was used as if it were one, so commits landed in
+the outer repository; `open()` now refuses it (`GitStoreError`). A nested repository of its own still works.
+
 ### A self-hosted image server's API, retried as far as it is safe to
 
 samhla (a consumer) drives ComfyUI and SwarmUI with its own graphs and parameters, and had written
