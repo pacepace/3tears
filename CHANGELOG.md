@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Testing: the dead-Redshift-connection test kills what it means to
+
+The TLS thread-state test could kill nothing: the fake warehouse records a connection only after its own side of the
+handshake, so a kill that ran in the gap reset no connection and the driver rightly reused it. It failed on slow CI
+runners. The kill now waits until the server has recorded every connection the client opened.
+
 ### scrape and enforcement: a quiet grep at the end of a pipe no longer fails a check that matched
 
 **Fixed (scrape):** the sidecar's entrypoint checked for the window manager with `xprop ... | grep -q` under
