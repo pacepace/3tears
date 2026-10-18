@@ -52,6 +52,7 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_cancel, job_poll, run_job_id, run_launch
 from threetears.evals.ops import LaunchArguments, SweepArguments, SweepArm, generation_key, sweep_launch
+from threetears.evals.ops import sweeps
 from threetears.evals.run import sweep_abandoned_runs
 from threetears.evals.schema import EvalRun, JobLease
 from threetears.evals.storage import InMemoryDocumentStore
@@ -825,6 +826,90 @@ async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more()
     assert runs[0].overlays.get("prompt_style") == STYLES[0]
     sweep, _ = off_loop(holder.eval_host.storage.load_job_record, EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and sweep.outcome == "cancelled" and sweep.lost is not None
+
+
+def _interleaved_sweep() -> SweepArguments:
+    return _three_arm_sweep().model_copy(update={"arm_schedule": None})
+
+
+async def _every_arm_running(host: OpsHost, job_id: str) -> None:
+    async with asyncio.timeout(10):
+        while set((await job_poll(host, job_id, TOYHOST_SCOPE)).progress.get("arms", {}).values()) != {"running"}:
+            await asyncio.sleep(0.005)
+
+
+async def test_an_interleaved_sweep_cancelled_part_way_stops_every_arm_it_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _held_extraction(monkeypatch)  # every arm's cells wait until the cancel stops them
+    holder = off_loop(_sweeping_host, InMemoryDocumentStore())
+    (job,) = (await sweep_launch(holder, _interleaved_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    await _every_arm_running(holder, job.job_id)
+
+    await job_cancel(holder, job.job_id, TOYHOST_SCOPE)
+    ended = await settled(holder, job.job_id)
+
+    assert ended.state == "cancelled"
+    assert set(ended.progress["arms"].values()) == {"cancelled"}, "one cancel stopped every arm of the one launch"
+    sweep, _ = off_loop(
+        holder.eval_host.storage.load_job_record, EvalSweep, job.job_id.removeprefix("sweep:"), TOYHOST_SCOPE
+    )
+    assert sweep is not None and sweep.arm_schedule == "interleaved"
+    campaign = off_loop(holder.eval_host.storage.load_campaign, sweep.campaign_id, TOYHOST_SCOPE)
+    assert campaign is not None and len(campaign.run_ids) == 3, "every arm it started stays a member"
+
+
+async def test_an_interleaved_sweep_whose_record_reads_lost_while_its_arms_prepare_starts_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ClockedStore()
+    holder = off_loop(_sweeping_host, store)
+    prepared: list[str] = []
+    start_run = sweeps.start_run
+
+    async def prepare_then_lapse(*args: Any, **kwargs: Any) -> Any:
+        runs = await start_run(*args, **kwargs)
+        prepared.extend(run.id for run in runs)
+        if len(prepared) == 3:
+            # The last arm is prepared, and the sweep's lease lapses before any arm starts: a long preparation.
+            store.at = T0 + timedelta(seconds=61)
+        return runs
+
+    monkeypatch.setattr(sweeps, "start_run", prepare_then_lapse)
+    (job,) = (await sweep_launch(holder, _interleaved_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    sweep_id = job.job_id.removeprefix("sweep:")
+    await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
+
+    assert len(prepared) == 3, "every arm was prepared"
+    assert off_loop(holder.eval_host.storage.query_eval_runs, TOYHOST_SCOPE) == [], (
+        "the sweep found its record lost before starting them, so it started none it could no longer name"
+    )
+    sweep, _ = off_loop(holder.eval_host.storage.load_job_record, EvalSweep, sweep_id, TOYHOST_SCOPE)
+    assert sweep is not None and sweep.lost is not None and all(arm.run_id is None for arm in sweep.arms)
+
+
+async def test_an_interleaved_sweep_whose_lease_lapsed_while_its_arms_ran_reads_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _held_extraction(monkeypatch)  # its arms run on until the holder lets go
+    store = ClockedStore()
+    # A short lease, so the holder's own renewal finds the loss: its arms are all launched, and it awaits them.
+    holder = off_loop(_sweeping_host, store, job_lease_s=0.9)
+    elsewhere = _other_process(holder)
+    (job,) = (await sweep_launch(holder, _interleaved_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    sweep_id = job.job_id.removeprefix("sweep:")
+    await _every_arm_running(elsewhere, job.job_id)
+
+    store.at = T0 + timedelta(seconds=61)
+    lost = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
+    assert (lost.state, lost.status) == ("lost", "cancelled")
+
+    await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
+    sweep, _ = off_loop(holder.eval_host.storage.load_job_record, EvalSweep, sweep_id, TOYHOST_SCOPE)
+    assert sweep is not None and sweep.outcome == "cancelled" and sweep.lost is not None, (
+        "the holder wrote no ending over the loss"
+    )
+    assert len(off_loop(holder.eval_host.storage.query_eval_runs, TOYHOST_SCOPE)) == 3
 
 
 # =============================================================================

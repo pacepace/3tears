@@ -13,6 +13,7 @@ from typing import Annotated, Any
 from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema.models import (
     DEFAULT_LAUNCH_K_RUNS,
@@ -232,6 +233,18 @@ class LaunchArguments(EvalBaseModel):
             "rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run."
         ),
     )
+
+    @model_validator(mode="after")
+    def _a_schedule_latency_can_be_read_under(self) -> LaunchArguments:
+        """Refuse arms asked to run at once beside latency under test, wherever the arguments are used.
+
+        :raises ValueError: ``measure_latency`` with ``arm_schedule`` ``interleaved`` or ``concurrent``.
+        """
+        try:
+            resolve_arm_schedule(self.arm_schedule, measure_latency=self.measure_latency)
+        except ValidationFailedError as refused:
+            raise ValueError(f"{refused.message}; {refused.remedy}") from refused
+        return self
 
     @model_validator(mode="after")
     def _a_case_set_names_its_version(self) -> LaunchArguments:

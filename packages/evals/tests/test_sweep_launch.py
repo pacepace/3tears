@@ -151,13 +151,10 @@ async def test_an_arm_its_launch_would_refuse_refuses_the_sweep_before_anything_
     )
 
 
-async def test_latency_under_test_refuses_arms_run_at_once_before_anything_is_created() -> None:
-    host, storage = off_loop(_host, latency_s=0.0)
-    with pytest.raises(ValidationFailedError, match="one after another"):
-        await sweep_launch(
-            host, _sweep(measure_latency=True, arm_schedule="interleaved"), TOYHOST_SCOPE, created_by="agent:test"
-        )
-    assert off_loop(storage.list_campaigns, TOYHOST_SCOPE) == []
+def test_latency_under_test_refuses_arms_run_at_once_as_the_sweep_is_named() -> None:
+    with pytest.raises(ValueError, match="one after another"):
+        _sweep(measure_latency=True, arm_schedule="interleaved")
+    assert _sweep(measure_latency=True).schedule == "sequential"
 
 
 def test_two_arms_that_are_one_condition_are_refused() -> None:

@@ -28,6 +28,7 @@ from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import ApparatusError
 from threetears.evals.ops import CampaignDefinition, LaunchArguments, OpsHost, campaign_create, run_get, run_launch
 from threetears.evals.ops.sweeps import SweepSettings
+from threetears.evals.run import start_run
 from threetears.evals.run.arm_schedule import CellInterleaver
 from threetears.evals.run.launch_job import EvalLaunch
 from threetears.evals.schema import EvalRun
@@ -116,8 +117,19 @@ async def test_a_launch_measuring_latency_runs_its_arms_one_after_another_and_re
 
     runs = await _launch(host, measure_latency=True)
     assert [run.arm_schedule for run in runs] == ["sequential", "sequential"]
-    with pytest.raises(ValidationFailedError, match="one after another"):
+    # Refused as the arguments are named, so an estimate of them is refused alike.
+    with pytest.raises(ValueError, match="one after another"):
         await _launch(host, measure_latency=True, arm_schedule="interleaved")
+    with pytest.raises(ValidationFailedError, match="one after another"):
+        await start_run(
+            host.launch,
+            template_id=toyhost_template().id,
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            models=_ARMS,
+            scope_id=TOYHOST_SCOPE,
+            measure_latency=True,
+            arm_schedule="concurrent",
+        )
 
 
 # =============================================================================
@@ -286,3 +298,76 @@ async def test_one_runs_failure_is_its_own_and_each_cell_runs_in_its_own_runs_co
     assert [name for name, _ in seen if name.startswith("y")] == ["y1", "y2", "y3"], "its sibling ran every cell"
     assert "x3" not in [name for name, _ in seen], "no cell of the failed run started after its failure"
     assert all(run == ("broken" if name.startswith("x") else "fine") for name, run in seen)
+
+
+async def test_a_cell_that_raises_a_cancel_stops_its_own_run_and_no_other() -> None:
+    interleaver = CellInterleaver()
+    interleaver.expect("cancelled")
+    interleaver.expect("fine")
+    interleaver.seal()
+    ran: list[str] = []
+
+    def cell(name: str, *, cancels: bool = False) -> Any:
+        async def work() -> None:
+            ran.append(name)
+            if cancels:
+                # What the runner does after recording a cell cancelled with its run, or a kind's scope leaking one.
+                raise asyncio.CancelledError
+
+        return work
+
+    cancelled = asyncio.create_task(
+        interleaver.lane("cancelled", None).execute([cell("x1", cancels=True), cell("x2")], width=1)
+    )
+    fine = asyncio.create_task(interleaver.lane("fine", None).execute([cell("y1"), cell("y2")], width=1))
+    results = await asyncio.gather(cancelled, fine, return_exceptions=True)
+
+    assert isinstance(results[0], asyncio.CancelledError), "the run stops on its cell's cancel, never completes short"
+    assert results[1] is None
+    assert "x2" not in ran and ran.count("y1") == ran.count("y2") == 1
+
+
+async def test_a_run_cancelled_mid_cell_stops_its_cells_while_its_sibling_finishes_every_one() -> None:
+    interleaver = CellInterleaver()
+    interleaver.expect("stopped")
+    interleaver.expect("sibling")
+    interleaver.seal()
+    stopped_cell_running, sibling_may_go_on = asyncio.Event(), asyncio.Event()
+    ran: list[str] = []
+    cancelled_cells: list[str] = []
+
+    def held(name: str) -> Any:
+        async def work() -> None:
+            ran.append(name)
+            stopped_cell_running.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled_cells.append(name)
+                raise
+
+        return work
+
+    def sibling(name: str, *, waits: bool = False) -> Any:
+        async def work() -> None:
+            if waits:
+                await sibling_may_go_on.wait()
+            ran.append(name)
+
+        return work
+
+    stopped = asyncio.create_task(interleaver.lane("stopped", None).execute([held("a1"), held("a2")], width=1))
+    going_on = asyncio.create_task(
+        interleaver.lane("sibling", None).execute([sibling("b1"), sibling("b2", waits=True), sibling("b3")], width=1)
+    )
+    await stopped_cell_running.wait()
+    stopped.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopped
+    assert cancelled_cells == ["a1"], "its cell in flight was cancelled and waited for before the cancel went on"
+    sibling_may_go_on.set()
+    await going_on
+
+    assert [name for name in ran if name.startswith("b")] == ["b1", "b2", "b3"]
+    assert "a2" not in ran, "no cell of the cancelled run started after its cancel"
+    assert interleaver.in_flight == 0

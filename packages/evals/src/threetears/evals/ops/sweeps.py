@@ -129,6 +129,18 @@ class SweepSettings(EvalBaseModel):
             return None
         return CaseSetRef(name=self.case_set_name, version=self.case_set_version)
 
+    @model_validator(mode="after")
+    def _a_schedule_latency_can_be_read_under(self) -> SweepSettings:
+        """Refuse arms asked to run at once beside latency under test, wherever the arguments are used.
+
+        :raises ValueError: ``measure_latency`` with ``arm_schedule`` ``interleaved`` or ``concurrent``.
+        """
+        try:
+            resolve_arm_schedule(self.arm_schedule, measure_latency=self.measure_latency)
+        except ValidationFailedError as refused:
+            raise ValueError(f"{refused.message}; {refused.remedy}") from refused
+        return self
+
     @property
     def schedule(self) -> ArmSchedule:
         """The schedule the arms run under: the one named, or the default for whether latency is under test.
@@ -528,6 +540,10 @@ class _SweepRun:
                     launch_group=group,
                 )
             preparing.clear()
+            # Asked again once every arm is prepared and before any starts: preparing can be long (a generating
+            # launch writes its cases), and a sweep whose record read lost meanwhile would start every arm unowned.
+            # Raised here, it abandons the launch, and nothing starts.
+            await self.require_held()
             return prepared
 
         try:
