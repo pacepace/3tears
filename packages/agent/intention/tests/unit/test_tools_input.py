@@ -130,6 +130,14 @@ class _FakeIntentions:
         return []
 
 
+class _FakeIntentionsDedupDown(_FakeIntentions):
+    """the dedup lookup fails, as an L3 timeout does."""
+
+    async def find_similar_for_dedup(self, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = kwargs
+        raise ConnectionError("l3 timeout")
+
+
 class _RaisingEmbedder:
     def __init__(self) -> None:
         self.calls = 0
@@ -169,7 +177,7 @@ class TestToolError:
         """a tool failure reads ``[TOOL ERROR] <tool>: <action> failed — <reason>``."""
         msg = await _log(_RaisingEmbedder(), _FakeIntentions(), "want")
         assert msg.startswith("[TOOL ERROR] intention_log: embed failed")
-        assert "embedding provider returned None" in msg
+        assert "the embedder failed: RuntimeError: upstream embedding outage" in msg
 
 
 class TestEmbeddingSoftFail:
@@ -188,6 +196,15 @@ class TestEmbeddingSoftFail:
         assert msg.startswith("[TOOL ERROR] intention_log: embed failed")
         assert collection.dedup_embeddings == []
         assert collection.saved == []
+
+    async def test_a_want_whose_dedup_lookup_fails_is_not_stored_as_new(self) -> None:
+        """no similar wants means "this is new"; a lookup that failed has not established it."""
+        collection = _FakeIntentionsDedupDown()
+        msg = await _log(_OkEmbedder(), collection, "want")
+        assert msg.startswith("[TOOL ERROR] intention_log: dedup failed")
+        assert "ConnectionError: l3 timeout" in msg
+        assert "nothing was written down" in msg
+        assert collection.saved == [], "a want stored without its dedup check is the duplicate this exists to stop"
 
     async def test_success_carries_the_vector_into_dedup_and_the_row(self) -> None:
         collection = _FakeIntentions()

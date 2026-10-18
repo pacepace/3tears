@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from threetears.observe.text_block import under
 from threetears.core.utils.local_time import render_local_time, resolve_zone
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_query
 from threetears.langgraph.events import FrameworkEvent, dispatch_event
 from threetears.observe import contain, get_logger
 
@@ -104,30 +105,6 @@ def _tool_error(tool_name: str, action: str, error: str) -> str:
     :rtype: str
     """
     return f"[TOOL ERROR] {tool_name}: {action} failed — {error}"
-
-
-async def _safe_aembed_query(embedder: Embeddings, text: str) -> list[float] | None:
-    """embed ``text`` with soft-fail semantics (``None`` on any failure).
-
-    Mirrors ``agent-memory``'s private shim so a transient embedding
-    outage degrades the tool to a graceful error rather than a crash;
-    kept local so ``agent-intention`` carries no dependency on the
-    memory package.
-
-    :param embedder: LangChain embedding model
-    :ptype embedder: Embeddings
-    :param text: text to embed
-    :ptype text: str
-    :return: embedding vector, or ``None`` on empty input / failure
-    :rtype: list[float] | None
-    """
-    if not text:
-        return None
-    try:
-        return await embedder.aembed_query(text)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- soft-fail embedding boundary; upstream API errors surface as None
-        contain(exc, log=log, what="intention embedding failed; degrading to soft-fail", extra={"error": str(exc)})
-        return None
 
 
 async def _emit_intention_event(event: FrameworkEvent) -> None:
@@ -275,12 +252,17 @@ async def load_intention_log_tool(
                     f"invalid source_memory_id '{source_memory_id}'",
                 )
 
-        embedding = await _safe_aembed_query(embedding_provider, text)
-        if embedding is None:
-            return _tool_error("intention_log", "embed", "embedding provider returned None")
+        try:
+            embedding = await embed_query(embedding_provider, text)
+        except EmbeddingUnavailableError as exc:
+            log.warning("intention_log: embedding failed: %s", exc)
+            return _tool_error("intention_log", "embed", str(exc))
 
         # dedup against the user's OPEN wants: refresh the near-duplicate
-        # instead of stacking a second row for the same standing want.
+        # instead of stacking a second row for the same standing want. a lookup
+        # that fails stores NOTHING: no similar wants is the answer "this is new",
+        # and a lookup that failed has not established that -- storing it anyway
+        # stacks a duplicate the deliberation loop then surfaces twice.
         try:
             similar = await intentions_collection.find_similar_for_dedup(
                 user_id=user_id,
@@ -290,10 +272,13 @@ async def load_intention_log_tool(
                 threshold=0.0,
             )
         except Exception as exc:
-            contain(
-                exc, log=log, what="intention_log: dedup lookup failed, creating new want", extra={"error": str(exc)}
+            contain(exc, log=log, what="intention_log: dedup lookup failed, nothing stored", extra={"error": str(exc)})
+            return _tool_error(
+                "intention_log",
+                "dedup",
+                f"your open wants could not be read to check this one against them ({type(exc).__name__}: {exc}); "
+                "nothing was written down, try again",
             )
-            similar = []
 
         for row in similar:
             if float(row["similarity"]) >= similarity_dedup_threshold:
