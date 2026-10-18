@@ -3071,7 +3071,7 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
 
 
 def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
-    """Every measure a decision rule may read as a pass rate, oriented: its name -> whether its higher end passes.
+    """Every measure a floor may read as a pass rate, oriented: its name -> whether its higher end passes.
 
     A check (:attr:`MetricDescriptor.is_check`): a boolean with a better end, or a pass/fail measure graded 0 or 1 (a
     scorer returning a bool, a field grader). A rate on it counts the observations on its better end as passes, so a
