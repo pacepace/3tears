@@ -7,7 +7,8 @@
    and the line names the arm, how many it lost, the cause most of them share in words, and the remedy.
 2. **One arm.** ``<eval>: n/N cases passed; k misses: …`` — how its cases came out.
 3. **A declared decision rule.** Each clause settled or not (:mod:`~threetears.evals.analysis.report.decision`),
-   and the rule's outcome in plain words: keep, switch, or unsettled with the fix and its cost. A keep names the
+   and the rule's outcome in plain words: keep, switch, or unsettled with the cases a switch needs, computed, and
+   what each more case costs. A keep names the
    counts that settled it, the arms by their models where they have one: ``Keep production: v4-flash passed 2 of 12
    trials to v4.1-flash's 10, and cost more per reply.`` The line is one sentence held to the page's numeral limit;
    the decision table directly below carries every figure and every clause's reason.
@@ -42,8 +43,11 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report.decision import (
     RateReading,
     RuleVerdict,
+    case_cost_usd,
     evaluate_rule,
+    projection_sentence,
     prose_ruled,
+    rule_projection,
     rule_readings,
     ruled_question,
 )
@@ -437,6 +441,12 @@ def rule_sentence(
     giving the interval. Each sentence keeps its clauses only while it stays within the page's numeral and length limits
     (:func:`~threetears.evals.analysis.style.lint_prose`): the decision table below carries every clause.
 
+    An unsettled rule then says the cases a switch needs, computed
+    (:func:`~threetears.evals.analysis.report.decision.rule_projection`): ``A switch needs about 107 independent cases
+    if the arms do not differ, 205 if they differ as observed; only new cases count, not repeats.``, then what each more
+    case costs. No memo states a sample size of its own: a next step's is replaced by this sentence
+    (:class:`~threetears.evals.analysis.report.memo_style.MemoStyle`).
+
     :param verdict: The rule read on one candidate.
     :ptype verdict: RuleVerdict
     :param control: The control, by name.
@@ -460,8 +470,10 @@ def rule_sentence(
         return f"Switch to {candidate}: every clause of the decision rule holds."
     reasons = [clause.reason for clause in verdict.clauses if clause.outcome == "unsettled"]
     cost = _cost_per_case(bundle)
+    projection = rule_projection(verdict, per_case_usd=case_cost_usd(bundle))
+    projected = f" {projection_sentence(projection)}" if projection is not None else ""
     fix = f" Each more case costs about {cost} over every arm." if cost else ""
-    return _within_limits(f"Unsettled between {control} and {candidate}: ", reasons) + fix
+    return _within_limits(f"Unsettled between {control} and {candidate}: ", reasons) + projected + fix
 
 
 def _within_limits(lead: str, parts: list[str]) -> str:
@@ -512,12 +524,9 @@ def _exceeds(rate: RateReading, control: str, candidate: str) -> str:
 
 
 def _cost_per_case(bundle: AnalysisContextBundle) -> str | None:
-    """What one more case costs over every arm, from what the run spent per case; None where unpriced."""
-    spent = [board.test_cost_usd for board in bundle.scoreboard]
-    cases = max((board.cases for board in bundle.scoreboard), default=0)
-    if not cases or any(cost is None for cost in spent):
-        return None
-    return f"${format_number(sum(cost or 0.0 for cost in spent) / cases)}"
+    """What one more case costs over every arm, as the verdict line says it; None where unpriced."""
+    cost = case_cost_usd(bundle)
+    return None if cost is None else f"${format_number(cost)}"
 
 
 #: How the verdict leads a guardrail an arm is not shown safe on, by the guardrail's decision, the breached first.

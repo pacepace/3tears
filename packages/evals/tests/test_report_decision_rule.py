@@ -612,7 +612,14 @@ def test_an_arrival_shaped_drop_past_the_margin_on_its_point_estimate_alone_read
     )
     assert verdict.clauses[0].reason == reason
     line = rule_sentence(verdict, bundle=AnalysisContextBundle.model_construct(scoreboard=[]), **on)
-    assert line == f"Unsettled between September build and 1017 build: {reason}."
+    # #846 added the cases a switch needs. The interval reaches 92.7 - 28.6 = 64.1 points past the point estimate over
+    # 7 cases, so with no true difference 7 x (64.1 / 10)^2 = 287.9 cases; at the observed drop, past the margin,
+    # none would. Unpriced (no scoreboard), it says no cost.
+    assert line == (
+        f"Unsettled between September build and 1017 build: {reason}. A switch needs about 288 independent cases if "
+        "the arms do not differ, and none would if they differ as observed; only new cases count, not repeats."
+    )
+    assert lint_prose(line.removeprefix(f"Unsettled between September build and 1017 build: {reason}. ")) == []
     assert "Keep" not in line and "exceeds" not in line
 
 

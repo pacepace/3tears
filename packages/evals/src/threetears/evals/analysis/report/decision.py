@@ -55,13 +55,15 @@ Every sentence here names the arms by the names the page gives them, never by th
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import reduce
 from typing import Literal
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
+from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR, cases_to_clear
 from threetears.evals.analysis.style import code, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import (
@@ -686,6 +688,253 @@ def rule_readings(
     )
 
 
+# =============================================================================
+# The cases a switch needs: an unsettled clause's interval, projected to more independent cases
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class SampleProjection:
+    """The independent cases that would show an unsettled clause holds, so that a switch could follow, projected from
+    the interval that left it unsettled (:func:`project_sample`).
+
+    **Only a switch is projected.** Keep is the default (:func:`keep_is_the_default`): an unsettled rule keeps the
+    control already, so a switch is the one decision more cases can change.
+
+    ``cases`` is the usable cases the interval was read over, the fewer of the two arms'. ``if_none`` is the cases in
+    all the interval needs to clear the margin if the arms truly do not differ, the optimistic bound; ``if_observed``
+    the same if they differ as the run observed. Either is None where no number of cases would show the clause holds:
+    a drop at or past the margin, or, on cost, arms that do not differ, which no sample shows cheaper. Each is at least
+    the case floor. ``per_case_usd`` is what one case costs over every arm (:func:`case_cost_usd`), None where
+    unpriced. Trials never enter it: a repeat of a case is not an independent case, so tripling the repeats at a fixed
+    case count leaves it unchanged.
+    """
+
+    cases: int
+    if_none: int | None
+    if_observed: int | None
+    per_case_usd: float | None = None
+
+    def cost(self, needed: int | None) -> float | None:
+        """What running ``needed`` cases over every arm costs at this run's price per case; None where unpriced or no
+        number of cases would do."""
+        return None if needed is None or self.per_case_usd is None else needed * self.per_case_usd
+
+    def counts(self) -> tuple[int, ...]:
+        """The case counts it projects, fewest first; empty where no number would do."""
+        return tuple(sorted({needed for needed in (self.if_none, self.if_observed) if needed is not None}))
+
+    def joined(self, other: SampleProjection) -> SampleProjection:
+        """This and ``other`` both shown, as a switch needing both clauses reads them: the more cases of each, None
+        where either needs a number no sample reaches, over the fewer cases read."""
+
+        def most(ours: int | None, theirs: int | None) -> int | None:
+            return None if ours is None or theirs is None else max(ours, theirs)
+
+        return SampleProjection(
+            cases=min(self.cases, other.cases),
+            if_none=most(self.if_none, other.if_none),
+            if_observed=most(self.if_observed, other.if_observed),
+            per_case_usd=self.per_case_usd,
+        )
+
+
+def project_sample(
+    *, half_width: float, cases: int, margin: float, observed: float, per_case_usd: float | None = None
+) -> SampleProjection:
+    """The cases an interval needs to show a clause holds, if the arms do not differ and if they differ as observed.
+
+    Every figure is on the clause's worse side and in one unit: ``observed`` is the observed difference toward worse
+    (a rate's drop in points, the cost an arm adds per reply), ``margin`` how far the true difference may go that way
+    with the clause still holding (a rate clause's points, zero for cost), and ``half_width`` how far the interval
+    reaches past ``observed`` on that side. Read over ``cases`` independent cases, the interval clears the margin at a
+    true difference ``d`` from :func:`~threetears.evals.analysis.stats.cases_to_clear` cases, with room
+    ``margin - d``: at ``d = 0`` for ``if_none`` and ``d = observed`` for ``if_observed``. It reads no trial, so any
+    reading, on any part of a campaign, is projected the same way from its interval.
+
+    The scaling is ``1/√n``, which the bounded interval a rate clause reads only approaches: it narrows faster than
+    that on a few cases, so a projection from them errs high (:func:`~threetears.evals.analysis.stats.cases_to_clear`).
+    A page says each count as "about".
+
+    :param half_width: How far the interval reaches past the observed difference on the worse side, at least 0.
+    :ptype half_width: float
+    :param cases: The independent cases the interval was read over, at least 1.
+    :ptype cases: int
+    :param margin: The worst true difference with which the clause still holds.
+    :ptype margin: float
+    :param observed: The observed difference toward worse.
+    :ptype observed: float
+    :param per_case_usd: What one case costs over every arm; None where unpriced.
+    :ptype per_case_usd: float | None
+    :return: The projection, each count at least the case floor.
+    :rtype: SampleProjection
+    :raises ValueError: As :func:`~threetears.evals.analysis.stats.cases_to_clear`.
+    """
+
+    def needed(true: float) -> int | None:
+        found = cases_to_clear(half_width, cases, margin - true)
+        return None if found is None else max(found, _FLOOR)
+
+    return SampleProjection(cases=cases, if_none=needed(0.0), if_observed=needed(observed), per_case_usd=per_case_usd)
+
+
+def case_cost_usd(bundle: AnalysisContextBundle) -> float | None:
+    """What one more case costs over every arm, from what the run spent per case: every arm's test cost over the most
+    cases an arm ran.
+
+    :param bundle: The campaign's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: The cost in US dollars; None where an arm went unpriced or no case ran.
+    :rtype: float | None
+    """
+    spent = [board.test_cost_usd for board in bundle.scoreboard]
+    cases = max((board.cases for board in bundle.scoreboard), default=0)
+    if not cases or any(cost is None for cost in spent):
+        return None
+    return sum(cost or 0.0 for cost in spent) / cases
+
+
+def clause_projection(
+    verdict: ClauseVerdict, readings: RuleReadings, *, per_case_usd: float | None = None
+) -> SampleProjection | None:
+    """The cases that would show one unsettled clause holds, from the interval the clause was read on.
+
+    A rate clause reads each rate's bounded interval (``bounded_interval``, the one a switch reads, never the t
+    interval the contrasts table prints), its reach past the point estimate on the drop's side as the half-width, over
+    the fewer usable cases of the two arms; a clause reading several rates needs the most any rate it left unsettled
+    needs. A cost clause reads the cost contrast's interval, its midpoint as the observed difference and a margin of
+    zero, so no number of cases shows arms that do not differ cheaper.
+
+    :param verdict: The clause as the rule read it.
+    :ptype verdict: ClauseVerdict
+    :param readings: What it was read against.
+    :ptype readings: RuleReadings
+    :param per_case_usd: What one case costs over every arm (:func:`case_cost_usd`); None where unpriced.
+    :ptype per_case_usd: float | None
+    :return: The projection; None for a settled clause, and where the cases were not counted or a rate it left
+        unsettled has no interval to project.
+    :rtype: SampleProjection | None
+    """
+    fewest = readings.fewest_cases()
+    if verdict.outcome != "unsettled" or fewest is None or fewest < 1:
+        return None
+    clause = verdict.clause
+    if isinstance(clause, CostLower):
+        if readings.cost_interval is None:
+            return None
+        low, high = readings.cost_interval
+        return project_sample(
+            half_width=(high - low) / 2, cases=fewest, margin=0.0, observed=(low + high) / 2, per_case_usd=per_case_usd
+        )
+    rates = [read.rate for read in verdict.rates if read.outcome == "unsettled"]
+    worst = [rate.worst_drop() for rate in rates]
+    if not rates or None in worst:
+        return None
+    projections = [
+        project_sample(
+            half_width=max((reach or 0.0) - rate.point_drop(), 0.0),
+            cases=fewest,
+            margin=clause.max_points,
+            observed=rate.point_drop(),
+            per_case_usd=per_case_usd,
+        )
+        for rate, reach in zip(rates, worst, strict=True)
+    ]
+    return reduce(SampleProjection.joined, projections)
+
+
+def rule_projection(verdict: RuleVerdict, *, per_case_usd: float | None = None) -> SampleProjection | None:
+    """The cases that would let an unsettled rule switch: every clause it left unsettled shown to hold, so the most
+    any of them needs (:func:`clause_projection`).
+
+    :param verdict: The rule as read on one arm.
+    :ptype verdict: RuleVerdict
+    :param per_case_usd: What one case costs over every arm; None where unpriced.
+    :ptype per_case_usd: float | None
+    :return: The projection; None for a settled rule, and where a clause it left unsettled cannot be projected.
+    :rtype: SampleProjection | None
+    """
+    if verdict.outcome != "unsettled" or verdict.readings is None:
+        return None
+    readings = verdict.readings
+    found = [
+        clause_projection(clause, readings, per_case_usd=per_case_usd)
+        for clause in verdict.clauses
+        if clause.outcome == "unsettled"
+    ]
+    projections = [projection for projection in found if projection is not None]
+    if not projections or len(projections) < len(found):
+        return None
+    return reduce(SampleProjection.joined, projections)
+
+
+def projected_usd(value: float) -> str:
+    """A projected cost to two figures, since the cases it prices are about: ``$2.7``, ``$120``."""
+    if value <= 0:
+        return format_number(0.0, prefix="$")
+    places = 1 - math.floor(math.log10(value))
+    return format_number(round(value, places), prefix="$")
+
+
+def projection_sentence(projection: SampleProjection) -> str:
+    """The cases a switch needs in one sentence, the verdict line's and a next step's: ``A switch needs about 107
+    independent cases if the arms do not differ, 205 if they differ as observed; only new cases count, not repeats.``
+
+    :param projection: The rule's projection (:func:`rule_projection`).
+    :ptype projection: SampleProjection
+    :return: The sentence, held to the page's numeral and length limits.
+    :rtype: str
+    """
+    none, observed = projection.if_none, projection.if_observed
+    tail = "; only new cases count, not repeats."
+    if none is not None and observed is not None:
+        return (
+            f"A switch needs about {none} independent cases if the arms do not differ, {observed} if they differ as "
+            f"observed{tail}"
+        )
+    if none is not None:
+        return (
+            f"A switch needs about {none} independent cases if the arms do not differ, and none would if they differ "
+            f"as observed{tail}"
+        )
+    if observed is not None:
+        return (
+            f"A switch needs about {observed} independent cases if the arms differ as observed, and none would if they "
+            f"do not differ{tail}"
+        )
+    return "No number of new cases would show a switch, whether the arms do not differ or differ as observed."
+
+
+def projected_cell(projection: SampleProjection, needed: int | None) -> str:
+    """One projected count as a table cell says it, with its cost: ``107 cases, $2.7``, or ``none would``."""
+    if needed is None:
+        return "none would"
+    cost = projection.cost(needed)
+    return f"{needed} cases" + ("" if cost is None else f", {projected_usd(cost)}")
+
+
+def projection_note(projections: Sequence[SampleProjection], *, template_cases: int) -> str:
+    """The sentences under the projected cases: that each is about and counts only new cases, and, where every count
+    is more than the template holds, that new cases must be written.
+
+    :param projections: Every projection the table shows.
+    :ptype projections: Sequence[SampleProjection]
+    :param template_cases: The cases the template holds: the most any arm ran.
+    :ptype template_cases: int
+    :return: Two sentences, or three where the template is too small.
+    :rtype: str
+    """
+    said = (
+        "Each count is about: it is scaled from this run's interval and errs high when the run has few cases. Repeats "
+        "of a case do not count; new cases do."
+    )
+    counts = sorted({count for projection in projections for count in projection.counts()})
+    if not counts or counts[0] <= template_cases:
+        return said
+    needs = f"about {counts[0]}" if len(counts) == 1 else f"about {counts[0]} to {counts[-1]}"
+    return f"{said} This template has {template_cases} cases; a switch needs {needs}, so new cases must be written."
+
+
 __all__ = [
     "PROSE_RULE_LINE",
     "ClauseVerdict",
@@ -694,10 +943,19 @@ __all__ = [
     "RuleOutcome",
     "RuleReadings",
     "RuleVerdict",
+    "SampleProjection",
+    "case_cost_usd",
+    "clause_projection",
     "clause_statement",
     "evaluate_rule",
     "keep_is_the_default",
+    "project_sample",
+    "projected_cell",
+    "projected_usd",
+    "projection_note",
+    "projection_sentence",
     "prose_ruled",
+    "rule_projection",
     "rule_readings",
     "rule_statement",
     "ruled_question",

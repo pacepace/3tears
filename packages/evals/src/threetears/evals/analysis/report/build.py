@@ -88,9 +88,15 @@ from threetears.evals.analysis.report.decision import (
     PROSE_RULE_LINE,
     RateReading,
     RuleVerdict,
+    SampleProjection,
+    case_cost_usd,
+    clause_projection,
     evaluate_rule,
     keep_is_the_default,
+    projected_cell,
+    projection_note,
     prose_ruled,
+    rule_projection,
     rule_readings,
     rule_statement,
     ruled_question,
@@ -833,6 +839,12 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     figures are under ``Value``. A rate clause has a row per rate it reads, each with that rate's own outcome and
     reason, so an outcome never sits beside a reading it is not about. A question that wrote its rule as prose and
     declares none typed gets one line saying so, and nothing is settled.
+
+    Where the rule is unsettled, a ``To switch`` table follows: for each clause left unsettled, the independent cases
+    that would show it holds if the arms do not differ and if they differ as observed, each with its cost
+    (:func:`~threetears.evals.analysis.report.decision.clause_projection`), then one line saying each is about, that
+    repeats of a case do not count, and where every count is past what the template holds, that new cases must be
+    written. A settled clause, or a settled rule, projects nothing.
     """
     control = _control_key(bundle)
     questions = _preregistered(bundle)
@@ -845,10 +857,19 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     cost = _cost_ruler(bundle)
     others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
     rows: list[dict[str, CellValue]] = []
+    projected: list[tuple[str, str, SampleProjection]] = []
     pointed = False
+    per_case = case_cost_usd(bundle)
     for key in others:
         readings = rule_readings(bundle, control, key, question_id=asked.id)
         verdict = evaluate_rule(rule, readings, control=arm(control), candidate=arm(key))
+        if rule_projection(verdict, per_case_usd=per_case) is not None:
+            # Only an unsettled rule projects, and only the clauses it left unsettled: a switch is what more cases buy.
+            projected += [
+                (clause.statement, arm(key), projection)
+                for clause in verdict.clauses
+                if (projection := clause_projection(clause, readings, per_case_usd=per_case)) is not None
+            ]
         for clause in verdict.clauses:
             shown: list[tuple[str, str | None, str | None, str]] = []
             if isinstance(clause.clause, CostLower):
@@ -915,6 +936,47 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             source="rule",
             text=keep_is_the_default(arm(control)),
             term="point estimate" if pointed else None,
+        ),
+        *_projection_blocks(bundle, projected, single=single),
+    ]
+
+
+def _projection_blocks(
+    bundle: AnalysisContextBundle, projected: Sequence[tuple[str, str, SampleProjection]], *, single: bool
+) -> list[ReportBlock]:
+    """The ``To switch`` table, one row per unsettled clause and arm, and the line under it; empty with none."""
+    if not projected:
+        return []
+    columns = [
+        TableColumn(key="clause", header="Clause", term="clause"),
+        *([] if single else [TableColumn(key="arm", header="Arm")]),
+        TableColumn(key="none", header="If no difference"),
+        TableColumn(key="observed", header="If as observed"),
+    ]
+    rows: list[dict[str, CellValue]] = [
+        {
+            "clause": statement,
+            "arm": name,
+            "none": projected_cell(projection, projection.if_none),
+            "observed": projected_cell(projection, projection.if_observed),
+        }
+        for statement, name, projection in projected
+    ]
+    template_cases = max((board.cases for board in bundle.scoreboard), default=0)
+    return [
+        TableBlock(
+            section="decision",
+            name="projection",
+            title="To switch",
+            columns=columns,
+            rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
+            order="clause by clause, each arm against the control",
+            total_rows=len(rows),
+        ),
+        DisclosureBlock(
+            section="decision",
+            source="rule",
+            text=projection_note([projection for *_, projection in projected], template_cases=template_cases),
         ),
     ]
 
