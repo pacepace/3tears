@@ -124,8 +124,8 @@ async def test_a_malformed_crawl_delay_is_ignored_without_losing_the_rest_of_the
 
 @pytest.mark.parametrize(
     ("status", "body"),
-    [(404, ""), (403, "nope"), (410, ""), (429, ""), (301, ""), (200, ""), (200, "\x00\xff not a robots file")],
-    ids=["missing", "forbidden", "gone", "too-many-requests", "redirect-left-over", "empty", "garbage"],
+    [(404, ""), (403, "nope"), (410, ""), (301, ""), (200, ""), (200, "\x00\xff not a robots file")],
+    ids=["missing", "forbidden", "gone", "redirect-left-over", "empty", "garbage"],
 )
 async def test_a_missing_or_empty_robots_file_allows_everything(status: int, body: str) -> None:
     """RFC 9309 section 2.3.1.3: a 4xx is "unavailable", and the crawler may access anything.
@@ -138,19 +138,34 @@ async def test_a_missing_or_empty_robots_file_allows_everything(status: int, bod
     assert decision.needs_human is False
 
 
-@pytest.mark.parametrize("status", [500, 502, 503, 199])
-async def test_an_unreachable_robots_file_is_a_complete_disallow(status: int) -> None:
-    """RFC 9309 section 2.3.1.4: a 5xx is "unreachable", and the crawler must assume disallow.
+#: Every unreachable decision carries this one reason, so it is asserted exactly.
+_UNREACHABLE_REASON = (
+    "robots.txt could not be read; RFC 9309 treats an unreachable robots.txt as a complete "
+    "disallow, so this is not fetched unattended until it can be read"
+)
+
+
+def _assert_unreachable(decision: Any) -> None:
+    """Refused for now, retryable, not a Disallow, and the same words whatever went wrong."""
+    assert decision.allowed is False
+    assert decision.unreachable is True
+    assert decision.needs_human is False, "an unreachable robots.txt was sent to a person"
+    assert decision.reason == _UNREACHABLE_REASON
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 429, 199])
+async def test_an_unreachable_robots_file_is_a_complete_disallow(status: int, caplog: pytest.LogCaptureFixture) -> None:
+    """RFC 9309 section 2.3.1.4: a 5xx or a 429 is "unreachable", and the crawler must assume disallow.
 
     It used to read as "allowed", so a site whose robots.txt was failing was fetched as if it
-    had no rules, including any Disallow it could not deliver.
+    had no rules, including any Disallow it could not deliver. A 429 is the site rate-limiting
+    us, not a missing file, which is how Google reads it too.
     """
     gate = RobotsGate(fetch=_fetcher("User-agent: *\nAllow: /\n", status=status))
-    decision = await gate.check("https://example.gov/anything")
-    assert decision.allowed is False
-    assert decision.needs_human is True
-    assert f"HTTP {status}" in decision.reason
-    assert "RFC 9309" in decision.reason
+    with caplog.at_level("WARNING", logger="threetears.scrape.robots"):
+        decision = await gate.check("https://example.gov/anything")
+    _assert_unreachable(decision)
+    assert any(f"returned {status}" in record.getMessage() for record in caplog.records), "the status was logged nowhere"
 
 
 def _refuse_connection(request: httpx.Request) -> httpx.Response:
@@ -165,10 +180,7 @@ async def test_a_fetcher_that_raises_refuses_without_raising_out_of_check() -> N
         raise RuntimeError("dns is down")
 
     gate = RobotsGate(fetch=_explode)
-    decision = await gate.check("https://example.gov/x")
-    assert decision.allowed is False
-    assert decision.needs_human is True
-    assert "RuntimeError" in decision.reason
+    _assert_unreachable(await gate.check("https://example.gov/x"))
 
 
 async def test_a_robots_fetch_that_times_out_refuses() -> None:
@@ -178,17 +190,14 @@ async def test_a_robots_fetch_that_times_out_refuses() -> None:
 
     with patch("threetears.scrape.robots._FETCH_TIMEOUT_SECONDS", 0.01):
         decision = await RobotsGate(fetch=_hang).check("https://example.gov/x")
-    assert decision.allowed is False
-    assert "TimeoutError" in decision.reason
+    _assert_unreachable(decision)
 
 
 async def test_a_robots_file_that_will_not_parse_refuses() -> None:
     """A parser that raises may be hiding a Disallow, so it is read as one for everything."""
     with patch("threetears.scrape.robots.RobotFileParser.parse", side_effect=ValueError("bad grammar")):
         decision = await RobotsGate(fetch=_fetcher(_ROBOTS_DELAY)).check("https://example.gov/x")
-    assert decision.allowed is False
-    assert decision.needs_human is True
-    assert "did not parse" in decision.reason
+    _assert_unreachable(decision)
 
 
 async def test_an_unreachable_file_does_not_override_a_copy_read_earlier() -> None:
@@ -208,6 +217,20 @@ async def test_an_unreachable_file_does_not_override_a_copy_read_earlier() -> No
     assert (await gate.check("https://example.gov/a", now=later)).allowed is True
     assert (await gate.check("https://example.gov/private/x", now=later)).needs_human is True
     assert responses == [], "the expired copy was not re-read"
+
+
+@pytest.mark.parametrize("earlier", [(404, ""), (200, "")], ids=["missing", "empty"])
+async def test_a_remembered_missing_file_is_no_copy_to_keep_using(earlier: tuple[int, str]) -> None:
+    """Section 2.4 is about a cached FILE. A remembered 404 or empty body is not one, so a later
+    5xx is unreachable like any other, rather than "still allowed because it was missing once"."""
+    responses = [earlier, (503, "")]
+
+    async def _fetch(_url: str) -> tuple[int, str]:
+        return responses.pop(0)
+
+    gate = RobotsGate(fetch=_fetch, cache_seconds=10.0)
+    assert (await gate.check("https://example.gov/a", now=0.0)).allowed is True
+    _assert_unreachable(await gate.check("https://example.gov/a", now=100.0))
 
 
 async def test_an_unreachable_answer_is_held_briefly_not_for_the_cache_lifetime() -> None:
@@ -234,9 +257,7 @@ async def test_no_fetcher_at_all_still_reads_an_unreachable_file_as_disallow() -
     """The default fetcher, through an exit that cannot connect: unreachable, so disallow."""
     unreachable = FakeEgress("down", respond=_refuse_connection)
 
-    decision = await RobotsGate(egress=unreachable).check("https://example.gov/x")
-    assert decision.allowed is False
-    assert decision.needs_human is True
+    _assert_unreachable(await RobotsGate(egress=unreachable).check("https://example.gov/x"))
 
 
 async def test_robots_is_read_once_per_origin_not_once_per_target() -> None:
@@ -433,20 +454,46 @@ async def test_a_disallowed_target_is_never_fetched_and_asks_for_a_human() -> No
     assert result.metadata["reason"] == "robots_disallow"
 
 
-async def test_a_target_whose_robots_file_is_unreachable_is_not_fetched_unattended() -> None:
-    """The tool boundary: a 503 on robots.txt used to read as "no rules" and the page was fetched."""
+async def test_a_target_whose_robots_file_is_unreachable_is_not_fetched_and_not_queued() -> None:
+    """The tool boundary: a 503 on robots.txt used to read as "no rules" and the page was fetched.
+
+    Now it is not fetched -- and it is a retryable refusal, not a human's job: `list_walled`
+    excludes a host that stopped answering, so nothing is written to the health row either.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.health import ScrapeTargetHealthCollection
+    from threetears.scrape.tool import ROBOTS_UNREACHABLE_STATUS, ScrapeTool
+
     url = "https://example.gov/list"
-    schema = {"employer": "str", "affected_count": "int"}
+    schema = {"employer": "str"}
+    target_id = await derived_target_id(url, schema)
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
     driver = _RecordingDriver()
-    gate = RobotsGate(fetch=_fetcher("", status=503))
-    tool = await _tool_with_robots(driver, gate, target_id=await derived_target_id(url, schema))
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"nodriver": driver},
+        api_key="k",
+        health_collection=health,
+        robots=RobotsGate(fetch=_fetcher("", status=503)),
+        block_private_hosts=False,
+    )
 
-    result = await tool.execute(url=url, field_schema=schema)
+    with patch("threetears.scrape.tool.record_robots_block") as queued:
+        result = await tool.execute(url=url, field_schema=schema)
 
+    queued.assert_not_called()
     assert driver.fetched == [], "a target whose robots.txt could not be read was fetched anyway"
     assert result.success is False
-    assert result.metadata["needs_human"] is True
-    assert "HTTP 503" in (result.error or "")
+    assert result.metadata["needs_human"] is False
+    assert result.metadata["validation_status"] == ROBOTS_UNREACHABLE_STATUS
+    assert result.metadata["reason"] == "robots_unreachable"
+    assert (result.error or "").startswith("retry later: ")
+    assert await health.list_walled() == [], "an unreachable robots.txt was queued for a person"
+    assert await health.get(target_id) is None, "the health row was written for an unreachable file"
 
 
 async def test_an_allowed_target_is_fetched_normally() -> None:

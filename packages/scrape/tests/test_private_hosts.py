@@ -238,9 +238,9 @@ class TestTheRobotsReadIsChecked:
         assert robots_url in _requested(egress), "the robots file was never read, so this proves nothing"
         assert "127.0.0.1" not in _hosts(egress), "the robots read followed a redirect to loopback"
         # A robots read the guard refused is RFC 9309's "unreachable": a complete disallow, so the
-        # page is not fetched unattended either.
+        # page is not fetched unattended either, and the refusal is a retryable one.
         assert _START not in _requested(egress)
-        assert (result.error or "").startswith("needs a human: "), result.error
+        assert (result.error or "").startswith("retry later: "), result.error
 
     async def test_without_the_guard_the_robots_redirect_is_followed(self) -> None:
         robots_url = urljoin(_START, "/robots.txt")
