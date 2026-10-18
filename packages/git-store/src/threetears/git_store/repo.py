@@ -856,7 +856,9 @@ class GitRepo:
         try:
             reply = await self._role.forward(READ_HANDLER, encode_read(kind, table, key))
         except NoOwnerError:
-            return None  # no writer: nobody is changing the repository, so this clone is as current as any
+            # NOSILENT: no writer means nobody is changing the repository, so this clone is as current as any;
+            # the caller reads it locally
+            return None
         except ForwardedHandlerError as exc:
             raise GitStoreError(
                 f"the writer of {self.config.lease_key} failed a read: {exc.type_name}: {exc.message}"
