@@ -29,24 +29,26 @@ flows through this single hierarchy. Your formatter controls the output format.
 
 ### Context propagation
 
-3tears exposes three `contextvars` for correlation:
+`threetears.observe` keeps one context (a `contextvars` dict) whose entries ride
+every log line. Set it at request entry, for example in middleware:
 
 ```python
-from threetears.core.logging import correlation_id, session_id, conversation_id, set_context
+from threetears.observe import clear_context, get_context, set_context
 
-# Set context at request entry (e.g. middleware)
-set_context(correlation_id="req-abc", session_id="sess-123", conversation_id="conv-456")
+set_context(cid="req-abc", sid="sess-123", conv="conv-456")
+# a value of None removes that key; clear_context() removes them all
 ```
 
-If the host app uses `ContextFormatter` from 3tears (or reads these context vars
-in its own formatter), log lines include `[cid:...] [sid:...] [conv:...]`.
+`ContextFormatter` (which `configure_logging` installs) renders each entry as a
+`[key:value]` tag, so log lines read `... [cid:req-abc] [sid:sess-123] [conv:conv-456] ...`.
+A host with its own formatter can read the same entries with `get_context()`.
 
 ### Standalone apps
 
 For simple scripts or standalone apps that just want working log output:
 
 ```python
-from threetears.core.logging import configure_logging
+from threetears.observe import configure_logging
 
 configure_logging("DEBUG")  # adds a StreamHandler with ContextFormatter
 ```
@@ -106,7 +108,7 @@ trace.set_tracer_provider(provider)
 The `@traced` decorator supports optional arguments:
 
 ```python
-from threetears.core.tracing import traced
+from threetears.observe import traced
 
 @traced()                              # default: span named after function
 @traced(name="custom.span.name")       # custom span name

@@ -107,6 +107,26 @@ _SANCTIONED_HTTPX_SITES: frozenset[str] = frozenset(
         # reaches an upstream through the injected ``SearchTransport`` protocol, which
         # this walker correctly never flags.
         "packages/search/src/threetears/search/standalone.py",
+        # 3tears-models' transport to the self-hosted image servers (ComfyUI, SwarmUI) that
+        # ``ComfyUIClient`` and ``SwarmUIClient`` drive. The models package must not import core
+        # (its dependencies are media-contracts, observe and tool-schema), so core's
+        # ``TracedHttpClient`` is out of reach; this is the ONE module in models' image providers
+        # permitted to open a long-lived client, and both clients reach their server through its
+        # ``ImageServerTransport`` rather than holding one. It discharges the full obligation set:
+        # a configurable timeout with a per-call override; bounded retry with doubling backoff
+        # (``RetryPolicy``, via observe's ``retry_bounded``) where a read repeats on connect,
+        # timeout, dropped connection or 5xx and a request that starts work (queue a graph, draw a
+        # picture, upload) repeats only when it never left (``NOT_SENT``), so nothing is drawn
+        # twice; per-attempt accounting (each attempt logged with method, path, attempt number,
+        # outcome and time, and an error log when a request fails for good); an origin guard in
+        # place of a private-address refusal -- a caller names a path that is joined to the
+        # operator-configured base URL, a full or scheme-relative URL is refused, a request whose
+        # origin differs from the base's is refused, and redirects are not followed (private and
+        # loopback addresses are allowed on purpose: these servers are GPU boxes on the LAN by
+        # design and their address never comes from request data); and streamed reads under a
+        # configurable byte cap, a declared ``Content-Length`` over it refused before reading
+        # (``ResponseTooLargeError``).
+        "packages/models/src/threetears/models/providers/image/transport.py",
     }
 )
 
@@ -277,29 +297,91 @@ def _names_httpx_client(value: ast.expr) -> bool:
     return result
 
 
-def _class_stores_httpx_client(node: ast.ClassDef) -> bool:
-    """true iff the class stores an httpx client on ``self`` (constructed or annotated).
+#: context-manager entry calls whose argument is the object kept: ``stack.enter_async_context(c)``
+_ENTER_CONTEXT_NAMES: frozenset[str] = frozenset({"enter_async_context", "enter_context"})
+#: typing wrappers whose arguments are the types a field may hold
+_OPTIONAL_WRAPPERS: frozenset[str] = frozenset({"Optional", "Union"})
 
-    matches ``self.<x> = httpx.AsyncClient(...)`` and annotated self-stores
-    ``self.<x>: httpx.AsyncClient = ...`` — a long-lived client held as a field. one-shot
-    ephemeral ``async with httpx.AsyncClient() as c`` usage is intentionally NOT matched.
+
+def _constructs_httpx_client(value: ast.expr) -> bool:
+    """true iff ``value`` builds an httpx client, directly or through a context-manager entry.
+
+    matches ``httpx.AsyncClient(...)``, ``await stack.enter_async_context(httpx.AsyncClient(...))``
+    and ``stack.enter_context(httpx.Client(...))`` -- each keeps the client it builds. a client
+    handed to anything else (a wrapper's constructor) is not this check's business.
+
+    :param value: the stored expression
+    :ptype value: ast.expr
+    :return: whether the expression yields a raw httpx client
+    :rtype: bool
+    """
+    if isinstance(value, ast.Await):
+        value = value.value
+    result = False
+    if isinstance(value, ast.Call):
+        if _names_httpx_client(value.func):
+            result = True
+        elif isinstance(value.func, ast.Attribute) and value.func.attr in _ENTER_CONTEXT_NAMES and value.args:
+            result = _constructs_httpx_client(value.args[0])
+    return result
+
+
+def _annotation_holds_httpx_client(annotation: ast.expr) -> bool:
+    """true iff an annotation admits an httpx client: bare, ``| None``, ``Optional``/``Union``, or quoted.
+
+    :param annotation: the annotation
+    :ptype annotation: ast.expr
+    :return: whether a field so annotated may hold an httpx client
+    :rtype: bool
+    """
+    result = False
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            parsed = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            parsed = None
+        result = parsed is not None and _annotation_holds_httpx_client(parsed)
+    elif isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        result = _annotation_holds_httpx_client(annotation.left) or _annotation_holds_httpx_client(annotation.right)
+    elif isinstance(annotation, ast.Subscript):
+        wrapper = annotation.value
+        name = wrapper.attr if isinstance(wrapper, ast.Attribute) else getattr(wrapper, "id", None)
+        if name in _OPTIONAL_WRAPPERS:
+            members = annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else [annotation.slice]
+            result = any(_annotation_holds_httpx_client(member) for member in members)
+    else:
+        result = _names_httpx_client(annotation)
+    return result
+
+
+def _class_stores_httpx_client(node: ast.ClassDef) -> bool:
+    """true iff the class stores an httpx client as a field (constructed or annotated).
+
+    matches, on ``self``: ``self.<x> = httpx.AsyncClient(...)``, the same built inside a
+    context-manager entry (``self.<x> = await stack.enter_async_context(httpx.AsyncClient(...))``),
+    and an annotated store whose annotation admits a client (``self.<x>: httpx.AsyncClient | None``,
+    ``Optional[...]``, ``Union[...]``, quoted). in the class body: a field declared with such an
+    annotation. one-shot ephemeral ``async with httpx.AsyncClient() as c`` usage is intentionally
+    NOT matched.
 
     :param node: class definition to inspect
     :ptype node: ast.ClassDef
     :return: whether the class holds an httpx client field
     :rtype: bool
     """
-    result = False
+    result = any(
+        isinstance(stmt, ast.AnnAssign) and _annotation_holds_httpx_client(stmt.annotation) for stmt in node.body
+    )
     for sub in ast.walk(node):
+        if result:
+            break
         if isinstance(sub, ast.Assign):
             stores_self = any(_self_attr(target) is not None for target in sub.targets)
-            if stores_self and isinstance(sub.value, ast.Call) and _names_httpx_client(sub.value.func):
-                result = True
-                break
-        if isinstance(sub, ast.AnnAssign):
-            if _self_attr(sub.target) is not None and _names_httpx_client(sub.annotation):
-                result = True
-                break
+            result = stores_self and _constructs_httpx_client(sub.value)
+        elif isinstance(sub, ast.AnnAssign) and _self_attr(sub.target) is not None:
+            result = _annotation_holds_httpx_client(sub.annotation) or (
+                sub.value is not None and _constructs_httpx_client(sub.value)
+            )
     return result
 
 
@@ -439,6 +521,70 @@ class TestWalkersFlagPlantedViolations:
         planted.write_text(source, encoding="utf-8")
         violations = find_bespoke_httpx_clients((tmp_path,), tmp_path, frozenset())
         assert [v.symbol for v in violations] == ["BespokeApiClient"]
+
+    def test_httpx_walker_flags_a_client_entered_on_an_exit_stack(self, tmp_path: Path) -> None:
+        # the shape ComfyUIClient / SwarmUIClient used before 0.71.0's image transport: the client
+        # is built inside ``enter_async_context`` and the field is typed ``AsyncClient | None``
+        source = (
+            "import contextlib\n"
+            "import httpx\n\n\n"
+            "class EnteredClient:\n"
+            "    async def __aenter__(self) -> 'EnteredClient':\n"
+            "        stack = contextlib.AsyncExitStack()\n"
+            "        self._http = await stack.enter_async_context(httpx.AsyncClient(timeout=5))\n"
+            "        return self\n"
+        )
+        planted = tmp_path / "entered_client.py"
+        planted.write_text(source, encoding="utf-8")
+        violations = find_bespoke_httpx_clients((tmp_path,), tmp_path, frozenset())
+        assert [v.symbol for v in violations] == ["EnteredClient"]
+
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            "httpx.AsyncClient | None",
+            "None | httpx.Client",
+            "Optional[httpx.AsyncClient]",
+            "typing.Optional[httpx.AsyncClient]",
+            "Union[httpx.AsyncClient, None]",
+            "'httpx.AsyncClient | None'",
+        ],
+    )
+    def test_httpx_walker_flags_an_optional_client_field(self, tmp_path: Path, annotation: str) -> None:
+        source = (
+            "import typing\n"
+            "from typing import Optional, Union\n"
+            "import httpx\n\n\n"
+            "class OptionalClient:\n"
+            "    def __init__(self) -> None:\n"
+            f"        self._http: {annotation} = None\n"
+        )
+        planted = tmp_path / "optional_client.py"
+        planted.write_text(source, encoding="utf-8")
+        violations = find_bespoke_httpx_clients((tmp_path,), tmp_path, frozenset())
+        assert [v.symbol for v in violations] == ["OptionalClient"]
+
+    def test_httpx_walker_flags_a_class_level_client_annotation(self, tmp_path: Path) -> None:
+        source = "import httpx\n\n\nclass DeclaredClient:\n    http: httpx.AsyncClient | None = None\n"
+        planted = tmp_path / "declared_client.py"
+        planted.write_text(source, encoding="utf-8")
+        violations = find_bespoke_httpx_clients((tmp_path,), tmp_path, frozenset())
+        assert [v.symbol for v in violations] == ["DeclaredClient"]
+
+    def test_httpx_walker_leaves_one_shot_and_unrelated_fields_alone(self, tmp_path: Path) -> None:
+        source = (
+            "import httpx\n\n\n"
+            "class OneShot:\n"
+            "    def __init__(self, transport: httpx.AsyncBaseTransport | None) -> None:\n"
+            "        self._transport: httpx.AsyncBaseTransport | None = transport\n"
+            "        self._timeout: httpx.Timeout | None = None\n\n"
+            "    async def fetch(self) -> bytes:\n"
+            "        async with httpx.AsyncClient() as client:\n"
+            "            return (await client.get('http://x/')).content\n"
+        )
+        planted = tmp_path / "one_shot.py"
+        planted.write_text(source, encoding="utf-8")
+        assert find_bespoke_httpx_clients((tmp_path,), tmp_path, frozenset()) == []
 
     def test_wrapper_walker_flags_planted(self, tmp_path: Path) -> None:
         source = (

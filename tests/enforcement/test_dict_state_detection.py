@@ -492,6 +492,84 @@ _ALLOWLIST = (
             "serializable (stores Python class refs, not data)"
         ),
     ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/backends/git/advanced.py",
+        class_name="AdvancedListener",
+        attr_name="_receivers",
+        rationale=(
+            "the callbacks of the repositories THIS process has open, by (namespace, key), that a "
+            "RepoAdvanced broadcast is handed to. live callables into this process's own GitRepo "
+            "objects, not data; another pod has its own repositories open, and a restart re-registers "
+            "each one as it opens"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/backends/git/layout.py",
+        class_name="TemplateLayout",
+        attr_name="_tables",
+        rationale=(
+            "static config: the table layouts a product passes to the constructor, by table name, "
+            "built once and never changed after"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/backends/git/layout.py",
+        class_name="TemplateLayout",
+        attr_name="_by_table",
+        rationale=(
+            "static config: the compiled path pattern of each table in _tables, built once in the "
+            "constructor from the same layouts"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/backends/git/repo.py",
+        class_name="GitRepo",
+        attr_name="_tails",
+        rationale=(
+            "the PendingTail objects a product registered on this repository in THIS process, by "
+            "folder: live objects holding an op-log handle, not data. what they stand for lives in "
+            "git and the NATS OpLog, and a restart re-adds them before open"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/backends/git/repo.py",
+        class_name="GitRepo",
+        attr_name="_pending",
+        rationale=(
+            "the files each tail has written into THIS process's working tree and not yet committed. "
+            "it describes this process's own files on disk, so another pod's copy would describe a "
+            "tree it does not have; the durable record is the OpLog, which a new writer replays to "
+            "rebuild both the files and this map"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/backends/git/repos.py",
+        class_name="GitRepos",
+        attr_name="_repos",
+        rationale=(
+            "the GitRepo objects THIS process has opened, by repository key: live handles on working "
+            "trees, leases and subscriptions, not data, IS the infrastructure. opened on first use "
+            "and closed with the holder"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/backends/git/repos.py",
+        class_name="RoutedGitStore",
+        attr_name="_stores",
+        rationale=(
+            "one GitDurableStore wrapper per repository opened through this store, by key: thin live "
+            "objects over the GitRepos above, not data, rebuilt on first use"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/backends/git/writer.py",
+        class_name="WriterRole",
+        attr_name="_handlers",
+        rationale=(
+            "the forward handlers a product registered on this writer, by operation name: live "
+            "callables, static once registered, served only while THIS process holds the writer lease"
+        ),
+    ),
 )
 
 #: Tracked for migration: real violations that are acknowledged, not accepted.
