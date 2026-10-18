@@ -71,7 +71,7 @@ ReportSection = Literal[
 SECTION_TITLES: dict[str, str] = {
     "header": "",
     "scoreboard": "Scoreboard",
-    "decision": "Decision",
+    "decision": "Floors",
     "memo": "What it means",
     "contrasts": "Contrasts",
     "cases": "Cases",
