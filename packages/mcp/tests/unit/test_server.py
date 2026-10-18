@@ -24,7 +24,7 @@ import mcp.types as mcp_types
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from threetears.mcp.auth import Identity
+from threetears.mcp.auth import Identity, LocalGrantAuthorizer
 from threetears.mcp.server import McpServer
 from threetears.mcp.tool import McpTool, ToolRegistry
 
@@ -324,6 +324,31 @@ class TestDispatchErrorPaths:
         authz.allows = AsyncMock(side_effect=RuntimeError("broken"))
         authz.start = AsyncMock()
         authz.stop = AsyncMock()
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        server = McpServer(
+            name="test",
+            identity_provider=_identity_provider(identity=identity),
+            authorizer=authz,
+            registry=_registry_with(_make_tool()),
+        )
+        result = await _call_tool(server, "probe", {})
+        assert result.isError is True
+        assert _payload_from_result(result)["error"]["code"] == "AUTHZ_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_a_grant_cache_that_never_loaded_is_an_authz_error_not_a_denial(self) -> None:
+        """a failed first load used to start empty, so every caller read as lacking the permission."""
+        listener = MagicMock()
+        listener.subscribe = AsyncMock()
+        listener.catch_up = AsyncMock(return_value=0)
+        epoch_client = MagicMock()
+        epoch_client.current = AsyncMock(return_value=0)
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(side_effect=RuntimeError("L3 down")),
+            epoch_client=epoch_client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
         identity = Identity(principal_type="user", principal_id=uuid4())
         server = McpServer(
             name="test",
