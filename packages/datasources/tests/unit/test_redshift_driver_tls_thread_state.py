@@ -28,7 +28,9 @@ import select
 import socket
 import ssl
 import struct
+import sys
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
@@ -445,13 +447,23 @@ async def test_a_collected_driver_closing_a_dead_connection_does_not_break_other
     warehouse: _Warehouse,
     bystander: _Bystander,
 ) -> None:
-    """the finalizer closes what is cached on whichever thread collects the driver -- here, the loop's."""
+    """the finalizer closes what is cached on whichever thread collects the driver -- here, the loop's.
+
+    The bridge's worker hands back the result before it drops the call it ran, and that call holds the driver: until
+    the worker lets go, the last reference may die on the worker's thread, not this one. So the test waits for the
+    driver's reference count to fall back to what it was before the call.
+    """
     with patch(_CONNECT, side_effect=warehouse.connect):
         driver = RedshiftDriver(_config())
+        held_here = sys.getrefcount(driver)
         await driver.fetch("SELECT 1")
         (dead,) = warehouse.connections
         warehouse.kill_connections()
 
+        deadline = time.monotonic() + _WAIT_S
+        while sys.getrefcount(driver) > held_here:
+            assert time.monotonic() < deadline, "the bridge's worker never let go of the driver"
+            await asyncio.sleep(0.01)
         del driver
         gc.collect()
 
