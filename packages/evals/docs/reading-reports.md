@@ -7,30 +7,98 @@ tiers). Terms such as campaign, arm and analysis are defined in [Concepts](conce
 
 ## The report: one page, result first
 
-Every campaign is read through one **report**, and every door into it returns the same page: the quick path's
-`comparison.report`, the command line's `report`, the `report_read` operation behind the MCP action, and
-`campaign_report(host, campaign_id, scope_id)`. Each door builds it with the one builder over the campaign's
-evidence bundle, so none adds, drops or reorders anything. Most of what a reader needs is countable — who ran, what
-got lost and why, which case failed, what the judge said — so code writes all of it; a model's analysis, when one
-was written, adds only findings and recommendations, each pinned to the evidence it rests on.
+Every campaign is read through one **page**, and every door into it returns the same one: the quick path's
+`result.page`, the command line's `report`, the `report_read` operation behind the MCP action, and
+`campaign_report(host, campaign_id, scope_id)`. It opens on the campaign's first screen, the whole decision at a
+glance, and then holds one fold per aspect, each that aspect's own page. Each door builds it with the one builder over
+the campaign's evidence, so none adds, drops or reorders anything. Most of what a reader needs is countable — who
+ran, what got lost and why, which case failed, what the judge said — so code writes all of it; a model's analysis,
+when one was written, adds only findings and a recommendation, each pinned to the evidence it rests on.
 
 ```python
-report = comparison.report                                   # the quick path
-report = campaign_report(host, campaign_id, scope_id)        # a host
-files = report.write("eval-report")    # report.html (one page, no script), report.md, bundle.json
+page = result.page                                           # the quick path
+page = campaign_report(host, campaign_id, scope_id)          # a host
+files = page.write("eval-report")  # report.html, report.md, campaign.json, bundle-<aspect>.json
 ```
 
 `report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
 page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
-printed as the text it draws. `bundle.json` is the evidence bundle the page was computed from, with its
-`schema_version`; the page names its fingerprint, and `AnalysisContextBundle.from_json(...).fingerprint()` over the
-file returns the same one. **The bundle is the machine form**: there is no published JSON of the report, and a host
-that wants its own pictures reads the bundle. `report_read(format="json")` and the command line's `--format json`
-return it too. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
+printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
+and confidence, the call, and each aspect's bundle by its fingerprint ([its shape](serving.md#the-campaign-json)).
+Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
+`AnalysisContextBundle.from_json(...).fingerprint()` over the file returns the fingerprint the page names. A host that
+wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return
+`campaign.json`. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
 
-### The first screen
+### The campaign's first screen
 
-The invoices example (rung 3) renders this, verbatim:
+What a campaign can decide depends on its arms ([the three kinds](concepts.md#campaign-kind)), and so does its
+first screen. Top to bottom:
+
+| | A change (control and candidates) | A choice (arms, no control) | A measurement (one arm) |
+|---|---|---|---|
+| 1 | each missed bar, then each broken floor | each missed bar | each missed bar |
+| 2 | title and question | title and question | title and question |
+| 3 | the writer's recommendation | **By aspect, pair by pair** | **By aspect, measure by measure** |
+| 4 | **By aspect**: each candidate against the control | the writer's recommendation | **Bars** |
+| 5 | **Bars**, then **To show no worse than the margin** | **Bars** | |
+| 6 | the call | the call | |
+
+The warnings are bold, above the title (in HTML each a `<p role="alert">`), and the writer's why sits beside each
+one the recommendation answers. A warning only warns: nothing on the page picks an arm, and the bars and floors decide
+nothing.
+
+A change of two aspects, one regressing past its floor and one improving, opens:
+
+```markdown
+**Bar missed on tone: candidate misses the bar on Measuring spend, all roles: its whole interval is on the bad side of the bar.**
+
+**Floor broken on billing: candidate's pass rate falls past the 10-point margin on its whole interval, a drop of 24.6 to 88 points.**
+
+# support queue
+"Does the candidate answer support requests as well as production?"
+
+**By aspect**
+
+| Aspect | Arm | Cases | ▸ production | Arm passed | Change (pts) | Interval (pts) | Margin (pts) | Reading |
+|---|---|---|---|---|---|---|---|---|
+| billing | candidate | 20 | 54 of 60 | 18 of 60 | -60 | [-90.8, -19.9] | 10 | shown worse |
+| tone | candidate | 20 | 18 of 60 | 57 of 60 | 65 | [24.1, 94.8] | 10 | shown better |
+
+Each interval is read at 97.5%, corrected across each arm's aspects.
+
+Each arm's gains and its drops are each shown wrongly at most 2.5% of the time.
+```
+
+**The readings.** A change reads each candidate on each aspect as **shown better** (its gain's interval lies wholly
+above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin) or **unclear**, and an
+aspect declaring no margin is never shown worse. A reading the question did not ask before the first result is
+marked `a lead`: worth chasing, not yet shown. A choice reads each pair: one arm **ahead** where the whole interval
+lies on one side of zero, else `no separation`; ahead is a reading, not a pick. A measurement reads each measure with
+its interval, the pass rate as a count (`45 of 60`).
+
+**One error rate per candidate.** A change tests each candidate's rows, one per aspect, as one family, with gains and
+drops corrected apart (Holm), so each candidate's gains and its drops are each shown wrongly at most 2.5% of the time.
+There is no correction across candidates: with several, one of them is shown better or worse by chance more often.
+A choice's pairs have no direction, so every pair on every aspect is one family. Each row's interval is read at the
+level its row was tested at, so a reading and its interval never disagree, and a campaign of one aspect reads at
+95%, as a floor does, so a floor and the reading on the same margin cannot disagree
+([why](measuring-soundly.md#one-family-per-candidate)).
+
+**To settle.** Each unclear row of a change says, in the `To show no worse than the margin` table, how many cases
+would show the candidate no worse than the margin, if no difference and if as observed, with the cost; it is the
+floor projection below, per aspect.
+
+**The call** is the last line: who decided, which arm, why, and each broken floor and missed bar it overrides, or
+`No call is recorded yet: a person decides, over the readings above.`
+([recording one](adopting-a-host.md#recording-the-call)).
+
+**The folds.** Each aspect follows as a fold: one line of its reading, then that aspect's page in full, laid out as
+the rest of this guide describes, its arms named by the campaign's labels. A campaign of one aspect has one fold.
+
+### An aspect's first screen
+
+Each fold opens on its aspect's first screen. The invoices example (rung 3) renders this, verbatim:
 
 ```markdown
 # invoices: does v2 do better than v1?
@@ -82,10 +150,6 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   `Exploratory:` (linked to the glossary) and what separated, or `nothing separated v2 from v1 on any reading`,
   never "no difference". A guardrail an arm is not shown safe on is the second sentence: `Not yet shown safe: v2 on
   no invented total.` No floor writes this line.
-<!-- slice1: WP-3/WP-4 -- a campaign of several aspects opens on one campaign page: the floor warnings, the
-writer's recommendation, the aspect table (each aspect shown better, shown worse or unclear against the control),
-what would settle each unclear aspect, and the recorded call; then one fold per aspect. Describe it here once it
-lands; until then a page reads one aspect. -->
 - **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a cent).
   A trial passed when every check passed (a goal check, and on the quick path a `bool` grader or a field grader) and
   every judged dimension cleared its bar, and a case passed when every trial of it did, on the console as on the
@@ -145,8 +209,8 @@ Glossary start folded, and a nav link opens the one it lands on.
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Findings are
   evidence: one that names no reading is not a finding, so it is not laid out here but noted in one line under Not
   tested (`The analysis also noted: …`). The memo's words are held to the page's style (below).
-  <!-- slice1: WP-4 -- the writer's recommendation (an arm, its reasons, its confidence, the findings it rests on),
-  its per-aspect summaries and how it must address a broken floor go here once the campaign writer lands. -->
+  A campaign's recommendation is on its first screen, not in a fold; the writer's summary of the aspect opens
+  the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
 - **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
   Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
   ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
@@ -333,7 +397,7 @@ cannot hide a loss here.
 | undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe; the contrasts open with a line naming the arm, and the verdict line says it. To decide it, add cases, declare a margin, or declare the reading's range |
 
 The margin is the measure's `materiality_threshold`, and a judged dimension's is the one its campaign declares
-(`CampaignDesign.guardrail_margins`). A guardrail with no margin declared is held at zero change: `held` then
+(`AspectDesign.guardrail_margins`). A guardrail with no margin declared is held at zero change: `held` then
 needs the arm shown no worse at all, which a few cases rarely show.
 
 **`held` is a claim of safety, so it is read only off a test that holds its error rate.** On a declared range
@@ -371,7 +435,8 @@ says so: its readings confirm nothing, and the design its comparisons read was i
 **A question counts only if it was asked before the evidence.** A question confirms nothing on an aspect when it was
 asked after the aspect's first member run was created, since it may have been asked of results that already
 existed. Each aspect carries its own time (`Aspect.asked_at`), read against its earliest member run's `created_at`
-(`asked_in_time`), and a control named after that run makes the aspect post hoc too. Every reader that scopes a
+(`asked_in_time`), and a control named after the aspect's first result (the earliest result the aspect reads)
+makes it post hoc too. Every reader that scopes a
 reading by the question (the comparison family, the reading scope, the verdict order, the disclosure) reads that one
 time, so they cannot disagree. A late question builds no family, `reading_scope.question_post_hoc` says so, and
 `question_declared` is true only when the question was asked in time. When it came late, the one disclosure says
@@ -473,13 +538,22 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
-**The memo is findings and recommendations, and code checks their structure.** The writer authors no headline, no
-summary, no chart and no count: the first screen is code's. It reads the bundle's trials (their states, causes,
-failed checks and the judge's reasons, without the excerpts) and names, in each finding's `trials`, the trials a
-finding is drawn from. The generator refuses, through the one repair round, a recommendation that rests on no
-finding, a finding naming a trial the bundle does not hold, and any `adopted` recommendation in a campaign that
-asked no question before its first run — keeping the control included, since nothing in an exploratory campaign
-is a decision. Adopting a non-control arm still needs an `improved` contrast.
+**One memo per campaign: findings, one recommendation, a summary per aspect.** The writer authors no headline, no
+chart and no count: the first screen is code's. It reads the campaign bundle (each aspect's readings, trials, their
+states, causes, failed checks and the judge's reasons) and writes findings, each naming in `trials` the trials it is
+drawn from; at most one recommendation (`Recommendation`: an arm, reasons, confidence, the findings it `rests_on`);
+one summary per aspect (what changed, how sure, what it means here), laid out at the top of that aspect's fold; and
+next steps. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
+
+| Kind | The writer must | The writer may not |
+|---|---|---|
+| measurement | write findings and summaries | recommend anything |
+| choice | pick an arm, or say no clear winner | pick at more than `low` confidence when no pair separated its pick ahead; leave unanswered an aspect where another arm is shown ahead (`behind_on`) |
+| change | recommend a switch or keeping the control | switch on exploratory evidence alone, to a candidate with no better reading or improved contrast on any aspect, or to one that breached a guardrail |
+
+Every kind answers its pick's warnings, each once and each with a why: a broken floor in `floors_overridden`, a
+missed bar in `bars_missed`. A switch rests on at least one finding; keeping the control may rest on none. The page
+sets each why beside the warning it answers, and a floor the memo overrides still opens the page.
 
 **A finding's title never states a null its evidence did not establish.** "Halving the budget does not change
 latency, cost or delivery" decides as surely as a measured result does, and over a contrast that did not separate it
