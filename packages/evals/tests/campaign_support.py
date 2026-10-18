@@ -40,8 +40,9 @@ ASKED_AT = "2000-01-01T00:00:00+00:00"
 CASES = 20
 REPEATS = 3
 
-#: What a reader calls the candidate.
+#: What a reader calls the candidate, and the control.
 CANDIDATE_LABEL = "v2"
+CONTROL_LABEL = "production"
 
 
 def _first_cases(right: int) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
@@ -110,7 +111,7 @@ async def measured_aspect(
         design=declared.design.model_copy(update={"merit_axes": []}),
         question=QUESTION,
         asked_at=when,
-        control=declared.control.model_copy(update={"named_at": when}),
+        control=declared.control.model_copy(update={"named_at": when, "label": CONTROL_LABEL}),
         margin=margin,
         floors=floors,
         id=view.campaign_id,
@@ -228,6 +229,7 @@ def arms_of(measured: MeasuredAspect) -> list[CampaignArm]:
 __all__ = [
     "ASKED_AT",
     "CANDIDATE_LABEL",
+    "CONTROL_LABEL",
     "CASES",
     "QUESTION",
     "REPEATS",

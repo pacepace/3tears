@@ -173,9 +173,9 @@ async def test_a_one_aspect_floor_and_its_reading_on_the_same_rate_and_margin_ne
     base = await _base()
     rng = random.Random(846)
     seen = set()
-    for _ in range(24):
+    for index in range(28):
         margin = rng.choice([2.0, 5.0, 10.0, 20.0])
-        control, candidate = _shares(rng, CASES, rng.choice([-3, -2, -1, 0, 1, 2]))
+        control, candidate = _shares(rng, CASES, (-3, -2, -1, 0, 1, 2, 3)[index % 7])
         lost = rng.choice([0, 0, 0, 2, 6])
         campaign = campaign_of(base, [("billing", margin)], floors=[("billing", RateDrop(max_points=margin))])
         bundle = varied(base.bundle, aspect="billing", control=control, candidate=candidate, lost=lost)
@@ -276,7 +276,7 @@ def _floors_match(read: CampaignReadings, bundle: AnalysisContextBundle, base: M
     readings = floor_readings(bundle, base.control, base.candidate)
     for status in read.floors:
         floor = Floor(aspect=status.aspect, clause=RateDrop(max_points=10))
-        assert status == evaluate_floor(floor, readings, arm=base.candidate, arm_label="v2", control_label="control")
+        assert status == evaluate_floor(floor, readings, arm=base.candidate, arm_label="v2", control_label="production")
 
 
 async def test_a_floor_status_is_evaluate_floor_s_own() -> None:
