@@ -279,18 +279,12 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
     """One aspect's closed fold: the writer's summary of it, then its page's first screen and sections, a heading level
     down, every id in it prefixed ``a-<slug>-``.
 
-    The page's own title, its quoted question and its broken floors are left out: the campaign's first screen carries
-    them once. Its glossary is the campaign page's.
+    The page's own title, its quoted question, its broken floors and its verdict line are left out
+    (:attr:`~threetears.evals.analysis.report.model.CampaignAspectFold.head`): the campaign's first screen carries the
+    first three once and reads each aspect itself. Its glossary is the campaign page's.
     """
     report = fold.report
-    head = [
-        block
-        for block in report.blocks
-        if block.section in FIRST_SCREEN
-        and not (
-            isinstance(block, DisclosureBlock) and block.section == "header" and block.source in ("floor", "basis")
-        )
-    ]
+    head = fold.head
     body = [
         *(_block(block, index) for index, block in enumerate(fold.summary)),
         *(_block(block, index) for index, block in enumerate(head)),

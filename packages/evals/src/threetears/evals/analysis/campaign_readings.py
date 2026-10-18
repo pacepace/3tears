@@ -5,22 +5,26 @@ pass rate against the control and whether it is **shown better**, **shown worse*
 candidate, whether it is broken, held or unclear; and for an unclear reading, the cases that would settle it. The
 writer's recommendation and the person's call both read it, and neither can change it.
 
-**One family across aspects, two directions.** A campaign tests every aspect × candidate row at once, so its p values
-are Holm-adjusted across all of them at the campaign's α, separately for gains and for drops: a gain is the change
-tested against zero, a drop the change tested against the aspect's margin. A row's interval is read at the level its
-Holm step tested it at, so its reading and its interval never contradict. Floors are read intersection-union, each at
-its nominal level with no correction, since a warning that fires less often for every floor added is no warning.
+**One family per candidate across its aspects, two directions.** Each candidate's rows, one per aspect, are tested
+as one family at the campaign's α, separately for gains and for drops: a gain is the change tested against zero, a
+drop the change tested against the aspect's margin. Each direction's claims are one-sided, read off a two-sided
+interval, so each errs at most α/2 and the gains and drops together at most α, per candidate. **There is no error
+control across candidates**: with several candidates, one of them is shown better or worse by chance more often than
+α. Floors are read intersection-union, each at its nominal level with no correction, since a warning that fires less
+often for every floor added is no warning.
 
-**The reading is read off the interval, never off a p.** Each direction is a step-down over its family's rows, Holm's
-procedure carried on the intervals themselves: with ``k`` rows not yet shown, each is read on its two-sided bounded
-interval (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`) at ``1 − α/k``, every row it shows
-leaves the family, and the step repeats at the next ``k`` until a step shows none; a row's interval is the one its last
-step read. One row is read at ``1 − α``, the 95% a floor reads, so a one-aspect campaign's floor on its pass rate and
-its aspect's reading against the same margin are one computation and cannot disagree: a drop is shown by
+**The reading is read off the interval.** Each direction is Holm's step-down over its family, carried on the
+intervals and made monotone by construction (:func:`_step_down`): a family of ``m`` rows is read on each row's
+two-sided bounded interval (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`) at the levels
+``1 − α/k``, ``k`` from 1 to ``m``, and a row counts as shown at a level only where it is shown there and at every
+looser level, so the procedure never relies on the intervals nesting. A row's interval is read at the level its step
+showed it at, or at a level where it does not clear, so its reading and its interval never contradict. One aspect
+makes a family of one, read at ``1 − α``, the 95% a floor reads, so a one-aspect campaign's floor on its pass rate and
+each candidate's reading against the same margin are one computation and cannot disagree: a drop is shown by
 :func:`~threetears.evals.analysis.report.decision.read_floor` itself, on the pass rate alone, with the floor's case
-floor and its bound over lost trials, and a gain by the same rules mirrored. The p values beside each row invert that
-same interval (the smallest α at which it would clear), Holm-adjusted across the family
-(:func:`~threetears.evals.analysis.stats.holm_adjust`), for a program to read; nothing on the page is decided by them.
+floor and its bound over lost trials, and a gain by the same rules mirrored. Each row's p is read on its family's
+grid, ``α / k`` for the largest ``k`` it reaches (1 where it reaches none), so its Holm-adjusted p
+(:func:`~threetears.evals.analysis.stats.holm_adjust`) is at most α exactly where the row is shown, to rounding.
 
 :func:`campaign_readings` reads every aspect's evidence bundle and nothing else: no storage, so a caller resolves the
 arms (named and derived, :func:`~threetears.evals.analysis.campaigns.campaign_arms`) and assembles the bundles first.
@@ -84,8 +88,8 @@ class AspectReading(EvalDocumentModel):
     Every figure is the candidate minus the control, in points of a 0-100 pass rate, so a positive change is a
     candidate passing more.
 
-    **The reading is decided per direction.** The gain and the drop are two Holm families, so each direction has its
-    own p values and its own interval, read at the level that direction's Holm step tested it at: ``better`` is the
+    **The reading is decided per direction.** The gain and the drop are two Holm families per candidate, so each
+    direction has its own p values and its own interval, read at the level that direction's step read it at: ``better`` is the
     gain shown (its interval wholly above zero), ``worse`` the drop past the margin shown (its interval wholly below
     minus the margin). ``unclear`` is neither, and a page showing one shows both intervals, so a reader sees how far
     each side is from settling.
@@ -103,8 +107,9 @@ class AspectReading(EvalDocumentModel):
     )
     gain_confidence: float | None = Field(
         description=(
-            "The level `gain_interval` is read at: one minus the α this row's step in the gains' Holm family tested "
-            "it at, so the interval and the gain reading never contradict. None with no interval."
+            "The level `gain_interval` is read at: the level the gains' step-down showed the row at, or, not shown, "
+            "a level at which its interval does not clear, so the interval and the gain reading never contradict. "
+            "None with no interval."
         )
     )
     drop_interval: tuple[float, float] | None = Field(
@@ -115,24 +120,34 @@ class AspectReading(EvalDocumentModel):
     )
     drop_confidence: float | None = Field(
         description=(
-            "The level `drop_interval` is read at: one minus the α this row's step in the drops' Holm family tested "
-            "it at. None with no interval."
+            "The level `drop_interval` is read at, by the rule `gain_confidence` is, in the drops' family. None with "
+            "no interval."
         )
     )
     gain_p: float | None = Field(
-        description="The p value of the change against zero, on the case-paired differences, unadjusted. None when untested."
+        description=(
+            "The gain's p, unadjusted, on its family's grid: `α / k` for the largest `k` at which the gain is shown at "
+            "`1 − α/k` and every looser level (its interval above zero, at the case floor, past the lost trials), 1 "
+            "where it is shown at none. None when untested."
+        )
     )
     gain_p_holm: float | None = Field(
-        description="`gain_p` Holm-adjusted across every aspect × candidate row's gain. None when untested."
+        description=(
+            "`gain_p` Holm-adjusted across this candidate's aspects: at most α exactly where the row reads `better` "
+            "(to rounding). None when untested."
+        )
     )
     drop_p: float | None = Field(
         description=(
-            "The p value of a drop past the margin, on the case-paired differences, unadjusted. None when untested, "
+            "The drop's p past the margin, unadjusted, on its family's grid as `gain_p` is. None when untested, "
             "which an aspect with no margin always is."
         )
     )
     drop_p_holm: float | None = Field(
-        description="`drop_p` Holm-adjusted across every aspect × candidate row's drop. None when untested."
+        description=(
+            "`drop_p` Holm-adjusted across this candidate's aspects: at most α exactly where the row reads `worse`. "
+            "None when untested."
+        )
     )
     reading: ShownReading = Field(description="What the row shows: `better`, `worse` or `unclear`.")
     margin: float | None = Field(
@@ -193,10 +208,16 @@ class FloorStatus(EvalDocumentModel):
 
 
 class CampaignReadings(EvalDocumentModel):
-    """Everything code reads off a campaign: one row per aspect × candidate, and one status per floor × candidate."""
+    """Everything code reads off a campaign: one row per aspect × candidate, and one status per floor × candidate.
+
+    Each candidate's rows are corrected across its own aspects (Holm, gains and drops apart, each direction erring at
+    most α/2); nothing corrects across candidates, so with several, one is shown by chance more often than α.
+    """
 
     campaign_id: str = Field(description="The campaign read.")
-    alpha: float = Field(gt=0.0, lt=1.0, description="The campaign's α, at which every Holm family is tested.")
+    alpha: float = Field(
+        gt=0.0, lt=1.0, description="The campaign's α, at which each candidate's two Holm families are tested."
+    )
     control: str | None = Field(description="The control arm's variant key; None when the campaign declares none.")
     control_label: str = Field(description="What a reader calls the control; empty when there is none.")
     aspects: list[str] = Field(description="The aspects' labels, in the campaign's order.")
@@ -226,6 +247,18 @@ class CampaignReadings(EvalDocumentModel):
         """
         return [status for status in self.floors if status.status == "broken"]
 
+    def arm_labels(self) -> dict[str, str]:
+        """What a reader calls each arm the readings name, by variant key: the control and every candidate with a
+        row. What an aspect's own page is built with (``build_code_only_report(..., arm_labels=...)``), so a fold
+        names the arms as the campaign's table does.
+
+        :return: Variant key → label.
+        :rtype: dict[str, str]
+        """
+        labels = {self.control: self.control_label} if self.control is not None else {}
+        labels.update({row.arm: row.arm_label for row in self.readings})
+        return labels
+
     def on_aspect(self, aspect: str) -> list[AspectReading]:
         """The rows read on one aspect, in candidate order.
 
@@ -247,15 +280,6 @@ _CASE_FLOOR = SMALL_N_BAND_FLOOR
 #: The share range the pass rate's per-case values lie in.
 _RATE_RANGE = (0.0, 1.0)
 
-#: The smallest p an inverted interval reports: one clearing even at ``1 - _P_FLOOR`` is reported at it.
-_P_FLOOR = 1e-12
-
-#: The largest α an inversion tries; an interval not clearing even there reads p 1.
-_P_CEILING = 1.0 - 1e-9
-
-#: Bisection steps on log α for an inverted p: enough for three significant figures across the twelve decades.
-_P_STEPS = 40
-
 
 @dataclass
 class _Row:
@@ -271,10 +295,11 @@ class _Row:
     confirmatory: bool
     per_case_usd: float | None
     levels: dict[float, RateReading]
+    drops: dict[float, tuple[bool, str]]
 
     def at(self, confidence: float) -> RateReading:
         """The pass rate with its bounded interval at ``confidence``, computed again from the same per-case values a
-        floor reads, by the same function; the nominal level's is the floor's own reading."""
+        floor reads, by the same function, once per level; the nominal level's is the floor's own reading."""
         if confidence == self.rate.confidence or self.rate.samples is None:
             return self.rate
         if confidence not in self.levels:
@@ -303,30 +328,13 @@ class _Row:
         (:func:`~threetears.evals.analysis.report.decision.read_floor`) on the pass rate alone, at that level."""
         if self.margin is None:
             return False, ""
-        rate = self.at(confidence)
-        readings = replace(self.base, rates=(rate,), confidence=confidence)
-        floor = Floor(aspect=self.aspect, clause=RateDrop(max_points=self.margin))
-        verdict = read_floor(floor, readings, control=self.control_label, candidate=self.arm.label)
-        return verdict.outcome == "broken", verdict.reason
-
-    def gain_p(self) -> float | None:
-        """The smallest two-sided α at which the interval lies wholly above zero; None with no interval."""
-        if self.rate.interval is None:
-            return None
-        return _inverted_p(lambda confidence: _low(self.at(confidence)) > 0)
-
-    def drop_p(self) -> float | None:
-        """The smallest two-sided α at which the interval lies wholly past the margin; None with no interval or no
-        margin."""
-        if self.rate.interval is None or self.margin is None:
-            return None
-        bound = -self.margin / 100
-        return _inverted_p(lambda confidence: _high(self.at(confidence)) < bound)
-
-
-def _low(rate: RateReading) -> float:
-    """The interval's low end as a share, or minus infinity with none."""
-    return rate.interval[0] if rate.interval is not None else -math.inf
+        if confidence not in self.drops:
+            rate = self.at(confidence)
+            readings = replace(self.base, rates=(rate,), confidence=confidence)
+            floor = Floor(aspect=self.aspect, clause=RateDrop(max_points=self.margin))
+            verdict = read_floor(floor, readings, control=self.control_label, candidate=self.arm.label)
+            self.drops[confidence] = (verdict.outcome == "broken", verdict.reason)
+        return self.drops[confidence]
 
 
 def _high(rate: RateReading) -> float:
@@ -334,49 +342,80 @@ def _high(rate: RateReading) -> float:
     return rate.interval[1] if rate.interval is not None else math.inf
 
 
-def _inverted_p(clears: Callable[[float], bool]) -> float:
-    """The smallest two-sided α at which ``clears(1 − α)`` holds: a p read off the interval itself, bisected on log α.
+@dataclass(frozen=True)
+class _Decision:
+    """One row in one direction's family: whether it is shown, the level its interval is read at, and its p."""
 
-    :param clears: Whether the interval at a two-sided level clears the null on the side tested.
-    :ptype clears: Callable[[float], bool]
-    :return: The p, in ``[_P_FLOOR, 1]``.
-    :rtype: float
+    shown: bool
+    level: float
+    p: float
+
+
+def _step_down(rows: Sequence[int], shown: Callable[[int, float], bool], alpha: float) -> dict[int, _Decision]:
+    """Holm's step-down on one family, read on the intervals and made monotone by construction.
+
+    The family of ``m`` rows is read at the levels ``1 − α/k``, ``k`` from 1 to ``m``, loosest first. A row's
+    **reach** is the largest ``k`` at which it is shown at that level and at every looser one, so whether a row
+    counts as shown never rises as the level tightens, whatever the interval does between levels. With ``k`` rows
+    not yet shown, a step shows every one whose reach is at least ``k``; they leave, and the next step reads the rest
+    at their new ``k``; a step showing none ends it. This is Holm's procedure exactly on the p values ``α / reach``
+    (1 where the reach is 0): a row is shown exactly where its Holm-adjusted p is at most ``α``. Each such p is valid
+    (a row reaches ``k`` only where its interval at ``1 − α/k`` clears), so the family's error is Holm's.
+
+    A shown row's interval is read at the level its step showed it at; one not shown at the last step's level, or,
+    where its interval clears there but not at some looser level, at the loosest level it does not clear, so its
+    interval never says it was shown.
+
+    :return: Each row's decision.
+    :rtype: dict[int, _Decision]
     """
-    if clears(1.0 - _P_FLOOR):
-        return _P_FLOOR
-    if not clears(1.0 - _P_CEILING):
-        return 1.0
-    low, high = math.log(_P_FLOOR), math.log(_P_CEILING)
-    for _ in range(_P_STEPS):
-        middle = (low + high) / 2
-        if clears(1.0 - math.exp(middle)):
-            high = middle
-        else:
-            low = middle
-    return min(1.0, math.exp(high))
-
-
-def _step_down(rows: Sequence[int], shown: Callable[[int, float], bool], alpha: float) -> dict[int, tuple[float, bool]]:
-    """Holm's step-down carried on the intervals: each step reads every row not yet shown at ``1 − α/k``, ``k`` of
-    them, and every row it shows leaves the family; a step showing none ends it, its level every remaining row's.
-
-    Equal to Holm on the inverted p values wherever a row's test is monotone in its level, which the bounded interval
-    is to the precision it is computed at; and the reading is the interval's by construction, so the two never
-    contradict.
-
-    :return: Each row's level and whether it was shown there.
-    :rtype: dict[int, tuple[float, bool]]
-    """
+    size = len(rows)
+    grid = [1.0 - alpha / k for k in range(1, size + 1)]
+    reach: dict[int, int] = {}
+    for index in rows:
+        reached = 0
+        for k, level in enumerate(grid, start=1):
+            if not shown(index, level):
+                break
+            reached = k
+        reach[index] = reached
+    decided: dict[int, _Decision] = {}
     remaining = list(rows)
-    decided: dict[int, tuple[float, bool]] = {}
     while remaining:
-        level = 1.0 - alpha / len(remaining)
-        hits = [index for index in remaining if shown(index, level)]
+        k = len(remaining)
+        hits = [index for index in remaining if reach[index] >= k]
         if not hits:
-            decided.update({index: (level, False) for index in remaining})
+            for index in remaining:
+                level = grid[k - 1] if not shown(index, grid[k - 1]) else grid[reach[index]]
+                decided[index] = _Decision(shown=False, level=level, p=_p(alpha, reach[index]))
             break
-        decided.update({index: (level, True) for index in hits})
+        for index in hits:
+            decided[index] = _Decision(shown=True, level=grid[k - 1], p=_p(alpha, reach[index]))
         remaining = [index for index in remaining if index not in hits]
+    return decided
+
+
+def _p(alpha: float, reach: int) -> float:
+    """A row's p on its family's grid: ``α / reach``, 1 for a row shown at no level."""
+    return alpha / reach if reach else 1.0
+
+
+def _families(rows: Sequence[_Row], keep: Callable[[_Row], bool]) -> list[list[int]]:
+    """One family per candidate, in candidate order: the rows of that candidate ``keep`` admits, across its aspects."""
+    by_arm: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        if keep(row):
+            by_arm.setdefault(row.arm.variant_key, []).append(index)
+    return list(by_arm.values())
+
+
+def _decided(
+    rows: Sequence[_Row], keep: Callable[[_Row], bool], shown: Callable[[int, float], bool], alpha: float
+) -> dict[int, _Decision]:
+    """Every family's step-down, each candidate's apart."""
+    decided: dict[int, _Decision] = {}
+    for family in _families(rows, keep):
+        decided.update(_step_down(family, shown, alpha))
     return decided
 
 
@@ -395,7 +434,7 @@ def _checked_bundles(
     if missing := [label for label in labels if label not in bundles]:
         raise RefusedInput(
             f"campaign {campaign.id} has no evidence bundle for aspect(s) {', '.join(missing)}",
-            remedy="assemble one bundle per aspect (assemble_context_bundle(campaign, aspect=label, ...)) and pass them all",
+            remedy="pass one bundle per aspect, each assembled for that aspect and keyed by its label",
         )
     if stray := sorted(set(bundles) - set(labels)):
         raise RefusedInput(
@@ -461,8 +500,9 @@ def campaign_readings(
 
     Per aspect and candidate, the aspect's pass rate
     (:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate`): the change in points, shown better, shown
-    worse or unclear, read by the step-down on intervals the module describes, Holm across every aspect × candidate
-    row at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart. An aspect with no margin
+    worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
+    at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart; nothing corrects across
+    candidates. An aspect with no margin
     is never shown worse and tests no drop. An unclear row with a margin carries the cases that would show the
     candidate within it (:func:`~threetears.evals.analysis.report.decision.project_rate`, at the row's drop level).
     Per floor and candidate, :func:`~threetears.evals.analysis.report.decision.evaluate_floor`, at the nominal level
@@ -524,28 +564,29 @@ def campaign_readings(
                     confirmatory=bundle.question_declared,
                     per_case_usd=per_case,
                     levels={},
+                    drops={},
                 )
             )
-    gains = _step_down(
-        [index for index, row in enumerate(rows) if row.rate.interval is not None],
-        lambda index, level: rows[index].gain_shown(level),
-        alpha,
-    )
-    drops = _step_down(
-        [index for index, row in enumerate(rows) if row.rate.interval is not None and row.margin is not None],
-        lambda index, level: rows[index].drop_verdict(level)[0],
-        alpha,
-    )
-    gain_ps = {index: p for index, row in enumerate(rows) if (p := row.gain_p()) is not None}
-    drop_ps = {index: p for index, row in enumerate(rows) if (p := row.drop_p()) is not None}
-    gain_holm = dict(zip(gain_ps, holm_adjust(list(gain_ps.values())), strict=True))
-    drop_holm = dict(zip(drop_ps, holm_adjust(list(drop_ps.values())), strict=True))
+
+    def gain_kept(row: _Row) -> bool:
+        return row.rate.interval is not None
+
+    def drop_kept(row: _Row) -> bool:
+        return row.rate.interval is not None and row.margin is not None
+
+    gains = _decided(rows, gain_kept, lambda index, level: rows[index].gain_shown(level), alpha)
+    drops = _decided(rows, drop_kept, lambda index, level: rows[index].drop_verdict(level)[0], alpha)
+    gain_holm = _holm(rows, gain_kept, gains)
+    drop_holm = _holm(rows, drop_kept, drops)
     readings: list[AspectReading] = []
     for index, row in enumerate(rows):
-        gain_level, gained = gains.get(index, (None, False))
-        drop_level, dropped = drops.get(index, (None, False))
-        # Both cannot hold on intervals about one estimate; were rounding ever to make them, neither is claimed.
+        gain, drop = gains.get(index), drops.get(index)
+        gained, dropped = gain is not None and gain.shown, drop is not None and drop.shown
+        # A gain and a drop past the margin on one estimate's two intervals would contradict each other; should the
+        # two ever both be shown, neither is claimed.
         reading: ShownReading = "unclear" if gained == dropped else "better" if gained else "worse"
+        gain_level = gain.level if gain is not None else None
+        drop_level = drop.level if drop is not None else None
         drop_reason = row.drop_verdict(drop_level)[1] if drop_level is not None else ""
         gain_rate = row.at(gain_level) if gain_level is not None else None
         drop_rate = row.at(drop_level) if drop_level is not None else None
@@ -565,9 +606,9 @@ def campaign_readings(
                 gain_confidence=gain_level,
                 drop_interval=_points(drop_rate),
                 drop_confidence=drop_level,
-                gain_p=gain_ps.get(index),
+                gain_p=gain.p if gain is not None else None,
                 gain_p_holm=gain_holm.get(index),
-                drop_p=drop_ps.get(index),
+                drop_p=drop.p if drop is not None else None,
                 drop_p_holm=drop_holm.get(index),
                 reading=reading,
                 margin=row.margin,
@@ -599,6 +640,14 @@ def campaign_readings(
         readings=readings,
         floors=floors,
     )
+
+
+def _holm(rows: Sequence[_Row], keep: Callable[[_Row], bool], decided: Mapping[int, _Decision]) -> dict[int, float]:
+    """Each row's p Holm-adjusted within its candidate's family: at most α exactly where the step-down showed it."""
+    adjusted: dict[int, float] = {}
+    for family in _families(rows, keep):
+        adjusted.update(zip(family, holm_adjust([decided[index].p for index in family]), strict=True))
+    return adjusted
 
 
 def _points(rate: RateReading | None) -> tuple[float, float] | None:

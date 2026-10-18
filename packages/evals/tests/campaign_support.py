@@ -44,6 +44,12 @@ REPEATS = 3
 CANDIDATE_LABEL = "v2"
 CONTROL_LABEL = "production"
 
+#: What a reader calls the second candidate, where one runs: its arm's name in the run too.
+THIRD_LABEL = "v3"
+
+#: When every aspect's own page was assembled.
+ASSEMBLED_AT = "2026-10-18T00:00:00+00:00"
+
 
 def _first_cases(right: int) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
     """A runner answering right on every trial of the first ``right`` cases and wrong on the rest."""
@@ -59,13 +65,15 @@ def _first_cases(right: int) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any
 
 @dataclass(frozen=True)
 class MeasuredAspect:
-    """One aspect measured for real: its one-aspect campaign, its bundle, its own page and the two arms' keys."""
+    """One aspect measured for real: its one-aspect campaign, its bundle, its own page and the arms' keys; ``third``
+    the second candidate's, where one ran."""
 
     campaign: EvalCampaign
     bundle: AnalysisContextBundle
     report: Report
     control: str
     candidate: str
+    third: str | None = None
 
 
 async def measured_aspect(
@@ -76,6 +84,7 @@ async def measured_aspect(
     margin: float | None = 10,
     floors: Sequence[DecisionClause] = (),
     asked_at: str | None = ASKED_AT,
+    third: int | None = None,
 ) -> MeasuredAspect:
     """A real run read as one declared aspect labelled ``label``: production passing its first ``production`` cases
     and the candidate its first ``candidate``, every trial of each, the question asked at ``asked_at``.
@@ -92,11 +101,15 @@ async def measured_aspect(
     :ptype floors: Sequence[DecisionClause]
     :param asked_at: When the question was asked; None asks it now, after the runs.
     :ptype asked_at: str | None
+    :param third: The cases a second candidate (:data:`THIRD_LABEL`) passes; None runs none.
+    :ptype third: int | None
     :return: The aspect.
     :rtype: MeasuredAspect
     """
     cases = [{"text": f"support request {index}", "label": "queued"} for index in range(CASES)]
     arms = {"production": _first_cases(production), "candidate": _first_cases(candidate)}
+    if third is not None:
+        arms[THIRD_LABEL] = _first_cases(third)
     comparison = await Eval(cases, arms, ["label"], k=REPEATS, name=label).run(store=":memory:")
     storage = comparison.host.storage
     stored = off_loop(get_campaign, storage, comparison.campaign_id, comparison.scope_id)
@@ -124,9 +137,16 @@ async def measured_aspect(
     bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=comparison.host.profile)
     assert bundle.design.control_arm is not None
     control = bundle.design.control_arm.variant_key
-    (other,) = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
-    report = build_code_only_report(bundle, assembled_at="2026-10-18T00:00:00+00:00", campaign_name="support")
-    return MeasuredAspect(campaign=campaign, bundle=bundle, report=report, control=control, candidate=other)
+    keys = {entry.levers["candidate"].display: entry.variant_key for entry in bundle.variant_index}
+    report = build_code_only_report(bundle, assembled_at=ASSEMBLED_AT, campaign_name="support")
+    return MeasuredAspect(
+        campaign=campaign,
+        bundle=bundle,
+        report=report,
+        control=control,
+        candidate=keys["candidate"],
+        third=keys.get(THIRD_LABEL),
+    )
 
 
 def varied(
@@ -136,6 +156,8 @@ def varied(
     control: Sequence[float],
     candidate: Sequence[float],
     lost: int = 0,
+    also: Mapping[str, Sequence[float]] | None = None,
+    paired: bool = True,
 ) -> AnalysisContextBundle:
     """``bundle`` read as aspect ``aspect`` with the overall pass rate's per-case shares set: ``control`` and
     ``candidate`` paired case by case, each a share of :data:`REPEATS` trials, and ``lost`` of the candidate's trials
@@ -151,19 +173,26 @@ def varied(
     :ptype candidate: Sequence[float]
     :param lost: Trials of the candidate's lost.
     :ptype lost: int
+    :param also: Every other candidate's shares, by its variant key; one not named keeps the candidate's.
+    :ptype also: Mapping[str, Sequence[float]] | None
+    :param paired: Whether the shares are read paired; unpaired, a candidate's may be of another length.
+    :ptype paired: bool
     :return: The bundle.
     :rtype: AnalysisContextBundle
     """
-    assert len(control) == len(candidate)
+    others = dict(also or {})
+    assert not paired or all(len(values) == len(control) for values in (candidate, *others.values()))
     control_key = bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None
-    trials = len(control) * REPEATS
-    shares = {True: list(control), False: list(candidate)}
+
+    def shares_of(key: str) -> list[float]:
+        return list(control) if key == control_key else list(others.get(key, candidate))
 
     def board_of(board: Any) -> Any:
-        is_control = board.variant_key == control_key
-        lose = 0 if is_control else lost
+        shares = shares_of(board.variant_key)
+        trials = len(shares) * REPEATS
+        lose = 0 if board.variant_key == control_key else lost
         usable = trials - lose
-        passed = min(usable, round(sum(shares[is_control]) * REPEATS))
+        passed = min(usable, round(sum(shares) * REPEATS))
         return board.model_copy(
             update={
                 "ran": trials,
@@ -171,13 +200,18 @@ def varied(
                 "passed": passed,
                 "lost": {"judge_truncated": lose} if lose else {},
                 "failed": {"check": usable - passed} if usable > passed else {},
-                "cases": len(control),
-                "usable_cases": len(control),
+                "cases": len(shares),
+                "usable_cases": len(shares),
             }
         )
 
     contrasts = [
-        contrast.model_copy(update={"case_values": (list(control), list(candidate)), "test": "paired"})
+        contrast.model_copy(
+            update={
+                "case_values": (list(control), shares_of(contrast.contrast.variant_key)),
+                "test": "paired" if paired else "unpaired",
+            }
+        )
         if contrast.reading == "trial" and contrast.name == TRIAL_PASS_NAME
         else contrast
         for contrast in bundle.floor_contrasts
@@ -220,16 +254,22 @@ def campaign_of(
 
 
 def arms_of(measured: MeasuredAspect) -> list[CampaignArm]:
-    """The campaign's arms: its control, then the candidate labelled :data:`CANDIDATE_LABEL`."""
+    """The campaign's arms: its control, then the candidate labelled :data:`CANDIDATE_LABEL`, then the second
+    candidate labelled :data:`THIRD_LABEL` where one ran."""
     control = measured.campaign.control
     assert control is not None
-    return [control, CampaignArm(label=CANDIDATE_LABEL, role="candidate", variant_key=measured.candidate)]
+    arms = [control, CampaignArm(label=CANDIDATE_LABEL, role="candidate", variant_key=measured.candidate)]
+    if measured.third is not None:
+        arms.append(CampaignArm(label=THIRD_LABEL, role="candidate", variant_key=measured.third))
+    return arms
 
 
 __all__ = [
     "ASKED_AT",
+    "ASSEMBLED_AT",
     "CANDIDATE_LABEL",
     "CONTROL_LABEL",
+    "THIRD_LABEL",
     "CASES",
     "QUESTION",
     "REPEATS",

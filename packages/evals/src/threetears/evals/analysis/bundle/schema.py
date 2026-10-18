@@ -2781,6 +2781,16 @@ class AnalysisContextBundle(EvalDocumentModel):
             "(`reading_scope.question_post_hoc`). None when the campaign holds no run yet."
         ),
     )
+    first_result_at: str | None = Field(
+        default=None,
+        description=(
+            "When the aspect's evidence could first be seen (ISO-8601): the earliest `scored_at` among its member "
+            "runs' results, the instant a control named later is read against. A margin, a floor or the question's "
+            "wording declared later than it is declared after the evidence, and the campaign's page says so. None "
+            "when no result has landed, or a bundle assembled before it was carried. Left out of `fingerprint()`: "
+            "when a result was written is not what it measured."
+        ),
+    )
     package_version: str | None = Field(
         default=None,
         description=(
@@ -3188,8 +3198,9 @@ class AnalysisContextBundle(EvalDocumentModel):
         return evidence_digest(self.to_dict())
 
 
-#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, not what it read.
-_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version"})
+#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, and when its results
+#: were written, not what it read.
+_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version", "first_result_at"})
 
 
 def evidence_digest(document: Mapping[str, Any]) -> str:

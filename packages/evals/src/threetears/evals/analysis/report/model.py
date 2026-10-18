@@ -44,6 +44,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Trial
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.quantities import number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
@@ -856,6 +857,11 @@ class Report(EvalDocumentModel):
         return files
 
 
+#: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
+#: shape would misread the new one.
+CAMPAIGN_JSON_SHAPE = 1
+
+
 class CampaignAspectFold(EvalDocumentModel):
     """One aspect's fold of a campaign's page: the writer's summary of the aspect, then that aspect's own page."""
 
@@ -874,9 +880,22 @@ class CampaignAspectFold(EvalDocumentModel):
     report: Report = Field(
         description=(
             "The aspect's own page (`build_code_only_report` over its bundle), laid out in the fold below the summary "
-            "without its title, its question or its broken floors, which the campaign's first screen carries."
+            "without its title, its question, its broken floors or its verdict line (:attr:`head`)."
         )
     )
+
+    @property
+    def head(self) -> list[ReportBlock]:
+        """The aspect page's first screen as the fold lays it out: its arms line, scoreboard and caveats, without its
+        question and broken floors, which the campaign's first screen carries once, or its verdict line, which reads
+        the aspect alone and could contradict, or pick an arm against, the campaign's table."""
+        dropped = {"floor", "basis", "verdict"}
+        return [
+            block
+            for block in self.report.blocks
+            if block.section in FIRST_SCREEN
+            and not (isinstance(block, DisclosureBlock) and block.section == "header" and block.source in dropped)
+        ]
 
 
 class CampaignReport(EvalDocumentModel):
@@ -904,6 +923,9 @@ class CampaignReport(EvalDocumentModel):
     aspects: list[CampaignAspectFold] = Field(description="One fold per aspect, in the campaign's order.")
     readings: CampaignReadings = Field(description="What code read off the campaign: every row and every floor.")
     call: CampaignCall | None = Field(default=None, description="The person's call; None while none is recorded.")
+    recommendation: Recommendation | None = Field(
+        default=None, description="The writer's recommendation, as the memo holds it; None with no memo."
+    )
 
     @model_validator(mode="after")
     def _the_basis_matches_what_the_page_holds(self) -> Self:
@@ -921,6 +943,12 @@ class CampaignReport(EvalDocumentModel):
                     f"{self.finding_count} finding(s)"
                 )
         if self.basis == "code_only":
+            if analysed := [fold.aspect for fold in self.aspects if fold.report.basis != "code_only"]:
+                raise ValueError(
+                    f"a code-only page folds code-only aspect pages, and {', '.join(analysed)} renders an analysis"
+                )
+            if self.recommendation is not None:
+                raise ValueError("a code-only page has no memo, so it holds no recommendation")
             if self.finding_count:
                 raise ValueError(f"a code-only page has no findings, and this one counts {self.finding_count}")
             if authored := [index for index, block in enumerate(blocks) if isinstance(block, TextBlock)]:
@@ -956,14 +984,22 @@ class CampaignReport(EvalDocumentModel):
         return ids
 
     def json_document(self) -> dict[str, object]:
-        """The page's machine form: code's readings, the call, and each aspect's bundle by its fingerprint and shape.
+        """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
+        the writer's recommendation (its arm and how sure) where there is a memo, the call, and each aspect's bundle by
+        its fingerprint and shape.
 
         :return: A JSON-ready mapping.
         :rtype: dict[str, object]
         """
+        recommendation = self.recommendation
         return {
+            "kind": "campaign",
+            "shape": CAMPAIGN_JSON_SHAPE,
             "campaign_id": self.campaign_id,
             "basis": self.basis,
+            "recommendation": None
+            if recommendation is None
+            else {"arm": recommendation.arm, "confidence": recommendation.confidence},
             "readings": self.readings.to_dict(),
             "call": self.call.to_dict() if self.call is not None else None,
             "aspects": [
@@ -978,6 +1014,7 @@ class CampaignReport(EvalDocumentModel):
 
 
 __all__ = [
+    "CAMPAIGN_JSON_SHAPE",
     "FINDING_ROLES",
     "FIRST_SCREEN",
     "SECTION_TITLES",

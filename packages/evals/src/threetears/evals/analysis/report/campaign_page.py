@@ -21,7 +21,7 @@ order:
 Then the memo's findings and next steps, and one closed fold per aspect: the writer's summary of the aspect (what
 changed, how sure, what it means) when there is one, then the aspect's own page as
 :func:`~threetears.evals.analysis.report.build.build_code_only_report` built it, which the serializers lay out in the
-fold without its title, its question or its broken floors.
+fold without its title, its question, its broken floors or its verdict line.
 
 Every arm is named by its label, never by its role; every line is held to :mod:`~threetears.evals.analysis.style`.
 """
@@ -128,6 +128,7 @@ def build_campaign_report(
         aspects=folds,
         readings=readings,
         call=call,
+        recommendation=memo.recommendation if memo is not None else None,
     )
 
 
@@ -138,13 +139,13 @@ def _checked_reports(
     if readings.campaign_id != campaign.id:
         raise RefusedInput(
             f"the readings are of campaign {readings.campaign_id}, not {campaign.id}",
-            remedy="read the campaign's own readings (campaign_readings(campaign, bundles))",
+            remedy="pass the readings read off this campaign, over its own aspects' bundles",
         )
     labels = [aspect.label for aspect in campaign.aspects]
     if missing := [label for label in labels if label not in reports]:
         raise RefusedInput(
             f"campaign {campaign.id} has no page for aspect(s) {', '.join(missing)}",
-            remedy="build one page per aspect (build_code_only_report over its bundle) and pass them all",
+            remedy="pass one page per aspect, each built over that aspect's bundle and keyed by its label",
         )
     if stray := sorted(set(reports) - set(labels)):
         raise RefusedInput(
@@ -174,30 +175,57 @@ def _floor_words(floor: Floor | None, status: FloorStatus) -> str:
 
 def _floor_warnings(campaign: EvalCampaign, readings: CampaignReadings) -> list[ReportBlock]:
     """One loud line per floor a candidate breaks, the page's first, worded as an aspect's page words it: the aspect,
-    the arm, and the interval it broke on."""
+    the arm, the rate that broke it and the interval it broke on. Past :data:`_WARNINGS_APART` of them, one line per
+    candidate names every floor it breaks, so the warnings stay readable."""
+    broken = readings.broken_floors()
+    if len(broken) <= _WARNINGS_APART:
+        return [
+            DisclosureBlock(section="header", source="floor", text=_warning(_floor_of(campaign, status.floor), status))
+            for status in broken
+        ]
+    by_arm: dict[str, list[FloorStatus]] = {}
+    for status in broken:
+        by_arm.setdefault(status.arm_label, []).append(status)
     return [
-        DisclosureBlock(section="header", source="floor", text=_warning(_floor_of(campaign, status.floor), status))
-        for status in readings.broken_floors()
+        DisclosureBlock(
+            section="header",
+            source="floor",
+            text=f"Floors broken for {arm}: "
+            + "; ".join(f"its {_which(status)} on {status.aspect}" for status in statuses)
+            + ".",
+        )
+        for arm, statuses in by_arm.items()
     ]
+
+
+#: The most broken floors the page warns of one line each; past it, one line per candidate.
+_WARNINGS_APART = 3
+
+
+def _which(status: FloorStatus) -> str:
+    """The rate a floor's status was decided on, as the page names it: ``pass rate``, a check's or a dimension's rate,
+    or ``cost per reply``."""
+    if status.floor.split("/")[1] == "cost_lower":
+        return "cost per reply"
+    if status.reading is None:
+        return "pass rate"
+    named = humanize("dimension", status.reading) if status.reading.isidentifier() else code(status.reading)
+    return f"{named} rate"
 
 
 def _warning(floor: Floor | None, status: FloorStatus) -> str:
     """``Floor broken on billing: v2's pass rate falls past the 10-point margin on its whole interval, a drop of 12.3
-    to 35.2 points.`` A cost floor, or one this page cannot place, says its reason."""
+    to 35.2 points.`` A floor reading every rate names the one that broke it. A cost floor, or one this page cannot
+    place, says its reason."""
     lead = f"Floor broken on {status.aspect}: "
     if floor is None or isinstance(floor.clause, CostLower) or status.interval is None:
         return f"{lead}{status.reason}."
     clause = floor.clause
     assert isinstance(clause, RateDrop)
-    if status.reading is None:
-        which = "pass rate"
-    else:
-        named = humanize("dimension", status.reading) if status.reading.isidentifier() else code(status.reading)
-        which = f"{named} rate"
     low, high = status.interval
     return (
-        f"{lead}{status.arm_label}'s {which} falls past the {format_number(clause.max_points)}-point margin on its "
-        f"whole interval, a drop of {_points(-high)} to {_points(-low)} points."
+        f"{lead}{status.arm_label}'s {_which(status)} falls past the {format_number(clause.max_points)}-point margin "
+        f"on its whole interval, a drop of {_points(-high)} to {_points(-low)} points."
     )
 
 
@@ -316,7 +344,8 @@ def _table_blocks(
             total_rows=len(rows),
         )
     ]
-    notes = [_level_line(levels)] if levels else []
+    notes = _level_lines(levels, readings) if levels else []
+    notes += _floor_beside_lines(campaign, readings)
     notes += _unread_lines(campaign, readings)
     notes += _timing_lines(campaign, readings, reports)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes if note]
@@ -328,17 +357,40 @@ def _percent(level: float) -> str:
     return format_number(round(100 * level, 2)) + "%"
 
 
-def _level_line(levels: Sequence[float]) -> str:
-    """The level the table's intervals were read at, in one sentence."""
+def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[str]:
+    """The level the table's intervals were read at, how often a reading can be wrong, and, with several arms, that
+    nothing corrects across them."""
     low, high = min(levels), max(levels)
-    if round(low, 4) == round(high, 4):
-        if len(levels) == 1:
-            return f"The interval is read at {_percent(low)}, as a floor's is."
-        return f"Each interval is read at {_percent(low)}, corrected for every row the campaign tests."
-    return (
-        f"Each interval is read at the level its row was tested at, from {_percent(low)} to {_percent(high)}, "
-        "corrected for every row; a reading never contradicts its interval."
-    )
+    if round(low, 4) == round(high, 4) and len(levels) == 1:
+        said = f"The interval is read at {_percent(low)}, as a floor's is."
+    elif round(low, 4) == round(high, 4):
+        said = f"Each interval is read at {_percent(low)}, corrected across each arm's aspects."
+    else:
+        said = (
+            f"Each interval is read at the level its row was tested at, from {_percent(low)} to {_percent(high)}, "
+            "corrected across each arm's aspects; a reading never contradicts its interval."
+        )
+    half = _percent(readings.alpha / 2)
+    lines = [said, f"Each arm's gains and its drops are each shown wrongly at most {half} of the time."]
+    if len({row.arm for row in readings.readings}) > 1:
+        lines.append(
+            "Nothing corrects across arms, so with several arms one is shown better or worse by chance more often."
+        )
+    return lines
+
+
+def _floor_beside_lines(campaign: EvalCampaign, readings: CampaignReadings) -> list[str]:
+    """A broken floor beside a row that is not shown worse: the two read different intervals, and say which."""
+    lines: list[str] = []
+    for status in readings.broken_floors():
+        row = next((row for row in readings.on_aspect(status.aspect) if row.arm == status.arm), None)
+        if row is None or row.reading == "worse":
+            continue
+        lines.append(
+            f"The floor broken on {status.aspect} for {status.arm_label} reads its {_which(status)} at 95% on its "
+            f"own, while its row reads only the pass rate, corrected across {status.arm_label}'s aspects."
+        )
+    return lines
 
 
 def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings) -> list[str]:
@@ -353,39 +405,46 @@ def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings) -> list[st
     return lines
 
 
-def _after(stamp: str | None, first_run: str | None, what: str) -> bool:
-    """Whether ``stamp`` is later than the aspect's first run; False where either is unrecorded."""
-    if stamp is None or first_run is None:
+def _after(stamp: str | None, first_result: str | None, what: str) -> bool:
+    """Whether ``stamp`` is later than the aspect's first result; False where either is unrecorded."""
+    if stamp is None or first_result is None:
         return False
-    return aware_instant(stamp, what) > aware_instant(first_run, "the aspect's first run")
+    return aware_instant(stamp, what) > aware_instant(first_result, "the aspect's first result")
 
 
 def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]) -> list[str]:
-    """What was declared after the evidence: a question asked after an aspect's first run makes its readings leads,
-    and a margin or a floor added later reads as declared after the runs."""
+    """What was declared after the evidence: a question asked after an aspect's first run makes its readings leads
+    (the bundle's ``question_declared``, the rule every reading reads); the question's wording, a margin or a floor
+    added later than the aspect's first result (the bundle's ``first_result_at``) reads as declared after it."""
     lines: list[str] = []
     if not campaign.question.strip():
-        return ["No question was declared before the runs, so every reading is a lead."]
+        return ["No question was declared, so every reading is a lead."]
     for aspect in campaign.aspects:
         bundle = reports[aspect.label].bundle
-        first_run = bundle.design_frozen_at
+        first_result = bundle.first_result_at
         if readings.on_aspect(aspect.label) and not bundle.question_declared:
             # Everything declared with a question asked late is late too: said once, of the question.
             lines.append(f"The question was asked after the first run on {aspect.label}, so its readings are leads.")
             continue
         declared = bundle.declared
-        if declared is not None and _after(declared.margin_declared_at, first_run, f"the margin on {aspect.label}"):
-            lines.append(f"The margin on {aspect.label} was declared after its first run.")
+        label = aspect.label
+        if declared is not None and _after(declared.question_declared_at, first_result, f"the question on {label}"):
+            lines.append(
+                f"The question was worded after the first result on {label}; its readings keep the time it was asked."
+            )
+        if declared is not None and _after(declared.margin_declared_at, first_result, f"the margin on {label}"):
+            lines.append(f"The margin on {label} was declared after its first result.")
         for floor in campaign.floors:
-            if floor.aspect == aspect.label and _after(floor.declared_at, first_run, f"floor {floor.key}"):
+            if floor.aspect == label and _after(floor.declared_at, first_result, f"floor {floor.key}"):
                 said = floor_statement(floor.clause, candidate="the arm")
-                lines.append(f"The floor that {said} on {aspect.label} was declared after its first run.")
+                lines.append(f"The floor that {said} on {label} was declared after its first result.")
     return lines
 
 
 def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
-    """What would settle each unclear row: why it is unclear, and the cases that would show the arm within the
-    aspect's margin, if the arms do not differ and if they differ as observed."""
+    """Each unclear row: why it is unclear, and the cases that would show the arm no worse than the control by more
+    than the aspect's margin, if the arms do not differ and if they differ as observed. They would not show it better:
+    the row stays unclear unless its gain clears too, and the note says so."""
     unclear = [row for row in readings.readings if row.reading == "unclear"]
     if not unclear:
         return []
@@ -414,7 +473,7 @@ def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
         TableBlock(
             section="scoreboard",
             name="to_settle",
-            title="To settle",
+            title="To show no worse than the margin",
             columns=columns,
             rows=rows,
             order="as the table above",
@@ -424,8 +483,10 @@ def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
             section="scoreboard",
             source="comparisons",
             text=(
-                "A count is the independent cases that would show the arm within the aspect's margin, read again over "
-                "this run's cases repeated to that many. Repeats of a case narrow an interval far less than new cases."
+                "A count is the independent cases that would show the arm no worse than the control by more than the "
+                "aspect's margin. It would not show the arm better, so its row stays unclear unless its gain clears "
+                "too. Each count reads the interval again over this run's cases repeated to that many; repeats of a "
+                "case narrow it far less than new cases."
             ),
         ),
     ]
