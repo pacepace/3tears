@@ -46,6 +46,7 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
     TrialRow,
     UnexercisedFactor,
+    refuse_a_bundle_before_aspects,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
@@ -244,8 +245,9 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
     floors: list[FloorVerdict] = []
     sample = None
     samples: list[SampleProjection] = []
-    # Every arm's cases showing its floors hold needs, as the To settle table states them, which the memo may cite and
-    # may not guess at; with one other arm its floors also settle the readings a finding may not dispute.
+    # Every arm's cases showing its floors hold needs, as the "To show the floors hold" table states them, which the
+    # memo may cite and may not guess at; with one other arm its floors also settle the readings a finding may not
+    # dispute.
     candidates = _candidates(bundle)
     for read in _floor_verdicts(bundle, namer).values():
         if (joined := floors_projection(read, per_case_usd=per_case)) is not None:
@@ -336,7 +338,13 @@ def analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle:
     :ptype analysis: EvalAnalysis
     :return: The bundle, as frozen at generation.
     :rtype: AnalysisContextBundle
+    :raises RefusedInput: The analysis was written over a bundle from before a bundle read one aspect (shape 59).
     """
+    refuse_a_bundle_before_aspects(
+        analysis.bundle,
+        what=f"analysis {analysis.id}",
+        remedy="generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands",
+    )
     return AnalysisContextBundle.from_dict(dict(analysis.bundle))
 
 
@@ -832,7 +840,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     reading it is not about. A broken floor is also the page's first line (:func:`_floor_warning_blocks`); here it
     reads as plainly as a held one.
 
-    Where a floor is unclear, a ``To settle`` table follows: for each unclear floor, what showing it holds needs if the
+    With no floor declared, one line says so. Where a floor is unclear, a ``To show the floors hold`` table follows: for each unclear floor, what showing it holds needs if the
     arms do not differ and if they differ as observed, each count with its cost
     (:func:`~threetears.evals.analysis.report.decision.floor_projection`), then one line saying how each count was
     found and that it is about, what repeats do, and, where holding needs more cases than the run used on every side,
@@ -840,8 +848,10 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     """
     control = _control_key(bundle)
     read = _floor_verdicts(bundle, arm)
-    if control is None or not read:
+    if control is None or not _candidates(bundle):
         return []
+    if not read:
+        return [DisclosureBlock(section="decision", source="floor", text=f"No floor was declared on {bundle.aspect}.")]
     cost = _cost_ruler(bundle)
     others = list(read)
     rows: list[dict[str, CellValue]] = []
@@ -941,7 +951,7 @@ def _projection_blocks(
     *,
     single: bool,
 ) -> list[ReportBlock]:
-    """The ``To settle`` table, one row per unclear floor and arm, and the line under it, which reads each arm's
+    """The ``To show the floors hold`` table, one row per unclear floor and arm, and the line under it, which reads each arm's
     projection over its floors (``joined``); empty with none. A cost floor's no-difference cell is blank: it has no
     margin, and the line says so once."""
     if not projected:
@@ -969,7 +979,7 @@ def _projection_blocks(
         TableBlock(
             section="decision",
             name="projection",
-            title="To settle",
+            title="To show the floors hold",
             columns=columns,
             rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
             order="floor by floor, each arm against the control",

@@ -10,7 +10,9 @@ floor is the page's first line, above the title; a held one reads quietly in the
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Coroutine, Mapping
+from pathlib import Path
 from typing import Any, get_args
 
 import pytest
@@ -19,6 +21,7 @@ from threetears.evals import Answer, Eval
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     FloorState,
+    analysis_bundle,
     FloorStatus,
     Report,
     assemble_context_bundle,
@@ -27,7 +30,16 @@ from threetears.evals.analysis import (
     report_html,
     report_markdown,
 )
+from threetears.evals.analysis.bundle.schema import (
+    NO_AXIS_EXPLORATORY,
+    NO_QUESTION_EXPLORATORY,
+    asked_in_time,
+    asks_a_question,
+    evidence_digest,
+    exploratory_disclosure,
+)
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
+from threetears.evals.analysis.reporter_kind import ReporterCase, rebuild_bundle
 from threetears.evals.analysis.report.decision import (
     FloorOutcome,
     aspect_pass_rate,
@@ -35,12 +47,13 @@ from threetears.evals.analysis.report.decision import (
     floor_readings,
     project_rate,
 )
-from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, difference_interval
 from threetears.evals.analysis.style import lint_page, lint_prose
 from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 
 from packages.evals.tests.aspect_support import redeclared
+from packages.evals.tests.factories import make_analysis
 from packages.evals.tests.off_loop import off_loop
 
 #: The aspect's floors: no pass rate drops by more than 10 points, and the candidate costs less per reply.
@@ -54,24 +67,39 @@ CASES = 20
 PRODUCTION_PASSES = 16
 
 
-def _first_cases(right: int, cost: float) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
-    """A runner answering right on every trial of the first ``right`` cases and wrong on the rest, at ``cost``."""
+def _first_cases(
+    right: int, cost: float, *, spread: float = 0.0
+) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
+    """A runner answering right on every trial of the first ``right`` cases and wrong on the rest, at ``cost``, plus
+    ``spread`` times the case's index mod 3, so its cost varies from case to case."""
 
     async def run(case: Mapping[str, Any]) -> Answer:
-        passes = int(case["text"].rsplit(" ", 1)[1]) < right
+        index = int(case["text"].rsplit(" ", 1)[1])
         return Answer(
-            case["label"] if passes else "skipped", model="m", input_tokens=100, output_tokens=10, cost_usd=cost
+            case["label"] if index < right else "skipped",
+            model="m",
+            input_tokens=100,
+            output_tokens=10,
+            cost_usd=cost + spread * (index % 3),
         )
 
     return run
 
 
-async def _shape(failed: int, *, candidate_cost: float = 0.0021) -> tuple[AnalysisContextBundle, str, str]:
-    """The fixture shape with the candidate passing all but its last ``failed`` cases, and the floors declared."""
+async def _shape(
+    failed: int,
+    *,
+    candidate_cost: float = 0.0021,
+    spread: float = 0.0,
+    floors: tuple[DecisionClause, ...] = FLOORS,
+    asked_at: str = "2000-01-01T00:00:00+00:00",
+) -> tuple[AnalysisContextBundle, str, str]:
+    """The fixture shape with the candidate passing all but its last ``failed`` cases, and ``floors`` declared with
+    the question asked at ``asked_at``; the aspect's margin is the every-rate floor's, as an upgraded aspect's is."""
     cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(CASES)]
     arms = {
         "production": _first_cases(PRODUCTION_PASSES, 0.0031),
-        "candidate": _first_cases(CASES - failed, candidate_cost),
+        "candidate": _first_cases(CASES - failed, candidate_cost, spread=spread),
     }
     comparison = await Eval(cases, arms, ["label"], k=3, name="floors").run(store=":memory:")
     storage = comparison.host.storage
@@ -79,10 +107,10 @@ async def _shape(failed: int, *, candidate_cost: float = 0.0021) -> tuple[Analys
     campaign = redeclared(
         campaign,
         question=QUESTION,
-        asked_at="2000-01-01T00:00:00+00:00",
+        asked_at=asked_at,
         design={"merit_axes": []},
-        margin=10.0,
-        floors=FLOORS,
+        margin=next((c.max_points for c in floors if isinstance(c, RateDrop) and c.reading is None), None),
+        floors=floors,
     )
     bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=comparison.host.profile)
     assert bundle.design.control_arm is not None
@@ -139,8 +167,10 @@ async def test_fourteen_cases_failed_breaks_the_rate_floor_on_its_whole_interval
     assert rate.reason.startswith(
         "candidate passed 18 of 60 to production's 48, a drop that exceeds the margin of 10 points on its whole interval"
     )
-    # The candidate costs less per reply, but a cost with no spread cannot show it: unclear, never held.
+    # The candidate costs less per reply, but a cost alike on every case has no interval to show it: unclear, never
+    # held, and it says why.
     assert (cost.floor, cost.status, cost.reading) == (f"{aspect}/cost_lower/*", "unclear", None)
+    assert cost.reason == "every case cost alike on both arms, so no interval on the cost difference exists"
 
 
 async def test_a_candidate_failing_no_case_holds_the_rate_floor() -> None:
@@ -169,10 +199,20 @@ async def test_a_drop_within_the_margin_whose_interval_reaches_past_it_is_unclea
     assert rate.reason.startswith("candidate's drop is not shown to stay within 10 points (it could be as much as ")
 
 
-async def test_a_candidate_costing_more_breaks_the_cost_floor_on_any_number_of_cases() -> None:
-    bundle, control, candidate = await _shape(0, candidate_cost=0.0041)
+async def test_a_candidate_costing_more_on_its_whole_interval_breaks_the_cost_floor() -> None:
+    """Read as a rate is: on the t interval on the per-case cost difference, at the nominal level, uncorrected."""
+    bundle, control, candidate = await _shape(0, candidate_cost=0.0041, spread=0.0001)
     _, cost = _statuses(bundle, control, candidate)
-    assert (cost.status, cost.reason) == ("broken", "candidate costs more per reply than production")
+    assert (cost.status, cost.reason) == (
+        "broken",
+        "candidate costs more per reply than production on the whole interval",
+    )
+    assert cost.interval is not None and cost.interval[0] > 0, "dollars per reply, the candidate minus the control"
+    (contrast,) = [c for c in bundle.floor_contrasts if c.reading == "measure"]
+    nominal = difference_interval(*contrast.case_values, paired=contrast.test == "paired", confidence=INTERVAL_LEVEL)
+    assert cost.interval == nominal
+    cheaper, control, candidate = await _shape(0, candidate_cost=0.0021, spread=0.0001)
+    assert _statuses(cheaper, control, candidate)[1].status == "held"
 
 
 # =============================================================================
@@ -271,3 +311,84 @@ async def test_a_bundle_names_the_aspect_it_reads_and_refuses_one_the_campaign_l
 
 def test_a_floor_key_names_its_aspect_kind_and_reading() -> None:
     assert Floor(aspect="queue", clause=RateDrop(max_points=5, reading="tone")).key == "queue/rate_drop/tone"
+
+
+# =============================================================================
+# The pass rate's own values, whatever the family compares
+# =============================================================================
+
+
+async def test_an_aspect_with_no_margin_compares_no_pass_rate_yet_its_floors_and_reading_have_its_values() -> None:
+    bundle, control, candidate = await _shape(5, floors=(RateDrop(max_points=10, reading="match"), CostLower()))
+    assert bundle.declared is not None and bundle.declared.margin is None
+    (family,) = bundle.multiple_comparisons.families
+    assert family.aspect == bundle.aspect
+    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (trial,) = [contrast for contrast in bundle.floor_contrasts if contrast.reading == "trial"]
+    assert (trial.control.variant_key, trial.contrast.variant_key, trial.test) == (control, candidate, "paired")
+    rate = aspect_pass_rate(bundle, control, candidate)
+    assert rate is not None and rate.samples is not None and rate.interval is not None
+
+
+async def test_a_question_asked_after_the_first_run_never_grows_the_exploratory_family() -> None:
+    """The pass rate is a hypothesis only of a question asked in time: in the exploratory family it would move every
+    other reading's adjusted p over unchanged runs."""
+    late, _, _ = await _shape(5, asked_at="2099-01-01T00:00:00+00:00")
+    early, _, _ = await _shape(5)
+    (exploratory,) = late.multiple_comparisons.families
+    (asked,) = early.multiple_comparisons.families
+    assert exploratory.aspect is None and asked.aspect == early.aspect
+    assert not [comparison for comparison in exploratory.comparisons if comparison.reading == "trial"]
+    assert [comparison.reading for comparison in asked.comparisons].count("trial") == 1
+    assert late.floor_contrasts == early.floor_contrasts, "the floors read the same values either way"
+
+
+async def test_the_aspect_pass_rate_is_read_at_the_level_it_is_asked_for() -> None:
+    """A campaign's readings call it at their Holm step's level; the floors at the nominal one."""
+    bundle, control, candidate = await _shape(5)
+    nominal = aspect_pass_rate(bundle, control, candidate)
+    stricter = aspect_pass_rate(bundle, control, candidate, confidence=0.99)
+    assert nominal is not None and stricter is not None
+    assert (nominal.confidence, stricter.confidence) == (INTERVAL_LEVEL, 0.99)
+    assert nominal.interval is not None and stricter.interval is not None
+    assert stricter.interval[0] < nominal.interval[0] and stricter.interval[1] > nominal.interval[1]
+
+
+# =============================================================================
+# A bundle from before aspects is refused by name, never half-read
+# =============================================================================
+
+#: A bundle the engine stored at shape 54: before a bundle read one aspect, it holds the campaign's ``declared_design``.
+_STORED_AT_54 = Path(__file__).parent / "fixtures" / "generate_analysis" / "recordings" / "llm_analysis.bundle.json"
+
+
+def test_an_analysis_over_a_bundle_from_before_aspects_is_refused_with_its_remedy() -> None:
+    """Until shape 59 the pre-55 bundle read as a bundle whose rate clause could never settle switch; now its
+    declaration is one this build cannot read, so the analysis holding it is refused, saying what to do."""
+    stored = json.loads(_STORED_AT_54.read_text(encoding="utf-8"))
+    assert stored["schema_version"] == 54 and "declared_design" in stored
+    analysis = make_analysis(bundle=stored)
+    with pytest.raises(RefusedInput, match="shape 54, from before a bundle read one aspect") as refused:
+        analysis_bundle(analysis)
+    assert "analysis_generate" in refused.value.remedy
+    case = ReporterCase.model_construct(bundle=stored, bundle_fingerprint=evidence_digest(stored))
+    with pytest.raises(RefusedInput, match="shape 54") as frozen:
+        rebuild_bundle(case)
+    assert "freeze the case again" in frozen.value.remedy
+
+
+# =============================================================================
+# Asking a question is one definition everywhere
+# =============================================================================
+
+
+async def test_a_question_naming_no_axis_of_this_aspect_is_not_asked_of_it_and_says_so() -> None:
+    bundle, _, _ = await _shape(5)
+    assert bundle.declared is not None and asks_a_question(bundle.declared)
+    unasked = bundle.declared.model_copy(
+        update={"design": bundle.declared.design.model_copy(update={"merit_axes": None})}
+    )
+    assert not asks_a_question(unasked) and not asked_in_time(unasked, None)
+    assert exploratory_disclosure(unasked) == NO_AXIS_EXPLORATORY
+    assert "names no axis this aspect measures" in NO_AXIS_EXPLORATORY
+    assert exploratory_disclosure(unasked.model_copy(update={"question": ""})) == NO_QUESTION_EXPLORATORY

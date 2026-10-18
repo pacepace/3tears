@@ -94,6 +94,7 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
     LeverCoverageInput,
     RunSummary,
+    asks_a_question,
 )
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
@@ -927,7 +928,7 @@ def _reject_mismatched_question_answers(document: AuthoredAnalysis, bundle: Anal
 
     :raises SoundnessRefusal: The answers are not one per live declared question.
     """
-    live = [bundle.aspect] if bundle.declared is not None and bundle.declared.question else []
+    live = [bundle.aspect] if asks_a_question(bundle.declared) else []
     declared = set(live)  # the aspect's one question, answered by the aspect's label
     answered = [answer.question_id for answer in document.questions]
     if duplicates := sorted({qid for qid in answered if answered.count(qid) > 1}):
@@ -1414,6 +1415,7 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
     # The trials without what a reader drills into: enough to name a failure mode (its state, cause, failed checks and
     # the judge's reason, cut), not the excerpts, which would bill the transcript on every generation.
     del payload["package_version"]
+    del payload["floor_contrasts"]  # the per-case values the floors read, which the page states
     for trial in payload["trials"]:
         for heavy in ("first_input", "excerpt", "error_words"):
             del trial[heavy]

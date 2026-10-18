@@ -82,9 +82,13 @@ class TestTheToyAnalysisSerializesTwoWays:
         # who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
         assert report.title == "chunk width sweep"
-        assert lines[0] == f"# {report.title}"
-        assert lines[1] == '"Is the wider chunk worth what it costs to retrieve?"', "the question, under the title"
-        assert lines[3].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
+        # Only a broken floor's warning may stand above the title, each in bold with a blank line under it.
+        top = lines.index(f"# {report.title}")
+        assert all(line.startswith("**Floor broken on ") or not line for line in lines[:top])
+        assert lines[top + 1] == '"Is the wider chunk worth what it costs to retrieve?"', (
+            "the question, under the title"
+        )
+        assert lines[top + 3].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
         assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown
         # A finding leads with its headline, unnumbered: nothing on the page cites a finding by number.
         assert f"**{finding.title}**" in markdown and "**F1." not in markdown
