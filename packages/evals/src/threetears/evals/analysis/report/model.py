@@ -471,8 +471,7 @@ class TableBlock(_Block):
     title_ref: str | None = Field(
         default=None,
         description=(
-            "An anchor on the page the title links to, where the table reads a sentence said there; "
-            "None for none."
+            "An anchor on the page the title links to, where the table reads a sentence said there; None for none."
         ),
     )
 
