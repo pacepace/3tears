@@ -341,6 +341,15 @@ def _dated_by_its_control(declared: AspectDeclaration | None, scored_at: Sequenc
     return declared.model_copy(update={"asked_at": declared.control.named_at}) if named_late else declared
 
 
+def _first_result_at(scored_at: Sequence[str]) -> str | None:
+    """The earliest of ``scored_at``, as stored; None with none, or where a time cannot be ordered against another."""
+    try:
+        return min(scored_at, key=lambda stamp: aware_instant(stamp, "a result"), default=None)
+    except ValueError:
+        # NOSILENT: an unorderable stamp leaves the evidence undated, which reads nothing as declared after it
+        return None
+
+
 def assemble_context_bundle(
     campaign: EvalCampaign,
     *,
@@ -452,9 +461,8 @@ def assemble_context_bundle(
     # dated no earlier than the control was named, so every reader that asks `asked_in_time` reads it post hoc. The
     # evidence is the aspect's first result (`EvalResult.scored_at`), never a run's creation: a control named after
     # its arms were launched and before any result landed was named before anything could be seen.
-    declared = _dated_by_its_control(
-        declared, [result.scored_at for run_results in every_result.values() for result in run_results]
-    )
+    scored_at = [result.scored_at for run_results in every_result.values() for result in run_results]
+    declared = _dated_by_its_control(declared, scored_at)
     results_by_run: dict[str, list[EvalResult]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
@@ -848,6 +856,9 @@ def assemble_context_bundle(
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then
     # on), and a question asked after that instant confirms nothing (`asked_in_time`): the same instant.
     bundle.design_frozen_at = first_run_at
+    # When the aspect's evidence could first be seen: what a margin, a floor or the question's wording added later is
+    # read against on the campaign's page, by the rule its control is read by (`_dated_by_its_control`).
+    bundle.first_result_at = _first_result_at(scored_at)
     # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
     bundle.exclusions = _arm_exclusions(results_by_cell)
     bundle.differential_exclusions = _differential_exclusions(bundle.exclusions)
