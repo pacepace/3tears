@@ -165,8 +165,9 @@ Each flag passes to one `start_run` argument: `--model` to `models`, `--k` to `k
 
 ### `report` and `bundle`
 
-`report` prints the campaign's report (see [Reading reports](reading-reports.md#the-report-one-page-result-first)) —
-its analysis, or, when it has none, a code-only report of its evidence. `bundle` prints, as JSON, the analysis
+`report` prints the campaign's page (see [Reading reports](reading-reports.md#the-report-one-page-result-first)) —
+its analysis, or, when it has none, a code-only page of its evidence; `--format json` prints
+[its JSON](#the-campaign-json). `bundle` prints, as JSON, the analysis
 bundle a generation would read inside a wrapper (`BundleInspection`) that adds its campaign, scope and
 fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command calls a model.
 
@@ -367,14 +368,34 @@ exploratory one takes none of them.
 2. `run_launch` the arms, then `campaign_runs_add` each run to its aspect (by its template, or the `aspect` you
    name; `campaign_runs_remove` takes one out, and its results stay);
 3. `campaign_update` with `control_from_run_id`, naming the member run whose variant is the control. Once a run has
-   joined, the control is named once and never re-pointed, and a control named after an aspect's first run makes
+   joined, the control is named once and never re-pointed, and a control named after an aspect's first result makes
    that aspect's comparisons post hoc.
 
 To ask again after the runs, `campaign_create` with `aspects_from` adopts the aspects it keeps, each with the time
 its question was asked; what it adds (`margins` for an adopted aspect, a floor, an arm, the question's new words)
 is dated now and reads as declared after the runs.
-<!-- slice1: WP-5 -- the campaign_record action (the person's call, overriding a broken floor by key) goes here once
-it lands. -->
+
+4. `report_read` the campaign's page; `analysis_generate` adds the writer's memo;
+5. `campaign_record` the person's call: the arm, `call_reason`, and each broken floor (`floors_overridden`, by key,
+   `billing/rate_drop/*`) and missed bar (`bars_overridden`, `tone/cost_usd`) it overrides. It is refused while the
+   arm leaves one unnamed, or names one the arm did not raise, and on a measurement
+   ([what it refuses](adopting-a-host.md#recording-the-call)).
+
+### The campaign JSON
+
+`report_read(format="json")`, `report --format json` and the `campaign.json` a written page holds are one object:
+
+| Key | Holds |
+|---|---|
+| `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 1) |
+| `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
+| `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason |
+| `recommendation` | the writer's arm and confidence, or null |
+| `call` | the recorded call (`CampaignCall`), or null |
+| `aspects` | each aspect's `aspect`, `bundle_fingerprint` and `bundle_schema_version` |
+
+Each aspect's bundle is not inlined: it is written beside the page as `bundle-<aspect>.json` (the label in lower case, hyphenated),
+and the fingerprint names it. Branch on the typed fields, never on a row's `reason`, which is words.
 
 `judge_configs_list` names the judge configs a second judge's `second_judge_config_ids` can map a dimension to.
 

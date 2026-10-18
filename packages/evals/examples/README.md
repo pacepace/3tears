@@ -192,6 +192,9 @@ These are documented in the guides:
 - Declaring a campaign (one question, its arms, the aspects it is measured on and the floors that warn), and when
   exploring without one is the right call:
   [Measuring soundly](../docs/measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects).
+- A campaign over several aspects, its one page and the person's recorded call:
+  [Reading reports](../docs/reading-reports.md#the-campaigns-first-screen) and
+  [Recording the call](../docs/adopting-a-host.md#recording-the-call).
 - Budgets and spend caps: [Cost and budgets](../docs/cost-and-budgets.md).
 - Conversations with a simulated user, generating cases, storage, and writing your own host:
   [Adopting the engine](../docs/adopting-a-host.md).

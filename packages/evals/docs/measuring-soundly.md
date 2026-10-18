@@ -138,19 +138,19 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
 | Field | What it does | Needed for |
 |---|---|---|
 | `question` | The one thing the campaign asks of its arms, in your words: what would make a candidate the one to adopt. Empty, it asks nothing, and every reading is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory) though a design is declared. | a confirmatory answer |
-| `arms` | `{label, role, from_run_ids}` each, the control first. The server reads each arm's variant key from its runs and refuses runs of one arm that carry two keys, naming each. With no control, the shape is `undesignated` and nothing is tested against a control. | A/B, single changes, grid |
-| `aspects[].margin` | How far, in points of the pass rate, a candidate may fall below the control on this aspect before it is shown worse. A declared aspect states one when the campaign asks a question. | a question |
+| `arms` | `{label, role, from_run_ids}` each, the control first. The server reads each arm's variant key from its runs and refuses runs of one arm that carry two keys, naming each. The arms decide the [kind](concepts.md#campaign-kind): one arm is a measurement, several with no control a choice (every pair read both ways), a control and candidates a change. | A/B, single changes, grid |
+| `aspects[].margin` | How far, in points of the pass rate, a candidate may fall below the control on this aspect before it is shown worse. A declared aspect states one when the campaign asks a question and names a control; with no control a margin is refused, and the remedy is an absolute bar. | a change |
 | `aspects[].design.axes` (required) | The levers and levels you meant to compare. Each declared axis gets a row in `bundle.coverage`, `unswept` if it held one level; compare the row's `levels` with yours. | every declared aspect |
 | `aspects[].design.held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every declared aspect |
 | `aspects[].design.merit_axes` | Which axes the question asks about on this aspect: they set the aspect's Holm family. Omitted, the question asks about every axis. | a scoped question |
 | `aspects[].design.intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
 | `aspects[].design.bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
 | `aspects[].design.crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
-| `floors` | Lines a candidate is warned for crossing, each `{aspect, clause}` on a declared aspect: `{kind: "rate_drop", max_points, reading?}` or `{kind: "cost_lower"}`, typed, never words. A broken floor opens the page; no floor decides anything ([declaring them](adopting-a-host.md#declaring-what-a-campaign-asks)). | a warning nobody can miss |
+| `floors` | Lines a candidate is warned for crossing, each `{aspect, clause}` on a declared aspect: `{kind: "rate_drop", max_points, reading?}` or `{kind: "cost_lower"}`, typed, never words. A floor reads a candidate against the control, so a campaign naming none is refused one. A broken floor opens the page; no floor decides anything ([declaring them](adopting-a-host.md#declaring-what-a-campaign-asks)). | a warning nobody can miss |
 
 **A question counts only if it was asked before the evidence.** Each aspect keeps the time its question was asked
-(`asked_at`), and a reading confirms only what was asked before that aspect's first run; a control named after it
-(`set_campaign_control`) makes the aspect post hoc too. So the declaration is frozen once any aspect holds a run:
+(`asked_at`), and a reading confirms only what was asked before that aspect's first run; a control named after the aspect's
+first result (`set_campaign_control`) makes it post hoc too. So the declaration is frozen once any aspect holds a run:
 `update_campaign` (the `campaign_update` action) refuses `question`, `aspects` and `floors` in any form from then
 on, and names a control only while none is. To amend a question after the runs, create a new campaign that adopts
 the aspects it keeps (`aspects_from`): each adopted aspect keeps its own `asked_at`, so its readings stay as
@@ -324,6 +324,23 @@ checks the 12-case row at 1,000 replicates: about 14% on the t interval, none on
 | control passes 0.95; the candidate breaks 1 case in 10 | 7 | 12.1% | 2.5% |
 | the same | 12 | 13.9% | 2.5% |
 | every trial passes; the candidate drops 0.4 on 1 case in 4 | 12 to 30 | 7.8 to 11.9% | 2.5% |
+
+### One family per candidate
+
+**A campaign over several aspects tests each candidate once per aspect, so it corrects across them.** Each
+candidate's rows, one per aspect, are one family at α = 0.05, with gains (the change against zero) and drops (the
+change against the aspect's margin) corrected apart by Holm's step-down. Each direction's claim is one-sided, read off
+a two-sided bounded interval, so a candidate's gains and its drops are each shown wrongly at most 2.5% of the time.
+A choice's pairs have no direction, so every pair on every aspect is one family.
+
+- **A reading and its interval never disagree.** A row's interval is read at the level its step tested it at, so a
+  row is shown exactly where its interval clears.
+- **One aspect reads as a floor reads.** A family of one is read at 95%, the floor's level, on the floor's bounded
+  interval, so a one-aspect campaign's floor and its reading on the same margin are one computation.
+- **There is no correction across candidates.** Each candidate is its own decision; with several, one of them is
+  shown better or worse by chance more often than 5%, and the page says what its correction covers.
+- **Floors are not corrected.** A floor warns, and a warning that fires less often for every floor added is no
+  warning, so each reads at its nominal 95%.
 
 ## Order and time
 

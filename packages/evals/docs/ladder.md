@@ -222,7 +222,7 @@ invoices = Eval(
 if __name__ == "__main__":
     result = asyncio.run(invoices.run())
     print(result)  # the verdict line, then each arm's readings; every delta and its interval is in the report
-    result.write("report")  # report.html for the reviewer, beside report.md and bundle.json
+    result.write("report")  # report.html for the reviewer, beside report.md, campaign.json and the bundle
     raise SystemExit(4 if result.gate().failed else 0)  # in CI: a regression or a guardrail not shown held fails
 ```
 
@@ -234,7 +234,7 @@ if __name__ == "__main__":
   whose `total` is `null` expects none stated, so an invented total misses there too.
 - **`grader(guard=0.02)`** makes a guardrail: something v2 must not do worse on, decided apart from everything else,
   so a gain elsewhere cannot pay for a loss here. Every grader is higher-is-better, so no direction is stated.
-- **`result.write("report")`** writes the report for a reviewer (`report.html`, `report.md`, `bundle.json`), and
+- **`result.write("report")`** writes the report for a reviewer (`report.html`, `report.md`, `campaign.json`, `bundle-<aspect>.json`), and
   `result.gate()` fails a CI step on a regression, a breach, or a guardrail not shown held.
 - **Two levers at once?** The file's docstring names arms as `k=v` pairs (`"prompt=v2, effort=high"`), so each
   pair is a factor of the design, and `result.against(...)` reads the same runs against another control.

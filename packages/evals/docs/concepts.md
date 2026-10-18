@@ -104,8 +104,8 @@ An `Eval` builds all of this for you (`as_host`); a host of your own declares it
      |
      |  optionally, a model reads the bundle and writes findings: an analysis
      v
-  report    one page, HTML and Markdown, beside the bundle.json it was computed from;
-            "code-only" when no analysis was generated
+  report    one page per campaign, HTML and Markdown, a fold per aspect, beside campaign.json
+            and each aspect's bundle; "code-only" when no analysis was generated
 ```
 
 Underneath all of it sits your **host**: the one value through which your app tells the engine what it can
@@ -421,8 +421,27 @@ by more than `max_points`) or `CostLower` (the candidate costs less per reply), 
 floor reads `broken`, `held` or `unclear`, on its own interval at the nominal level. It only **warns**, loudly: a
 broken floor is the first line of the page. It never decides, blocks or writes the verdict; code reports, the
 writer recommends, and a person decides.
-<!-- slice1: WP-4/WP-5 -- the writer's recommendation and the recorded call (campaign_record, CampaignCall,
-floors_overridden) are defined here once they land. -->
+
+#### Campaign kind
+What a campaign can decide, read off its arms and never declared (`campaign_kind`):
+
+| Kind | Arms | Code reports, per aspect | The writer |
+|---|---|---|---|
+| measurement | one | each measure with its interval, and each bar met or missed | findings only; no recommendation |
+| choice | two or more, no control | every pair's difference with its interval, and which arm is shown ahead | picks an arm, or says no clear winner |
+| change | a control and candidates | each candidate against the control: shown better, shown worse or unclear | recommends a switch or keeping the control |
+
+A margin and a relative floor read a candidate against a control, so a campaign naming none is refused either,
+with the remedy to declare a bar instead. A bar is absolute, so every kind is held to its bars.
+
+#### Recommendation and call
+**Code reports, the writer recommends, a person decides.** The writer's memo makes at most one recommendation per
+campaign (`Recommendation`): an arm, its reasons, how sure, and the findings it rests on. It answers every warning
+its arm raises: each broken floor in `floors_overridden`, each aspect where another arm is shown ahead in
+`behind_on`, each missed bar in `bars_missed`, each with a why. The person's decision is the **call**
+(`CampaignCall`, recorded by `campaign_record`): the arm, why, and each broken floor and missed bar it overrides by
+name. The call is read against code's readings, never the memo, and is matched by variant key, since a derived arm's
+label can shift when a variant joins.
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
@@ -430,7 +449,7 @@ so any run of that configuration counts toward it. An `Eval` comparison sets it 
 key; elsewhere it is the campaign's first arm, with role `control` (`CampaignArm`), addressed from a run: an arm's
 `from_run_ids` at creation, or `set_campaign_control` (`control_from_run_id` on the `campaign_update` action)
 afterwards. The server records the run's variant key beside its lever map and identity version, as a run records
-its own; nobody types those. A control named after an aspect's first run makes that aspect's readings post hoc.
+its own; nobody types those. A control named after an aspect's first result makes that aspect's readings post hoc.
 Every read resolves it through `resolve_control_arm` to the
 keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
 version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a
@@ -478,9 +497,12 @@ written: the bundle is the whole context. The CLI's `bundle` prints it inside a 
 `bundle.to_json()`.
 
 #### Analysis
-Findings a model wrote over a bundle (`EvalAnalysis`): findings, recommendations and next steps, with every number
-in its prose replaced by the value code read, stored with the bundle it was written over. Optional, and it costs
-money; the verdict and every count on the report are code's either way.
+One memo a model wrote over a whole campaign (`EvalAnalysis`): its findings, at most one recommendation, a short
+summary of each aspect and next steps, with every number in its prose replaced by the value code read. It is
+written over the **campaign bundle** (`CampaignBundle`): the campaign's arms, floors and bars, and each aspect's
+readings, each aspect's part held to its own budget of characters, so adding an aspect never crowds out another.
+Each aspect's bundle is stored with it. Optional, and it costs money; the verdict and every count on the report are
+code's either way.
 
 #### Trial
 One case run once on one arm — one stored result. It is passed, failed (the candidate's failure: its model, its
