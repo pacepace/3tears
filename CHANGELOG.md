@@ -78,49 +78,36 @@ packages (bumped in lock-step).
   the role. A coverage row's `n` counts only the results that sit at a level.
 - `unexercised_factors` keeps the lever, and Not tested says `observed in one arm only` where several results made the
   calls. Bundle shape 58; `UnexercisedFactor.results` is no longer capped at 1.
-### 3tears-evals: an unsettled rule states the cases that would settle it, and a memo no longer guesses them
+### 3tears-evals: an unclear floor states the cases that would settle it, and a memo no longer guesses them
 
-- **An unsettled decision rule says the independent cases a switch needs, computed** (#846). For each clause left
-  open, code computes the bounded interval the clause was read on again over the run's own cases repeated to each
-  count, and finds the fewest at which it would show the clause holds: if the arms do not differ (the optimistic
-  bound) and if they differ as observed. The verdict line says it once (`A switch needs about 121 independent cases
-  if the arms do not differ, about 223 if they differ as observed; it counts cases, not repeats.`), and the Decision
-  section tables each clause's counts with their cost (`To switch`), then says each is about and, where a switch
-  needs more cases than the run used, that it does. A count is always more than the run had; a clause the lost
-  trials alone keep open says re-running them, not more cases, would settle it; a drop at or past the margin says
-  no number of cases would show it within. A settled clause, or a settled rule, projects nothing.
+- **An unclear floor says the independent cases that would show it holds, computed** (#846). For each unclear
+  floor, code computes the bounded interval the floor was read on again over the run's own cases repeated to each
+  count, and finds the fewest at which it would show the floor holds: if the arms do not differ (the optimistic
+  bound) and if they differ as observed. The Decision section tables each count with its cost (`To show the floors
+  hold`), then says each is about and, where it needs more cases than the run used, that it does. A count is always
+  more than the run had; a broken or held floor projects nothing.
 - **The count is the bounded interval's, computed, not scaled.** Scaling a dozen cases' bounded interval as 1/sqrt(n)
   overstates its need by up to about twice, and the issue's "about 107" scaled the contrasts table's t interval,
-  which never settles a clause; on a character-shaped run the code says 121 and 223. The bundle moves to shape 58
-  to carry the per-case values each bounded interval read.
+  which never settles a clause; on a character-shaped run the code says 121 and 223. The bundle carries the per-case
+  values each bounded interval read.
 - **The memo may not state a sample size or cost of its own** where it says what to run next: a next step, a
   question's answer, a deferred decision's revisit. Discodon's character campaign proposed "30 cases ... would
   formally settle question q1 for roughly $0.40". Such a sentence is now replaced by code's and listed in the
   methods, and the seeded writer prompt no longer asks for a rough cost.
-- Breaking for a host matching on the unsettled verdict line, the Decision section's blocks or a memo's next steps:
-  the migration notes give the strings.
+- Breaking for a host matching on a memo's next steps: the migration notes give the strings.
 
-### 3tears-evals: a decision rule's rate clause reads keep only on a drop shown past its margin
+### 3tears-evals: a floor reads broken only on a drop shown past its margin
 
-- **A `RateDrop` rate has three states, and only one reads as a regression** (#845). Shown to break: every arm at
-  the case floor and the drop's whole bounded interval past `max_points`, which settles `keep` and headlines `Keep
-  v1: v2's drop exceeds the margin, passing 14 of 60 trials to v1's 29.` Shown to hold: the interval within the
-  margin, as before. Unsettled: everything else, including a drop past the margin on its point estimate alone, which
-  reads `Unsettled between v1 and v2: v2's drop is past 10 points on the point estimate alone, not on its interval
-  (from a gain of 35.5 to a drop of 92.7).` Until now an observed drop past the margin settled `keep` on any number
-  of cases: a Discodon memo headlined Keep on 6 of 21 trials to 12 while its own contrasts read the pass rate as not
-  separated, its interval reaching a 35.5-point gain. Keep stays the default when unsettled; only the words change.
-- **Each rate a clause reads has its own row outcome in the Decision table**, about that reading alone. A clause with
+- **A `RateDrop` rate has three states, and only one is broken** (#845). Shown to break: every arm at the case floor
+  and the drop's whole bounded interval past `max_points`. Shown to hold: the interval within the margin. Unclear:
+  everything else, including a drop past the margin on its point estimate alone. Until now an observed drop past the
+  margin settled `keep` on any number of cases: a Discodon memo headlined Keep on 6 of 21 trials to 12 while its own
+  contrasts read the pass rate as not separated, its interval reaching a 35.5-point gain.
+- **Each rate a floor reads has its own row and status in the floors table**, about that reading alone. A clause with
   no `reading` reads every pass/fail rate the arms share, and its one outcome used to sit on the pass rate's row
   whichever rate decided it: a readiness memo's row read "the pass rate, 0 of 18 to 0 of 18" beside an outcome
-  quoting a goal check's 12 of 18 to 14. A rate both arms pass on every trial or on none says it `cannot separate
-  the arms (both 0 of 18)`. The clause's own reason, which the verdict line says, leads with a rate past the margin
-  on its point estimate where one is.
-- Under the case floor no rate clause settles, so a keep there is the cost's, and the caveat says so: `4 cases per
-  arm: keep follows from the cost per reply above.` The glossary defines `point estimate` and says what `settled`
-  needs either way.
-- Breaking for a host matching on the page's words, or on a `keep` the rule settled on a point estimate: the
-  migration notes list the strings.
+  quoting a goal check's 12 of 18 to 14.
+- Under the case floor no rate floor is broken, so only a cost floor can be.
 ### 3tears-evals: a launch's arms take their cells in turn, case by case, so a provider's bad minute lands on every arm alike
 
 - **`run_launch` no longer co-loads its arms** (#841). A declared two-arm comparison launched with one call started
