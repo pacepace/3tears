@@ -54,14 +54,18 @@ def redeclared(
     if declared is None:
         raise ValueError("the campaign's aspect declares no design to change")
     asked = declared.question if question is _KEPT else question
+    when = (declared.asked_at if asked else None) if asked_at is _KEPT else asked_at
+    arm = declared.control if control is _KEPT else control
+    # Declared again, the control is named with the rest of the declaration, at the time the question is asked.
+    named = arm.model_copy(update={"named_at": when}) if arm is not None else None
     return make_aspect_campaign(
         label=view.aspect,
         template_id=view.template_id,
         run_ids=view.run_ids,
         design=declared.design.model_copy(update=dict(design or {})),
         question=asked,
-        asked_at=(declared.asked_at if asked else None) if asked_at is _KEPT else asked_at,
-        control=declared.control if control is _KEPT else control,
+        asked_at=when,
+        control=named,
         margin=declared.margin if margin is _KEPT else margin,
         floors=[floor.clause for floor in declared.floors] if floors is _KEPT else floors,
         id=view.campaign_id,
