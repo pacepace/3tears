@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.72.0
+
 ### 3tears-evals: a judge campaign's report states each arm's cost per reply
 
 - **`threetears.evals.kernel.production_replicating_cost` takes `candidate_kind`** (keyword, required, no default):
