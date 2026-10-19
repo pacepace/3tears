@@ -709,7 +709,13 @@ class WebSocketHandler:
         finally:
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # ``wait``, not ``gather``: cancelled while it waits here, ``gather`` can raise a child's own
+            # message-less ``CancelledError`` in place of the canceller's. anyio (Starlette serves sockets
+            # inside it) absorbs only a cancellation it recognises as its own, so the swapped one escaped
+            # the app: a test client leaving a socket block raised ``concurrent.futures.CancelledError``
+            # in about one exit in three. ``wait`` never re-raises a child's; each task's outcome is read
+            # just below.
+            await asyncio.wait(tasks)
         for task in tasks:
             failure = None if task.cancelled() else task.exception()
             if failure is not None:
