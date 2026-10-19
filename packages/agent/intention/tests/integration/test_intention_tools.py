@@ -235,8 +235,8 @@ class TestIntentionLog:
 
             coll.save_entity = _boom  # type: ignore[method-assign]
             out = await log_tool.ainvoke({"content": "same want, will re-log"})
-            assert "[TOOL ERROR] intention_log: refresh failed" in out
-            assert "simulated CAS conflict" in out
+            assert out == "[TOOL ERROR] intention_log: refresh failed — RuntimeError"
+            assert "simulated CAS conflict" not in out, "the store's own message goes to contain(), not the reply"
         finally:
             await pool.close()
 

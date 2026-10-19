@@ -139,6 +139,14 @@ class _FakeIntentionsDedupDown(_FakeIntentions):
         raise ConnectionError("l3 timeout")
 
 
+class _FakeIntentionsStoreDown(_FakeIntentions):
+    """the save fails with a driver message that quotes the SQL, as asyncpg's do."""
+
+    async def save_entity(self, entity: IntentionEntity) -> None:
+        _ = entity
+        raise ConnectionError('relation "intentions" ... INSERT INTO intentions VALUES ($1, $2) at postgres://u:pw@db')
+
+
 class _RaisingEmbedder:
     def __init__(self) -> None:
         self.calls = 0
@@ -220,6 +228,10 @@ class TestEmbeddingSoftFail:
         assert "l3 timeout" not in msg, "a store's own message stays in the log, out of the reply"
         assert "nothing was written down" in msg
         assert collection.saved == [], "a want stored without its dedup check is the duplicate this exists to stop"
+
+    async def test_a_failed_store_names_the_step_and_class_only(self) -> None:
+        msg = await _log(_OkEmbedder(), _FakeIntentionsStoreDown(), "want")
+        assert msg == "[TOOL ERROR] intention_log: store failed — ConnectionError"
 
     async def test_success_carries_the_vector_into_dedup_and_the_row(self) -> None:
         collection = _FakeIntentions()
