@@ -268,7 +268,11 @@ def _format_subscription_line(
 ) -> str:
     """Render a one-line catalog entry for a subscription row."""
     name = entity.name or "untitled"
-    skill_segment = f" · skill: {skill_name}" if skill_name else ""
+    skill_segment = (
+        f" · skill: {skill_name or 'unnamed'} [skill:{entity.default_skill_id}]"
+        if entity.default_skill_id is not None
+        else ""
+    )
     last = format_wake_time(entity.last_fired_at, zone, unset="never")
     return (
         f"[webhook:{entity.subscription_id}] · {name} · "
@@ -388,7 +392,7 @@ async def _check_skill_acl(
             what="webhook subscription skill ACL probe raised",
             extra={"skill_id": str(skill_id), "error": str(exc)},
         )
-        return f"default_skill_id {skill_id} ACL probe failed: {exc}"
+        return f"default_skill_id {skill_id} ACL probe failed ({type(exc).__name__})"
     if not permitted:
         return f"default_skill_id {skill_id} not authorized for this user/agent"
     return None
@@ -553,7 +557,7 @@ def load_webhook_subscription_create_tool(
             contain(exc, log=log, what="webhook_subscription_create encrypt failed", extra={"error": str(exc)})
             return _tool_error(
                 "webhook_subscription_create",
-                f"secret encryption failed: {exc}",
+                f"secret encryption failed ({type(exc).__name__})",
             )
 
         now = datetime.now(UTC)
@@ -591,7 +595,7 @@ def load_webhook_subscription_create_tool(
                 what="webhook_subscription_create persist failed",
                 extra={"subscription_id": str(new_id), "error": str(exc)},
             )
-            return _tool_error("webhook_subscription_create", f"persist failed: {exc}")
+            return _tool_error("webhook_subscription_create", f"persist failed ({type(exc).__name__})")
 
         skill_name: str | None = None
         if attached_skill is not None:
@@ -837,7 +841,7 @@ def load_webhook_subscription_update_tool(
             )
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_update persist failed")
-            return _tool_error("webhook_subscription_update", f"persist failed: {exc}")
+            return _tool_error("webhook_subscription_update", f"persist failed ({type(exc).__name__})")
 
         skill_name: str | None = None
         if entity.default_skill_id is not None:
@@ -886,7 +890,7 @@ def load_webhook_subscription_list_tool(
             visible = await subscriptions_collection.list_for_agent(agent_id)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_list list failed")
-            return _tool_error("webhook_subscription_list", f"list failed: {exc}")
+            return _tool_error("webhook_subscription_list", f"list failed ({type(exc).__name__})")
 
         if not visible:
             return "You have no webhook subscriptions."
@@ -1046,7 +1050,7 @@ def load_webhook_subscription_pause_tool(
             await subscriptions_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_pause persist failed")
-            return _tool_error("webhook_subscription_pause", f"persist failed: {exc}")
+            return _tool_error("webhook_subscription_pause", f"persist failed ({type(exc).__name__})")
         return (
             f"Paused [webhook:{parsed}] ({entity.name or 'untitled'}). It was active. Deliveries to it are "
             "refused, and kept as refused, until webhook_subscription_resume."
@@ -1085,7 +1089,7 @@ def load_webhook_subscription_resume_tool(
             await subscriptions_collection.resume(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_resume persist failed")
-            return _tool_error("webhook_subscription_resume", f"persist failed: {exc}")
+            return _tool_error("webhook_subscription_resume", f"persist failed ({type(exc).__name__})")
         return (
             f"Resumed [webhook:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. "
             "It is active: deliveries to it are accepted again."
@@ -1118,7 +1122,7 @@ def load_webhook_subscription_delete_tool(
             await subscriptions_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_delete persist failed")
-            return _tool_error("webhook_subscription_delete", f"persist failed: {exc}")
+            return _tool_error("webhook_subscription_delete", f"persist failed ({type(exc).__name__})")
         return (
             f"Deleted [webhook:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. Its address and "
             "secret no longer work and it cannot be brought back. Its past fires are kept; its refused "
@@ -1191,7 +1195,7 @@ def load_webhook_subscription_rotate_secret_tool(
             )
             return _tool_error(
                 "webhook_subscription_rotate_secret",
-                f"secret encryption failed: {exc}",
+                f"secret encryption failed ({type(exc).__name__})",
             )
 
         try:
@@ -1204,7 +1208,7 @@ def load_webhook_subscription_rotate_secret_tool(
             contain(exc, log=log, what="webhook_subscription_rotate_secret persist failed")
             return _tool_error(
                 "webhook_subscription_rotate_secret",
-                f"persist failed: {exc}",
+                f"persist failed ({type(exc).__name__})",
             )
 
         log.info(

@@ -2047,3 +2047,51 @@ async def test_a_failed_skill_name_lookup_or_refusal_count_reads_unknown_on_webh
     assert f"skill: unknown (lookup failed) [skill:{skill}]" in got, got
     assert "refused deliveries kept: unknown (lookup failed)" in got, got
     assert "hunter2" not in got and "exploded" not in got
+
+
+@pytest.mark.asyncio
+async def test_a_skill_with_no_name_on_file_still_shows_its_id_on_every_line(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """the registry answers None for the name: the line says "unnamed" and the id, never nothing."""
+    conv_id, user_id, agent_id = actor
+    sched, subs = _FakeScheduleCollection(), _FakeSubscriptionsCollection()
+    sid, wid, skill = _new_uuid(), _new_uuid(), _new_uuid()
+    sched.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id, sid=sid, user_id=user_id, agent_id=agent_id, skill_id=skill
+    )
+    subs.rows[(conv_id, wid)] = _seeded_subscription_row(
+        conv_id=conv_id, sid=wid, user_id=user_id, agent_id=agent_id, default_skill_id=skill
+    )
+    listed = await load_wake_schedule_list_tool(
+        user_id=user_id, agent_id=agent_id, schedules_collection=sched, registry=_FakeRegistry()
+    )[0].ainvoke({})
+    hooks = await load_webhook_subscription_list_tool(
+        user_id=user_id, agent_id=agent_id, subscriptions_collection=subs, registry=_FakeRegistry()
+    )[0].ainvoke({})
+    assert f"skill: unnamed [skill:{skill}]" in listed, listed
+    assert f"skill: unnamed [skill:{skill}]" in hooks, hooks
+
+
+@pytest.mark.asyncio
+async def test_a_failed_list_names_the_exception_type_and_keeps_its_message_out(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """failure injection: the store is down and its error text holds a credential."""
+    _, user_id, agent_id = actor
+    sched, subs = _FakeScheduleCollection(), _FakeSubscriptionsCollection()
+
+    async def _down(*_a: Any, **_k: Any) -> Any:
+        raise ConnectionError("pg: password=hunter2")
+
+    sched.list_for_agent = _down  # type: ignore[method-assign]
+    subs.list_for_agent = _down  # type: ignore[method-assign]
+    one = await load_wake_schedule_list_tool(
+        user_id=user_id, agent_id=agent_id, schedules_collection=sched, registry=_FakeRegistry()
+    )[0].ainvoke({})
+    two = await load_webhook_subscription_list_tool(
+        user_id=user_id, agent_id=agent_id, subscriptions_collection=subs, registry=_FakeRegistry()
+    )[0].ainvoke({})
+    for out in (one, two):
+        assert "list failed (ConnectionError)" in out, out
+        assert "hunter2" not in out

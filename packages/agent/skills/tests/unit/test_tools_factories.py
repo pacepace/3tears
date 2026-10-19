@@ -1086,6 +1086,23 @@ class TestSkillIntrospect:
         assert "hunter2" not in out, "the exception message reached the model"
 
 
+class TestAgentFacingTextCarriesTheTypeNotTheMessage:
+    async def test_a_failed_tool_list_names_the_type_and_keeps_the_message_out(self) -> None:
+        """failure injection: the registry's database is down and its error text holds a credential."""
+
+        async def _down(**_: Any) -> Any:
+            raise ConnectionError("pg: password=hunter2")
+
+        reg = FakeRegistry()
+        reg.list_skill_eligible_tools = _down  # type: ignore[method-assign]
+        [tool] = load_skill_list_tool(
+            agent_id=_new_uuid(), user_id=_new_uuid(), skills_collection=FakeSkillsCollection(), registry=reg
+        )
+        out = await tool.ainvoke({})
+        assert "[TOOL ERROR]" in out and "tool list failed (ConnectionError)" in out
+        assert "hunter2" not in out
+
+
 # --- a skill that is one tool call ---
 
 

@@ -696,7 +696,7 @@ async def _check_tool_acl(
         )
     except Exception as exc:  # pragma: no cover -- registry failure modes
         contain(exc, log=log, what="skill ACL probe raised", extra={"tool_name": tool_name, "error": str(exc)})
-        return f"{label} ACL probe failed for tool {tool_name!r}: {exc}"
+        return f"{label} ACL probe failed for tool {tool_name!r} ({type(exc).__name__})"
     if not permitted:
         return f"{label} entry {tool_name!r} not authorized for this user"
     return None
@@ -1203,7 +1203,7 @@ def load_skill_create_tool(
             await skills_collection.save_entity(entity)
         except Exception as exc:
             contain(exc, log=log, what="skill_create persist failed", extra={"name": name, "error": str(exc)})
-            return _tool_error("skill_create", f"persist failed: {exc}")
+            return _tool_error("skill_create", f"persist failed ({type(exc).__name__})")
 
         log.info(
             "skill_create persisted",
@@ -1284,7 +1284,7 @@ def load_skill_list_tool(
                 )
             except Exception as exc:
                 contain(exc, log=log, what="skill_list: tool list failed")
-                return _tool_error("skill_list", f"tool list failed: {exc}")
+                return _tool_error("skill_list", f"tool list failed ({type(exc).__name__})")
             needle = (query or "").lower().strip() if query else None
             for trow in tool_rows:
                 # Tag filter is prose-only -- a tool-skill has no tags,
@@ -1327,7 +1327,7 @@ def load_skill_list_tool(
                 )
             except Exception as exc:
                 contain(exc, log=log, what="skill_list: prose list failed")
-                return _tool_error("skill_list", f"prose list failed: {exc}")
+                return _tool_error("skill_list", f"prose list failed ({type(exc).__name__})")
             for entity in rows:
                 prose_entries.append(
                     {
@@ -1638,7 +1638,7 @@ def load_skill_update_tool(
             contain(
                 exc, log=log, what="skill_update persist failed", extra={"skill_id": str(parsed), "error": str(exc)}
             )
-            return _tool_error("skill_update", f"persist failed: {exc}")
+            return _tool_error("skill_update", f"persist failed ({type(exc).__name__})")
 
         lines = [f"Changed [skill:{entity.skill_id}] {entity.name}, was -> now:"]
         lines += [_change_line(field, before[field], after[field]) for field in changed]
@@ -1708,7 +1708,7 @@ def load_skill_delete_tool(
             contain(
                 exc, log=log, what="skill_delete persist failed", extra={"skill_id": str(parsed), "error": str(exc)}
             )
-            return _tool_error("skill_delete", f"persist failed: {exc}")
+            return _tool_error("skill_delete", f"persist failed ({type(exc).__name__})")
 
         return f"Deleted skill {deleted_name!r} ([skill:{deleted_skill_id}])."
 
@@ -1795,7 +1795,7 @@ def load_skill_invoke_tool(
             active = active_skill_probe()
         except Exception as exc:
             contain(exc, log=log, what="skill_invoke active_skill_probe raised", extra={"error": str(exc)})
-            return _tool_error("skill_invoke", f"state probe failed: {exc}")
+            return _tool_error("skill_invoke", f"state probe failed ({type(exc).__name__})")
         if active is not None:
             return _tool_error(
                 "skill_invoke",
@@ -1838,7 +1838,7 @@ def load_skill_invoke_tool(
             contain(exc, log=log, what="skill_invoke conversation_id_resolver raised", extra={"error": str(exc)})
             return _tool_error(
                 "skill_invoke",
-                f"conversation_id_resolver raised {type(exc).__name__}: {exc}",
+                f"conversation_id_resolver raised {type(exc).__name__}",
             )
         if conversation_id is None:
             return _tool_error(
@@ -1858,7 +1858,7 @@ def load_skill_invoke_tool(
             contain(exc, log=log, what="skill_invoke active_skill_setter raised", extra={"error": str(exc)})
             return _tool_error(
                 "skill_invoke",
-                f"state setter failed: {exc}",
+                f"state setter failed ({type(exc).__name__})",
             )
 
         invocation_id = UUID(str(uuid7()))
@@ -1895,7 +1895,7 @@ def load_skill_invoke_tool(
                     "error": str(exc),
                 },
             )
-            return _tool_error("skill_invoke", f"invocation persist failed: {exc}")
+            return _tool_error("skill_invoke", f"invocation persist failed ({type(exc).__name__})")
 
         # convert at border: skill_invoke-fired log extra_data fields
         log_invocation_id = str(invocation_id)
@@ -1967,7 +1967,7 @@ def load_skill_report_outcome_tool(
             active_skill_id = active_skill_probe()
         except Exception as exc:
             contain(exc, log=log, what="skill_report_outcome active_skill_probe raised", extra={"error": str(exc)})
-            return _tool_error("skill_report_outcome", f"state probe failed: {exc}")
+            return _tool_error("skill_report_outcome", f"state probe failed ({type(exc).__name__})")
         if active_skill_id is None:
             return _tool_error(
                 "skill_report_outcome",
@@ -1982,7 +1982,7 @@ def load_skill_report_outcome_tool(
             )
             return _tool_error(
                 "skill_report_outcome",
-                f"conversation_id_resolver raised {type(exc).__name__}: {exc}",
+                f"conversation_id_resolver raised {type(exc).__name__}",
             )
         if conversation_id is None:
             return _tool_error(

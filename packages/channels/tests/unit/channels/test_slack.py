@@ -7,6 +7,7 @@ import inspect
 import time
 from datetime import UTC
 from typing import Any
+import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -32,6 +33,63 @@ def _slack_app_mock() -> MagicMock:
     app = MagicMock()
     app.client.users_info = AsyncMock(return_value={})
     return app
+
+
+class _Resp:
+    """a Slack response as far as the adapter reads one: ``get`` and ``headers``."""
+
+    def __init__(self, body: dict[str, Any], headers: dict[str, str] | None = None) -> None:
+        self._body = body
+        self.headers = headers or {}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._body.get(key, default)
+
+
+def _api_error(code: str, headers: dict[str, str] | None = None) -> Exception:
+    from slack_sdk.errors import SlackApiError
+
+    return SlackApiError(code, _Resp({"error": code}, headers))
+
+
+def _ok_profile(name: str) -> dict[str, Any]:
+    return {"user": {"profile": {"display_name": name, "email": f"{name}@x.io"}, "tz": "UTC"}}
+
+
+@pytest.fixture
+def clock() -> Any:
+    """the adapter's monotonic clock, set by the test through the one-item list."""
+    now = [0.0]
+    with patch("threetears.channels.slack.time.monotonic", side_effect=lambda: now[0]):
+        yield now
+
+
+class _Probe:
+    """an adapter whose users.info answers ``outcomes`` in turn; ``send`` routes one message and returns it."""
+
+    def __init__(self, mock_app_cls: MagicMock, outcomes: list[Any]) -> None:
+        from threetears.channels.slack import SlackAdapter
+
+        self.router = _MockRouter()
+        mock_app = _slack_app_mock()
+        mock_app.client = AsyncMock()
+        self.users_info = AsyncMock(side_effect=outcomes)
+        mock_app.client.users_info = self.users_info
+        mock_app_cls.return_value = mock_app
+        self.adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=self.router)
+
+    async def send(self) -> Any:
+        await self.adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+        assert self.router.last_message is not None
+        return self.router.last_message
+
+    @property
+    def calls(self) -> int:
+        return self.users_info.await_count
+
+
+def _unknown(msg: Any) -> bool:
+    return bool(msg.metadata.get("profile_lookup_failed"))
 
 
 class _MockRouter:
@@ -1479,33 +1537,65 @@ class TestSlackSenderIdentity:
         assert msg.metadata["profile_lookup_failed"] is True, "an unknown sender must not read as a sparse one"
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_a_lookup_failure_is_remembered_only_briefly(self, mock_app_cls: MagicMock) -> None:
-        """failure injection: users.info fails once, then recovers. the failure must not stick for the TTL."""
-        from threetears.channels.slack import SlackAdapter
+    async def test_a_lookup_failure_backs_off_per_user_15_then_60_then_300(
+        self, mock_app_cls: MagicMock, clock: list[float]
+    ) -> None:
+        """failure injection: users.info keeps failing. each retry waits longer, and a recovery is picked up."""
+        probe = _Probe(mock_app_cls, [RuntimeError("down")] * 3 + [_ok_profile("Ada")])
+        assert _unknown(await probe.send())
+        clock[0] = 14.0
+        await probe.send()
+        assert probe.calls == 1, "inside the first 15s window"
+        clock[0] = 16.0
+        await probe.send()
+        assert probe.calls == 2
+        clock[0] = 16.0 + 59.0
+        await probe.send()
+        assert probe.calls == 2, "the second failure waits 60s, not 15s"
+        clock[0] = 16.0 + 61.0
+        await probe.send()
+        assert probe.calls == 3
+        clock[0] = 16.0 + 61.0 + 299.0
+        await probe.send()
+        assert probe.calls == 3, "the third failure waits 300s"
+        clock[0] = 16.0 + 61.0 + 301.0
+        recovered = await probe.send()
+        assert recovered.sender_name == "Ada" and not _unknown(recovered)
 
-        router = _MockRouter()
-        mock_app = _slack_app_mock()
-        mock_app.client = AsyncMock()
-        mock_app.client.users_info = AsyncMock(
-            side_effect=[RuntimeError("slack is down"), _users_info_response(profile={"display_name": "Ada"}, tz="UTC")]
-        )
-        mock_app_cls.return_value = mock_app
-        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_a_failed_refresh_serves_the_last_good_profile(
+        self, mock_app_cls: MagicMock, clock: list[float]
+    ) -> None:
+        probe = _Probe(mock_app_cls, [_ok_profile("Ada"), RuntimeError("down")])
+        assert (await probe.send()).sender_name == "Ada"
+        clock[0] = 301.0  # the success TTL has lapsed; the refresh fails
+        stale = await probe.send()
+        assert stale.sender_name == "Ada" and not _unknown(stale)
+        assert probe.calls == 2
 
-        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
-        assert router.last_message is not None and router.last_message.sender_name is None
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_a_rate_limit_waits_for_retry_after(self, mock_app_cls: MagicMock, clock: list[float]) -> None:
+        limited = _api_error("ratelimited", headers={"Retry-After": "120"})
+        probe = _Probe(mock_app_cls, [limited, _ok_profile("Ada")])
+        assert _unknown(await probe.send())
+        clock[0] = 100.0  # past the 15s backoff, inside Slack's 120s
+        await probe.send()
+        assert probe.calls == 1
+        clock[0] = 121.0
+        assert (await probe.send()).sender_name == "Ada"
 
-        # inside the failure window: no second call (the endpoint is not hammered)
-        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
-        assert mock_app.client.users_info.await_count == 1
-
-        # past the failure window, far inside the success TTL: it retries and recovers
-        later = time.monotonic() + 20.0
-        with patch("threetears.channels.slack.time.monotonic", return_value=later):
-            await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
-        assert mock_app.client.users_info.await_count == 2
-        assert router.last_message.sender_name == "Ada"
-        assert "profile_lookup_failed" not in router.last_message.metadata
+    @pytest.mark.parametrize("code", ["user_not_found", "missing_scope", "not_authed", "account_inactive"])
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_a_permanent_error_is_remembered_for_the_full_ttl(
+        self, mock_app_cls: MagicMock, clock: list[float], code: str
+    ) -> None:
+        probe = _Probe(mock_app_cls, [_api_error(code), _ok_profile("Ada")])
+        assert _unknown(await probe.send())
+        clock[0] = 299.0
+        await probe.send()
+        assert probe.calls == 1, "asking again cannot cure a permanent error"
+        clock[0] = 301.0
+        assert (await probe.send()).sender_name == "Ada"
 
 
 class TestSlackProfileCacheBound:
