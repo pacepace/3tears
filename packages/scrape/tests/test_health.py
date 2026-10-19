@@ -27,11 +27,12 @@ from threetears.core.testing.kv import FakeNatsClient
 from threetears.models import LlmPurpose
 
 from threetears.scrape.challenge import PageVerdict
-from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection, StoredTimestampUnreadable
 from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
     content_fingerprint,
+    record_robots_block,
     record_validated_fetch,
 )
 
@@ -647,3 +648,239 @@ async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTarg
         "is guarding against a different version than the one this write was based on"
     )
     assert entity.content_fingerprint == content_fingerprint(_PAGE)
+
+
+def test_a_stored_timestamp_that_does_not_parse_is_refused_rather_than_read_as_absent(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """``blocked_until`` read as ``None`` means "no backoff in force": an unreadable one must not lift a block."""
+    entity = health.create({"target_id": "warn_garbled", "blocked_until": "not-a-timestamp"})
+
+    with pytest.raises(StoredTimestampUnreadable, match="not-a-timestamp"):
+        _ = entity.blocked_until
+
+
+def test_an_unreadable_record_of_when_something_happened_reads_as_not_recorded(
+    health: ScrapeTargetHealthCollection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Lenient and recorded: nothing is lifted by its absence, and the next write replaces it."""
+    entity = health.create({"target_id": "warn_numeric", "robots_blocked_at": 1721900000})
+
+    with caplog.at_level("WARNING"):
+        assert entity.robots_blocked_at is None
+    assert any("stored robots_blocked_at of warn_numeric could not be read" in r.getMessage() for r in caplog.records)
+
+
+async def test_an_unreadable_robots_block_time_is_written_over(health: ScrapeTargetHealthCollection) -> None:
+    """Read as not recorded, the block is stamped afresh rather than kept unreadable forever."""
+    await health.save_entity(
+        health.create(
+            {"target_id": "warn_robots", "robots_blocked_at": "garbage", "robots_blocked_reason": "Disallow: /"}
+        )
+    )
+    moment = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+
+    await record_robots_block(health, target_id="warn_robots", reason="Disallow: /", now=moment)
+
+    stored = await health.get("warn_robots")
+    assert stored is not None
+    assert stored.robots_blocked_at == moment
+
+
+async def test_an_unreadable_won_at_is_repaired_by_the_next_poll(
+    recipes: ScrapeRecipeCollection, extractions: ScrapeExtractionCollection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A recipe whose won_at cannot be read still reuses, and the poll writes a real timestamp over it."""
+    entity = recipes.create(
+        {
+            "target_id": "warn_garbled_recipe",
+            "extraction_strategy": {"row_selector": "table tr", "field_selectors": {"employer": "td"}},
+            "consecutive_validation_failures": 0,
+            "won_at": "garbage",
+            "last_validated_at": "garbage",
+        }
+    )
+    await recipes.save_entity(entity)
+
+    with caplog.at_level("WARNING"):
+        result = await run_eval_loop_multi_row(
+            "warn_garbled_recipe",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="unused-no-llm-call-on-the-reuse-path",
+        )
+
+    assert result.validation_status == "validated"
+    assert any("stored won_at of warn_garbled_recipe could not be read" in r.getMessage() for r in caplog.records)
+    stored = await recipes.get("warn_garbled_recipe")
+    assert stored is not None
+    assert isinstance(stored.won_at, datetime)
+    assert isinstance(stored.last_validated_at, datetime)
+
+
+def test_an_absent_stored_timestamp_still_reads_as_none(health: ScrapeTargetHealthCollection) -> None:
+    entity = health.create({"target_id": "warn_absent", "blocked_until": ""})
+
+    assert entity.blocked_until is None
+
+
+# ---------------------------------------------------------------------------
+# A partly read document is not a validation miss
+# ---------------------------------------------------------------------------
+
+_FAULTS = ["page 2: tables could not be extracted (RuntimeError)"]
+
+
+def _no_model_call() -> Any:
+    return patch(
+        "threetears.scrape.llm_retry.create_chat_model",
+        side_effect=RuntimeError("a partly read document must not be classified or regenerated"),
+    )
+
+
+async def test_a_miss_on_a_partly_read_document_is_not_counted(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """The records may be in the part that was not read: the count stands and nothing is regenerated."""
+    await _seed_working_recipe(
+        recipes, "warn_partial", {"row_selector": "table tr.nonexistent", "field_selectors": {"employer": "td"}}
+    )
+
+    with _no_model_call():
+        result = await run_eval_loop_multi_row(
+            "warn_partial",
+            _PAGE,
+            "https://example.gov/warn.pdf",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="k",
+            health_collection=health,
+            page_faults=_FAULTS,
+        )
+
+    assert result.validation_status == "failed"
+    assert result.field_confidences == {"page_faults": _FAULTS}
+    stored = await recipes.get("warn_partial")
+    assert stored is not None
+    assert stored.consecutive_validation_failures == 0
+
+
+async def test_a_miss_on_a_partly_read_document_is_not_counted_on_the_single_record_path(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    entity = recipes.create(
+        {
+            "target_id": "warn_partial_single",
+            "extraction_strategy": {"selectors": {"employer": "td.nope"}},
+            "consecutive_validation_failures": 1,
+        }
+    )
+    await recipes.save_entity(entity)
+
+    with _no_model_call():
+        result = await run_eval_loop(
+            "warn_partial_single",
+            _PAGE,
+            "https://example.gov/warn.pdf",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="k",
+            health_collection=health,
+            page_faults=_FAULTS,
+        )
+
+    assert result.field_confidences == {"page_faults": _FAULTS}
+    stored = await recipes.get("warn_partial_single")
+    assert stored is not None
+    assert stored.consecutive_validation_failures == 1
+
+
+async def test_a_read_from_a_partly_read_document_records_what_was_not_read(
+    recipes: ScrapeRecipeCollection, extractions: ScrapeExtractionCollection
+) -> None:
+    await _seed_working_recipe(recipes, "warn_ok", {"row_selector": "table tr", "field_selectors": {"employer": "td"}})
+
+    result = await run_eval_loop_multi_row(
+        "warn_ok",
+        _PAGE,
+        "https://example.gov/warn.pdf",
+        {"employer": str},
+        recipe_collection=recipes,
+        extraction_collection=extractions,
+        api_key="unused-no-llm-call-on-the-reuse-path",
+        page_faults=_FAULTS,
+    )
+
+    assert result.validation_status == "validated"
+    assert result.field_confidences == {"page_faults": _FAULTS}
+
+
+async def test_a_vision_read_with_no_images_from_a_partly_read_document_is_not_counted(
+    recipes: ScrapeRecipeCollection, extractions: ScrapeExtractionCollection
+) -> None:
+    """The images that were not rendered are named on the page, and the miss is theirs, not the recipe's."""
+    entity = recipes.create(
+        {
+            "target_id": "warn_vision",
+            "extraction_strategy": {"strategy": "multi_row_vision"},
+            "consecutive_validation_failures": 2,
+        }
+    )
+    await recipes.save_entity(entity)
+    lost = ["PDF page images could not be rendered (RuntimeError)"]
+
+    result = await run_eval_loop_multi_row(
+        "warn_vision",
+        "<html><body><p>no images</p></body></html>",
+        "https://example.gov/warn.pdf",
+        {"employer": str},
+        recipe_collection=recipes,
+        extraction_collection=extractions,
+        api_key="k",
+        strategy_type="multi_row_vision",
+        page_faults=lost,
+    )
+
+    assert result.validation_status == "failed"
+    assert result.field_confidences == {"page_faults": lost}
+    stored = await recipes.get("warn_vision")
+    assert stored is not None
+    assert stored.consecutive_validation_failures == 2
+
+
+async def test_without_page_faults_the_same_miss_is_counted(
+    recipes: ScrapeRecipeCollection, extractions: ScrapeExtractionCollection
+) -> None:
+    """The good-traffic twin: a fully read page's miss still marches toward regeneration."""
+    entity = recipes.create(
+        {
+            "target_id": "warn_vision_full",
+            "extraction_strategy": {"strategy": "multi_row_vision"},
+            "consecutive_validation_failures": 2,
+        }
+    )
+    await recipes.save_entity(entity)
+
+    await run_eval_loop_multi_row(
+        "warn_vision_full",
+        "<html><body><p>no images</p></body></html>",
+        "https://example.gov/warn.pdf",
+        {"employer": str},
+        recipe_collection=recipes,
+        extraction_collection=extractions,
+        api_key="k",
+        strategy_type="multi_row_vision",
+    )
+
+    stored = await recipes.get("warn_vision_full")
+    assert stored is not None
+    assert stored.consecutive_validation_failures == 3

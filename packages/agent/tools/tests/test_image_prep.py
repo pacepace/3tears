@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import io
 
-from threetears.agent.tools.builtin.image_prep import prepare_image_for_vision
+import base64
+import sys
+
+import pytest
+
+from threetears.agent.tools.builtin.image_prep import ImagePrepError, ImagePrepTool, prepare_image_for_vision
 
 #: the long-edge limit the module documents for every image it re-encodes -- under
 #: Anthropic's 8192px cap with room for a base64 payload under 5MB.
@@ -127,7 +132,7 @@ class TestFormatConversion:
 
 
 class TestErrorHandling:
-    """Invalid data should fall back to returning original."""
+    """Small bytes labelled web-safe pass through unread, so even invalid ones come back as given."""
 
     def test_corrupt_data_returns_original(self):
         data = b"not an image at all"
@@ -140,3 +145,45 @@ class TestErrorHandling:
         result, mime = prepare_image_for_vision(data, "image/png")
         assert result is data
         assert mime == "image/png"
+
+
+class TestAFailedResizeIsReported:
+    """An image that needed processing and could not be processed is never handed back as prepared."""
+
+    def test_corrupt_bytes_that_need_processing_raise_rather_than_come_back_as_prepared(self):
+        data = b"not an image at all"
+        with pytest.raises(ImagePrepError, match=r"image/heic, 19 bytes\) could not be resized") as caught:
+            prepare_image_for_vision(data, "image/heic")
+        assert caught.value.mime_type == "image/heic"
+        assert caught.value.size_bytes == len(data)
+
+    def test_a_missing_pillow_is_reported_rather_than_sending_the_original(self, monkeypatch):
+        big = _make_jpeg(100, 100) + b"\x00" * (SIZE_THRESHOLD + 1)
+        monkeypatch.setitem(sys.modules, "PIL", None)
+        with pytest.raises(ImagePrepError, match="ModuleNotFoundError"):
+            prepare_image_for_vision(big, "image/jpeg")
+
+    @pytest.mark.asyncio
+    async def test_no_exception_message_reaches_the_agent(self, monkeypatch):
+        from PIL import Image
+
+        def _planted(*args, **kwargs):
+            raise OSError("PLANTED-1a9f cannot identify image file")
+
+        monkeypatch.setattr(Image, "open", _planted)
+        result = await ImagePrepTool().execute(
+            image_data_base64=base64.b64encode(b"x" * (SIZE_THRESHOLD + 1)).decode(), mime_type="image/jpeg"
+        )
+        assert result.success is False
+        assert result.error is not None and "for a vision model: OSError;" in result.error
+        assert "PLANTED-1a9f" not in (result.error or "") + result.content
+
+    @pytest.mark.asyncio
+    async def test_the_tool_reports_the_failure_and_that_the_original_is_unchanged(self):
+        result = await ImagePrepTool().execute(
+            image_data_base64=base64.b64encode(b"not an image at all").decode(), mime_type="image/heic"
+        )
+        assert result.success is False
+        assert result.error is not None
+        assert "could not be resized or re-encoded for a vision model" in result.error
+        assert "the original image is unchanged" in result.error

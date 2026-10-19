@@ -224,12 +224,17 @@ def pdf_reader(
             )
         else:
             note = f"A PDF of {total} page(s), all read."
+        notes = [note]
+        if parsed.page_faults:
+            # the text is still each page's own, but a table or a heading the parser could not
+            # read would otherwise look like one the PDF does not have
+            notes.append("Parts of the PDF could not be read: " + "; ".join(parsed.page_faults) + ".")
         title = (parsed.metadata.get("title") or parsed.title or "").strip() or None
         return CarrierText(
             text=parsed.text,
             title=title,
             published_at=_pdf_date(parsed.metadata.get("creationDate")),
-            notes=(note,),
+            notes=tuple(notes),
         )
 
     return CarrierReader(kind="PDF", media_types=PDF_MEDIA_TYPES, max_bytes=max_bytes, read=read)

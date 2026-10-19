@@ -99,6 +99,14 @@ class DocumentResult:
     was_ocr: bool
     metadata: dict[str, Any] = field(default_factory=dict)
     sections: list[DocumentSection] = field(default_factory=list)
+    #: what could not be read, one entry per page and step (``"page 3: tables could not be
+    #: extracted (RuntimeError)"``), or per document-level step (``"document properties could
+    #: not be read (KeyError)"``); empty when everything read fully. A step that failed leaves
+    #: the rest intact, so ``text`` is still the page's text -- but without this list a page
+    #: whose tables or OCR failed reads exactly like one that has none. Each entry names the
+    #: step and the exception's type only: it reaches an agent, and an exception's message
+    #: can quote the document. The message is in the log, with the traceback.
+    page_faults: list[str] = field(default_factory=list)
 
 
 #: Why a document could not be read: no parser reads its type, or its parser failed.
@@ -278,6 +286,7 @@ def _parse_pdf(
         try:
             sections: list[DocumentSection] = []
             full_parts: list[str] = []
+            page_faults: list[str] = []
             was_ocr = False
             title = doc.metadata.get("title") or filename
 
@@ -295,16 +304,34 @@ def _parse_pdf(
 
                 # OCR fallback for pages with very little text
                 if len(text.strip()) < 50 and ocr.enabled:
-                    ocr_text = _ocr_page(data, page_num, ocr.language, ocr.psm)
+                    try:
+                        ocr_text = _ocr_page(data, page_num, ocr.language, ocr.psm)
+                    except Exception as exc:  # noqa: BLE001 -- recorded on the result: the page keeps its own text
+                        ocr_text = None
+                        fault = _page_fault(page_num + 1, "OCR could not run", exc)
+                        contain(exc, log=log, what=f"PDF page partly unread: {fault}")
+                        page_faults.append(fault)
                     if ocr_text:
                         text = ocr_text
                         was_ocr = True
 
                 # Try to extract tables
-                tables_md = _extract_pdf_tables(page, merge_wrapped_rows=merge_wrapped_table_rows)
+                try:
+                    tables_md = _extract_pdf_tables(page, merge_wrapped_rows=merge_wrapped_table_rows)
+                except Exception as exc:  # noqa: BLE001 -- recorded on the result: the page keeps its own text
+                    tables_md = ""
+                    fault = _page_fault(page_num + 1, "tables could not be extracted", exc)
+                    contain(exc, log=log, what=f"PDF page partly unread: {fault}")
+                    page_faults.append(fault)
 
                 # Font-size heuristic for headings
-                page_sections = _extract_pdf_headings(page, text, page_num + 1)
+                try:
+                    page_sections = _extract_pdf_headings(page, text, page_num + 1)
+                except Exception as exc:  # noqa: BLE001 -- recorded on the result: the page stays one section
+                    page_sections = []
+                    fault = _page_fault(page_num + 1, "headings could not be detected", exc)
+                    contain(exc, log=log, what=f"PDF page partly unread: {fault}")
+                    page_faults.append(fault)
                 if page_sections:
                     sections.extend(page_sections)
                 else:
@@ -337,6 +364,7 @@ def _parse_pdf(
             was_ocr=was_ocr,
             metadata=metadata,
             sections=sections,
+            page_faults=page_faults,
         )
 
     except Exception as exc:
@@ -345,7 +373,27 @@ def _parse_pdf(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"PDF parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"PDF parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
+
+
+def _page_fault(page_number: int, step: str, exc: Exception) -> str:
+    """one entry of :attr:`DocumentResult.page_faults`: which page, what could not be done, and why.
+
+    the exception's type, never its message: the entry reaches an agent, and a message can
+    quote the document. :func:`threetears.observe.contain` logs the message with the traceback.
+
+    :param page_number: the page, 1-based
+    :ptype page_number: int
+    :param step: what could not be done, e.g. ``"tables could not be extracted"``
+    :ptype step: str
+    :param exc: why
+    :ptype exc: Exception
+    :return: ``"page <n>: <step> (<Type>)"``
+    :rtype: str
+    """
+    return f"page {page_number}: {step} ({type(exc).__name__})"
 
 
 def _merge_wrapped_table_rows(rows: list[list[Any]]) -> list[list[Any]]:
@@ -424,36 +472,33 @@ def _extract_pdf_tables(page: Any, *, merge_wrapped_rows: bool = False) -> str:
         own docstring) and this function is shared by every document-backed
         target, not scoped to any one of them.
     :ptype merge_wrapped_rows: bool
+    :return: the page's tables as markdown, ``""`` when it has none
+    :rtype: str
+    :raises Exception: whatever the PDF library raised; :func:`_parse_pdf` records it on the
+        page's :attr:`DocumentResult.page_faults` and keeps the page's text
     """
-    try:
-        tables = page.find_tables()
-        if not tables or not tables.tables:
-            return ""
-
-        parts = []
-        for table in tables.tables:
-            rows = table.extract()
-            if not rows:
-                continue
-            if merge_wrapped_rows:
-                rows = _merge_wrapped_table_rows(rows)
-            # Build markdown table
-            header = rows[0]
-            header_line = "| " + " | ".join(str(c) if c else "" for c in header) + " |"
-            sep_line = "| " + " | ".join("---" for _ in header) + " |"
-            body_lines = []
-            for row in rows[1:]:
-                cells = [str(c) if c else "" for c in row]
-                body_lines.append("| " + " | ".join(cells) + " |")
-            parts.append("\n".join([header_line, sep_line] + body_lines))
-
-        return "\n\n".join(parts)
-    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-empty
-        # contract: a table-extraction failure must never fail the whole document
-        # parse; the plain (tableless) text this feeds into is still usable on its
-        # own, same posture as this module's other PDF-page-rendering fallbacks.
-        contain(exc, log=log, what=f"PDF table extraction failed: {exc}")
+    tables = page.find_tables()
+    if not tables or not tables.tables:
         return ""
+
+    parts = []
+    for table in tables.tables:
+        rows = table.extract()
+        if not rows:
+            continue
+        if merge_wrapped_rows:
+            rows = _merge_wrapped_table_rows(rows)
+        # Build markdown table
+        header = rows[0]
+        header_line = "| " + " | ".join(str(c) if c else "" for c in header) + " |"
+        sep_line = "| " + " | ".join("---" for _ in header) + " |"
+        body_lines = []
+        for row in rows[1:]:
+            cells = [str(c) if c else "" for c in row]
+            body_lines.append("| " + " | ".join(cells) + " |")
+        parts.append("\n".join([header_line, sep_line] + body_lines))
+
+    return "\n\n".join(parts)
 
 
 def _extract_pdf_headings(
@@ -461,84 +506,85 @@ def _extract_pdf_headings(
     text: str,
     page_number: int,
 ) -> list[DocumentSection]:
-    """Use font-size heuristic to identify headings on a PDF page."""
-    try:
-        blocks = page.get_text("dict")["blocks"]
-        if not blocks:
-            return []
+    """Use font-size heuristic to identify headings on a PDF page.
 
-        font_sizes: list[float] = []
+    :return: the page's sections, or ``[]`` when it has no text spans
+    :rtype: list[DocumentSection]
+    :raises Exception: whatever the heuristic raised; :func:`_parse_pdf` records it on the page's
+        :attr:`DocumentResult.page_faults` and keeps the page as one section
+    """
+    blocks = page.get_text("dict")["blocks"]
+    if not blocks:
+        return []
+
+    font_sizes: list[float] = []
+    for block in blocks:
+        if block.get("type") == 0:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    font_sizes.append(span.get("size", 12))
+
+    if not font_sizes:
+        return []
+
+    median_size = sorted(font_sizes)[len(font_sizes) // 2]
+
+    sections: list[DocumentSection] = []
+    current_heading: str | None = None
+    current_level = 0
+    current_text: list[str] = []
+
+    for line in text.split("\n"):
+        line_text = line.strip()
+        if not line_text:
+            continue
+
+        is_heading = False
         for block in blocks:
             if block.get("type") == 0:
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        font_sizes.append(span.get("size", 12))
+                for bline in block.get("lines", []):
+                    for span in bline.get("spans", []):
+                        if span.get("text", "").strip() == line_text and span.get("size", 12) > median_size * 1.2:
+                            is_heading = True
 
-        if not font_sizes:
-            return []
-
-        median_size = sorted(font_sizes)[len(font_sizes) // 2]
-
-        sections: list[DocumentSection] = []
-        current_heading: str | None = None
-        current_level = 0
-        current_text: list[str] = []
-
-        for line in text.split("\n"):
-            line_text = line.strip()
-            if not line_text:
-                continue
-
-            is_heading = False
-            for block in blocks:
-                if block.get("type") == 0:
-                    for bline in block.get("lines", []):
-                        for span in bline.get("spans", []):
-                            if span.get("text", "").strip() == line_text and span.get("size", 12) > median_size * 1.2:
-                                is_heading = True
-
-            if is_heading:
-                if current_text or current_heading:
-                    sections.append(
-                        DocumentSection(
-                            heading=current_heading,
-                            content="\n".join(current_text).strip(),
-                            page_number=page_number,
-                            level=current_level,
-                        )
+        if is_heading:
+            if current_text or current_heading:
+                sections.append(
+                    DocumentSection(
+                        heading=current_heading,
+                        content="\n".join(current_text).strip(),
+                        page_number=page_number,
+                        level=current_level,
                     )
-                    current_text = []
-
-                if any(
-                    span.get("text", "").strip() == line_text and span.get("size", 12) > median_size * 1.5
-                    for block in blocks
-                    if block.get("type") == 0
-                    for bline in block.get("lines", [])
-                    for span in bline.get("spans", [])
-                ):
-                    current_level = 1
-                else:
-                    current_level = 3
-                current_heading = line_text
-            else:
-                current_text.append(line_text)
-
-        # Flush remaining
-        if current_text or current_heading:
-            sections.append(
-                DocumentSection(
-                    heading=current_heading,
-                    content="\n".join(current_text).strip(),
-                    page_number=page_number,
-                    level=current_level,
                 )
+                current_text = []
+
+            if any(
+                span.get("text", "").strip() == line_text and span.get("size", 12) > median_size * 1.5
+                for block in blocks
+                if block.get("type") == 0
+                for bline in block.get("lines", [])
+                for span in bline.get("spans", [])
+            ):
+                current_level = 1
+            else:
+                current_level = 3
+            current_heading = line_text
+        else:
+            current_text.append(line_text)
+
+    # Flush remaining
+    if current_text or current_heading:
+        sections.append(
+            DocumentSection(
+                heading=current_heading,
+                content="\n".join(current_text).strip(),
+                page_number=page_number,
+                level=current_level,
             )
+        )
 
-        return sections
-
-    except Exception as exc:
-        contain(exc, log=log, what="PDF section extraction failed; the document has no sections")
-        return []
+    return sections
 
 
 def _ocr_page(pdf_data: bytes, page_num: int, language: str, psm: int) -> str | None:
@@ -549,26 +595,26 @@ def _ocr_page(pdf_data: bytes, page_num: int, language: str, psm: int) -> str | 
         module constant (one target's own evidence for PSM 4 shouldn't become
         an unconditional default for every consumer of this shared tool).
     :ptype psm: int
+    :return: the page's text, or ``None`` when OCR ran and found none
+    :rtype: str | None
+    :raises Exception: OCR could not run (``pdf2image`` / ``pytesseract`` absent, poppler or
+        tesseract missing, the page unrenderable); :func:`_parse_pdf` records it on the page's
+        :attr:`DocumentResult.page_faults`, so a scanned page is never answered as blank
     """
-    try:
-        from pdf2image import convert_from_bytes
-        import pytesseract
+    from pdf2image import convert_from_bytes
+    import pytesseract
 
-        images = convert_from_bytes(
-            pdf_data,
-            first_page=page_num + 1,
-            last_page=page_num + 1,
-            dpi=300,
-        )
-        if not images:
-            return None
-
-        text = pytesseract.image_to_string(images[0], lang=language, config=f"--psm {psm}")
-        return text.strip() if text.strip() else None
-
-    except Exception as exc:
-        contain(exc, log=log, what="OCR failed for page", extra={"page": page_num, "error": str(exc)})
+    images = convert_from_bytes(
+        pdf_data,
+        first_page=page_num + 1,
+        last_page=page_num + 1,
+        dpi=300,
+    )
+    if not images:
         return None
+
+    text = pytesseract.image_to_string(images[0], lang=language, config=f"--psm {psm}")
+    return text.strip() if text.strip() else None
 
 
 #: Default page cap for :func:`render_pdf_pages_to_images` -- a vision-capable model
@@ -598,9 +644,11 @@ def render_pdf_pages_to_images(
     :ptype dpi: int
     :param max_pages: cap on how many leading pages to render
     :ptype max_pages: int
-    :return: one PNG-encoded image per rendered page, in page order; empty list on
-        any failure (never raises -- mirrors ``_ocr_page``'s own honest-empty contract)
+    :return: one PNG-encoded image per rendered page, in page order
     :rtype: list[bytes]
+    :raises DocumentParseError: the pages could not be rendered or encoded (``pdf2image``
+        absent, poppler missing, the render failed). an empty list would read as "a document
+        with no pages"; the caller decides whether the images were optional, and says so.
     """
     try:
         import io
@@ -608,15 +656,15 @@ def render_pdf_pages_to_images(
         from pdf2image import convert_from_bytes
 
         images = convert_from_bytes(pdf_data, dpi=dpi, first_page=1, last_page=max_pages)
-    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-empty contract, mirrors _ocr_page's own: a rendering failure must never crash the caller, only degrade to "no images"
-        contain(exc, log=log, what="PDF page image rendering failed", extra={"error": str(exc)})
-        return []
-
-    encoded: list[bytes] = []
-    for image in images:
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        encoded.append(buf.getvalue())
+        encoded: list[bytes] = []
+        for image in images:
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            encoded.append(buf.getvalue())
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any render failure is refused by name; the caller decides whether the images were optional
+        raise DocumentParseError(
+            "parse_failed", f"PDF page images could not be rendered ({type(exc).__name__})", filename=None
+        ) from exc
     return encoded
 
 
@@ -641,6 +689,7 @@ def _parse_docx(
 
         # Extract core properties
         metadata: dict[str, Any] = {}
+        page_faults: list[str] = []
         try:
             props = doc.core_properties
             if props.title:
@@ -658,6 +707,7 @@ def _parse_docx(
                 what="could not read document core properties; metadata omitted",
                 extra={"error": str(exc), "error_type": type(exc).__name__},
             )
+            page_faults.append(f"document properties (title, author) could not be read ({type(exc).__name__})")
 
         current_heading: str | None = None
         current_level = 0
@@ -726,6 +776,7 @@ def _parse_docx(
             was_ocr=False,
             metadata=metadata,
             sections=sections,
+            page_faults=page_faults,
         )
 
     except Exception as exc:
@@ -734,7 +785,9 @@ def _parse_docx(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"DOCX parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"DOCX parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 def _docx_para_to_markdown(para: Any) -> str:
@@ -857,7 +910,9 @@ def _parse_xlsx(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"XLSX parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"XLSX parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- CSV parser ---------------------------------------------------------------
@@ -933,7 +988,9 @@ def _parse_csv(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"CSV parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"CSV parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- TXT parser ---------------------------------------------------------------
@@ -977,7 +1034,9 @@ def _parse_txt(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"TXT parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"TXT parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- Markdown parser ----------------------------------------------------------
@@ -1052,7 +1111,9 @@ def _parse_markdown(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"Markdown parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"Markdown parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- LaTeX parser -------------------------------------------------------------
@@ -1176,7 +1237,9 @@ def _parse_latex(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"LaTeX parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"LaTeX parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- parse_document tool factory ----------------------------------------------
@@ -1218,7 +1281,7 @@ def create_parse_document_tool(
             data = base64.b64decode(content_base64)
         except Exception as exc:
             contain(exc, log=log, what="parse_document could not decode the base64 content")
-            return _tool_error("parse_document", "decode", f"Invalid base64: {exc}")
+            return _tool_error("parse_document", "decode", f"Invalid base64 ({type(exc).__name__})")
 
         if len(data) > _PARSE_DOCUMENT_MAX_BYTES:
             return _tool_error(
@@ -1257,6 +1320,8 @@ def create_parse_document_tool(
         if result.page_count:
             parts.append(f"**Pages:** {result.page_count}")
         parts.append(f"**Words:** {result.word_count}")
+        if result.page_faults:
+            parts.append("**Not fully read:** " + "; ".join(result.page_faults))
         parts.append("")
         parts.append(window.text)
 

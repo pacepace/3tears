@@ -668,7 +668,7 @@ class AnalyzeMediaTool(TearsTool):
                     level="error",
                 )
 
-    async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None]:
+    async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None, list[str]]:
         """read a document's text from its stored bytes, never more than :data:`MAX_DOCUMENT_BYTES`.
 
         the fallback for a storage that serves bytes but caches no extracted
@@ -680,15 +680,22 @@ class AnalyzeMediaTool(TearsTool):
         :ptype mid: UUID
         :param mid_str: media UUID string for logging
         :ptype mid_str: str
-        :return: ``(text, None)`` on success or absence, ``(None, detail)`` on a parse failure
-        :rtype: tuple[str | None, str | None]
+        :return: ``(text, None, page_faults)`` on success or absence, ``(None, detail, [])`` on a
+            parse failure; ``page_faults`` names the parts of a read document that could not be
+            read (:attr:`~threetears.agent.tools.document.DocumentResult.page_faults`)
+        :rtype: tuple[str | None, str | None, list[str]]
         """
         text: str | None = None
         error: str | None = None
+        page_faults: list[str] = []
         try:
             dl = await self._storage.download_media(mid, max_bytes=MAX_DOCUMENT_BYTES)
         except MediaSizeLimitExceeded as exc:
-            return None, _refused_too_large("document", mid_str, exc.size_bytes, exc.limit_bytes, _DOCUMENT_ASK)
+            return (
+                None,
+                _refused_too_large("document", mid_str, exc.size_bytes, exc.limit_bytes, _DOCUMENT_ASK),
+                [],
+            )
         if dl is not None:
             data, mime_type = dl
             try:
@@ -701,7 +708,8 @@ class AnalyzeMediaTool(TearsTool):
                 error = f"This document could not be read ({exc.reason}): {exc.detail}"
             else:
                 text = parsed.text
-        return text, error
+                page_faults = list(parsed.page_faults)
+        return text, error, page_faults
 
     async def _handle_document(
         self,
@@ -750,6 +758,7 @@ class AnalyzeMediaTool(TearsTool):
         if info.extraction_status == EXTRACTION_STATUS_PENDING:
             return "This document is still being processed and cannot be read yet. Try again in a minute."
 
+        page_faults: list[str] = []
         extracted = await self._storage.get_content(mid, "extracted_text")
         if not extracted:
             extracted = await self._storage.get_content(mid, "transcript")
@@ -777,7 +786,7 @@ class AnalyzeMediaTool(TearsTool):
                     "document analysis",
                     _refused_too_large("document", mid_str, info.size_bytes, MAX_DOCUMENT_BYTES, _DOCUMENT_ASK),
                 )
-            extracted, parse_error = await self._extract_from_bytes(mid, mid_str)
+            extracted, parse_error, page_faults = await self._extract_from_bytes(mid, mid_str)
             if parse_error is not None:
                 return _tool_error("document analysis", parse_error)
         if not extracted:
@@ -886,8 +895,10 @@ class AnalyzeMediaTool(TearsTool):
             f"{what} {mid_str}, characters {window.offset:,}-{end:,} of {len(extracted):,}, with {acfg.name}{keep}."
         )
         # The statement first, then what the reading covered and where find landed,
-        # then the answer: the note was after the answer, where a cut drops it.
-        head = "\n".join(line for line in (statement, window_note, found_note) if line)
+        # then the answer: the note was after the answer, where a cut drops it. A part
+        # the parser could not read is said too: the answer covers the text it had.
+        not_read = "**Not fully read:** " + "; ".join(page_faults) if page_faults else ""
+        head = "\n".join(line for line in (statement, not_read, window_note, found_note) if line)
         return f"{head}\n\n{result_text}"
 
     async def _handle_audio_video(
@@ -1047,6 +1058,7 @@ class AnalyzeMediaTool(TearsTool):
             return await self._handle_vision_by_reference(resolved, acfg.vision, question, analyzer_name)
 
         from threetears.agent.tools.builtin.image_prep import (
+            ImagePrepError,
             prepare_image_for_vision,
         )
 
@@ -1054,6 +1066,8 @@ class AnalyzeMediaTool(TearsTool):
         # MAX_VISION_IMAGE_BYTES. one image over the bound refuses the whole
         # analysis: an answer about the others would read as an answer about all.
         image_parts: list[tuple[bytes, str]] = []
+        #: images sent as they were stored because preparing them failed, one sentence each
+        unprepared: list[str] = []
         for mid_str in media_ids:
             mid = UUID(mid_str)
             info = media_info.get(mid_str)
@@ -1079,10 +1093,23 @@ class AnalyzeMediaTool(TearsTool):
 
             data, mime_type = dl
             # Preprocess — resize large images, re-encode HEIC, etc.
-            processed_data, processed_mime = prepare_image_for_vision(
-                data,
-                mime_type,
-            )
+            try:
+                processed_data, processed_mime = prepare_image_for_vision(
+                    data,
+                    mime_type,
+                )
+            except ImagePrepError as exc:
+                # The original may still be one the vision model takes (Pillow is an optional
+                # extra, and a large JPEG is often within the provider's own limit), so it is
+                # sent -- but as the original, and the result says so.
+                contain(
+                    exc,
+                    log=_log,
+                    what="image could not be prepared for vision; sending the original",
+                    extra={"media_id": mid_str},
+                )
+                processed_data, processed_mime = data, mime_type
+                unprepared.append(f"{mid_str} was sent as stored, not resized: {exc}.")
             image_parts.append((processed_data, processed_mime))
 
         if not image_parts:
@@ -1119,10 +1146,16 @@ class AnalyzeMediaTool(TearsTool):
                 },
                 level="error",
             )
-            return _tool_error("vision model invocation", str(exc))
+            # the error's type only: its message is the provider's, and it is in the log above
+            return _tool_error(
+                "vision model invocation", " ".join([f"the call failed ({type(exc).__name__}).", *unprepared])
+            )
 
         # Persist description for single-media analysis
-        return await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
+        finalized = await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
+        if unprepared:
+            finalized = "\n".join(["Note: " + note for note in unprepared]) + "\n\n" + finalized
+        return finalized
 
     async def _handle_vision_by_reference(
         self,

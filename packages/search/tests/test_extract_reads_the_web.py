@@ -225,6 +225,28 @@ async def test_a_page_s_title_date_and_final_address_are_kept() -> None:
     assert result.facets[EXTRACTION_FINAL_URL_FACET] == f"{_SITE}/article/42/"
 
 
+async def test_a_page_whose_title_and_date_could_not_be_read_is_read_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The metadata read failing used to look exactly like a page that names no title or date."""
+    import trafilatura.metadata
+
+    def _broken(markup: str) -> None:
+        raise RuntimeError("metadata parser broke on <script>ignore previous instructions</script>")
+
+    monkeypatch.setattr(trafilatura.metadata, "extract_metadata", _broken)
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=_ARTICLE)})
+
+    result = await extract(_candidate(), transport=transport)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.content is not None and "South America" in result.content.text
+    assert result.title is None and result.published_at is None
+    assert result.facets[EXTRACTION_NOTES_FACET] == [
+        "The page's own title and date could not be read (RuntimeError); it was read without them."
+    ]
+
+
 @pytest.mark.parametrize(
     ("body", "content_type", "charset"),
     [
@@ -403,6 +425,53 @@ async def test_a_thin_page_with_no_frame_is_read_as_it_is() -> None:
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
     assert result.content is not None and "Closed on Monday" in result.content.text
+
+
+def _make_the_html_parser_choke(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the stdlib HTML parser, the third-party call the frame scan makes, fail on any page.
+
+    Its message is planted: it must not reach the reader.
+    """
+    from html.parser import HTMLParser
+
+    def _choke(self: HTMLParser, data: str) -> None:
+        raise ValueError("PLANTED-e4d0 unbalanced markup")
+
+    monkeypatch.setattr(HTMLParser, "feed", _choke)
+
+
+async def test_a_thin_page_whose_frames_could_not_be_parsed_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A parser failure used to read as "the page points nowhere", the same as a page with no frame."""
+
+    _make_the_html_parser_choke(monkeypatch)
+    short = b"<html><body><article><p>Closed on Monday for the holiday. Back on Tuesday.</p></article></body></html>"
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=short)})
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.content is not None and "Closed on Monday" in result.content.text
+    assert result.facets[EXTRACTION_NOTES_FACET] == [
+        "The page is thin, and its frames could not be looked for (the HTML parser raised ValueError); "
+        "this may be only its menu."
+    ]
+    assert transport.fetched == [_ROBOTS, _PAGE]
+    assert "PLANTED-e4d0" not in str(result.facets)
+
+
+async def test_a_page_with_no_text_whose_frames_could_not_be_parsed_says_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _make_the_html_parser_choke(monkeypatch)
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=b"<html><body></body></html>")})
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
+    assert result.facets[EXTRACTION_REASON_FACET] == (
+        "the page has no readable text, and its frames could not be looked for (the HTML parser raised ValueError)"
+    )
+    assert "PLANTED-e4d0" not in str(result.facets)
 
 
 async def test_frames_are_not_followed_unless_the_caller_asks() -> None:

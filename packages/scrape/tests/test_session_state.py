@@ -173,6 +173,23 @@ async def test_a_state_with_no_expiry_is_treated_as_expired(health: ScrapeTarget
 
 
 @pytest.mark.asyncio
+async def test_a_state_whose_expiry_cannot_be_read_is_treated_as_expired(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """An expiry that does not parse is refused by the column, and read here as no expiry: expired."""
+    sealed = seal_session_state(_STATE, _KEY, now=_NOW)
+    await health.save_entity(
+        health.create(
+            {"target_id": _T, "session_state_sealed": sealed.sealed, "session_state_expires_at": "next tuesday"}
+        )
+    )
+    row = await health.get(_T)
+    assert row is not None
+
+    assert usable_session_state(row, _KEY, now=_NOW) is None
+
+
+@pytest.mark.asyncio
 async def test_no_key_configured_means_no_state_is_sent(health: ScrapeTargetHealthCollection) -> None:
     """A deployment with no master key must not somehow send an unopened token as a cookie jar."""
     sealed = seal_session_state(_STATE, _KEY, now=_NOW)

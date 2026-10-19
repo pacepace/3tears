@@ -36,7 +36,7 @@ from threetears.agent.tools.document import (
 )
 from threetears.core.egress import EgressDriver
 from threetears.core.http_client import TracedHttpClient, UpstreamHttpError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from .._private_hosts import refuse_private_hosts
 from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
@@ -79,10 +79,24 @@ class DocumentDriverError(Exception):
 
 
 class ParsedDocumentHtml(NamedTuple):
-    """Return shape of :func:`parse_document_bytes_to_html`."""
+    """Return shape of :func:`parse_document_bytes_to_html`.
+
+    ``page_images_fault`` names why an OCR'd document's page images are missing from
+    ``html`` (``None`` when they are there, or were never wanted): the OCR'd text still
+    stands on its own, but a vision read of this document will find no images, and should
+    know that is a failure rather than a document without pages.
+
+    ``page_faults`` is the parser's own account of what it could not read
+    (:attr:`~threetears.agent.tools.document.DocumentResult.page_faults`); empty when it read
+    everything. A partly read document is not evidence that a recipe stopped working.
+
+    Both name a step and an exception type, never an exception's message.
+    """
 
     html: str
     was_ocr: bool
+    page_images_fault: str | None = None
+    page_faults: tuple[str, ...] = ()
 
 
 def _embed_ocr_page_images(pdf_data: bytes) -> str:
@@ -96,9 +110,9 @@ def _embed_ocr_page_images(pdf_data: bytes) -> str:
     :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` already
     uses to combine documents -- lets a vision-capable extraction path read them
     later, without a second network fetch and without widening ``RenderedPage``
-    beyond the one ``was_ocr`` flag. A no-op (returns ``""``) if page rendering
-    itself fails; the plain OCR'd text this gets appended to is still usable on
-    its own, so a rendering failure here must never fail the whole parse.
+    beyond the one ``was_ocr`` flag. A rendering failure raises
+    (:class:`DocumentParseError`); the caller decides whether the images were
+    required, and records the failure when they were not.
     """
     images = render_pdf_pages_to_images(pdf_data)
     tags = [
@@ -164,7 +178,8 @@ async def parse_document_bytes_to_html(
         ``<img>`` tags inside that same HTML, for a vision-based extraction path
         to use)
     :rtype: ParsedDocumentHtml
-    :raises DocumentDriverError: the parser couldn't handle this document
+    :raises DocumentDriverError: the parser couldn't handle this document, or *force_images*
+        was set and the page images could not be rendered (``render_failed``)
     """
     mime_type = content_type or (detect_mime_from_filename(filename) or "")
     try:
@@ -174,9 +189,29 @@ async def parse_document_bytes_to_html(
     except DocumentParseError as exc:
         raise DocumentDriverError("parse_failed", str(exc)) from exc
     html = document_text_to_html(result.text, result.sections)
+    page_images_fault: str | None = None
     if result.was_ocr or force_images:
-        html = html.replace("</body></html>", _embed_ocr_page_images(data) + "</body></html>")
-    return ParsedDocumentHtml(html=html, was_ocr=result.was_ocr)
+        try:
+            tags = _embed_ocr_page_images(data)
+        except DocumentParseError as exc:
+            if force_images:
+                # the caller asked for a vision read of this document, which has nothing to read;
+                # exc.detail names the step and the error's type, never its message
+                raise DocumentDriverError(
+                    "render_failed", f"this target needs its page images for a vision read, and {exc.detail}"
+                ) from exc
+            # the images were not required: the OCR'd text is the parse result and stands on its
+            # own, and the lost images are named on the result's page_images_fault
+            contain(exc, log=log, what="an OCR'd document's page images could not be rendered; its text stands alone")
+            page_images_fault = exc.detail
+            tags = ""
+        html = html.replace("</body></html>", tags + "</body></html>")
+    return ParsedDocumentHtml(
+        html=html,
+        was_ocr=result.was_ocr,
+        page_images_fault=page_images_fault,
+        page_faults=tuple(result.page_faults),
+    )
 
 
 def _merge_broken_pipe_rows(lines: list[str]) -> list[str]:
@@ -454,6 +489,8 @@ class DocumentDriver(ScrapeDriver):
             final_url=str(response.url),
             timing_ms=(time.monotonic() - start) * 1000,
             was_ocr=parsed.was_ocr,
+            page_faults=list(parsed.page_faults),
+            page_images_fault=parsed.page_images_fault,
             # Reported for the same reason ApiDriver reports it: a driver that honours an exit
             # but never says which leaves `last_egress` empty, and "walled" stops being
             # distinguishable from "walled from this exit" -- the distinction that column exists

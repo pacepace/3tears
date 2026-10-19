@@ -592,6 +592,38 @@ class TestDocumentSizeLimit:
         assert text.answer_calls == []
 
 
+class TestDocumentNotFullyRead:
+    """a document whose parser could not read every part says so above the answer."""
+
+    @pytest.mark.asyncio
+    async def test_a_part_the_parser_could_not_read_is_named(self, monkeypatch):
+        import docx
+        import docx.document
+
+        docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        built = docx.Document()
+        built.add_paragraph("The revenue was 42.")
+        buf = io.BytesIO()
+        built.save(buf)
+
+        def _unreadable(self: Any) -> Any:
+            raise KeyError("PLANTED-a11c")
+
+        monkeypatch.setattr(docx.document.Document, "core_properties", property(_unreadable))
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", docx_mime), buf.getvalue(), docx_mime)
+        text = FakeTextProvider("42.")
+        tool = _make_tool(storage, text=text, categories={"document"})
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Revenue?", "analyzer": "TestVision"})
+
+        head = result.partition("\n\n")[0]
+        assert "**Not fully read:** document properties (title, author) could not be read (KeyError)" in head
+        assert "PLANTED-a11c" not in result
+        assert _body(result) == "42."
+
+
 class TestTranscriptionSizeLimit:
     """audio and video are read for transcription only up to MAX_TRANSCRIPTION_BYTES."""
 
@@ -706,6 +738,27 @@ class TestVisionImageSizeLimit:
         assert "too large" in result
         assert str(too_big) in result, "the refusal names the image it could not read"
         assert vision.analyze_calls == [], "an analysis of the other images would read as an analysis of all of them"
+
+
+class TestVisionImagePrepFailure:
+    """an image that could not be prepared is sent as stored, and the result says so."""
+
+    @pytest.mark.asyncio
+    async def test_an_image_that_could_not_be_resized_is_named_in_the_result(self):
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider("Something unreadable.")
+        mid = uuid4()
+        # labelled HEIC, so it is always re-encoded -- and the bytes are not an image Pillow reads
+        corrupt = b"not an image at all"
+        storage.add_media(mid, MediaInfo(mid, "image", "image/heic"), corrupt, "image/heic")
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe", "analyzer": "TestVision"})
+
+        assert vision.analyze_calls[0][:2] == (corrupt, "image/heic"), "the original is what was sent"
+        assert result.startswith(f"Note: {mid} was sent as stored, not resized: the image (image/heic, ")
+        assert "could not be resized or re-encoded for a vision model" in result
+        assert "Something unreadable." in result
 
 
 class TestAudioVideoRouting:

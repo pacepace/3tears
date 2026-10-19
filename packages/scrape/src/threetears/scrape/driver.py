@@ -186,6 +186,15 @@ class RenderedPage:
     #: need vision-based extraction rather than the faster/cheaper text path --
     #: see ``eval_loop._run_per_document_extraction``.
     was_ocr: bool = False
+    #: What a document driver's parser could not read of this page's document, one entry per
+    #: page and step (``"page 3: tables could not be extracted (RuntimeError)"``); empty when it
+    #: read everything, and always empty for a driver that renders HTML. A page whose document
+    #: was only partly read is not evidence that a recipe stopped working -- see
+    #: ``eval_loop.run_eval_loop``'s *page_faults*.
+    page_faults: list[str] = field(default_factory=list)
+    #: Why an OCR'd document's page images are missing from ``html``, when they could not be
+    #: rendered and were not required; ``None`` when they are there or were never wanted.
+    page_images_fault: str | None = None
     #: One entry per ``NavStep(action="evaluate", ...)`` in the caller's
     #: ``nav_steps``, in step order -- each entry is that step's JS
     #: expression's own (JSON-serializable) return value. Empty when no
