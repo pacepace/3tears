@@ -15,6 +15,7 @@ from typing import Any
 
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_sdk.errors import SlackApiError
 
 from threetears.channels.formatting import (
     markdown_to_slack_blocks,
@@ -40,6 +41,54 @@ log = get_logger(__name__)
 # just travelled (Slack updates ``user.tz`` from the user's profile, which
 # a user can change mid-session).
 _USER_PROFILE_TTL_SECONDS = 300.0
+#: how long a FAILED users.info lookup is remembered, by how many times in a row it has failed for that
+#: user: 15 s, then 60 s, then 300 s. a burst of messages from one user does not hammer a struggling
+#: endpoint, and the next message after a blip retries instead of carrying an unknown sender for the
+#: whole :data:`_USER_PROFILE_TTL_SECONDS`.
+_USER_PROFILE_FAILURE_BACKOFF_SECONDS = (15.0, 60.0, 300.0)
+#: the longest a Slack ``Retry-After`` is honoured for one user.
+_USER_PROFILE_RETRY_AFTER_CAP_SECONDS = 3600.0
+#: Slack error codes that no retry will cure: the user does not exist, the app lacks the scope, the token
+#: is bad, the account is deactivated. asking again inside the TTL only spends the Tier 4 budget.
+_PERMANENT_USERS_INFO_ERRORS = frozenset({"user_not_found", "missing_scope", "not_authed", "account_inactive"})
+
+
+@dataclass(slots=True)
+class _ProfileCacheEntry:
+    """one user's cached lookup.
+
+    :param profile: what to serve: the last profile Slack answered if there ever was one, else a
+        profile marked ``lookup_failed``
+    :ptype profile: _SlackUserProfile
+    :param fresh_until: monotonic time before which the entry is served without asking Slack again
+    :ptype fresh_until: float
+    :param failures: consecutive failed lookups, driving the backoff
+    :ptype failures: int
+    :param good: the last profile Slack actually answered, kept to serve when a refresh fails
+    :ptype good: _SlackUserProfile | None
+    """
+
+    profile: _SlackUserProfile
+    fresh_until: float
+    failures: int = 0
+    good: _SlackUserProfile | None = None
+
+
+def _retry_after_seconds(exc: SlackApiError) -> float | None:
+    """the ``Retry-After`` a rate-limited Slack response carried, in seconds.
+
+    :param exc: the failure
+    :ptype exc: SlackApiError
+    :return: the wait, or ``None`` when the response named none
+    :rtype: float | None
+    """
+    headers = getattr(exc.response, "headers", None) or {}
+    raw = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        return float(raw) if raw is not None else None
+    except TypeError, ValueError:
+        # NOSILENT: an unreadable Retry-After is "Slack named no wait"; the caller falls back to its backoff
+        return None
 
 
 # hard bound on the per-user profile cache. entries are keyed by Slack user
@@ -93,12 +142,16 @@ class _SlackUserProfile:
         address on file, or a lookup failure" and the three are
         indistinguishable from the response alone.
     :ptype email: str | None
+    :param lookup_failed: ``True`` when ``users.info`` itself failed, so every field is UNKNOWN
+        rather than absent; ``False`` for a profile Slack answered (however sparse)
+    :ptype lookup_failed: bool
     """
 
     timezone: str | None = None
     locale: str | None = None
     display_name: str | None = None
     email: str | None = None
+    lookup_failed: bool = False
 
 
 def _non_empty_str(value: Any) -> str | None:
@@ -162,6 +215,13 @@ class SlackAdapter:
     :param user_profile_cache_max_entries: most user profiles held before the least recently
         used is evicted
     :ptype user_profile_cache_max_entries: int
+
+    host contract: when Slack's ``users.info`` fails and no earlier answer exists for the sender,
+    the routed :class:`ChannelMessage` carries ``metadata["profile_lookup_failed"] = True`` and
+    ``sender_name`` / ``sender_email`` / ``user_timezone`` / ``user_locale`` are ``None`` because they
+    are UNKNOWN, not absent. a host that reconciles identity by address, or stamps a timezone, must
+    treat that flag as "do not conclude anything from the missing values". the key is absent on a
+    profile Slack answered, however sparse, and on one served stale from an earlier answer.
     """
 
     def __init__(
@@ -207,7 +267,7 @@ class SlackAdapter:
         # ``user_profile_cache_max_entries`` so the map cannot grow without
         # bound. populated lazily on first message from each user via
         # :meth:`_resolve_user_profile`.
-        self._user_profile_cache: OrderedDict[str, tuple[float, _SlackUserProfile]] = OrderedDict()
+        self._user_profile_cache: OrderedDict[str, _ProfileCacheEntry] = OrderedDict()
         self._user_profile_cache_max_entries = user_profile_cache_max_entries
 
         self._app.event("message")(self.handle_message_event)
@@ -220,10 +280,13 @@ class SlackAdapter:
 
         consults the per-instance LRU/TTL cache first; on miss, calls
         ``users.info(user=user_id, include_locale=True)`` and caches
-        the result. failures (network error, unknown user, missing
-        fields) are cached as an all-None profile so a flapping user-info
-        endpoint does not hammer slack with retries inside the cache
-        window. callers consume the result as the ``ChannelMessage``
+        the result. a FAILED lookup serves the last profile Slack answered for
+        that user, or a profile marked ``lookup_failed`` when there never was
+        one. the failure is remembered per user for 15, then 60, then 300
+        seconds; a rate-limit's ``Retry-After`` is honoured instead; and a
+        permanent error (``user_not_found``, ``missing_scope``, ``not_authed``,
+        ``account_inactive``) is remembered for the full TTL, since asking again
+        cannot change the answer. callers consume the result as the ``ChannelMessage``
         ``user_timezone`` / ``user_locale`` / ``sender_name`` /
         ``sender_email`` fields.
 
@@ -238,47 +301,67 @@ class SlackAdapter:
             does not surface a value for this user
         :rtype: _SlackUserProfile
         """
-        cached = self._user_profile_cache.get(user_id)
+        entry = self._user_profile_cache.get(user_id)
         now = time.monotonic()
-        result: _SlackUserProfile
-        if cached is not None and (now - cached[0]) < _USER_PROFILE_TTL_SECONDS:
+        if entry is not None and now < entry.fresh_until:
             self._user_profile_cache.move_to_end(user_id)
-            result = cached[1]
-        else:
-            profile = _SlackUserProfile()
-            try:
-                response = await self._app.client.users_info(
-                    user=user_id,
-                    include_locale=True,
+            return entry.profile
+        previous_good = entry.good if entry is not None else None
+        failures = entry.failures if entry is not None else 0
+        try:
+            response = await self._app.client.users_info(
+                user=user_id,
+                include_locale=True,
+            )
+            user_obj: dict[str, Any] = response.get("user", {}) if response else {}
+            profile = _profile_from_user_object(user_obj)
+            if profile.email is None:
+                # named explicitly because the usual cause is a MISSING SCOPE
+                # and slack reports it by silently omitting the field -- no
+                # error, no warning, just an address that never arrives. a
+                # host relying on it (to reconcile a chat participant with a
+                # known identity) would otherwise see a feature that quietly
+                # never fires. once per user per TTL, not per message.
+                log.info(
+                    "slack users.info returned no email for this user; "
+                    "the app needs the users:read.email scope alongside users:read "
+                    "(a re-install is required after adding it)",
+                    extra={"extra_data": {"user_id": user_id}},
                 )
-                user_obj: dict[str, Any] = response.get("user", {}) if response else {}
-                profile = _profile_from_user_object(user_obj)
-                if profile.email is None:
-                    # named explicitly because the usual cause is a MISSING SCOPE
-                    # and slack reports it by silently omitting the field -- no
-                    # error, no warning, just an address that never arrives. a
-                    # host relying on it (to reconcile a chat participant with a
-                    # known identity) would otherwise see a feature that quietly
-                    # never fires. once per user per TTL, not per message.
-                    log.info(
-                        "slack users.info returned no email for this user; "
-                        "the app needs the users:read.email scope alongside users:read "
-                        "(a re-install is required after adding it)",
-                        extra={"extra_data": {"user_id": user_id}},
-                    )
-            except Exception as exc:
-                contain(
-                    exc,
-                    log=log,
-                    what="slack users.info lookup failed; caching an empty profile to avoid hammering the API",
-                    extra={"user_id": user_id, "error": str(exc)},
+            new_entry = _ProfileCacheEntry(profile, now + _USER_PROFILE_TTL_SECONDS, 0, good=profile)
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="slack users.info lookup failed; serving the last known profile, or an unknown one",
+                extra={"user_id": user_id, "error": str(exc)},
+            )
+            failures += 1
+            code = exc.response.get("error") if isinstance(exc, SlackApiError) and exc.response is not None else None
+            if code in _PERMANENT_USERS_INFO_ERRORS:
+                wait = _USER_PROFILE_TTL_SECONDS
+            else:
+                retry_after = _retry_after_seconds(exc) if isinstance(exc, SlackApiError) else None
+                backoff = _USER_PROFILE_FAILURE_BACKOFF_SECONDS
+                wait = (
+                    min(max(retry_after, 1.0), _USER_PROFILE_RETRY_AFTER_CAP_SECONDS)
+                    if retry_after is not None
+                    else backoff[min(failures, len(backoff)) - 1]
                 )
-            self._user_profile_cache[user_id] = (now, profile)
-            self._user_profile_cache.move_to_end(user_id)
-            while len(self._user_profile_cache) > self._user_profile_cache_max_entries:
-                self._user_profile_cache.popitem(last=False)
-            result = profile
-        return result
+            # stale-on-error: a profile Slack once answered beats an unknown one. a PERMANENT error says the
+            # user (or our access to them) is gone, so there the old profile is not served.
+            served = previous_good if previous_good is not None and code not in _PERMANENT_USERS_INFO_ERRORS else None
+            new_entry = _ProfileCacheEntry(
+                served if served is not None else _SlackUserProfile(lookup_failed=True),
+                now + wait,
+                failures,
+                good=previous_good,
+            )
+        self._user_profile_cache[user_id] = new_entry
+        self._user_profile_cache.move_to_end(user_id)
+        while len(self._user_profile_cache) > self._user_profile_cache_max_entries:
+            self._user_profile_cache.popitem(last=False)
+        return new_entry.profile
 
     async def start(self) -> None:
         """start socket mode connection to slack.
@@ -442,6 +525,10 @@ class SlackAdapter:
         profile = _SlackUserProfile()
         if sender_id:
             profile = await self._resolve_user_profile(sender_id)
+
+        if profile.lookup_failed:
+            # the sender's name, address, zone and locale are unknown, not absent
+            metadata["profile_lookup_failed"] = True
 
         channel_message = ChannelMessage(
             channel_type="slack",

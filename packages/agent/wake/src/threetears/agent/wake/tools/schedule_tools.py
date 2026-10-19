@@ -435,6 +435,42 @@ def _validate_task_prompt(prompt: str | None) -> str | None:
     return None
 
 
+#: what a catalog line shows for a skill whose name could not be read. NOT "no skill" and NOT "unnamed"
+#: (which says the registry has no name on file): the lookup failed, so the model is told the name is unknown and the id beside it still identifies the skill.
+SKILL_LOOKUP_FAILED = "unknown (lookup failed)"
+
+
+async def _skill_label(
+    registry: WakeRegistryClient,
+    *,
+    user_id: UUID,
+    agent_id: UUID,
+    skill_id: UUID,
+) -> str | None:
+    """the attached skill's name for a catalog line, or :data:`SKILL_LOOKUP_FAILED` when the lookup raised.
+
+    a lookup that raised used to answer ``None``, which the line renders as NO skill (or as an
+    "unnamed" one): the model read a schedule that runs a skill as one that does not. the full
+    failure goes to :func:`contain`; the text the model sees carries only that the lookup failed.
+
+    :param registry: the consumer's registry client
+    :ptype registry: WakeRegistryClient
+    :param user_id: caller's user UUID
+    :ptype user_id: UUID
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
+    :param skill_id: the attached skill
+    :ptype skill_id: UUID
+    :return: the name; ``None`` when the registry answered that it has none (the line then says "unnamed")
+    :rtype: str | None
+    """
+    try:
+        return await registry.skill_name_for_id(user_id=user_id, agent_id=agent_id, skill_id=skill_id)
+    except Exception as exc:  # noqa: BLE001 - a name is decoration; the line still carries the skill, marked unknown
+        contain(exc, log=log, what="skill name lookup failed", extra={"skill_id": str(skill_id)})
+        return SKILL_LOOKUP_FAILED
+
+
 def _format_schedule_line(
     entity: Any,
     *,
@@ -443,7 +479,11 @@ def _format_schedule_line(
 ) -> str:
     """Render a one-line catalog entry for a schedule row."""
     name = entity.name or "untitled"
-    skill_segment = f" · skill: {skill_name}" if skill_name else ""
+    # the id is shown whatever the registry answered: a skill with no name on file is "unnamed", a failed
+    # lookup is "unknown (lookup failed)", and neither reads as a schedule that runs no skill.
+    skill_segment = (
+        f" · skill: {skill_name or 'unnamed'} [skill:{entity.skill_id}]" if entity.skill_id is not None else ""
+    )
     # Surface the history switch only when OFF -- the default (on) is the
     # common case and would add noise to every catalog line.
     history_segment = "" if entity.include_conversation_history else " · history: off"
@@ -570,7 +610,7 @@ async def _check_skill_acl(
             what="wake schedule skill ACL probe raised",
             extra={"skill_id": str(skill_id), "error": str(exc)},
         )
-        return f"skill_id {skill_id} ACL probe failed: {exc}"
+        return f"skill_id {skill_id} ACL probe failed ({type(exc).__name__})"
     if not permitted:
         return f"skill_id {skill_id} not authorized for this user/agent"
     return None
@@ -897,24 +937,11 @@ def load_wake_schedule_create_tool(
                 what="wake_schedule_create persist failed",
                 extra={"schedule_id": str(new_schedule_id), "error": str(exc)},
             )
-            return _tool_error("wake_schedule_create", f"persist failed: {exc}")
+            return _tool_error("wake_schedule_create", f"persist failed ({type(exc).__name__})")
 
         skill_name: str | None = None
         if attached_skill is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=attached_skill,
-                )
-            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
-                contain(
-                    exc,
-                    log=log,
-                    what="wake_schedule_create skill_name lookup raised",
-                    extra={"skill_id": str(attached_skill), "error": str(exc)},
-                )
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
 
         log.info(
             "wake_schedule_create persisted",
@@ -1202,19 +1229,11 @@ def load_wake_schedule_update_tool(
                 what="wake_schedule_update persist failed",
                 extra={"schedule_id": str(parsed), "error": str(exc)},
             )
-            return _tool_error("wake_schedule_update", f"persist failed: {exc}")
+            return _tool_error("wake_schedule_update", f"persist failed ({type(exc).__name__})")
 
         skill_name: str | None = None
         if entity.skill_id is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=entity.skill_id,
-                )
-            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
-                contain(exc, log=log, what="schedule skill name lookup failed")
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
         if entity.next_fire_at != next_fire_before:
             changes.append(
                 f"next fire: {format_wake_time(next_fire_before, zone, unset='not set')} -> "
@@ -1270,7 +1289,7 @@ def load_wake_schedule_list_tool(
             visible = await schedules_collection.list_for_agent(agent_id, include_paused=include_paused)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="wake_schedule_list list failed")
-            return _tool_error("wake_schedule_list", f"list failed: {exc}")
+            return _tool_error("wake_schedule_list", f"list failed ({type(exc).__name__})")
 
         if not visible:
             return "You have no wake schedules."
@@ -1279,15 +1298,7 @@ def load_wake_schedule_list_tool(
         for entity in visible:
             skill_name: str | None = None
             if entity.skill_id is not None:
-                try:
-                    skill_name = await registry.skill_name_for_id(
-                        user_id=user_id,
-                        agent_id=agent_id,
-                        skill_id=entity.skill_id,
-                    )
-                except Exception as exc:  # noqa: BLE001 - best-effort
-                    contain(exc, log=log, what="schedule skill name lookup failed")
-                    skill_name = None
+                skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
             lines.append("- " + _format_schedule_line(entity, skill_name=skill_name, zone=zone))
         return "\n".join(lines)
 
@@ -1343,13 +1354,7 @@ def load_wake_schedule_get_tool(
             return _tool_error("wake_schedule_get", "schedule not found; wake_schedule_list shows the ones you have")
         skill = "none"
         if entity.skill_id is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id
-                )
-            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
-                contain(exc, log=log, what="schedule skill name lookup failed")
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
             skill = f"{skill_name or 'unnamed'} [skill:{entity.skill_id}]"
         upcoming = next_fires(entity, 3)
         if upcoming:
@@ -1563,7 +1568,7 @@ def load_wake_fires_tool(
             return await _of_subscription(subscription_id or "", limit)
         except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
             contain(exc, log=log, what="wake_fires history read failed")
-            return _tool_error("wake_fires", f"the history could not be read: {exc}")
+            return _tool_error("wake_fires", f"the history could not be read ({type(exc).__name__})")
 
     wake_fires.description = (
         "Read how a wake schedule's past fires went, newest first: when each ran, whether on schedule "
@@ -1630,7 +1635,7 @@ def load_wake_schedule_pause_tool(
             await schedules_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="wake_schedule_pause persist failed")
-            return _tool_error("wake_schedule_pause", f"persist failed: {exc}")
+            return _tool_error("wake_schedule_pause", f"persist failed ({type(exc).__name__})")
         return (
             f"Paused [schedule:{parsed}] ({entity.name or 'untitled'}). It was {was}. "
             "It does not fire until wake_schedule_resume."
@@ -1751,7 +1756,7 @@ def load_wake_schedule_resume_tool(
             )
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="wake_schedule_resume persist failed")
-            return _tool_error("wake_schedule_resume", f"persist failed: {exc}")
+            return _tool_error("wake_schedule_resume", f"persist failed ({type(exc).__name__})")
         return (
             f"Resumed [schedule:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. "
             f"It is {describe_schedule(entity.schedule_type, entity.schedule_config or {})}. "
@@ -1808,7 +1813,7 @@ def load_wake_schedule_delete_tool(
             await schedules_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="wake_schedule_delete persist failed")
-            return _tool_error("wake_schedule_delete", f"persist failed: {exc}")
+            return _tool_error("wake_schedule_delete", f"persist failed ({type(exc).__name__})")
         return (
             f"Deleted [schedule:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}: {was}. "
             "Its history went with it, and it cannot be brought back."
@@ -1875,7 +1880,7 @@ def load_wake_yield_tool(
             set_yield_requested()
         except Exception as exc:  # noqa: BLE001 - surface as tool error
             contain(exc, log=log, what="wake_yield setter raised", extra={"error": str(exc)})
-            return _tool_error("wake_yield", f"yield setter failed: {exc}")
+            return _tool_error("wake_yield", f"yield setter failed ({type(exc).__name__})")
         log.info("wake_yield fired")
         return "Wake yielded. Your last message ends it, and the person's waiting message is answered next."
 
