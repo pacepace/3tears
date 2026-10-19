@@ -89,7 +89,7 @@ from threetears.models._claude_sdk_internals import (
     remove_tool_server,
     send_control_request,
 )
-from threetears.observe import BuildOnce, cancel_and_wait, contain, contained, get_logger
+from threetears.observe import BuildOnce, cancel_and_wait, contain, contained, gauge, get_logger
 
 __all__ = [
     "POOL_MARKER_ENV",
@@ -246,9 +246,18 @@ def _process_environ(pid: int) -> dict[str, str]:
     """
     try:
         raw = (_PROC / str(pid) / "environ").read_bytes()
-    except OSError, ValueError:
+    except FileNotFoundError, ProcessLookupError, PermissionError:
         # NOSILENT: another user's or an exited process's environment is unreadable by design; an
         # empty mapping means "carries no pool marker", so the sweep never touches it.
+        return {}
+    except OSError as exc:
+        # any other failure is not by design: still "no marker" (never a kill), but counted
+        contain(
+            exc,
+            log=_logger,
+            what="Could not read a process's environment; the sweep leaves it alone",
+            extra={"pid": pid},
+        )
         return {}
     env: dict[str, str] = {}
     for chunk in raw.split(b"\0"):
@@ -391,30 +400,62 @@ def _marker(owner_pid: int | None = None) -> str:
     return f"{pid}:{_process_start_ticks(pid) or 0}:{secrets.token_hex(16)}"
 
 
+class _OwnerUnknownError(Exception):
+    """The sweep cannot tell whether the process a pool marker names is still running."""
+
+
 def _owner_is_alive(marker: str) -> bool:
     """Whether the process that started a marked CLI is still running.
 
     Both halves matter: the pid must exist AND still report the start time the marker recorded, so
     a recycled pid cannot make a stale CLI look owned.
 
+    ``False`` is the sweep's licence to kill a process tree, so it is returned only on proof the
+    owner is gone: no process has its pid, or the process that has it started at another time.
+    Anything short of proof -- a marker that names no owner, a liveness probe or a ``/proc`` read
+    that failed -- raises instead, because "cannot tell" is not "gone".
+
     :param marker: the :data:`POOL_MARKER_ENV` value read off the process
     :ptype marker: str
     :return: whether the owner is alive
     :rtype: bool
+    :raises _OwnerUnknownError: the marker names no owner, or whether it runs could not be read
     """
     parts = marker.split(":")
-    if len(parts) < 2:
-        return False
     try:
         owner_pid = int(parts[0])
         owner_ticks = int(parts[1])
-    except ValueError:
+    except (IndexError, ValueError) as exc:
+        raise _OwnerUnknownError(f"the marker {marker!r} names no owner pid and start time") from exc
+    another_users = False
+    try:
+        os.kill(owner_pid, 0)
+    except ProcessLookupError:
+        # NOSILENT: no process has the owner's pid, which is the proof it is gone
         return False
-    if not _alive(owner_pid):
-        return False
+    except PermissionError:
+        # NOSILENT: a process this user may not signal exists all the same; its start time decides below
+        another_users = True
+    except OSError as exc:
+        raise _OwnerUnknownError(f"could not test whether owner pid {owner_pid} is running: {exc}") from exc
     if owner_ticks == 0:
         return True
-    return _process_start_ticks(owner_pid) == owner_ticks
+    try:
+        raw = (_PROC / str(owner_pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError as exc:
+        if another_users:
+            # a /proc mounted hidepid hides another user's process that the probe just found
+            raise _OwnerUnknownError(f"owner pid {owner_pid} runs, and /proc does not show it") from exc
+        # NOSILENT: the owner exited between the probe and this read, which is the proof it is gone
+        return False
+    except OSError as exc:
+        raise _OwnerUnknownError(f"could not read owner pid {owner_pid}'s start time: {exc}") from exc
+    fields = raw[raw.rfind(")") + 2 :].split()
+    try:
+        started = int(fields[19])
+    except (IndexError, ValueError) as exc:
+        raise _OwnerUnknownError(f"owner pid {owner_pid}'s /proc stat carries no start time") from exc
+    return started == owner_ticks
 
 
 def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
@@ -422,7 +463,11 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
 
     The mechanism that actually saves a host: a crash, an OOM kill or a container kill skips every
     shutdown hook, and the CLIs it started are reparented to init and keep running. A marked CLI
-    whose owner is still alive belongs to a sibling worker and is left alone.
+    whose owner is still alive belongs to a sibling worker and is left alone. So is one whose owner
+    cannot be shown gone -- an unreadable marker, a failed ``/proc`` read -- with a contained
+    WARNING naming it: killing a live worker's CLI on a guess is worse than leaving one orphan. Those
+    are counted: the sweep's summary is a WARNING naming how many, and the
+    ``claude_cli_sweep_owner_unknown`` gauge is set to the count.
 
     :param grace_seconds: how long each SIGTERM gets before SIGKILL
     :ptype grace_seconds: float
@@ -436,11 +481,26 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
 
     self_pid = os.getpid()
     killed = 0
+    unknown = 0
     for pid in pids:
         if pid == self_pid:
             continue
         marker = _process_environ(pid).get(POOL_MARKER_ENV)
-        if not marker or _owner_is_alive(marker):
+        if not marker:
+            continue
+        try:
+            owned = _owner_is_alive(marker)
+        except _OwnerUnknownError as exc:
+            # a CLI whose owner cannot be shown gone is not an orphan: it is left running, and said to be
+            contain(
+                exc,
+                log=_logger,
+                what="Leaving a pooled Claude CLI running: whether its owner is alive could not be read",
+                extra={"pid": pid},
+            )
+            unknown += 1
+            continue
+        if owned:
             continue
         _logger.warning(
             "Killing an orphaned Claude CLI left by a previous process",
@@ -449,14 +509,27 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
         kill_process_tree(pid, grace_seconds=grace_seconds)
         killed += 1
 
-    if killed:
+    gauge(_OWNER_UNKNOWN_GAUGE, description=_OWNER_UNKNOWN_DESCRIPTION).set(unknown)
+    summary = {"killed": killed, "owner_unknown": unknown, "scanned": len(pids)}
+    if killed or unknown:
         _logger.warning(
-            "Orphaned Claude CLI sweep finished",
-            extra={"extra_data": {"killed": killed, "scanned": len(pids)}},
+            "Orphaned Claude CLI sweep finished: %d killed, %d left running with an owner that could not be read",
+            killed,
+            unknown,
+            extra={"extra_data": summary},
         )
     else:
-        _logger.info("Orphaned Claude CLI sweep found nothing", extra={"extra_data": {"scanned": len(pids)}})
+        _logger.info("Orphaned Claude CLI sweep found nothing", extra={"extra_data": summary})
     return killed
+
+
+#: the gauge the sweep sets to how many marked CLIs it left running because their owner could not be
+#: read -- each may be an orphan the sweep could not prove one, so a value that stays above zero is
+#: for an operator to look at.
+_OWNER_UNKNOWN_GAUGE = "claude_cli_sweep_owner_unknown"
+_OWNER_UNKNOWN_DESCRIPTION = (
+    "pooled Claude CLIs the last orphan sweep left running because whether their owner is alive could not be read"
+)
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,13 @@ from threetears.agent.workspace.entities import Workspace, WorkspaceFile, Worksp
 from threetears.agent.workspace.factory import build_workspace_tools
 from threetears.agent.workspace.handlers import YamlHandler
 from threetears.agent.workspace.lease import WorkspaceFileLease
-from threetears.agent.workspace.materialize import bind, materialize, recover
+from threetears.agent.workspace.materialize import (
+    CaptureBackFailedError,
+    DiskRootChangedError,
+    bind,
+    materialize,
+    recover,
+)
 from threetears.agent.workspace.migrations import (
     create_workspace_tables,
     register as register_workspace_migrations,
@@ -45,6 +51,8 @@ __all__ = [
     "AllowConfig",
     "BindConfig",
     "BindConflictPolicy",
+    "CaptureBackFailedError",
+    "DiskRootChangedError",
     "PinnedWorkspace",
     "ValidatorEntry",
     "Workspace",
