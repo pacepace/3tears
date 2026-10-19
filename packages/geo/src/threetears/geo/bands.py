@@ -44,6 +44,7 @@ __all__ = [
     "BandResult",
     "FeatureSpec",
     "TileFeature",
+    "UNDECODABLE_PROPERTY",
     "aggregate_band",
     "feature_band",
     "simplification_tolerance",
@@ -56,6 +57,13 @@ log = get_logger(__name__)
 #: that removes vertices the tile grid cannot express anyway, and simplifying
 #: above it is visible.
 _BASE_TOLERANCE_DEGREES: Final = 360.0 / 4096.0
+
+#: the property an aggregate feature carries when some of its bucket's source rows were left
+#: out because their geometry could not be read: how many. its ``count`` and measures then
+#: total only the rows that were read, and this says by how many rows they fall short, in the
+#: stored tile itself rather than only in a log line. absent on a feature that lost nothing,
+#: so a healthy tile encodes exactly as before and a client reads it as ``?? 0``.
+UNDECODABLE_PROPERTY: Final = "undecodable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,10 +142,19 @@ class AggregateSpec:
     :ptype rollup_column: str | None
     :param measures: column name to aggregation, one of ``sum``/``mean``/``count``
     :ptype measures: dict[str, str]
+    :raises ValueError: when the rollup column or a measure is named ``undecodable``
+        (:data:`UNDECODABLE_PROPERTY`), which would overwrite the partial-bucket marker or be
+        overwritten by it
     """
 
     rollup_column: str | None = None
     measures: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.rollup_column == UNDECODABLE_PROPERTY or UNDECODABLE_PROPERTY in self.measures:
+            raise ValueError(
+                f"{UNDECODABLE_PROPERTY!r} is reserved for the partial-bucket marker on aggregate features"
+            )
 
 
 def simplification_tolerance(zoom: int) -> float:
@@ -257,6 +274,11 @@ def aggregate_band(
     none is declared), and emits one point feature per group at the group's
     centroid, carrying the declared measures plus a ``count``.
 
+    a row whose geometry cannot be read is left out and counted against its bucket: the
+    bucket's feature carries :data:`UNDECODABLE_PROPERTY`, so a total that undercounts says so
+    in the tile. a bucket none of whose rows could be read has no position and so no feature;
+    its rows are still counted on the result's ``undecodable``.
+
     the centroid is the mean of member centroids rather than the centre of the
     tile, so a group's marker sits on its members instead of in whatever empty
     space the tile happens to centre on.
@@ -275,19 +297,21 @@ def aggregate_band(
     from shapely.geometry import Point
 
     groups: dict[Any, list[tuple[dict[str, Any], BaseGeometry]]] = {}
+    unread_by_bucket: dict[Any, int] = {}
     undecodable = 0
     first_undecodable: Any = None
     for row in rows:
+        bucket = row.get(spec.rollup_column) if spec.rollup_column else tile.key
         try:
             geometry = geometry_of(row)
         except UndecodableGeometry:
             undecodable += 1
+            unread_by_bucket[bucket] = unread_by_bucket.get(bucket, 0) + 1
             if first_undecodable is None:
                 first_undecodable = row.get(spec.rollup_column) if spec.rollup_column else None
             continue
         if geometry is None:
             continue
-        bucket = row.get(spec.rollup_column) if spec.rollup_column else tile.key
         groups.setdefault(bucket, []).append((row, geometry))
 
     features: list[TileFeature] = []
@@ -302,6 +326,9 @@ def aggregate_band(
             aggregated = _aggregate([row.get(column) for row, _ in members], how)
             if aggregated is not None:
                 attributes[column] = aggregated
+        unread = unread_by_bucket.get(bucket, 0)
+        if unread:
+            attributes[UNDECODABLE_PROPERTY] = unread
         features.append(
             TileFeature(
                 geometry=Point(mean_x, mean_y),

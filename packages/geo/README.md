@@ -105,6 +105,16 @@ declared ranking column so the survivors are the important ones, and the
 result records that it was truncated — a silently capped tile reads as
 "this is all the data there is".
 
+A source row whose geometry cannot be read is left out, not allowed to fail
+the tile. It is counted (`geo_undecodable_rows_total`) and warned about, and in
+the aggregate band it is also marked in the stored tile: the bucket's feature
+carries an `undecodable` property giving how many of its rows were left out, so
+a `count` or sum that falls short says by how much. A feature that lost no rows
+has no such property, so a healthy tile is unchanged; read it as
+`["coalesce", ["get", "undecodable"], 0]`. A bucket none of whose rows could be
+read has no position to draw at, so it has no feature, and only the counter and
+the warning record it.
+
 ## Feature ids are not MVT ids
 
 MVT feature ids are **uint64 by specification**. A census geoid or a UUID is

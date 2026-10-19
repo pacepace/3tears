@@ -16,6 +16,7 @@ from threetears.geo.bands import (
     AggregateSpec,
     BandResult,
     FeatureSpec,
+    UNDECODABLE_PROPERTY,
     TileFeature,
     aggregate_band,
     feature_band,
@@ -54,6 +55,7 @@ from threetears.geo.tiles import (
 __all__ = [
     "MAX_CACHE_SCOPE_LENGTH",
     "MAX_MERCATOR_LATITUDE",
+    "UNDECODABLE_PROPERTY",
     "AggregateSpec",
     "BandResult",
     "FeatureCache",
