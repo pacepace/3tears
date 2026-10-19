@@ -61,7 +61,9 @@ anti-patterns deliberately avoided:
 - :func:`os.walk` or :meth:`pathlib.Path.rglob` for the capture-back
   snapshot -- both pass an unreadable directory over silently, and a
   file the snapshot misses is a file capture-back deletes;
-  :meth:`pathlib.Path.walk` with an ``on_error`` that raises is used.
+  :meth:`pathlib.Path.walk` with an ``on_error`` that records the
+  directory is used, and a bind keeps the L3 rows under every path the
+  snapshot could not read.
 """
 
 from __future__ import annotations
@@ -82,7 +84,7 @@ from watchfiles import Change, awatch
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.core.utils.atomic_write import atomic_write
-from threetears.observe import contain, get_logger
+from threetears.observe import contain, counter, get_logger
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.tools.helpers import _next_journal_version
@@ -136,18 +138,22 @@ class DiskRootChangedError(RuntimeError):
 
 
 class CaptureBackFailedError(RuntimeError):
-    """capture-back at :func:`bind` exit could not read the disk, so it wrote nothing to L3.
+    """capture-back at :func:`bind` exit could not read the bind root itself, so it wrote nothing to L3.
+
+    raised only for the root as a whole -- gone, unlistable, or on another device than when the
+    window opened. a directory or file below the root that cannot be read does not raise: it is
+    skipped, its L3 rows are kept, and the rest of the disk is captured.
 
     L3 is exactly as it was before capture-back ran; nothing was deleted on account of the
-    unreadable path. the disk root still holds whatever the bind body wrote.
+    unreadable root. the disk root, if it is still there, holds whatever the bind body wrote.
 
-    what an operator does next: fix what :attr:`path` and the chained cause name -- a directory or
-    file this process may not read, a volume that is no longer mounted at the bind root -- then run
+    what an operator does next: fix what :attr:`path` and the chained cause name -- a root this
+    process may not read, a volume that is no longer mounted at the bind root -- then run
     :func:`recover` for the same workspace and root name to write the disk's creates and updates
     into L3. :func:`recover` never deletes, so a file the body deliberately removed during the
     window is still in L3 afterwards; remove it through the workspace tools if it should go.
 
-    :param path: the path the snapshot could not read (the bind root itself for a changed device)
+    :param path: the bind root the snapshot could not read
     :ptype path: Path
     :param workspace_id: the workspace whose capture-back failed
     :ptype workspace_id: Any
@@ -155,7 +161,7 @@ class CaptureBackFailedError(RuntimeError):
 
     def __init__(self, path: Path, *, workspace_id: Any) -> None:
         super().__init__(
-            f"capture-back for workspace {workspace_id} could not read {path}; L3 was left unchanged -- "
+            f"capture-back for workspace {workspace_id} could not read its bind root {path}; L3 was left unchanged -- "
             f"fix the path, then run recover() for this workspace and root"
         )
         self.path = path
@@ -284,21 +290,29 @@ def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _snapshot_disk_sync(disk_root: Path, root_device: int | None = None) -> dict[str, tuple[bytes, str]]:
+def _snapshot_disk_sync(
+    disk_root: Path,
+    root_device: int | None = None,
+    unreadable: dict[str, OSError] | None = None,
+) -> dict[str, tuple[bytes, str]]:
     """sync walker: enumerate every file under ``disk_root``, return ``{relpath: (bytes, sha256)}``.
 
     walks via :meth:`Path.walk` and keeps regular files and the in-root symlinks that resolve to one.
     symlinks that resolve OUTSIDE the root are dropped defensively so an attacker who planted a
     symlink into ``/etc`` cannot exfiltrate its contents via the capture-back path.
 
-    a file absent from this snapshot is a file capture-back deletes from L3, so anything the walker
-    cannot read raises rather than reading as absent: the root itself missing, a root on another
-    device than ``root_device``, a directory it cannot list, an entry it cannot ``lstat``, an in-root
-    symlink whose target it cannot ``stat``, a file it cannot read. :meth:`Path.rglob` and
-    :meth:`Path.is_file` both pass such errors over silently, which is why neither decides
-    membership here. only :class:`FileNotFoundError` below the root reads as absent: a directory or
-    file that vanished between being listed and being read is gone, and a dangling symlink names
-    no file.
+    a file absent from this snapshot is a file capture-back deletes from L3, so nothing the walker
+    cannot read is allowed to read as absent. the root itself missing, on another device than
+    ``root_device``, or unlistable always raises. below the root -- a directory it cannot list, an
+    entry it cannot ``lstat`` or ``resolve()``, an in-root symlink whose target it cannot ``stat``,
+    a file it cannot read -- the failure raises when ``unreadable`` is ``None``; given a dict, the
+    walker records the failure there under the path's POSIX relative path, leaves that path (and,
+    for a directory, everything under it) out of the result, and walks on. a caller handed a
+    non-empty ``unreadable`` must not read those paths' absence as deletion.
+    :meth:`Path.rglob` and :meth:`Path.is_file` both pass such errors over silently, which is why
+    neither decides membership here. only :class:`FileNotFoundError` below the root reads as absent:
+    a directory or file that vanished between being listed and being read is gone, and a dangling
+    symlink names no file.
 
     this is the sync, blocking body. async callers must invoke via
     :func:`asyncio.to_thread` so the event loop is not blocked on the
@@ -308,21 +322,33 @@ def _snapshot_disk_sync(disk_root: Path, root_device: int | None = None) -> dict
     :ptype disk_root: Path
     :param root_device: the root's ``st_dev`` when the bind window opened; ``None`` skips the check
     :ptype root_device: int | None
+    :param unreadable: where to record the paths below the root that could not be read, instead of
+        raising; ``None`` raises
+    :ptype unreadable: dict[str, OSError] | None
     :return: mapping from POSIX-style relative path to (content, sha256)
     :rtype: dict[str, tuple[bytes, str]]
     :raises FileNotFoundError: when ``disk_root`` itself does not exist
     :raises DiskRootChangedError: when ``disk_root`` is no longer on ``root_device``
-    :raises OSError: when a directory, entry or file under ``disk_root`` cannot be read
+    :raises OSError: when ``disk_root`` cannot be listed, or, with ``unreadable`` ``None``, when a
+        directory, entry or file under it cannot be read
     """
     found_device = disk_root.stat().st_dev
     if root_device is not None and found_device != root_device:
         raise DiskRootChangedError(disk_root, expected=root_device, found=found_device)
 
+    def _unread(path: Path, exc: OSError) -> None:
+        # the root is never a subtree to skip: without it there is nothing left to capture
+        if unreadable is None or path == disk_root or not path.is_relative_to(disk_root):
+            raise exc
+        unreadable[path.relative_to(disk_root).as_posix()] = exc
+
     def _unlisted_directory(exc: OSError) -> None:
         # a directory below the root that is gone holds no files; any other listing error -- and the
-        # root itself going missing mid-walk -- raises, since every file under it would read as deleted
-        if not isinstance(exc, FileNotFoundError) or Path(str(exc.filename)) == disk_root:
-            raise exc
+        # root itself going missing mid-walk -- is unread, since every file under it would read as deleted
+        directory = Path(str(exc.filename))
+        if isinstance(exc, FileNotFoundError) and directory != disk_root:
+            return
+        _unread(directory, exc)
 
     out: dict[str, tuple[bytes, str]] = {}
     resolved_root = disk_root.resolve()
@@ -334,9 +360,16 @@ def _snapshot_disk_sync(disk_root: Path, root_device: int | None = None) -> dict
             except FileNotFoundError:
                 # NOSILENT: removed since the directory was listed -- gone, as a vanished directory is
                 continue
+            except OSError as exc:
+                _unread(candidate, exc)
+                continue
             # a symlink whose target escapes the root is not a file of this workspace: it is left
             # out, and said. .resolve() + parentage closes the hole.
-            resolved_candidate = candidate.resolve()
+            try:
+                resolved_candidate = candidate.resolve()
+            except OSError as exc:
+                _unread(candidate, exc)
+                continue
             if not resolved_candidate.is_relative_to(resolved_root):
                 log.warning(
                     "workspace.snapshot_disk.skip_escape",
@@ -352,7 +385,10 @@ def _snapshot_disk_sync(disk_root: Path, root_device: int | None = None) -> dict
                 try:
                     mode = candidate.stat().st_mode
                 except FileNotFoundError:
-                    # NOSILENT: a dangling symlink names no file; a loop or an unreadable target raises
+                    # NOSILENT: a dangling symlink names no file; a loop or an unreadable target is unread
+                    continue
+                except OSError as exc:
+                    _unread(candidate, exc)
                     continue
             if not stat.S_ISREG(mode):
                 continue
@@ -362,24 +398,108 @@ def _snapshot_disk_sync(disk_root: Path, root_device: int | None = None) -> dict
             except FileNotFoundError:
                 # NOSILENT: removed since it was listed -- gone, as a vanished directory is
                 continue
+            except OSError as exc:
+                _unread(candidate, exc)
+                continue
             out[rel] = (data, _sha256_bytes(data))
     return out
 
 
-async def snapshot_disk(disk_root: Path, *, root_device: int | None = None) -> dict[str, tuple[bytes, str]]:
+async def snapshot_disk(
+    disk_root: Path,
+    *,
+    root_device: int | None = None,
+    unreadable: dict[str, OSError] | None = None,
+) -> dict[str, tuple[bytes, str]]:
     """async wrapper around :func:`_snapshot_disk_sync` via :func:`asyncio.to_thread`.
 
     :param disk_root: absolute path to sandboxed root directory
     :ptype disk_root: Path
     :param root_device: the root's ``st_dev`` when the bind window opened; ``None`` skips the check
     :ptype root_device: int | None
+    :param unreadable: where to record the paths below the root that could not be read, instead of
+        raising; ``None`` raises
+    :ptype unreadable: dict[str, OSError] | None
     :return: mapping from POSIX-style relative path to (content, sha256)
     :rtype: dict[str, tuple[bytes, str]]
     :raises FileNotFoundError: when ``disk_root`` itself does not exist
     :raises DiskRootChangedError: when ``disk_root`` is no longer on ``root_device``
-    :raises OSError: when anything under ``disk_root`` cannot be read
+    :raises OSError: when ``disk_root`` cannot be listed, or, with ``unreadable`` ``None``, when
+        anything under it cannot be read
     """
-    return await asyncio.to_thread(_snapshot_disk_sync, disk_root, root_device)
+    return await asyncio.to_thread(_snapshot_disk_sync, disk_root, root_device, unreadable)
+
+
+#: the counter of paths a bind's snapshot could not read and skipped, keeping their L3 rows. each is a
+#: directory or file whose state L3 no longer follows until it is readable again, so a rate above
+#: zero is for an operator to look at.
+_UNREADABLE_SKIPPED = "workspace_snapshot_unreadable_skipped_total"
+_UNREADABLE_SKIPPED_HELP = (
+    "paths below a bind root the snapshot could not read and skipped, keeping their L3 rows, by bind phase"
+)
+
+
+async def _snapshot_disk_tolerant(
+    disk_root: Path,
+    *,
+    root_device: int | None,
+    workspace_id: Any,
+    phase: Literal["seed", "capture_back"],
+) -> tuple[dict[str, tuple[bytes, str]], tuple[str, ...]]:
+    """snapshot ``disk_root`` for :func:`bind`, skipping what below the root cannot be read.
+
+    one unreadable directory must not fail every bind of the workspace, and must not read as its
+    files deleted either: each path the walker could not read is left out of the snapshot, named in
+    the second element so the caller keeps every L3 row at or under it, contained (a WARNING with
+    the cause, counted in ``contained_errors_total``) and counted in
+    ``workspace_snapshot_unreadable_skipped_total{phase}``. the root itself still raises.
+
+    :param disk_root: absolute path to the sandboxed bind root
+    :ptype disk_root: Path
+    :param root_device: the root's ``st_dev`` when the bind window opened; ``None`` skips the check
+    :ptype root_device: int | None
+    :param workspace_id: the workspace being bound, for the warning
+    :ptype workspace_id: Any
+    :param phase: the bind phase reading the disk, the counter's label
+    :ptype phase: Literal["seed", "capture_back"]
+    :return: the snapshot, and the POSIX relative paths that could not be read
+    :rtype: tuple[dict[str, tuple[bytes, str]], tuple[str, ...]]
+    :raises FileNotFoundError: when ``disk_root`` itself does not exist
+    :raises DiskRootChangedError: when ``disk_root`` is no longer on ``root_device``
+    :raises OSError: when ``disk_root`` itself cannot be listed
+    """
+    unreadable: dict[str, OSError] = {}
+    disk = await snapshot_disk(disk_root, root_device=root_device, unreadable=unreadable)
+    for rel, exc in unreadable.items():
+        contain(
+            exc,
+            log=log,
+            what="workspace bind could not read a path below its root; skipped it and kept its L3 rows",
+            extra={
+                "workspace_id": str(workspace_id),
+                "disk_root": str(disk_root),
+                "relative_path": rel,
+                "phase": phase,
+            },
+        )
+    if unreadable:
+        counter(_UNREADABLE_SKIPPED, description=_UNREADABLE_SKIPPED_HELP, label_names=("phase",)).labels(
+            phase=phase
+        ).inc(len(unreadable))
+    return disk, tuple(unreadable)
+
+
+def _is_under(rel: str, unreadable: tuple[str, ...]) -> bool:
+    """whether ``rel`` is one of ``unreadable`` or lies beneath one.
+
+    :param rel: a POSIX relative path of an L3 row
+    :ptype rel: str
+    :param unreadable: POSIX relative paths the snapshot could not read
+    :ptype unreadable: tuple[str, ...]
+    :return: ``True`` when the snapshot cannot say whether ``rel`` is still on disk
+    :rtype: bool
+    """
+    return any(rel == path or rel.startswith(f"{path}/") for path in unreadable)
 
 
 async def _seed_l3_from_disk(
@@ -392,7 +512,7 @@ async def _seed_l3_from_disk(
     correlation_id: UUID,
     on_conflict: BindConflictPolicy,
     root_device: int | None = None,
-) -> int:
+) -> tuple[int, tuple[str, ...]]:
     """seed L3 head-state from disk under the chosen conflict policy.
 
     branches on ``on_conflict``:
@@ -415,6 +535,10 @@ async def _seed_l3_from_disk(
       (matching sha) are skipped. all writes land in a single asyncpg
       transaction and ``workspaces.current_version`` is bumped via
       ``GREATEST``.
+
+    a directory or file below the root that cannot be read is skipped in both modes, with a
+    contained WARNING and a count, and DISK_WINS keeps every L3 row at or under it rather than
+    deleting it; only the root itself failing raises.
 
     validator dispatch is intentionally bypassed in both modes: the
     bind-enter contract mirrors disk <-> L3 while validators target the
@@ -442,16 +566,23 @@ async def _seed_l3_from_disk(
     :ptype root_device: int | None
     :return: count of files created + updated + deleted during seeding
         (0 when the L3_WINS gate short-circuits and the workspace
-        already has head rows)
-    :rtype: int
+        already has head rows), and the POSIX relative paths the seed
+        could not read (empty when it read no disk)
+    :rtype: tuple[int, tuple[str, ...]]
+    :raises FileNotFoundError: when ``disk_root`` itself does not exist
+    :raises DiskRootChangedError: when ``disk_root`` is no longer on ``root_device``
+    :raises OSError: when ``disk_root`` itself cannot be listed
     """
     n_touched = 0
+    unreadable: tuple[str, ...] = ()
     if on_conflict is BindConflictPolicy.L3_WINS:
         existing = await workspace_file_collection.find_by_workspace(
             workspace.id,
         )
         if not existing:
-            disk = await snapshot_disk(disk_root, root_device=root_device)
+            disk, unreadable = await _snapshot_disk_tolerant(
+                disk_root, root_device=root_device, workspace_id=workspace.id, phase="seed"
+            )
             if disk:
                 n_touched = await _seed_l3_import_all(
                     workspace=workspace,
@@ -469,7 +600,9 @@ async def _seed_l3_from_disk(
                     },
                 )
     else:
-        disk = await snapshot_disk(disk_root, root_device=root_device)
+        disk, unreadable = await _snapshot_disk_tolerant(
+            disk_root, root_device=root_device, workspace_id=workspace.id, phase="seed"
+        )
         existing_rows = await workspace_file_collection.find_by_workspace(
             workspace.id,
         )
@@ -483,6 +616,7 @@ async def _seed_l3_from_disk(
             db_pool=db_pool,
             actor_id=actor_id,
             correlation_id=correlation_id,
+            unreadable=unreadable,
         )
         log.info(
             "workspace.bind.seed_disk_wins",
@@ -490,9 +624,10 @@ async def _seed_l3_from_disk(
                 "workspace_id": str(workspace.id),
                 "file_count": n_touched,
                 "disk_root": str(disk_root),
+                "unreadable_count": len(unreadable),
             },
         )
-    return n_touched
+    return n_touched, unreadable
 
 
 async def _seed_l3_import_all(
@@ -579,6 +714,7 @@ async def _seed_l3_disk_wins(
     db_pool: Any,
     actor_id: UUID,
     correlation_id: UUID,
+    unreadable: tuple[str, ...] = (),
 ) -> int:
     """clobber L3 head-state with disk contents: create + update + delete.
 
@@ -591,7 +727,8 @@ async def _seed_l3_disk_wins(
     - emits an ``update`` journal row + head upsert for every disk
       path whose existing head sha differs
     - emits a ``delete`` journal row + head delete for every existing
-      head path absent from disk
+      head path absent from disk, except one at or under a path in
+      ``unreadable``: the snapshot could not say whether it is still there
     - bumps ``workspaces.current_version`` via ``GREATEST`` when any
       of the above fired
 
@@ -611,6 +748,8 @@ async def _seed_l3_disk_wins(
     :ptype actor_id: UUID
     :param correlation_id: originating tool-call envelope identifier
     :ptype correlation_id: UUID
+    :param unreadable: POSIX relative paths the snapshot could not read; rows at or under them are kept
+    :ptype unreadable: tuple[str, ...]
     :return: count of journal rows emitted (create + update + delete)
     :rtype: int
     """
@@ -624,7 +763,7 @@ async def _seed_l3_disk_wins(
         elif prior[0] != sha:
             updates.append((rel, content, sha))
     for rel in existing_by_path:
-        if rel not in disk:
+        if rel not in disk and not _is_under(rel, unreadable):
             deletes.append(rel)
 
     n_touched = 0
@@ -1151,7 +1290,9 @@ async def _capture_back(
 
     - ``create`` journal row + head upsert for files new on disk
     - ``update`` journal row + head upsert for files whose sha changed
-    - ``delete`` journal row + head delete for files missing from disk
+    - ``delete`` journal row + head delete for files missing from disk,
+      except under a path the snapshot could not read: that path is
+      skipped with a contained WARNING and a count, and its rows kept
     - ``workspaces.current_version`` bump (GREATEST) + ``date_updated``
       refresh when any of the above fired
 
@@ -1189,19 +1330,19 @@ async def _capture_back(
     :ptype root_device: int | None
     :return: list of ``relative_path`` keys whose L3 rows were written
     :rtype: list[str]
-    :raises CaptureBackFailedError: when the disk cannot be read; L3 is left unchanged
+    :raises CaptureBackFailedError: when the bind root itself cannot be read; L3 is left unchanged
     """
     del workspace_file_collection
     del workspace_file_version_collection
     del workspace_collection
 
     try:
-        disk = await snapshot_disk(disk_root, root_device=root_device)
-    except DiskRootChangedError as exc:
+        disk, unreadable = await _snapshot_disk_tolerant(
+            disk_root, root_device=root_device, workspace_id=workspace.id, phase="capture_back"
+        )
+    except (DiskRootChangedError, OSError) as exc:
+        # only the root failing reaches here; a path below it was skipped and its rows kept
         raise CaptureBackFailedError(disk_root, workspace_id=workspace.id) from exc
-    except OSError as exc:
-        unread = disk_root if exc.filename is None else Path(str(exc.filename))
-        raise CaptureBackFailedError(unread, workspace_id=workspace.id) from exc
 
     creates: list[tuple[str, bytes, str]] = []
     updates: list[tuple[str, bytes, str]] = []
@@ -1215,7 +1356,7 @@ async def _capture_back(
             updates.append((rel, content, sha))
 
     for rel in snapshot:
-        if rel not in disk:
+        if rel not in disk and not _is_under(rel, unreadable):
             deletes.append(rel)
 
     changed: list[str] = []
@@ -1492,7 +1633,8 @@ async def bind(
     :raises ValueError: if ``workspace_id`` does not resolve to a live workspace
     :raises KeyError: if ``root_name`` is not configured on sandbox
     :raises SandboxDenied: if ``workspace.name`` escapes the named root
-    :raises CaptureBackFailedError: at exit, when capture-back cannot read the disk; L3 is unchanged
+    :raises CaptureBackFailedError: at exit, when capture-back cannot read the bind root itself; L3 is
+        unchanged. a path below the root it cannot read is skipped, counted, and its L3 rows kept
     :raises DiskRootChangedError: at entry, when a DISK_WINS seed finds the root on another device
     """
     workspace = await workspace_collection.find_by_id(agent_id, workspace_id)
@@ -1516,7 +1658,7 @@ async def bind(
         # disk unconditionally and mirrors create/update/delete rows.
         # the gate re-queries find_by_workspace so the L3_WINS path
         # does not re-import on a populated workspace.
-        await _seed_l3_from_disk(
+        _n_seeded, unreadable = await _seed_l3_from_disk(
             workspace=workspace,
             disk_root=disk_root,
             workspace_file_collection=workspace_file_collection,
@@ -1534,15 +1676,20 @@ async def bind(
         snapshot: dict[str, tuple[str, int]] = {}
         just_wrote: deque[tuple[str, str]] = deque(maxlen=256)
         for file_entity in files:
+            snapshot[file_entity.relative_path] = (
+                file_entity.sha256,
+                file_entity.version,
+            )
+            # a row the seed kept because its path could not be read is not projected over that
+            # path: the write would fail the bind, or clobber a file nobody could read. it stays in
+            # the snapshot, so capture-back updates it if the path is readable again at exit
+            if _is_under(file_entity.relative_path, unreadable):
+                continue
             target = disk_root / file_entity.relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
             await atomic_write(target, file_entity.content)
             just_wrote.append(
                 (file_entity.relative_path, file_entity.sha256),
-            )
-            snapshot[file_entity.relative_path] = (
-                file_entity.sha256,
-                file_entity.version,
             )
         log.info(
             "workspace.bind.enter",

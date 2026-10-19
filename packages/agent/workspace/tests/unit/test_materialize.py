@@ -277,6 +277,68 @@ async def test_a_directory_the_snapshot_cannot_list_fails_it_rather_than_reading
 
 
 @pytest.mark.asyncio
+@_ROOT_READS_EVERYTHING
+async def test_a_bind_snapshot_records_an_unlistable_directory_and_reads_the_rest(tmp_path: Path) -> None:
+    """with somewhere to record them, paths below the root that cannot be read are named, not raised."""
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    (root / "ok.txt").write_bytes(b"inside")
+    (root / "sub" / "kept.txt").write_bytes(b"still here")
+    (root / "sub").chmod(0)
+    unreadable: dict[str, OSError] = {}
+    try:
+        result = await materialize_module.snapshot_disk(root, unreadable=unreadable)
+    finally:
+        (root / "sub").chmod(0o755)
+    assert set(result) == {"ok.txt"}
+    assert list(unreadable) == ["sub"]
+    assert isinstance(unreadable["sub"], PermissionError)
+
+
+@pytest.mark.asyncio
+async def test_a_bind_snapshot_records_a_file_it_cannot_read_or_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    for name in ("ok.txt", "unreadable.txt", "unresolvable.txt"):
+        (root / name).write_bytes(b"x")
+    real_read_bytes, real_resolve = Path.read_bytes, Path.resolve
+
+    def _read_bytes(self: Path) -> bytes:
+        if self.name == "unreadable.txt":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    def _resolve(self: Path, strict: bool = False) -> Path:
+        if self.name == "unresolvable.txt":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(Path, "resolve", _resolve)
+    unreadable: dict[str, OSError] = {}
+    assert set(await materialize_module.snapshot_disk(root, unreadable=unreadable)) == {"ok.txt"}
+    assert sorted(unreadable) == ["unreadable.txt", "unresolvable.txt"]
+
+
+@pytest.mark.asyncio
+@_ROOT_READS_EVERYTHING
+async def test_a_bind_snapshot_still_raises_for_a_root_it_cannot_list(tmp_path: Path) -> None:
+    """the root is never a subtree to skip: without it there is nothing left to capture."""
+    root = tmp_path / "root"
+    root.mkdir()
+    root.chmod(0)
+    unreadable: dict[str, OSError] = {}
+    try:
+        with pytest.raises(PermissionError):
+            await materialize_module.snapshot_disk(root, unreadable=unreadable)
+    finally:
+        root.chmod(0o755)
+    assert unreadable == {}
+
+
+@pytest.mark.asyncio
 async def test_a_file_whose_path_cannot_be_resolved_fails_the_snapshot_rather_than_reading_as_deleted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

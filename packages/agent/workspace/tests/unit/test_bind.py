@@ -30,6 +30,7 @@ from typing import Any
 from uuid import UUID, uuid4, uuid7
 
 import pytest
+from prometheus_client import REGISTRY
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.materialize import (
@@ -442,6 +443,18 @@ def _deletes(harness: dict[str, Any]) -> list[tuple[str, tuple[Any, ...], bool]]
     return [e for e in harness["pool"].conn.executions if "DELETE FROM workspace_files" in e[0]]
 
 
+def _skipped(phase: str) -> float:
+    """how many unreadable paths binds have skipped so far in ``phase``."""
+    return REGISTRY.get_sample_value("workspace_snapshot_unreadable_skipped_total", {"phase": phase}) or 0.0
+
+
+def _skip_warnings(caplog: pytest.LogCaptureFixture) -> list[Any]:
+    """the contained warnings naming a path a bind skipped."""
+    return [
+        r for r in caplog.records if r.getMessage().startswith("workspace bind could not read a path below its root")
+    ]
+
+
 class _RootOnAnotherDevice:
     """``Path.stat`` that reports ``root`` on another device once :attr:`moved` is set -- a volume
     unmounted mid-window leaves its empty mount point at the same path."""
@@ -478,30 +491,64 @@ class _RootOnAnotherDevice:
 
 @_ROOT_READS_EVERYTHING
 @pytest.mark.asyncio
-async def test_bind_exit_keeps_the_row_of_a_file_it_cannot_read(tmp_path: Path) -> None:
-    """a directory the body leaves unreadable fails capture-back; its files' L3 rows are not deleted."""
+async def test_bind_exit_skips_a_directory_it_cannot_read_keeps_its_rows_and_captures_the_rest(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """an unreadable directory once read as its files deleted, then failed every bind; now only it is skipped."""
     content = b"still here"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("sub/kept.txt", content, _sha(content), 2)],
+        initial_files=[
+            _FakeFile("sub/kept.txt", content, _sha(content), 2),
+            _FakeFile("gone.txt", b"gone", _sha(b"gone"), 1),
+        ],
     )
+    skipped_before = _skipped("capture_back")
     unreadable = None
     try:
-        with pytest.raises(CaptureBackFailedError) as failed:
+        with caplog.at_level("WARNING"):
             async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
                 assert (disk_root / "sub" / "kept.txt").read_bytes() == content
+                (disk_root / "gone.txt").unlink()
+                (disk_root / "new.txt").write_bytes(b"new")
                 unreadable = disk_root / "sub"
                 unreadable.chmod(0)
     finally:
         if unreadable is not None:
             unreadable.chmod(0o755)
 
-    assert failed.value.path == unreadable
+    executions = harness["pool"].conn.executions
+    assert [e[1][1] for e in _deletes(harness)] == ["gone.txt"]
+    assert _journal(executions, "sub/kept.txt") == []
+    assert [e[1][6] for e in _journal(executions, "new.txt")] == ["create"]
+    assert _skipped("capture_back") == skipped_before + 1
+    [warning] = _skip_warnings(caplog)
+    assert warning.levelname == "WARNING"
+    assert warning.extra_data["relative_path"] == "sub"
+    assert warning.extra_data["exc_type"] == "PermissionError"
+    assert harness["lease"].handles[0].released is True
+
+
+@_ROOT_READS_EVERYTHING
+@pytest.mark.asyncio
+async def test_bind_exit_refuses_a_root_it_cannot_list(tmp_path: Path) -> None:
+    """the root is never a subtree to skip: an unlistable root still refuses, and deletes nothing."""
+    content = b"still here"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    unlistable = None
+    try:
+        with pytest.raises(CaptureBackFailedError) as failed:
+            async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
+                unlistable = disk_root
+                disk_root.chmod(0)
+    finally:
+        if unlistable is not None:
+            unlistable.chmod(0o755)
+
+    assert failed.value.path == unlistable
     assert isinstance(failed.value.__cause__, PermissionError)
     assert "recover" in (CaptureBackFailedError.__doc__ or "")
     assert _deletes(harness) == []
-    assert _journal(harness["pool"].conn.executions, "sub/kept.txt") == []
-    assert harness["lease"].handles[0].released is True
 
 
 @pytest.mark.asyncio
@@ -555,25 +602,42 @@ async def test_bind_exit_still_deletes_every_file_the_body_removed(tmp_path: Pat
 
 @_ROOT_READS_EVERYTHING
 @pytest.mark.asyncio
-async def test_a_disk_wins_seed_keeps_the_rows_of_a_directory_it_cannot_read(tmp_path: Path) -> None:
-    """the DISK_WINS seed deletes every L3 row missing from disk; an unreadable directory fails it instead."""
+async def test_a_disk_wins_seed_skips_a_directory_it_cannot_read_and_keeps_its_rows(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """the DISK_WINS seed deletes every L3 row missing from disk, but not one under a directory it could not read."""
     content = b"still here"
-    harness = _build_harness(tmp_path, initial_files=[_FakeFile("sub/kept.txt", content, _sha(content), 2)])
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[
+            _FakeFile("sub/kept.txt", content, _sha(content), 2),
+            _FakeFile("gone.txt", b"gone", _sha(b"gone"), 1),
+        ],
+    )
     disk_root = harness["bind_root"] / harness["workspace"].name
     (disk_root / "sub").mkdir(parents=True)
     (disk_root / "sub" / "kept.txt").write_bytes(content)
     (disk_root / "sub").chmod(0)
+    seed_skipped, capture_skipped = _skipped("seed"), _skipped("capture_back")
+    entered = False
     try:
-        with pytest.raises(PermissionError):
+        with caplog.at_level("WARNING"):
             async with await _call_bind(
                 harness, on_conflict=BindConflictPolicy.DISK_WINS, watch_changes=ScriptedWatch()
             ):
-                pass
+                entered = True
+                # the seed has run, and deleted only the row whose file is genuinely gone
+                assert [e[1][1] for e in _deletes(harness)] == ["gone.txt"]
     finally:
         (disk_root / "sub").chmod(0o755)
 
-    assert _deletes(harness) == []
+    assert entered
+    assert [e[1][1] for e in _deletes(harness)] == ["gone.txt"]
     assert _journal(harness["pool"].conn.executions, "sub/kept.txt") == []
+    # the kept row is not projected over the directory it could not read
+    assert (disk_root / "sub" / "kept.txt").read_bytes() == content
+    assert (_skipped("seed"), _skipped("capture_back")) == (seed_skipped + 1, capture_skipped + 1)
+    assert [w.extra_data["phase"] for w in _skip_warnings(caplog)] == ["seed", "capture_back"]
 
 
 @pytest.mark.asyncio
