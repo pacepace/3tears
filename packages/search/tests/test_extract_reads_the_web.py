@@ -427,13 +427,23 @@ async def test_a_thin_page_with_no_frame_is_read_as_it_is() -> None:
     assert result.content is not None and "Closed on Monday" in result.content.text
 
 
+def _make_the_html_parser_choke(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the stdlib HTML parser, the third-party call the frame scan makes, fail on any page.
+
+    Its message is planted: it must not reach the reader.
+    """
+    from html.parser import HTMLParser
+
+    def _choke(self: HTMLParser, data: str) -> None:
+        raise ValueError("PLANTED-e4d0 unbalanced markup")
+
+    monkeypatch.setattr(HTMLParser, "feed", _choke)
+
+
 async def test_a_thin_page_whose_frames_could_not_be_parsed_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
     """A parser failure used to read as "the page points nowhere", the same as a page with no frame."""
 
-    def _choke(self: object, tag: str, attrs: object) -> None:
-        raise ValueError("unbalanced markup")
-
-    monkeypatch.setattr("threetears.search.extract._FramesAndPointers.handle_starttag", _choke)
+    _make_the_html_parser_choke(monkeypatch)
     short = b"<html><body><article><p>Closed on Monday for the holiday. Back on Tuesday.</p></article></body></html>"
     transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=short)})
 
@@ -446,15 +456,13 @@ async def test_a_thin_page_whose_frames_could_not_be_parsed_says_so(monkeypatch:
         "this may be only its menu."
     ]
     assert transport.fetched == [_ROBOTS, _PAGE]
+    assert "PLANTED-e4d0" not in str(result.facets)
 
 
 async def test_a_page_with_no_text_whose_frames_could_not_be_parsed_says_both(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _choke(self: object, tag: str, attrs: object) -> None:
-        raise ValueError("unbalanced markup")
-
-    monkeypatch.setattr("threetears.search.extract._FramesAndPointers.handle_starttag", _choke)
+    _make_the_html_parser_choke(monkeypatch)
     transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=b"<html><body></body></html>")})
 
     result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
@@ -463,6 +471,7 @@ async def test_a_page_with_no_text_whose_frames_could_not_be_parsed_says_both(
     assert result.facets[EXTRACTION_REASON_FACET] == (
         "the page has no readable text, and its frames could not be looked for (the HTML parser raised ValueError)"
     )
+    assert "PLANTED-e4d0" not in str(result.facets)
 
 
 async def test_frames_are_not_followed_unless_the_caller_asks() -> None:
