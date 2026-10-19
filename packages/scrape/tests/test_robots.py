@@ -185,14 +185,26 @@ async def test_a_fetcher_that_raises_refuses_without_raising_out_of_check() -> N
     _assert_unreachable(await gate.check("https://example.gov/x"))
 
 
-async def test_a_robots_fetch_that_times_out_refuses() -> None:
-    async def _hang(_url: str) -> tuple[int, str]:
-        await asyncio.sleep(3600)
-        return 200, ""
+@pytest.mark.parametrize(
+    "timeout",
+    [
+        httpx.ReadTimeout("read timed out", request=httpx.Request("GET", "https://example.gov/robots.txt")),
+        TimeoutError(),
+    ],
+    ids=["client-timeout", "budget-exceeded"],
+)
+async def test_a_robots_fetch_that_times_out_refuses(timeout: Exception) -> None:
+    """A timeout is a network failure, so "unreachable" (RFC 9309 section 2.3.1.4).
 
-    with patch("threetears.scrape.robots._FETCH_TIMEOUT_SECONDS", 0.01):
-        decision = await RobotsGate(fetch=_hang).check("https://example.gov/x")
-    _assert_unreachable(decision)
+    Driven through the fetcher, the front door: the default fetcher's client raises
+    ``httpx.ReadTimeout`` when the site is too slow, and the gate's own fetch budget raises
+    ``TimeoutError``. Both used to read as "no restrictions".
+    """
+
+    async def _times_out(_url: str) -> tuple[int, str]:
+        raise timeout
+
+    _assert_unreachable(await RobotsGate(fetch=_times_out).check("https://example.gov/x"))
 
 
 async def test_a_robots_file_that_will_not_parse_refuses() -> None:
