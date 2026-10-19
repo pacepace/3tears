@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.72.0
-
 ### 3tears-evals: a campaign is a campaign of aspects, asking one question
 
 - **One decision is one campaign.** A campaign asks one question of its arms (the control first, then candidates)
