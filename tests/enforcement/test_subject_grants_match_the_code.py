@@ -256,6 +256,9 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
             Principal.GATEWAY: (str(Subjects.gateway_catalog_epoch()),),
             Principal.HUB: (str(Subjects.mcp_rbac_epoch()),),
         },
+        # constructed by a consumer's own process (samhla, scriob); no deployed 3tears, SDK or hub process opens a repository
+        "packages/core/src/threetears/core/backends/git/advanced.py::AdvancedListener.register": _NOT_WIRED,
+        "packages/core/src/threetears/core/backends/git/writer.py::WriterRole._serve_one": _NOT_WIRED,
         "packages/mcp/src/threetears/mcp/auth.py::LocalGrantAuthorizer.start": {
             # constructed by the hub alone (aibots/hub/app.py); no agent pod builds one
             Principal.HUB: (str(Subjects.mcp_rbac_epoch()),),

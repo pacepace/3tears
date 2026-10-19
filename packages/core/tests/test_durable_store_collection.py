@@ -78,7 +78,8 @@ class _InMemoryDurableStore:
         self.tables.get(table, {}).pop(self._key(pk), None)
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-        return list(self.tables.get(table, {}).values())
+        rows = [dict(row) for row in self.tables.get(table, {}).values()]
+        return [row for row in rows if all(row.get(k) == v for k, v in (filters or {}).items())]
 
 
 class _SceneCollection(DurableStoreCollection[_SceneEntity]):
@@ -302,3 +303,46 @@ async def test_flush_batches_through_a_transactional_durable_store(l1_backend: S
     )
     assert len(store.batches) == 1
     assert len(store.batches[0]) == 4
+
+
+@pytest.mark.asyncio
+async def test_list_reads_every_matching_row_through_the_store_and_caches_it(registry: CollectionRegistry) -> None:
+    store = _InMemoryDurableStore()
+    store.tables["scenes"] = {
+        ("scn-1",): {"id": "scn-1", "text": "alpha"},
+        ("scn-2",): {"id": "scn-2", "text": "beta"},
+    }
+    coll = _SceneCollection(registry, DefaultCoreConfig(), store, nats_client=None)
+
+    everything = await coll.list()
+    assert sorted(entity.text for entity in everything) == ["alpha", "beta"]
+    assert coll.get_row_sync("scn-1") is not None  # the scan filled L1
+
+    only_beta = await coll.list({"text": "beta"})
+    assert [entity.id for entity in only_beta] == ["scn-2"]
+
+
+class _EvictingDuringScanStore(_InMemoryDurableStore):
+    """a store whose scan lets an eviction of the collection land while it is in flight."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.collection: _SceneCollection | None = None
+
+    async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+        rows = await super().scan(table, filters)
+        assert self.collection is not None
+        await self.collection.invalidate_cache("scn-1")  # a commit elsewhere, noticed mid-scan
+        return rows
+
+
+@pytest.mark.asyncio
+async def test_list_caches_nothing_a_write_or_eviction_overtook(registry: CollectionRegistry) -> None:
+    store = _EvictingDuringScanStore()
+    store.tables["scenes"] = {("scn-1",): {"id": "scn-1", "text": "old"}}
+    coll = _SceneCollection(registry, DefaultCoreConfig(), store, nats_client=None)
+    store.collection = coll
+
+    listed = await coll.list()
+    assert [entity.text for entity in listed] == ["old"]  # the caller still gets what it read
+    assert coll.get_row_sync("scn-1") is None  # but L1 does not keep a row the eviction overtook
