@@ -1067,6 +1067,79 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             entities.append(entity)
         return entities
 
+    async def find_ids_by_tags(
+        self,
+        *,
+        agent_id: UUID,
+        customer_id: UUID,
+        user_id: UUID,
+        tags_any: tuple[str, ...],
+    ) -> list[UUID]:
+        """the ids of one owner's memories carrying at least one of ``tags_any``.
+
+        for a host that files derived memories under a tag (a source document, a scene) and must
+        drop them when the source goes. scoped to the full owner triple: the same tag on another
+        agent's, customer's or user's rows is never found. an empty ``tags_any`` names nothing and
+        finds nothing, never every row (:func:`scope_matches_nothing`). the caller authorizes.
+
+        :param agent_id: partition column on memories
+        :ptype agent_id: UUID
+        :param customer_id: owning customer
+        :ptype customer_id: UUID
+        :param user_id: owning user
+        :ptype user_id: UUID
+        :param tags_any: a row qualifies when it carries any of these
+        :ptype tags_any: tuple[str, ...]
+        :return: the matching memory ids, oldest first
+        :rtype: list[UUID]
+        """
+        scope = RetrievalScope(tags_any=tags_any)
+        if self.l3_pool is None or scope_matches_nothing(scope):
+            return []
+        fragments, scope_params, _next = build_scope_conditions(scope, next_param=4)
+        where = " AND ".join(["agent_id = $1", "customer_id = $2", "user_id = $3", *fragments])
+        # cache-bypass: a multi-row scan by tag is not primary-key addressable, as find_by_scope.
+        rows = await self.l3_pool.fetch(
+            f"SELECT memory_id FROM memories WHERE {where} ORDER BY date_created",
+            agent_id,
+            customer_id,
+            user_id,
+            *scope_params,
+        )
+        return [row["memory_id"] for row in rows]
+
+    async def delete_by_tags(
+        self,
+        *,
+        agent_id: UUID,
+        customer_id: UUID,
+        user_id: UUID,
+        tags_any: tuple[str, ...],
+    ) -> int:
+        """delete one owner's memories carrying at least one of ``tags_any``, from every tier.
+
+        each goes through :meth:`delete`, so it leaves the row cache and L2 and its removal is
+        announced like any delete; a raw ``DELETE`` would leave a deleted memory answering from a
+        cache. the same scoping and empty-means-nothing rule as :meth:`find_ids_by_tags`.
+
+        :param agent_id: partition column on memories
+        :ptype agent_id: UUID
+        :param customer_id: owning customer
+        :ptype customer_id: UUID
+        :param user_id: owning user
+        :ptype user_id: UUID
+        :param tags_any: a row qualifies when it carries any of these
+        :ptype tags_any: tuple[str, ...]
+        :return: how many memories were deleted
+        :rtype: int
+        """
+        ids = await self.find_ids_by_tags(
+            agent_id=agent_id, customer_id=customer_id, user_id=user_id, tags_any=tags_any
+        )
+        for memory_id in ids:
+            await self.delete((agent_id, memory_id))  # the key is (agent_id, memory_id)
+        return len(ids)
+
     async def save_memory(
         self,
         entity: MemoryEntity,
@@ -4125,7 +4198,10 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         # cache-bypass: vector-distance search joining memory_chunks
         # to media (via memory_id parent FK) scoped to one parent
         # memory. auth triple enforced. memory_id predicate purely
-        # additive to the auth filter.
+        # additive to the auth filter. ``mc.embedding IS NOT NULL`` guard:
+        # an un-embedded chunk has a NULL distance, which ``float()`` in the
+        # merge cannot take; it is left to the keyword arm, as in every other
+        # vector query here.
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
@@ -4139,6 +4215,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
              AND mc.memory_id = med.memory_id
             WHERE {scope_conditions}
               AND mc.memory_id = {memory_id_param}
+              AND mc.embedding IS NOT NULL
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
