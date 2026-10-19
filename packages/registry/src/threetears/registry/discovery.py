@@ -23,7 +23,7 @@ from uuid import UUID
 from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
 
 from threetears.nats import IncomingMessage, Subjects
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.registry.catalog import CatalogEntry, CopySelection, ToolCatalog
 
 if TYPE_CHECKING:
@@ -241,9 +241,11 @@ class DiscoveryHandler:
             request = DiscoverRequest.model_validate_json(msg.data)
         except Exception as exc:
             response = DiscoverResponse(agent_id="unknown", tools=[])
-            _logger.warning(
-                "malformed discovery request",
-                extra={"extra_data": {"error": str(exc)}},
+            contain(
+                exc,
+                log=_logger,
+                what="malformed discovery request",
+                extra={"error": str(exc)},
             )
             if msg.reply_subject is not None:
                 await self._nc.publish_reply(

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.agent.memory.extraction import ExtractionResult
@@ -242,10 +242,7 @@ class MemoryIntegration:
                 customer_id=customer_id,
             )
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- cross-agent retrieval is best-effort; a fault yields an empty result rather than crashing the consumer
-            log.warning(
-                "memory cross-agent retrieval failed (soft-fail): %s",
-                exc,
-            )
+            contain(exc, log=log, what=f"memory cross-agent retrieval failed (soft-fail): {exc}")
             result = []
         return result
 
@@ -309,7 +306,7 @@ async def retrieve_memories(
         )
         memories: list[str] = [context] if context else []
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- retrieval is best-effort context enrichment; a fault yields no memories rather than failing the turn
-        log.warning("memory retrieval failed (soft-fail): %s", exc)
+        contain(exc, log=log, what=f"memory retrieval failed (soft-fail): {exc}")
         memories = []
 
     return memories

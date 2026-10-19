@@ -245,9 +245,17 @@ class _FakeRawSubscription:
         return _gen()
 
 
-# parity-exempt: subset shim for nats.aio.client.Client implementing subscribe only; that is the whole surface the wrapper drives on this path and nats-py's full Client surface is enormous
+# parity-exempt: subset shim for nats.aio.client.Client implementing subscribe and the connection-state flags only; that is the whole surface the wrapper drives on this path and nats-py's full Client surface is enormous
 class _FakeNatsPyClient:
-    """minimal fake of ``nats.aio.client.Client`` recording every subscribe."""
+    """minimal fake of ``nats.aio.client.Client`` recording every subscribe.
+
+    it reports itself open but not connected, so the wrapper's post-subscribe confirmation
+    round trip fails the way a reconnecting client's does (the subscription stands, the
+    confirmation is logged as missing), rather than on a flag the fake never had.
+    """
+
+    is_closed = False
+    is_connected = False
 
     def __init__(self, unsubscribe_error: Exception | None = None) -> None:
         self.subscriptions: list[_FakeRawSubscription] = []

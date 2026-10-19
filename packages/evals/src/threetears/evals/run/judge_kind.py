@@ -97,7 +97,7 @@ from threetears.evals.schema.models import (
     label_key_of,
 )
 from threetears.evals.schema.subject import SubjectSnapshot
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:
@@ -813,7 +813,7 @@ class JudgeKind:
                 Exception
             ) as exc:  # prawduct:allow prawduct/broad-except -- one client's teardown must not strand the others
                 # NOSILENT: the first failure is raised once every client has been offered its release.
-                log.warning("releasing a judge kind's client failed; its pool may leak", exc_info=True)
+                contain(exc, log=log, what="releasing a judge kind's client failed; its pool may leak")
                 first = first or exc
         if first is not None:
             raise first

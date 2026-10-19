@@ -72,7 +72,7 @@ from threetears.agent.wake.tools.validators import (
     validate_context_from_chain,
     validate_schedule_config,
 )
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT",
@@ -564,9 +564,11 @@ async def _check_skill_acl(
             skill_id=skill_id,
         )
     except Exception as exc:  # noqa: BLE001 - boundary; surface as tool error
-        log.warning(
-            "wake schedule skill ACL probe raised",
-            extra={"extra_data": {"skill_id": str(skill_id), "error": str(exc)}},
+        contain(
+            exc,
+            log=log,
+            what="wake schedule skill ACL probe raised",
+            extra={"skill_id": str(skill_id), "error": str(exc)},
         )
         return f"skill_id {skill_id} ACL probe failed: {exc}"
     if not permitted:
@@ -766,9 +768,11 @@ def load_wake_schedule_create_tool(
                 include_conversation_history=include_conversation_history,
             )
         except Exception as exc:  # noqa: BLE001 - the check must not cost the create
-            log.warning(
-                "wake_schedule_create could not read the agent's wakes; creating without the same-wake check",
-                extra={"extra_data": {"error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="wake_schedule_create could not read the agent's wakes; creating without the same-wake check",
+                extra={"error": str(exc)},
             )
             standing = None
         if standing is not None:
@@ -887,9 +891,11 @@ def load_wake_schedule_create_tool(
                 f"you have {max_active_schedules_per_agent} active wakes, the most allowed (pause or delete one first)",
             )
         except Exception as exc:  # noqa: BLE001 - surface persistence failure
-            log.warning(
-                "wake_schedule_create persist failed",
-                extra={"extra_data": {"schedule_id": str(new_schedule_id), "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="wake_schedule_create persist failed",
+                extra={"schedule_id": str(new_schedule_id), "error": str(exc)},
             )
             return _tool_error("wake_schedule_create", f"persist failed: {exc}")
 
@@ -902,9 +908,11 @@ def load_wake_schedule_create_tool(
                     skill_id=attached_skill,
                 )
             except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
-                log.warning(
-                    "wake_schedule_create skill_name lookup raised",
-                    extra={"extra_data": {"skill_id": str(attached_skill), "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="wake_schedule_create skill_name lookup raised",
+                    extra={"skill_id": str(attached_skill), "error": str(exc)},
                 )
                 skill_name = None
 
@@ -1188,9 +1196,11 @@ def load_wake_schedule_update_tool(
                 "reapply the change if it still makes sense.",
             )
         except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "wake_schedule_update persist failed",
-                extra={"extra_data": {"schedule_id": str(parsed), "error": str(exc)}},
+            contain(
+                exc,
+                log=log,
+                what="wake_schedule_update persist failed",
+                extra={"schedule_id": str(parsed), "error": str(exc)},
             )
             return _tool_error("wake_schedule_update", f"persist failed: {exc}")
 
@@ -1202,7 +1212,8 @@ def load_wake_schedule_update_tool(
                     agent_id=agent_id,
                     skill_id=entity.skill_id,
                 )
-            except Exception:  # noqa: BLE001 - name lookup is best-effort
+            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
+                contain(exc, log=log, what="schedule skill name lookup failed")
                 skill_name = None
         if entity.next_fire_at != next_fire_before:
             changes.append(
@@ -1258,6 +1269,7 @@ def load_wake_schedule_list_tool(
         try:
             visible = await schedules_collection.list_for_agent(agent_id, include_paused=include_paused)
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="wake_schedule_list list failed")
             return _tool_error("wake_schedule_list", f"list failed: {exc}")
 
         if not visible:
@@ -1273,7 +1285,8 @@ def load_wake_schedule_list_tool(
                         agent_id=agent_id,
                         skill_id=entity.skill_id,
                     )
-                except Exception:  # noqa: BLE001 - best-effort
+                except Exception as exc:  # noqa: BLE001 - best-effort
+                    contain(exc, log=log, what="schedule skill name lookup failed")
                     skill_name = None
             lines.append("- " + _format_schedule_line(entity, skill_name=skill_name, zone=zone))
         return "\n".join(lines)
@@ -1334,7 +1347,8 @@ def load_wake_schedule_get_tool(
                 skill_name = await registry.skill_name_for_id(
                     user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id
                 )
-            except Exception:  # noqa: BLE001 - name lookup is best-effort
+            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
+                contain(exc, log=log, what="schedule skill name lookup failed")
                 skill_name = None
             skill = f"{skill_name or 'unnamed'} [skill:{entity.skill_id}]"
         upcoming = next_fires(entity, 3)
@@ -1548,6 +1562,7 @@ def load_wake_fires_tool(
                 return await _of_schedule(schedule_id, limit)
             return await _of_subscription(subscription_id or "", limit)
         except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
+            contain(exc, log=log, what="wake_fires history read failed")
             return _tool_error("wake_fires", f"the history could not be read: {exc}")
 
     wake_fires.description = (
@@ -1614,6 +1629,7 @@ def load_wake_schedule_pause_tool(
         try:
             await schedules_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="wake_schedule_pause persist failed")
             return _tool_error("wake_schedule_pause", f"persist failed: {exc}")
         return (
             f"Paused [schedule:{parsed}] ({entity.name or 'untitled'}). It was {was}. "
@@ -1734,6 +1750,7 @@ def load_wake_schedule_resume_tool(
                 f"you have {max_active_schedules_per_agent} active wakes, the most allowed (pause or delete one first)",
             )
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="wake_schedule_resume persist failed")
             return _tool_error("wake_schedule_resume", f"persist failed: {exc}")
         return (
             f"Resumed [schedule:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. "
@@ -1790,6 +1807,7 @@ def load_wake_schedule_delete_tool(
         try:
             await schedules_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
+            contain(exc, log=log, what="wake_schedule_delete persist failed")
             return _tool_error("wake_schedule_delete", f"persist failed: {exc}")
         return (
             f"Deleted [schedule:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}: {was}. "
@@ -1856,10 +1874,7 @@ def load_wake_yield_tool(
         try:
             set_yield_requested()
         except Exception as exc:  # noqa: BLE001 - surface as tool error
-            log.warning(
-                "wake_yield setter raised",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="wake_yield setter raised", extra={"error": str(exc)})
             return _tool_error("wake_yield", f"yield setter failed: {exc}")
         log.info("wake_yield fired")
         return "Wake yielded. Your last message ends it, and the person's waiting message is answered next."

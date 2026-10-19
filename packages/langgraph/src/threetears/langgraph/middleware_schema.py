@@ -72,7 +72,7 @@ from langgraph.config import get_config
 from langgraph.types import Command
 from threetears.observe.text_block import one_line
 from threetears.langgraph.state import merge_metadata
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["SchemaPrimingMiddleware", "SchemaPrimingState"]
 
@@ -518,10 +518,10 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
             # broke in a way it did not anticipate. The honesty rule still
             # ships below: losing the schema block degrades the answer, losing
             # the rule removes the instruction to ground it at all.
-            log.warning(
-                "documented-schema read failed (soft-fail; honesty rule still shipped): %s: %s",
-                type(exc).__name__,
+            contain(
                 exc,
+                log=log,
+                what=f"documented-schema read failed (soft-fail; honesty rule still shipped): {type(exc).__name__}: {exc}",
             )
             tables = []
         schema_block = _render_schema_block(tables, budget=self.token_budget)

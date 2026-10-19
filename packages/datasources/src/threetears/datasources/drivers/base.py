@@ -63,7 +63,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mappin
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
-from threetears.observe import BuildOnce, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
 from threetears.core.sql_fragments import quote_identifier
 
@@ -703,13 +703,13 @@ class TransactionContext:
                     # the transaction may still be open server-side; the
                     # connection is evicted by the driver's finish hook
                     # either way, so this is observability, not control flow.
-                    log.warning(
-                        "transaction rollback failed; original error propagates",
+                    contain(
+                        rollback_exc,
+                        log=log,
+                        what="transaction rollback failed; original error propagates",
                         extra={
-                            "extra_data": {
-                                "error": str(rollback_exc),
-                                "error_type": type(rollback_exc).__name__,
-                            }
+                            "error": str(rollback_exc),
+                            "error_type": type(rollback_exc).__name__,
                         },
                     )
         return False
@@ -1390,9 +1390,11 @@ class Driver(ABC):
                 # The cancellation still propagates, but the backend statement it was meant to stop
                 # may not have stopped: a failed cancel leaves work running server-side while this
                 # side reports cancelled.
-                log.warning(
-                    "cancel callback failed; backend work may still be running",
-                    extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+                contain(
+                    exc,
+                    log=log,
+                    what="cancel callback failed; backend work may still be running",
+                    extra={"error": str(exc), "error_type": type(exc).__name__},
                 )
             raise
         return result

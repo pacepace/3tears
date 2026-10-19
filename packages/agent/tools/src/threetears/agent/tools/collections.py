@@ -29,7 +29,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.data.migrations import ConnectionSession, database_ddl_lock
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.tools.entities import ContextItemEntity
 
@@ -374,14 +374,14 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
                 now,
             )
         except Exception as exc:
-            log.warning(
-                "Failed to update date_accessed in L3",
+            contain(
+                exc,
+                log=log,
+                what="Failed to update date_accessed in L3",
                 extra={
-                    "extra_data": {
-                        "conversation_id": str(conversation_id),
-                        "context_id": str(cid),
-                        "error": str(exc),
-                    },
+                    "conversation_id": str(conversation_id),
+                    "context_id": str(cid),
+                    "error": str(exc),
                 },
             )
 

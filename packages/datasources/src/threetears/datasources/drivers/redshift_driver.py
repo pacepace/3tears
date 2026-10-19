@@ -203,7 +203,7 @@ from threetears.datasources.drivers.errors import (
     connect_error_from,
     required_password,
 )
-from threetears.observe import get_logger, spawn_background, traced
+from threetears.observe import contain, get_logger, spawn_background, traced
 
 __all__ = [
     "DriverCancellationError",
@@ -944,7 +944,7 @@ def _drain_cache_static(
         except Exception as exc:  # noqa: BLE001 -- defensive at finalize
             # finalize must not raise; log + continue so other cached
             # connections still get the close attempt.
-            log.debug("redshift finalize close failed: %s", exc)
+            contain(exc, log=log, what=f"redshift finalize close failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -1291,7 +1291,7 @@ class RedshiftDriver(Driver):
         except Exception as exc:  # noqa: BLE001 -- best-effort pid read
             # non-fatal: the connection is still usable; only the
             # server-side cancel degrades. log + continue.
-            log.warning("redshift backend pid read failed: %s; server-side cancel will degrade", exc)
+            contain(exc, log=log, what=f"redshift backend pid read failed: {exc}; server-side cancel will degrade")
             pid = None
         return pid
 
@@ -1339,9 +1339,11 @@ class RedshiftDriver(Driver):
         try:
             yield
         except Exception as exc:  # noqa: BLE001 -- best-effort close; failure must not propagate
-            log.debug(
-                "best-effort close failed (ignored)",
-                extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+            contain(
+                exc,
+                log=log,
+                what="best-effort close failed (ignored)",
+                extra={"error": str(exc), "error_type": type(exc).__name__},
             )
 
     async def _acquire_connection(self) -> RedshiftConnection:
@@ -1381,7 +1383,8 @@ class RedshiftDriver(Driver):
                     lambda: self._apply_search_path_sync(conn),
                     cancel_cb=lambda: None,
                 )
-            except Exception:
+            except Exception as exc:
+                contain(exc, log=log, what="redshift search_path setup failed; closing the connection")
                 # off the loop, like every other close: it writes to a socket that is
                 # most likely dead (an idle cached connection the network dropped).
                 with self._suppress_close():
@@ -1514,9 +1517,10 @@ class RedshiftDriver(Driver):
                     cancel_cb=lambda: None,
                 )
             except Exception as exc:  # noqa: BLE001 -- release path must not raise over the caller's result
-                log.warning(
-                    "redshift release-path rollback / timeout reset failed: %s; evicting connection",
+                contain(
                     exc,
+                    log=log,
+                    what=f"redshift release-path rollback / timeout reset failed: {exc}; evicting connection",
                 )
                 checkout.poisoned = True
         if checkout.poisoned:
@@ -1556,10 +1560,7 @@ class RedshiftDriver(Driver):
                 timeout=self._cancel_timeout_seconds,
             )
         except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
-            log.warning(
-                "redshift cancel (conn.close) failed: %s; evicting connection",
-                exc,
-            )
+            contain(exc, log=log, what=f"redshift cancel (conn.close) failed: {exc}; evicting connection")
             if cancel_failed is not None:
                 cancel_failed.add(1, attributes={"driver_type": "redshift"})
         else:
@@ -1736,10 +1737,8 @@ class RedshiftDriver(Driver):
             if cancel_failed is not None:
                 cancel_failed.add(1, attributes={"driver_type": "redshift"})
         except Exception as exc:  # noqa: BLE001 -- best-effort terminate
-            log.warning(
-                "redshift server-side terminate (pg_terminate_backend) failed for pid=%s: %s",
-                pid,
-                exc,
+            contain(
+                exc, log=log, what=f"redshift server-side terminate (pg_terminate_backend) failed for pid={pid}: {exc}"
             )
             if cancel_failed is not None:
                 cancel_failed.add(1, attributes={"driver_type": "redshift"})

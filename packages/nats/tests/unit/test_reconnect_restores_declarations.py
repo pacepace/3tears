@@ -292,6 +292,10 @@ async def test_a_declared_file_kv_bucket_lost_with_the_brokers_storage_is_declar
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_on_a_lost_file_stream_is_bound_again() -> None:
     """the agent-router's turn consumer: its stream back, the durable on it bound again."""
     server = _ScriptedServer()
@@ -611,6 +615,10 @@ async def _ack(msg: Any) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_on_a_wiped_stream_is_created_again() -> None:
     """a durable lives on its stream: the restart that took the stream took the durable too."""
     server = _ScriptedServer()
@@ -632,6 +640,10 @@ async def test_a_pull_durable_on_a_wiped_stream_is_created_again() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_that_survived_is_not_rebound() -> None:
     """a reconnect over a network blip leaves the durable in place; rebinding it is churn."""
     server = _ScriptedServer()

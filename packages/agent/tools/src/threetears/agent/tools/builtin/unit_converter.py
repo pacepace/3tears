@@ -18,6 +18,7 @@ from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error, tool_no_change
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "UnitConverterTool",
@@ -32,6 +33,8 @@ try:
     _HAS_PINT = True
 except ImportError:
     _HAS_PINT = False
+
+log = get_logger(__name__)
 
 _TOOL = "unit_converter"
 
@@ -211,6 +214,7 @@ def _convert(value: float | None, from_unit: str, to_unit: str, quantity: str | 
     except (ValueError, ZeroDivisionError) as exc:
         return tool_error(_TOOL, "convert", str(exc))
     except Exception as exc:
+        contain(exc, log=log, what="unit conversion failed unexpectedly")
         return tool_error(_TOOL, "convert", str(exc))
 
     notes = [*letters, f"rounded to {_SIGNIFICANT} significant figures"]

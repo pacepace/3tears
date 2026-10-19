@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 import mcp.types as mcp_types
 from mcp.server import Server as _SdkServer
 from mcp.server.stdio import stdio_server as _stdio_server
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.mcp.auth import Authorizer, IdentityProvider
 from threetears.mcp.tool import ToolRegistry
@@ -201,11 +201,12 @@ class McpServer:
 
         try:
             identity = await self._identity_provider.identify()
-        except Exception:
-            log.warning(
-                "MCP dispatch: identity resolution failed",
-                exc_info=True,
-                extra={"extra_data": {"tool_name": tool_name}},
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="MCP dispatch: identity resolution failed",
+                extra={"tool_name": tool_name},
             )
             return self._error_result(
                 tool_name=tool_name,
@@ -215,16 +216,15 @@ class McpServer:
 
         try:
             allowed = await self._authorizer.allows(identity, tool.required_permission)
-        except Exception:
-            log.warning(
-                "MCP dispatch: authorizer raised; denying by default",
-                exc_info=True,
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="MCP dispatch: authorizer raised; denying by default",
                 extra={
-                    "extra_data": {
-                        "tool_name": tool_name,
-                        "principal_id": str(identity.principal_id),
-                        "required_permission": tool.required_permission,
-                    }
+                    "tool_name": tool_name,
+                    "principal_id": str(identity.principal_id),
+                    "required_permission": tool.required_permission,
                 },
             )
             return self._error_result(
@@ -253,14 +253,13 @@ class McpServer:
         try:
             result = await tool.handler(**arguments)
         except Exception as exc:
-            log.warning(
-                "MCP dispatch: handler exception",
-                exc_info=True,
+            contain(
+                exc,
+                log=log,
+                what="MCP dispatch: handler exception",
                 extra={
-                    "extra_data": {
-                        "tool_name": tool_name,
-                        "principal_id": str(identity.principal_id),
-                    }
+                    "tool_name": tool_name,
+                    "principal_id": str(identity.principal_id),
                 },
             )
             return self._error_result(

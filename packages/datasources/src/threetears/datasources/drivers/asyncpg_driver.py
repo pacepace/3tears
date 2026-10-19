@@ -197,7 +197,7 @@ from threetears.datasources.drivers.errors import (
     connect_error_from,
     optional_password,
 )
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS",
@@ -829,9 +829,11 @@ class AsyncpgDriver(Driver):
             # asyncpg's own pool release runs ``RESET ALL``, so a failure
             # here degrades to that rather than leaking; log it anyway,
             # because a reset that keeps failing is how a leak starts.
-            log.warning(
-                "asyncpg statement_timeout reset failed on release",
-                extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+            contain(
+                exc,
+                log=log,
+                what="asyncpg statement_timeout reset failed on release",
+                extra={"error": str(exc), "error_type": type(exc).__name__},
             )
 
     async def _scope_borrowed_connection(self, conn: "asyncpg.Connection[Any]") -> None:

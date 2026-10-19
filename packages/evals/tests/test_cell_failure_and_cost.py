@@ -609,6 +609,10 @@ async def test_a_run_failed_by_a_kind_s_defect_still_counts_what_the_cell_was_bi
     assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the test drives a judge completion with no temperature: the job fails on CompletionProtocolDefect, a TypeError, which it asserts",
+)
 async def test_a_run_failed_by_a_judge_completion_s_defect_says_so_where_an_operator_reads_it():
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1)
     _, go = off_loop(_drive, judge=judge)

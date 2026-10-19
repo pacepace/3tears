@@ -23,7 +23,7 @@ from typing import Any
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import build_select_clause, bulk_columns
 from threetears.core.sql_fragments import quote_identifier
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DuckDBBackend",
@@ -775,23 +775,23 @@ class DuckDBBackend:
                 try:
                     conn.close()
                 # NOSILENT: teardown best-effort; a connection that will not close is already gone
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    contain(exc, log=log, what="duckdb L1 backend close: a connection did not close")
             self._pooled_connections = []
         self._local = threading.local()
         if self._reader is not None:
             try:
                 self._reader.close()
             # NOSILENT: teardown best-effort; a connection that will not close is already gone
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                contain(exc, log=log, what="duckdb L1 backend close: a connection did not close")
             self._reader = None
         if self._db is not None:
             try:
                 self._db.close()
             # NOSILENT: teardown best-effort; a connection that will not close is already gone
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                contain(exc, log=log, what="duckdb L1 backend close: a connection did not close")
         self._db = None
         self._initialized = False
         self._schema_info = {}

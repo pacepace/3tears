@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["SchemaPrimingIntegration"]
 
@@ -149,10 +149,10 @@ class SchemaPrimingIntegration:
             # memoize: leave _resolved_ids None so the next turn retries.
             # priming injects nothing THIS turn, but recovers -- never
             # silently bricks for the pod lifetime.
-            log.warning(
-                "schema-priming datasource resolution failed (soft-fail this turn, will retry): %s: %s",
-                type(exc).__name__,
+            contain(
                 exc,
+                log=log,
+                what=f"schema-priming datasource resolution failed (soft-fail this turn, will retry): {type(exc).__name__}: {exc}",
             )
             return []
         resolved = [row["id"] for row in rows]

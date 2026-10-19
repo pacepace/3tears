@@ -47,7 +47,7 @@ from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 from threetears.nats.errors import KvError
 from threetears.nats.subject_permissions import KV_KEY_SCOPE_GRAMMAR
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "ChatModelFactory",
@@ -436,11 +436,12 @@ class MemoryExtractor:
             await asyncio.shield(self._release_claim(conversation_id, claim))
             raise
         except Exception as exc:
-            log.error(
-                "memory extraction failed: %s",
+            contain(
                 exc,
-                exc_info=True,
-                extra={"extra_data": {"conversation_id": str(conversation_id), "agent_id": str(agent_id)}},
+                log=log,
+                what=f"memory extraction failed: {exc}",
+                extra={"conversation_id": str(conversation_id), "agent_id": str(agent_id)},
+                level="error",
             )
             result = ExtractionResult(outcome=ExtractionOutcome.FAILED, reason=f"{type(exc).__name__}: {exc}")
         if result.outcome is ExtractionOutcome.FAILED:
@@ -467,7 +468,9 @@ class MemoryExtractor:
             )
             released = await bucket.delete(key=self._rate_limit_key(conversation_id), revision=claim.revision)
         except Exception as exc:
-            log.warning("could not release the extraction cooldown of a turn that stored nothing: %s", exc)
+            contain(
+                exc, log=log, what=f"could not release the extraction cooldown of a turn that stored nothing: {exc}"
+            )
             return
         claim.revision = None
         # convert at border: log extra_data fields
@@ -726,7 +729,7 @@ class MemoryExtractor:
             )
             running = await bucket.get(key=self._rate_limit_key(conversation_id)) is not None
         except Exception as exc:
-            log.warning("rate limit read failed, allowing extraction: %s", exc)
+            contain(exc, log=log, what=f"rate limit read failed, allowing extraction: {exc}")
             running = False
         return (False, cooldown) if running else (True, 0)
 
@@ -801,7 +804,7 @@ class MemoryExtractor:
                 )
                 raise
         except Exception as exc:
-            log.warning("rate limit claim failed, allowing extraction: %s", exc)
+            contain(exc, log=log, what=f"rate limit claim failed, allowing extraction: {exc}")
             claimed = True
         return (True, 0, revision) if claimed else (False, cooldown, None)
 
@@ -856,7 +859,7 @@ class MemoryExtractor:
             log.warning("Failed to parse worthiness gate response, allowing extraction")
             return True, "parse_error"
         except Exception as exc:
-            log.warning("Worthiness gate LLM call failed, allowing extraction: %s", exc)
+            contain(exc, log=log, what=f"Worthiness gate LLM call failed, allowing extraction: {exc}")
             return True, "llm_error"
 
     @traced()
@@ -1084,7 +1087,7 @@ class MemoryExtractor:
             log.warning("Failed to parse memory resolution response, falling back to ADD all")
             return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
         except Exception as exc:
-            log.warning("Memory resolution LLM call failed: %s, falling back to ADD all", exc)
+            contain(exc, log=log, what=f"Memory resolution LLM call failed: {exc}, falling back to ADD all")
             return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
 
     def _build_resolution_prompt(
@@ -1251,16 +1254,16 @@ class MemoryExtractor:
                             # convert at border: callback-failed log extra_data fields
                             log_user_id = str(user_id)
                             log_conversation_id = str(conversation_id)
-                            log.warning(
-                                "on_memory_created callback failed",
+                            contain(
+                                cb_exc,
+                                log=log,
+                                what="on_memory_created callback failed",
                                 extra={
-                                    "extra_data": {
-                                        "memory_id": str(memory_id),
-                                        "user_id": log_user_id,
-                                        "conversation_id": log_conversation_id,
-                                        "error_type": type(cb_exc).__name__,
-                                        "error": str(cb_exc),
-                                    },
+                                    "memory_id": str(memory_id),
+                                    "user_id": log_user_id,
+                                    "conversation_id": log_conversation_id,
+                                    "error_type": type(cb_exc).__name__,
+                                    "error": str(cb_exc),
                                 },
                             )
 
@@ -1347,11 +1350,7 @@ class MemoryExtractor:
                     tally.skipped += 1
 
             except Exception as exc:
-                log.warning(
-                    "Failed to execute memory action %s: %s",
-                    action,
-                    exc,
-                )
+                contain(exc, log=log, what=f"Failed to execute memory action {action}: {exc}")
                 tally.failed += 1
                 continue
 

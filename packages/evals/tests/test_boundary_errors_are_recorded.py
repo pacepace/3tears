@@ -66,7 +66,7 @@ class _CompletenessRefusingStore(InMemoryRunStore):
     def save_eval_run(self, run: EvalRun, *, if_match: str | None = None) -> None:
         """Refuse a completeness write (or every write); keep anything else."""
         if self.refuse_everything or run.completeness is not None:
-            raise ConflictError(f"run {run.id} moved under the write")
+            raise ConflictError(f"run {run.id} moved under the write", remedy="re-read the run and write again")
         super().save_eval_run(run, if_match=if_match)
 
 

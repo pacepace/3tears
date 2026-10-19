@@ -26,7 +26,7 @@ from threetears.channels.protocol import (
     ChannelResponse,
     ChannelRouter,
 )
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "SlackAdapter",
@@ -267,9 +267,11 @@ class SlackAdapter:
                         extra={"extra_data": {"user_id": user_id}},
                     )
             except Exception as exc:
-                log.warning(
-                    "slack users.info lookup failed; caching an empty profile to avoid hammering the API",
-                    extra={"extra_data": {"user_id": user_id, "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="slack users.info lookup failed; caching an empty profile to avoid hammering the API",
+                    extra={"user_id": user_id, "error": str(exc)},
                 )
             self._user_profile_cache[user_id] = (now, profile)
             self._user_profile_cache.move_to_end(user_id)

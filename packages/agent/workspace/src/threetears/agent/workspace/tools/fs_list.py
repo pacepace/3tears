@@ -25,7 +25,7 @@ from threetears.agent.tools.base_tool import (
 )
 from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
@@ -159,7 +159,7 @@ class FsListTool(TearsTool):
         except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            log.exception("fs_list failed: %s", exc)
+            contain(exc, log=log, what=f"fs_list failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

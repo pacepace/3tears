@@ -45,7 +45,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from threetears.agent.wake.hmac_util import verify_generic_hmac_sha256
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
@@ -394,13 +394,13 @@ class WebhookReceiver:
         try:
             secret = sub.decrypt_secret(self._encryption_service)
         except Exception as exc:  # noqa: BLE001 - encryption boundary
-            log.warning(
-                "webhook_receiver secret decrypt failed",
+            contain(
+                exc,
+                log=log,
+                what="webhook_receiver secret decrypt failed",
                 extra={
-                    "extra_data": {
-                        "subscription_id": str(subscription_id),
-                        "error": str(exc),
-                    },
+                    "subscription_id": str(subscription_id),
+                    "error": str(exc),
                 },
             )
             return JSONResponse(

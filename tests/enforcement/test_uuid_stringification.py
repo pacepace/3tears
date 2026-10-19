@@ -60,6 +60,8 @@ _LEGITIMATE_BORDERS = [
     ".warning(",
     ".error(",
     ".exception(",
+    "contain(",  # threetears.observe.contain / contained: a log call with its own extra=
+    "contained(",
     "extra_data",
     "extra=",
     'f"',

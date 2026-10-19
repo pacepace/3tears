@@ -61,7 +61,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.config import get_config
 from langgraph.types import Command
 from threetears.langgraph.state import merge_metadata
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.memory.integration import retrieve_memories
 
@@ -263,7 +263,7 @@ class MemoryInjectionMiddleware(AgentMiddleware[MemoryInjectionState, Any, Any])
                     surfaced.update(memories)
                     surfaced_ids = list(surfaced)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- memory injection is best-effort context enrichment; a fault proceeds on the un-merged request rather than failing the turn
-                log.warning("memory injection middleware failed (soft-fail): %s", exc)
+                contain(exc, log=log, what=f"memory injection middleware failed (soft-fail): {exc}")
                 memory_text, surfaced_ids = "", []
         if not memory_text:
             passthrough: ModelResponse[Any] = await handler(request)

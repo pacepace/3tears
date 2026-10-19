@@ -31,6 +31,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from threetears.observe import contain
+
 if TYPE_CHECKING:
     from threetears.core.task_registry import KeyedTaskRegistry
     from threetears.nats.client import NatsClient
@@ -135,9 +137,11 @@ class CrossWorkerCanceller:
                 message_type=TaskCancelEnvelope,
             )
         except Exception as exc:  # noqa: BLE001 — startup fail-open boundary: a cancel-subscription failure of ANY kind must not break worker startup; local cancels still work
-            self._logger.warning(
-                "cross-worker cancel subscription failed; this worker cannot honour cross-worker cancels",
-                extra={"extra_data": {"error": str(exc)}},
+            contain(
+                exc,
+                log=self._logger,
+                what="cross-worker cancel subscription failed; this worker cannot honour cross-worker cancels",
+                extra={"error": str(exc)},
             )
 
     async def _cancel_local(self, key: UUID, payload: dict[str, Any]) -> bool:
@@ -184,8 +188,10 @@ class CrossWorkerCanceller:
                 message=TaskCancelEnvelope(key=str(key), payload=payload),
             )
         except Exception as exc:  # noqa: BLE001 — best-effort fail-open: a cancel publish failure must not raise into the caller; the consumer's own TTL/backstop covers a missed cross-worker cancel
-            self._logger.warning(
-                "cross-worker cancel publish failed; a task on another worker cannot be cancelled",
-                extra={"extra_data": {"key": str(key), "error": str(exc)}},
+            contain(
+                exc,
+                log=self._logger,
+                what="cross-worker cancel publish failed; a task on another worker cannot be cancelled",
+                extra={"key": str(key), "error": str(exc)},
             )
         return False

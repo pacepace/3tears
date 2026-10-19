@@ -80,6 +80,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import SystemMessage
+from threetears.observe import contain, get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "ANTHROPIC_MIN_CACHEABLE_TOKENS",
@@ -523,7 +526,13 @@ def compute_tool_key(tools: list[Any]) -> str:
         if args_schema is not None and hasattr(args_schema, "model_json_schema"):
             try:
                 schema = args_schema.model_json_schema()
-            except Exception:  # noqa: BLE001 - schema generation may fail on exotic tools
+            except Exception as exc:  # noqa: BLE001 - schema generation may fail on exotic tools
+                contain(
+                    exc,
+                    log=log,
+                    what="tool args schema generation failed; fingerprinting the tool by name only",
+                    extra={"tool_name": name},
+                )
                 schema = None
         else:
             schema = None

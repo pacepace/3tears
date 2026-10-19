@@ -23,7 +23,7 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse, urlunparse
 from uuid import uuid7
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.backup.process import feed_stdin
 
@@ -192,12 +192,13 @@ async def _drop_database_best_effort(
                 await cleanup.execute(f'DROP DATABASE IF EXISTS "{database}"')
             finally:
                 await cleanup.close()
-        except Exception:  # noqa: BLE001 - cleanup must not fail the work it follows
+        except Exception as exc:  # noqa: BLE001 - cleanup must not fail the work it follows
             if attempt == _TEMP_DB_DROP_ATTEMPTS:
-                log.warning(
-                    "temp database drop failed; it is orphaned and must be dropped manually",
-                    extra={"extra_data": {"database": database, "attempts": attempt}},
-                    exc_info=True,
+                contain(
+                    exc,
+                    log=log,
+                    what="temp database drop failed; it is orphaned and must be dropped manually",
+                    extra={"database": database, "attempts": attempt},
                 )
                 break
             await asyncio.sleep(_TEMP_DB_DROP_BACKOFF_SECONDS * attempt)

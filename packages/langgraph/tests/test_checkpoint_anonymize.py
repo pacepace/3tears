@@ -785,8 +785,11 @@ class TestAFailedErasureCanBeFound:
         survivors = [blob for blob in executor.blobs() if _NAME.encode() in blob or _EXTERNAL_ID.encode() in blob]
         assert survivors == [b"\xc1" + _NAME.encode()], "only the unreadable blob still holds the name"
         [logged] = [r for r in caplog.records if "cannot be anonymized" in r.getMessage()]
-        assert logged.__dict__["thread_id"] == _THREAD
-        assert logged.__dict__["task_id"] == bad["task_id"] and logged.__dict__["idx"] == bad["idx"]
+        assert logged.__dict__["extra_data"]["thread_id"] == _THREAD
+        assert (
+            logged.__dict__["extra_data"]["task_id"] == bad["task_id"]
+            and logged.__dict__["extra_data"]["idx"] == bad["idx"]
+        )
 
         again = await saver.aanonymize_threads([_THREAD])
         assert again.unreadable == (reported,), "a rerun names the same row, and only it"

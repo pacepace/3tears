@@ -89,7 +89,7 @@ from threetears.models._claude_sdk_internals import (
     remove_tool_server,
     send_control_request,
 )
-from threetears.observe import BuildOnce, get_logger
+from threetears.observe import BuildOnce, cancel_and_wait, contain, contained, get_logger
 
 __all__ = [
     "POOL_MARKER_ENV",
@@ -888,7 +888,7 @@ class PooledCliSession:
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any start failure (including an SDK whose surface moved) must become "no pooled session", so the call falls back to its own CLI instead of failing the turn
             # NOSILENT: best-effort cleanup of a CLI that never came up; the start failure itself is
             # raised immediately below as ClaudeCliSessionError and logged by the caller.
-            with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
+            with contained("could not disconnect a Claude CLI that failed to start", log=_logger):
                 await asyncio.wait_for(client.disconnect(), timeout=5.0)
             raise ClaudeCliSessionError(f"could not start a Claude CLI: {exc}") from exc
         except BaseException:
@@ -896,7 +896,7 @@ class PooledCliSession:
             # subprocess behind -- disconnect before the cancellation continues.
             # NOSILENT: the cancellation being re-raised below is the event that matters; this only
             # makes sure the half-started CLI does not outlive it.
-            with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
+            with contained("could not disconnect a Claude CLI whose start was cancelled", log=_logger):
                 await asyncio.shield(asyncio.wait_for(client.disconnect(), timeout=5.0))
             raise
         session = cls(client, key=key, pid=_discover_pid(client, marker), marker=marker)
@@ -1029,7 +1029,7 @@ class PooledCliSession:
         self.closed = True
         # NOSILENT: whatever disconnect raises, the process-tree kill below is what guarantees the CLI
         # is gone; a disconnect failure changes nothing about that outcome.
-        with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
+        with contained("Claude CLI disconnect failed; the process-tree kill follows", log=_logger):
             await asyncio.wait_for(self.client.disconnect(), timeout=5.0)
         await asyncio.to_thread(self._kill_if_still_ours, grace_seconds)
 
@@ -1396,9 +1396,11 @@ class ClaudeCliPool:
             await session.abandon(grace_seconds=self._kill_grace)
             stopped = True
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- per-session isolation: logged with its pid and kept tracked for the next attempt
-            _logger.warning(
-                "Could not stop a Claude CLI a closed event loop left behind; it stays tracked for the next attempt",
-                extra={"extra_data": {"pid": session.pid, "error": repr(exc)}},
+            contain(
+                exc,
+                log=_logger,
+                what="Could not stop a Claude CLI a closed event loop left behind; it stays tracked for the next attempt",
+                extra={"pid": session.pid, "error": repr(exc)},
             )
         if stopped:
             self._stopping.discard(session)
@@ -1470,11 +1472,7 @@ class ClaudeCliPool:
         # its own failure. Neither is this close's to raise.
         await asyncio.gather(*spares, return_exceptions=True)
         if self._reaper is not None:
-            self._reaper.cancel()
-            # NOSILENT: we cancelled the reaper ourselves one line above; its CancelledError is the
-            # expected result of that, not a failure.
-            with suppress(asyncio.CancelledError):
-                await self._reaper
+            await cancel_and_wait(self._reaper)
             self._reaper = None
         for session in sessions:
             await session.dispose(grace_seconds=self._kill_grace)
@@ -1732,9 +1730,11 @@ class ClaudeCliPool:
                     await session.rewind(first_message_uuid, timeout=self._reset_timeout)
                 self._structural_failures = 0
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever a returning session raises, it is stopped and its slot freed, and a call that already succeeded must not fail here
-                _logger.warning(
-                    "A pooled Claude CLI could not be reset; stopping it and starting a spare",
-                    extra={"extra_data": {"key": key[:12], "error": str(exc)}},
+                contain(
+                    exc,
+                    log=_logger,
+                    what="A pooled Claude CLI could not be reset; stopping it and starting a spare",
+                    extra={"key": key[:12], "error": str(exc)},
                 )
                 keep = False
                 if isinstance(exc, ClaudeCliSessionError):
@@ -1884,7 +1884,12 @@ class ClaudeCliPool:
             except (
                 Exception
             ) as exc:  # prawduct:allow prawduct/broad-except -- a background supervisor loop must outlive one bad pass
-                _logger.warning("The Claude CLI idle reaper failed a pass", extra={"extra_data": {"error": str(exc)}})
+                contain(
+                    exc,
+                    log=_logger,
+                    what="The Claude CLI idle reaper failed a pass",
+                    extra={"error": str(exc)},
+                )
 
     async def _reap_once(self) -> None:
         """One idle-eviction pass."""

@@ -53,7 +53,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from threetears.observe.text_block import under
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.tool_schema.self_contained import declared_type
 
 from threetears.agent.tools.utils import tool_no_change
@@ -226,10 +226,7 @@ class ToolRelevanceIndex:
         try:
             result = await self._embedder.aembed_query(text)
         except Exception as exc:
-            _log.warning(
-                "tool-relevance query embedding failed (soft-fail)",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=_log, what="tool-relevance query embedding failed (soft-fail)", extra={"error": str(exc)})
             return None
         if not result:
             return None
@@ -242,9 +239,11 @@ class ToolRelevanceIndex:
         try:
             result = await self._embedder.aembed_documents(texts)
         except Exception as exc:
-            _log.warning(
-                "tool-relevance batch embedding failed (soft-fail)",
-                extra={"extra_data": {"error": str(exc), "text_count": len(texts)}},
+            contain(
+                exc,
+                log=_log,
+                what="tool-relevance batch embedding failed (soft-fail)",
+                extra={"error": str(exc), "text_count": len(texts)},
             )
             return None
         if not result or len(result) != len(texts):

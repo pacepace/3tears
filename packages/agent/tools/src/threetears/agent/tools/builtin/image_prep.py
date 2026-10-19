@@ -19,7 +19,7 @@ import json
 from typing import Any
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "ImagePrepTool",
@@ -111,14 +111,14 @@ def prepare_image_for_vision(
         return result, "image/jpeg"
 
     except Exception as exc:
-        _log.warning(
-            "Image preprocessing failed, sending original",
+        contain(
+            exc,
+            log=_log,
+            what="Image preprocessing failed, sending original",
             extra={
-                "extra_data": {
-                    "error": str(exc),
-                    "mime_type": mime_type,
-                    "size_bytes": len(data),
-                }
+                "error": str(exc),
+                "mime_type": mime_type,
+                "size_bytes": len(data),
             },
         )
         return data, mime_type
@@ -175,6 +175,7 @@ class ImagePrepTool(TearsTool):
         try:
             raw_bytes = base64.b64decode(image_data_base64)
         except Exception as exc:
+            contain(exc, log=_log, what="failed to decode base64 image data")
             result = ToolResult(
                 success=False,
                 content="",

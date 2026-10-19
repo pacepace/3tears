@@ -16,6 +16,9 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Final
 from uuid import UUID
+from threetears.observe import contain, get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "CONTEXT_FROM_MAX_DEPTH",
@@ -188,6 +191,7 @@ def _validate_cron(config: dict[str, Any]) -> str | None:
     except ValueError as exc:
         return f"cron 'expr' invalid: {exc}"
     except Exception as exc:  # noqa: BLE001 - apscheduler raises varied types
+        contain(exc, log=log, what="cron expression parse failed")
         return f"cron 'expr' parse failed: {exc}"
     return None
 

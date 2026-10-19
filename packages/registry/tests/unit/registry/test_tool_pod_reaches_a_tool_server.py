@@ -138,9 +138,17 @@ class _PodNats:
 
     def __init__(self) -> None:
         self.replies: list[Any] = []
+        #: audit events the pod persists to JetStream; its own list, apart from the replies tests assert on
+        self.jetstream_published: list[tuple[Any, bytes]] = []
 
     async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
         self.replies.append(message)
+
+    async def jetstream_publish(
+        self, *, subject: Any, payload: bytes, timeout: Any = None, headers: Any = None
+    ) -> None:
+        del timeout, headers
+        self.jetstream_published.append((subject, payload))
 
 
 # parity-exempt: subset stand-in for NatsClient: the proxy's forward hop delivered in-process to a real ToolServer

@@ -45,7 +45,7 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, bounds_to_tile_range, tile_bounds
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = ["FeatureCache", "FeatureEntity", "FeatureLoader"]
 
@@ -622,5 +622,5 @@ def _drop_index_entries(backend: Any, rtree_table: str, map_table: str, prefix: 
         conn.commit()
     # prawduct:allow prawduct/broad-except -- a finalizer must not raise; whatever the L1 says on
     # the way down, the entries are unread and the table is in memory
-    except Exception:  # noqa: BLE001
-        log.debug("could not drop a collected feature cache's index entries", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        contain(exc, log=log, what="could not drop a collected feature cache's index entries")

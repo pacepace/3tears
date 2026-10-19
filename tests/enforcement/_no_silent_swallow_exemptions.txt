@@ -7,3 +7,9 @@
 
 # rationale: holds the caller's cancellation until a stopped run has ended, and its only caller re-raises it at once, so a lease is never released while the run may still be writing
 packages/core/src/threetears/core/coordination/coalesced_run.py:_until_ended#0:CancelledError
+
+# rationale: waits out work already handed to an executor thread, holding a cancellation aimed at the waiter and returning it as a flag, because the work cannot be stopped and its outcome must still be read; every caller raises CancelledError once it has
+packages/evals/src/threetears/evals/kernel/offload.py:wait_through_cancellation#0:CancelledError
+
+# rationale: a cell cancelled with its run is recorded as excluded with what it had already spent, which lives only on that cell's sink, and the cancellation is re-raised once that record is saved
+packages/evals/src/threetears/evals/run/runner.py:execute_run.run_and_record#0:CancelledError

@@ -38,7 +38,7 @@ from uuid import UUID
 
 from threetears.epoch import EpochClient, EpochListener, catchup_tick
 from threetears.nats import Subjects
-from threetears.observe import PeriodicTask, get_logger
+from threetears.observe import PeriodicTask, contain, get_logger
 
 __all__ = [
     "Authorizer",
@@ -626,11 +626,12 @@ class LocalGrantAuthorizer:
         """
         try:
             rows = await self._grant_loader()
-        except Exception:
-            log.warning(
-                "MCP grant cache reload failed; keeping prior cache",
-                exc_info=True,
-                extra={"extra_data": {"prior_grant_count": len(self._cache)}},
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="MCP grant cache reload failed; keeping prior cache",
+                extra={"prior_grant_count": len(self._cache)},
             )
             return
         new_cache: set[tuple[UUID, str]] = set()

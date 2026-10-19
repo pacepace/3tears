@@ -18,7 +18,7 @@ from threetears.evals.kernel import default_job_timeout
 from threetears.evals.schema import EvalRun, EvalTestCase
 from threetears.evals.kernel import EvalStorage, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.errors import AdmissionRefusedError
-from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.host import EvalHost, WorldRegistry
 from threetears.evals.schema.models import VariationCounts
 from threetears.evals.run import (
     ArmPlan,
@@ -226,10 +226,12 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
         )
 
 
-def _wired(request: LaunchRequest, **overrides: object) -> KindWiring:
-    """What a well-behaved toy launcher resolves for ``request``, with ``overrides`` applied."""
-    world = toyhost_profile().world
-    assert world is not None
+def _wired(request: LaunchRequest, world: WorldRegistry, **overrides: object) -> KindWiring:
+    """What a well-behaved toy launcher resolves for ``request``, with ``overrides`` applied.
+
+    ``world`` is the launching host's own registry: a cell binds its session over that one, and the
+    kind asserts it seeds the world it was built with, so a registry built beside it is a different world.
+    """
     kind = ToyExtractorKind(
         client=ScriptedExtractionClient(), world=world, goal_checks=tuple(request.template.goal_state_checks)
     )
@@ -243,7 +245,7 @@ def _wired(request: LaunchRequest, **overrides: object) -> KindWiring:
 
 
 def _launching_with(
-    wire: Callable[[LaunchRequest], KindWiring], *, unhonoured: frozenset[LaunchArgument] = frozenset()
+    wire: Callable[[LaunchRequest, WorldRegistry], KindWiring], *, unhonoured: frozenset[LaunchArgument] = frozenset()
 ) -> tuple[LaunchHost, EvalStorage, list[LaunchRequest]]:
     """The toy launch host with a launcher that hands the tail whatever ``wire`` resolves.
 
@@ -256,7 +258,9 @@ def _launching_with(
 
     async def launch(request: LaunchRequest) -> EvalRun:
         handed.append(request)
-        return await launch_run(launching, request, wire(request))
+        world = launching.eval_host.profile.world
+        assert world is not None, "the toy host declares a world"
+        return await launch_run(launching, request, wire(request, world))
 
     def plan(request: LaunchRequest) -> ArmPlan:
         # The toy invoices, whatever a generation would have asked for: a launcher that generates nothing.
@@ -441,7 +445,7 @@ _OTHER_TEMPLATE_CASE = EvalTestCase(scope_id=TOYHOST_SCOPE, template_id="another
 )
 async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(overrides, arguments, said):
     """Where the request and the wiring speak to one fact they must agree, or the run records one thing and runs another."""
-    host, storage, _handed = off_loop(_launching_with, lambda request: _wired(request, **overrides))
+    host, storage, _handed = off_loop(_launching_with, lambda request, world: _wired(request, world, **overrides))
 
     with pytest.raises(ValueError, match=said):
         await _launch_one(host, **arguments)

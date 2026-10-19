@@ -52,7 +52,7 @@ from nats.js.api import (
     StreamConfig,
 )
 from nats.js.errors import APIError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.nats._publish import publish_bounded, run_bounded
 from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
@@ -532,8 +532,10 @@ class OpLog:
         finally:
             try:
                 await psub.unsubscribe()
-            except Exception:  # noqa: BLE001 - best-effort teardown of the ephemeral replay consumer
-                log.debug(
-                    "op-log replay consumer teardown failed (ignored)",
-                    extra={"extra_data": {"stream": self._stream}},
+            except Exception as exc:  # noqa: BLE001 - best-effort teardown of the ephemeral replay consumer
+                contain(
+                    exc,
+                    log=log,
+                    what="op-log replay consumer teardown failed (ignored)",
+                    extra={"stream": self._stream},
                 )

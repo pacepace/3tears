@@ -44,7 +44,7 @@ from typing import Protocol, runtime_checkable
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from threetears.core.security.secret_refs import resolve_secret
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.channels.webhook import (
     DEFAULT_MAX_PAYLOAD_BYTES,
@@ -275,9 +275,11 @@ class BounceReceiver:
             # "accepted" is precisely what tells the provider to stop resending -- so
             # admitting here would silently discard every bounce for as long as the
             # secret backend is unwell.
-            log.warning(
-                "mail bounce receiver: could not resolve the signing secret",
-                extra={"extra_data": {"error_type": type(exc).__name__, "secret_ref": self.secret_ref}},
+            contain(
+                exc,
+                log=log,
+                what="mail bounce receiver: could not resolve the signing secret",
+                extra={"error_type": type(exc).__name__, "secret_ref": self.secret_ref},
             )
             return BounceIngestResult(status_code=500, accepted=0, message="signing secret unavailable")
         if not verifier(secret.encode("utf-8"), body, signature):
@@ -289,9 +291,11 @@ class BounceReceiver:
         try:
             events = self.parser.parse(body)
         except Exception as exc:
-            log.warning(
-                "mail bounce receiver: could not parse a verified callback",
-                extra={"extra_data": {"error_type": type(exc).__name__}},
+            contain(
+                exc,
+                log=log,
+                what="mail bounce receiver: could not parse a verified callback",
+                extra={"error_type": type(exc).__name__},
             )
             return BounceIngestResult(status_code=400, accepted=0, message="unparseable callback body")
         accepted = 0
@@ -302,9 +306,11 @@ class BounceReceiver:
                 # Never the exception text: a handler failing to write a suppression row
                 # routinely names the address it was writing, and an address is personal
                 # data. The type is what stays diagnostic.
-                log.warning(
-                    "mail bounce receiver: handler failed, asking the provider to resend",
-                    extra={"extra_data": {"error_type": type(exc).__name__, "accepted_before_failure": accepted}},
+                contain(
+                    exc,
+                    log=log,
+                    what="mail bounce receiver: handler failed, asking the provider to resend",
+                    extra={"error_type": type(exc).__name__, "accepted_before_failure": accepted},
                 )
                 return BounceIngestResult(
                     status_code=500,

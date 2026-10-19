@@ -42,7 +42,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     from fastapi import APIRouter
@@ -373,8 +373,8 @@ async def relay_stream(
         writer.close()
         try:
             await writer.wait_closed()
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the peer is already gone; a close that fails changes nothing and must not mask the disconnect that got us here
-            log.debug("operator: RFB connection did not close cleanly", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the peer is already gone; a close that fails changes nothing and must not mask the disconnect that got us here
+            contain(exc, log=log, what="operator: RFB connection did not close cleanly")
 
 
 def build_operator_router(

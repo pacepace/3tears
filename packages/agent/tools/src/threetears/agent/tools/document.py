@@ -32,7 +32,7 @@ from pydantic import Field
 from threetears.agent.tools.text_window import WindowedInput, window_text
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "DocumentParseError",
@@ -452,7 +452,7 @@ def _extract_pdf_tables(page: Any, *, merge_wrapped_rows: bool = False) -> str:
         # contract: a table-extraction failure must never fail the whole document
         # parse; the plain (tableless) text this feeds into is still usable on its
         # own, same posture as this module's other PDF-page-rendering fallbacks.
-        log.debug("PDF table extraction failed: %s", exc)
+        contain(exc, log=log, what=f"PDF table extraction failed: {exc}")
         return ""
 
 
@@ -536,7 +536,8 @@ def _extract_pdf_headings(
 
         return sections
 
-    except Exception:
+    except Exception as exc:
+        contain(exc, log=log, what="PDF section extraction failed; the document has no sections")
         return []
 
 
@@ -566,10 +567,7 @@ def _ocr_page(pdf_data: bytes, page_num: int, language: str, psm: int) -> str | 
         return text.strip() if text.strip() else None
 
     except Exception as exc:
-        log.warning(
-            "OCR failed for page",
-            extra={"extra_data": {"page": page_num, "error": str(exc)}},
-        )
+        contain(exc, log=log, what="OCR failed for page", extra={"page": page_num, "error": str(exc)})
         return None
 
 
@@ -611,7 +609,7 @@ def render_pdf_pages_to_images(
 
         images = convert_from_bytes(pdf_data, dpi=dpi, first_page=1, last_page=max_pages)
     except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-empty contract, mirrors _ocr_page's own: a rendering failure must never crash the caller, only degrade to "no images"
-        log.warning("PDF page image rendering failed", extra={"extra_data": {"error": str(exc)}})
+        contain(exc, log=log, what="PDF page image rendering failed", extra={"error": str(exc)})
         return []
 
     encoded: list[bytes] = []
@@ -654,9 +652,11 @@ def _parse_docx(
         except Exception as exc:  # noqa: BLE001 -- body extraction below is the real product
             # The document body still parses; only its core properties are lost. The result then
             # carries no title or author and looks like a document that simply had none.
-            log.debug(
-                "could not read document core properties; metadata omitted",
-                extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+            contain(
+                exc,
+                log=log,
+                what="could not read document core properties; metadata omitted",
+                extra={"error": str(exc), "error_type": type(exc).__name__},
             )
 
         current_heading: str | None = None
@@ -1217,6 +1217,7 @@ def create_parse_document_tool(
         try:
             data = base64.b64decode(content_base64)
         except Exception as exc:
+            contain(exc, log=log, what="parse_document could not decode the base64 content")
             return _tool_error("parse_document", "decode", f"Invalid base64: {exc}")
 
         if len(data) > _PARSE_DOCUMENT_MAX_BYTES:
@@ -1237,6 +1238,7 @@ def create_parse_document_tool(
         try:
             result = await parse_document(data, mime_type, filename, ocr_config=ocr)
         except Exception as exc:
+            contain(exc, log=log, what="parse_document failed to parse the document")
             return _tool_error("parse_document", "parse", str(exc))
 
         # Windowed, not cut: a document past the bound is read in parts, and
