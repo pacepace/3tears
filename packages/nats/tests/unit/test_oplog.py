@@ -226,14 +226,15 @@ async def test_replay_rejects_from_seq_below_one() -> None:
 
 # parity-exempt: fakes the external nats.js.api.StreamState (last_seq field only); not a threetears protocol
 class _FakeStreamState:
-    def __init__(self, last_seq: int) -> None:
+    def __init__(self, last_seq: int, first_seq: int = 1) -> None:
         self.last_seq = last_seq
+        self.first_seq = first_seq
 
 
-# parity-exempt: fakes the external nats.js.api.StreamInfo (last_seq field only); not a threetears protocol
+# parity-exempt: fakes the external nats.js.api.StreamInfo (first_seq and last_seq fields only); not a threetears protocol
 class _FakeStreamInfo:
-    def __init__(self, last_seq: int) -> None:
-        self.state = _FakeStreamState(last_seq)
+    def __init__(self, last_seq: int, first_seq: int = 1) -> None:
+        self.state = _FakeStreamState(last_seq, first_seq)
 
 
 # parity-exempt: fakes the external nats pull subscription raising a scripted fetch error; external lib, no threetears parity
@@ -252,14 +253,15 @@ class _FakePullSub:
 class _ReplayJetStream:
     """fake JS that drives replay to the fetch loop with a scripted fetch error."""
 
-    def __init__(self, *, last_seq: int, fetch_error: BaseException) -> None:
+    def __init__(self, *, last_seq: int, fetch_error: BaseException, first_seq: int = 1) -> None:
         self._last_seq = last_seq
+        self._first_seq = first_seq
         self.psub: Any = _FakePullSub(fetch_error)
         self.created: list[tuple[str, Any]] = []
         self.bound: list[tuple[str, str]] = []
 
     async def stream_info(self, name: str) -> _FakeStreamInfo:
-        return _FakeStreamInfo(self._last_seq)
+        return _FakeStreamInfo(self._last_seq, self._first_seq)
 
     async def add_consumer(self, stream: str, *, config: Any) -> Any:
         self.created.append((stream, config))
@@ -414,6 +416,84 @@ async def test_a_cas_retry_whose_op_id_scan_ends_short_is_not_reported_as_a_fenc
     with pytest.raises(OpLogError, match="short of the stream head") as exc_info:
         await oplog.append(payload=b"x", op_id="op-5", expected_last_seq=2)
     assert not isinstance(exc_info.value, OpLogSequenceConflict)
+
+
+# parity-exempt: fakes the external nats pull subscription answering each fetch with a scripted batch or timeout; external lib, no threetears parity
+class _SteppedPullSub:
+    def __init__(self, steps: list[list[Any] | BaseException]) -> None:
+        self._steps = steps
+        self.unsubscribed = False
+
+    async def fetch(self, batch: int, timeout: float) -> list[Any]:
+        step = self._steps.pop(0) if self._steps else TimeoutError("nats: timeout")
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+    async def unsubscribe(self) -> None:
+        self.unsubscribed = True
+
+
+class _SteppedJetStream(_ReplayJetStream):
+    """fake JS whose replay consumer answers fetches from a script of ``(seqs | timeout)`` steps."""
+
+    def __init__(self, *, last_seq: int, first_seq: int = 1, steps: list[list[int] | BaseException]) -> None:
+        super().__init__(last_seq=last_seq, first_seq=first_seq, fetch_error=TimeoutError("unused"))
+        self._steps = steps
+        self.publish_error: BaseException | None = None
+
+    async def pull_subscribe_bind(self, *, consumer: str, stream: str) -> Any:
+        self.bound.append((consumer, stream))
+        self.psub = _SteppedPullSub(
+            [
+                step
+                if isinstance(step, BaseException)
+                else [_fetched(seq, f"op {seq}".encode(), consumer=consumer, stream=stream) for seq in step]
+                for step in self._steps
+            ]
+        )
+        return self.psub
+
+    async def publish(
+        self, subject: str, payload: bytes, *, headers: dict[str, str], stream: str, timeout: float
+    ) -> Any:
+        assert self.publish_error is not None
+        raise self.publish_error
+
+
+async def test_one_fetch_timeout_is_ridden_out_before_a_replay_is_called_short() -> None:
+    """a single slow 2s fetch mid-replay is a broker under load, not a gap; two in a row raise."""
+    js = _SteppedJetStream(last_seq=5, steps=[[1, 2], TimeoutError("nats: timeout"), [3, 4, 5]])
+    oplog = _make_oplog(js)  # type: ignore[arg-type]
+
+    replayed = [record.seq async for record in oplog.replay(from_seq=1)]
+
+    assert replayed == [1, 2, 3, 4, 5]
+
+
+async def test_a_replay_from_before_the_streams_first_seq_names_the_purged_gap() -> None:
+    """a purged or trimmed start timed out as "short of the head", or replayed only what was left."""
+    js = _SteppedJetStream(last_seq=9, first_seq=6, steps=[[6, 7, 8, 9]])
+    oplog = _make_oplog(js)  # type: ignore[arg-type]
+
+    with pytest.raises(OpLogError, match=r"holds seqs 6\.\.9; 2\.\.5 were purged or trimmed"):
+        _ = [r async for r in oplog.replay(from_seq=2)]
+    assert js.created == [], "a consumer was opened on a replay that could not start where asked"
+
+
+async def test_the_append_op_id_scan_reads_from_the_first_seq_the_stream_still_holds() -> None:
+    """a trimmed start is not a gap for "is this op already logged": the scan covers what is left."""
+    from nats.js.errors import APIError
+
+    js = _SteppedJetStream(last_seq=4, first_seq=3, steps=[[3, 4]])
+    js.publish_error = APIError(code=400, err_code=10071, description="wrong last sequence: 4")
+    oplog = _make_oplog(js)  # type: ignore[arg-type]
+
+    result = await oplog.append(payload=b"x", op_id="op-4", expected_last_seq=2)
+
+    assert result == AppendResult(seq=4, deduplicated=True)
+    ((_stream, config),) = js.created
+    assert config.opt_start_seq == 3
 
 
 # ----------------------------------------------------------------------
