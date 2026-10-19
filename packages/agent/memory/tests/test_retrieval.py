@@ -570,6 +570,27 @@ class TestFormatMemoryContext:
         assert "likes cats" in result
         assert "memory_recall" in result
 
+    async def test_an_unreadable_stored_date_is_said_to_be_unreadable_not_left_off(
+        self, render: Render, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """failure injection: date_created is "last tuesday". An undated line reads as current."""
+        mid = uuid.uuid7()
+        memories = [
+            {
+                "memory_id": mid,
+                "content": "garbled",
+                "summary": None,
+                "hybrid_score": 0.5,
+                "date_created": "last tuesday",
+            }
+        ]
+        with caplog.at_level("WARNING"):
+            result = await render(memories, user_timezone="UTC")
+
+        assert "(written at an unknown time: its stored date is unreadable) garbled" in result
+        assert "last tuesday" not in result
+        assert any(str(mid) in str(getattr(r, "extra_data", "")) for r in caplog.records)
+
     async def test_each_memory_says_when_it_was_written_in_the_persons_own_time(self, render: Render) -> None:
         """Without a time every memory reads as current.
 

@@ -22,9 +22,11 @@ from sqlalchemy import Integer, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.geo.bands import AggregateSpec, FeatureSpec
+from threetears.geo.bands import UNDECODABLE_PROPERTY, AggregateSpec, FeatureSpec
 from threetears.geo.collection import LayerDefinition, TileCollection, ViewportRequest
 from threetears.geo.features import FeatureCache
+from threetears.geo.geometry import UndecodableGeometry, decode_geometry
+from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.object_store.filesystem import FilesystemObjectStore
 
@@ -50,6 +52,14 @@ def _tracts_layer(**overrides: Any) -> LayerDefinition:
 def _tract_row(geoid: str, *, lon: float, lat: float, unreg: int = 100, state: str = "04") -> dict[str, Any]:
     box = Polygon([(lon, lat), (lon + 0.01, lat), (lon + 0.01, lat + 0.01), (lon, lat + 0.01)])
     return {"geoid": geoid, "geometry_wkb": box.wkb, "total_unreg": unreg, "state_fips": state}
+
+
+def _undecodable_total(layer: str) -> float:
+    """the current value of ``geo_undecodable_rows_total`` for a layer."""
+    from prometheus_client import REGISTRY
+
+    value = REGISTRY.get_sample_value("geo_undecodable_rows_total", {"layer": layer})
+    return value or 0.0
 
 
 def _make_collection(
@@ -112,6 +122,34 @@ class TestLayerDefinition:
             latitude_column="latitude",
         )
         assert layer.geometry_of({"longitude": None, "latitude": None}) is None
+
+
+class TestUnreadableGeometry:
+    def test_a_corrupt_blob_raises_rather_than_reading_as_no_geometry(self) -> None:
+        with pytest.raises(UndecodableGeometry):
+            decode_geometry(b"\x01\x02junk")
+
+    def test_absent_and_empty_are_still_none(self) -> None:
+        assert decode_geometry(None) is None
+        assert decode_geometry(b"") is None
+
+    def test_a_non_numeric_coordinate_raises_rather_than_reading_as_no_point(self) -> None:
+        layer = LayerDefinition(
+            name="locations",
+            feature_id_column="id",
+            longitude_column="longitude",
+            latitude_column="latitude",
+        )
+        with pytest.raises(UndecodableGeometry, match="not numbers"):
+            layer.geometry_of({"longitude": "west", "latitude": 33.4})
+
+    def test_an_unexpected_error_type_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(_: bytes) -> None:
+            raise RuntimeError("not a decode error")
+
+        monkeypatch.setattr("threetears.geo.geometry.shapely_wkb.loads", _boom)
+        with pytest.raises(RuntimeError):
+            decode_geometry(b"\x01\x02")
 
 
 class TestQuantization:
@@ -211,6 +249,148 @@ class TestBuild:
         built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
         assert built is not None
         assert len(mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]) == 2
+
+    async def test_an_undecodable_row_is_counted_and_warned_not_passed_off_as_absent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """failure injection: one row's WKB is corrupt. The tile still builds without it, but says so."""
+        tile = TileId(z=12, x=812, y=1620)
+        bounds = tile_bounds(tile)
+        good = _tract_row("good", lon=bounds.min_lon + 0.001, lat=bounds.min_lat + 0.001)
+        bad = {**_tract_row("bad", lon=bounds.min_lon + 0.002, lat=bounds.min_lat + 0.002), "geometry_wkb": b"\x01junk"}
+        collection, _ = _make_collection(tmp_path, rows=[good, bad])
+        before = _undecodable_total("census_tracts")
+
+        with caplog.at_level("WARNING"):
+            built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+
+        assert built is not None
+        assert len(mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]) == 1
+        assert any("could not be read" in r.getMessage() and "1 source rows" in r.getMessage() for r in caplog.records)
+        assert any("(first: 'bad')" in r.getMessage() for r in caplog.records), (
+            "the warning must name the first bad row"
+        )
+        assert _undecodable_total("census_tracts") == before + 1
+
+    async def test_a_rollup_over_an_undecodable_row_is_marked_partial_in_the_stored_tile(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """failure injection below the crossover: the rollup's totals miss a row, and the stored tile says so.
+
+        the count and warning stand; the marker survives the object-store round trip, because it
+        is a property in the encoded tile rather than state beside it.
+        """
+        tile = TileId(z=5, x=6, y=12)
+        bounds = tile_bounds(tile)
+        lon = bounds.min_lon + 0.1
+        lat = bounds.min_lat + 0.1
+        rows = [
+            _tract_row("a", lon=lon, lat=lat, unreg=100),
+            {**_tract_row("b", lon=lon + 0.02, lat=lat, unreg=250), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("c", lon=lon + 0.04, lat=lat, unreg=50), "geometry_wkb": b"\x01junk"},
+        ]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+        before = _undecodable_total("census_tracts")
+
+        with caplog.at_level("WARNING"):
+            built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        await collection.save_to_store(built)
+        loaded = await collection.load_derived(("census_tracts", 3, tile.z, tile.x, tile.y))
+
+        assert loaded is not None
+        (feature,) = mapbox_vector_tile.decode(loaded["mvt"])["census_tracts"]["features"]
+        assert feature["properties"]["total_unreg"] == 100
+        assert feature["properties"]["count"] == 1
+        assert feature["properties"][UNDECODABLE_PROPERTY] == 2
+        assert any("2 source rows" in r.getMessage() for r in caplog.records)
+        assert _undecodable_total("census_tracts") == before + 2
+
+    async def test_a_rollup_that_lost_no_rows_carries_no_marker(self, tmp_path: Path) -> None:
+        tile = TileId(z=5, x=6, y=12)
+        bounds = tile_bounds(tile)
+        rows = [_tract_row("a", lon=bounds.min_lon + 0.1, lat=bounds.min_lat + 0.1)]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+
+        built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        decoded = mapbox_vector_tile.decode(built["mvt"])
+        (feature,) = decoded["census_tracts"]["features"]
+        assert UNDECODABLE_PROPERTY not in feature["properties"]
+        assert set(decoded) == {"census_tracts"}, "a tile that lost nothing carries no partial layer"
+
+    async def test_a_feature_tile_over_undecodable_rows_carries_the_partial_layer_through_the_store(
+        self, tmp_path: Path
+    ) -> None:
+        """above the crossover there is no rollup to carry a per-bucket marker; the tile still says so."""
+        tile = TileId(z=12, x=812, y=1620)
+        bounds = tile_bounds(tile)
+        lon = bounds.min_lon + 0.001
+        lat = bounds.min_lat + 0.001
+        rows = [
+            _tract_row("good", lon=lon, lat=lat),
+            {**_tract_row("bad1", lon=lon + 0.001, lat=lat), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("bad2", lon=lon + 0.002, lat=lat), "geometry_wkb": b"\x01junk"},
+        ]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+        before = _undecodable_total("census_tracts")
+
+        built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        await collection.save_to_store(built)
+        loaded = await collection.load_derived(("census_tracts", 3, tile.z, tile.x, tile.y))
+
+        assert loaded is not None
+        decoded = mapbox_vector_tile.decode(loaded["mvt"])
+        assert len(decoded["census_tracts"]["features"]) == 1
+        (marker,) = decoded[f"census_tracts{PARTIAL_LAYER_SUFFIX}"]["features"]
+        assert marker["properties"] == {UNDECODABLE_PROPERTY: 2}
+        assert _undecodable_total("census_tracts") == before + 2
+
+    async def test_a_bucket_that_lost_every_row_still_marks_the_tile(self, tmp_path: Path) -> None:
+        """no readable row means no position and no rollup feature; the partial layer is all that says so."""
+        tile = TileId(z=5, x=6, y=12)
+        bounds = tile_bounds(tile)
+        lon = bounds.min_lon + 0.1
+        lat = bounds.min_lat + 0.1
+        rows = [
+            {**_tract_row("a", lon=lon, lat=lat), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("b", lon=lon + 0.02, lat=lat), "geometry_wkb": b"\x01junk"},
+        ]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+
+        built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        await collection.save_to_store(built)
+        loaded = await collection.load_derived(("census_tracts", 3, tile.z, tile.x, tile.y))
+
+        assert loaded is not None
+        decoded = mapbox_vector_tile.decode(loaded["mvt"])
+        assert not decoded.get("census_tracts", {}).get("features")
+        (marker,) = decoded[f"census_tracts{PARTIAL_LAYER_SUFFIX}"]["features"]
+        assert marker["properties"] == {UNDECODABLE_PROPERTY: 2}
+
+    async def test_a_mixed_rollup_tile_carries_the_bucket_marker_and_the_tile_total(self, tmp_path: Path) -> None:
+        """one bucket kept a feature and lost a row, another lost everything: the partial layer sums both."""
+        tile = TileId(z=5, x=6, y=12)
+        bounds = tile_bounds(tile)
+        lon = bounds.min_lon + 0.1
+        lat = bounds.min_lat + 0.1
+        rows = [
+            _tract_row("a", lon=lon, lat=lat, state="04"),
+            {**_tract_row("b", lon=lon + 0.02, lat=lat, state="04"), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("c", lon=lon + 0.04, lat=lat, state="06"), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("d", lon=lon + 0.06, lat=lat, state="06"), "geometry_wkb": b"\x01junk"},
+        ]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+
+        built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        decoded = mapbox_vector_tile.decode(built["mvt"])
+        (feature,) = decoded["census_tracts"]["features"]
+        assert feature["properties"][UNDECODABLE_PROPERTY] == 1
+        (marker,) = decoded[f"census_tracts{PARTIAL_LAYER_SUFFIX}"]["features"]
+        assert marker["properties"] == {UNDECODABLE_PROPERTY: 3}
 
     async def test_undeclared_layer_is_a_miss_not_an_error(self, tmp_path: Path) -> None:
         collection, _ = _make_collection(tmp_path)
