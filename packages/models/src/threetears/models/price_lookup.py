@@ -162,44 +162,44 @@ def _to_per_million(per_token: object) -> Decimal | None:
     :ptype per_token: object
     :return: the per-1M price, or ``None`` when none is published
     :rtype: Decimal | None
-    :raises ValueError: a price is published but is not a number -- the upstream encoding changed,
-        which must not read as "no price published"
+    :raises ValueError: a price is published but is not a finite number -- the upstream encoding
+        changed, which must not read as "no price published"
     """
     if per_token in (None, "", "0"):
         return None
     try:
         value = Decimal(str(per_token)) * _PER_MILLION
     except InvalidOperation, ValueError:
-        raise ValueError(f"{str(per_token)[:64]!r} is not a number") from None
+        raise ValueError("is not a number") from None
+    if not value.is_finite():
+        # "NaN" and "Infinity" parse as Decimals, and NaN makes the comparison below raise
+        raise ValueError("is not a finite number")
     return value if value > 0 else None
 
 
-def _catalogue_prices(entry_id: str, pricing: dict[str, Any]) -> tuple[Decimal | None, Decimal | None, str | None]:
+def _catalogue_prices(pricing: dict[str, Any]) -> tuple[Decimal | None, Decimal | None, str | None, dict[str, str]]:
     """The per-1M input and output prices of one catalogue entry, and why either is missing though published.
 
-    :param entry_id: the catalogue id, for the reason and the log line
-    :ptype entry_id: str
     :param pricing: the entry's ``pricing`` mapping
     :ptype pricing: dict[str, Any]
-    :return: ``(input, output, unpriced_reason)``; the reason is ``None`` when every published price read
-    :rtype: tuple[Decimal | None, Decimal | None, str | None]
+    :return: ``(input, output, unpriced_reason, raw)``. the reason is a fixed sentence naming only the
+        side ("its published prompt price is not a number"), never upstream text, and is ``None`` when
+        every published price read; ``raw`` maps each unreadable side to its upstream value, for the
+        operator's log and nowhere else
+    :rtype: tuple[Decimal | None, Decimal | None, str | None, dict[str, str]]
     """
     costs: list[Decimal | None] = []
     problems: list[str] = []
+    raw: dict[str, str] = {}
     for side in ("prompt", "completion"):
         try:
             costs.append(_to_per_million(pricing.get(side)))
         except ValueError as exc:
             costs.append(None)
             problems.append(f"its published {side} price {exc}")
-    reason = f"{entry_id} is listed, but " + " and ".join(problems) if problems else None
-    if reason is not None:
-        log.warning(
-            "an upstream price did not parse; the model is left unpriced: %s",
-            reason,
-            extra={"extra_data": {"entry_id": entry_id, "source": "openrouter"}},
-        )
-    return costs[0], costs[1], reason
+            raw[side] = str(pricing.get(side))[:64]
+    reason = " and ".join(problems) if problems else None
+    return costs[0], costs[1], reason, raw
 
 
 def _candidate_ids(provider: str, api_name: str) -> tuple[str, ...]:
@@ -254,7 +254,7 @@ def match_price(catalogue: Sequence[dict[str, Any]], *, provider: str, api_name:
         None,
         None,
         None,
-        unpriced_reason=f"no catalogue entry matches {provider}/{api_name}",
+        unpriced_reason="no catalogue entry matches the requested model",
     )
 
 
@@ -262,7 +262,12 @@ def _result(entry: dict[str, Any], provider: str, api_name: str) -> PriceLookup:
     pricing = entry.get("pricing") or {}
     context = entry.get("context_length")
     entry_id = str(entry.get("id"))
-    cost_in, cost_out, reason = _catalogue_prices(entry_id, pricing)
+    cost_in, cost_out, reason, raw = _catalogue_prices(pricing)
+    if reason is not None:
+        log.warning(
+            "an upstream price did not parse; the model is left unpriced",
+            extra={"extra_data": {"entry_id": entry_id, "source": "openrouter", "raw": raw}},
+        )
     return PriceLookup(
         provider=provider,
         api_name=api_name,
@@ -305,6 +310,7 @@ def list_provider_models(catalogue: Sequence[dict[str, Any]], *, provider: str) 
     :rtype: list[ModelOption]
     """
     out: list[ModelOption] = []
+    unparsed: dict[str, dict[str, str]] = {}
     for entry in catalogue:
         entry_id = str(entry.get("id", ""))
         if not entry_id:
@@ -317,7 +323,9 @@ def list_provider_models(catalogue: Sequence[dict[str, Any]], *, provider: str) 
             api_name = entry_id.split("/", 1)[1]
         pricing = entry.get("pricing") or {}
         context = entry.get("context_length")
-        cost_in, cost_out, reason = _catalogue_prices(entry_id, pricing)
+        cost_in, cost_out, reason, raw = _catalogue_prices(pricing)
+        if reason is not None:
+            unparsed[entry_id] = raw
         out.append(
             ModelOption(
                 api_name=api_name,
@@ -327,6 +335,15 @@ def list_provider_models(catalogue: Sequence[dict[str, Any]], *, provider: str) 
                 cost_per_1m_output=cost_out,
                 unpriced_reason=reason,
             )
+        )
+    if unparsed:
+        # one line per pass: a changed price encoding hits every entry, and a line each would bury the log
+        log.warning(
+            "%d catalogue entries have an upstream price that did not parse; they are left unpriced",
+            len(unparsed),
+            extra={
+                "extra_data": {"source": "openrouter", "provider": provider, "sample": dict(list(unparsed.items())[:5])}
+            },
         )
     out.sort(key=lambda m: m.api_name)
     return out
@@ -437,8 +454,8 @@ def _parse_voyage_prices(body_html: str) -> dict[str, Decimal]:
     :ptype body_html: str
     :return: model id → per-1M USD price
     :rtype: dict[str, Decimal]
-    :raises PricePageUnreadable: no table on the page has a per-million-tokens column -- the
-        column label changed, which must not read as "no prices published"
+    :raises PricePageUnreadable: no table on the page has a per-million-tokens column, or none of
+        them yields a single price -- the page changed, which must not read as "no prices published"
     """
     prices: dict[str, Decimal] = {}
     priced_tables = 0
@@ -472,6 +489,10 @@ def _parse_voyage_prices(body_html: str) -> dict[str, Decimal]:
                     prices.setdefault(model_id, price)
     if priced_tables == 0:
         raise PricePageUnreadable(f"no pricing table has a {_PER_MILLION_HEADER!r} column")
+    if not prices:
+        raise PricePageUnreadable(
+            f"{priced_tables} pricing table(s) have a {_PER_MILLION_HEADER!r} column but no row yields a price"
+        )
     return prices
 
 
@@ -605,7 +626,7 @@ class VoyagePriceSource:
             raise
         matched = _match_voyage_model(prices, api_name)
         if matched is None:
-            return replace(empty, unpriced_reason=f"{api_name} is not listed on the Voyage pricing page")
+            return replace(empty, unpriced_reason="the model is not listed on the Voyage pricing page")
         matched_id, price = matched
         return PriceLookup(
             provider=provider,
@@ -680,8 +701,9 @@ async def lookup_price(client: HttpClient, *, provider: str, api_name: str) -> P
 
     The caller owns the HTTP client lifecycle (an ``httpx.AsyncClient`` with a timeout). A
     transport/HTTP error propagates to the caller, which surfaces it to the admin (lookup is a
-    best-effort pre-fill; a failure just means hand-enter). A *parse* miss inside a source yields an
-    all-``None`` result rather than raising.
+    best-effort pre-fill; a failure just means hand-enter). So does a page a source cannot read at
+    all (:class:`PricePageUnreadable`). A model the source does not list, or whose published price
+    does not parse, yields an all-``None`` result whose ``unpriced_reason`` says which.
 
     :param client: an async HTTP client exposing ``get(url)`` (e.g. ``httpx.AsyncClient``).
     :ptype client: HttpClient
@@ -691,6 +713,7 @@ async def lookup_price(client: HttpClient, *, provider: str, api_name: str) -> P
     :ptype api_name: str
     :return: the matched price (or an all-``None`` result when nothing matched).
     :rtype: PriceLookup
+    :raises PricePageUnreadable: a source's page was fetched but has lost the shape this build reads
     """
     source = _REGISTRY.resolve(provider)
     return await source.lookup(client, provider=provider, api_name=api_name)

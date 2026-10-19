@@ -53,6 +53,14 @@ def _tract_row(geoid: str, *, lon: float, lat: float, unreg: int = 100, state: s
     return {"geoid": geoid, "geometry_wkb": box.wkb, "total_unreg": unreg, "state_fips": state}
 
 
+def _undecodable_total(layer: str) -> float:
+    """the current value of ``geo_undecodable_rows_total`` for a layer."""
+    from prometheus_client import REGISTRY
+
+    value = REGISTRY.get_sample_value("geo_undecodable_rows_total", {"layer": layer})
+    return value or 0.0
+
+
 def _make_collection(
     tmp_path: Path,
     *,
@@ -250,6 +258,7 @@ class TestBuild:
         good = _tract_row("good", lon=bounds.min_lon + 0.001, lat=bounds.min_lat + 0.001)
         bad = {**_tract_row("bad", lon=bounds.min_lon + 0.002, lat=bounds.min_lat + 0.002), "geometry_wkb": b"\x01junk"}
         collection, _ = _make_collection(tmp_path, rows=[good, bad])
+        before = _undecodable_total("census_tracts")
 
         with caplog.at_level("WARNING"):
             built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
@@ -257,6 +266,10 @@ class TestBuild:
         assert built is not None
         assert len(mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]) == 1
         assert any("could not be read" in r.getMessage() and "1 source rows" in r.getMessage() for r in caplog.records)
+        assert any("(first: 'bad')" in r.getMessage() for r in caplog.records), (
+            "the warning must name the first bad row"
+        )
+        assert _undecodable_total("census_tracts") == before + 1
 
     async def test_undeclared_layer_is_a_miss_not_an_error(self, tmp_path: Path) -> None:
         collection, _ = _make_collection(tmp_path)

@@ -123,7 +123,7 @@ def test_unknown_model_returns_empty() -> None:
         cost_per_1m_input=None,
         cost_per_1m_output=None,
         context_window_tokens=None,
-        unpriced_reason="no catalogue entry matches openai/gpt-9-ultra",
+        unpriced_reason="no catalogue entry matches the requested model",
     )
 
 
@@ -136,10 +136,34 @@ def test_a_listed_model_with_an_unparseable_price_says_so_instead_of_reading_as_
         result = match_price(catalogue, provider="openai", api_name="gpt-4o")
     assert result.cost_per_1m_input is None
     assert result.cost_per_1m_output == Decimal("10")
-    assert result.unpriced_reason is not None and "prompt price" in result.unpriced_reason
+    assert result.unpriced_reason == "its published prompt price is not a number"
+    assert "two-fifty" not in result.unpriced_reason and "gpt-4o" not in result.unpriced_reason
     assert any("did not parse" in r.getMessage() for r in caplog.records)
     option = list_provider_models(catalogue, provider="openai")[0]
     assert option.unpriced_reason == result.unpriced_reason
+
+
+def test_a_published_nan_price_is_unpriced_with_a_reason_not_a_crash() -> None:
+    """failure injection: "NaN" is a valid Decimal, and comparing it raises InvalidOperation."""
+    catalogue = [
+        {"id": "openai/gpt-4o", "pricing": {"prompt": "NaN", "completion": "Infinity"}},
+        {"id": "openai/gpt-4o-mini", "pricing": {"prompt": "0.00000015", "completion": "0.0000006"}},
+    ]
+    result = match_price(catalogue, provider="openai", api_name="gpt-4o")
+    assert result.cost_per_1m_input is None and result.cost_per_1m_output is None
+    assert result.unpriced_reason == (
+        "its published prompt price is not a finite number and its published completion price is not a finite number"
+    )
+    options = list_provider_models(catalogue, provider="openai")
+    assert len(options) == 2, "one bad entry took the whole catalogue down"
+
+
+def test_a_catalogue_pass_logs_one_summary_not_one_line_per_entry(caplog: pytest.LogCaptureFixture) -> None:
+    catalogue = [{"id": f"openai/m{n}", "pricing": {"prompt": "bad", "completion": "bad"}} for n in range(50)]
+    with caplog.at_level("WARNING"):
+        list_provider_models(catalogue, provider="openai")
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "50 catalogue entries" in warnings[0].getMessage()
 
 
 def test_discovery_openrouter_lists_every_slug_as_api_name() -> None:
@@ -301,11 +325,21 @@ async def test_voyage_source_malformed_page_is_a_failed_lookup_not_an_empty_one(
     assert any("could not be read" in r.getMessage() for r in caplog.records)
 
 
+def test_voyage_table_where_no_cell_parses_as_a_price_is_an_unreadable_page() -> None:
+    """failure injection: the per-million column exists but its cells changed format (no "$")."""
+    table = (
+        "<table><thead><tr><th>Model</th><th>Price per million tokens</th></tr></thead>"
+        "<tbody><tr><td><code>voyage-4</code></td><td>six cents</td></tr></tbody></table>"
+    )
+    with pytest.raises(PricePageUnreadable, match="no row yields a price"):
+        parse_voyage_pricing('{"body":"' + table.replace('"', '\\"') + '"}')
+
+
 async def test_voyage_source_unlisted_model_is_empty_with_a_reason() -> None:
     client = _FakeClient(text=_VOYAGE_FIXTURE)
     result = await VoyagePriceSource().lookup(client, provider="voyage", api_name="voyage-nonexistent")
     assert result.matched_id is None and result.cost_per_1m_input is None
-    assert result.unpriced_reason is not None and "not listed" in result.unpriced_reason
+    assert result.unpriced_reason == "the model is not listed on the Voyage pricing page"
 
 
 async def test_voyage_source_transport_error_propagates() -> None:

@@ -90,12 +90,16 @@ class BandResult:
         read (:class:`~threetears.geo.geometry.UndecodableGeometry`). a malformed row costs its
         own feature, never the tile, and is counted here rather than passed off as absent
     :ptype undecodable: int
+    :param first_undecodable: the feature id (or rollup key) of the first such row, so the warning
+        points at a row an operator can look up; ``None`` when none was left out or the row has no id
+    :ptype first_undecodable: Any
     """
 
     features: list[TileFeature]
     truncated: bool = False
     dropped: int = 0
     undecodable: int = 0
+    first_undecodable: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,11 +186,14 @@ def feature_band(
     tolerance = simplification_tolerance(tile.z)
     candidates: list[tuple[float, TileFeature]] = []
     undecodable = 0
+    first_undecodable: Any = None
     for row in rows:
         try:
             geometry = geometry_of(row)
         except UndecodableGeometry:
             undecodable += 1
+            if first_undecodable is None:
+                first_undecodable = row.get(spec.feature_id_column) if spec.feature_id_column else None
             continue
         if geometry is None:
             continue
@@ -215,7 +222,11 @@ def feature_band(
         )
 
     if len(candidates) <= spec.max_features_per_tile:
-        return BandResult(features=[feature for _, feature in candidates], undecodable=undecodable)
+        return BandResult(
+            features=[feature for _, feature in candidates],
+            undecodable=undecodable,
+            first_undecodable=first_undecodable,
+        )
 
     # descending rank: keep the most important, drop the rest.
     candidates.sort(key=lambda pair: pair[0], reverse=True)
@@ -228,7 +239,9 @@ def feature_band(
         len(candidates),
         spec.rank_column or "source order",
     )
-    return BandResult(features=kept, truncated=True, dropped=dropped, undecodable=undecodable)
+    return BandResult(
+        features=kept, truncated=True, dropped=dropped, undecodable=undecodable, first_undecodable=first_undecodable
+    )
 
 
 def aggregate_band(
@@ -263,11 +276,14 @@ def aggregate_band(
 
     groups: dict[Any, list[tuple[dict[str, Any], BaseGeometry]]] = {}
     undecodable = 0
+    first_undecodable: Any = None
     for row in rows:
         try:
             geometry = geometry_of(row)
         except UndecodableGeometry:
             undecodable += 1
+            if first_undecodable is None:
+                first_undecodable = row.get(spec.rollup_column) if spec.rollup_column else None
             continue
         if geometry is None:
             continue
@@ -295,7 +311,7 @@ def aggregate_band(
                 feature_id=bucket if isinstance(bucket, (str, int)) else None,
             )
         )
-    return BandResult(features=features, undecodable=undecodable)
+    return BandResult(features=features, undecodable=undecodable, first_undecodable=first_undecodable)
 
 
 def _rank_of(row: dict[str, Any], rank_column: str | None) -> float:

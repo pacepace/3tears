@@ -367,11 +367,18 @@ class TileCollection(DerivedCollection[TileEntity]):
                 label_names=("layer",),
             ).labels(layer=layer_name).inc(band.undecodable)
             log.warning(
-                "tile %s/%s left out %d source rows whose geometry could not be read",
+                "tile %s/%s left out %d source rows whose geometry could not be read (first: %r)",
                 layer_name,
                 tile,
                 band.undecodable,
-                extra={"extra_data": {"layer": layer_name, "undecodable": band.undecodable}},
+                band.first_undecodable,
+                extra={
+                    "extra_data": {
+                        "layer": layer_name,
+                        "undecodable": band.undecodable,
+                        "first_undecodable": str(band.first_undecodable),
+                    }
+                },
             )
         if band.truncated:
             log.info(
