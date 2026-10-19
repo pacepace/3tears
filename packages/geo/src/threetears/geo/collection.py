@@ -346,6 +346,10 @@ class TileCollection(DerivedCollection[TileEntity]):
         returns ``None`` for an undeclared layer or an out-of-range zoom.
         that is a miss rather than an error: a client asking for a zoom the
         layer does not serve should get nothing to draw, not a failure.
+
+        a tile built over source rows whose geometry could not be read, in either band, carries
+        the layer's :data:`~threetears.geo.mvt.PARTIAL_LAYER_SUFFIX` companion layer saying how
+        many, besides the counter and the warning.
         """
         layer_name, version, z, x, y = self.normalize_pk(entity_id)
         definition = self._layers.get(layer_name)
@@ -358,7 +362,9 @@ class TileCollection(DerivedCollection[TileEntity]):
         tile = TileId(z=z, x=x, y=y)
         rows = await self._features_for(definition, version, tile)
         band = self._build_band(rows, tile=tile, definition=definition)
-        payload = encode_tile({layer_name: band.features}, tile)
+        # both bands meet here, so this is where a tile built over unreadable rows is marked:
+        # the per-bucket property covers only buckets that kept a feature
+        payload = encode_tile({layer_name: band.features}, tile, undecodable={layer_name: band.undecodable})
 
         if band.undecodable:
             counter(

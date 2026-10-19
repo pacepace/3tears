@@ -111,9 +111,17 @@ the aggregate band it is also marked in the stored tile: the bucket's feature
 carries an `undecodable` property giving how many of its rows were left out, so
 a `count` or sum that falls short says by how much. A feature that lost no rows
 has no such property, so a healthy tile is unchanged; read it as
-`["coalesce", ["get", "undecodable"], 0]`. A bucket none of whose rows could be
-read has no position to draw at, so it has no feature, and only the counter and
-the warning record it.
+`["coalesce", ["get", "undecodable"], 0]`.
+
+A tile that left out any rows, in either band, also carries a companion layer
+named after its own with `.partial` appended (`PARTIAL_LAYER_SUFFIX`): `tracts`
+gets `tracts.partial`. It holds one feature whose `undecodable` property is the
+tile's total for that layer. That covers what no per-feature marker can: a
+feature-band tile, and an aggregate bucket none of whose rows could be read,
+which has no position and so no feature of its own. The feature's geometry is a
+point at the tile's centre and means nothing; a style draws the layer only if
+it names it. A tile that lost no rows has no such layer and is byte-for-byte
+unchanged.
 
 ## Feature ids are not MVT ids
 

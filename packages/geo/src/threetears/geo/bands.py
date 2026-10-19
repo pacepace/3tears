@@ -62,7 +62,8 @@ _BASE_TOLERANCE_DEGREES: Final = 360.0 / 4096.0
 #: out because their geometry could not be read: how many. its ``count`` and measures then
 #: total only the rows that were read, and this says by how many rows they fall short, in the
 #: stored tile itself rather than only in a log line. absent on a feature that lost nothing,
-#: so a healthy tile encodes exactly as before and a client reads it as ``?? 0``.
+#: so a healthy tile encodes exactly as before and a client reads it as ``?? 0``. the same
+#: name carries a tile's whole count on its :data:`~threetears.geo.mvt.PARTIAL_LAYER_SUFFIX` layer.
 UNDECODABLE_PROPERTY: Final = "undecodable"
 
 
@@ -96,7 +97,8 @@ class BandResult:
     :ptype dropped: int
     :param undecodable: how many source rows were left out because their geometry could not be
         read (:class:`~threetears.geo.geometry.UndecodableGeometry`). a malformed row costs its
-        own feature, never the tile, and is counted here rather than passed off as absent
+        own feature, never the tile, and is counted here rather than passed off as absent; the
+        encoded tile carries the count in its :data:`~threetears.geo.mvt.PARTIAL_LAYER_SUFFIX` layer
     :ptype undecodable: int
     :param first_undecodable: the feature id (or rollup key) of the first such row, so the warning
         points at a row an operator can look up; ``None`` when none was left out or the row has no id
@@ -277,7 +279,8 @@ def aggregate_band(
     a row whose geometry cannot be read is left out and counted against its bucket: the
     bucket's feature carries :data:`UNDECODABLE_PROPERTY`, so a total that undercounts says so
     in the tile. a bucket none of whose rows could be read has no position and so no feature;
-    its rows are still counted on the result's ``undecodable``.
+    its rows are still counted on the result's ``undecodable``, which the encoder turns into the
+    tile's :data:`~threetears.geo.mvt.PARTIAL_LAYER_SUFFIX` layer.
 
     the centroid is the mean of member centroids rather than the centre of the
     tile, so a group's marker sits on its members instead of in whatever empty

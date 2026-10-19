@@ -30,7 +30,7 @@ from threetears.geo.collection import (
 )
 from threetears.geo.features import FeatureCache, FeatureEntity, FeatureLoader
 from threetears.geo.geometry import UndecodableGeometry, decode_geometry, geometry_bounds, point_geometry
-from threetears.geo.mvt import encode_tile, project_to_tile
+from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX, encode_tile, project_to_tile
 from threetears.geo.overlay import (
     KeyedFeature,
     LayerOverlayError,
@@ -55,6 +55,7 @@ from threetears.geo.tiles import (
 __all__ = [
     "MAX_CACHE_SCOPE_LENGTH",
     "MAX_MERCATOR_LATITUDE",
+    "PARTIAL_LAYER_SUFFIX",
     "UNDECODABLE_PROPERTY",
     "AggregateSpec",
     "BandResult",

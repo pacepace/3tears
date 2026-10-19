@@ -26,6 +26,7 @@ from threetears.geo.bands import UNDECODABLE_PROPERTY, AggregateSpec, FeatureSpe
 from threetears.geo.collection import LayerDefinition, TileCollection, ViewportRequest
 from threetears.geo.features import FeatureCache
 from threetears.geo.geometry import UndecodableGeometry, decode_geometry
+from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.object_store.filesystem import FilesystemObjectStore
 
@@ -313,8 +314,83 @@ class TestBuild:
 
         built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
         assert built is not None
-        (feature,) = mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]
+        decoded = mapbox_vector_tile.decode(built["mvt"])
+        (feature,) = decoded["census_tracts"]["features"]
         assert UNDECODABLE_PROPERTY not in feature["properties"]
+        assert set(decoded) == {"census_tracts"}, "a tile that lost nothing carries no partial layer"
+
+    async def test_a_feature_tile_over_undecodable_rows_carries_the_partial_layer_through_the_store(
+        self, tmp_path: Path
+    ) -> None:
+        """above the crossover there is no rollup to carry a per-bucket marker; the tile still says so."""
+        tile = TileId(z=12, x=812, y=1620)
+        bounds = tile_bounds(tile)
+        lon = bounds.min_lon + 0.001
+        lat = bounds.min_lat + 0.001
+        rows = [
+            _tract_row("good", lon=lon, lat=lat),
+            {**_tract_row("bad1", lon=lon + 0.001, lat=lat), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("bad2", lon=lon + 0.002, lat=lat), "geometry_wkb": b"\x01junk"},
+        ]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+        before = _undecodable_total("census_tracts")
+
+        built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        await collection.save_to_store(built)
+        loaded = await collection.load_derived(("census_tracts", 3, tile.z, tile.x, tile.y))
+
+        assert loaded is not None
+        decoded = mapbox_vector_tile.decode(loaded["mvt"])
+        assert len(decoded["census_tracts"]["features"]) == 1
+        (marker,) = decoded[f"census_tracts{PARTIAL_LAYER_SUFFIX}"]["features"]
+        assert marker["properties"] == {UNDECODABLE_PROPERTY: 2}
+        assert _undecodable_total("census_tracts") == before + 2
+
+    async def test_a_bucket_that_lost_every_row_still_marks_the_tile(self, tmp_path: Path) -> None:
+        """no readable row means no position and no rollup feature; the partial layer is all that says so."""
+        tile = TileId(z=5, x=6, y=12)
+        bounds = tile_bounds(tile)
+        lon = bounds.min_lon + 0.1
+        lat = bounds.min_lat + 0.1
+        rows = [
+            {**_tract_row("a", lon=lon, lat=lat), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("b", lon=lon + 0.02, lat=lat), "geometry_wkb": b"\x01junk"},
+        ]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+
+        built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        await collection.save_to_store(built)
+        loaded = await collection.load_derived(("census_tracts", 3, tile.z, tile.x, tile.y))
+
+        assert loaded is not None
+        decoded = mapbox_vector_tile.decode(loaded["mvt"])
+        assert not decoded.get("census_tracts", {}).get("features")
+        (marker,) = decoded[f"census_tracts{PARTIAL_LAYER_SUFFIX}"]["features"]
+        assert marker["properties"] == {UNDECODABLE_PROPERTY: 2}
+
+    async def test_a_mixed_rollup_tile_carries_the_bucket_marker_and_the_tile_total(self, tmp_path: Path) -> None:
+        """one bucket kept a feature and lost a row, another lost everything: the partial layer sums both."""
+        tile = TileId(z=5, x=6, y=12)
+        bounds = tile_bounds(tile)
+        lon = bounds.min_lon + 0.1
+        lat = bounds.min_lat + 0.1
+        rows = [
+            _tract_row("a", lon=lon, lat=lat, state="04"),
+            {**_tract_row("b", lon=lon + 0.02, lat=lat, state="04"), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("c", lon=lon + 0.04, lat=lat, state="06"), "geometry_wkb": b"\x01junk"},
+            {**_tract_row("d", lon=lon + 0.06, lat=lat, state="06"), "geometry_wkb": b"\x01junk"},
+        ]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+
+        built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        decoded = mapbox_vector_tile.decode(built["mvt"])
+        (feature,) = decoded["census_tracts"]["features"]
+        assert feature["properties"][UNDECODABLE_PROPERTY] == 1
+        (marker,) = decoded[f"census_tracts{PARTIAL_LAYER_SUFFIX}"]["features"]
+        assert marker["properties"] == {UNDECODABLE_PROPERTY: 3}
 
     async def test_undeclared_layer_is_a_miss_not_an_error(self, tmp_path: Path) -> None:
         collection, _ = _make_collection(tmp_path)
