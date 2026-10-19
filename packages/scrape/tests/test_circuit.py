@@ -1291,3 +1291,44 @@ async def test_an_unreadable_backoff_window_backs_off_rather_than_lifting_the_bl
 
     later = await circuit.check(_T, now=_NOW + timedelta(seconds=61))
     assert later.permitted and later.is_probe, "after one window the target is probed as usual"
+
+
+@pytest.mark.asyncio
+async def test_the_fresh_window_for_an_unreadable_one_books_its_reprobe(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """An event-driven deployment has nothing else that will revisit the row when the window ends."""
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=2,
+        blocked_until="not-a-timestamp",  # type: ignore[arg-type]
+    )
+    scheduler = _FakeReprobeScheduler()
+
+    await TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler).check(_T, now=_NOW)
+
+    assert scheduler.booked == [(_T, pytest.approx(60.0))]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_window_that_cannot_be_rewritten_says_it_will_keep_backing_off(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=2,
+        blocked_until="not-a-timestamp",  # type: ignore[arg-type]
+    )
+    circuit = TargetCircuit(health, policy=policy)
+
+    with patch("threetears.scrape.circuit.record_circuit_state", side_effect=RuntimeError("L3 pool is gone")):
+        decision = await circuit.check(_T, now=_NOW)
+
+    assert not decision.permitted
+    assert "the fresh window could not be written, so every check backs off until the row is repaired" in (
+        decision.reason
+    )

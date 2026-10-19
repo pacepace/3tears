@@ -397,22 +397,29 @@ class TargetCircuit:
         window = self._stored_window(health, moment)
         if window.unreadable:
             self._release_in_process_probe(breaker)
-            await self._write(
+            rewritten = await self._write(
                 target_id,
                 state=was,
                 failures=health.consecutive_fetch_failures,
                 blocked_until=window.until,
             )
             wait = _seconds_until(window.until, moment)
+            # Booked like any other window, so an event-driven deployment re-probes when it ends.
+            await self._book_reprobe(target_id, wait)
+            reason = (
+                "the stored backoff window for this target could not be read, so it is treated as in "
+                f"force: backing off for {wait:.0f}s"
+            )
+            if not rewritten:
+                # The unreadable value is still stored, so the next check reads it again and
+                # backs off again: say so, rather than promise a recovery that cannot come.
+                reason += "; the fresh window could not be written, so every check backs off until the row is repaired"
             return FetchDecision(
                 permitted=False,
                 state=was,
                 retry_after_seconds=wait,
                 is_probe=False,
-                reason=(
-                    "the stored backoff window for this target could not be read, so it is treated as in "
-                    f"force: backing off for {wait:.0f}s"
-                ),
+                reason=reason,
             )
 
         # A HALF_OPEN row means a probe was admitted and has not reported back. `CircuitBreaker`
@@ -1041,8 +1048,13 @@ class TargetCircuit:
         blocked_until: datetime | None,
         blocked_at: datetime | None = None,
         egress: str | None = None,
-    ) -> None:
-        """Persist the circuit, never letting the bookkeeping cost the caller its fetch."""
+    ) -> bool:
+        """Persist the circuit, never letting the bookkeeping cost the caller its fetch.
+
+        :return: whether the write landed; a caller whose answer depends on it says so
+        :rtype: bool
+        """
+        landed = True
         try:
             await record_circuit_state(
                 self._health,
@@ -1064,6 +1076,8 @@ class TargetCircuit:
                 extra={"target_id": target_id},
                 level="error",
             )
+            landed = False
+        return landed
 
 
 class _Window(NamedTuple):

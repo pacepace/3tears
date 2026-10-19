@@ -236,7 +236,7 @@ class TestParseDocumentBytesToHtmlOcrImages:
         assert result.was_ocr is True
         assert "Scanned letter text" in result.html
         assert OCR_PAGE_IMAGE_CLASS not in result.html
-        assert result.page_images_fault is not None and "boom" in result.page_images_fault
+        assert result.page_images_fault == "PDF page images could not be rendered (RuntimeError)"
 
     async def test_force_images_whose_rendering_fails_is_refused_rather_than_parsed_without_them(
         self, monkeypatch: pytest.MonkeyPatch
@@ -252,7 +252,46 @@ class TestParseDocumentBytesToHtmlOcrImages:
                 b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf", force_images=True
             )
         assert caught.value.code == "render_failed"
-        assert "boom" in caught.value.message
+        assert caught.value.message.endswith("PDF page images could not be rendered (RuntimeError)")
+
+    async def test_no_exception_message_reaches_the_lost_images_fault(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Through the real renderer: its library's message stays in the log, out of the result."""
+        import sys
+        from types import ModuleType
+
+        fake_result = DocumentResult(text="Scanned letter text", title=None, page_count=1, word_count=3, was_ocr=True)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        fake_pdf2image = ModuleType("pdf2image")
+
+        def _planted(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("PLANTED-77ab poppler said something")
+
+        fake_pdf2image.convert_from_bytes = _planted  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+
+        parsed = await parse_document_bytes_to_html(b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf")
+        with pytest.raises(DocumentDriverError) as caught:
+            await parse_document_bytes_to_html(
+                b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf", force_images=True
+            )
+
+        assert parsed.page_images_fault == "PDF page images could not be rendered (RuntimeError)"
+        assert "PLANTED-77ab" not in caught.value.message
+
+    async def test_the_parsers_page_faults_are_carried_on_the_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_result = DocumentResult(
+            text="Table text",
+            title=None,
+            page_count=2,
+            word_count=2,
+            was_ocr=False,
+            page_faults=["page 2: tables could not be extracted (RuntimeError)"],
+        )
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+
+        result = await parse_document_bytes_to_html(b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf")
+
+        assert result.page_faults == ("page 2: tables could not be extracted (RuntimeError)",)
 
     async def test_force_images_embeds_pages_even_when_was_ocr_is_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Live-found: a born-digital PDF (Nevada's real master WARN table) can
@@ -585,6 +624,27 @@ class TestDocumentDriver:
         assert page.was_ocr is True
         await client.aclose()
 
+    async def test_render_carries_what_the_parser_could_not_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
+        driver = DocumentDriver(client=client)
+
+        fake_result = DocumentResult(
+            text="Scanned text",
+            title=None,
+            page_count=1,
+            word_count=2,
+            was_ocr=True,
+            page_faults=["page 1: tables could not be extracted (RuntimeError)"],
+        )
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", _refuse_to_render)
+
+        page = await driver.render("https://example.gov/warn.pdf")
+
+        assert page.page_faults == ["page 1: tables could not be extracted (RuntimeError)"]
+        assert page.page_images_fault == "PDF page images could not be rendered (RuntimeError)"
+        await client.aclose()
+
     async def test_force_images_constructor_flag_is_threaded_through_to_the_parse_call(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -713,4 +773,4 @@ async def test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver(caplog
 
 def _refuse_to_render(data: bytes) -> list[bytes]:
     """``render_pdf_pages_to_images`` as it answers when the pages cannot be rendered."""
-    raise DocumentParseError("parse_failed", "PDF page images could not be rendered: RuntimeError: boom", filename=None)
+    raise DocumentParseError("parse_failed", "PDF page images could not be rendered (RuntimeError)", filename=None)

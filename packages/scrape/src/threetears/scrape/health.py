@@ -38,7 +38,7 @@ from typing import Any, ClassVar
 
 from threetears.core.entities.base import BaseEntity
 
-from .collections import ScrapeCollection, _parse_dt
+from .collections import ScrapeCollection, _parse_dt_or_unrecorded, _parse_dt_strict
 from .extraction import html_to_text
 
 __all__ = [
@@ -103,7 +103,9 @@ class ScrapeTargetHealth(BaseEntity):
     @property
     def fingerprint_updated_at(self) -> datetime | None:
         """When :attr:`content_fingerprint` was last stamped."""
-        return _parse_dt(self._get_raw("fingerprint_updated_at"))
+        return _parse_dt_or_unrecorded(
+            self._get_raw("fingerprint_updated_at"), column="fingerprint_updated_at", row=self.target_id
+        )
 
     @property
     def consecutive_fetch_failures(self) -> int:
@@ -147,13 +149,19 @@ class ScrapeTargetHealth(BaseEntity):
         this window is not fetched, so it reaches neither candidate generation nor the page
         classifier -- the classifier's own verdict cache cannot bound it, because a real
         interstitial renders a per-request id into the very text the cache keys on.
+
+        Strict: a stored value that is not a timestamp raises rather than reading as
+        ``None``, which would lift the block; :class:`~threetears.scrape.circuit.TargetCircuit`
+        reads that as a window in force.
+
+        :raises StoredTimestampUnreadable: the stored value is not a timestamp
         """
-        return _parse_dt(self._get_raw("blocked_until"))
+        return _parse_dt_strict(self._get_raw("blocked_until"))
 
     @property
     def last_blocked_at(self) -> datetime | None:
         """When this target was last observed to be behind a wall."""
-        return _parse_dt(self._get_raw("last_blocked_at"))
+        return _parse_dt_or_unrecorded(self._get_raw("last_blocked_at"), column="last_blocked_at", row=self.target_id)
 
     @property
     def last_egress(self) -> str | None:
@@ -188,7 +196,9 @@ class ScrapeTargetHealth(BaseEntity):
         fetch failure: counting it as one would open the circuit, start a backoff and mark a
         working site unhealthy over a rule that says nothing about whether it works.
         """
-        return _parse_dt(self._get_raw("robots_blocked_at"))
+        return _parse_dt_or_unrecorded(
+            self._get_raw("robots_blocked_at"), column="robots_blocked_at", row=self.target_id
+        )
 
     @property
     def robots_blocked_reason(self) -> str | None:
@@ -270,9 +280,12 @@ class ScrapeTargetHealth(BaseEntity):
 
         Written together with :attr:`session_state_sealed`, always. A token with no expiry is a
         credential of unknown lifetime, so a missing one here is read as expired rather than as
-        eternal -- see :func:`threetears.scrape.session_state.usable_session_state`.
+        eternal -- see :func:`threetears.scrape.session_state.usable_session_state`. Strict for
+        the same reason: one that cannot be read raises, and that reader treats it as expired.
+
+        :raises StoredTimestampUnreadable: the stored value is not a timestamp
         """
-        return _parse_dt(self._get_raw("session_state_expires_at"))
+        return _parse_dt_strict(self._get_raw("session_state_expires_at"))
 
 
 class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):

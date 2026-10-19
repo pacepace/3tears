@@ -1038,6 +1038,12 @@ class ScrapeTool(TearsTool):
                         # The driver already knows the status; not passing it would leave the
                         # classifier guessing about evidence we are holding.
                         page_status=page.status,
+                        # What the document's parser could not read: a miss on a partly read
+                        # document is recorded with it, and not counted against the recipe.
+                        page_faults=[
+                            *page.page_faults,
+                            *([page.page_images_fault] if page.page_images_fault is not None else []),
+                        ],
                     )
                 except StructuredCallFailedError as exc:
                     # A model call the eval loop depended on failed every attempt (logged once
