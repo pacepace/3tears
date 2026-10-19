@@ -45,7 +45,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from threetears.core.security.delegated_token import NAMESPACE_DISCOVER_DOOR
 from threetears.core.security.door_request import NAMESPACE_DISCOVER_OP, DoorCredential, ProvenDoorRequest
 from threetears.observe import contain, get_logger, traced
@@ -363,11 +363,11 @@ class NamespaceDiscoveryClient:
             ) from exc
         body = reply.data
         # success path first; fall through to error parsing on failure
-        parse_error: Exception | None = None
+        parse_error: ValidationError | None = None
         response: NamespaceDiscoveryResponse | None
         try:
             response = NamespaceDiscoveryResponse.model_validate_json(body)
-        except Exception as exc:
+        except ValidationError as exc:
             contain(exc, log=log, what="namespace.discover reply did not parse as a discovery response")
             parse_error = exc
             response = None
@@ -378,8 +378,10 @@ class NamespaceDiscoveryClient:
             # either response is None (parse failed) or success=False;
             # inspect the body for the broker's error envelope fields.
             error_code = "UNKNOWN"
+            # the error reaches the agent through the workspace tools, so a parse failure is named by
+            # its type only: a ValidationError's text quotes the reply it refused. contain() has it.
             error_message = (
-                f"malformed discovery response: {parse_error}"
+                f"malformed discovery response ({type(parse_error).__name__})"
                 if parse_error is not None
                 else "discovery returned success=false"
             )
@@ -387,7 +389,7 @@ class NamespaceDiscoveryClient:
                 envelope = NamespaceDiscoveryErrorEnvelope.model_validate_json(body)
                 error_code = envelope.error_code
                 error_message = envelope.error_message
-            except Exception as exc:  # noqa: BLE001 -- the DiscoveryClientError below is the report
+            except ValidationError as exc:
                 # Only enriching the message; the failure is raised either way. Logged so a
                 # generic "discovery returned success=false" is traceable to an unparseable body
                 # rather than read as all the detail the server sent.

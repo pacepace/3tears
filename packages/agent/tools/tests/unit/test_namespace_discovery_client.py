@@ -22,6 +22,7 @@ import pytest
 
 from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
+    NamespaceDiscoveryErrorEnvelope,
     NamespaceDiscoveryClient,
     NamespaceDiscoveryRequest,
     NamespaceDiscoveryResponse,
@@ -359,3 +360,49 @@ async def test_an_unparseable_body_still_reports_something_useful() -> None:
         await client.discover(correlation_id=uuid4(), identity_token="agent.token")
 
     assert "malformed discovery response" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_a_bug_while_parsing_the_reply_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """only a reply that does not validate reads as malformed; a TypeError is a bug.
+
+    It used to be contained and reported as "malformed discovery response", blaming the broker.
+    """
+
+    def _broken(cls: type[NamespaceDiscoveryResponse], data: bytes) -> NamespaceDiscoveryResponse:
+        raise TypeError("a bug in the reply parse")
+
+    monkeypatch.setattr(NamespaceDiscoveryResponse, "model_validate_json", classmethod(_broken))
+    fake = _FakeNatsClient(reply_bytes=_success_bytes([]))
+    client = NamespaceDiscoveryClient(nats_client=fake, namespace="ns")
+
+    with pytest.raises(TypeError, match="a bug in the reply parse"):
+        await client.discover(correlation_id=uuid4(), identity_token="agent.token")
+
+
+@pytest.mark.asyncio
+async def test_a_bug_while_parsing_the_error_envelope_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """a refusal whose envelope parse hits a bug raises the bug, not a refusal with default text."""
+
+    def _broken(cls: type[NamespaceDiscoveryErrorEnvelope], data: bytes) -> NamespaceDiscoveryErrorEnvelope:
+        raise TypeError("a bug in the envelope parse")
+
+    monkeypatch.setattr(NamespaceDiscoveryErrorEnvelope, "model_validate_json", classmethod(_broken))
+    fake = _FakeNatsClient(reply_bytes=b'{"success": false, "error_code": "X", "error_message": "no"}')
+    client = NamespaceDiscoveryClient(nats_client=fake, namespace="ns")
+
+    with pytest.raises(TypeError, match="a bug in the envelope parse"):
+        await client.discover(correlation_id=uuid4(), identity_token="agent.token")
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_reply_is_named_by_type_not_by_its_content() -> None:
+    """the error reaches the agent, so it never quotes the reply pydantic refused."""
+    fake = _FakeNatsClient(reply_bytes=b'{"success": true, "items": [{"id": "secret-looking-content"}]}')
+    client = NamespaceDiscoveryClient(nats_client=fake, namespace="ns")
+
+    with pytest.raises(DiscoveryClientError) as excinfo:
+        await client.discover(correlation_id=uuid4(), identity_token="agent.token")
+
+    assert "malformed discovery response (ValidationError)" in str(excinfo.value)
+    assert "secret-looking-content" not in str(excinfo.value)
