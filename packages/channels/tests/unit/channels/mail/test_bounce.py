@@ -16,6 +16,7 @@ same canonical `verify_generic_hmac_sha256`, the same signature header and size 
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -67,6 +68,17 @@ class _JsonParser:
             )
             for item in raw
         ]
+
+
+# parity-with: threetears.channels.mail.bounce.DeliveryEventParser
+class _RaisingParser:
+    """A parser that raises the exception it was built with, for every body."""
+
+    def __init__(self, raises: Exception) -> None:
+        self._raises = raises
+
+    def parse(self, payload: bytes) -> list[DeliveryEvent]:
+        raise self._raises
 
 
 class _RecordingHandler:
@@ -206,6 +218,38 @@ class TestWhatItRefuses:
         result = await _receiver(handler).handle_payload(payload, _signed(payload))
 
         assert result.status_code == 400
+
+    async def test_the_declared_parse_error_is_a_bad_request(self) -> None:
+        """`ValueError` is the parser contract's "this body is malformed". It alone is
+        the provider's problem."""
+        handler = _RecordingHandler()
+        receiver = BounceReceiver(
+            secret_ref=_SECRET_REF, parser=_RaisingParser(ValueError("not a delivery report")), handler=handler
+        )
+        payload = _payload({"type": "bounced_hard", "recipient": "ada@acme.example"})
+
+        result = await receiver.handle_payload(payload, _signed(payload))
+
+        assert result.status_code == 400
+        assert handler.events == []
+
+    async def test_a_parser_bug_asks_the_provider_to_resend(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Anything but a `ValueError` is our bug, not a bad body. A 400 would make the
+        provider drop a bounce nothing else will ever report; a 500 has it resend."""
+        handler = _RecordingHandler()
+        receiver = BounceReceiver(secret_ref=_SECRET_REF, parser=_RaisingParser(KeyError("recipient")), handler=handler)
+        payload = _payload({"type": "bounced_hard", "recipient": "ada@acme.example"})
+
+        with caplog.at_level(logging.WARNING):
+            result = await receiver.handle_payload(payload, _signed(payload))
+
+        assert result.status_code == 500
+        assert result.message == "parser failed (KeyError); redelivery expected"
+        assert handler.events == []
+        logged = [record for record in caplog.records if "the parser failed" in record.getMessage()]
+        assert len(logged) == 1
+        assert logged[0].levelno == logging.WARNING
+        assert logged[0].exc_info is not None and isinstance(logged[0].exc_info[1], KeyError)
 
 
 class TestTheSecretIsAReferenceResolvedPerCallback:
