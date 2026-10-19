@@ -24,7 +24,7 @@ host's side: declare the measure's range.
 ### On a few cases a rate floor reads unclear (accepted limit)
 
 Decided with the fix that made a rate clause read the bounded interval (`.30`; no issue filed yet), and kept when
-decision rules became floors (`0.71`).
+decision rules became floors (`0.72`).
 
 A rate floor reads `held` and `broken` only on the bounded interval, for the overall pass rate and each check's
 alike, at the nominal 95%, and that interval holds its error rate at every n

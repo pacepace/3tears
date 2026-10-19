@@ -705,12 +705,12 @@ rating names the run and result it was given on as provenance, and carries what 
 judged transcript per rating. **Back the durable store up like source code**: it is what people wrote, and nothing
 can make it again.
 
-**Campaigns became durable at durable v16 (`0.71.0`)**, when a campaign came to ask one question of one or more
+**Campaigns became durable at durable v16 (`0.72.0`)**, when a campaign came to ask one question of one or more
 aspects. The one upgrade step (`upgrade_campaign_v15`, in `DURABLE_UPGRADERS`) reads a stored v15 campaign, core or
 durable, as one aspect labelled with its behavior, its question, control and decision rule as the campaign's
 question, control arm and floors; nothing is rewritten in place. What a host must know before deploying it:
 
-- **No rollback past it.** A build before `0.71.0` refuses every durable document this one writes, templates
+- **No rollback past it.** A build before `0.72.0` refuses every durable document this one writes, templates
   included, so once it has written, the fleet does not roll back, and during a rolling deploy the older pods refuse
   what the new ones write. Move every process together.
 - **A routed store relocates first.** Under a `RoutedDocumentStore` that routes by lifecycle, campaigns are now
@@ -789,7 +789,7 @@ for profile in dropped.judge_profiles:                # the one kind that does n
 
 `drop_derived` deletes nothing else: runs, results, cassettes and every durable document stay. Analyses come back by
 generating them again and insights with the analyses that mint them; a judge profile only by recording it again, and
-until then a campaign that took its judges' tier from it reads its own evidence's tier. `0.71.0` is such a bump
+until then a campaign that took its judges' tier from it reads its own evidence's tier. `0.72.0` is such a bump
 (regenerable v12: one memo per campaign). A cassette is not touched by that bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
 when the cassette itself changes, because re-capturing a corpus calls your third-party tools again. A cassette
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new

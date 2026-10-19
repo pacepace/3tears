@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.71.0 -- 2026-10-18
+## v0.72.0
 
 ### 3tears-evals: a campaign is a campaign of aspects, asking one question
 
@@ -14,7 +14,7 @@ packages (bumped in lock-step).
   across one or more aspects, each read on its own runs, with its own template, design and margin. Seven
   single-template campaigns that served one decision used to produce seven memos; adopted into one campaign
   (`aspects_from`), they produce one page and one memo. A stored campaign reads as one aspect, so nothing stored
-  needs rewriting; campaigns move to the durable store (durable v16), which a build before 0.71 cannot read.
+  needs rewriting; campaigns move to the durable store (durable v16), which a build before 0.72 cannot read.
 - **The kind of campaign follows from its arms, never declared.** One arm is a measurement: each aspect's measures
   with their intervals and bars. Several arms and no control is a choice: every pair on every aspect, symmetric.
   A control and candidates is a change: each candidate against the control, shown better, shown worse or unclear
@@ -338,6 +338,212 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
   ceiling that is not positive and finite: either would stop the run before it began. New:
   `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
   `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
+
+## v0.71.0 -- 2026-10-18
+
+### Testing: the dead-Redshift-connection test kills what it means to
+
+The TLS thread-state test could kill nothing: the fake warehouse records a connection only after its own side of the
+handshake, so a kill that ran in the gap reset no connection and the driver rightly reused it. It failed on slow CI
+runners. The kill now waits until the server has recorded every connection the client opened.
+
+### scrape and enforcement: a quiet grep at the end of a pipe no longer fails a check that matched
+
+**Fixed (scrape):** the sidecar's entrypoint checked for the window manager with `xprop ... | grep -q` under
+`pipefail`. `grep -q` exits on its first match; when xprop was still writing it died of SIGPIPE (141) and `pipefail`
+failed the check, so a running window manager could read as missing and the boot was refused. The answer is now read
+whole and then matched (`wm_running`), tested against a fake xprop writing past the 64 KB pipe buffer.
+
+**Added (enforcement): `threetears.enforcement.grep_q_pipefail`.** Refuses a pipe (`|` or `|&`, not `||`) into
+`grep`, `egrep` or `fgrep` running quiet (`-q` in any flag position, `--quiet`, `--silent`) in every `*.sh` that sets
+`pipefail` and in every GitHub workflow (a `shell: bash` step runs with `pipefail`; the gate holds every workflow line to it, the safe side). Lines continued by a trailing `\` or `|` are
+joined, comment lines skipped, and a scan that finds no files is refused. `run_grep_q_pipefail_enforcement(
+GrepQPipefailConfig(repo_root=...))` is the one-line pytest shell; 3tears runs it in
+`tests/enforcement/test_no_grep_q_pipeline_under_pipefail.py`. Repos that carry their own copy of this gate (the bluelabsio hub,
+reports and geography) can now share this one.
+
+### core: synchronous callers get a supported bridge and a synchronous lease; TracedHttpClient gets a quiet probe
+
+**Added (core): `threetears.core.sync.run(work, *, timeout=None)`.** Runs one async call to the end from
+synchronous code (a CLI, a batch script, a worker thread with no loop) and returns its result. `work` is a
+coroutine or a no-argument factory, which is called on the loop so what it builds belongs there. Every call
+shares one loop in a daemon thread, so a resource one call opens (a NATS connection, an HTTP client) serves the
+next. A timeout cancels the work and raises `TimeoutError`; Ctrl-C while waiting cancels it too. Called from
+inside a running event loop it raises `RuntimeError` rather than stall or deadlock that loop. Consumers wrote
+their own bridges because `threetears.core._bridge.sync_await` is private and waits without bound.
+
+**Added (core): `KVLease.hold_sync(key, *, ttl, renew_every, ...) -> SyncHeldLease`.** `hold`, from
+synchronous code: it blocks until the lease is held (or refused), then `sync`'s loop renews it while the
+caller's thread works. Same keywords and the same loss rules as `hold`. `SyncHeldLease` is a context manager
+that releases on exit, with `held`, `lost_reason`, `lost` (a `threading.Event`), `check()` (raises `LeaseLost`
+once lost) and `release()`. The lease's NATS client must be opened through `sync.run`. Exported from
+`threetears.core` and `threetears.core.coordination`.
+
+**Added (core): `TracedHttpClient.probe(path, *, method="GET", headers=None, timeout=None) -> bool`.** A
+health check: one try, `True` for a status below 400, `False` for any other status or a network failure. It
+never retries, never raises for a network failure, never touches the circuit breaker, logs only at DEBUG, and
+does not read the body. `request` logs every exhausted call at ERROR, so a machine that is often off, checked
+every minute, filled the log with errors; consumers fell back to plain `httpx`.
+
+### observe: httpx's request lines no longer flood an INFO log
+
+**Changed (observe), behaviour to note:** `NOISY_LIBRARY_LOGGERS` gains `httpx` and `httpcore`, and
+`configure_logging` now holds those libraries one step quieter than a root below WARNING: at WARNING under an
+INFO root (before, an INFO root left them alone), at INFO under a DEBUG root (as before). A root at WARNING or
+higher still leaves them alone. httpx logs every request at INFO, so an application on `TracedHttpClient` got
+one `HTTP Request: POST ... "HTTP/1.1 200 OK"` line per call, burying its own lines. A consumer that wants those
+lines (or botocore's INFO lines) back passes `quiet_noisy_libraries=False`.
+
+### enforcement: `print_log_lines`, the log lines that bypass `threetears.observe` in an application
+
+**Added (enforcement): the `print_log_lines` domain.** In every module that imports 3tears, it flags
+`print(..., file=sys.stderr)` (every spelling of stderr) and direct stdlib `logging` calls (`getLogger`,
+`basicConfig`, root-logger calls). Narrower than `codebase_conventions` and `no_stdlib_logging` on purpose, for
+an application whose command line prints its answers: `print` to stdout is left alone, modules that do not
+import 3tears are not scanned (`scope_import_roots`), and a command line goes in `exempt_files`. One call takes
+`# print-log: ok`. A floor, `minimum_scoped_modules` (default 1), fails a scan that reaches no 3tears module.
+`run_print_log_lines_enforcement(PrintLogLinesConfig(repo_root=..., src_roots=...))`.
+
+### docs
+
+`docs/observability.md` named modules that do not exist: `threetears.core.logging` and
+`threetears.core.tracing` are `threetears.observe`, and the context it described (three contextvars,
+`correlation_id`, `session_id`, `conversation_id`) is one context set with `set_context(**tags)`.
+
+### A git working tree as the durable tier: a new core backend, threetears.core.backends.git
+
+scriob keeps its stories in git and reads them through 3tears' cache tiers; samhla is moving its
+characters into git the same way. The parts of scriob's git tier that are not about stories now
+live here, as an L3 beside `threetears.core.backends.sql` and `nats_proxy`, so both build on one copy.
+Import it by its own path (`threetears.core.backends` does not load it); it needs core's `nats` extra
+(`pip install 3tears[nats]`) and the `git` program.
+
+**Added (core, a new L3 backend):** `threetears.core.backends.git`. A product brings a `RowCodec` (how a row
+becomes bytes; `JsonCodec` ships) and a `Layout` (where a row's file lives; `TemplateLayout` builds
+one from path templates such as `"{character}/keepers/{batch}/{tile}.json"`, escaping key values
+so a key can never point outside its folder). `GitRepo` owns one working tree: `change()` gathers
+collection saves (`save_entity(..., conn=cs)`) into ONE commit, refused whole when a row changed
+since it was read (`ChangeConflictError`, a `ConcurrentModificationError`) or when a hand edit is in
+the way (`HandEditPendingError`); `commit_paths` commits hand edits; `history`, `read_at`, `status`,
+`sync`, `push`. A journal in the git directory lets the next writer put back a change a crash
+interrupted. One process per repository is the writer, by `KVLease.hold`; the others forward their
+change sets to it over `threetears.nats.forward` (family `git-store`) and get the commit or the
+same typed refusal back. Pushes are plain, never forced; a refused push stops pushing and shows in
+`status()`. After a push the writer announces `RepoAdvanced`, and clones that are not the writer
+fetch and fast-forward. `GitDurableStore` is the `DurableStore` / `BulkDurableStore` /
+`BulkDeletingStore` collections run on, with working compare-and-swap; `bind_collections` drops
+every row any commit changed (hand commits and pulled commits included) from the collections'
+caches. `GitRepos` and `RoutedGitStore` keep many repositories at once: one per entity, one shared,
+or several.
+
+**Added (core):** `DurableStoreCollection.list(filters)`: a scan through the collection's store,
+each row cached in L1 only while no write or eviction of the collection overtook the scan.
+
+**Added (nats):** `Subjects.git_store_advanced()`, `{ns}.git-store.advanced`.
+
+**Security (core, git backend): a forwarded change proves it comes from the repository's own deployment.** Every request
+a process forwards to a repository's writer is sealed in 3tears' service envelope (Ed25519 over exactly the body,
+addressed to that repository's door and handler, alive for at most a minute, a single-use id spent in a shared
+`ReplayGuard`); the writer's door is born requiring it, so an unsigned, foreign, stale or replayed request is refused
+and reaches the sender as `ForwardRefusedError`. The deployment's processes share one seed,
+`GitRepoConfig.forward_signing_seed` (32 bytes, base64; required with NATS, else `open()` raises), with
+`forward_issuer` and `envelope_bucket` beside it; the public half is pinned at the writer, so no key server is
+needed. The ledger's first existence is anchored in the repository's git directory (`GitDirReplayAnchor`; a
+consumer can pass a `CollectionReplayAnchor` as `GitRepo(replay_anchor=...)`), so a fresh deployment or a NATS
+restart doesn't refuse its first requests. The receiver's sender posture is `signed-envelope`; the open allowlist
+row it was added under is gone.
+
+**Git backend: files committed through the writer (`GitRepo.commit_files`).** Writes the given bytes (``None``
+removes a file) and commits them as one commit, on the writer: a process on a clone of its own sends them over the
+sealed forward family, since a commit of its own would race the writer's pushes. For files that aren't rows (a
+training log) and for a hand edit made on such a clone. With ``base=`` (the commit the sender read the files at),
+a file the repository changed since then refuses the whole change with the new `FileConflictError`; an uncommitted
+hand edit of one on the writer refuses it with `HandEditPendingError`. Rows among the files are reported like any
+commit's, so every cache drops them. Found adopting the git backend in samhla (a pod couldn't commit a training log).
+
+**Git backend: every pod reads current data.** A process on a clone of its own that isn't the writer now has its
+durable reads (`fetch_one`, `scan`) answered by the writer (a sealed `read` request on the forward family), because
+its own clone lags the writer's until it fetches and a collection would have cached the stale row. So the git tier
+is one current copy from every process's view, as a shared database is, and 3tears' collections (evict on every
+commit, re-read on a miss) show current data on whichever pod serves the request. A shared working tree, the writer
+itself, and a clone with no writer running read their own files. `GitRepo.read_row` / `read_rows` route the read;
+`read_local` / `scan_local` read this process's tree.
+
+**Git backend: saved now, committed later (`PendingTail`, `OpLogTail`, `GitRepo.commit_intent`).** For products that
+save an edit at once but commit only when the user means it (scriob). A tail keeps one folder's saved edits
+(`GitRepo.add_tail`; folders may not overlap, so many stories share one repository); `OpLogTail` keeps them in a
+`threetears.nats.OpLog`, lifted from scriob's coordinator. `OpLogTail.save` appends an op and writes the whole tail
+into the working tree, under the repository's lock, with no commit; `GitRepo.commit_intent(scope, message)` replays
+the tail and commits it with an `Op-Seq: <n>` trailer (edits that net to no change make no commit; `idle=` commits
+only after a quiet stretch). The ops after the folder's newest trailer are the tail: a new writer puts the folder
+back as HEAD has it and replays them, so an edit saved on a pod that dies before its commit is not lost. Kept from
+scriob: a trailer ahead of the log (a reset or fresh log) counts nothing as committed until HEAD moves, however far
+the log grows meanwhile. Saved files are the store's own, not hand edits: `status().dirty` and the sweep's warning
+leave them out, a commit that touches the folder takes them along with the trailer, a write over one is refused,
+and the sweep commits a folder idle past `safety_idle`. `GitRepo.pending(scope)` is the lock-held save a product's
+own tail builds on; `GitRepo.on_committed` hears every commit the store makes. Found adopting the git backend in scriob.
+
+**Git backend: a product's own operations run where the store's commits do.** `GitRepo.forward(name, payload,
+local=...)` runs `local` here when this process is the writer (always without NATS), sends the request to the
+writer otherwise, and when no process is the writer takes the lease once and runs `local` (`NotTheWriterError` when
+it can't), as `commit` does. A forwarded commit that fails on the writer with a git failure or a bad request now
+raises `GitError` / `ValueError` on the sender, not a generic `GitStoreError`. `new_signing_seed()` makes a
+`forward_signing_seed`. Asked for by scriob, whose ~20 operations ride `forward`.
+
+**Git backend: pull on request (`GitRepo.pull`).** Takes what someone pushed to origin from outside (a desktop
+editor, a merged PR), on the writer (forwarded from any other process): fetch, fast-forward when only behind,
+report the changed rows so every cache drops them, rebuild pending tails on the new HEAD. A branch that diverged
+raises the new `DivergedError` and changes nothing; one only ahead is pushed. Asked for by scriob (its Pull button).
+
+**Git backend: a saved file moves with its edits (`commit_files(..., moves={old: new})`).** The new path gets the
+old one's bytes as the writer's tree holds them, saved edits of a pending tail included, and the old path is removed,
+in the same commit as the folder's other saved edits and its trailer. scriob's rename (a saved heading edit, then the
+file moved to its new name) stays one commit. A move from a missing file or onto an existing one is refused.
+
+A work tree inside another git repository is refused at `open()` (`GitStoreError`), so commits never land in the outer
+repository; a nested repository of its own works.
+
+### A self-hosted image server's API, retried as far as it is safe to
+
+samhla (a consumer) drives ComfyUI and SwarmUI with its own graphs and parameters, and had written
+the same raw urllib client five times: no retries, and nothing to stop a slow answer from queueing a
+picture twice. The stock `ComfyUIImageProvider` only ran its built-in graph.
+
+**Added (models):** `threetears.models.providers.image.ComfyUIClient` (`queue(graph)`, `wait`,
+`run`, `images`, `view`, `upload_image`, `queue_depth`; `ComfyUIError` with ComfyUI's own messages
+for a rejected or failed graph) and `SwarmUIClient` (`generate(params)`, `call`, `list_backends`,
+`toggle_backend`, `reconnect_backend`, `refresh_models`, `comfy()` for its ComfyUI proxy;
+`SwarmUIError` for the refusals SwarmUI answers with HTTP 200 and an `error` body). Both take a
+`RetryPolicy`: a read is sent again when the server can't be reached, times out or answers 5xx; a
+request that starts work (queue a graph, draw a picture, upload) only when it never left. SwarmUI's
+expired session, a model added since its last scan (one rescan) and a pinned backend still
+connecting (bounded waits) are handled where they happen.
+
+**Added (core):** `TracedHttpClient.request(..., idempotent=False)` (and `post`): a request that
+must not run twice is sent again only after a refused connection or a connect or pool timeout; a
+read timeout, a dropped connection or a 5xx ends it at once with `UpstreamHttpError`. The default
+(`True`) retries exactly as before.
+
+**Changed (models):** `ComfyUIClient` and `SwarmUIClient` hold no httpx client of their own. Both reach their
+server through one transport module, `threetears.models.providers.image.transport` (`ImageServerTransport`); `RetryPolicy` is exported from `threetears.models.providers.image`. 3tears-models may not
+depend on core, so core's `TracedHttpClient` is out of reach; this module is the one sanctioned place in models to open
+a socket, and it carries the same duties: a timeout a call can override, the same safe retry rule (reads repeat on
+connect, timeout or 5xx; a graph, picture or upload repeats only when it never left), a log line for every attempt and
+an error log when one fails for good, requests limited to the configured server's origin with redirects not followed
+(LAN addresses are allowed on purpose), and bodies read under a cap (`max_response_bytes`, 256 MiB by default; a larger
+body raises `ResponseTooLargeError`). The no-bespoke-reuse guard now also catches a client built inside
+`enter_async_context(...)` and a field typed `httpx.AsyncClient | None`, `Optional[...]` or `Union[...]`, the shapes
+that let the two clients slip past it.
+
+**Changed (models):** `ComfyUIImageProvider` runs on `ComfyUIClient`: the same request, now retried
+on reads; a rejected or failed graph raises `ComfyUIError` instead of an httpx status error.
+
+### Testing: the cross-process cancel test takes job_cancel's documented answer
+
+**Fixed (testing):** `test_a_generation_another_process_runs_reads_running_and_is_cancelled_from_there` required
+`job_cancel` from another process to read `running`. Its contract allows `cancelled` when the holder's next renewal
+lands before the read-back, which a 0.3 s lease makes likely on a loaded machine (the v0.70.1 release run). It now
+takes either; the checks that the holder ended it, with the reason, while it was held, are unchanged.
 
 ## v0.70.1 -- 2026-10-18
 
