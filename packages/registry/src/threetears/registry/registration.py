@@ -22,8 +22,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from threetears.agent.tools.http_operation import RestAffordanceError
 from threetears.agent.tools.server import (
     RefusedTool,
     RegistrationManifest,
@@ -383,7 +384,10 @@ class RegistrationHandler:
             raise RuntimeError("handle_registration invoked before NATS connected")
         try:
             manifest = RegistrationManifest.model_validate_json(msg.data)
-        except Exception as exc:
+        except (ValidationError, RestAffordanceError) as exc:
+            # a ValidationError for a body that is not a manifest; a RestAffordanceError for one whose
+            # REST face is incoherent, which the face's own dataclass raises during validation and pydantic
+            # does not wrap, being a TypeError. any other type is a bug in this handler, and propagates.
             contain(
                 exc,
                 log=log,
