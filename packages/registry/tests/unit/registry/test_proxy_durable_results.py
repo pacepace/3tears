@@ -485,16 +485,18 @@ class TestDeliveringToTheAgent:
         assert not [reply for reply in nats.replies if isinstance(reply, ProxyCallResponse)]
 
     @pytest.mark.asyncio
-    async def test_a_limit_guard_outage_travels_the_delivery_route_too(self) -> None:
+    async def test_a_limit_guard_outage_still_delivers_on_the_callers_subject(self) -> None:
+        """the outage serves the call (Fork-2), so its answer must reach the subject the caller waits on."""
         catalog = await _registered_catalog(_LONG)
         nats = _Nats(delivered=_pod_answer())
         subject = Subjects.tools_reply(DEFAULT_AGENT_ID, "call-1").path
         proxy = make_proxy(catalog, namespace=_NS, limit_guard=_UnreachableLimitGuard())
         await _dispatch(proxy, nats, self._long_request(result_subject=subject))
 
-        assert nats.request_raw_calls == []
         assert len(nats.published) == 1
-        assert json.loads(nats.published[0][1])["error_code"] == "TOOL_AUTHORIZATION_UNAVAILABLE"
+        published_subject, payload = nats.published[0]
+        assert published_subject == subject
+        assert json.loads(payload)["content"] == "68KB of results"
 
     @pytest.mark.asyncio
     async def test_an_unknown_tool_travels_the_delivery_route_too(self) -> None:

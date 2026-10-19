@@ -345,11 +345,13 @@ class LimitGuard(Protocol):
     returns a typed :class:`LimitDecision` rather than a bool so the dispatcher can
     map a deny to the right ``error_code``.
 
-    the money path FAILS CLOSED, like the identity/pop/authorizer gates: a returned
-    ``LimitDecision(allowed=False)`` denies with its code, and a guard that RAISES or
-    is unreachable makes the proxy REFUSE the call with a retryable
-    ``TOOL_AUTHORIZATION_UNAVAILABLE`` reply rather than serve it with no spend
-    limit checked. the concrete counter-backed implementation is hub code
+    the money path FAILS OPEN (Fork-2): the proxy denies only on a returned
+    ``LimitDecision(allowed=False)``. a guard that RAISES or is unreachable makes
+    the proxy SERVE the call with no spend limit checked -- a billing-infra outage
+    must never brick tool traffic. this inverts the fail-CLOSED identity/pop/authorizer
+    gates on purpose, and it is not silent: each such call is counted on
+    ``threetears_registry_spend_limit_unchecked_total`` and logged at ERROR, so the
+    outage reaches an operator. the concrete counter-backed implementation is hub code
     (``KvCallLimitGuard``, gu-task-15a); dev/test callers wire
     :class:`AllowAllLimitGuard` / :class:`DenyAllLimitGuard`.
     """
