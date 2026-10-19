@@ -24,6 +24,7 @@ from threetears.core.backends import (
     NatsProxyL3Backend,
     SqlL3Backend,
     bound_request_connection,
+    RowcountUnreadableError,
     parse_rowcount,
 )
 
@@ -322,8 +323,9 @@ def test_parse_rowcount_reads_a_command_that_reports_no_count_as_no_rows() -> No
 @pytest.mark.parametrize("tag", ["UPDATE", "UPDATE many", "INSERT 0 x", "delete -1", "SELECT ２"])
 def test_parse_rowcount_refuses_a_counting_tag_whose_count_does_not_parse(tag: str) -> None:
     """an unreadable count read as 0 rows -- a conditional update that "lost", a delete that "found nothing"."""
-    with pytest.raises(ValueError, match="row count this cannot read"):
+    with pytest.raises(RowcountUnreadableError, match="row count this cannot read") as refused:
         parse_rowcount(tag)
+    assert isinstance(refused.value, ValueError)
 
 
 class _UnreadableTagPool(_RecordingPool):
@@ -336,7 +338,7 @@ class _UnreadableTagPool(_RecordingPool):
 
 @pytest.mark.asyncio
 async def test_an_upsert_whose_tag_cannot_be_read_raises_rather_than_reporting_no_rows() -> None:
-    with pytest.raises(ValueError, match="row count this cannot read"):
+    with pytest.raises(RowcountUnreadableError, match="row count this cannot read"):
         await SqlL3Backend(_UnreadableTagPool()).upsert("widgets", {"id": "e1", "name": "Bob"}, pk=["id"])
 
 

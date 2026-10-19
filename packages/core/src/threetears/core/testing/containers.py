@@ -34,11 +34,12 @@ import math
 import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
-from threetears.observe import BuildOnce, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
 log = get_logger(__name__)
 
@@ -53,11 +54,30 @@ __all__ = [
 ]
 
 
-#: probe verdicts, memoised through ``BuildOnce`` so concurrent first callers probe once: docker
-#: under :data:`_DOCKER`, each NATS ``host:port`` under its own (a colon never appears in the former).
+#: NATS probe verdicts, memoised through ``BuildOnce`` so concurrent first callers probe once, each
+#: ``host:port`` under its own key.
 _PROBES: BuildOnce[str, bool] = BuildOnce()
 
-#: the :data:`_PROBES` key the docker verdict is held under.
+
+@dataclass(frozen=True, slots=True)
+class _DockerVerdict:
+    """what the one docker probe of this process found: an answer, or the error it raised.
+
+    :param available: whether docker is reachable, when the probe answered
+    :ptype available: bool
+    :param error: what the probe raised instead of answering, or ``None``
+    :ptype error: Exception | None
+    """
+
+    available: bool
+    error: Exception | None = None
+
+
+#: the docker verdict, memoised through ``BuildOnce`` so concurrent first callers probe once. A
+#: failed probe is memoised too: every later check raises the same error rather than probing again.
+_DOCKER_VERDICT: BuildOnce[str, _DockerVerdict] = BuildOnce()
+
+#: the :data:`_DOCKER_VERDICT` key the docker verdict is held under.
 _DOCKER = "docker"
 
 #: seconds between xdist workers' first container starts; ``0`` disables the stagger.
@@ -139,11 +159,36 @@ def check_docker_available() -> bool:
     ``DOCKER_HOST`` that does not resolve, a daemon that answers with an error) raises, so a
     broken docker fails the tests that need it instead of skipping them and leaving CI green.
 
+    a probe that raised is memoised like one that answered: every later call raises that same
+    error, so one broken docker is one failure per check, not a fresh probe each time.
+
     :return: True when docker is reachable, False when docker is not installed or not running
     :rtype: bool
     :raises Exception: the probe's own error, for any failure other than docker being absent
     """
-    return _PROBES.get(_DOCKER, _ping_docker)
+    verdict = _DOCKER_VERDICT.get(_DOCKER, _probe_docker_once)
+    if verdict.error is not None:
+        raise verdict.error
+    return verdict.available
+
+
+def _probe_docker_once() -> _DockerVerdict:
+    """run :func:`_ping_docker`, keeping what it raised as the verdict rather than letting it escape.
+
+    :return: the answer, or the error to raise from every :func:`check_docker_available`
+    :rtype: _DockerVerdict
+    """
+    try:
+        verdict = _DockerVerdict(available=_ping_docker())
+    except Exception as exc:  # noqa: BLE001 -- not absorbed: every check_docker_available() raises it
+        contain(
+            exc,
+            log=log,
+            what="docker probe failed with something other than docker being absent; every docker check raises it",
+            level="error",
+        )
+        verdict = _DockerVerdict(available=False, error=exc)
+    return verdict
 
 
 def _docker_is_absent(exc: BaseException) -> bool:
@@ -250,8 +295,13 @@ def skip_without_docker_marker() -> Any:
     do their own ``pytest.skip`` calls; this marker is for the
     handful of tests that build containers ad-hoc.
 
+    the probe runs when this is CALLED, which for a decorator is when its module is collected: a
+    docker that is installed but broken (see :func:`check_docker_available`) raises here, so the
+    module fails to collect and the run reports it as an error, rather than its tests skipping.
+
     :return: pytest mark
     :rtype: Any
+    :raises Exception: the docker probe's error, for any failure other than docker being absent
     """
     return pytest.mark.skipif(
         not check_docker_available(),

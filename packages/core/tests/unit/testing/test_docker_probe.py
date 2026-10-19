@@ -102,3 +102,46 @@ def test_a_daemon_that_answers_with_an_error_raises(erroring_daemon: int) -> Non
 
 def test_a_docker_host_that_does_not_resolve_raises() -> None:
     assert _probe("tcp://no-such-docker-host.invalid:2375") == "raised DockerException"
+
+
+_PROBE_TWICE = """
+import os
+from threetears.core.testing.containers import check_docker_available
+outcomes = []
+for host in ("tcp://no-such-docker-host.invalid:2375", "unix:///nonexistent/docker.sock"):
+    os.environ["DOCKER_HOST"] = host
+    try:
+        outcomes.append(check_docker_available())
+    except Exception as exc:
+        outcomes.append(exc)
+first, second = outcomes
+print("same-error" if isinstance(first, Exception) and first is second else f"reprobed {outcomes!r}")
+"""
+
+
+def test_a_failed_probe_is_memoised_and_raised_again_rather_than_probing_again() -> None:
+    """the second check would answer False against the missing socket if it probed again."""
+    done = subprocess.run([sys.executable, "-c", _PROBE_TWICE], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip().splitlines()[-1] == "same-error"
+
+
+def test_the_skip_marker_raises_at_collection_on_a_broken_docker(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a module decorated with the marker fails to collect, so a broken docker is an error, not skipped tests."""
+    pytester.makepyfile(
+        test_needs_docker="""
+        from threetears.core.testing.containers import skip_without_docker_marker
+
+        @skip_without_docker_marker()
+        def test_uses_docker():
+            pass
+        """
+    )
+    monkeypatch.setenv("DOCKER_HOST", "tcp://no-such-docker-host.invalid:2375")
+    # the workspace's entry-point plugins are not what is under test, and loading them is slow
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
+    result.assert_outcomes(errors=1)
+    result.stdout.fnmatch_lines(["*ERROR collecting*test_needs_docker.py*"])

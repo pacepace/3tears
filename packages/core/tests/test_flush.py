@@ -13,7 +13,7 @@ import pytest
 
 import uuid
 
-from threetears.core.backends.protocol import DurableStore
+from threetears.core.backends.protocol import DurableStore, RowcountUnreadableError
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.flush import (
     WriteBuffer,
@@ -1050,3 +1050,28 @@ class TestZeroRowcountFlushIsNotSuccess:
 
         assert flushed == 0
         assert backend.committed is True
+
+
+class TestAnUnreadableRowcountIsNotALostWrite:
+    """``persist_to_store`` raising RowcountUnreadableError means the statement RAN and its count is unknown."""
+
+    @pytest.mark.asyncio
+    async def test_it_is_acknowledged_not_replayed_and_said_distinctly(self, caplog: pytest.LogCaptureFixture) -> None:
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+        registry = CollectionRegistry()
+        mock_coll = MagicMock()
+        mock_coll.table_name = "users"
+        mock_coll.persist_to_store = AsyncMock(
+            side_effect=RowcountUnreadableError("command tag 'UPDATE' reports a row count this cannot read")
+        )
+        registry.register(mock_coll)
+
+        with caplog.at_level(logging.ERROR, logger="threetears.core.collections.flush"):
+            flushed = await flush_pending(buf, registry)
+
+        assert flushed == 1
+        assert buf.pending_count() == 0, "a statement that already ran was queued to run again"
+        distinct = [r for r in caplog.records if "its row count could not be read" in r.getMessage()]
+        assert len(distinct) == 1 and distinct[0].levelname == "ERROR"
+        assert not [r for r in caplog.records if "permanently failed" in r.getMessage()]

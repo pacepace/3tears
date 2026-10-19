@@ -37,6 +37,7 @@ __all__ = [
     "L3Backend",
     "L3Reader",
     "OrderedDurableStore",
+    "RowcountUnreadableError",
     "parse_rowcount",
 ]
 
@@ -336,6 +337,16 @@ class OrderedDurableStore(Protocol):
         ...
 
 
+class RowcountUnreadableError(ValueError):
+    """a counting command's status tag carries no row count that can be read.
+
+    The statement RAN -- the tag is its answer -- but how many rows it touched is unknown. Not
+    "no rows": a fenced update that "lost", a delete that "found nothing" are decisions a caller
+    makes on 0, and this is not 0. A :class:`ValueError` so a caller already treating a bad tag as
+    a value error keeps doing so.
+    """
+
+
 #: command tags that end in a rows-affected count (PostgreSQL ``CommandComplete``).
 _COUNTED_COMMANDS: frozenset[str] = frozenset(
     {"INSERT", "UPDATE", "DELETE", "MERGE", "SELECT", "COPY", "MOVE", "FETCH"}
@@ -363,7 +374,7 @@ def parse_rowcount(status: Any) -> int:
     :ptype status: Any
     :return: the rows-affected count.
     :rtype: int
-    :raises ValueError: a counting command's tag carries no readable count.
+    :raises RowcountUnreadableError: a counting command's tag carries no readable count.
     """
     if not status or not isinstance(status, str):
         return 0
@@ -373,5 +384,5 @@ def parse_rowcount(status: Any) -> int:
     if parts[-1].isascii() and parts[-1].isdigit():
         return int(parts[-1])
     if parts[0].upper() in _COUNTED_COMMANDS:
-        raise ValueError(f"command tag {status!r} reports a row count this cannot read")
+        raise RowcountUnreadableError(f"command tag {status!r} reports a row count this cannot read")
     return 0

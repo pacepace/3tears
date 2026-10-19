@@ -24,6 +24,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import MetaData
 from threetears.agent.skills.tables import agent_skills_table
+from threetears.core.backends import RowcountUnreadableError
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -97,6 +98,15 @@ class _Store:
         for col, pos in re.findall(r"(\w+) = \$(\d+)", set_part):
             row[col] = args[int(pos) - 1]
         return "UPDATE 1"
+
+
+# parity-with: asyncpg.Pool (fetchrow / execute -- the seam a by-pk read and a save drive)
+class _NoCountStore(_Store):
+    """runs the fenced UPDATE, then answers as the NATS proxy does for a broker reply with no row_count."""
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        answered = await super().execute(sql, *args)
+        return answered.split()[0] if answered.startswith("UPDATE") else answered
 
 
 def _collections(store: _Store) -> tuple[WakeScheduleCollection, WebhookSubscriptionCollection]:
@@ -207,6 +217,25 @@ class TestAScheduleSaveIsFencedOnTheRowItRead:
 
         assert store.rows[key]["name"] == "renamed"
         assert store.rows[key]["date_updated"] > _READ_AT
+
+    @pytest.mark.asyncio
+    async def test_a_save_whose_count_the_broker_did_not_report_is_not_a_lost_race(self) -> None:
+        """a broker reply with no row_count became "UPDATE 0", and a save that landed raised a false
+        ConcurrentModificationError. The proxy now answers the bare verb, and the save says the count
+        is unknown."""
+        store = _NoCountStore()
+        schedules, _ = _collections(store)
+        conv, sid = uuid.uuid4(), uuid.uuid4()
+        key = ("agent_wake_schedules", conv, sid)
+        store.rows[key] = _schedule_row(conv, sid, uuid.uuid4(), uuid.uuid4())
+
+        entity = await schedules.get((conv, sid))
+        assert entity is not None
+        entity.name = "renamed"
+        with pytest.raises(RowcountUnreadableError):
+            await schedules.save_entity(entity)
+
+        assert store.rows[key]["name"] == "renamed", "the fenced update ran; only its count is unknown"
 
     @pytest.mark.asyncio
     async def test_a_save_of_a_row_deleted_since_the_read_does_not_recreate_it(self) -> None:
