@@ -87,6 +87,7 @@ def _retry_after_seconds(exc: SlackApiError) -> float | None:
     try:
         return float(raw) if raw is not None else None
     except TypeError, ValueError:
+        # NOSILENT: an unreadable Retry-After is "Slack named no wait"; the caller falls back to its backoff
         return None
 
 
