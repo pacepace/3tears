@@ -10,8 +10,9 @@ about an old CLI, so a pooled start skips it, the first included.
 
 from __future__ import annotations
 
-import inspect
+import importlib.util
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -47,10 +48,11 @@ class _RecordingClient:
 def test_the_sdk_reads_the_skip_flag_from_the_process_environment() -> None:
     """The premise this fix rests on, true of claude_agent_sdk 0.2.163: an SDK that reads the flag elsewhere
     (from the client's options, say) must fail here rather than silently spawn on the loop again."""
-    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
-
-    source = inspect.getsource(SubprocessCLITransport.connect)
-    assert f'os.environ.get("{_SKIP}")' in source
+    # read as text: the transport module is the SDK's own private module, so nothing here imports it
+    spec = importlib.util.find_spec("claude_agent_sdk")
+    assert spec is not None and spec.origin is not None
+    transport = Path(spec.origin).parent / "_internal" / "transport" / "subprocess_cli.py"
+    assert f'os.environ.get("{_SKIP}")' in transport.read_text(encoding="utf-8")
 
 
 async def test_every_pooled_start_skips_the_version_check_the_first_included(
