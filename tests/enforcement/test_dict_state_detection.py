@@ -484,6 +484,30 @@ _ALLOWLIST = (
         rationale=("synced from NATS KV on load, not a local-only cache"),
     ),
     DictStateAllowlistEntry(
+        file="packages/registry/src/threetears/registry/health.py",
+        class_name="HeartbeatSubscriber",
+        attr_name="_heard_at",
+        rationale=(
+            "THIS registry's own liveness record of the pods it has heard, pod id -> when it last heard it. "
+            "it is the judgement that must survive an L2 outage, so a shared store is exactly what it must "
+            "not depend on, and an L1 backend adds nothing to a per-process view; a restart correctly "
+            "rebuilds it from the next heartbeats. keyed only by pods in the known-pods set and dropped with "
+            "a pod when it is deregistered"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/registry/src/threetears/registry/health.py",
+        class_name="HeartbeatSubscriber",
+        attr_name="_local_misses",
+        rationale=(
+            "THIS registry's own liveness record of the pods it has heard, pod id -> consecutive sweeps "
+            "missed. it is the judgement that must survive an L2 outage, so a shared store is exactly what it"
+            " must not depend on, and an L1 backend adds nothing to a per-process view; a restart correctly "
+            "rebuilds it from the next heartbeats. keyed only by pods in the known-pods set and dropped with "
+            "a pod when it is deregistered"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/langgraph/src/threetears/langgraph/events.py",
         class_name="FrameworkEventRegistry",
         attr_name="_by_name",

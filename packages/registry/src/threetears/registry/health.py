@@ -134,7 +134,8 @@ class HeartbeatSubscriber:
         self._known_pod_ids: set[str] = set()
         # what THIS registry heard and counted, kept beside the collection so liveness is still
         # judged while L2 (the collection's only store) is unreachable: quarantining a pod that
-        # stopped heartbeating is a safety property, and an outage must not suspend it.
+        # stopped heartbeating is a safety property, and an outage must not suspend it. Keyed only
+        # by pods in _known_pod_ids, and dropped with a pod when the sweep forgets it.
         self._heard_at: dict[str, datetime] = {}
         self._local_misses: dict[str, int] = {}
 

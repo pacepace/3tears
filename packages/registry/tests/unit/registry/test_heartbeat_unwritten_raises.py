@@ -65,18 +65,22 @@ def _heartbeat(pod_id: str) -> MagicMock:
     return msg
 
 
+async def _register(catalog: ToolCatalog, pod_id: str) -> None:
+    await catalog.register(
+        uniform_entry(
+            tool_name=f"threetears.{pod_id}",
+            tool_version="1.0.0",
+            description="a tool",
+            input_schema={"type": "object", "properties": {}},
+            endpoints=[ToolEndpoint(pod_id=pod_id, status="available")],
+        )
+    )
+
+
 async def _catalog_serving(*pod_ids: str) -> ToolCatalog:
     catalog = ToolCatalog()
     for pod_id in pod_ids:
-        await catalog.register(
-            uniform_entry(
-                tool_name=f"threetears.{pod_id}",
-                tool_version="1.0.0",
-                description="a tool",
-                input_schema={"type": "object", "properties": {}},
-                endpoints=[ToolEndpoint(pod_id=pod_id, status="available")],
-            )
-        )
+        await _register(catalog, pod_id)
     return catalog
 
 
@@ -225,3 +229,30 @@ class TestASweepGoesOnPastARefusedDelete:
         assert subscriber.known_pod_ids == {"pod-a"}, "pod-a's delete is retried next sweep; pod-b is done"
         assert await collection.get("pod-b") is None
         assert await collection.get("pod-a") is not None
+
+
+class TestTheLocalRecordIsDroppedWithThePod:
+    @pytest.mark.asyncio
+    async def test_a_deregistered_pod_leaves_no_local_record_behind(self) -> None:
+        """the record is bounded by the known pods: once a pod is forgotten, nothing of it remains.
+
+        Observed through behaviour: re-tracked during an outage and never heard again, the pod has
+        nothing to be judged by. A record left behind would deregister it on stale evidence.
+        """
+        nats = FakeNatsClient()
+        collection = _collection(nats)
+        catalog = await _catalog_serving("pod-a")
+        subscriber = _subscriber(catalog, collection, misses=1)
+        await subscriber.handle_heartbeat(_heartbeat("pod-a"))
+        await asyncio.sleep(_TIMEOUT * 2)
+        await subscriber.run_health_check()
+        assert "pod-a" not in subscriber.known_pod_ids
+        assert _status(catalog, "pod-a") is None
+
+        await _register(catalog, "pod-a")
+        subscriber.track_pod("pod-a")
+        (await _bucket(nats)).become_unreachable(_outage())
+        await subscriber.run_health_check()
+
+        assert _status(catalog, "pod-a") == "available", "no stale record judged it"
+        assert "pod-a" in subscriber.known_pod_ids
