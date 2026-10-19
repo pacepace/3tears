@@ -358,8 +358,11 @@ class NamespaceDiscoveryClient:
                 timeout=self._timeout_seconds,
             )
         except Exception as exc:
+            # the error reaches the agent through the workspace tools, so it names the failure's type;
+            # the message, which can name hosts and subjects, goes to contain().
+            contain(exc, log=log, what=f"namespace.discover request to {subject} failed: {exc}")
             raise DiscoveryClientError(
-                f"namespace.discover request failed: {exc}",
+                f"namespace.discover request failed ({type(exc).__name__})",
             ) from exc
         body = reply.data
         # success path first; fall through to error parsing on failure

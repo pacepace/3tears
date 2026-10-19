@@ -232,7 +232,10 @@ async def test_discover_transport_failure_raises_client_error() -> None:
             correlation_id=uuid4(),
             identity_token="agent.token",
         )
-    assert "nats unreachable" in str(excinfo.value)
+    # the error reaches the agent, so it names the type; the message rides on the cause
+    assert "request failed (RuntimeError)" in str(excinfo.value)
+    assert "nats unreachable" not in str(excinfo.value)
+    assert "nats unreachable" in str(excinfo.value.__cause__)
 
 
 @pytest.mark.asyncio
