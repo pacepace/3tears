@@ -214,6 +214,10 @@ def _convert(value: float | None, from_unit: str, to_unit: str, quantity: str | 
     except (ValueError, ZeroDivisionError) as exc:
         return tool_error(_TOOL, "convert", str(exc))
     except Exception as exc:
+        # left broad: pint's expression parser signals malformed input with a bare AssertionError and
+        # tokenize.TokenError, so narrowing would break the answer to a bad quantity. str(exc) reaches the
+        # agent on purpose -- pint's messages describe the agent's own input, which is how it corrects it
+        # (integrator ruling: exception text about the caller's own input may be returned).
         contain(exc, log=log, what="unit conversion failed unexpectedly")
         return tool_error(_TOOL, "convert", str(exc))
 

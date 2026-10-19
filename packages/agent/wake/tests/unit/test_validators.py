@@ -6,6 +6,9 @@ chain walker. No DB; the chain walker uses an in-memory resolver fake.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -141,6 +144,65 @@ def test_cron_valid() -> None:
 def test_cron_invalid_expr_rejected() -> None:
     err = validate_schedule_config("cron", {"expr": "this is not cron"})
     assert err is not None and "cron" in err
+
+
+def test_cron_out_of_range_field_names_the_expression_invalid() -> None:
+    err = validate_schedule_config("cron", {"expr": "99 * * * *"})
+    assert err is not None and err.startswith("cron 'expr' invalid:")
+
+
+def test_cron_in_a_known_zone_is_accepted() -> None:
+    assert validate_schedule_config("cron", {"expr": "0 9 * * 1-5", "tz": "America/Los_Angeles"}) is None
+
+
+@pytest.mark.parametrize("tz", ["Bogus/Zone", "America", "../etc/passwd", ""])
+def test_cron_in_an_unknown_zone_is_refused(tz: str) -> None:
+    """the scheduler loads the zone with ZoneInfo at tick time; one it cannot load is refused up front."""
+    err = validate_schedule_config("cron", {"expr": "0 9 * * *", "tz": tz})
+    assert err is not None and err.startswith("cron 'tz'") and "not a known IANA zone" in err
+
+
+def test_cron_zone_that_is_not_a_string_is_refused() -> None:
+    err = validate_schedule_config("cron", {"expr": "0 9 * * *", "tz": None})
+    assert err is not None and err.startswith("cron 'tz' must be an IANA zone name")
+
+
+def test_cron_validates_regardless_of_the_hosts_own_zone() -> None:
+    """a host whose TZ names no zone used to raise ZoneInfoNotFoundError for a valid expression.
+
+    from_crontab with no zone reads the host's local zone (and caches it per process), so this
+    runs in a fresh interpreter with TZ=Bogus/Zone.
+    """
+    script = (
+        "from threetears.agent.wake.tools.validators import validate_schedule_config;"
+        "print(repr(validate_schedule_config('cron', {'expr': '0 */3 * * *'})))"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "TZ": "Bogus/Zone"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "None"
+
+
+def test_cron_failure_that_is_not_the_expression_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """an invalid expression is a ValueError; anything else is not the expression's fault.
+
+    It used to be contained and reported as "cron 'expr' parse failed", blaming the expression for a
+    broken install or an unreadable local zone.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+
+    def _broken(cls: type[CronTrigger], expr: str, timezone: object = None) -> CronTrigger:
+        raise TypeError("a bug below the parser")
+
+    monkeypatch.setattr(CronTrigger, "from_crontab", classmethod(_broken))
+    with pytest.raises(TypeError, match="a bug below the parser"):
+        validate_schedule_config("cron", {"expr": "0 */3 * * *"})
 
 
 # relative_delay ------------------------------------------------------------

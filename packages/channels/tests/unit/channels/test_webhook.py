@@ -41,7 +41,7 @@ from fastapi.testclient import TestClient
 
 from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG
-from threetears.agent.wake.entities import WebhookSubscriptionEntity
+from threetears.agent.wake.entities import EncryptionService, WebhookSubscriptionEntity
 from threetears.agent.wake.webhook_adapter import WebhookReceiveResult
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -65,6 +65,17 @@ class _IdentityEncryption:
 
     def decrypt(self, ciphertext: bytes) -> str:
         return ciphertext.decode("utf-8")
+
+
+# parity-with: threetears.agent.wake.entities.EncryptionService
+class _RefusingEncryption:
+    """a key service that cannot decrypt, the way a rotated-away key fails."""
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        return bytes(plaintext)
+
+    def decrypt(self, ciphertext: bytes) -> str:
+        raise ValueError("key kms://prod/webhooks/7 rejected ciphertext 736563726574")
 
 
 # parity-with: threetears.agent.wake.types.HandlerCallback
@@ -100,6 +111,7 @@ def _build_receiver(
     signature_header: str | None = None,
     max_payload_bytes: int | None = None,
     collections: tuple[WebhookSubscriptionCollection, WakeFireCollection] | None = None,
+    encryption_service: EncryptionService | None = None,
 ) -> WebhookReceiver:
     """Construct a receiver with stub dependencies suitable for routing tests.
 
@@ -111,7 +123,7 @@ def _build_receiver(
         "pool": object(),
         "subscriptions": subscriptions,
         "fires": fires,
-        "encryption_service": _IdentityEncryption(),
+        "encryption_service": encryption_service if encryption_service is not None else _IdentityEncryption(),
         "handler": _NullHandler(),
         "wake_config": DEFAULT_WAKE_CONFIG,
     }
@@ -749,6 +761,22 @@ class TestHttpStatusMapping:
 # ============================================================
 # 413 short-circuit + Retry-After absence on non-429 responses
 # ============================================================
+
+
+class TestSecretDecryptFailure:
+    """a secret that will not decrypt answers 500, and the body never says why."""
+
+    def test_the_500_body_carries_no_exception_text(self, fixed_subscription_id: UUID) -> None:
+        receiver = _build_receiver(encryption_service=_RefusingEncryption())
+        with _patch_subscription_lookup(_build_subscription()):
+            r = TestClient(_make_app(receiver)).post(
+                f"/webhooks/{fixed_subscription_id}",
+                content=b"{}",
+                headers={DEFAULT_SIGNATURE_HEADER: _hmac_signature(b"{}")},
+            )
+        # the caller is unauthenticated: the key reference and ciphertext stay in contain()'s record
+        assert r.status_code == 500
+        assert r.json() == {"fire_id": None, "message": "secret decrypt failed"}
 
 
 class TestPayloadSizeCap:

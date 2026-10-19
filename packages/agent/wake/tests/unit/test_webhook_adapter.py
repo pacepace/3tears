@@ -25,6 +25,7 @@ from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.agent.wake import webhook_adapter
 from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
+from threetears.agent.wake.entities import EncryptionService
 from threetears.agent.wake.tables import (
     agent_wake_schedules_table,
     wake_fires_table,
@@ -93,6 +94,17 @@ class _Encryption:
         return ciphertext.decode("utf-8")
 
 
+# parity-with: threetears.agent.wake.entities.EncryptionService
+class _RefusingEncryption:
+    """a key service that cannot decrypt, the way a rotated-away key fails."""
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        return bytes(plaintext)
+
+    def decrypt(self, ciphertext: bytes) -> str:
+        raise ValueError("key kms://prod/webhooks/7 rejected ciphertext 736563726574")
+
+
 # parity-with: threetears.agent.wake.types.HandlerCallback
 class _Handler:
     async def __call__(self, trigger: Any, prepared_context: Any, pool: Any) -> Any:
@@ -100,13 +112,26 @@ class _Handler:
         raise AssertionError("dispatch_wake is replaced; the handler is never reached")
 
 
-async def _receive(monkeypatch: pytest.MonkeyPatch, payload: bytes) -> tuple[WebhookReceiveResult, list[WakeTrigger]]:
-    """deliver ``payload`` to a pre-verified subscription and record what is dispatched.
+async def _receive(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    *,
+    encryption: EncryptionService | None = None,
+    signature_header: str | None = None,
+) -> tuple[WebhookReceiveResult, list[WakeTrigger]]:
+    """deliver ``payload`` to a subscription and record what is dispatched.
+
+    Pre-verified unless ``signature_header`` is given, in which case the receiver runs its own
+    verify path, decrypting the secret with ``encryption``.
 
     :param monkeypatch: pytest's monkeypatch fixture
     :ptype monkeypatch: pytest.MonkeyPatch
     :param payload: the raw HTTP body
     :ptype payload: bytes
+    :param encryption: the service the receiver decrypts the secret with (default: the plain one)
+    :ptype encryption: EncryptionService | None
+    :param signature_header: the signature the sender presented, or ``None`` for pre-verified
+    :ptype signature_header: str | None
     :return: the receiver's result and every trigger handed to the dispatcher
     :rtype: tuple[WebhookReceiveResult, list[WakeTrigger]]
     """
@@ -130,15 +155,15 @@ async def _receive(monkeypatch: pytest.MonkeyPatch, payload: bytes) -> tuple[Web
     result = await webhook_adapter.webhook_receive(
         subscription_id=sub,
         payload_bytes=payload,
-        signature_header=None,
+        signature_header=signature_header,
         source_ip=None,
         pool=store,
         subscriptions=WebhookSubscriptionCollection(registry=registry, config=config),
         fires=WakeFireCollection(registry=registry, config=config),
-        encryption_service=_Encryption(),
+        encryption_service=encryption if encryption is not None else _Encryption(),
         handler=_Handler(),
         now=_NOW,
-        pre_verified=True,
+        pre_verified=signature_header is None,
     )
     return result, dispatched
 
@@ -172,6 +197,16 @@ async def test_decode_payload_invalid_utf8_is_refused(monkeypatch: pytest.Monkey
     assert result.status_code == 400
     assert "payload decode error" in result.message
     assert "UTF-8" in result.message
+    assert dispatched == []
+
+
+async def test_a_secret_that_will_not_decrypt_answers_500_without_the_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """the body goes to an unauthenticated caller, so it says what failed and never why."""
+    result, dispatched = await _receive(
+        monkeypatch, b"{}", encryption=_RefusingEncryption(), signature_header="sha256=00"
+    )
+    assert result.status_code == 500
+    assert result.message == "secret decrypt failed"
     assert dispatched == []
 
 

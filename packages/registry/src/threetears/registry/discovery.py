@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
+from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer
 
 from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import contain, get_logger
@@ -239,7 +239,7 @@ class DiscoveryHandler:
             raise RuntimeError("handle_discover invoked before NATS connected")
         try:
             request = DiscoverRequest.model_validate_json(msg.data)
-        except Exception as exc:
+        except ValidationError as exc:
             response = DiscoverResponse(agent_id="unknown", tools=[])
             contain(
                 exc,

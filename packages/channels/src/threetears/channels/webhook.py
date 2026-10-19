@@ -403,11 +403,13 @@ class WebhookReceiver:
                     "error": str(exc),
                 },
             )
+            # the body goes to an unauthenticated caller: it says what failed, never why;
+            # contain() has the message.
             return JSONResponse(
                 status_code=500,
                 content={
                     "fire_id": None,
-                    "message": f"secret decrypt failed: {exc}",
+                    "message": "secret decrypt failed",
                 },
             )
 

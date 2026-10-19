@@ -138,10 +138,11 @@ class WorkspaceListTool(TearsTool):
             )
         except Exception as exc:
             contain(exc, log=log, what=f"workspace_list failed: {exc}", level="error")
+            # the agent sees the failure's type; contain() has the message.
             result = ToolResult(
                 success=False,
                 content="",
-                error=f"list failed: {exc}",
+                error=f"list failed ({type(exc).__name__})",
             )
         return result
 

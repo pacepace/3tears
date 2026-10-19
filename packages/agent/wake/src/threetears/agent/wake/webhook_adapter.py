@@ -257,10 +257,12 @@ async def webhook_receive(
                 what="webhook_receive secret decrypt failed",
                 extra={"subscription_id": str(subscription_id), "error": str(exc)},
             )
+            # the body goes to an unauthenticated caller: it says what failed, never why;
+            # contain() has the message.
             return WebhookReceiveResult(
                 status_code=500,
                 fire_id=None,
-                message=f"secret decrypt failed: {exc}",
+                message="secret decrypt failed",
             )
         # Same constant-time compare the receiver-side default verifier
         # uses (single source of truth in ``hmac_util``).
