@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Final
 from uuid import UUID
-from threetears.observe import contain, get_logger
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
@@ -183,16 +183,16 @@ def _validate_cron(config: dict[str, Any]) -> str | None:
         return f"cron 'expr' must be a non-empty string; got {expr!r}"
     # APScheduler parses + validates; we surface its raise as a tool
     # error rather than letting it explode at tick time. Lazy import so
-    # the validator costs nothing for non-cron schedule types.
-    try:
-        from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
+    # the validator costs nothing for non-cron schedule types. An invalid
+    # expression is a ValueError -- the only type from_crontab raises for
+    # one -- and anything else (a broken install, an unreadable local
+    # zone) is not the expression's fault, so it propagates.
+    from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
 
+    try:
         CronTrigger.from_crontab(expr)
     except ValueError as exc:
         return f"cron 'expr' invalid: {exc}"
-    except Exception as exc:  # noqa: BLE001 - apscheduler raises varied types
-        contain(exc, log=log, what="cron expression parse failed")
-        return f"cron 'expr' parse failed: {exc}"
     return None
 
 

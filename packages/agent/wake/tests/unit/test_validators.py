@@ -143,6 +143,27 @@ def test_cron_invalid_expr_rejected() -> None:
     assert err is not None and "cron" in err
 
 
+def test_cron_out_of_range_field_names_the_expression_invalid() -> None:
+    err = validate_schedule_config("cron", {"expr": "99 * * * *"})
+    assert err is not None and err.startswith("cron 'expr' invalid:")
+
+
+def test_cron_failure_that_is_not_the_expression_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """an invalid expression is a ValueError; anything else is not the expression's fault.
+
+    It used to be contained and reported as "cron 'expr' parse failed", blaming the expression for a
+    broken install or an unreadable local zone.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+
+    def _broken(cls: type[CronTrigger], expr: str, timezone: object = None) -> CronTrigger:
+        raise TypeError("a bug below the parser")
+
+    monkeypatch.setattr(CronTrigger, "from_crontab", classmethod(_broken))
+    with pytest.raises(TypeError, match="a bug below the parser"):
+        validate_schedule_config("cron", {"expr": "0 */3 * * *"})
+
+
 # relative_delay ------------------------------------------------------------
 
 
