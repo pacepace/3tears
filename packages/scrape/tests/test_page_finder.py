@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
@@ -276,6 +277,26 @@ class TestVerifyCandidatePage:
         assert result.verified is False
         assert result.driver_backend == "nodriver"
         assert "could not fetch" in result.verification_note
+
+    async def test_a_url_httpx_cannot_parse_degrades_to_unverified(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.InvalidURL("Invalid port: 'x'")
+
+        result = await _find(verify_client=_client_for(handler))
+        assert result.verified is False
+        assert "could not fetch" in result.verification_note
+        # the note reaches the agent: the failure's type, never its message
+        assert "InvalidURL" in result.verification_note
+        assert "Invalid port" not in result.verification_note
+
+    async def test_a_bug_in_the_fetch_propagates_rather_than_reading_as_unverified(self):
+        # only httpx's own failures are an unfetchable page; a TypeError is a bug, and used to be
+        # reported as "could not fetch candidate page".
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise TypeError("a bug in the transport")
+
+        with pytest.raises(TypeError, match="a bug in the transport"):
+            await _find(verify_client=_client_for(handler))
 
     async def test_no_injected_client_constructs_and_closes_its_own(self):
         owned_client = _serving(b"<html><body><p>none</p></body></html>")

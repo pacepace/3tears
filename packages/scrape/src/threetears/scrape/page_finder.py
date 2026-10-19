@@ -455,11 +455,14 @@ async def _verify_candidate_page(
                     read += len(chunk)
                     if read > max_bytes:
                         break
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-unverified
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             # a fetch failure here must degrade to "unverified," never raise into the caller --
             # same "surface for review, never silently drop" discipline as bounded_retry_structured_call.
+            # HTTPError covers every transport, timeout, protocol and redirect failure; InvalidURL,
+            # which is not one, a candidate URL httpx cannot parse. anything else is a bug and propagates.
             contain(exc, log=log, what=f"page-finder verification fetch failed for {url}: {exc}")
-            return False, "nodriver", f"could not fetch candidate page for verification: {exc}"
+            # the note reaches the agent, so it names the failure's type only; contain() has the message.
+            return False, "nodriver", f"could not fetch candidate page for verification ({type(exc).__name__})"
     finally:
         if owns_client:
             await client.aclose()
