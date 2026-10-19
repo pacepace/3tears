@@ -1061,6 +1061,30 @@ class TestSkillIntrospect:
         assert "[TOOL ERROR]" in out
         assert "no skill or tool" in out
 
+    async def test_a_failed_lookup_is_reported_as_a_failure_not_as_no_such_skill(self) -> None:
+        """failure injection: both lookups raise; the model must not be told the skill does not exist."""
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        coll = FakeSkillsCollection()
+
+        async def _down(**_: Any) -> Any:
+            raise ConnectionError("pg: password=hunter2")
+
+        coll.find_by_name_for_user = _down  # type: ignore[method-assign]
+        reg = FakeRegistry()
+        reg.get_tool_introspect = _down  # type: ignore[method-assign]
+        [tool] = load_skill_introspect_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            registry=reg,
+        )
+        out = await tool.ainvoke({"name_or_id": "real-skill"})
+        assert "[TOOL ERROR]" in out
+        assert "could not look up" in out and "ConnectionError" in out
+        assert "no skill or tool" not in out
+        assert "hunter2" not in out, "the exception message reached the model"
+
 
 # --- a skill that is one tool call ---
 

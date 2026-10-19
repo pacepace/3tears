@@ -1476,6 +1476,36 @@ class TestSlackSenderIdentity:
         assert msg.sender_name is None
         assert msg.sender_email is None
         assert msg.sender_email_verified is False
+        assert msg.metadata["profile_lookup_failed"] is True, "an unknown sender must not read as a sparse one"
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_a_lookup_failure_is_remembered_only_briefly(self, mock_app_cls: MagicMock) -> None:
+        """failure injection: users.info fails once, then recovers. the failure must not stick for the TTL."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app = _slack_app_mock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            side_effect=[RuntimeError("slack is down"), _users_info_response(profile={"display_name": "Ada"}, tz="UTC")]
+        )
+        mock_app_cls.return_value = mock_app
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+        assert router.last_message is not None and router.last_message.sender_name is None
+
+        # inside the failure window: no second call (the endpoint is not hammered)
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+        assert mock_app.client.users_info.await_count == 1
+
+        # past the failure window, far inside the success TTL: it retries and recovers
+        later = time.monotonic() + 20.0
+        with patch("threetears.channels.slack.time.monotonic", return_value=later):
+            await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+        assert mock_app.client.users_info.await_count == 2
+        assert router.last_message.sender_name == "Ada"
+        assert "profile_lookup_failed" not in router.last_message.metadata
 
 
 class TestSlackProfileCacheBound:

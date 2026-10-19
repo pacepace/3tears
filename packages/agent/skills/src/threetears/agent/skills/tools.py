@@ -2218,6 +2218,7 @@ def load_skill_introspect_tool(
         bare_name = candidate
         if bare_name.startswith("[skill:") and bare_name.endswith("]"):
             bare_name = bare_name[len("[skill:") : -1].strip()
+        failed_lookups: list[str] = []
         try:
             prose_entity = await skills_collection.find_by_name_for_user(
                 agent_id=agent_id,
@@ -2228,6 +2229,7 @@ def load_skill_introspect_tool(
             contain(
                 exc, log=log, what="skill_introspect name lookup raised", extra={"name": bare_name, "error": str(exc)}
             )
+            failed_lookups.append(f"the skill-name lookup raised {type(exc).__name__}")
             prose_entity = None
         if prose_entity is not None:
             return _render_prose_introspect(prose_entity)
@@ -2245,7 +2247,17 @@ def load_skill_introspect_tool(
                 what="skill_introspect tool lookup raised",
                 extra={"mcp_name": bare_name, "error": str(exc)},
             )
+            failed_lookups.append(f"the tool lookup raised {type(exc).__name__}")
             tool_payload = None
+        if tool_payload is None and failed_lookups:
+            # a lookup that FAILED says nothing about whether the skill exists; "no such skill" would be a
+            # false answer the model acts on (re-creating a skill that is there). the type only: the full
+            # failure is already with the operator through contain().
+            return _tool_error(
+                "skill_introspect",
+                f"could not look up {name_or_id!r}: {'; '.join(failed_lookups)}. "
+                "this does not mean there is no such skill; try again",
+            )
         if tool_payload is None:
             return _tool_error(
                 "skill_introspect",

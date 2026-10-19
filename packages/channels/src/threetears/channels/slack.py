@@ -40,6 +40,10 @@ log = get_logger(__name__)
 # just travelled (Slack updates ``user.tz`` from the user's profile, which
 # a user can change mid-session).
 _USER_PROFILE_TTL_SECONDS = 300.0
+#: how long a FAILED users.info lookup is remembered. long enough that a burst of messages from one
+#: user does not hammer a struggling endpoint, short enough that the next message after a blip
+#: retries instead of carrying an unknown sender for the whole :data:`_USER_PROFILE_TTL_SECONDS`.
+_USER_PROFILE_FAILURE_TTL_SECONDS = 15.0
 
 
 # hard bound on the per-user profile cache. entries are keyed by Slack user
@@ -93,12 +97,16 @@ class _SlackUserProfile:
         address on file, or a lookup failure" and the three are
         indistinguishable from the response alone.
     :ptype email: str | None
+    :param lookup_failed: ``True`` when ``users.info`` itself failed, so every field is UNKNOWN
+        rather than absent; ``False`` for a profile Slack answered (however sparse)
+    :ptype lookup_failed: bool
     """
 
     timezone: str | None = None
     locale: str | None = None
     display_name: str | None = None
     email: str | None = None
+    lookup_failed: bool = False
 
 
 def _non_empty_str(value: Any) -> str | None:
@@ -220,10 +228,11 @@ class SlackAdapter:
 
         consults the per-instance LRU/TTL cache first; on miss, calls
         ``users.info(user=user_id, include_locale=True)`` and caches
-        the result. failures (network error, unknown user, missing
-        fields) are cached as an all-None profile so a flapping user-info
-        endpoint does not hammer slack with retries inside the cache
-        window. callers consume the result as the ``ChannelMessage``
+        the result. a FAILED lookup (network error, unknown user) returns a
+        profile marked ``lookup_failed`` and is remembered only for
+        :data:`_USER_PROFILE_FAILURE_TTL_SECONDS`: long enough that a flapping
+        endpoint is not hammered, short enough that the sender is not unknown
+        for the whole success TTL. callers consume the result as the ``ChannelMessage``
         ``user_timezone`` / ``user_locale`` / ``sender_name`` /
         ``sender_email`` fields.
 
@@ -241,7 +250,9 @@ class SlackAdapter:
         cached = self._user_profile_cache.get(user_id)
         now = time.monotonic()
         result: _SlackUserProfile
-        if cached is not None and (now - cached[0]) < _USER_PROFILE_TTL_SECONDS:
+        if cached is not None and (now - cached[0]) < (
+            _USER_PROFILE_FAILURE_TTL_SECONDS if cached[1].lookup_failed else _USER_PROFILE_TTL_SECONDS
+        ):
             self._user_profile_cache.move_to_end(user_id)
             result = cached[1]
         else:
@@ -270,9 +281,10 @@ class SlackAdapter:
                 contain(
                     exc,
                     log=log,
-                    what="slack users.info lookup failed; caching an empty profile to avoid hammering the API",
+                    what="slack users.info lookup failed; the sender's profile is unknown, remembered only briefly",
                     extra={"user_id": user_id, "error": str(exc)},
                 )
+                profile = _SlackUserProfile(lookup_failed=True)
             self._user_profile_cache[user_id] = (now, profile)
             self._user_profile_cache.move_to_end(user_id)
             while len(self._user_profile_cache) > self._user_profile_cache_max_entries:
@@ -442,6 +454,10 @@ class SlackAdapter:
         profile = _SlackUserProfile()
         if sender_id:
             profile = await self._resolve_user_profile(sender_id)
+
+        if profile.lookup_failed:
+            # the sender's name, address, zone and locale are unknown, not absent
+            metadata["profile_lookup_failed"] = True
 
         channel_message = ChannelMessage(
             channel_type="slack",

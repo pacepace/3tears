@@ -41,6 +41,7 @@ from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.utils.local_time import resolve_zone
 from threetears.agent.wake.tools.schedule_tools import (
     WakeRegistryClient,
+    _skill_label,
     _no_change,
     _tool_error,
     _validate_name,
@@ -594,15 +595,7 @@ def load_webhook_subscription_create_tool(
 
         skill_name: str | None = None
         if attached_skill is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=attached_skill,
-                )
-            except Exception as exc:  # noqa: BLE001 - best-effort
-                contain(exc, log=log, what="webhook subscription skill name lookup failed")
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
 
         log.info(
             "webhook_subscription_create persisted",
@@ -848,15 +841,9 @@ def load_webhook_subscription_update_tool(
 
         skill_name: str | None = None
         if entity.default_skill_id is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=entity.default_skill_id,
-                )
-            except Exception as exc:  # noqa: BLE001 - best-effort
-                contain(exc, log=log, what="webhook subscription skill name lookup failed")
-                skill_name = None
+            skill_name = await _skill_label(
+                registry, user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
+            )
         return f"{_format_subscription_line(entity, skill_name=skill_name, zone=zone)}\nChanged: " + "; ".join(changes)
 
     webhook_subscription_update.description = (
@@ -908,15 +895,9 @@ def load_webhook_subscription_list_tool(
         for entity in visible:
             skill_name: str | None = None
             if entity.default_skill_id is not None:
-                try:
-                    skill_name = await registry.skill_name_for_id(
-                        user_id=user_id,
-                        agent_id=agent_id,
-                        skill_id=entity.default_skill_id,
-                    )
-                except Exception as exc:  # noqa: BLE001 - best-effort
-                    contain(exc, log=log, what="webhook subscription skill name lookup failed")
-                    skill_name = None
+                skill_name = await _skill_label(
+                    registry, user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
+                )
             lines.append("- " + _format_subscription_line(entity, skill_name=skill_name, zone=zone))
         if endpoint_base_url:
             lines.append(f"Each one's address is {endpoint_base_url.rstrip('/')}/<its id>.")
@@ -985,25 +966,23 @@ def load_webhook_subscription_get_tool(
             )
         skill = "none"
         if entity.default_skill_id is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
-                )
-            except Exception as exc:  # noqa: BLE001 - best-effort
-                contain(exc, log=log, what="webhook subscription skill name lookup failed")
-                skill_name = None
+            skill_name = await _skill_label(
+                registry, user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
+            )
             skill = f"{skill_name or 'unnamed'} [skill:{entity.default_skill_id}]"
         limit = (
             f"{entity.rate_limit_per_minute} a minute"
             if entity.rate_limit_per_minute
             else f"the default, {default_rate_limit_per_minute} a minute"
         )
+        refused: int | None
         try:
             refusals = await subscriptions_collection.list_refusals(parsed, limit=50)
         except Exception as exc:  # noqa: BLE001 - the settings are the answer; the count is extra
             contain(exc, log=log, what="webhook subscription refusal count read failed")
-            refusals = []
-        refused = sum(int(row["refusals"]) for row in refusals)
+            refused = None
+        else:
+            refused = sum(int(row["refusals"]) for row in refusals)
         lines = [
             f"[webhook:{entity.subscription_id}] {entity.name or 'untitled'}",
             f"status: {entity.status}"
@@ -1016,7 +995,7 @@ def load_webhook_subscription_get_tool(
             f"skill: {skill}",
             f"lives in: [conversation:{entity.conversation_id}]",
             f"last accepted delivery: {format_wake_time(entity.last_fired_at, zone, unset='never')}",
-            f"refused deliveries kept: {refused}"
+            f"refused deliveries kept: {'unknown (lookup failed)' if refused is None else refused}"
             + (" (wake_fires with this subscription_id shows them)" if refused else ""),
             f"made: {format_wake_time(entity.date_created, zone)}",
             f"last changed: {format_wake_time(entity.date_updated, zone)}",

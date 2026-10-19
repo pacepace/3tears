@@ -435,6 +435,42 @@ def _validate_task_prompt(prompt: str | None) -> str | None:
     return None
 
 
+#: what a catalog line shows for a skill whose name could not be read. NOT "no skill" and NOT "unnamed": the
+#: lookup failed, so the model is told the name is unknown and the id beside it still identifies the skill.
+SKILL_LOOKUP_FAILED = "unknown (lookup failed)"
+
+
+async def _skill_label(
+    registry: WakeRegistryClient,
+    *,
+    user_id: UUID,
+    agent_id: UUID,
+    skill_id: UUID,
+) -> str | None:
+    """the attached skill's name for a catalog line, or :data:`SKILL_LOOKUP_FAILED` when the lookup raised.
+
+    a lookup that raised used to answer ``None``, which the line renders as NO skill (or as an
+    "unnamed" one): the model read a schedule that runs a skill as one that does not. the full
+    failure goes to :func:`contain`; the text the model sees carries only that the lookup failed.
+
+    :param registry: the consumer's registry client
+    :ptype registry: WakeRegistryClient
+    :param user_id: caller's user UUID
+    :ptype user_id: UUID
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
+    :param skill_id: the attached skill
+    :ptype skill_id: UUID
+    :return: the name; ``None`` only when the registry answered that it has no name for the skill
+    :rtype: str | None
+    """
+    try:
+        return await registry.skill_name_for_id(user_id=user_id, agent_id=agent_id, skill_id=skill_id)
+    except Exception as exc:  # noqa: BLE001 - a name is decoration; the line still carries the skill, marked unknown
+        contain(exc, log=log, what="skill name lookup failed", extra={"skill_id": str(skill_id)})
+        return SKILL_LOOKUP_FAILED
+
+
 def _format_schedule_line(
     entity: Any,
     *,
@@ -901,20 +937,7 @@ def load_wake_schedule_create_tool(
 
         skill_name: str | None = None
         if attached_skill is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=attached_skill,
-                )
-            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
-                contain(
-                    exc,
-                    log=log,
-                    what="wake_schedule_create skill_name lookup raised",
-                    extra={"skill_id": str(attached_skill), "error": str(exc)},
-                )
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
 
         log.info(
             "wake_schedule_create persisted",
@@ -1206,15 +1229,7 @@ def load_wake_schedule_update_tool(
 
         skill_name: str | None = None
         if entity.skill_id is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=entity.skill_id,
-                )
-            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
-                contain(exc, log=log, what="schedule skill name lookup failed")
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
         if entity.next_fire_at != next_fire_before:
             changes.append(
                 f"next fire: {format_wake_time(next_fire_before, zone, unset='not set')} -> "
@@ -1279,15 +1294,7 @@ def load_wake_schedule_list_tool(
         for entity in visible:
             skill_name: str | None = None
             if entity.skill_id is not None:
-                try:
-                    skill_name = await registry.skill_name_for_id(
-                        user_id=user_id,
-                        agent_id=agent_id,
-                        skill_id=entity.skill_id,
-                    )
-                except Exception as exc:  # noqa: BLE001 - best-effort
-                    contain(exc, log=log, what="schedule skill name lookup failed")
-                    skill_name = None
+                skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
             lines.append("- " + _format_schedule_line(entity, skill_name=skill_name, zone=zone))
         return "\n".join(lines)
 
@@ -1343,13 +1350,7 @@ def load_wake_schedule_get_tool(
             return _tool_error("wake_schedule_get", "schedule not found; wake_schedule_list shows the ones you have")
         skill = "none"
         if entity.skill_id is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id
-                )
-            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
-                contain(exc, log=log, what="schedule skill name lookup failed")
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
             skill = f"{skill_name or 'unnamed'} [skill:{entity.skill_id}]"
         upcoming = next_fires(entity, 3)
         if upcoming:

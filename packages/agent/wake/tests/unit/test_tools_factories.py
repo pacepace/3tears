@@ -22,6 +22,7 @@ from threetears.agent.wake.tools.schedule_tools import (
     WakeRegistryClient,
     load_wake_schedule_create_tool,
     load_wake_schedule_delete_tool,
+    load_wake_schedule_get_tool,
     load_wake_schedule_list_tool,
     load_wake_schedule_pause_tool,
     load_wake_schedule_resume_tool,
@@ -31,6 +32,7 @@ from threetears.agent.wake.tools.schedule_tools import (
 from threetears.agent.wake.tools.webhook_tools import (
     load_webhook_subscription_create_tool,
     load_webhook_subscription_delete_tool,
+    load_webhook_subscription_get_tool,
     load_webhook_subscription_list_tool,
     load_webhook_subscription_pause_tool,
     load_webhook_subscription_resume_tool,
@@ -1985,3 +1987,63 @@ def test_a_zone_that_does_not_exist_is_refused_when_a_wake_tool_is_built(actor: 
             registry=_FakeRegistry(),
             tz="Mars/Olympus",
         )
+
+
+# parity-with: threetears.agent.wake.tools.schedule_tools.WakeRegistryClient
+class _RaisingNameRegistry(_FakeRegistry):
+    """a registry whose skill-name lookup fails, with a message the model must never see."""
+
+    async def skill_name_for_id(self, *, user_id: UUID, agent_id: UUID, skill_id: UUID) -> str | None:
+        raise RuntimeError("secret-dsn://host/db exploded")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_skill_name_lookup_reads_unknown_not_no_skill_on_schedule_tools(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid, skill = _new_uuid(), _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id, sid=sid, user_id=user_id, agent_id=agent_id, skill_id=skill
+    )
+    kwargs: dict[str, Any] = {
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "schedules_collection": coll,
+        "registry": _RaisingNameRegistry(),
+    }
+    listed = await load_wake_schedule_list_tool(**kwargs)[0].ainvoke({})
+    got = await load_wake_schedule_get_tool(**kwargs)[0].ainvoke({"schedule_id": str(sid)})
+    assert "skill: unknown (lookup failed)" in listed, listed
+    assert f"skill: unknown (lookup failed) [skill:{skill}]" in got, got
+    assert "exploded" not in listed + got and "secret-dsn" not in listed + got
+
+
+@pytest.mark.asyncio
+async def test_a_failed_skill_name_lookup_or_refusal_count_reads_unknown_on_webhook_tools(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    sid, skill = _new_uuid(), _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_subscription_row(
+        conv_id=conv_id, sid=sid, user_id=user_id, agent_id=agent_id, default_skill_id=skill
+    )
+
+    async def _refusals_down(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        raise ConnectionError("pg: password=hunter2")
+
+    coll.list_refusals = _refusals_down  # type: ignore[attr-defined]
+    kwargs: dict[str, Any] = {
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "subscriptions_collection": coll,
+        "registry": _RaisingNameRegistry(),
+    }
+    listed = await load_webhook_subscription_list_tool(**kwargs)[0].ainvoke({})
+    got = await load_webhook_subscription_get_tool(**kwargs)[0].ainvoke({"subscription_id": str(sid)})
+    assert "skill: unknown (lookup failed)" in listed, listed
+    assert f"skill: unknown (lookup failed) [skill:{skill}]" in got, got
+    assert "refused deliveries kept: unknown (lookup failed)" in got, got
+    assert "hunter2" not in got and "exploded" not in got
