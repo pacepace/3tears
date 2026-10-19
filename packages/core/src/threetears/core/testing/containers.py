@@ -34,6 +34,7 @@ import math
 import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -53,11 +54,30 @@ __all__ = [
 ]
 
 
-#: probe verdicts, memoised through ``BuildOnce`` so concurrent first callers probe once: docker
-#: under :data:`_DOCKER`, each NATS ``host:port`` under its own (a colon never appears in the former).
+#: NATS probe verdicts, memoised through ``BuildOnce`` so concurrent first callers probe once, each
+#: ``host:port`` under its own key.
 _PROBES: BuildOnce[str, bool] = BuildOnce()
 
-#: the :data:`_PROBES` key the docker verdict is held under.
+
+@dataclass(frozen=True, slots=True)
+class _DockerVerdict:
+    """what the one docker probe of this process found: an answer, or the error it raised.
+
+    :param available: whether docker is reachable, when the probe answered
+    :ptype available: bool
+    :param error: what the probe raised instead of answering, or ``None``
+    :ptype error: Exception | None
+    """
+
+    available: bool
+    error: Exception | None = None
+
+
+#: the docker verdict, memoised through ``BuildOnce`` so concurrent first callers probe once. A
+#: failed probe is memoised too: every later check raises the same error rather than probing again.
+_DOCKER_VERDICT: BuildOnce[str, _DockerVerdict] = BuildOnce()
+
+#: the :data:`_DOCKER_VERDICT` key the docker verdict is held under.
 _DOCKER = "docker"
 
 #: seconds between xdist workers' first container starts; ``0`` disables the stagger.
@@ -133,28 +153,89 @@ def check_docker_available() -> bool:
     developer checkout (docker desktop not running) and we want
     the check to be cheap when N integration tests all gate on it.
 
-    :return: True when docker is reachable, False otherwise
+    ``False`` -- which skips every docker-backed test -- is the answer only for docker that is
+    genuinely not there: the docker SDK is not installed, the daemon's socket does not exist, or
+    nothing is listening on it. any other probe failure (a socket this user may not open, a
+    ``DOCKER_HOST`` that does not resolve, a daemon that answers with an error) raises, so a
+    broken docker fails the tests that need it instead of skipping them and leaving CI green.
+
+    a probe that raised is memoised like one that answered: every later call raises that same
+    error, so one broken docker is one failure per check, not a fresh probe each time.
+
+    :return: True when docker is reachable, False when docker is not installed or not running
+    :rtype: bool
+    :raises Exception: the probe's own error, for any failure other than docker being absent
+    """
+    verdict = _DOCKER_VERDICT.get(_DOCKER, _probe_docker_once)
+    if verdict.error is not None:
+        raise verdict.error
+    return verdict.available
+
+
+def _probe_docker_once() -> _DockerVerdict:
+    """run :func:`_ping_docker`, keeping what it raised as the verdict rather than letting it escape.
+
+    :return: the answer, or the error to raise from every :func:`check_docker_available`
+    :rtype: _DockerVerdict
+    """
+    try:
+        verdict = _DockerVerdict(available=_ping_docker())
+    except Exception as exc:  # noqa: BLE001 -- not absorbed: every check_docker_available() raises it
+        contain(
+            exc,
+            log=log,
+            what="docker probe failed with something other than docker being absent; every docker check raises it",
+            level="error",
+        )
+        verdict = _DockerVerdict(available=False, error=exc)
+    return verdict
+
+
+def _docker_is_absent(exc: BaseException) -> bool:
+    """whether a probe failure says docker is not running, rather than that it is broken.
+
+    the docker SDK wraps the socket error under a ``DockerException`` / ``requests`` error, so the
+    whole cause chain is read: no socket file (:class:`FileNotFoundError`) or nothing listening
+    (:class:`ConnectionRefusedError`) is absence; a :class:`PermissionError` anywhere in it is a
+    docker that runs and this user may not reach.
+
+    :param exc: the probe's error
+    :ptype exc: BaseException
+    :return: True when the error means the daemon is not there
     :rtype: bool
     """
-    return _PROBES.get(_DOCKER, _ping_docker)
+    causes: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in causes:
+        causes.append(current)
+        current = current.__cause__ or current.__context__
+    if any(isinstance(cause, PermissionError) for cause in causes):
+        return False
+    return any(isinstance(cause, FileNotFoundError | ConnectionRefusedError) for cause in causes)
 
 
 def _ping_docker() -> bool:
     """ping the docker daemon once.
 
-    :return: True when docker is reachable, False otherwise
+    :return: True when docker is reachable, False when it is not installed or not running
     :rtype: bool
+    :raises Exception: any other probe failure; see :func:`check_docker_available`
     """
     try:
         import docker  # noqa: PLC0415
-
+    except ImportError:
+        log.info("the docker SDK is not installed; treating docker as unavailable")
+        return False
+    try:
         client = docker.from_env()  # type: ignore[attr-defined]
         client.ping()
-        result = True
-    except Exception as exc:
-        contain(exc, log=log, what="docker daemon ping failed; treating docker as unreachable")
-        result = False
-    return result
+    except (docker.errors.DockerException, OSError) as exc:  # type: ignore[attr-defined]
+        # requests' errors are OSErrors; the SDK wraps them in DockerException when it reads the version
+        if not _docker_is_absent(exc):
+            raise
+        log.info("docker daemon is not running; treating docker as unavailable: %s", exc)
+        return False
+    return True
 
 
 def nats_reachable(
@@ -214,8 +295,13 @@ def skip_without_docker_marker() -> Any:
     do their own ``pytest.skip`` calls; this marker is for the
     handful of tests that build containers ad-hoc.
 
+    the probe runs when this is CALLED, which for a decorator is when its module is collected: a
+    docker that is installed but broken (see :func:`check_docker_available`) raises here, so the
+    module fails to collect and the run reports it as an error, rather than its tests skipping.
+
     :return: pytest mark
     :rtype: Any
+    :raises Exception: the docker probe's error, for any failure other than docker being absent
     """
     return pytest.mark.skipif(
         not check_docker_available(),

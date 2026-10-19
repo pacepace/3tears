@@ -32,7 +32,8 @@ design notes
 - **Replay terminates.** :meth:`replay` reads the stream's current
   ``last_seq`` once and stops when caught up, so consuming it eagerly
   (``[r async for r in oplog.replay(...)]``) returns rather than hanging
-  on a live subscription. A ``from_seq`` past the end yields nothing.
+  on a live subscription. A ``from_seq`` past the end yields nothing. A replay that
+  cannot reach that head raises :class:`OpLogError` rather than ending as if it had.
 - Stream names cannot contain dots; the ``(repo, branch)`` segments are
   sanitized (``.`` -> ``-``) and namespace-prefixed, mirroring
   :func:`threetears.nats.subjects.sanitize_subject_segment`.
@@ -96,6 +97,8 @@ _DEDUP_WINDOW_SECONDS: Final[float] = 300.0
 #: Replay fetch batch size and per-fetch timeout (seconds).
 _REPLAY_BATCH: Final[int] = 256
 _REPLAY_FETCH_TIMEOUT: Final[float] = 2.0
+#: fetch timeouts in a row a replay rides out before it reports itself short of the head.
+_REPLAY_TIMEOUT_RETRIES: Final[int] = 1
 #: what a replay consumer's random name starts with, so an operator can tell whose it is.
 _REPLAY_CONSUMER_PREFIX: Final[str] = "oplog-replay-"
 
@@ -389,9 +392,17 @@ class OpLog:
         :ptype op_id: str
         :return: stream sequence of the logged op, or ``None`` if absent
         :rtype: int | None
-        :raises OpLogError: on transport failure during the scan
+        :raises OpLogError: on transport failure during the scan, or a scan that ends short of the head --
+            an op_id the scan never reached is not proof the append was a genuine fence
         """
-        async for record in self.replay(from_seq=1):
+        js = self._client.jetstream_context()
+        try:
+            info = await js.stream_info(self._stream)
+        except Exception as exc:
+            raise OpLogError(f"op-log op_id scan failed (stream_info): stream={self._stream}: {exc!r}") from exc
+        # the scan covers what the stream still holds: a retry within the dedup window is near the
+        # head, and a trimmed start is not a gap in that question
+        async for record in self.replay(from_seq=max(1, int(info.state.first_seq))):
             if record.op_id == op_id:
                 return record.seq
         return None
@@ -443,6 +454,12 @@ class OpLog:
         and returns cleanly. Read-only (``AckPolicy.NONE``); the
         ephemeral consumer is torn down on exit.
 
+        **Ending normally means the head was reached.** Two fetches in a row that time out (2 s
+        each) before the head read up front has been delivered raise :class:`OpLogError` instead,
+        after every op delivered so far has been yielded; so does a ``from_seq`` below the
+        stream's first sequence, before anything is yielded, since the ops in between were purged
+        or trimmed. A short replay read as complete corrupts materialise and failover.
+
         The consumer is named at random and a fetched message counts only when it carries that
         consumer's ack reply: any client in the account can get bytes delivered onto the fetch
         inbox, and a forged op replayed into a materialise would be written as if logged.
@@ -452,7 +469,7 @@ class OpLog:
         :return: async iterator over logged ops in sequence order
         :rtype: AsyncIterator[OpRecord]
         :raises ValueError: if from_seq < 1
-        :raises OpLogError: on transport / consumer failure
+        :raises OpLogError: on transport / consumer failure, or when the replay ends short of the head
         """
         if from_seq < 1:
             raise ValueError(f"from_seq must be >= 1, got {from_seq}")
@@ -466,6 +483,14 @@ class OpLog:
         if from_seq > last_seq:
             # Past the end (includes an empty stream where last_seq == 0): nothing to yield.
             return
+        first_seq = int(info.state.first_seq)
+        if from_seq < first_seq:
+            # the ops from from_seq up to first_seq are no longer in the stream (purged, trimmed):
+            # replaying what is left would hand the consumer a log with its start missing.
+            raise OpLogError(
+                f"op-log replay cannot start at {from_seq}: stream={self._stream} holds seqs "
+                f"{first_seq}..{last_seq}; {from_seq}..{first_seq - 1} were purged or trimmed"
+            )
 
         consumer = random_consumer_name(_REPLAY_CONSUMER_PREFIX)
         config = ConsumerConfig(
@@ -487,10 +512,16 @@ class OpLog:
         try:
             done = False
             last_yielded = from_seq - 1
+            timeouts = 0
             while not done:
                 try:
                     msgs = await psub.fetch(_REPLAY_BATCH, timeout=_REPLAY_FETCH_TIMEOUT)
-                except TimeoutError:
+                except TimeoutError as exc:
+                    timeouts += 1
+                    if timeouts <= _REPLAY_TIMEOUT_RETRIES:
+                        # NOSILENT: one slow fetch is a broker under load; the next fetch decides, and
+                        # a second timeout in a row raises below
+                        continue
                     # Reaching here always means the replay stopped short of the head: the
                     # `seq >= last_seq` exit below is the clean terminator, and `from_seq >
                     # last_seq` already returned above, so a timeout can only land with
@@ -499,23 +530,16 @@ class OpLog:
                     # a purged/expired gap ahead of the head reads identically to a broker too
                     # slow to answer -- and both hand the consumer a short replay, which is the
                     # shape that corrupts materialise / failover (the durability invariant). So
-                    # the gap is reported rather than passed off as a clean tail.
-                    log.warning(
-                        "op-log replay ended short of the stream head",
-                        extra={
-                            "extra_data": {
-                                "stream": self._stream,
-                                "from_seq": from_seq,
-                                "last_yielded_seq": last_yielded,
-                                "last_seq": last_seq,
-                            }
-                        },
-                    )
-                    break
+                    # the replay raises: an iteration that ends is a replay that reached the head.
+                    raise OpLogError(
+                        f"op-log replay ended short of the stream head: stream={self._stream} "
+                        f"from_seq={from_seq} last_yielded_seq={last_yielded} last_seq={last_seq}"
+                    ) from exc
                 except APIError as exc:
                     raise OpLogError(f"op-log replay failed (fetch): stream={self._stream}: {exc!r}") from exc
                 except Exception as exc:  # noqa: BLE001 - any non-timeout fetch failure surfaces loudly, never as a clean tail
                     raise OpLogError(f"op-log replay failed (fetch): stream={self._stream}: {exc!r}") from exc
+                timeouts = 0
                 for msg in msgs:
                     if not delivered_by_own_consumer(
                         msg, stream=self._stream, consumer=consumer, receiver="op-log replay"

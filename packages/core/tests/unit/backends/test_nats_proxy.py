@@ -12,6 +12,7 @@ import pytest
 from threetears.nats import Subject
 
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
+from threetears.core.backends.protocol import RowcountUnreadableError, parse_rowcount
 from threetears.core.exceptions import DataLayerUnavailableError
 
 
@@ -605,7 +606,17 @@ class TestExecute:
         assert int(tag.split()[-1]) == 3
 
     @pytest.mark.asyncio
-    async def test_execute_returns_zero_for_null_row_count(self) -> None:
+    @pytest.mark.parametrize(
+        ("query", "tag"),
+        [
+            ("DELETE FROM foo WHERE id = $1", "DELETE"),
+            ("UPDATE foo SET bar = $1", "UPDATE"),
+            ("INSERT INTO foo (id) VALUES ($1)", "INSERT"),
+            ("INSERT INTO foo (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", "INSERT"),
+        ],
+    )
+    async def test_a_dml_reply_with_no_row_count_carries_no_count(self, query: str, tag: str) -> None:
+        """a null row_count on a DML reply became "DELETE 0", and a fenced update read as a lost race."""
         mock_nc = MagicMock()
         mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
@@ -619,11 +630,24 @@ class TestExecute:
         )
         proxy = _make_proxy(mock_nc)
 
-        tag = await proxy.execute("DELETE FROM foo WHERE id = $1", "x")
+        answered = await proxy.execute(query, "x")
 
-        # null row_count from the broker collapses to zero on the wire.
-        assert tag == "DELETE 0"
-        assert int(tag.split()[-1]) == 0
+        assert answered == tag
+        with pytest.raises(RowcountUnreadableError):
+            parse_rowcount(answered)
+
+    @pytest.mark.asyncio
+    async def test_a_verbless_statement_with_no_row_count_still_reads_as_zero(self) -> None:
+        """DDL is labelled ``select``; it reports no count, and reads as 0 rows as before."""
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(
+            return_value=_make_reply({"success": True, "rows": [], "row_count": None, "duration_ms": 2})
+        )
+        proxy = _make_proxy(mock_nc)
+
+        answered = await proxy.execute("CREATE TABLE foo (id int)")
+
+        assert parse_rowcount(answered) == 0
 
     @pytest.mark.asyncio
     async def test_execute_detects_insert_operation(self) -> None:

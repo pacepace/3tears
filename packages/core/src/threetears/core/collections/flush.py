@@ -15,6 +15,7 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.generation import WriteGeneration
 from threetears.core.collections.l2_order import l2_order_of
+from threetears.core.backends.protocol import RowcountUnreadableError
 from threetears.core.exceptions import CorruptCacheEntry, GenerationUnavailableError
 from threetears.observe import contain, get_logger
 
@@ -698,6 +699,21 @@ async def _flush_per_entity(
             # declined write is not re-enqueued: the buffered payload is what the tier
             # already refused, so replaying it refuses again, and an ``ON CONFLICT DO
             # NOTHING`` no-op would burn the retry budget on every duplicate.
+            await write_buffer.ack(pw.table_name, pw.entity_id)
+        except RowcountUnreadableError as exc:
+            # the statement ran -- the tag is its answer -- but how many rows it touched is unknown.
+            # replaying it would run it again, and dropping it as "affected no row" would be a guess,
+            # so it is acknowledged, counted as landed (an announce for a row that did not change
+            # is harmless; a missed one leaves a derived cache stale), and said, distinctly.
+            contain(
+                exc,
+                log=log,
+                what="Deferred L3 write ran but its row count could not be read; acknowledged, not replayed",
+                extra={"table": pw.table_name, "entity_id": str(pw.entity_id), "error": str(exc)},
+                level="error",
+            )
+            flushed += 1
+            landed.append(pw)
             await write_buffer.ack(pw.table_name, pw.entity_id)
         except Exception as exc:
             # FK violations are "my parent hasn't landed yet" -- treat

@@ -142,7 +142,9 @@ jobs:
           MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/datasources/src
         run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.identity -p threetears.agent.intention -p threetears.agent.skills -p threetears.agent.tools -p threetears.agent.wake -p threetears.datasources
 
-      - name: Test (unit + enforcement; integration excluded - no docker on the runner)
+      # integration is excluded because it is its own suite (./scripts/test-integration.sh), not because
+      # the runner lacks docker: ubuntu-latest has a daemon, so a docker-gated unit test here runs.
+      - name: Test (unit + enforcement; the integration suite runs separately)
         run: uv run pytest packages/ tests/ -m "not integration" -v
 
   build:

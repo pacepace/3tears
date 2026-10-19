@@ -268,6 +268,11 @@ def _parse_iso_datetime(raw: str) -> Any:
     return parsed
 
 
+#: the operation labels whose tag reports rows affected; a broker reply without a count for one of
+#: these is not a zero.
+_DML_VERBS: frozenset[str] = frozenset({"INSERT", "UPDATE", "DELETE", "UPSERT"})
+
+
 def _format_execute_tag(operation: str, row_count: Any) -> str:
     """build an asyncpg-shape status tag for a given operation + row count.
 
@@ -279,9 +284,14 @@ def _format_execute_tag(operation: str, row_count: Any) -> str:
     - ``UPDATE`` / ``DELETE`` / ``UPSERT``: ``"{VERB} {count}"``
     - ``SELECT`` (rare for execute): ``"SELECT {count}"``
 
-    ``row_count`` may be ``None`` when the broker did not populate it
-    (DDL, transactional no-ops). that's treated as zero so the tag
-    remains parseable by every caller.
+    ``row_count`` may be ``None`` when the broker did not populate it. for a
+    statement labelled ``select`` (which is also how DDL and other verbless
+    statements are labelled) that reads as zero. for a DML statement --
+    ``insert``, ``update``, ``delete``, ``upsert`` -- it does NOT: the tag is
+    the bare verb, with no count, so :func:`~threetears.core.backends.protocol.parse_rowcount`
+    raises :class:`~threetears.core.backends.protocol.RowcountUnreadableError`
+    rather than a fenced update reading as a lost race. a caller that never
+    reads the count is unaffected.
 
     :param operation: detected op verb (select/insert/update/delete/upsert)
     :ptype operation: str
@@ -290,8 +300,11 @@ def _format_execute_tag(operation: str, row_count: Any) -> str:
     :return: asyncpg-compatible status tag
     :rtype: str
     """
-    count = 0 if row_count is None else int(row_count)
     verb = operation.upper()
+    if row_count is None and verb in _DML_VERBS:
+        # the statement ran and the broker did not say how many rows it touched: no count is invented
+        return "INSERT" if verb == "UPSERT" else verb
+    count = 0 if row_count is None else int(row_count)
     if verb == "INSERT":
         return f"INSERT 0 {count}"
     if verb == "UPSERT":
