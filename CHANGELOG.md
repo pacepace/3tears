@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.72.0
-
 ### 3tears-evals: a judge campaign's report no longer labels the subject's own spend measuring spend
 
 - **In a campaign whose every result is judge-kind (`candidate_kind`) the spend measures read as the arm's own spend** (#830). The judge under test is the
