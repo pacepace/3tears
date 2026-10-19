@@ -29,8 +29,8 @@ packages (bumped in lock-step).
   scope-keyed form (`path:qualname#N:symbol`). 3tears checks every package, with three held cancellations
   recorded in `tests/enforcement/_no_silent_swallow_exemptions.txt`.
 - **Every package contains its broad handlers** (`packages/evals` through its own `contain` in
-  `threetears.evals.schema.logs`, since it imports no other 3tears package). No handler's return value or control
-  flow changed. What a consumer can notice:
+  `threetears.evals.schema.logs`, since it imports no other 3tears package). In this phase no handler's return value or
+  control flow changed (phase 2, below, changes them on purpose). What a consumer can notice:
   - each such record now carries the traceback and `contained_site` / `exc_type` in `extra_data`, keeps its message
     and fields, and counts on `contained_errors_total`; records that were DEBUG or INFO are now WARNING;
   - stopping a task no longer swallows the caller's own cancellation: `NatsClient` close and unsubscribe,
@@ -42,14 +42,96 @@ packages (bumped in lock-step).
 - **Under pytest, `contain()` absorbing a `TypeError`, `AttributeError`, `NameError` or `AssertionError` fails the
   test** (`tests/contain_tripwire.py`, repo-internal). A test that drives one there on purpose marks it
   `@pytest.mark.expect_contained(<type>, why=...)`.
-- **registry: a limit-guard outage still serves the call (Fork-2), and is now counted and alerted.** A guard that
-  raises logs at ERROR through `contain` and counts `threetears_registry_spend_limit_unchecked_total{exc_type}`, so
-  calls running with no spend limit checked are a query and an alert rather than a WARNING.
-- **registry: a declaring pod is sent the delegation without the agent's token when the hub JWKS cannot be read or
-  reads empty** (logged at ERROR once per outage). A `CallProxy` built with a `delegated_signer` and no
-  `jwks_provider` still keeps the token, and now raises a `DeprecationWarning` and logs it; that allowance is removed
-  in 0.73.0.
 - The rule, the decision table and the conversion recipe: `docs/exceptions.md`.
+
+### Swallowed exceptions, phase 2: a failure reaches its caller instead of reading as an answer
+
+Phase 1 kept every handler's behaviour. Phase 2 changes behaviour where the old default lied to its caller (#838).
+Where that forced a choice between failing open and failing closed, the owner ruled on each in #876.
+
+- **Security checks fail closed.**
+  - The scrape SSRF check refuses a host with an unparseable resolved address.
+  - `robots.txt` follows RFC 9309. A 4xx allows. A 5xx, 429, network error, timeout or parse failure is
+    unreachable and disallows, refused as retryable (`ROBOTS_UNREACHABLE_STATUS`) and never sent to the human queue.
+    Only a parsed earlier copy stands in for it.
+  - A failed MCP grant reload refuses non-admin calls with `AUTHZ_ERROR` (`GrantCacheUnavailableError`) until a
+    reload lands. The catch-up tick retries it, and a failed first load fails `start()`.
+  - `iam/saml.py` catches only parse, encoding and value errors.
+  - A corrupt password hash or TOTP secret still denies access, and now names the fault
+    (`PasswordVerifyResult.stored_hash_fault`, `TotpVerifyResult.secret_fault`) at ERROR.
+  - **`verify_code` returns `TotpVerifyResult`, not a `bool`.** Truth-testing it raises `TypeError`, so `if
+    verify_code(...)` fails loudly instead of accepting every code.
+- **registry: a limit-guard outage still serves the call (Fork-2), counted and alerted.** A guard that raises logs
+  at ERROR and counts `threetears_registry_spend_limit_unchecked_total{exc_type}`.
+- **registry: the agent's token is withheld from a declaring pod when the hub JWKS cannot be read or reads empty.**
+  A `CallProxy` with a `delegated_signer` and no `jwks_provider` still keeps it, raises a `DeprecationWarning`, and
+  loses the allowance in 0.73.0.
+- **A write that did not land fails its save.**
+  - `BaseCollection.l2_is_the_store` (default False) marks collections whose only store is L2. A refused L2 write
+    there raises `L2WriteRefusedError` and the save fails. A refused read raises instead of answering "absent".
+    Heartbeats, presence and coordination tables with no L3 declare it.
+  - `tests/enforcement/test_l2_only_collections_declare_their_store.py` makes every in-repo collection without L3
+    declare it.
+  - Recording or checking a revocation on such a table raises during an L2 outage.
+  - During an L2 outage the registry judges liveness from its own record, so dead pods are still quarantined.
+  - A scheduled job's lost fire row is retried 3 times and counted (`threetears_scheduled_jobs_fires_unrecorded_total`).
+    `join()` raises `FireNotRecordedError`.
+- **A failure no longer deletes rows or kills processes.**
+  - A workspace bind skips a path below its root that it cannot read, keeps that path's L3 rows, and completes.
+    Each skip counts `workspace_snapshot_unreadable_skipped_total{phase}`.
+  - `CaptureBackFailedError` means the bind root itself failed. `DiskRootChangedError` refuses a root whose device
+    changed.
+  - The Claude CLI orphan sweep leaves a CLI running when its owner cannot be shown gone (an unreadable marker,
+    EPERM, a hidden `/proc`). The gauge `claude_cli_sweep_owner_unknown` counts these.
+- **An outage reads as an outage, not as nothing found.**
+  - `threetears.langgraph.embeddings.embed_query` / `embed_documents` raise `EmbeddingUnavailableError`.
+  - Memory retrieval raises. As turn enrichment, the turn still runs and the model is told its memories could not
+    be read.
+  - Extraction's model failures raise `ExtractionModelFailedError`. **An unreadable extraction cooldown extracts
+    anyway**, contained at ERROR and counted.
+  - **A failed intention dedup stores the want** and says it went unchecked.
+  - Knowledge fails the turn only when its invariants are unknown. `list_own_drafts` raises
+    `DraftListIncompleteError`.
+  - Checkpoint purges raise `CheckpointPurgeIncompleteError`.
+  - The extractor's hooks now raise, which a host subclass will see.
+- **A partial result no longer reads as complete.**
+  - The NATS op-log replay raises `OpLogError` short of the stream head, after yielding what it read.
+  - An unparseable rowcount tag raises `RowcountUnreadableError`. The NATS proxy no longer invents `"UPDATE 0"`,
+    so a fenced save behind it raises when the broker omits `row_count` (#877).
+  - KV watches recreate their consumer and raise `KvError` after 5 failures in a row.
+  - The docker probe skips only for a missing SDK, socket or connection, so docker-gated tests run wherever
+    Docker does.
+- **Extraction says what it could not read.**
+  - `DocumentResult.page_faults` names each unread page, and `parse_document` says "Not fully read".
+  - `ImagePrepError` replaces a resize that reported success with the original bytes.
+  - `page_faults` travels on scrape's `ParsedDocumentHtml` and `RenderedPage`.
+  - An invalid CSS selector is refused by name. A malformed `blocked_until` backs off.
+  - Other unreadable stored timestamps are counted and read as not recorded (`StoredTimestampUnreadable`).
+- **Input that cannot be parsed no longer drops a row silently.**
+  - `UndecodableGeometry` is raised for an undecodable geometry. A geo tile skips the row and counts
+    `geo_undecodable_rows_total{layer}`.
+  - The stored tile says so: each aggregate feature whose bucket lost rows carries `undecodable`
+    (`UNDECODABLE_PROPERTY`). A tile built over any unreadable rows carries a `<layer>.partial` layer
+    (`PARTIAL_LAYER_SUFFIX`) holding the tile's total.
+  - A Voyage pricing page that changed shape raises `PricePageUnreadable`, and an unparseable published price
+    carries `unpriced_reason`.
+- **A failed lookup no longer shows as a false value.**
+  - Wake tools show `unknown (lookup failed)`, not "no skill" or 0.
+  - Slack serves the last good profile on a transient `users.info` failure, honours `Retry-After` (capped at
+    3600 s) and backs off 15 → 60 → 300 s. Raw event metadata carries `profile_lookup_failed`.
+- **Broad handlers catch the types they meant**, in registry discovery and registration, the namespace discovery
+  client, the cron validator, langgraph tool keys and the scrape page finder.
+  - **A mail-bounce parser bug answers 500, so the provider resends.** Only the parser's declared `ValueError`
+    answers 400.
+- **Agent-facing text names the exception type only**, never its message. The full message goes to `contain()`.
+  Text about the agent's own input (a cron, template or regex error) is still returned so it can fix it.
+- **Check before release.**
+  - Hosts:
+    - any `if verify_code(...)` caller;
+    - extractor subclasses that relied on the hooks failing open;
+    - host callers of `datasource_ids`, `list_own_drafts` and `retrieve_across_authorized_agents`;
+    - a price refresh that catches only transport errors.
+  - scriob: materialise and failover must not commit a head after `OpLogError` arrives mid-replay.
 
 ## v0.71.0 -- 2026-10-18
 
