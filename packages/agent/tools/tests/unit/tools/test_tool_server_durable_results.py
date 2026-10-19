@@ -366,6 +366,53 @@ class TestADeliveryFailureIsRetriedRatherThanDiscarded:
         assert not nats.delivered
 
     @pytest.mark.asyncio
+    async def test_exhausted_retries_are_audited_as_an_error_not_as_the_tool_s_success(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the tool succeeded but the caller received nothing: the audit must say what was received."""
+        nats = _FakeNats(jetstream_failures=99)
+        server = _server(nats)
+
+        with caplog.at_level("ERROR"):
+            await server.handle_call(_long_call(result_subject=_delivery_subject()))
+
+        assert len(nats.audits) == 1
+        audit = _decoded(nats.audits[0][1])
+        assert audit["outcome"] == "error"
+        assert "the answer is lost" in audit["details"]["failure_reason"]
+        assert any("the answer is lost" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_lost_refusal_keeps_its_reason_beside_the_loss(self) -> None:
+        nats = _FakeNats(jetstream_failures=99)
+        server = _server(nats, tool=_StubTool(raise_exc=RuntimeError("scanner crashed")))
+
+        await server.handle_call(_long_call(result_subject=_delivery_subject()))
+
+        audit = _decoded(nats.audits[0][1])
+        assert audit["outcome"] == "error"
+        reason = audit["details"]["failure_reason"]
+        assert "scanner crashed" in reason and "the answer is lost" in reason
+
+    @pytest.mark.asyncio
+    async def test_a_lost_rejection_keeps_the_rejection_s_reason(self) -> None:
+        nats = _FakeNats(jetstream_failures=99)
+        server = _server(nats)
+        payload = _signed_call_payload(pod_id=_POD, conversation_id=uuid4(), user_id=uuid4())
+        payload["result_subject"] = _delivery_subject()
+        payload["context"]["identity_token"] = "not-a-jws"
+
+        await server.handle_call(_msg(payload))
+
+        audit = _decoded(nats.audits[0][1])
+        assert audit["outcome"] == "error"
+        reason = audit["details"]["failure_reason"]
+        assert "the answer is lost" in reason
+        rejection, _, loss = reason.partition("; then ")
+        assert rejection and "the answer is lost" not in rejection, "the rejection's own reason comes first"
+        assert "the answer is lost" in loss
+
+    @pytest.mark.asyncio
     async def test_each_retry_waits_the_configured_pause(self) -> None:
         """the pause is what lets a reconnect complete between attempts; two failures wait it twice."""
         nats = _FakeNats(jetstream_failures=2)

@@ -60,7 +60,7 @@ import functools
 import hashlib
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -89,7 +89,11 @@ __all__ = [
     "IN_FLIGHT_LOCK_KEY_PREFIX",
     "IN_FLIGHT_SKIP_OUTPUT_KEY",
     "REAP_MARGIN_SECONDS",
+    "DEFAULT_FINALIZE_RETRY_SECONDS",
+    "FINALIZE_ATTEMPTS",
+    "UNRECORDED_FIRES_NAMED",
     "BackgroundDispatch",
+    "FireNotRecordedError",
     "in_flight_lock_key",
 ]
 
@@ -126,6 +130,42 @@ _TIMEOUT: Final[str] = "timeout"
 _CANCELLED: Final[str] = "cancelled"
 _OTHER: Final[str] = "other"
 
+#: How many times a fire row's finalize write is tried before the fire is left to the reaper. The
+#: write is an upsert of the fire's own row, so a retry cannot record it twice.
+FINALIZE_ATTEMPTS: Final[int] = 3
+
+#: The pause before the first finalize retry; each later one waits twice the one before.
+DEFAULT_FINALIZE_RETRY_SECONDS: Final[float] = 0.5
+
+#: How many unrecorded fires :class:`FireNotRecordedError` names; past it, they are only counted.
+UNRECORDED_FIRES_NAMED: Final[int] = 20
+
+
+class FireNotRecordedError(RuntimeError):
+    """Raised by :meth:`BackgroundDispatch.join` for fires whose row could not be finalized.
+
+    Each such row stays ``'dispatching'`` until the tick's reaper records it as failed, so its real
+    outcome -- a success included -- is lost. Every fire's own failure was already logged at ERROR
+    and counted on :data:`~threetears.scheduled_jobs.metrics.SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL`
+    when its last write attempt failed; this is what tells the code waiting on the dispatcher.
+
+    :param count: how many fires were not recorded
+    :ptype count: int
+    :param unrecorded: ``(kind, fire_id)`` of the first :data:`UNRECORDED_FIRES_NAMED` of them, in
+        the order they failed
+    :ptype unrecorded: Sequence[tuple[str, UUID]]
+    """
+
+    def __init__(self, count: int, unrecorded: Sequence[tuple[str, UUID]]) -> None:
+        self.count = count
+        self.unrecorded: tuple[tuple[str, UUID], ...] = tuple(unrecorded)
+        named = ", ".join(f"{kind} {fire_id}" for kind, fire_id in self.unrecorded)
+        more = "" if count <= len(self.unrecorded) else f" and {count - len(self.unrecorded)} more"
+        super().__init__(
+            f"{count} background fire row(s) could not be finalized and are left to the reaper, which "
+            f"will record them as failed: {named}{more}"
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class _Outcome:
@@ -153,6 +193,7 @@ class BackgroundDispatch:
         fire_timeout_seconds_by_kind: Mapping[str, float] | None = None,
         emitter: ScheduledJobsMetricsEmitter | None = None,
         exclusion_groups: Mapping[str, str] | None = None,
+        finalize_retry_seconds: float = DEFAULT_FINALIZE_RETRY_SECONDS,
     ) -> None:
         """Build the dispatcher; validate its limits against the pump's reap thresholds.
 
@@ -176,7 +217,11 @@ class BackgroundDispatch:
             and before their timeout starts, but no longer than their reap deadline allows. A kind
             absent from the mapping belongs to no group. Held within this instance only.
         :ptype exclusion_groups: Mapping[str, str] | None
-        :raises ValueError: when a limit is not a positive number, a fire timeout does not fit
+        :param finalize_retry_seconds: the pause before the first retry of a fire row's finalize
+            write; each later retry waits twice as long (:data:`FINALIZE_ATTEMPTS` tries in all)
+        :ptype finalize_retry_seconds: float
+        :raises ValueError: when a limit is not a positive number, ``finalize_retry_seconds`` is
+            negative, a fire timeout does not fit
             below the reap threshold (less :data:`REAP_MARGIN_SECONDS`) of the kinds it applies to,
             or a group name is empty
         """
@@ -189,6 +234,8 @@ class BackgroundDispatch:
             if not seconds > 0:
                 raise ValueError(f"fire_timeout_seconds_by_kind[{kind!r}] must be a positive number, got {seconds!r}")
         _check_timeouts_fit_reap(fire_timeout_seconds, by_kind, config)
+        if not finalize_retry_seconds >= 0:
+            raise ValueError(f"finalize_retry_seconds must be >= 0, got {finalize_retry_seconds!r}")
         groups = dict(exclusion_groups or {})
         for kind, group in groups.items():
             if not isinstance(group, str) or not group:
@@ -218,6 +265,12 @@ class BackgroundDispatch:
         self._started: set[UUID] = set()
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
         self._writes: set[asyncio.Task[None]] = set()
+        self._finalize_retry_seconds = float(finalize_retry_seconds)
+        # Fires whose finalize write failed since the last join -- counted, the first few named --
+        # and the first such failure: join raises them, so a lost record is not reported as recorded.
+        self._unrecorded_count = 0
+        self._unrecorded: list[tuple[str, UUID]] = []
+        self._first_unrecorded_error: Exception | None = None
         self._closed = False
 
     @property
@@ -261,15 +314,26 @@ class BackgroundDispatch:
         return _hand_off
 
     async def join(self) -> None:
-        """Wait until every fire handed off so far (and any handed off meanwhile) is recorded."""
+        """Wait until every fire handed off so far (and any handed off meanwhile) is recorded.
+
+        :raises FireNotRecordedError: when the row of any fire settled since the last ``join`` could
+            not be finalized; each is named once
+        """
         while self._tasks or self._writes:
             await asyncio.gather(*list(self._tasks.values()), *list(self._writes), return_exceptions=True)
+        if self._unrecorded_count:
+            count, unrecorded, cause = self._unrecorded_count, self._unrecorded, self._first_unrecorded_error
+            self._unrecorded_count, self._unrecorded, self._first_unrecorded_error = 0, [], None
+            raise FireNotRecordedError(count, unrecorded) from cause
 
     async def aclose(self) -> None:
         """Stop: refuse new fires, cancel the running ones, and record each as failed.
 
         A fire whose body had already finished keeps its real result; a fire cancelled before its
         task ever started is recorded here, since it never reached its own handler.
+
+        Never raises for a fire whose row could not be finalized: shutdown completes, and one ERROR
+        line names what the reaper will record (each was logged and counted when its write failed).
         """
         self._closed = True
         tasks = list(self._tasks.values())
@@ -279,7 +343,15 @@ class BackgroundDispatch:
         for fire_id, (trigger, handed_off_at) in list(self._pending.items()):
             if fire_id not in self._started:
                 await self._finalize(trigger, fire_id, self._cancelled(trigger, handed_off_at))
-        await self.join()
+        try:
+            await self.join()
+        except FireNotRecordedError as exc:
+            contain(
+                exc,
+                log=log,
+                what=f"scheduled_jobs background closed with fires left to the reaper: {exc}",
+                level="error",
+            )
 
     # ------------------------------------------------------------------
 
@@ -563,36 +635,41 @@ class BackgroundDispatch:
 
     async def _write(self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str) -> None:
         failed = result.status == "failed"
-        try:
-            if failed:
-                await self._fire_store.finalize_failed(
-                    trigger.partition_key,
-                    fire_id,
-                    error=result.error or "dispatch returned status='failed' without an error string",
-                    latency_ms=result.latency_ms,
-                    **_failed_output(result),
+        pause = self._finalize_retry_seconds
+        for attempt in range(1, FINALIZE_ATTEMPTS + 1):
+            try:
+                await self._write_once(trigger, fire_id, result, failed=failed)
+                break
+            except Exception as exc:  # noqa: BLE001 - boundary: a lost write leaves the row to the reaper and must not wedge the kind
+                if attempt < FINALIZE_ATTEMPTS:
+                    log.warning(
+                        "scheduled_jobs background: finalizing the fire row failed; retrying",
+                        extra={
+                            "extra_data": {
+                                "fire_id": str(fire_id),  # convert at border: log extra_data field
+                                "kind": trigger.kind,
+                                "attempt": attempt,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
+                        },
+                    )
+                    await asyncio.sleep(pause)
+                    pause *= 2
+                    continue
+                contain(
+                    exc,
+                    log=log,
+                    what="scheduled_jobs background: could not finalize the fire row; the reaper will record it as failed",
+                    extra={
+                        "fire_id": str(fire_id),  # convert at border: log extra_data field
+                        "kind": trigger.kind,
+                        "status": result.status,
+                        "attempts": attempt,
+                    },
+                    level="error",
                 )
-            else:
-                await self._fire_store.finalize_success(
-                    trigger.partition_key,
-                    fire_id,
-                    status=result.status,
-                    output=result.output,
-                    latency_ms=result.latency_ms,
-                )
-        except Exception as exc:  # noqa: BLE001 - boundary: a lost write leaves the row to the reaper and must not wedge the kind
-            contain(
-                exc,
-                log=log,
-                what="scheduled_jobs background: could not finalize the fire row; the reaper will record it as failed",
-                extra={
-                    "fire_id": str(fire_id),  # convert at border: log extra_data field
-                    "kind": trigger.kind,
-                    "status": result.status,
-                },
-                level="error",
-            )
-            return
+                self._record_unrecorded(trigger.kind, fire_id, exc)
+                return
         emitter = self._emitter if self._emitter is not None else get_scheduled_jobs_emitter()
         emitter.inc_fire(status=result.status, schedule_type=trigger.schedule_type)
         detail = {
@@ -608,6 +685,33 @@ class BackgroundDispatch:
                 EVENT_FIRE_FAILED, extra={"extra_data": {**detail, "reason": failure_reason, "error": result.error}}
             )
         log.info(EVENT_FIRE_COMPLETED, extra={"extra_data": detail})
+
+    async def _write_once(self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, *, failed: bool) -> None:
+        if failed:
+            await self._fire_store.finalize_failed(
+                trigger.partition_key,
+                fire_id,
+                error=result.error or "dispatch returned status='failed' without an error string",
+                latency_ms=result.latency_ms,
+                **_failed_output(result),
+            )
+        else:
+            await self._fire_store.finalize_success(
+                trigger.partition_key,
+                fire_id,
+                status=result.status,
+                output=result.output,
+                latency_ms=result.latency_ms,
+            )
+
+    def _record_unrecorded(self, kind: str, fire_id: UUID, exc: Exception) -> None:
+        emitter = self._emitter if self._emitter is not None else get_scheduled_jobs_emitter()
+        emitter.inc_fire_unrecorded()
+        self._unrecorded_count += 1
+        if len(self._unrecorded) < UNRECORDED_FIRES_NAMED:
+            self._unrecorded.append((kind, fire_id))
+        if self._first_unrecorded_error is None:
+            self._first_unrecorded_error = exc
 
 
 def in_flight_lock_key(kind: str) -> str:

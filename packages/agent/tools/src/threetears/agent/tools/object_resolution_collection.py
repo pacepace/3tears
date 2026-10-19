@@ -100,6 +100,10 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
     #: rehydrated to aware-UTC by the framework's L2 codec on every read.
     datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
 
+    #: the hub is this mapping's durable source, so L2 is a cache of it: an L2 failure degrades to a
+    #: miss and the next resolve asks the hub again.
+    l2_is_the_store: bool = False
+
     def __init__(
         self,
         registry: CollectionRegistry,

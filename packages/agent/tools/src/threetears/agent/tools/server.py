@@ -994,6 +994,15 @@ def _effective_ceiling(pod_ceiling: float | None, caller_deadline: float | None)
     return min(bounds) if bounds else None
 
 
+class _ResultLost(Exception):
+    """the answer to a durably-delivered call could not be published, after every attempt.
+
+    Raised by :meth:`ToolServer._deliver` and caught once, by the dispatch that called it, which
+    records the call as an error in its audit rather than as the outcome the tool reached: what
+    the caller received is nothing.
+    """
+
+
 class ToolCallFailure(Exception):
     """a tool failure that still has structure worth sending back (§10.9).
 
@@ -3449,6 +3458,9 @@ class ToolServer:
                     error_code=IDENTITY_REFUSED,
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = identity_rejection
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod rejected call: identity unverified",
@@ -3461,8 +3473,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = identity_rejection
                 return
             # the verified identity now rides the re-stamped request; re-bind the log tags so this
             # dispatch's log lines + the baseline audit attribute to the authenticated identity, not
@@ -3484,6 +3494,9 @@ class ToolServer:
                     error_code=assertion_refusal.error_code,
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = assertion_refusal.reason
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod rejected call at the proxy-assertion gate",
@@ -3496,8 +3509,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = assertion_refusal.reason
                 return
 
             owner_rejection = self._foreign_caller_rejection(request)
@@ -3509,6 +3520,9 @@ class ToolServer:
                     error_code="TOOL_CALLER_NOT_OWNER",
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = owner_rejection
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod refused call: the verified caller is not the agent this in-process server belongs to",
@@ -3521,8 +3535,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = owner_rejection
                 return
 
             tool = self._tools.get(tool_key)
@@ -3534,6 +3546,9 @@ class ToolServer:
                     error=f"unknown tool: {tool_key}",
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = f"unknown tool: {tool_key}"
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "unknown tool requested",
@@ -3544,8 +3559,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = f"unknown tool: {tool_key}"
                 return
 
             try:
@@ -3618,6 +3631,13 @@ class ToolServer:
                 # the caller received, not what the tool returned
                 outcome = "failure"
                 failure_reason = sent.error
+        except _ResultLost as exc:
+            # whichever branch was answering, the caller received nothing: the audit says so, and
+            # the pod's log carries the subject and size. Not raised further: the dispatch is a
+            # NATS callback, and nothing above it can reach the caller either.
+            contain(exc, log=log, what=str(exc), extra={"tool_key": tool_key}, level="error")
+            outcome = "error"
+            failure_reason = str(exc) if failure_reason is None else f"{failure_reason}; then {exc}"
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
@@ -3738,6 +3758,7 @@ class ToolServer:
         :ptype response: CallResponse
         :return: nothing
         :rtype: None
+        :raises _ResultLost: when every attempt failed; the answer is lost
         """
         if self._nc is None:
             return
@@ -3748,19 +3769,14 @@ class ToolServer:
                 return
             except Exception as exc:  # noqa: BLE001 — the work is already done; retry beats discarding it
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
-                    # NOSILENT: the answer is now lost. say so, with the subject and the size, rather
-                    # than letting it surface as an unexplained timeout at the caller.
-                    contain(
-                        exc,
-                        log=log,
-                        what=(
-                            f"tool result could not be delivered after {_RESULT_DELIVERY_ATTEMPTS} attempts; "
-                            f"the answer is lost (subject={subject.path} pod_id={self._pod_id} "
-                            f"bytes={len(payload)}): {exc}"
-                        ),
-                        level="error",
-                    )
-                    return
+                    # the answer is now lost. say so, with the subject and the size, rather than
+                    # letting it surface as an unexplained timeout at the caller, and as a call the
+                    # audit records as answered.
+                    raise _ResultLost(
+                        f"tool result could not be delivered after {_RESULT_DELIVERY_ATTEMPTS} attempts; "
+                        f"the answer is lost (subject={subject.path} pod_id={self._pod_id} "
+                        f"bytes={len(payload)}): {type(exc).__name__}: {exc}"
+                    ) from exc
                 log.warning(
                     "tool result delivery failed (attempt %d/%d, subject=%s); retrying: %s",
                     attempt,
