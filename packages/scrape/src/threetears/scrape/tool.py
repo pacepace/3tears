@@ -58,7 +58,7 @@ from .extraction import FieldSchema
 from .health import ScrapeTargetHealthCollection, clear_robots_block, record_robots_block
 from .llm_retry import StructuredCallFailedError
 
-__all__ = ["MODEL_UNAVAILABLE_STATUS", "ScrapeTool"]
+__all__ = ["MODEL_UNAVAILABLE_STATUS", "ROBOTS_UNREACHABLE_STATUS", "ScrapeTool"]
 
 log = get_logger(__name__)
 
@@ -68,6 +68,12 @@ log = get_logger(__name__)
 #: was observed. Distinct from ``"failed"``, which means the page WAS read and nothing could be
 #: extracted from it -- the outcome a model outage used to be recorded as.
 MODEL_UNAVAILABLE_STATUS = "model_unavailable"
+
+#: The ``validation_status`` this tool reports when the target's ``robots.txt`` could not be
+#: read (RFC 9309's "unreachable", a complete disallow until it can be). A payload value, never
+#: a stored one, and retryable: nothing was fetched and nothing is queued for a person, because
+#: the site has not said no -- it has stopped answering.
+ROBOTS_UNREACHABLE_STATUS = "robots_unreachable"
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -108,6 +114,8 @@ class _Gate(StrEnum):
     INPUT = "input"
     #: ``robots.txt`` disallows this path. Escalates to a human rather than failing.
     ROBOTS = "robots"
+    #: ``robots.txt`` could not be read. A retryable refusal; nothing is queued for a human.
+    ROBOTS_UNREACHABLE = "robots_unreachable"
     #: The target's durable fetch circuit is open, so no fetch was attempted.
     CIRCUIT = "circuit"
     #: The fetch was attempted and did not produce a page.
@@ -761,7 +769,18 @@ class ScrapeTool(TearsTool):
             # The robots.txt read is a request too, and it can be redirected as well.
             with refusing_private_hosts(self._block_private_hosts):
                 robots_decision = await self._robots.check(url)
-            if not robots_decision.allowed:
+            if not robots_decision.allowed and robots_decision.unreachable:
+                # Not a Disallow: the site stopped answering for its robots.txt. Refused for
+                # now (RFC 9309), retryable, and kept OFF the human queue -- `list_walled`
+                # excludes a host that stopped answering, since a person sent there would
+                # find nothing to do.
+                log.info(
+                    "scrape tool: %s not fetched; its robots.txt could not be read",
+                    url,
+                    extra={"extra_data": {"target_id": target_id, "url": url}},
+                )
+                declined_by = _Gate.ROBOTS_UNREACHABLE
+            elif not robots_decision.allowed:
                 # A disallowed path is not fetched unattended and not silently skipped: it is
                 # reported as needing a person, through the same shape a bot wall takes, so a
                 # queue can pick it up. The exclusion protocol governs automated agents; an
@@ -975,6 +994,23 @@ class ScrapeTool(TearsTool):
         if declined_by is _Gate.ROBOTS:
             assert escalation is not None  # set with the marker, in the same block
             result = escalation
+        elif declined_by is _Gate.ROBOTS_UNREACHABLE:
+            assert robots_decision is not None  # only the robots gate sets this marker
+            result = ToolResult(
+                success=False,
+                error=f"retry later: {robots_decision.reason}",
+                content=json.dumps(
+                    {"target_id": target_id, "validation_status": ROBOTS_UNREACHABLE_STATUS, "records": []}
+                ),
+                metadata={
+                    "target_id": target_id,
+                    "validation_status": ROBOTS_UNREACHABLE_STATUS,
+                    "record_count": 0,
+                    "source_url": url,
+                    "needs_human": False,
+                    "reason": "robots_unreachable",
+                },
+            )
         elif declined_by is _Gate.INPUT or declined_by is _Gate.RENDER:
             assert error is not None  # both gates set it with the marker, in one statement
             result = ToolResult(success=False, content="", error=error)

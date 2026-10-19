@@ -42,6 +42,13 @@ packages (bumped in lock-step).
 - **Under pytest, `contain()` absorbing a `TypeError`, `AttributeError`, `NameError` or `AssertionError` fails the
   test** (`tests/contain_tripwire.py`, repo-internal). A test that drives one there on purpose marks it
   `@pytest.mark.expect_contained(<type>, why=...)`.
+- **registry: a limit-guard outage still serves the call (Fork-2), and is now counted and alerted.** A guard that
+  raises logs at ERROR through `contain` and counts `threetears_registry_spend_limit_unchecked_total{exc_type}`, so
+  calls running with no spend limit checked are a query and an alert rather than a WARNING.
+- **registry: a declaring pod is sent the delegation without the agent's token when the hub JWKS cannot be read or
+  reads empty** (logged at ERROR once per outage). A `CallProxy` built with a `delegated_signer` and no
+  `jwks_provider` still keeps the token, and now raises a `DeprecationWarning` and logs it; that allowance is removed
+  in 0.73.0.
 - The rule, the decision table and the conversion recipe: `docs/exceptions.md`.
 
 ## v0.70.0 -- 2026-10-16

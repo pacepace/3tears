@@ -28,6 +28,22 @@ not. A fetch satisfies both, and neither may be used to weaken the other -- in p
 circuit probe is not exempt from the crawl delay, or the politeness contract breaks precisely
 when a target is already unhappy with us.
 
+**A file that cannot be read is read the way RFC 9309 says.** A ``4xx`` (the file is not
+there, or not for us) is "unavailable" and allows everything (RFC 9309 section 2.3.1.3) --
+except ``429``, which is the site asking us to slow down and is read as "unreachable", as
+Google reads it. A ``5xx``, a ``429`` or a network failure is "unreachable" and means
+complete disallow (section 2.3.1.4): the site may be saying no and we cannot hear it, so the
+unattended fetcher does not go ahead on a guess. A body that will not parse is disallow too,
+for the same reason. When the file was PARSED successfully before, that earlier copy keeps
+governing while the origin is unreachable (section 2.4 allows a cached copy then), so one 503
+on a site we already know does not stop it; a remembered 404 is no copy and does not count.
+An unreadable answer is held only briefly, so the gate asks again soon.
+
+**Unreachable is not a Disallow, and does not go to a person.** It is its own decision
+(:attr:`RobotsDecision.unreachable`): the unattended fetch is refused with a retryable
+failure, and nothing is queued for a human, because a person sent to a host that stopped
+answering has nothing to do when they arrive.
+
 Parsing is :mod:`urllib.robotparser` from the standard library rather than a dependency. The
 grammar is older and looser than its reputation and implementations genuinely disagree about
 wildcards and ``Allow`` precedence; the stdlib's reading is a defensible one, it is already
@@ -73,9 +89,9 @@ DEFAULT_USER_AGENT = "3tears-scrape"
 #: more requests than it saves.
 _DEFAULT_CACHE_SECONDS = 3600.0
 
-#: Budget for fetching ``robots.txt`` itself. Short on purpose -- a site that will not serve
-#: its own robots file within this is a site we are about to fetch anyway, and blocking a
-#: scrape on it would let an unreachable text file stop real work.
+#: Budget for fetching ``robots.txt`` itself. Running past it is RFC 9309's "unreachable",
+#: which refuses the unattended fetch, so it is short enough not to stall a caller and long
+#: enough that a slow but working site still answers.
 _FETCH_TIMEOUT_SECONDS = 10.0
 
 #: How many origins' parsed files and fetch clocks to retain. A cap rather than unbounded
@@ -83,6 +99,31 @@ _FETCH_TIMEOUT_SECONDS = 10.0
 #: cost of evicting the least-recently-used entry is one re-fetch, while the cost of never
 #: evicting is a leak proportional to how many distinct sites a process has ever seen.
 _DEFAULT_MAX_ORIGINS = 2048
+
+#: How long an unreachable or unparseable ``robots.txt`` is held before asking again. Short,
+#: because it refuses every unattended fetch of the origin while it stands: held for the full
+#: cache lifetime, one 503 would stop a site for an hour. Long enough that a site that is down
+#: is not asked for its robots file on every fetch.
+_UNREADABLE_RETRY_SECONDS = 60.0
+
+
+#: The reason every unreachable decision carries, whatever the status or error was.
+_UNREACHABLE_REASON = (
+    "robots.txt could not be read; RFC 9309 treats an unreachable robots.txt as a complete "
+    "disallow, so this is not fetched unattended until it can be read"
+)
+
+
+@dataclass(frozen=True)
+class _Unreadable:
+    """``robots.txt`` could not be read or parsed, so the site's wishes are unknown.
+
+    Distinct from ``None`` ("the site asked for nothing", a ``4xx`` or an empty file): under
+    RFC 9309 section 2.3.1.4 an unreachable file means complete disallow, not allow.
+    """
+
+    #: Why, for the operator and for the escalation the caller builds.
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -128,6 +169,10 @@ class RobotsDecision:
     wait_seconds: float = 0.0
     #: True when a ``Disallow`` matched and a human should decide.
     needs_human: bool = False
+    #: True when ``robots.txt`` could not be read or parsed (RFC 9309's "unreachable"). The
+    #: fetch is refused for now and should be retried; it is not a Disallow, so
+    #: :attr:`needs_human` stays ``False`` and nothing is queued for a person.
+    unreachable: bool = False
     #: Human-readable explanation.
     reason: str = "no robots.txt restrictions apply"
 
@@ -197,7 +242,7 @@ class RobotsGate:
         # circuit row would discard a judgement nothing can reconstruct, while evicting one of
         # these costs exactly one re-fetch. A long-lived process scraping a wide set of sites
         # would otherwise hold one entry per origin it had ever touched, forever.
-        self._cache: OrderedDict[str, tuple[RobotFileParser | None, float]] = OrderedDict()
+        self._cache: OrderedDict[str, tuple[RobotFileParser | _Unreadable | None, float]] = OrderedDict()
         self._last_fetch_at: OrderedDict[str, float] = OrderedDict()
         # Bumped by `forget`. `_parser_for` deliberately does not hold the lock across its
         # fetch -- one slow origin must not stall every other -- which leaves a window where a
@@ -239,9 +284,10 @@ class RobotsGate:
     async def check(self, url: str, *, now: float | None = None) -> RobotsDecision:
         """Decide whether *url* may be fetched, and how long to wait first.
 
-        Never raises. Every way of failing to read a site's wishes ends in "allowed", because
-        a broken or missing ``robots.txt`` is not a refusal -- treating an unreachable text
-        file as a wall would let one 500 stop a scrape the site never objected to.
+        Never raises. A missing file (``4xx``) allows everything; an unreachable one (``5xx``,
+        network failure, timeout) or one that will not parse refuses, as RFC 9309 section
+        2.3.1.4 requires, unless an earlier good copy of the file is still held. See the
+        module docstring.
 
         :param url: the url about to be fetched
         :ptype url: str
@@ -272,7 +318,19 @@ class RobotsGate:
 
         parser = await self._parser_for(origin, moment)
         if parser is None:
-            return RobotsDecision(allowed=True, reason="no usable robots.txt; nothing was asked of us")
+            return RobotsDecision(allowed=True, reason="no robots.txt; nothing was asked of us")
+        if isinstance(parser, _Unreadable):
+            if not self._policy.flag_disallowed:
+                # This deployment does not honour Disallow, so a complete disallow it cannot
+                # read changes nothing; there is no Crawl-delay to honour either.
+                return RobotsDecision(allowed=True, reason=f"{parser.reason}; Disallow is not honoured here")
+            # A stable reason, not the per-attempt status: the detail is in the log line
+            # `_load` wrote, and a reason that changed with every 5xx would read as a new event.
+            return RobotsDecision(
+                allowed=False,
+                unreachable=True,
+                reason=_UNREACHABLE_REASON,
+            )
 
         if self._policy.flag_disallowed and not parser.can_fetch(self._policy.user_agent, url):
             return RobotsDecision(
@@ -479,7 +537,9 @@ class RobotsGate:
         # while the reverse combination short-circuits `check` entirely and is handled by the
         # guard above.
         parser = await self._parser_for(origin, time.monotonic())
-        if parser is None or self._capped_delay(origin, parser, announce=False) is None:
+        if parser is None or isinstance(parser, _Unreadable):
+            return 0.0, False
+        if self._capped_delay(origin, parser, announce=False) is None:
             return 0.0, False
 
         try:
@@ -509,8 +569,13 @@ class RobotsGate:
             return 0.0
         return max(0.0, delay - (now - last))
 
-    async def _parser_for(self, origin: str, now: float) -> RobotFileParser | None:
-        """The cached parser for *origin*, fetching and parsing when stale."""
+    async def _parser_for(self, origin: str, now: float) -> RobotFileParser | _Unreadable | None:
+        """The cached parser for *origin*, fetching and parsing when stale.
+
+        An unreadable answer replaces a previously good one only when there is no good one:
+        RFC 9309 section 2.4 lets a crawler keep using its cached copy while the file is
+        unreachable, and refusing a known site over one 503 would be the worse reading.
+        """
         async with self._lock:
             cached = self._cache.get(origin)
             if cached is not None and now < cached[1]:
@@ -518,42 +583,70 @@ class RobotsGate:
                 # burst of one-off ones purely because it was fetched longer ago.
                 self._cache.move_to_end(origin)
                 return cached[0]
+            # A stale entry is still held until eviction; a PARSED one can stand in below. A
+            # remembered 404 or empty file is not a copy of anything (section 2.4 is about a
+            # cached file), so it does not license fetching past a later 5xx.
+            previous = cached[0] if cached is not None and isinstance(cached[0], RobotFileParser) else None
             seen = self._generation
 
         parser = await self._load(origin)
+        lifetime = self._cache_seconds
+        if isinstance(parser, _Unreadable):
+            lifetime = min(self._cache_seconds, _UNREADABLE_RETRY_SECONDS)
+            if previous is not None:
+                log.warning(
+                    "scrape robots: %s; keeping the copy read earlier (RFC 9309 section 2.4)",
+                    parser.reason,
+                    extra={"extra_data": {"origin": origin}},
+                )
+                parser = previous
         async with self._lock:
             if self._generation != seen:
                 # Something was forgotten while this was in flight. Hand the caller what was
                 # actually fetched, but do not cache it: the write would undo the forget.
                 return parser
-            self._cache[origin] = (parser, now + self._cache_seconds)
+            self._cache[origin] = (parser, now + lifetime)
             self._cache.move_to_end(origin)
             self._evict_if_needed(self._cache)
         return parser
 
-    async def _load(self, origin: str) -> RobotFileParser | None:
-        """Fetch and parse ``{origin}/robots.txt``, or ``None`` when there is nothing usable.
+    async def _load(self, origin: str) -> RobotFileParser | _Unreadable | None:
+        """Fetch and parse ``{origin}/robots.txt``, classified by RFC 9309 section 2.3.1.
 
-        ``None`` covers every unusable outcome deliberately: no fetcher injected, a transport
-        failure, a 404, a 500, or a body that will not parse. All of them mean the same thing
-        -- the site has not told us anything -- and distinguishing them here would produce
-        four ways of saying "allowed".
+        - ``2xx`` with a body: the parsed file. An empty body is a file with no rules: ``None``.
+        - ``3xx`` left over after redirects, and ``4xx`` other than ``429``: "unavailable",
+          which allows everything (sections 2.3.1.2 and 2.3.1.3): ``None``.
+        - ``429``, ``5xx``, any other status, a transport failure or timeout, and a body that
+          will not parse: "unreachable", which means complete disallow (section 2.3.1.4):
+          :class:`_Unreadable`. ``429`` is the site rate-limiting us, not a missing file;
+          section 2.3.1.4 lets a crawler treat it as unreachable, and Google does.
+
+        :param origin: ``scheme://host[:port]``
+        :ptype origin: str
+        :return: the parsed file, ``None`` when the site asked for nothing, or why it could not
+            be read
+        :rtype: RobotFileParser | _Unreadable | None
         """
         url = f"{origin}/robots.txt"
         try:
             status, body = await asyncio.wait_for(self._fetch(url), timeout=_FETCH_TIMEOUT_SECONDS)
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreachable robots.txt is not a refusal; letting it raise would turn one 500 on a text file into a stopped scrape the site never objected to. Logged with its traceback below
-            contain(exc, log=log, what=f"scrape robots: could not read {url}; proceeding as unrestricted")
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any failure to fetch the file is RFC 9309's "unreachable", answered below as a complete disallow; raising instead would stop the caller's tool, which returns a result rather than raising. Logged with its traceback below
+            contain(exc, log=log, what=f"scrape robots: could not read {url}; treating it as disallow-all (RFC 9309)")
+            return _Unreadable(f"{url} could not be read ({type(exc).__name__})")
+        if 300 <= status < 500 and status != 429:
+            log.debug("scrape robots: %s returned %s; RFC 9309 reads that as no restrictions", url, status)
             return None
-        if status != 200 or not body:
-            log.debug("scrape robots: %s returned %s; proceeding as unrestricted", url, status)
+        if not 200 <= status < 300:
+            log.warning("scrape robots: %s returned %s; treating it as disallow-all (RFC 9309)", url, status)
+            return _Unreadable(f"{url} returned HTTP {status}")
+        if not body:
             return None
         parser = RobotFileParser()
         try:
             parser.parse(body.splitlines())
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the grammar is loose and implementations disagree; an unparseable file is a site that failed to express a restriction, not one that expressed a total ban. Logged with its traceback below
-            contain(exc, log=log, what=f"scrape robots: {url} did not parse; proceeding as unrestricted")
-            return None
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a file that will not parse may hold a Disallow we cannot see, so it is answered below as a complete disallow; raising instead would stop the caller's tool, which returns a result rather than raising. Logged with its traceback below
+            contain(exc, log=log, what=f"scrape robots: {url} did not parse; treating it as disallow-all")
+            return _Unreadable(f"{url} did not parse ({type(exc).__name__})")
         return parser
 
 
@@ -566,8 +659,8 @@ def _default_fetch_via(egress: EgressDriver | None) -> Any:
     disclose the container's real address to every origin, on by default, immediately before
     the proxied fetch that was supposed to hide it.
 
-    Errors propagate to :meth:`RobotsGate._load`, which treats every one of them as "the site
-    told us nothing".
+    Errors propagate to :meth:`RobotsGate._load`, which treats every one of them as RFC 9309's
+    "unreachable": a complete disallow.
     """
 
     async def _fetch(url: str) -> tuple[int, str]:
@@ -578,7 +671,7 @@ def _default_fetch_via(egress: EgressDriver | None) -> Any:
             follow_redirects=True,
             transport=egress.httpx_transport() if egress is not None else None,
             # A robots.txt that redirects inward is refused like any other guarded request;
-            # the refusal reaches `_load` as an unreadable file. See `._private_hosts`.
+            # the refusal reaches `_load` as an unreachable file, so disallow. See `._private_hosts`.
             event_hooks={"request": [refuse_private_hosts]},
         ) as client:
             response = await client.get(url, headers={"user-agent": DEFAULT_USER_AGENT})

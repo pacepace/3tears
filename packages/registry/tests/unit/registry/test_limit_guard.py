@@ -6,9 +6,10 @@ shape (required constructor arg, async method, allow-all/deny-all doubles) but r
 a typed :class:`LimitDecision` verdict rather than a bool so the dispatcher can set the
 right ``error_code``.
 
-the money path FAILS OPEN (Fork-2): a guard that RAISES serves the call (loud warn);
-only a returned ``LimitDecision(allowed=False)`` hard-denies. contrast the fail-CLOSED
-identity/pop/authorizer gates.
+the money path FAILS OPEN (Fork-2): a guard that RAISES serves the call with no spend
+limit checked, counted on ``threetears_registry_spend_limit_unchecked_total`` and logged
+at ERROR; only a returned ``LimitDecision(allowed=False)`` hard-denies. contrast the
+fail-CLOSED identity/pop/authorizer gates.
 
 this module also covers the second injected seam: the ``EndpointUsageEmitter`` slot,
 invoked post-call fire-and-forget where both the inbound request args and the outbound
@@ -21,6 +22,7 @@ import logging
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.nats import IncomingMessage, set_default_namespace
@@ -70,7 +72,7 @@ class _DenyLimitGuard:
 
 
 class _RaisingLimitGuard:
-    """guard whose ``check`` raises -- exercises the fail-open dispatch branch."""
+    """guard whose ``check`` raises -- exercises the fail-open outage branch."""
 
     async def check(
         self,
@@ -221,16 +223,19 @@ async def test_deny_verdict_rejects_without_forwarding(code: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# fail-open path -- a raising guard SERVES the call (Fork-2)
+# outage path -- a raising guard SERVES the call (Fork-2), counted and alerted
 # ---------------------------------------------------------------------------
 
 
-async def test_raising_guard_serves_fail_open(caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_raising_guard_serves_the_call_counted_and_alerted(caplog: pytest.LogCaptureFixture) -> None:
+    """a billing-store outage must not brick tool traffic, and must not pass unseen either."""
     catalog = ToolCatalog()
     await catalog.register(_make_entry())
     proxy = make_proxy(catalog, namespace="test", limit_guard=_RaisingLimitGuard())
     nc = _StubNats(_tool_reply(success=True))
     await proxy.start(nc)
+    labels = {"exc_type": "RuntimeError"}
+    before = REGISTRY.get_sample_value("threetears_registry_spend_limit_unchecked_total", labels) or 0.0
 
     request = make_authed_request()
     with caplog.at_level(logging.WARNING):
@@ -242,7 +247,11 @@ async def test_raising_guard_serves_fail_open(caplog: pytest.LogCaptureFixture) 
     response = nc.published[0]
     assert response.success is True
     assert response.error_code is None
-    assert any("fail-open" in rec.message for rec in caplog.records)
+    after = REGISTRY.get_sample_value("threetears_registry_spend_limit_unchecked_total", labels)
+    assert after == before + 1, "an unmetered call went uncounted"
+    assert any("no spend limit checked" in rec.message and rec.levelno == logging.ERROR for rec in caplog.records), (
+        "an unmetered call was not logged at ERROR"
+    )
 
 
 # ---------------------------------------------------------------------------

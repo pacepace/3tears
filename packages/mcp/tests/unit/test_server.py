@@ -15,6 +15,7 @@ authorizer raise, denied), handler failure, and the happy path.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -24,7 +25,7 @@ import mcp.types as mcp_types
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from threetears.mcp.auth import Identity
+from threetears.mcp.auth import Identity, LocalGrantAuthorizer
 from threetears.mcp.server import McpServer
 from threetears.mcp.tool import McpTool, ToolRegistry
 
@@ -334,6 +335,62 @@ class TestDispatchErrorPaths:
         result = await _call_tool(server, "probe", {})
         assert result.isError is True
         assert _payload_from_result(result)["error"]["code"] == "AUTHZ_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_a_grant_cache_that_never_loaded_is_an_authz_error_not_a_denial(self) -> None:
+        """a failed first load used to start empty, so every caller read as lacking the permission."""
+        listener = MagicMock()
+        listener.subscribe = AsyncMock()
+        listener.catch_up = AsyncMock(return_value=0)
+        epoch_client = MagicMock()
+        epoch_client.current = AsyncMock(return_value=0)
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(side_effect=RuntimeError("L3 down")),
+            epoch_client=epoch_client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        server = McpServer(
+            name="test",
+            identity_provider=_identity_provider(identity=identity),
+            authorizer=authz,
+            registry=_registry_with(_make_tool()),
+        )
+        result = await _call_tool(server, "probe", {})
+        assert result.isError is True
+        assert _payload_from_result(result)["error"]["code"] == "AUTHZ_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_a_grant_cache_outage_is_logged_once_not_per_refused_call(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the authorizer logged the failed reload with its traceback; each refusal adds nothing new."""
+        listener = MagicMock()
+        listener.subscribe = AsyncMock()
+        listener.catch_up = AsyncMock(return_value=0)
+        epoch_client = MagicMock()
+        epoch_client.current = AsyncMock(return_value=0)
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(side_effect=RuntimeError("L3 down")),
+            epoch_client=epoch_client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        server = McpServer(
+            name="test",
+            identity_provider=_identity_provider(identity=Identity(principal_type="user", principal_id=uuid4())),
+            authorizer=authz,
+            registry=_registry_with(_make_tool()),
+        )
+        with caplog.at_level(logging.INFO, logger="threetears.mcp.server"):
+            first = await _call_tool(server, "probe", {})
+            second = await _call_tool(server, "probe", {})
+        assert _payload_from_result(first)["error"]["code"] == "AUTHZ_ERROR"
+        assert _payload_from_result(second)["error"]["code"] == "AUTHZ_ERROR"
+        outage = [r for r in caplog.records if r.name == "threetears.mcp.server" and "grant cache" in r.getMessage()]
+        assert len(outage) == 1, [r.getMessage() for r in outage]
+        assert outage[0].exc_info is None
 
     @pytest.mark.asyncio
     async def test_denied_dispatch_returns_permission_denied(self) -> None:

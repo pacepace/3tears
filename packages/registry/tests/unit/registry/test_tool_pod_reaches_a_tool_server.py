@@ -538,10 +538,14 @@ class TestTheForwardedCallCarriesADelegatedToken:
         assert context.conversation_id == conversation
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_hub_jwks_keeps_the_token_on_the_call_and_says_so_once(
+    async def test_an_unreadable_hub_jwks_withholds_the_token_from_a_declaring_pod_and_says_so_once(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """the registry cannot tell whether the hub publishes its key, so it strips nothing."""
+        """the registry cannot tell whether the hub publishes its key, so it does not hand over the token.
+
+        it used to keep the agent's token on the call, giving a pod that declared it needs none the
+        agent's own credential on the strength of a failed read.
+        """
 
         def _flaky_hub(jwks: dict[str, Any]) -> Callable[[], dict[str, Any]]:
             # a hub that fails every third fetch: a forwarded call reads the key set twice to verify
@@ -565,7 +569,63 @@ class TestTheForwardedCallCarriesADelegatedToken:
         for forwarded in hop.forwarded:
             assert forwarded.context is not None
             assert forwarded.context.delegated_token
-            assert forwarded.context.identity_token
-        assert all(context.identity_token for context in tool.contexts)
+            assert forwarded.context.identity_token is None
+            assert forwarded.context.user_identity_token is None
+        assert not any(context.identity_token for context in tool.contexts)
         assert len(tool.contexts) == 2
         assert sum("hub JWKS unreadable" in record.getMessage() for record in caplog.records) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_empty_hub_jwks_withholds_the_token_from_a_declaring_pod_like_an_unreadable_one(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a key set with no keys is no reading of whether the hub publishes the key, so the token stays back."""
+
+        def _empty_hub(jwks: dict[str, Any]) -> Callable[[], dict[str, Any]]:
+            # the same cadence as the unreadable case: the third read of each call, the one that asks
+            # whether the hub publishes the delegation key, comes back with no keys at all
+            fetches = itertools.count(1)
+
+            def _provider() -> dict[str, Any]:
+                return {"keys": []} if next(fetches) % 3 == 0 else jwks
+
+            return _provider
+
+        pod_key = Ed25519PrivateKey.generate()
+        with caplog.at_level("WARNING"):
+            hop, _jwks, _caller, tool = await self._forward(
+                pod_key=pod_key, declares=True, proxy_jwks=_empty_hub, calls=2
+            )
+        assert len(hop.forwarded) == 2
+        for forwarded in hop.forwarded:
+            assert forwarded.context is not None
+            assert forwarded.context.delegated_token
+            assert forwarded.context.identity_token is None
+            assert forwarded.context.user_identity_token is None
+        assert not any(context.identity_token for context in tool.contexts)
+        empty = [record for record in caplog.records if "hub JWKS read empty" in record.getMessage()]
+        assert len(empty) == 1, "the empty key set was not reported, or was reported per call"
+        assert empty[0].levelname == "ERROR"
+
+    @pytest.mark.asyncio
+    async def test_a_delegated_signer_without_a_jwks_provider_warns_that_its_allowance_ends(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the rollout allowance stays until 0.73.0, and says so at construction rather than silently.
+
+        a warning a deployment filters out still reaches an operator: the same text is logged.
+        """
+        from threetears.core.security import DelegatedTokenSigner  # noqa: PLC0415
+
+        delegated_key = Ed25519PrivateKey.generate()
+        delegated = DelegatedTokenSigner(signing_key=delegated_key, kid=jwk_thumbprint(delegated_key.public_key()))
+        with caplog.at_level("WARNING"), pytest.warns(DeprecationWarning, match=r"removed in 0\.73\.0"):
+            CallProxy(
+                ToolCatalog(),
+                AllowAllAuthorizer(),
+                FakeReplayGuard(),
+                limit_guard=AllowAllLimitGuard(),
+                namespace=_NS,
+                delegated_signer=delegated,
+            )
+        assert any("removed in 0.73.0" in record.getMessage() for record in caplog.records)

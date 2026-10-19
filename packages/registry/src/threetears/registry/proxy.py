@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -50,7 +51,7 @@ from threetears.nats import (
     requires_async_result,
     result_stream_name,
 )
-from threetears.observe import InflightRequestsGauge, clear_context, contain, get_logger
+from threetears.observe import InflightRequestsGauge, clear_context, contain, counter, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog, ToolDefinition
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
@@ -87,6 +88,14 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: tool calls served with no spend limit checked because the limit guard raised (Fork-2 fail-open).
+#: any non-zero rate is a billing-store outage letting traffic run unmetered; alert on it.
+_SPEND_LIMIT_UNCHECKED = counter(
+    "threetears_registry_spend_limit_unchecked_total",
+    description="tool calls served with no spend limit checked because the limit guard raised, by exception type",
+    label_names=("exc_type",),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -347,8 +356,10 @@ class CallProxy:
             routing -- no silent-bypass path, same discipline as ``authorizer``. the
             money path FAILS OPEN (Fork-2): the proxy denies only on a returned
             :class:`LimitDecision(allowed=False)`; a guard that RAISES or is
-            unreachable makes the proxy SERVE the call (and log loudly) so a
-            billing-infra outage never bricks tool traffic. dev/test callers pass
+            unreachable makes the proxy SERVE the call with no spend limit checked,
+            so a billing-infra outage never bricks tool traffic. each such call is
+            counted on ``threetears_registry_spend_limit_unchecked_total`` and logged
+            at ERROR, so the outage is visible. dev/test callers pass
             :class:`AllowAllLimitGuard` / :class:`DenyAllLimitGuard`; production wires
             the counter-backed ``KvCallLimitGuard`` (gu-task-15a)
         :ptype limit_guard: LimitGuard
@@ -381,7 +392,10 @@ class CallProxy:
         :ptype proxy_signer: ProxyAssertionSigner | None
         :param delegated_signer: mints each forwarded call a delegated token for its pod, bound to
             the pod's key, the call's deadline and the doors a call may reach; ``None`` mints none,
-            and the pod keeps acting with the caller's own tokens until the doors' windows close
+            and the pod keeps acting with the caller's own tokens until the doors' windows close.
+            Wired without a ``jwks_provider``, a declaring pod keeps the agent's token beside the
+            delegation; that allowance is deprecated (a ``DeprecationWarning`` at construction) and
+            is removed in 0.73.0, after which the token is withheld as for an unreadable JWKS
         :ptype delegated_signer: DelegatedTokenSigner | None
         :param usage_emitter: post-call usage-emit seam; ``None`` (the safe default)
             emits nothing. when present, the proxy calls
@@ -416,6 +430,14 @@ class CallProxy:
         self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
         self._delegated_signer = delegated_signer
+        if delegated_signer is not None and jwks_provider is None:
+            message = (
+                "CallProxy has a delegated_signer but no jwks_provider, so a pod that declares it proves "
+                "the delegation still receives the agent's token; this allowance is removed in 0.73.0, "
+                "after which the token is withheld as it is for an unreadable or empty JWKS"
+            )
+            warnings.warn(message, DeprecationWarning, stacklevel=2)
+            log.warning(message)
         # a guard sized for a smaller future tolerance than this proxy accepts would let a replayed
         # proof stamped at the edge through its wipe check; refuse it here, at startup.
         pop_replay_guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
@@ -1041,10 +1063,13 @@ class CallProxy:
                 )
 
         # pre-call spend gate (gu-task-06): AFTER pop / BEFORE the authorizer + catalog routing, so a
-        # spend-denied call never consumes a catalog lookup. FAIL-OPEN (Fork-2): a guard that RAISES
-        # or is unreachable SERVES the call (loud WARNING) -- a billing-infra outage must not brick
-        # tool traffic. this inverts the fail-CLOSED identity/pop/authorizer gates ON PURPOSE. only a
-        # returned LimitDecision(allowed=False) hard-denies.
+        # spend-denied call never consumes a catalog lookup. FAIL-OPEN (Fork-2, an owner decision,
+        # re-affirmed in #876): a guard that RAISES or is unreachable SERVES the call with no spend
+        # limit checked -- a billing-store outage must never brick tool traffic. this inverts the
+        # fail-CLOSED identity/pop/authorizer gates ON PURPOSE. what it must not be is silent: every
+        # such call is counted on ``_SPEND_LIMIT_UNCHECKED`` and logged at ERROR through `contain`,
+        # so an operator sees calls running unmetered instead of discovering it on the invoice.
+        # only a returned LimitDecision(allowed=False) hard-denies.
         try:
             limit_decision = await self._limit_guard.check(
                 agent_id_log,
@@ -1053,17 +1078,20 @@ class CallProxy:
                 request.tool_name,
                 request.tool_version,
             )
-        except Exception as exc:  # noqa: BLE001 -- fail-open per Fork-2: a guard outage must never deny
+        except Exception as exc:  # noqa: BLE001 -- fail-open per Fork-2, counted and alerted
+            _SPEND_LIMIT_UNCHECKED.labels(exc_type=type(exc).__name__).inc()
             contain(
                 exc,
                 log=log,
-                what="limit guard unreachable; serving fail-open",
+                what="spend-limit guard unreachable; serving the tool call with no spend limit checked (Fork-2)",
                 extra={
                     "agent_id": agent_id_log,
                     "customer_id": customer_id_log,
                     "tool_name": request.tool_name,
                     "correlation_id": correlation_id_log,
+                    "error_type": type(exc).__name__,
                 },
+                level="error",
             )
         else:
             if not limit_decision.allowed:
@@ -1074,11 +1102,10 @@ class CallProxy:
                     error_code=limit_decision.error_code,
                     context=request.context,
                 )
-                if msg.reply_subject is not None:
-                    await self._nc.publish_reply(
-                        reply_subject=msg.reply_subject,
-                        message=response,
-                    )
+                # through `_answer`, like every other branch: a call already acknowledged for
+                # durable delivery listens on its result subject, and a denial published on the
+                # inbox instead left it waiting out its whole timeout.
+                await self._answer(msg, response, delivery_subject)
                 log.warning(
                     "tool call denied by limit guard",
                     extra={
@@ -1861,32 +1888,56 @@ class CallProxy:
             )
         return result
 
-    def _hub_publishes_delegation_key(self) -> bool:
-        """whether the hub JWKS publishes this registry's delegated-token key, so a pod can verify it.
+    def _withholds_agent_token(self) -> bool:
+        """whether a declaring pod is sent the delegation in place of the agent's token.
 
         A pod sent the delegation in place of the agent's token verifies it against the hub JWKS; a
         registry whose key the hub does not publish yet (the seed rolled out before the hub's pin)
         keeps sending the agent's token beside it, so no call fails for the order the two roll in.
+        That exception is granted only on a JWKS that was READ and lacks the key.
 
-        :return: whether the hub publishes it
+        A JWKS that cannot be read withholds the token, and so does one that reads EMPTY: a key set
+        with no keys says nothing about whether the hub publishes this registry's key, so it is no
+        more a reading than a failed fetch. Keeping the token there handed the agent's own
+        credential to a pod that declared it does not need one, on nothing more than a failed
+        read. Withheld, the worst case is a call the pod refuses because it cannot verify the
+        delegation: a visible failure, where the other way was a silent credential exposure.
+
+        With no ``jwks_provider`` at all the token is still kept, a rollout allowance that is
+        deprecated (the constructor warns) and removed in 0.73.0.
+
+        :return: whether the agent's token and user assertion are withheld
         :rtype: bool
         """
-        published = False
+        withheld = False
         if self._delegated_signer is not None and self._jwks_provider is not None:
             try:
-                published = self._delegated_signer.kid in _published_kids(self._jwks_provider())
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a provider failure keeps the agent's token on the call, the safe side; logged
+                published = _published_kids(self._jwks_provider())
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- an unreadable JWKS withholds the agent's token, the closed side; logged with its traceback below
+                withheld = True
                 if not self._jwks_unreadable_logged:
                     self._jwks_unreadable_logged = True
                     contain(
                         exc,
                         log=log,
-                        what="hub JWKS unreadable; the agent's token stays on calls to declaring pods until it is",
+                        what="hub JWKS unreadable; declaring pods are sent the delegation without the agent's "
+                        "token, and a pod that cannot verify it will refuse the call",
                         extra={"detail": str(exc)},
+                        level="error",
                     )
             else:
-                self._jwks_unreadable_logged = False
-        return published
+                if not published:
+                    withheld = True
+                    if not self._jwks_unreadable_logged:
+                        self._jwks_unreadable_logged = True
+                        log.error(
+                            "hub JWKS read empty; declaring pods are sent the delegation without the agent's "
+                            "token, and a pod that cannot verify it will refuse the call"
+                        )
+                else:
+                    withheld = self._delegated_signer.kid in published
+                    self._jwks_unreadable_logged = False
+        return withheld
 
     def _with_delegation(
         self, request: ProxyCallRequest, pod_id: str, principal: VerifiedPrincipal, effective_timeout: float
@@ -1929,7 +1980,7 @@ class CallProxy:
                 conversation_id=str(context.conversation_id) if context.conversation_id is not None else None,
             )
             forwarded: dict[str, str | None] = {"delegated_token": token}
-            if endpoint is not None and endpoint.proves_delegation and self._hub_publishes_delegation_key():
+            if endpoint is not None and endpoint.proves_delegation and self._withholds_agent_token():
                 forwarded |= {"identity_token": None, "user_identity_token": None}
             result = request.model_copy(update={"context": context.model_copy(update=forwarded)})
         return result
