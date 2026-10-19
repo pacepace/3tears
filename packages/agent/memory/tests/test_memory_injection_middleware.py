@@ -7,10 +7,10 @@ Anthropic binding), the surfaced ids are deduped into the ``surfaced_memory_ids`
 metadata ledger and persisted via a returned
 :class:`~langchain.agents.middleware.types.ExtendedModelResponse` ``Command``; a
 missing integration, a missing verified ``call_context``, an empty query, and no
-surfaced memory all pass the call through un-merged; a retrieval fault soft-fails to a
-pass-through; and the sync mirror passes through. A REAL ``create_agent`` + capturing
-fake model regression proves the model receives exactly one leading ``SystemMessage``
-(the crash guard the stub-model unit tests cannot see).
+surfaced memory all pass the call through un-merged; a retrieval fault runs the turn
+and tells the model its memories could not be read; and the sync mirror passes through.
+A REAL ``create_agent`` + capturing fake model regression proves the model receives
+exactly one leading ``SystemMessage`` (the crash guard the stub-model unit tests cannot see).
 
 The integration + verified identity are read off ``config["configurable"]``; the
 direct-drive tests set the runnable-config contextvar so the middleware's
@@ -34,6 +34,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
+
+from threetears.langgraph.embeddings import EmbeddingUnavailableError
 
 from threetears.agent.memory.middleware import (
     MemoryInjectionMiddleware,
@@ -285,15 +287,46 @@ class TestNoop:
         assert not isinstance(out, ExtendedModelResponse)
 
 
+class _EmbedderDownRetriever(_StubRetriever):
+    """a retriever whose embedder is down: the real retriever raises this, it no longer answers ``None``."""
+
+    async def retrieve(
+        self,
+        user_id: Any,
+        query: Any,
+        *,
+        agent_id: Any,
+        customer_id: Any,
+        caller_user_id: Any,
+        caller_agent_id: Any,
+    ) -> str:
+        raise EmbeddingUnavailableError("the embedder failed: ConnectionError: gateway down")
+
+
 class TestSoftFail:
-    def test_soft_fail_on_retrieval_error(self) -> None:
-        # the integration faults while retrieving -> the seam swallows it and proceeds
-        # on the un-merged request rather than failing the turn.
+    def test_a_retrieval_fault_runs_the_turn_and_tells_the_model_its_memories_were_not_read(self) -> None:
+        # the integration faults while retrieving -> the turn still runs, but the model is
+        # told the memories could not be read; a bare un-merged request would read to it as
+        # "nothing is remembered about this user".
         configurable = {"memory_integration": _StubIntegrationRaising(), "call_context": _call_context()}
         req_in = _request(SystemMessage(content="base"))
         req_out, out = _drive(MemoryInjectionMiddleware(), req_in, configurable)
-        assert req_out is req_in
-        assert not isinstance(out, ExtendedModelResponse)
+        assert not isinstance(out, ExtendedModelResponse), "nothing was surfaced, so no ledger update"
+        assert req_out.system_message is not None
+        content = req_out.system_message.content
+        assert isinstance(content, str)
+        assert content.startswith("base\n\n")
+        assert "could not be read this turn" in content
+        assert "do not tell the user you remember nothing" in content
+
+    def test_an_embedder_outage_is_said_to_the_model_not_read_as_no_memories(self) -> None:
+        configurable = {
+            "memory_integration": _StubIntegration(_EmbedderDownRetriever("")),
+            "call_context": _call_context(),
+        }
+        req_out, _out = _drive(MemoryInjectionMiddleware(), _request(SystemMessage(content="base")), configurable)
+        assert req_out.system_message is not None
+        assert "could not be read this turn" in str(req_out.system_message.content)
 
 
 class TestSyncMirror:

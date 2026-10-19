@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from threetears.observe.text_block import under
 from threetears.core.utils.local_time import render_local_time, resolve_zone
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_query
 from threetears.langgraph.events import FrameworkEvent, dispatch_event
 from threetears.observe import contain, get_logger
 
@@ -98,36 +99,13 @@ def _tool_error(tool_name: str, action: str, error: str) -> str:
     :ptype tool_name: str
     :param action: action that failed
     :ptype action: str
-    :param error: error description
+    :param error: the exception class, or a fixed description -- never an exception's own
+        message, which can carry SQL, a URL or a key; that goes to ``contain()`` or the log
     :ptype error: str
     :return: formatted error string
     :rtype: str
     """
     return f"[TOOL ERROR] {tool_name}: {action} failed — {error}"
-
-
-async def _safe_aembed_query(embedder: Embeddings, text: str) -> list[float] | None:
-    """embed ``text`` with soft-fail semantics (``None`` on any failure).
-
-    Mirrors ``agent-memory``'s private shim so a transient embedding
-    outage degrades the tool to a graceful error rather than a crash;
-    kept local so ``agent-intention`` carries no dependency on the
-    memory package.
-
-    :param embedder: LangChain embedding model
-    :ptype embedder: Embeddings
-    :param text: text to embed
-    :ptype text: str
-    :return: embedding vector, or ``None`` on empty input / failure
-    :rtype: list[float] | None
-    """
-    if not text:
-        return None
-    try:
-        return await embedder.aembed_query(text)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- soft-fail embedding boundary; upstream API errors surface as None
-        contain(exc, log=log, what="intention embedding failed; degrading to soft-fail", extra={"error": str(exc)})
-        return None
 
 
 async def _emit_intention_event(event: FrameworkEvent) -> None:
@@ -258,7 +236,8 @@ async def load_intention_log_tool(
                 deps=authorizer,
             )
         except IntentionAccessDenied as exc:
-            return _tool_error("intention_log", "authorize", str(exc))
+            log.warning("intention_log: access denied: %s", exc)
+            return _tool_error("intention_log", "authorize", type(exc).__name__)
 
         text = content.strip()
         if not text:
@@ -275,12 +254,19 @@ async def load_intention_log_tool(
                     f"invalid source_memory_id '{source_memory_id}'",
                 )
 
-        embedding = await _safe_aembed_query(embedding_provider, text)
-        if embedding is None:
-            return _tool_error("intention_log", "embed", "embedding provider returned None")
+        try:
+            embedding = await embed_query(embedding_provider, text)
+        except EmbeddingUnavailableError as exc:
+            # contained, with the provider's own text on the cause; the reply carries only the
+            # refusal's fixed words and the provider's exception class
+            contain(exc, log=log, what="intention_log: the want could not be embedded")
+            return _tool_error("intention_log", "embed", str(exc))
 
         # dedup against the user's OPEN wants: refresh the near-duplicate
-        # instead of stacking a second row for the same standing want.
+        # instead of stacking a second row for the same standing want. a lookup
+        # that fails still stores the want, and the reply says it went unchecked:
+        # a duplicate can be cleaned up later, a refused want may never be retried.
+        unchecked = ""
         try:
             similar = await intentions_collection.find_similar_for_dedup(
                 user_id=user_id,
@@ -290,9 +276,9 @@ async def load_intention_log_tool(
                 threshold=0.0,
             )
         except Exception as exc:
-            contain(
-                exc, log=log, what="intention_log: dedup lookup failed, creating new want", extra={"error": str(exc)}
-            )
+            contain(exc, log=log, what="intention_log: dedup lookup failed, storing the want unchecked")
+            # the reply names the exception class only: a store's message can carry SQL or a URL
+            unchecked = f" (not checked against your open wants, which could not be read: {type(exc).__name__})"
             similar = []
 
         for row in similar:
@@ -329,7 +315,7 @@ async def load_intention_log_tool(
                         what="intention_log: refresh save failed",
                         extra={"intention_id": str(existing_id), "error": str(exc)},
                     )
-                    return _tool_error("intention_log", "refresh", str(exc))
+                    return _tool_error("intention_log", "refresh", type(exc).__name__)
                 log.info(
                     "intention_log: refreshed near-duplicate open want",
                     extra={
@@ -380,7 +366,7 @@ async def load_intention_log_tool(
             await intentions_collection.save_entity(entity)
         except Exception as exc:
             contain(exc, log=log, what="intention_log: create failed", extra={"error": str(exc)})
-            return _tool_error("intention_log", "store", str(exc))
+            return _tool_error("intention_log", "store", type(exc).__name__)
 
         log.info(
             "intention_log: stored new open want",
@@ -397,7 +383,7 @@ async def load_intention_log_tool(
                     extra={"intention_id": str(intention_id), "error": str(exc)},
                     level="error",
                 )
-        return f"Logged as [intention:{intention_id}]: {text}"
+        return f"Logged as [intention:{intention_id}]: {text}{unchecked}"
 
     intention_log.description = (
         "Write down something you want to do, ask or come back to, in any later "
@@ -467,7 +453,8 @@ async def load_intention_list_tool(
                 deps=authorizer,
             )
         except IntentionAccessDenied as exc:
-            return _tool_error("intention_list", "authorize", str(exc))
+            log.warning("intention_list: access denied: %s", exc)
+            return _tool_error("intention_list", "authorize", type(exc).__name__)
 
         wanted = status.strip().lower()
         if wanted not in _LIST_STATUSES:
@@ -491,7 +478,7 @@ async def load_intention_list_tool(
                 wants = every if wanted == "all" else [w for w in every if w.status == wanted]
         except Exception as exc:
             contain(exc, log=log, what="intention_list query failed")
-            return _tool_error("intention_list", "query", str(exc))
+            return _tool_error("intention_list", "query", type(exc).__name__)
 
         held = (
             f" {held_back} more open want{'' if held_back == 1 else 's'} {'is' if held_back == 1 else 'are'} "
@@ -584,7 +571,8 @@ async def load_intention_get_tool(
                 deps=authorizer,
             )
         except IntentionAccessDenied as exc:
-            return _tool_error("intention_get", "authorize", str(exc))
+            log.warning("intention_get: access denied: %s", exc)
+            return _tool_error("intention_get", "authorize", type(exc).__name__)
         try:
             want_uuid = UUID(intention_id.strip().removeprefix("[").removesuffix("]").removeprefix("intention:"))
         except ValueError:
@@ -658,7 +646,8 @@ async def load_intention_mark_surfaced_tool(
                 deps=authorizer,
             )
         except IntentionAccessDenied as exc:
-            return _tool_error("intention_mark_surfaced", "authorize", str(exc))
+            log.warning("intention_mark_surfaced: access denied: %s", exc)
+            return _tool_error("intention_mark_surfaced", "authorize", type(exc).__name__)
 
         status = new_status.strip().lower()
         if status not in _MARK_SURFACED_STATUSES:
@@ -690,7 +679,7 @@ async def load_intention_mark_surfaced_tool(
             await intentions_collection.save_entity(entity)
         except Exception as exc:
             contain(exc, log=log, what="intention_mark_surfaced store failed")
-            return _tool_error("intention_mark_surfaced", "store", str(exc))
+            return _tool_error("intention_mark_surfaced", "store", type(exc).__name__)
 
         preview = entity.content[:_CONTENT_PREVIEW_LEN]
         # event payloads carry str-form uuids (FrameworkEvent wire contract,

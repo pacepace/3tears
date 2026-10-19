@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 from pydantic import ValidationError
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
@@ -160,6 +161,43 @@ async def _search_by_alias(
 
 def _alias_row(date_created: Any) -> dict[str, Any]:
     return {"memory_id": uuid4(), "type_memory": "fact", "content": "lives in Leeds", "date_created": date_created}
+
+
+class _KeyLeakingEmbedder:
+    """an embedder whose provider error carries a key, as an auth failure's message does."""
+
+    async def aembed_query(self, text: str) -> list[float]:
+        _ = text
+        raise ValueError("Incorrect API key provided: sk-proj-FAKE1234567890. See https://api.example.test/keys")
+
+
+def _contained(site: str) -> float:
+    return (
+        REGISTRY.get_sample_value("contained_errors_total", {"site": site, "exc_type": "EmbeddingUnavailableError"})
+        or 0.0
+    )
+
+
+class TestAnEmbeddingOutageInATool:
+    async def test_the_reply_names_the_failure_without_the_providers_text_and_the_failure_is_counted(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        (tool,) = await load_memory_search_tool(
+            uuid4(),
+            _KeyLeakingEmbedder(),  # type: ignore[arg-type]
+            uuid4(),
+            uuid4(),
+            permissive_memory_authorizer,
+            None,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+        )
+        site = "threetears.agent.memory.tools:load_memory_search_tool.<locals>.memory_search"
+        before = _contained(site)
+        result = await tool.ainvoke({"query": "where do I live"})
+        assert result == "[TOOL ERROR] memory_search: embed failed — the embedder failed (ValueError)"
+        assert "sk-proj" not in result and "https://" not in result
+        assert _contained(site) == before + 1, "the outage moves contained_errors_total, not only a log line"
 
 
 class TestToolError:

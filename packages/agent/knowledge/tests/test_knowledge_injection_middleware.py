@@ -436,15 +436,58 @@ class TestSoftFail:
         with pytest.raises(GovernedKnowledgeUnavailableError):
             _drive(KnowledgeInjectionMiddleware(), req_in, _configurable(integration))
 
-    def test_identity_fault_passes_through(self) -> None:
-        # reading the verified identity raises INSIDE the middleware try -> the
-        # seam swallows it and proceeds on the un-merged request.
-        integration = _integration(entries=[_entry_snapshot()])
+    def test_a_fault_building_the_block_fails_closed(self) -> None:
+        """THIS TEST PREVIOUSLY ASSERTED THE BUG.
+
+        A fault building the block -- here, reading the verified identity -- was
+        swallowed into an empty block, and the turn ran with NO governed knowledge,
+        invariants included, reading exactly like a turn that had none to apply.
+        """
+        integration = _integration(entries=[_entry_snapshot(always_inject=True)])
         cfg = {"knowledge_integration": integration, "call_context": _RaisingCallContext()}
-        req_in = _request(SystemMessage(content="base"))
-        req_out, out = _drive(KnowledgeInjectionMiddleware(), req_in, cfg)
-        assert req_out is req_in
-        assert not isinstance(out, ExtendedModelResponse)
+        with pytest.raises(RuntimeError, match="identity boom"):
+            _drive(KnowledgeInjectionMiddleware(), _request(SystemMessage(content="base")), cfg)
+
+
+class _UnmultipliableComponent:
+    """a stored-vector component that faults the moment it is ranked, as a corrupt cast can."""
+
+    def __mul__(self, other: Any) -> float:
+        raise RuntimeError("ranking boom")
+
+    __rmul__ = __mul__
+
+
+class TestAFaultAfterTheInvariantsAreKnown:
+    """owner ruling: fail closed only when the invariants could not be retrieved; a fault after
+    they are known injects them alone, with a notice, and the turn runs."""
+
+    def test_a_ranking_fault_injects_the_invariants_alone_with_a_notice(self, caplog: pytest.LogCaptureFixture) -> None:
+        invariant = _entry_snapshot(title="Always", body="exclude test accounts", always_inject=True)
+        situational = _entry_snapshot(title="Sometimes", body="use the weekly view")
+        integration = _integration(
+            entries=[invariant, situational],
+            embedding_model=_FixedEmbedder([1.0, 0.0]),
+            embeddings={situational.id: [_UnmultipliableComponent(), _UnmultipliableComponent()]},  # type: ignore[list-item]
+        )
+        with caplog.at_level("WARNING"):
+            req, out = _drive(
+                KnowledgeInjectionMiddleware(token_budget=10_000),
+                _request(SystemMessage(content="base")),
+                _configurable(integration),
+            )
+        text = _system_text(req)
+        assert "exclude test accounts" in text, "the invariant still applies"
+        assert "use the weekly view" not in text
+        assert "could not be applied" in text and "Do not treat a rule" in text
+        assert _metadata(out)["governed_knowledge_block"] in text
+        records = [r for r in caplog.records if "past its invariants" in r.getMessage()]
+        assert [getattr(r, "extra_data", {}).get("exc_type") for r in records] == ["RuntimeError"]
+
+    def test_a_fault_before_the_invariants_are_known_still_fails_closed(self) -> None:
+        integration = _integration(entries=[_entry_snapshot(always_inject=True)], entry_raises=True)
+        with pytest.raises(GovernedKnowledgeUnavailableError):
+            _drive(KnowledgeInjectionMiddleware(), _request(SystemMessage(content="base")), _configurable(integration))
 
 
 class TestSyncMirror:
@@ -847,6 +890,36 @@ class TestSilentDegradationSignals:
         with caplog.at_level("WARNING"):
             _run_turn(entries=[_entry_snapshot(always_inject=True)], token_budget=10_000)
         assert _all_warnings(caplog) == []
+
+    def test_a_vector_fetch_that_fails_on_one_side_ranks_nothing_by_similarity(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """each side used to soft-fail alone: the concepts' vectors arrived, the entries' did not,
+        and every concept then ranked ahead of every entry with no fallback warning at all."""
+        entries = [_entry_snapshot() for _ in range(2)]
+        concepts = [_concept_snapshot()]
+
+        class _EntryVectorsDown(_StubEntryCollection):
+            async def fetch_embeddings(self, ids: Any, *, customer_scope: Any) -> dict[Any, Any]:
+                raise ConnectionError("l3 timeout")
+
+        integration = KnowledgeIntegration(
+            entry_collection=_EntryVectorsDown(entries),
+            concept_collection=_StubConceptCollection(concepts, embeddings={concepts[0].id: [1.0, 0.0]}),
+            embedding_model=_FixedEmbedder([1.0, 0.0]),
+        )
+        with caplog.at_level("WARNING"):
+            _drive(
+                KnowledgeInjectionMiddleware(token_budget=10_000),
+                _request(SystemMessage(content="base")),
+                _configurable(integration),
+            )
+        fallbacks = [w for w in _all_warnings(caplog) if "fell back to stable order" in w]
+        assert fallbacks == [
+            "knowledge situational ranking fell back to stable order: the situational vector fetch failed "
+            "(ConnectionError) (candidates=3); ranking quality is degraded for this turn"
+        ]
+        assert any("vector fetch failed" in w and "l3 timeout" in w for w in _all_warnings(caplog))
 
     def test_partial_embedding_coverage_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
         # one stored vector still ranks; only a TOTAL absence is the fallback.

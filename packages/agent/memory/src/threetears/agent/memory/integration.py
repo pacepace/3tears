@@ -1,7 +1,11 @@
 """memory integration for agent runtime.
 
 wires the 3tears memory system (retrieval + extraction) into the agent
-runtime. all operations soft-fail: log a warning and continue.
+runtime. a retrieval that fails raises to its caller -- an empty answer
+would read as "no memories" -- and the caller decides what the failure costs:
+:class:`~threetears.agent.memory.middleware.MemoryInjectionMiddleware` runs
+the turn without memories and tells the model they could not be read.
+extraction answers every failure as an ``ExtractionOutcome.FAILED`` result.
 
 the memory-package Collections live on this integration object so the
 framework memory-injection middleware
@@ -17,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
-from threetears.observe import contain, get_logger
+from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.agent.memory.extraction import ExtractionResult
@@ -212,9 +216,10 @@ class MemoryIntegration:
         admin agents troubleshooting across customer agents and any
         future cross-agent memory pull runs through this helper.
 
-        soft-fails when ``access_service`` is not wired (returns empty
-        list) so a partial integration build does not crash the
-        consumer.
+        answers an empty list when ``access_service`` is not wired, so a
+        partial integration build does not crash the consumer. a retrieval
+        that FAILS raises: it used to answer the same empty list, which
+        reads as "nothing to see".
 
         :param user_id: user whose memories to surface (row filter
             inside each authorized partition)
@@ -229,21 +234,20 @@ class MemoryIntegration:
             agent partition; empty when no agents resolve or when
             the access service is not wired
         :rtype: list[Any]
+        :raises Exception: whatever the access service raised; nothing is answered in its place
         """
         if self.access_service is None:
             log.debug(
                 "memory cross-agent retrieval: skipping (no access service)",
             )
             return []
-        try:
-            result: list[Any] = await self.access_service.find_for_user_across_authorized_agents(
-                user_id=user_id,
-                caller_user_id=caller_user_id,
-                customer_id=customer_id,
-            )
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- cross-agent retrieval is best-effort; a fault yields an empty result rather than crashing the consumer
-            contain(exc, log=log, what=f"memory cross-agent retrieval failed (soft-fail): {exc}")
-            result = []
+        # a fault raises: an empty list is the answer "this user has no memories the caller may
+        # read", and a retrieval that failed has not established that.
+        result: list[Any] = await self.access_service.find_for_user_across_authorized_agents(
+            user_id=user_id,
+            caller_user_id=caller_user_id,
+            customer_id=customer_id,
+        )
         return result
 
 
@@ -259,8 +263,10 @@ async def retrieve_memories(
 
     delegates to :meth:`MemoryRetriever.retrieve` which returns a
     formatted context string. wraps the result in a list for uniform
-    consumption. soft-fails on error -- returns an empty list, logs a
-    warning.
+    consumption. a retrieval that fails raises -- it used to answer an
+    empty list, the same answer as "nothing relevant" -- and the caller
+    decides what a failure costs (:class:`MemoryInjectionMiddleware` runs
+    the turn and tells the model its memories could not be read).
 
     ``user_id`` flows through as BOTH the row filter and the
     ``caller_user_id`` for the rbac evaluator; ``agent_id`` flows
@@ -283,32 +289,29 @@ async def retrieve_memories(
     :ptype limit: int
     :return: list of memory content strings
     :rtype: list[str]
+    :raises EmbeddingUnavailableError: the query could not be embedded
+    :raises MemoryAccessDenied: rbac denied the read
     """
     _ = limit
     if integration.retriever is None:
         return []
 
-    try:
-        # agent-internal context enrichment: authorize AGENT-ONLY via the
-        # owner short-circuit. ``caller_user_id`` is None on purpose -- the
-        # retriever enforces the two-sided user ∩ agent check only when a
-        # caller user is supplied (user-initiated memory tools); passing the
-        # user here would deny an ungranted channel user every turn. the
-        # first positional ``user_id`` still row-scopes which memories are
-        # searched.
-        context = await integration.retriever.retrieve(
-            user_id,
-            query,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            caller_user_id=None,
-            caller_agent_id=agent_id,
-        )
-        memories: list[str] = [context] if context else []
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- retrieval is best-effort context enrichment; a fault yields no memories rather than failing the turn
-        contain(exc, log=log, what=f"memory retrieval failed (soft-fail): {exc}")
-        memories = []
-
+    # agent-internal context enrichment: authorize AGENT-ONLY via the
+    # owner short-circuit. ``caller_user_id`` is None on purpose -- the
+    # retriever enforces the two-sided user ∩ agent check only when a
+    # caller user is supplied (user-initiated memory tools); passing the
+    # user here would deny an ungranted channel user every turn. the
+    # first positional ``user_id`` still row-scopes which memories are
+    # searched. a failure raises: ``[]`` is the answer "nothing relevant".
+    context = await integration.retriever.retrieve(
+        user_id,
+        query,
+        agent_id=agent_id,
+        customer_id=customer_id,
+        caller_user_id=None,
+        caller_agent_id=agent_id,
+    )
+    memories: list[str] = [context] if context else []
     return memories
 
 

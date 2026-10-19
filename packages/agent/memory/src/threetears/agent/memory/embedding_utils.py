@@ -1,17 +1,18 @@
 """Internal helpers for working with LangChain ``Embeddings`` instances.
 
-Adds two thin shims that the agent-memory call sites need now that the
-local ``EmbeddingProvider`` Protocol has been replaced by
-:class:`langchain_core.embeddings.Embeddings`:
-
-- :func:`_safe_aembed_query` -- wraps :meth:`Embeddings.aembed_query` in
-  try/except, returning ``None`` on failure (callers used to rely on the
-  ``embed_text`` tuple's ``None`` sentinel for soft-fail).
 - :func:`_estimate_tokens` -- returns a coarse token count estimate. The
   retired ``embed_text`` returned a real token count from the embedding
   provider; LangChain's ``Embeddings`` interface does not surface one, so
   call sites that need it estimate locally (used only for observability,
   not billing).
+- :func:`embedding_attribution_scope` -- binds the usage-attribution user for
+  the embeddings sent inside it.
+
+The embed call itself is :func:`threetears.langgraph.embeddings.embed_query`, shared with
+the other agent packages: it raises
+:class:`~threetears.langgraph.embeddings.EmbeddingUnavailableError` where this module's
+soft-fail shim used to answer ``None`` -- the same ``None`` every caller read as "nothing
+relevant".
 """
 
 from __future__ import annotations
@@ -21,58 +22,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from uuid import UUID
 
-from langchain_core.embeddings import Embeddings
-
-from threetears.observe import contain, get_logger
-
-# ``__all__`` lists only the public embedding-attribution scope helper. The two
-# ``_``-prefixed shims (:func:`_safe_aembed_query`, :func:`_estimate_tokens`) stay
-# package-private and are intentionally excluded -- listing a private name in
-# ``__all__`` is contradictory and the underscore-access enforcement (shape E)
-# flags it.
+# ``__all__`` lists only the public embedding-attribution scope helper. The
+# ``_``-prefixed :func:`_estimate_tokens` stays package-private and is intentionally
+# excluded -- listing a private name in ``__all__`` is contradictory and the
+# underscore-access enforcement (shape E) flags it.
 __all__ = ["embedding_attribution_scope"]
-
-_log = get_logger(__name__)
 
 # rough words-to-tokens ratio for English. used only for observability
 # (RetrievalResult.embed_tokens), not for billing or rate-limiting.
 _TOKENS_PER_WORD = 1.3
-
-
-async def _safe_aembed_query(
-    embedder: Embeddings,
-    text: str,
-) -> list[float] | None:
-    """invokes :meth:`Embeddings.aembed_query` with soft-fail semantics.
-
-    returns ``None`` when the embedder raises (network error, auth failure,
-    upstream outage). matches the ``embed_text(text) -> (None, 0)``
-    behaviour of the retired protocol so soft-fail call sites continue to
-    work without changes.
-
-    :param embedder: LangChain embedding model
-    :ptype embedder: Embeddings
-    :param text: text to embed
-    :ptype text: str
-    :return: embedding vector or ``None`` on failure
-    :rtype: list[float] | None
-    """
-    if not text:
-        return None
-    try:
-        result = await embedder.aembed_query(text)
-    except Exception as exc:
-        contain(exc, log=_log, what=f"embedding aembed_query failed (soft-fail): {exc}")
-        return None
-    if not result:
-        # SDS-04: an empty vector is a successful call that returns nothing usable.
-        # every caller then behaves exactly like "nothing was relevant", so without
-        # this line a provider degradation is indistinguishable from a quiet turn.
-        _log.warning(
-            "embedding aembed_query returned an empty vector (soft-fail): semantic recall is off for this call"
-        )
-        return None
-    return result
 
 
 def _estimate_tokens(text: str) -> int:

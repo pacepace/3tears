@@ -40,9 +40,10 @@ from threetears.agent.memory.collections import (
 )
 from langchain_core.embeddings import Embeddings
 
-from threetears.agent.memory.embedding_utils import _estimate_tokens, _safe_aembed_query
+from threetears.agent.memory.embedding_utils import _estimate_tokens
 from threetears.agent.memory.retrieval_scope import RetrievalScope
 from threetears.agent.memory.types import MemoryConfig
+from threetears.langgraph.embeddings import embed_query
 from threetears.langgraph.fence import nonce_for, untrusted_fence, untrusted_rule
 from threetears.observe import get_logger, traced
 
@@ -530,6 +531,7 @@ class MemoryRetriever:
         :return: formatted context string or ``None``
         :rtype: str | None
         :raises MemoryAccessDenied: when rbac enforcement denies
+        :raises EmbeddingUnavailableError: when the query could not be embedded, so nothing was searched
         """
         result = await self.retrieve_with_candidates(
             user_id,
@@ -582,6 +584,7 @@ class MemoryRetriever:
         :return: structured retrieval results
         :rtype: RetrievalResult
         :raises MemoryAccessDenied: when rbac enforcement denies
+        :raises EmbeddingUnavailableError: when the query could not be embedded, so nothing was searched
         """
         empty = RetrievalResult()
         if not user_text.strip():
@@ -597,9 +600,9 @@ class MemoryRetriever:
                 deps=self._authorizer,
             )
 
-        embedding = await _safe_aembed_query(self._embedding, user_text)
-        if embedding is None:
-            return empty
+        # an embedder that cannot answer raises EmbeddingUnavailableError rather than answering
+        # "nothing relevant": the two read the same downstream and only one of them is true.
+        embedding = await embed_query(self._embedding, user_text)
         embed_tokens = _estimate_tokens(user_text)
 
         cfg = self._config

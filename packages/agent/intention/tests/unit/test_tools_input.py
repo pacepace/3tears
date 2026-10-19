@@ -16,6 +16,7 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 from pydantic import ValidationError
 
 from threetears.agent.acl import AclCache
@@ -130,6 +131,22 @@ class _FakeIntentions:
         return []
 
 
+class _FakeIntentionsDedupDown(_FakeIntentions):
+    """the dedup lookup fails, as an L3 timeout does."""
+
+    async def find_similar_for_dedup(self, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = kwargs
+        raise ConnectionError("l3 timeout")
+
+
+class _FakeIntentionsStoreDown(_FakeIntentions):
+    """the save fails with a driver message that quotes the SQL, as asyncpg's do."""
+
+    async def save_entity(self, entity: IntentionEntity) -> None:
+        _ = entity
+        raise ConnectionError('relation "intentions" ... INSERT INTO intentions VALUES ($1, $2) at postgres://u:pw@db')
+
+
 class _RaisingEmbedder:
     def __init__(self) -> None:
         self.calls = 0
@@ -169,7 +186,20 @@ class TestToolError:
         """a tool failure reads ``[TOOL ERROR] <tool>: <action> failed — <reason>``."""
         msg = await _log(_RaisingEmbedder(), _FakeIntentions(), "want")
         assert msg.startswith("[TOOL ERROR] intention_log: embed failed")
-        assert "embedding provider returned None" in msg
+        assert "the embedder failed (RuntimeError)" in msg
+        assert "upstream embedding outage" not in msg
+
+    async def test_an_embedding_outage_is_counted_and_its_provider_text_never_reaches_the_reply(self) -> None:
+        class _KeyLeaking(_RaisingEmbedder):
+            async def aembed_query(self, text: str) -> list[float]:
+                raise ValueError("Incorrect API key provided: sk-proj-FAKE1234567890")
+
+        site = "threetears.agent.intention.tools:load_intention_log_tool.<locals>.intention_log"
+        labels = {"site": site, "exc_type": "EmbeddingUnavailableError"}
+        before = REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0
+        msg = await _log(_KeyLeaking(), _FakeIntentions(), "want")
+        assert "sk-proj" not in msg
+        assert (REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0) == before + 1
 
 
 class TestEmbeddingSoftFail:
@@ -188,6 +218,29 @@ class TestEmbeddingSoftFail:
         assert msg.startswith("[TOOL ERROR] intention_log: embed failed")
         assert collection.dedup_embeddings == []
         assert collection.saved == []
+
+    async def test_a_want_logged_without_its_dedup_check_says_so(self) -> None:
+        """a duplicate can be cleaned up; a refused want may never be retried, so it is stored."""
+        collection = _FakeIntentionsDedupDown()
+        site = "threetears.agent.intention.tools:load_intention_log_tool.<locals>.intention_log"
+        labels = {"site": site, "exc_type": "ConnectionError"}
+        before = REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0
+        msg = await _log(_OkEmbedder(), collection, "want")
+        assert len(collection.saved) == 1
+        assert msg == (
+            f"Logged as [intention:{collection.saved[0].intention_id}]: want "
+            "(not checked against your open wants, which could not be read: ConnectionError)"
+        )
+        assert "l3 timeout" not in msg, "a store's own message stays in the log, out of the reply"
+        assert (REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0) == before + 1
+
+    async def test_a_checked_want_claims_nothing_extra(self) -> None:
+        msg = await _log(_OkEmbedder(), _FakeIntentions(), "want")
+        assert "not checked" not in msg
+
+    async def test_a_failed_store_names_the_step_and_class_only(self) -> None:
+        msg = await _log(_OkEmbedder(), _FakeIntentionsStoreDown(), "want")
+        assert msg == "[TOOL ERROR] intention_log: store failed — ConnectionError"
 
     async def test_success_carries_the_vector_into_dedup_and_the_row(self) -> None:
         collection = _FakeIntentions()

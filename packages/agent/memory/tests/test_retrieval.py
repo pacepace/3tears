@@ -27,8 +27,9 @@ from threetears.agent.memory.retrieval import (
     MemoryRetriever,
     RetrievalResult,
 )
-from threetears.agent.memory.integration import retrieve_memories
+from threetears.agent.memory.integration import MemoryIntegration, retrieve_memories
 from threetears.agent.memory.types import MemoryConfig
+from threetears.langgraph.embeddings import EmbeddingUnavailableError
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
@@ -102,6 +103,42 @@ class _RecordingIntegration:
         :rtype: None
         """
         self.retriever = retriever
+
+
+class TestRetrievalFailuresReachTheCaller:
+    """a retrieval that failed used to answer ``[]`` -- the same as "no memories"."""
+
+    async def test_retrieve_memories_raises_what_the_retriever_raised(self) -> None:
+        class _Down(_RecordingRetriever):
+            async def retrieve(self, *args: Any, **kwargs: Any) -> str | None:
+                raise EmbeddingUnavailableError("the embedder failed: ConnectionError: gateway down")
+
+        with pytest.raises(EmbeddingUnavailableError, match="gateway down"):
+            await retrieve_memories(
+                _RecordingIntegration(_Down()),  # type: ignore[arg-type]
+                uuid.uuid4(),
+                uuid.uuid4(),
+                uuid.uuid4(),
+                "what did we discuss",
+            )
+
+    async def test_cross_agent_retrieval_raises_what_the_access_service_raised(self) -> None:
+        access = AsyncMock()
+        access.find_for_user_across_authorized_agents.side_effect = ConnectionError("l3 down")
+        integration = MemoryIntegration(access_service=access)
+        with pytest.raises(ConnectionError, match="l3 down"):
+            await integration.retrieve_across_authorized_agents(
+                user_id=uuid.uuid4(), caller_user_id=uuid.uuid4(), customer_id=uuid.uuid4()
+            )
+
+    async def test_cross_agent_retrieval_without_an_access_service_is_still_empty(self) -> None:
+        integration = MemoryIntegration()
+        assert (
+            await integration.retrieve_across_authorized_agents(
+                user_id=uuid.uuid4(), caller_user_id=uuid.uuid4(), customer_id=uuid.uuid4()
+            )
+            == []
+        )
 
 
 class TestRetrieveMemoriesCallSite:
@@ -1116,7 +1153,7 @@ class TestMemoryRetrieverE2E:
         )
         assert result is None
 
-    async def test_embedding_failure_returns_none(
+    async def test_an_embedding_failure_is_raised_not_read_as_nothing_relevant(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
@@ -1170,13 +1207,15 @@ class TestMemoryRetrieverE2E:
             memory_chunk_collection=chunks,
         )
 
-        result = await retriever.retrieve(
-            uuid.uuid7(),
-            "hello world",
-            agent_id=uuid.uuid7(),
-            customer_id=uuid.uuid7(),
-        )
-        assert result is None
+        # None is the answer "nothing relevant"; an embedder that is down has not established that
+        with pytest.raises(EmbeddingUnavailableError, match=r"the embedder failed \(RuntimeError\)"):
+            await retriever.retrieve(
+                uuid.uuid7(),
+                "hello world",
+                agent_id=uuid.uuid7(),
+                customer_id=uuid.uuid7(),
+            )
+        pool.fetch.assert_not_called()
 
     async def test_no_results_returns_none(
         self,

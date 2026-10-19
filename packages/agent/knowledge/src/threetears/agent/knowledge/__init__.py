@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     )
     from threetears.agent.knowledge.entities import ConceptEntity, PlaybookEntryEntity
     from threetears.agent.knowledge.integration import (
+        DraftListIncompleteError,
         DraftView,
         KnowledgeIntegration,
         retrieve_concepts,
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
 _LAZY: dict[str, tuple[str, str]] = {
     "ConceptCollection": ("threetears.agent.knowledge.collections", "ConceptCollection"),
     "ConceptEntity": ("threetears.agent.knowledge.entities", "ConceptEntity"),
+    "DraftListIncompleteError": ("threetears.agent.knowledge.integration", "DraftListIncompleteError"),
     "DraftView": ("threetears.agent.knowledge.integration", "DraftView"),
     "KnowledgeInjectionMiddleware": ("threetears.agent.knowledge.middleware", "KnowledgeInjectionMiddleware"),
     "KnowledgeIntegration": ("threetears.agent.knowledge.integration", "KnowledgeIntegration"),
@@ -64,6 +66,7 @@ _LAZY: dict[str, tuple[str, str]] = {
 __all__ = [
     "ConceptCollection",
     "ConceptEntity",
+    "DraftListIncompleteError",
     "DraftView",
     "KnowledgeInjectionMiddleware",
     "KnowledgeIntegration",

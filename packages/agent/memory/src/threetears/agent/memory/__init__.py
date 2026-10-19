@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from threetears.agent.memory.extraction import (
         ChatModelFactory,
         ExtractionGate,
+        ExtractionModelFailedError,
         ExtractionOutcome,
         ExtractionResult,
         MemoryExtractor,
@@ -142,6 +143,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ConsolidationResult": ("threetears.agent.memory.dream", "ConsolidationResult"),
     "DreamService": ("threetears.agent.memory.dream", "DreamService"),
     "ExtractionGate": ("threetears.agent.memory.extraction", "ExtractionGate"),
+    "ExtractionModelFailedError": ("threetears.agent.memory.extraction", "ExtractionModelFailedError"),
     "ExtractionOutcome": ("threetears.agent.memory.extraction", "ExtractionOutcome"),
     "ExtractionPrompts": ("threetears.agent.memory.prompts", "ExtractionPrompts"),
     "ExtractionResult": ("threetears.agent.memory.extraction", "ExtractionResult"),
@@ -249,6 +251,7 @@ __all__ = [
     "ConsolidationResult",
     "DreamService",
     "ExtractionGate",
+    "ExtractionModelFailedError",
     "ExtractionOutcome",
     "ExtractionPrompts",
     "ExtractionResult",

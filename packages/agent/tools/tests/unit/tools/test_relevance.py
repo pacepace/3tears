@@ -271,6 +271,26 @@ async def test_select_falls_back_to_full_catalog_on_query_embed_error() -> None:
     assert result.selected == tools
 
 
+async def test_a_tool_the_embedder_answered_no_vector_for_is_ranked_last_by_name_and_cached() -> None:
+    """an empty vector for one tool used to score it 0.0, a rank that read as a real one; failing the
+    batch for it instead would re-embed the whole catalog every turn. it is cached as unranked."""
+    tools = _catalog(10)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    vectors[_tool_text(tools[0])] = []
+    vectors["anything"] = [1.0, 0.0]
+    embedder = _FakeEmbeddings(vectors)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=3)
+
+    first = await index.select(tools, "anything")
+    found = await index.search_outcome(tools, "anything", limit=10)
+
+    assert not first.fallback_used
+    assert first.unranked == ["tool_0"] and found.unranked == ["tool_0"]
+    assert found.hits[-1] is tools[0], "the unranked tool follows every scored one"
+    assert tools[0] not in [tool for tool, _ in found.ranked], "it is given no made-up score"
+    assert len(embedder.aembed_documents_calls) == 1, "the batch was cached, not re-embedded"
+
+
 async def test_select_falls_back_to_full_catalog_on_latency_ceiling() -> None:
     tools = _catalog(10)
     vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
