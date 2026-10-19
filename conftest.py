@@ -102,6 +102,7 @@ def _package_of(nodeid: str) -> str:
     return parts[0]
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """put every test of one package on one xdist worker, in its usual order.
 

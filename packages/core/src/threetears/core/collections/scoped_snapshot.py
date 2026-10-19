@@ -1812,7 +1812,10 @@ class ScopedSnapshot:
         # scope out of the index with its pointer still standing is in flight, not gone
         gone = [scope for scope in self._applied if scope not in index and scope not in self._seen]
         if gone:
-            await self._drop_locally(gone)
+            # judged again under the L1's lock: a publish of a new scope holds it from listing the scope as
+            # applied until its pointer is seen, and a scope judged gone in between was dropped once the lock
+            # was free, lost to readers until a later recheck applied it again
+            await self._drop_locally(gone, unless_seen=True)
         moved = {
             scope: self._seen[scope]
             for scope in index
@@ -1821,12 +1824,10 @@ class ScopedSnapshot:
         for scope in index:
             if scope in self._seen and self._foreign_ahead(self._seen[scope], self._applied.get(scope)):
                 self._mark_foreign(scope)
-        failed = await self._apply_pointers(moved)
+        await self._apply_pointers(moved, mark_behind=True)
         # a scope removed before it was ever applied leaves no `behind` entry to report, or to rebuild
         self._behind = _updated(
-            self._behind,
-            {scope: (self._behind.get(scope, (0, ""))[0] + 1, why) for scope, why in failed.items()},
-            drop=[scope for scope in self._behind if scope not in index and scope not in self._seen],
+            self._behind, drop=[scope for scope in self._behind if scope not in index and scope not in self._seen]
         )
         # a scope that failed is tried again at the next recheck, not at once; one that keeps failing
         # is rebuilt from L3, which writes its chunks again
@@ -1860,12 +1861,19 @@ class ScopedSnapshot:
         # (L3 below its pointer, or a pointer of other columns it may not load) stays behind
         log.info("scoped snapshot %s: rebuilt %s from L3", self._name, sorted(rebuilt or ()))
 
-    async def _apply_pointers(self, pointers: Mapping[str, _Pointer]) -> dict[str, str]:
+    async def _apply_pointers(self, pointers: Mapping[str, _Pointer], *, mark_behind: bool = False) -> dict[str, str]:
         """fetch each scope's chunks and replace it in this L1, unless the L1 already holds as new.
+
+        A scope whose chunks cannot be read has failed, and with ``mark_behind`` goes on ``behind``, one failure
+        more, unless a write moved it on while they were read. That is judged under the L1's lock, which a publish holds from its local commit (which takes
+        the scope off ``behind``) until its pointer moves: judged outside it, a failure landing in that window put
+        the scope back on ``behind`` after the publish took it off, and it stayed there though it was current.
 
         :param pointers: the scopes to apply and their pointers
         :ptype pointers: Mapping[str, _Pointer]
-        :return: scope -> why its chunks could not be read, each logged
+        :param mark_behind: whether a failure goes on ``behind`` (a recheck's), or is only returned (a rebuild's)
+        :ptype mark_behind: bool
+        :return: scope -> why its chunks could not be read, for each one no write moved on from, each logged
         :rtype: dict[str, str]
         """
         failed: dict[str, str] = {}
@@ -1875,6 +1883,17 @@ class ScopedSnapshot:
                 current, replacements = await self._fetch_current(scope, pointer)
             except _Lost as exc:
                 log.warning("scoped snapshot %s: scope %r could not be applied: %s", self._name, scope, exc)
+                async with self._local:
+                    seen = self._seen.get(scope)
+                    if (seen is not None and seen.supersedes(pointer)) or not self._ahead(
+                        pointer, self._applied.get(scope)
+                    ):
+                        # a write moved the scope past the pointer that failed; the next recheck judges the new one
+                        continue
+                    if mark_behind:
+                        self._behind = _updated(
+                            self._behind, {scope: (self._behind.get(scope, (0, ""))[0] + 1, str(exc))}
+                        )
                 failed[scope] = str(exc)
                 continue
             async with self._local:
@@ -1886,15 +1905,21 @@ class ScopedSnapshot:
             self._record_change(scope, current, replacements, started)
         return failed
 
-    async def _drop_locally(self, scopes: Sequence[str]) -> None:
+    async def _drop_locally(self, scopes: Sequence[str], *, unless_seen: bool = False) -> None:
         """remove scopes from this L1, in one transaction.
 
         :param scopes: the scopes
         :ptype scopes: Sequence[str]
+        :param unless_seen: keep a scope whose pointer has been seen by the time the L1's lock is taken
+        :ptype unless_seen: bool
         :return: nothing
         :rtype: None
         """
         async with self._local:
+            if unless_seen:
+                scopes = [scope for scope in scopes if scope not in self._seen]
+                if not scopes:
+                    return
             # forgotten BEFORE the drop commits: a scope listed by applied_epochs() is one a read opened
             # after holds, and a dropped scope's rows may already be gone (under-listing is the safe side)
             self._applied = _updated(self._applied, drop=scopes)

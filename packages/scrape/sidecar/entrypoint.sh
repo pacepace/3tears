@@ -71,13 +71,22 @@ openbox-session &
 # `_NET_SUPPORTING_WM_CHECK` is the EWMH property a compliant window manager sets on the root
 # window once it is managing the display. Polling it asks the question that matters -- is a WM
 # actually running -- rather than whether a process was spawned.
+#
+# The answer is read whole and then matched, never piped into `grep -q`: under `pipefail` that pipeline fails when grep
+# exits on its first match while xprop is still writing (xprop dies of SIGPIPE, 141), so a running window manager
+# read as missing and the boot was refused.
+wm_running() {
+    local out
+    out="$(xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null)" || return 1
+    [[ "$out" == *"window id"* ]]
+}
 for _ in $(seq 1 100); do
-    if xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id"; then
+    if wm_running; then
         break
     fi
     sleep 0.1
 done
-xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id" || {
+wm_running || {
     echo "[entrypoint] openbox-session failed to start; the display would be unusable by a human"
     exit 1
 }
