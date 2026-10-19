@@ -16,6 +16,7 @@ EXISTS`` + trigger CREATE OR REPLACE pattern.
 
 from __future__ import annotations
 
+from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, require_indexable_embedding_dim
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -26,7 +27,15 @@ __all__ = [
 log = get_logger(__name__)
 
 
-_CREATE_MEMORY_CHUNKS_SQL = """
+def _create_memory_chunks_sql(embedding_dim: int) -> str:
+    """the ``memory_chunks`` DDL, its embedding column ``embedding_dim`` wide.
+
+    :param embedding_dim: the configured embedding width
+    :ptype embedding_dim: int
+    :return: the ``CREATE TABLE`` statement
+    :rtype: str
+    """
+    sql = f"""
 CREATE TABLE IF NOT EXISTS memory_chunks (
     chunk_id UUID PRIMARY KEY,
     media_id UUID NULL REFERENCES media(media_id) ON DELETE CASCADE,
@@ -37,11 +46,13 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     summary TEXT NULL,
     heading_context TEXT NULL,
     page_number INTEGER NULL,
-    embedding public.vector(1024) NULL,
+    embedding public.vector({embedding_dim}) NULL,
     search_vector TSVECTOR NULL,
     date_created TIMESTAMP NOT NULL
 )
 """
+    return sql
+
 
 _CREATE_CHUNKS_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_chunks_user ON memory_chunks (user_id)"
 
@@ -76,15 +87,20 @@ FOR EACH ROW EXECUTE FUNCTION memory_chunks_search_vector_update()
 """
 
 
-async def create_memory_chunks(store: DataStore) -> None:
+async def create_memory_chunks(store: DataStore, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
     """
     create memory_chunks table with indexes and FTS trigger.
 
     :param store: DataStore bound to per-agent schema via search_path
     :ptype store: DataStore
+    :param embedding_dim: the embedding column's width; a width the database cannot index is
+        refused before any statement runs
+    :ptype embedding_dim: int
+    :raises ValueError: when the database cannot index ``embedding_dim``
     """
+    await require_indexable_embedding_dim(store, embedding_dim)
     log.info("creating memory_chunks table (v007)")
-    await store.execute(_CREATE_MEMORY_CHUNKS_SQL)
+    await store.execute(_create_memory_chunks_sql(embedding_dim))
     await store.execute(_CREATE_CHUNKS_USER_IDX_SQL)
     await store.execute(_CREATE_CHUNKS_MEDIA_IDX_SQL)
     await store.execute(_CREATE_CHUNKS_EMBEDDING_IDX_SQL)

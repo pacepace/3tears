@@ -50,6 +50,7 @@ from threetears.core.backends.protocol import (
 from threetears.core.backends.schema_sql import (
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
+    decode_vector as _decode_vector,
     encode_jsonb as encode_jsonb,
     json_default as _json_default,
 )
@@ -1542,7 +1543,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         comment; blanket rationales are rejected by code review
     """
 
-    schema: ClassVar[TableSchema]
+    #: the table this collection reads and writes. declared on the subclass; an instance may hold
+    #: its own copy, set before ``__init__`` registers it, to vary what a deployment configures --
+    #: an embedding column's width (:func:`threetears.core.data.embedding_width.schema_with_embedding_dim`).
+    schema: TableSchema
     partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
     #: whether every L3 write this collection makes is a statement generated from :attr:`schema`,
     #: so :meth:`complete_written_row` may fill in the columns those statements write ``NULL``.
@@ -1644,6 +1648,28 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         super().__init__(*args, **kwargs)
         self._reject_deferred_flush_on_cas_null_safe()
         self._register_schema()
+
+    async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
+        """save ``entity`` through the three-tier write path, refusing a vector its column cannot hold.
+
+        see :meth:`BaseCollection.save_entity`. a ``vector(N)`` column holds only N-dimensional
+        vectors, so a row carrying one of another width is refused here, before any tier takes it
+        or any statement runs (:func:`_refuse_misfit_vectors`); the database's own refusal would
+        come only once the L3 write ran, and a write-behind collection's L2 would hold the row by
+        then.
+
+        :param entity: entity instance to persist
+        :ptype entity: BaseEntity
+        :param conn: see :meth:`BaseCollection.save_entity`
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when a vector is not its column's declared width, and as
+            :meth:`BaseCollection.save_entity` raises it
+        """
+        if any(col.column_type == VECTOR_TYPE for col in self.schema.columns):
+            _refuse_misfit_vectors(self.schema, entity.to_dict())
+        await super().save_entity(entity, conn=conn)
 
     @property
     def emits_cas_fence(self) -> bool:
@@ -1956,6 +1982,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             missing = [name for name in self.schema.pk_columns if name not in row]
             if missing:
                 raise KeyError(f"{self.table_name}.save_rows: row {index} has no key column {missing[0]!r}")
+            _refuse_misfit_vectors(self.schema, row)
             data = {**row, **stamps}
             stamped.append(data)
             key = tuple(data[name] for name in self.schema.pk_columns)
@@ -2249,6 +2276,40 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: dict[str, Any]
         """
         return _coerce_row_fn(self.schema, row)
+
+
+def _refuse_misfit_vectors(schema: TableSchema, row: Mapping[str, Any]) -> None:
+    """refuse a row carrying a vector that is not its column's declared width.
+
+    a ``vector(N)`` column cannot hold any other width. a value is measured as a sequence, or as
+    pgvector's bracketed text; ``None`` and a value of neither shape pass, for the database to
+    judge.
+
+    :param schema: the schema the row is written to
+    :ptype schema: TableSchema
+    :param row: the row, keyed by column
+    :ptype row: Mapping[str, Any]
+    :return: nothing
+    :rtype: None
+    :raises ValueError: naming the table, the column, its declared width and the vector's width
+    """
+    for col in schema.columns:
+        if col.column_type != VECTOR_TYPE or col.vector_dim is None:
+            continue
+        value = row.get(col.name)
+        width: int | None = None
+        if isinstance(value, str):
+            decoded = _decode_vector(value)
+            width = None if decoded is None else len(decoded)
+        elif value is not None and hasattr(value, "__len__"):
+            width = len(value)
+        if width is not None and width != col.vector_dim:
+            raise ValueError(
+                f"{schema.name}.{col.name} holds {col.vector_dim}-dimensional embeddings, and this row's "
+                f"has {width} dimensions (expected {col.vector_dim}, got {width}); nothing was written. "
+                f"Embed with a model of the configured width, or configure embedding_dim={width} (an "
+                f"existing schema then needs resize_embedding_width)."
+            )
 
 
 def collection_for_schema(

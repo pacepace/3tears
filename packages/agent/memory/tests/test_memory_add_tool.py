@@ -67,6 +67,10 @@ def _resolver():
     )
 
 
+#: the width the stub provider embeds at, and the width the collection is built with
+_EMBEDDING_DIM = 768
+
+
 def _make_pool():
     """build a simple asyncpg-shape mock pool."""
     pool = AsyncMock()
@@ -80,8 +84,8 @@ def _make_pool():
 def _make_embedding_provider():
     """build a stub LangChain ``Embeddings``."""
     provider = AsyncMock()
-    provider.aembed_query.return_value = [0.1] * 768
-    provider.aembed_documents.return_value = [[0.1] * 768]
+    provider.aembed_query.return_value = [0.1] * _EMBEDDING_DIM
+    provider.aembed_documents.return_value = [[0.1] * _EMBEDDING_DIM]
     return provider
 
 
@@ -100,6 +104,7 @@ def _make_collection(
         registry=registry,
         config=core_config,
         authorizer=authorizer,
+        embedding_dim=_EMBEDDING_DIM,
     )
 
 

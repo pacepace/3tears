@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-memory, agent-intention, core: the embedding width is a deployment setting
+
+**Added (agent-memory, agent-intention):** `embedding_dim: int = 1024` on `migrations.register(runner, *,
+embedding_dim=...)`, on the collections that store embeddings (`MemoriesCollection`, `MediaContentCollection`,
+`MemoryChunkCollection`, `IntentionsCollection`) and on their table factories (`memories_table`,
+`media_content_table`, `memory_chunks_table`, `intentions_table`). The columns stay plain pgvector `vector(N)`.
+The default is unchanged, so a host that configures nothing builds and writes exactly what it did; v001 / v006 /
+v007 (memory) and v001 (intention) keep their ledger names at any width, so migrated schemas verify as before.
+`register` refuses a width below 1 or above 16,000 (YugabyteDB's `ybhnsw` ceiling); the creating migration refuses a
+width above 2,000 on PostgreSQL (pgvector's HNSW ceiling) before any statement runs.
+
+**Added:** `verify_embedding_width(store, embedding_dim)` and `resize_embedding_width(store, embedding_dim)` in
+`threetears.agent.memory.embedding_width` and `threetears.agent.intention.embedding_width` (and both package roots),
+raising `EmbeddingWidthMismatch` (table, stored width, configured width). The resize is an explicit operator action:
+it drops each embedding column's indexes, alters the column `USING NULL`, recreates every index under its own name
+and options, and returns how many embeddings it cleared; every row must be re-embedded afterwards.
+
+**Added (core): `threetears.core.data.embedding_width`**, the shared mechanism (`check_embedding_dim`,
+`require_indexable_embedding_dim`, `schema_with_embedding_dim`, `embedding_columns`, `stored_embedding_dim`,
+`verify_embedding_columns`, `resize_embedding_columns`, `EmbeddingWidthMismatch`, `DEFAULT_EMBEDDING_DIM`).
+`SchemaBackedCollection.schema` may now be set per instance before `__init__` registers it.
+
+**Changed (core):** `SchemaBackedCollection.save_entity` and `save_rows` refuse a row whose vector is not its
+column's declared width with a `ValueError` naming both widths, before any cache tier takes the row or any SQL runs.
+Such a row was already refused by PostgreSQL at the L3 write; it is now refused first. A test fake that stored a
+short vector through a declared `vector(1024)` column now has to declare the width it embeds at.
+
 ## v0.71.0 -- 2026-10-18
 
 ### Testing: the dead-Redshift-connection test kills what it means to

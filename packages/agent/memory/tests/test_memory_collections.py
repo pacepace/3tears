@@ -58,6 +58,10 @@ def _make_metadata() -> MetaData:
     return metadata
 
 
+#: the width of :func:`_sample_data`'s embedding, the width this module's collections are built with
+_SAMPLE_EMBEDDING_DIM = 3
+
+
 def _sample_data() -> dict:
     """build a sample memory row for tests.
 
@@ -308,6 +312,7 @@ class TestMemoriesCollectionGet:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
             nats_client=nats,
         )
 
@@ -335,6 +340,7 @@ class TestMemoriesCollectionGet:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
             nats_client=nats,
         )
 
@@ -354,6 +360,7 @@ class TestMemoriesCollectionGet:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
 
         entity = await coll.get((uuid.uuid7(), uuid.uuid7()))
@@ -375,6 +382,7 @@ class TestMemoriesCollectionSave:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
             nats_client=nats,
         )
 
@@ -400,6 +408,7 @@ class TestMemoriesCollectionSave:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
 
         entity = await coll.get((data["agent_id"], data["memory_id"]))
@@ -427,6 +436,7 @@ class TestMemoriesCollectionDelete:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
             nats_client=nats,
         )
 
@@ -466,6 +476,7 @@ class TestMemoriesCollectionFindByUser:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
 
         entities = await coll.find_by_user(
@@ -489,6 +500,7 @@ class TestMemoriesCollectionSerialization:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
 
         data = _sample_data()
@@ -516,6 +528,7 @@ class TestMemoriesCollectionSerialization:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
 
         raw = json.dumps(
@@ -542,6 +555,7 @@ class TestMemoriesCollectionTableName:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
         assert coll.table_name == "memories"
 
@@ -555,6 +569,7 @@ class TestMemoriesCollectionTableName:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
         assert coll.entity_class is MemoryEntity
 
@@ -568,6 +583,7 @@ class TestMemoriesCollectionTableName:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
         assert coll.primary_key_column == ("agent_id", "memory_id")
 
@@ -587,6 +603,7 @@ class TestMemoriesCollectionCountByUser:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
 
         result = await coll.count_by_user(
@@ -605,6 +622,7 @@ class TestMemoriesCollectionCountByUser:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
         )
 
         result = await coll.count_by_user(uuid.uuid7(), agent_id=uuid.uuid7())
@@ -640,6 +658,7 @@ class TestAScanCachesNothing:
             registry,
             config_always,
             authorizer=permissive_memory_authorizer,
+            embedding_dim=_SAMPLE_EMBEDDING_DIM,
             nats_client=_make_nats_mock(),
         )
         holder["coll"] = coll

@@ -51,6 +51,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.backends.schema_sql import decode_vector
 from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.config import CoreConfig
+from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
 from threetears.core.data.gin import gin_filter
 from threetears.observe import get_logger
 
@@ -163,16 +164,17 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
 # ---------------------------------------------------------------------------
 
 
-# Single source of truth for the embedding dimension carried by memory
-# tables. The value matches every Vector column in this file -- bump
-# here to bump everywhere if an embedding provider with a different
-# native dim is ever adopted. The 1024 value matches Voyage AI's
-# voyage-4 default + the pre-v0.7.5 hardcoded ``Vector(1024)`` in
-# the upstream declarations.
-_MEMORY_VECTOR_DIM = 1024
+# The embedding width the memory tables are declared with: every Vector
+# column in this file. It is the default of the deployment setting, not a
+# fixed shape -- the collections and table factories take ``embedding_dim``
+# and derive their schema at that width
+# (:func:`~threetears.core.data.embedding_width.schema_with_embedding_dim`),
+# and the migrations create the columns at the width they are registered
+# with. 1024 is Voyage AI's voyage-4, the provider the tables were built for.
+_MEMORY_VECTOR_DIM = DEFAULT_EMBEDDING_DIM
 
 
-def memories_table(metadata: MetaData) -> Table:
+def memories_table(metadata: MetaData, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> Table:
     """Register the ``memories`` table on the given SA metadata.
 
     v0.8.0: schema declaration is now the single source of truth. This
@@ -184,10 +186,13 @@ def memories_table(metadata: MetaData) -> Table:
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
+    :param embedding_dim: the ``embedding`` column's width, the deployment's; default 1024
+    :ptype embedding_dim: int
     :return: the ``memories`` :class:`Table`
     :rtype: Table
     """
-    return cast(Table, MemoriesCollection.schema.to_sqlalchemy_table(metadata))
+    schema = schema_with_embedding_dim(MemoriesCollection.schema, embedding_dim)
+    return cast(Table, schema.to_sqlalchemy_table(metadata))
 
 
 def media_table(metadata: MetaData) -> Table:
@@ -208,7 +213,7 @@ def media_table(metadata: MetaData) -> Table:
     return cast(Table, MediaCollection.schema.to_sqlalchemy_table(metadata))
 
 
-def media_content_table(metadata: MetaData) -> Table:
+def media_content_table(metadata: MetaData, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> Table:
     """Register the ``media_content`` table on the given SA metadata.
 
     v0.8.0: schema declaration is now the single source of truth. This
@@ -219,13 +224,16 @@ def media_content_table(metadata: MetaData) -> Table:
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
+    :param embedding_dim: the ``embedding`` column's width, the deployment's; default 1024
+    :ptype embedding_dim: int
     :return: the ``media_content`` :class:`Table`
     :rtype: Table
     """
-    return cast(Table, MediaContentCollection.schema.to_sqlalchemy_table(metadata))
+    schema = schema_with_embedding_dim(MediaContentCollection.schema, embedding_dim)
+    return cast(Table, schema.to_sqlalchemy_table(metadata))
 
 
-def memory_chunks_table(metadata: MetaData) -> Table:
+def memory_chunks_table(metadata: MetaData, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> Table:
     """Register the ``memory_chunks`` table on the given SA metadata.
 
     v0.8.0: schema declaration is now the single source of truth. This
@@ -237,10 +245,13 @@ def memory_chunks_table(metadata: MetaData) -> Table:
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
+    :param embedding_dim: the ``embedding`` column's width, the deployment's; default 1024
+    :ptype embedding_dim: int
     :return: the ``memory_chunks`` :class:`Table`
     :rtype: Table
     """
-    return cast(Table, MemoryChunkCollection.schema.to_sqlalchemy_table(metadata))
+    schema = schema_with_embedding_dim(MemoryChunkCollection.schema, embedding_dim)
+    return cast(Table, schema.to_sqlalchemy_table(metadata))
 
 
 def memory_consolidations_table(metadata: MetaData) -> Table:
@@ -872,6 +883,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         authorizer: MemoryAuthorizerDependencies,
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
+        *,
+        embedding_dim: int = DEFAULT_EMBEDDING_DIM,
     ) -> None:
         """initialize memory collection with required rbac authorizer.
 
@@ -895,8 +908,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype nats_client: Any
         :param write_buffer: optional shared write buffer
         :ptype write_buffer: WriteBuffer | None
+        :param embedding_dim: the ``embedding`` column's width, the deployment's (default 1024);
+            a write carrying an embedding of another width is refused before any statement runs
+        :ptype embedding_dim: int
+        :raises ValueError: when ``embedding_dim`` is below 1 or above 16,000
         """
         self._authorizer = authorizer
+        self.schema = schema_with_embedding_dim(type(self).schema, embedding_dim)
         super().__init__(registry, config, nats_client, write_buffer)
 
     @property
@@ -2855,6 +2873,24 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         unique_constraints=(SchemaUniqueConstraint("uq_media_content_content_id", "content_id"),),
     )
 
+    def __init__(self, *args: Any, embedding_dim: int = DEFAULT_EMBEDDING_DIM, **kwargs: Any) -> None:
+        """construct the collection with its ``embedding`` column ``embedding_dim`` wide.
+
+        :param args: positional args forwarded to :class:`SchemaBackedCollection`
+            (``registry``, ``config``, ``nats_client``, ``write_buffer``)
+        :ptype args: Any
+        :param embedding_dim: the ``embedding`` column's width, the deployment's (default 1024);
+            a write carrying an embedding of another width is refused before any statement runs
+        :ptype embedding_dim: int
+        :param kwargs: keyword args forwarded to :class:`SchemaBackedCollection`
+        :ptype kwargs: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``embedding_dim`` is below 1 or above 16,000
+        """
+        self.schema = schema_with_embedding_dim(type(self).schema, embedding_dim)
+        super().__init__(*args, **kwargs)
+
     @property
     def table_name(self) -> str:
         """return the database table name for this collection.
@@ -3431,6 +3467,24 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         # UNIQUE`` in upstream alembic 064.
         unique_constraints=(SchemaUniqueConstraint("uq_memory_chunks_chunk_id", "chunk_id"),),
     )
+
+    def __init__(self, *args: Any, embedding_dim: int = DEFAULT_EMBEDDING_DIM, **kwargs: Any) -> None:
+        """construct the collection with its ``embedding`` column ``embedding_dim`` wide.
+
+        :param args: positional args forwarded to :class:`SchemaBackedCollection`
+            (``registry``, ``config``, ``nats_client``, ``write_buffer``)
+        :ptype args: Any
+        :param embedding_dim: the ``embedding`` column's width, the deployment's (default 1024);
+            a write carrying an embedding of another width is refused before any statement runs
+        :ptype embedding_dim: int
+        :param kwargs: keyword args forwarded to :class:`SchemaBackedCollection`
+        :ptype kwargs: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``embedding_dim`` is below 1 or above 16,000
+        """
+        self.schema = schema_with_embedding_dim(type(self).schema, embedding_dim)
+        super().__init__(*args, **kwargs)
 
     @property
     def table_name(self) -> str:
