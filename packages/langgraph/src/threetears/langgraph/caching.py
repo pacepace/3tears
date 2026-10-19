@@ -80,6 +80,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import SystemMessage
+from pydantic import PydanticUndefinedAnnotation, PydanticUserError
 from threetears.observe import contain, get_logger
 
 log = get_logger(__name__)
@@ -526,7 +527,10 @@ def compute_tool_key(tools: list[Any]) -> str:
         if args_schema is not None and hasattr(args_schema, "model_json_schema"):
             try:
                 schema = args_schema.model_json_schema()
-            except Exception as exc:  # noqa: BLE001 - schema generation may fail on exotic tools
+            except (PydanticUserError, PydanticUndefinedAnnotation) as exc:
+                # what pydantic raises for a model it cannot render as JSON schema: a type with no
+                # schema (PydanticInvalidForJsonSchema), one it cannot generate a core schema for, or a
+                # forward reference never resolved. any other type is a bug and propagates.
                 contain(
                     exc,
                     log=log,

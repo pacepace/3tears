@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, SystemMessage
+from pydantic import BaseModel, ConfigDict
 from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.langgraph.caching import (
     ANTHROPIC_EPHEMERAL_TTL_SECONDS,
@@ -140,6 +142,17 @@ class _StubPydanticArgsSchema:
         :rtype: dict[str, Any]
         """
         return self._schema
+
+
+class _Opaque:
+    """a field type pydantic can hold but has no JSON schema for."""
+
+
+class _ArgsWithNoJsonSchema(BaseModel):
+    """an args model whose ``model_json_schema`` raises ``PydanticInvalidForJsonSchema``."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    handle: _Opaque
 
 
 class _StubTool:
@@ -677,6 +690,32 @@ class TestComputeToolKey:
         tool_plain = _StubTool("plain", args_schema=None)
         tool_other = _StubTool("other", args_schema=None)
         assert compute_tool_key([tool_plain]) != compute_tool_key([tool_other])
+
+    def test_a_schema_pydantic_cannot_render_fingerprints_by_name(self) -> None:
+        """a model with a field type that has no JSON schema still hashes, by its name.
+
+        :raises AssertionError: when the unrenderable schema breaks the key
+        """
+        exotic = _StubTool("exotic")
+        exotic.args_schema = _ArgsWithNoJsonSchema  # type: ignore[assignment]
+        assert compute_tool_key([exotic]) == compute_tool_key([_StubTool("exotic", args_schema=None)])
+
+    def test_a_bug_in_schema_generation_propagates(self) -> None:
+        """only pydantic's own schema errors fall back to the name; a TypeError is a bug.
+
+        It used to be contained and the tool fingerprinted by name, hiding it.
+
+        :raises AssertionError: when the TypeError is absorbed
+        """
+
+        class _BrokenSchema:
+            def model_json_schema(self) -> dict[str, Any]:
+                raise TypeError("a bug in the schema")
+
+        broken = _StubTool("broken")
+        broken.args_schema = _BrokenSchema()  # type: ignore[assignment]
+        with pytest.raises(TypeError, match="a bug in the schema"):
+            compute_tool_key([broken])
 
 
 class TestShouldBindToolsFresh:
