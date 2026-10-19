@@ -164,6 +164,21 @@ class TestAFailedResizeIsReported:
             prepare_image_for_vision(big, "image/jpeg")
 
     @pytest.mark.asyncio
+    async def test_no_exception_message_reaches_the_agent(self, monkeypatch):
+        from PIL import Image
+
+        def _planted(*args, **kwargs):
+            raise OSError("PLANTED-1a9f cannot identify image file")
+
+        monkeypatch.setattr(Image, "open", _planted)
+        result = await ImagePrepTool().execute(
+            image_data_base64=base64.b64encode(b"x" * (SIZE_THRESHOLD + 1)).decode(), mime_type="image/jpeg"
+        )
+        assert result.success is False
+        assert result.error is not None and "for a vision model: OSError;" in result.error
+        assert "PLANTED-1a9f" not in (result.error or "") + result.content
+
+    @pytest.mark.asyncio
     async def test_the_tool_reports_the_failure_and_that_the_original_is_unchanged(self):
         result = await ImagePrepTool().execute(
             image_data_base64=base64.b64encode(b"not an image at all").decode(), mime_type="image/heic"

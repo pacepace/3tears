@@ -592,6 +592,38 @@ class TestDocumentSizeLimit:
         assert text.answer_calls == []
 
 
+class TestDocumentNotFullyRead:
+    """a document whose parser could not read every part says so above the answer."""
+
+    @pytest.mark.asyncio
+    async def test_a_part_the_parser_could_not_read_is_named(self, monkeypatch):
+        import docx
+        import docx.document
+
+        docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        built = docx.Document()
+        built.add_paragraph("The revenue was 42.")
+        buf = io.BytesIO()
+        built.save(buf)
+
+        def _unreadable(self: Any) -> Any:
+            raise KeyError("PLANTED-a11c")
+
+        monkeypatch.setattr(docx.document.Document, "core_properties", property(_unreadable))
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", docx_mime), buf.getvalue(), docx_mime)
+        text = FakeTextProvider("42.")
+        tool = _make_tool(storage, text=text, categories={"document"})
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Revenue?", "analyzer": "TestVision"})
+
+        head = result.partition("\n\n")[0]
+        assert "**Not fully read:** document properties (title, author) could not be read (KeyError)" in head
+        assert "PLANTED-a11c" not in result
+        assert _body(result) == "42."
+
+
 class TestTranscriptionSizeLimit:
     """audio and video are read for transcription only up to MAX_TRANSCRIPTION_BYTES."""
 

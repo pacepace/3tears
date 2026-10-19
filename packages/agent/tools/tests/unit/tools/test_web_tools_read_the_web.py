@@ -418,21 +418,26 @@ class TestPdfs:
     async def test_a_part_of_the_pdf_that_could_not_be_read_is_named_in_the_notes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A page whose tables would not extract used to read as a page with no tables."""
+        """A page whose tables would not extract used to read as a page with no tables.
 
-        def _broken_tables(page: Any, *, merge_wrapped_rows: bool = False) -> str:
-            raise RuntimeError("table finder broke")
+        The failure is injected at PyMuPDF's own table finder, the third-party call the parser
+        makes, with a message that must not reach the agent.
+        """
+        import fitz
 
-        monkeypatch.setattr("threetears.agent.tools.document._extract_pdf_tables", _broken_tables)
+        def _broken_tables(self: object, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("PLANTED-5b2a table finder broke")
+
+        monkeypatch.setattr(fitz.Page, "find_tables", _broken_tables)
 
         read = await pdf_reader().read(_fixture("otter-survey.pdf"))
 
         assert read.text, "the pages' own text is still read"
         assert any(
-            note.startswith("Parts of the PDF could not be read: page 1: tables could not be extracted")
-            and "RuntimeError: table finder broke" in note
+            note.startswith("Parts of the PDF could not be read: page 1: tables could not be extracted (RuntimeError)")
             for note in read.notes
         ), read.notes
+        assert not any("PLANTED-5b2a" in note for note in read.notes)
 
     def test_the_fixture_is_the_recording_it_claims_to_be(self) -> None:
         assert _fixture("otter-survey.pdf").startswith(b"%PDF-")

@@ -53,7 +53,8 @@ class ImagePrepError(RuntimeError):
     :ptype mime_type: str
     :param size_bytes: the image's size
     :ptype size_bytes: int
-    :param detail: why, as ``"<Type>: <message>"``
+    :param detail: why, as the exception's type name only -- this message reaches an agent,
+        and an exception's message is not for it; the cause carries the message to the log
     :ptype detail: str
     """
 
@@ -140,7 +141,7 @@ def prepare_image_for_vision(
         return result, "image/jpeg"
 
     except Exception as exc:  # noqa: BLE001 -- any failure is refused by name; the caller decides whether to send the original
-        raise ImagePrepError(mime_type, len(data), f"{type(exc).__name__}: {exc}") from exc
+        raise ImagePrepError(mime_type, len(data), type(exc).__name__) from exc
 
 
 class ImagePrepTool(TearsTool):

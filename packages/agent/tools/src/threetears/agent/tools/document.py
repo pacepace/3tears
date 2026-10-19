@@ -100,9 +100,12 @@ class DocumentResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     sections: list[DocumentSection] = field(default_factory=list)
     #: what could not be read, one entry per page and step (``"page 3: tables could not be
-    #: extracted (RuntimeError: ...)"``); empty when every page read fully. A step that failed
-    #: leaves the rest of its page intact, so ``text`` is still the page's text -- but without
-    #: this list a page whose tables or OCR failed reads exactly like one that has none.
+    #: extracted (RuntimeError)"``), or per document-level step (``"document properties could
+    #: not be read (KeyError)"``); empty when everything read fully. A step that failed leaves
+    #: the rest intact, so ``text`` is still the page's text -- but without this list a page
+    #: whose tables or OCR failed reads exactly like one that has none. Each entry names the
+    #: step and the exception's type only: it reaches an agent, and an exception's message
+    #: can quote the document. The message is in the log, with the traceback.
     page_faults: list[str] = field(default_factory=list)
 
 
@@ -370,11 +373,16 @@ def _parse_pdf(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"PDF parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"PDF parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 def _page_fault(page_number: int, step: str, exc: Exception) -> str:
     """one entry of :attr:`DocumentResult.page_faults`: which page, what could not be done, and why.
+
+    the exception's type, never its message: the entry reaches an agent, and a message can
+    quote the document. :func:`threetears.observe.contain` logs the message with the traceback.
 
     :param page_number: the page, 1-based
     :ptype page_number: int
@@ -382,10 +390,10 @@ def _page_fault(page_number: int, step: str, exc: Exception) -> str:
     :ptype step: str
     :param exc: why
     :ptype exc: Exception
-    :return: ``"page <n>: <step> (<Type>: <message>)"``
+    :return: ``"page <n>: <step> (<Type>)"``
     :rtype: str
     """
-    return f"page {page_number}: {step} ({type(exc).__name__}: {exc})"
+    return f"page {page_number}: {step} ({type(exc).__name__})"
 
 
 def _merge_wrapped_table_rows(rows: list[list[Any]]) -> list[list[Any]]:
@@ -655,7 +663,7 @@ def render_pdf_pages_to_images(
             encoded.append(buf.getvalue())
     except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any render failure is refused by name; the caller decides whether the images were optional
         raise DocumentParseError(
-            "parse_failed", f"PDF page images could not be rendered: {type(exc).__name__}: {exc}", filename=None
+            "parse_failed", f"PDF page images could not be rendered ({type(exc).__name__})", filename=None
         ) from exc
     return encoded
 
@@ -681,6 +689,7 @@ def _parse_docx(
 
         # Extract core properties
         metadata: dict[str, Any] = {}
+        page_faults: list[str] = []
         try:
             props = doc.core_properties
             if props.title:
@@ -698,6 +707,7 @@ def _parse_docx(
                 what="could not read document core properties; metadata omitted",
                 extra={"error": str(exc), "error_type": type(exc).__name__},
             )
+            page_faults.append(f"document properties (title, author) could not be read ({type(exc).__name__})")
 
         current_heading: str | None = None
         current_level = 0
@@ -766,6 +776,7 @@ def _parse_docx(
             was_ocr=False,
             metadata=metadata,
             sections=sections,
+            page_faults=page_faults,
         )
 
     except Exception as exc:
@@ -774,7 +785,9 @@ def _parse_docx(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"DOCX parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"DOCX parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 def _docx_para_to_markdown(para: Any) -> str:
@@ -897,7 +910,9 @@ def _parse_xlsx(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"XLSX parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"XLSX parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- CSV parser ---------------------------------------------------------------
@@ -973,7 +988,9 @@ def _parse_csv(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"CSV parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"CSV parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- TXT parser ---------------------------------------------------------------
@@ -1017,7 +1034,9 @@ def _parse_txt(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"TXT parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"TXT parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- Markdown parser ----------------------------------------------------------
@@ -1092,7 +1111,9 @@ def _parse_markdown(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"Markdown parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"Markdown parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- LaTeX parser -------------------------------------------------------------
@@ -1216,7 +1237,9 @@ def _parse_latex(
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
             exc_info=True,
         )
-        raise DocumentParseError("parse_failed", f"LaTeX parsing failed: {exc}", filename=filename) from exc
+        raise DocumentParseError(
+            "parse_failed", f"LaTeX parsing failed ({type(exc).__name__})", filename=filename
+        ) from exc
 
 
 # -- parse_document tool factory ----------------------------------------------
@@ -1258,7 +1281,7 @@ def create_parse_document_tool(
             data = base64.b64decode(content_base64)
         except Exception as exc:
             contain(exc, log=log, what="parse_document could not decode the base64 content")
-            return _tool_error("parse_document", "decode", f"Invalid base64: {exc}")
+            return _tool_error("parse_document", "decode", f"Invalid base64 ({type(exc).__name__})")
 
         if len(data) > _PARSE_DOCUMENT_MAX_BYTES:
             return _tool_error(
