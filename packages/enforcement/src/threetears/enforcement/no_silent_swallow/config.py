@@ -47,6 +47,8 @@ _DEFAULT_LOGGER_METHODS: frozenset[str] = frozenset(
 
 _DEFAULT_NOSILENT_MARKER: str = "# NOSILENT:"
 
+_DEFAULT_CONTAIN_NAMES: frozenset[str] = frozenset({"contain"})
+
 
 @dataclass(frozen=True)
 class NoSilentSwallowConfig:
@@ -75,6 +77,16 @@ class NoSilentSwallowConfig:
     :ivar nosilent_marker: the comment-marker substring that justifies
         a silent handler / suppress. defaults to ``# NOSILENT:``. the
         text after the colon (the "reason") must be non-empty.
+    :ivar contain_names: the names the containment helper is called by.
+        a broad ``except Exception`` that calls one of them is a
+        contained failure (:func:`threetears.observe.contain`).
+    :ivar uncontained_pending: repo-relative directories (one per
+        package, e.g. ``packages/nats``) whose broad and cancellation
+        handlers are not checked yet. the list only shrinks: an entry
+        whose directory has no such handler left is itself a
+        violation, so a converted package leaves the list in the same
+        change. a package not listed is checked, so a new one starts
+        inside the gate.
     """
 
     repo_root: Path
@@ -88,3 +100,7 @@ class NoSilentSwallowConfig:
         default_factory=lambda: _DEFAULT_LOGGER_METHODS,
     )
     nosilent_marker: str = _DEFAULT_NOSILENT_MARKER
+    contain_names: frozenset[str] = field(
+        default_factory=lambda: _DEFAULT_CONTAIN_NAMES,
+    )
+    uncontained_pending: tuple[str, ...] = ()

@@ -177,6 +177,16 @@ A leading underscore means implementation detail: nothing outside the defining c
 
 Owner ruling, 2026-10-01.
 
+## Exceptions
+
+A failure either reaches the caller, or it is recorded where an operator will see it -- never neither. A handler that logs and then returns `None`, `[]` or a partial result has still lied to its caller.
+
+- `except Exception` re-raises or calls `threetears.observe.contain(exc, log=..., what=...)`; `suppress(Exception)` is `with contained(...)`. A log line or a `# NOSILENT` comment does not excuse a broad handler.
+- `except CancelledError` re-raises; stop another task with `await cancel_and_wait(task)`.
+- Catch the specific type when the failure is an expected condition. Never write a soft-fail wrapper that returns `None` on any error.
+
+`tests/enforcement/test_no_silent_swallow.py` enforces it, and under pytest a programming error reaching `contain()` fails the test. The rules, the decision table and the conversion recipe: [docs/exceptions.md](docs/exceptions.md).
+
 ## Test fakes
 
 A test fake is any class named `Fake<Name>` or `_Fake<Name>` under a `tests/` directory, and every one declares what production protocol it stands in for, ON the class: subclass it, or `# parity-with: <fully.qualified.name>` (the only route that verifies the surface), or a one-line `# parity-exempt: <rationale>` of at least 30 characters. Never in `tests/enforcement/_fake_parity_exemptions.txt`, which is deliberately empty. `tests/enforcement/test_fake_protocol_parity.py` enforces it; the three routes in full: [docs/testing.md](docs/testing.md#test-fakes).
