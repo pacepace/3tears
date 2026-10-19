@@ -92,7 +92,6 @@ if TYPE_CHECKING:
     )
     from threetears.agent.memory.extraction import (
         ChatModelFactory,
-        ExtractionCooldownUnavailableError,
         ExtractionGate,
         ExtractionModelFailedError,
         ExtractionOutcome,
@@ -143,7 +142,6 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ChunkSearchInput": ("threetears.agent.memory.tools", "ChunkSearchInput"),
     "ConsolidationResult": ("threetears.agent.memory.dream", "ConsolidationResult"),
     "DreamService": ("threetears.agent.memory.dream", "DreamService"),
-    "ExtractionCooldownUnavailableError": ("threetears.agent.memory.extraction", "ExtractionCooldownUnavailableError"),
     "ExtractionGate": ("threetears.agent.memory.extraction", "ExtractionGate"),
     "ExtractionModelFailedError": ("threetears.agent.memory.extraction", "ExtractionModelFailedError"),
     "ExtractionOutcome": ("threetears.agent.memory.extraction", "ExtractionOutcome"),
@@ -252,7 +250,6 @@ __all__ = [
     "ConsolidationCycleError",
     "ConsolidationResult",
     "DreamService",
-    "ExtractionCooldownUnavailableError",
     "ExtractionGate",
     "ExtractionModelFailedError",
     "ExtractionOutcome",

@@ -219,15 +219,24 @@ class TestEmbeddingSoftFail:
         assert collection.dedup_embeddings == []
         assert collection.saved == []
 
-    async def test_a_want_whose_dedup_lookup_fails_is_not_stored_as_new(self) -> None:
-        """no similar wants means "this is new"; a lookup that failed has not established it."""
+    async def test_a_want_logged_without_its_dedup_check_says_so(self) -> None:
+        """a duplicate can be cleaned up; a refused want may never be retried, so it is stored."""
         collection = _FakeIntentionsDedupDown()
+        site = "threetears.agent.intention.tools:load_intention_log_tool.<locals>.intention_log"
+        labels = {"site": site, "exc_type": "ConnectionError"}
+        before = REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0
         msg = await _log(_OkEmbedder(), collection, "want")
-        assert msg.startswith("[TOOL ERROR] intention_log: dedup failed")
-        assert "(ConnectionError)" in msg
+        assert len(collection.saved) == 1
+        assert msg == (
+            f"Logged as [intention:{collection.saved[0].intention_id}]: want "
+            "(not checked against your open wants, which could not be read: ConnectionError)"
+        )
         assert "l3 timeout" not in msg, "a store's own message stays in the log, out of the reply"
-        assert "nothing was written down" in msg
-        assert collection.saved == [], "a want stored without its dedup check is the duplicate this exists to stop"
+        assert (REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0) == before + 1
+
+    async def test_a_checked_want_claims_nothing_extra(self) -> None:
+        msg = await _log(_OkEmbedder(), _FakeIntentions(), "want")
+        assert "not checked" not in msg
 
     async def test_a_failed_store_names_the_step_and_class_only(self) -> None:
         msg = await _log(_OkEmbedder(), _FakeIntentionsStoreDown(), "want")

@@ -18,11 +18,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from prometheus_client import REGISTRY
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.extraction import (
-    ExtractionCooldownUnavailableError,
     ExtractionGate,
     ExtractionModelFailedError,
     ExtractionOutcome,
@@ -343,6 +343,15 @@ async def _extract_turn(ext: MemoryExtractor, conversation_id: uuid.UUID) -> Ext
     )
 
 
+_CHECK_SITE = "threetears.agent.memory.extraction:MemoryExtractor.check_rate_limit"
+_CLAIM_SITE = "threetears.agent.memory.extraction:MemoryExtractor._claim"
+
+
+def _contained(site: str, exc_type: str = "RuntimeError") -> float:
+    """how many failures ``site`` has contained, so far, of ``exc_type``."""
+    return REGISTRY.get_sample_value("contained_errors_total", {"site": site, "exc_type": exc_type}) or 0.0
+
+
 class TestRateLimit:
     """the cooldown is READ before worthiness and CLAIMED only after it says yes."""
 
@@ -402,40 +411,53 @@ class TestRateLimit:
         bucket.advance_clock(timedelta(seconds=1))
         assert await ext.check_rate_limit(conversation_id) == (True, 0)
 
-    async def test_a_cooldown_that_cannot_be_read_is_raised_not_read_as_no_cooldown(
+    async def test_a_cooldown_that_cannot_be_read_lets_the_turn_through_and_is_counted(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
+        """the cooldown is a cost throttle: an unreadable one costs a model call, never the memories."""
         nats = MagicMock()
         nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        with pytest.raises(ExtractionCooldownUnavailableError, match="could not be read: RuntimeError: nats down"):
-            await ext.check_rate_limit(uuid.uuid7())
+        before = _contained(_CHECK_SITE)
+        with caplog.at_level(logging.ERROR, logger="threetears.agent.memory.extraction"):
+            assert await ext.check_rate_limit(uuid.uuid7()) == (True, 0)
+        assert _contained(_CHECK_SITE) == before + 1
+        assert any(
+            record.levelno == logging.ERROR and "could not be read, extracting anyway" in record.getMessage()
+            for record in caplog.records
+        ), f"no ERROR for the unread cooldown; got {[r.getMessage() for r in caplog.records]!r}"
 
-    async def test_a_turn_whose_cooldown_cannot_be_read_fails_before_any_model_call(
+    async def test_a_turn_whose_cooldown_store_is_down_still_extracts(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
+        """losing a window of memories to a KV outage is the failure the flip exists to remove."""
         nats = MagicMock()
         nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
         factory = _worthy_factory()
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=factory)
+        read_before, claim_before = _contained(_CHECK_SITE), _contained(_CLAIM_SITE)
         result = await _extract_turn(ext, uuid.uuid7())
-        assert result.outcome is ExtractionOutcome.FAILED, result
-        assert "cooldown could not be read" in result.reason
-        assert factory.calls == {"worthiness": 0, "extraction": 0, "resolution": 0}
+        assert result.outcome is ExtractionOutcome.STORED, result
+        assert factory.calls["worthiness"] == 1
+        assert factory.calls["extraction"] == 1
+        assert _contained(_CHECK_SITE) == read_before + 1
+        assert _contained(_CLAIM_SITE) == claim_before + 1
 
-    async def test_a_claim_that_cannot_be_written_is_raised_not_read_as_claimed(
+    async def test_a_claim_that_cannot_be_written_lets_the_turn_through_and_is_counted(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = MagicMock()
         nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        with pytest.raises(ExtractionCooldownUnavailableError, match="could not be claimed: RuntimeError: nats down"):
-            await ext.claim_rate_limit(uuid.uuid7())
+        before = _contained(_CLAIM_SITE)
+        assert await ext.claim_rate_limit(uuid.uuid7()) == (True, 0)
+        assert _contained(_CLAIM_SITE) == before + 1
 
-    async def test_a_claim_the_bucket_refuses_is_raised_not_read_as_claimed(
+    async def test_a_claim_the_bucket_times_out_lets_the_turn_through_and_is_counted(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
@@ -445,8 +467,9 @@ class TestRateLimit:
                 raise KvError("KV create failed: nats: timeout")
 
         ext = _make_extractor(permissive_memory_authorizer, nats_client=_SingleBucketClient(_RefusingBucket()))
-        with pytest.raises(ExtractionCooldownUnavailableError, match="could not be claimed: KvError"):
-            await ext.claim_rate_limit(uuid.uuid7())
+        before = _contained(_CLAIM_SITE, "KvError")
+        assert await ext.claim_rate_limit(uuid.uuid7()) == (True, 0)
+        assert _contained(_CLAIM_SITE, "KvError") == before + 1
 
     async def test_claim_on_a_bucket_refusing_per_key_ttl_fails_loud(
         self,

@@ -264,9 +264,9 @@ async def load_intention_log_tool(
 
         # dedup against the user's OPEN wants: refresh the near-duplicate
         # instead of stacking a second row for the same standing want. a lookup
-        # that fails stores NOTHING: no similar wants is the answer "this is new",
-        # and a lookup that failed has not established that -- storing it anyway
-        # stacks a duplicate the deliberation loop then surfaces twice.
+        # that fails still stores the want, and the reply says it went unchecked:
+        # a duplicate can be cleaned up later, a refused want may never be retried.
+        unchecked = ""
         try:
             similar = await intentions_collection.find_similar_for_dedup(
                 user_id=user_id,
@@ -276,14 +276,10 @@ async def load_intention_log_tool(
                 threshold=0.0,
             )
         except Exception as exc:
-            contain(exc, log=log, what="intention_log: dedup lookup failed, nothing stored")
+            contain(exc, log=log, what="intention_log: dedup lookup failed, storing the want unchecked")
             # the reply names the exception class only: a store's message can carry SQL or a URL
-            return _tool_error(
-                "intention_log",
-                "dedup",
-                f"your open wants could not be read to check this one against them ({type(exc).__name__}); "
-                "nothing was written down, try again",
-            )
+            unchecked = f" (not checked against your open wants, which could not be read: {type(exc).__name__})"
+            similar = []
 
         for row in similar:
             if float(row["similarity"]) >= similarity_dedup_threshold:
@@ -387,7 +383,7 @@ async def load_intention_log_tool(
                     extra={"intention_id": str(intention_id), "error": str(exc)},
                     level="error",
                 )
-        return f"Logged as [intention:{intention_id}]: {text}"
+        return f"Logged as [intention:{intention_id}]: {text}{unchecked}"
 
     intention_log.description = (
         "Write down something you want to do, ask or come back to, in any later "

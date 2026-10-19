@@ -51,7 +51,6 @@ from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "ChatModelFactory",
-    "ExtractionCooldownUnavailableError",
     "ExtractionGate",
     "ExtractionModelFailedError",
     "ExtractionOutcome",
@@ -237,15 +236,6 @@ class ExtractionModelFailedError(RuntimeError):
     :attr:`ExtractionOutcome.FAILED` with the reason. each used to answer a default that read as
     a decision: a failed worthiness call read as "worthy", a failed extraction call as "found
     nothing", a failed resolution call as "ADD every candidate" -- duplicates included.
-    """
-
-
-class ExtractionCooldownUnavailableError(RuntimeError):
-    """the conversation's extraction cooldown could not be read or claimed.
-
-    raised so the turn answers :attr:`ExtractionOutcome.FAILED`. a cooldown that cannot be
-    read is not a cooldown that is not running: the read and the claim used to fail open, so a
-    KV outage ran extraction on every turn the cooldown exists to hold back.
     """
 
 
@@ -533,7 +523,6 @@ class MemoryExtractor:
         :return: what the turn came to
         :rtype: ExtractionResult
         :raises ExtractionModelFailedError: when a model call or its reply failed
-        :raises ExtractionCooldownUnavailableError: when the cooldown could not be read or claimed
         :raises MemoryAccessDenied: when the agent may not extract into its namespace
         :raises KvError: when the rate-limit bucket refuses a per-key lifetime
         """
@@ -743,16 +732,16 @@ class MemoryExtractor:
         turn inside the cooldown costs no worthiness call. it only reads: the key
         is taken by :meth:`claim_rate_limit`, after worthiness says yes, so a turn
         that stops here or at worthiness never blocks the next one. a read that
-        fails raises: it used to answer ``(True, 0)``, "no cooldown is running",
-        which a read that failed has not established. stability contract:
-        signature and return shape are part of public api.
+        fails answers ``(True, 0)`` and the turn extracts anyway, contained at
+        ERROR and counted: the cooldown is a cost throttle, not a safety check,
+        and failing the turn would lose that window's memories. stability
+        contract: signature and return shape are part of public api.
 
         :param conversation_id: conversation UUID to rate-limit
         :ptype conversation_id: UUID
         :return: ``(True, 0)`` when no cooldown is running, ``(False, cooldown)``
             when one is
         :rtype: tuple[bool, int]
-        :raises ExtractionCooldownUnavailableError: when the cooldown could not be read
         """
         cooldown = self._config.extraction_rate_limit_cooldown_seconds
         if self._nats_client is None or cooldown <= 0:
@@ -763,9 +752,15 @@ class MemoryExtractor:
             )
             running = await bucket.get(key=self._rate_limit_key(conversation_id)) is not None
         except Exception as exc:
-            raise ExtractionCooldownUnavailableError(
-                f"the extraction cooldown could not be read: {type(exc).__name__}: {exc}"
-            ) from exc
+            # a cost throttle, not a safety check: extract anyway, and count every turn it let through
+            contain(
+                exc,
+                log=log,
+                what=f"the extraction cooldown could not be read, extracting anyway: {type(exc).__name__}: {exc}",
+                extra={"conversation_id": str(conversation_id)},
+                level="error",
+            )
+            running = False
         return (False, cooldown) if running else (True, 0)
 
     async def claim_rate_limit(
@@ -785,10 +780,11 @@ class MemoryExtractor:
         cannot carry a per-message TTL (``allow_msg_ttl`` off, on a handle that
         could not reconcile it) refuses the write; that is a deployment defect,
         logged at ERROR naming the bucket and raised -- never answered by a key
-        that would outlive its cooldown. any other NATS failure raises
-        :class:`ExtractionCooldownUnavailableError`: a claim that did not land
-        has not given this turn the window. stability contract: signature and
-        return shape are part of public api.
+        that would outlive its cooldown. any other NATS failure answers
+        ``(True, 0)`` and the turn extracts anyway, contained at ERROR and
+        counted: the cooldown is a cost throttle, and failing the turn would
+        lose that window's memories. stability contract: signature and return
+        shape are part of public api.
 
         :param conversation_id: conversation UUID to rate-limit
         :ptype conversation_id: UUID
@@ -796,7 +792,6 @@ class MemoryExtractor:
             ``(False, cooldown)`` when a concurrent turn already had
         :rtype: tuple[bool, int]
         :raises KvError: when the bucket refuses a per-key TTL
-        :raises ExtractionCooldownUnavailableError: when the claim could not be written
         """
         claimed, cooldown, _revision = await self._claim(conversation_id)
         return claimed, cooldown
@@ -807,10 +802,9 @@ class MemoryExtractor:
         :param conversation_id: conversation UUID to rate-limit
         :ptype conversation_id: UUID
         :return: ``(claimed, cooldown, revision)``; the revision is ``None`` when no key was
-            written because the limit is off
+            written -- the limit is off, or NATS failed and the turn extracts unclaimed
         :rtype: tuple[bool, int, int | None]
         :raises KvError: when the bucket refuses a per-key TTL
-        :raises ExtractionCooldownUnavailableError: when the claim could not be written
         """
         cooldown = self._config.extraction_rate_limit_cooldown_seconds
         if self._nats_client is None or cooldown <= 0:
@@ -830,9 +824,8 @@ class MemoryExtractor:
             claimed = revision is not None
         except KvError as exc:
             if not _refuses_per_message_ttl(exc):
-                raise ExtractionCooldownUnavailableError(
-                    f"the extraction cooldown could not be claimed: {type(exc).__name__}: {exc}"
-                ) from exc
+                self._contain_unclaimed(exc, conversation_id)
+                claimed = True
             else:
                 log.error(
                     "memory extraction rate-limit bucket %s refuses per-key TTLs (allow_msg_ttl is off), so no "
@@ -844,10 +837,29 @@ class MemoryExtractor:
                 )
                 raise
         except Exception as exc:
-            raise ExtractionCooldownUnavailableError(
-                f"the extraction cooldown could not be claimed: {type(exc).__name__}: {exc}"
-            ) from exc
+            self._contain_unclaimed(exc, conversation_id)
+            claimed = True
         return (True, 0, revision) if claimed else (False, cooldown, None)
+
+    @staticmethod
+    def _contain_unclaimed(exc: Exception, conversation_id: UUID) -> None:
+        """record a cooldown claim that did not land, before the turn extracts without it.
+
+        a cost throttle, not a safety check: the turn extracts anyway, and every turn it let
+        through is counted under :meth:`_claim`'s site.
+
+        :param exc: the claim's failure
+        :ptype exc: Exception
+        :param conversation_id: conversation whose cooldown went unclaimed
+        :ptype conversation_id: UUID
+        """
+        contain(
+            exc,
+            log=log,
+            what=f"the extraction cooldown could not be claimed, extracting anyway: {type(exc).__name__}: {exc}",
+            extra={"conversation_id": str(conversation_id)},
+            level="error",
+        )
 
     async def check_worthiness(
         self,
