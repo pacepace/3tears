@@ -824,7 +824,13 @@ class MemoryExtractor:
             claimed = revision is not None
         except KvError as exc:
             if not _refuses_per_message_ttl(exc):
-                self._contain_unclaimed(exc, conversation_id)
+                contain(
+                    exc,
+                    log=log,
+                    what=f"the extraction cooldown could not be claimed, extracting anyway: {type(exc).__name__}: {exc}",
+                    extra={"conversation_id": str(conversation_id)},
+                    level="error",
+                )
                 claimed = True
             else:
                 log.error(
@@ -837,29 +843,15 @@ class MemoryExtractor:
                 )
                 raise
         except Exception as exc:
-            self._contain_unclaimed(exc, conversation_id)
+            contain(
+                exc,
+                log=log,
+                what=f"the extraction cooldown could not be claimed, extracting anyway: {type(exc).__name__}: {exc}",
+                extra={"conversation_id": str(conversation_id)},
+                level="error",
+            )
             claimed = True
         return (True, 0, revision) if claimed else (False, cooldown, None)
-
-    @staticmethod
-    def _contain_unclaimed(exc: Exception, conversation_id: UUID) -> None:
-        """record a cooldown claim that did not land, before the turn extracts without it.
-
-        a cost throttle, not a safety check: the turn extracts anyway, and every turn it let
-        through is counted under :meth:`_claim`'s site.
-
-        :param exc: the claim's failure
-        :ptype exc: Exception
-        :param conversation_id: conversation whose cooldown went unclaimed
-        :ptype conversation_id: UUID
-        """
-        contain(
-            exc,
-            log=log,
-            what=f"the extraction cooldown could not be claimed, extracting anyway: {type(exc).__name__}: {exc}",
-            extra={"conversation_id": str(conversation_id)},
-            level="error",
-        )
 
     async def check_worthiness(
         self,
