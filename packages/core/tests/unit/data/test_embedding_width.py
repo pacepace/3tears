@@ -6,6 +6,9 @@ agent-intention integration suites; this module pins what needs no database.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -277,6 +280,56 @@ class TestAMisfitVectorIsRefusedBeforeAnyStatement:
         with pytest.raises(ValueError, match=r"expected 6, got 4"):
             await notes.save_entity(notes.create(_row([0.1, 0.2, 0.3, 0.4])))
         assert pool.calls == []
+
+
+class _Conn:
+    """an asyncpg-shaped connection with a transaction, recording every statement run on it."""
+
+    def __init__(self) -> None:
+        """start with nothing run."""
+        self.executed: list[str] = []
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[None]:
+        yield
+
+    def transaction(self, **options: Any) -> Any:
+        """open a transaction (statements run immediately; nothing here rolls back)."""
+        return self._transaction()
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        """record the statement."""
+        self.executed.append(sql)
+        return f"INSERT 0 {sql.count('),(') + 1}"
+
+
+class TestABatchWithAMisfitVectorIsRefusedBeforeAnyStatement:
+    async def test_save_rows_refuses_a_batch_holding_one_vector_of_another_width(self) -> None:
+        from threetears.core.collections.caller_transaction import CallerTransaction
+
+        notes, conn = _collection(_RecordingPool()), _Conn()
+        with pytest.raises(ValueError, match=r"expected 4, got 3"):
+            async with CallerTransaction(conn):
+                await notes.save_rows([_row([0.1, 0.2, 0.3, 0.4]), _row([0.1, 0.2, 0.3])], conn=conn)
+        assert conn.executed == [], "the whole batch is refused, the fitting row included"
+
+    async def test_save_rows_writes_a_batch_of_the_declared_width(self) -> None:
+        from threetears.core.collections.caller_transaction import CallerTransaction
+
+        notes, conn = _collection(_RecordingPool()), _Conn()
+        async with CallerTransaction(conn):
+            written = await notes.save_rows([_row([0.1, 0.2, 0.3, 0.4]), _row(None)], conn=conn)
+        assert written == 2 and len(conn.executed) == 1
+
+
+class TestTextThatIsNotAVector:
+    @pytest.mark.parametrize("text", ["", "abc", "[1,2"])
+    async def test_it_is_left_for_the_database_to_judge_not_refused_with_an_unrelated_error(self, text: str) -> None:
+        """the width check measures what it can read; unreadable text is not its to refuse."""
+        pool = _RecordingPool()
+        notes = _collection(pool)
+        await notes.save_entity(notes.create(_row(text)))
+        assert any(sql.lstrip().upper().startswith("INSERT") for sql in pool.calls)
 
 
 class TestTheMismatchError:

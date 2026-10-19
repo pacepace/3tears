@@ -2278,6 +2278,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         return _coerce_row_fn(self.schema, row)
 
 
+def _text_vector_width(text: str) -> int | None:
+    """the width of pgvector's bracketed text, or ``None`` for text that is not one (the database judges it)."""
+    try:
+        decoded = _decode_vector(text)
+    except ValueError:  # json.JSONDecodeError is a ValueError: text that is not a vector
+        decoded = None
+    return None if decoded is None else len(decoded)
+
+
 def _refuse_misfit_vectors(schema: TableSchema, row: Mapping[str, Any]) -> None:
     """refuse a row carrying a vector that is not its column's declared width.
 
@@ -2299,8 +2308,7 @@ def _refuse_misfit_vectors(schema: TableSchema, row: Mapping[str, Any]) -> None:
         value = row.get(col.name)
         width: int | None = None
         if isinstance(value, str):
-            decoded = _decode_vector(value)
-            width = None if decoded is None else len(decoded)
+            width = _text_vector_width(value)
         elif value is not None and hasattr(value, "__len__"):
             width = len(value)
         if width is not None and width != col.vector_dim:

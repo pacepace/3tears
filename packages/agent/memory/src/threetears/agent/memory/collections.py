@@ -1133,12 +1133,20 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         customer_id: UUID,
         user_id: UUID,
         tags_any: tuple[str, ...],
+        caller_user_id: UUID | None = None,
+        caller_agent_id: UUID | None = None,
     ) -> int:
         """delete one owner's memories carrying at least one of ``tags_any``, from every tier.
 
         each goes through :meth:`delete`, so it leaves the row cache and L2 and its removal is
         announced like any delete; a raw ``DELETE`` would leave a deleted memory answering from a
         cache. the same scoping and empty-means-nothing rule as :meth:`find_ids_by_tags`.
+
+        given ``caller_user_id``, the rbac evaluator decides ``memory.write`` on the ``(agent_id,
+        customer_id)`` namespace before anything is found, as :meth:`save_memory` does; a refusal deletes
+        nothing. without one it is an agent-internal path (as :meth:`find_by_scope` without a caller), for
+        a host that authorizes upstream. one delete per memory, not atomic: a failure part way leaves the
+        ones before it deleted and raises.
 
         :param agent_id: partition column on memories
         :ptype agent_id: UUID
@@ -1148,9 +1156,23 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype user_id: UUID
         :param tags_any: a row qualifies when it carries any of these
         :ptype tags_any: tuple[str, ...]
+        :param caller_user_id: invoking user, evaluated for ``memory.write`` when given
+        :ptype caller_user_id: UUID | None
+        :param caller_agent_id: invoking agent, passed to the evaluator
+        :ptype caller_agent_id: UUID | None
         :return: how many memories were deleted
         :rtype: int
+        :raises MemoryAccessDenied: when the evaluator refuses the caller
         """
+        if caller_user_id is not None:
+            await authorize_memory_access(
+                action=ACTION_MEMORY_WRITE,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=caller_user_id,
+                caller_agent_id=caller_agent_id,
+                deps=self._authorizer,
+            )
         ids = await self.find_ids_by_tags(
             agent_id=agent_id, customer_id=customer_id, user_id=user_id, tags_any=tags_any
         )

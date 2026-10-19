@@ -29,8 +29,11 @@ stopped: on YugabyteDB the column change is a table rewrite that may not carry o
 The DDL follows the YugabyteDB-safe migration rules: one statement per ``execute`` (YugabyteDB
 auto-commits DDL), ``IF EXISTS`` / ``IF NOT EXISTS`` on every drop and create, and catalogue lookups
 limited to the current schema. The column type is changed with ``USING NULL``, so no ``UPDATE``
-runs at all. A resize stopped part way is finished by running it again: a column already at the
-width is not altered again, and the indexes its collection declares are created when missing.
+runs at all. A resize stopped part way is finished by running it again for the indexes the
+collection declares: a column already at the width is not altered again, and a declared index that is
+missing is created. An index the collection does not declare (one an operator added) that was dropped
+before the stop is not recreated by a second run; its full definition is in the log line written before
+anything is dropped, to recreate it by hand.
 """
 
 from __future__ import annotations
@@ -470,6 +473,11 @@ async def _resize_column(store: EmbeddingWidthStore, schema: str, col: Embedding
                     "new_width": embedding_dim,
                     "embeddings_cleared": held,
                     "indexes_rebuilt": [str(row["index_name"]) for row in indexes],
+                    # every definition, before anything is dropped: an index the collection does not
+                    # declare cannot be rebuilt by a second run if this one stops after dropping it
+                    "index_definitions": [
+                        _recreate_index_sql(str(row["index_definition"]), row["index_options"]) for row in indexes
+                    ],
                 }
             },
         )

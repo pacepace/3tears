@@ -432,6 +432,31 @@ class ConnectionRegistry:
             return list(self._connections.get(user_id, []))
 
 
+async def _stop_both(tasks: tuple[asyncio.Task[None], ...]) -> None:
+    """Wait until every task has stopped; a cancellation that arrives meanwhile is raised after, not before.
+
+    ``gather`` was wrong here twice over: cancelled while it waits, it can raise a child's own message-less
+    ``CancelledError`` in place of the canceller's, and anyio (Starlette serves sockets inside it) absorbs only
+    a cancellation it recognises as its own, so the swapped one escaped the app. A bare ``wait`` is wrong the
+    other way: a cancel lands at once, and the connection's teardown then runs while a child is still
+    stopping. So: wait in a loop until all have stopped, keep the cancellation that arrived (anyio re-delivers
+    it while the task is waiting), and raise that one, the canceller's, once they have.
+
+    :param tasks: the tasks just cancelled
+    :ptype tasks: tuple[asyncio.Task[None], ...]
+    :raises asyncio.CancelledError: the cancellation that arrived while waiting, once every task has stopped
+    """
+    pending: set[asyncio.Task[None]] = set(tasks)
+    arrived: asyncio.CancelledError | None = None
+    while pending:
+        try:
+            _done, pending = await asyncio.wait(pending)
+        except asyncio.CancelledError as exc:
+            arrived = exc  # re-raised once the tasks have stopped
+    if arrived is not None:
+        raise arrived
+
+
 class WebSocketHandler:
     """manages websocket connection lifecycle with delegated authentication.
 
@@ -679,7 +704,8 @@ class WebSocketHandler:
         arrives; the heartbeat finishes when it has closed a connection whose peer
         stopped answering, or whose credential expired while idle. an exception
         from either is raised once both have stopped; cancelling this coroutine
-        cancels both.
+        cancels both and still waits for both to stop, then raises the
+        canceller's own cancellation.
 
         :param websocket: the authenticated socket
         :ptype websocket: Any
@@ -709,17 +735,11 @@ class WebSocketHandler:
         finally:
             for task in tasks:
                 task.cancel()
-            # ``wait``, not ``gather``: cancelled while it waits here, ``gather`` can raise a child's own
-            # message-less ``CancelledError`` in place of the canceller's. anyio (Starlette serves sockets
-            # inside it) absorbs only a cancellation it recognises as its own, so the swapped one escaped
-            # the app: a test client leaving a socket block raised ``concurrent.futures.CancelledError``
-            # in about one exit in three. ``wait`` never re-raises a child's; each task's outcome is read
-            # just below.
-            await asyncio.wait(tasks)
-        for task in tasks:
-            failure = None if task.cancelled() else task.exception()
-            if failure is not None:
-                raise failure
+            await _stop_both(tasks)
+        failures = [task.exception() for task in tasks if not task.cancelled()]  # every outcome is read
+        first = next((failure for failure in failures if failure is not None), None)
+        if first is not None:
+            raise first
 
     async def _heartbeat(self, websocket: Any, connection_id: str, connection: _RoomConnection) -> None:
         """ping the peer every ``heartbeat_interval`` seconds; return once the connection is ended.

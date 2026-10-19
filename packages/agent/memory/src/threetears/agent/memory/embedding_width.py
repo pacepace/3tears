@@ -63,7 +63,8 @@ async def resize_embedding_width(store: EmbeddingWidthStore, embedding_dim: int)
 
     every memory, media content and chunk row keeps its content and loses its embedding, so each
     has to be embedded again with a model of the new width. a column already at the width is left
-    as it is; running it again after a stop finishes the job.
+    as it is; running it again after a stop recreates any declared index that is missing (an index the
+    collection does not declare is logged, with its definition, before it is dropped).
     run it with writes to these tables stopped: on YugabyteDB the column change is a table rewrite
     that may not carry over writes made while it runs ("Concurrent DMLs may not be reflected in the
     new table", yugabyte-db issue 19860). a

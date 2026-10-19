@@ -146,3 +146,34 @@ class TestMemoriesByTag:
             assert await memories.get((owner["agent_id"], kept)) is not None
         finally:
             await pool.close()
+
+    async def test_a_callers_delete_is_authorized_as_a_memory_write_first(
+        self, applied_schema: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Given a caller, the bulk delete evaluates ``memory.write`` before anything is found; a refusal
+        deletes nothing. Without a caller it is the agent-internal path, as ``find_by_scope``'s is."""
+        import threetears.agent.memory.collections as collections_module
+        from threetears.agent.memory.authorize import MemoryAccessDenied
+
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        try:
+            memories = _build_collection(pool)
+            owner = {"agent_id": uuid.uuid4(), "customer_id": uuid.uuid4(), "user_id": uuid.uuid4()}
+            kept = await _insert(pool, **owner, content="a", tags=["scene:1"])
+            asked: list[dict[str, object]] = []
+
+            async def deny(**kwargs: object) -> None:
+                asked.append(kwargs)
+                raise MemoryAccessDenied("no")
+
+            monkeypatch.setattr(collections_module, "authorize_memory_access", deny)
+            caller = uuid.uuid4()
+
+            with pytest.raises(MemoryAccessDenied):
+                await memories.delete_by_tags(**owner, tags_any=("scene:1",), caller_user_id=caller)
+
+            assert asked[0]["action"] == "memory.write" and asked[0]["caller_user_id"] == caller
+            assert await memories.get((owner["agent_id"], kept)) is not None, "a refused delete deletes nothing"
+        finally:
+            await pool.close()
