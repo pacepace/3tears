@@ -184,7 +184,9 @@ async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_
     assert (polled.state, polled.done) == ("running", False), "the other process reads the holder's live job"
 
     asked = await job_cancel(elsewhere, job.job_id, TOYHOST_SCOPE, reason="stop it from over here")
-    assert asked.state == "running", "request-then-converge: the holder ends it at its next renewal"
+    # request-then-converge: the holder ends it at its next renewal, which with a 0.3 s lease may come before
+    # job_cancel's own read-back on a loaded machine; what the other process may never do is end it itself
+    assert asked.state in ("running", "cancelled"), f"the other process's cancel reads {asked.state!r}"
     ended = await settled(elsewhere, job.job_id)
 
     assert (ended.state, ended.status) == ("cancelled", "cancelled")

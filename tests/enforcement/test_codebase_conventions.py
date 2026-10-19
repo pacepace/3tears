@@ -53,6 +53,7 @@ _CONFIG = CodebaseConventionsConfig(
             "dependency_alignment",
             "dict_state_detection",
             "fake_parity",
+            "grep_q_pipefail",
             "invalidation_listener",
             "jwt_alg_pinning",
             "logger_coverage",
@@ -60,6 +61,7 @@ _CONFIG = CodebaseConventionsConfig(
             "nats_wrapper_usage",
             "no_silent_swallow",
             "no_stdlib_logging",
+            "print_log_lines",
             "single_return",
             "underscore_access",
         )

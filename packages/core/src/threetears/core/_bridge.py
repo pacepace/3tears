@@ -16,6 +16,7 @@ Pattern borrowed from fsspec (pandas/dask/xarray ecosystem).
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from dataclasses import dataclass
 from typing import Any, Coroutine, TypeVar
@@ -28,6 +29,7 @@ __all__ = [
     "drain",
     "fire_and_forget",
     "shutdown",
+    "submit",
     "sync_await",
 ]
 
@@ -103,11 +105,24 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
     return _background.get(_ONLY, _start_loop).loop
 
 
+def submit(coro: Coroutine[Any, Any, T]) -> concurrent.futures.Future[T]:
+    """schedule ``coro`` on the background loop, starting the loop on first use.
+
+    the one way onto the loop for code that waits on the result itself: :func:`sync_await`
+    blocks without bound, :func:`threetears.core.sync.run` bounds the wait and cancels on
+    timeout.
+
+    :param coro: the coroutine to run there
+    :ptype coro: Coroutine[Any, Any, T]
+    :return: the future the coroutine's result or exception lands in
+    :rtype: concurrent.futures.Future[T]
+    """
+    return asyncio.run_coroutine_threadsafe(coro, _ensure_loop())
+
+
 def sync_await(coro: Coroutine[Any, Any, T]) -> T:
     """Run an async coroutine from sync code, blocking until complete."""
-    loop = _ensure_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result()
+    return submit(coro).result()
 
 
 def fire_and_forget(coro: Coroutine[Any, Any, Any]) -> None:
