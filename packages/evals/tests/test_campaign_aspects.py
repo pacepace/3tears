@@ -332,6 +332,19 @@ def test_adopted_aspects_keep_their_own_times_so_each_stays_confirmatory() -> No
     assert storage.load_campaign(tone.id, _SCOPE) == tone, "a source is read, never written"
 
 
+def test_a_source_declared_at_a_time_that_cannot_be_ordered_refuses_the_adoption_by_name() -> None:
+    """Leaving it out would date the joined question by the other sources alone, possibly before it was asked."""
+    storage, _ = _store()
+    tone, tools = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools")
+    storage.save_campaign(tools.model_copy(update={"declared_at": "2026-10-02T00:00:00"}))
+
+    with pytest.raises(ValidationFailedError, match="no offset") as refused:
+        _create(storage, aspects_from=(tone.id, tools.id))
+
+    assert tools.id in str(refused.value)
+    assert "declared_at" in refused.value.remedy
+
+
 def test_what_is_added_at_adoption_is_dated_now_by_itself_and_the_adopted_aspects_stay_confirmatory() -> None:
     storage, _ = _store()
     tone, tools = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools")

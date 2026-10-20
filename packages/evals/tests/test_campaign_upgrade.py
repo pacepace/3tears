@@ -265,6 +265,20 @@ class TestAMultiQuestionCampaign:
         assert (upgraded["declared_at"], _aspect(upgraded).asked_at) == (None, None)
         assert read.declared_at is None and read.aspects[0].asked_at is None
 
+    @pytest.mark.parametrize("asked_at", ["last tuesday", "2026-10-02T00:00:00"])
+    def test_an_asked_at_that_cannot_be_ordered_is_logged_with_its_campaign(
+        self, asked_at: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Undated keeps the campaign readable; the warning keeps the dropped pre-registration from going unseen."""
+        stored = _stored(V15Question(text="Is it kinder?"), V15Question(text="Is it quicker?"))
+        stored["declared_design"]["questions"][0]["asked_at"] = asked_at
+
+        with caplog.at_level("WARNING", logger="threetears.evals.schema.campaign_upgrade"):
+            upgrade_campaign_v15(stored)
+
+        (record,) = caplog.records
+        assert stored["id"] in record.getMessage() and repr(asked_at) in record.getMessage()
+
     def test_a_question_without_an_id_or_words_is_read_as_having_none(self) -> None:
         stored = _stored(V15Question(text="Is it kinder?"))
         del stored["declared_design"]["questions"][0]["id"], stored["declared_design"]["questions"][0]["text"]

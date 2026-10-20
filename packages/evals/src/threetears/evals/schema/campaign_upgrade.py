@@ -21,8 +21,12 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
+from threetears.evals.schema.logs import get_logger
+
 
 __all__ = ["QUESTION_SEPARATOR", "UPGRADED_CONTROL_LABEL", "aware_instant", "upgrade_campaign_v15"]
+
+log = get_logger(__name__)
 
 #: The label a v15 campaign's declared control carries as an arm. A v15 design names its control by key alone.
 UPGRADED_CONTROL_LABEL = "control"
@@ -39,7 +43,8 @@ _MOVED_TO_THE_CAMPAIGN = frozenset(
 def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     """A stored v15 ``eval_campaign`` as the campaign of aspects it reads as: one aspect, its arms, its floors.
 
-    Pure: no store, host, clock or randomness, and ``document`` is not modified. The fields every campaign is
+    Pure but for one warning log (a question stamp that cannot be ordered): no store, host, clock or randomness, and
+    ``document`` is not modified. The fields every campaign is
     addressed by (``id``, ``doc_type``, ``schema_version``, ``scope_id``, ``subject_id``, ``behavior``,
     ``archived``, ``created_at``) and every field below not named here pass through untouched; ``schema_version`` is
     the chain's to set, never a step's.
@@ -107,7 +112,7 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     aspect.update(margin=_margin(floors), design=aspect_design, declared_at=design.get("declared_at"))
     upgraded["question"] = QUESTION_SEPARATOR.join(str(question.get("text") or "") for question in live)
     upgraded["floors"] = [{"aspect": label, "clause": clause} for clause in floors]
-    upgraded["declared_at"] = _last_asked(live) if live else design.get("declared_at")
+    upgraded["declared_at"] = _last_asked(live, document.get("id")) if live else design.get("declared_at")
     aspect["asked_at"] = upgraded["declared_at"]
     upgraded["declared_by"] = design.get("declared_by", "")
     if design.get("control") is not None:
@@ -169,8 +174,12 @@ def _floor_clauses(clauses: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
     return list(kept.values())
 
 
-def _last_asked(live: Sequence[Mapping[str, Any]]) -> str | None:
-    """The ``asked_at`` of the live question asked last, as stored; None when one cannot be ordered."""
+def _last_asked(live: Sequence[Mapping[str, Any]], campaign_id: object) -> str | None:
+    """The ``asked_at`` of the live question asked last, as stored; None when one cannot be ordered.
+
+    A stamp that cannot be ordered leaves the campaign undeclared rather than unreadable, and is logged at warning
+    with the campaign and the stamp, so an operator sees which pre-registration was dropped and why.
+    """
     asked: list[tuple[Any, str]] = []
     for question in live:
         stamp = question.get("asked_at")
@@ -178,7 +187,8 @@ def _last_asked(live: Sequence[Mapping[str, Any]]) -> str | None:
             return None
         try:
             asked.append((aware_instant(stamp, "a question"), stamp))
-        except ValueError:
+        except ValueError as unordered:
+            log.warning("campaign %s reads as undeclared on upgrade from v15: %s", campaign_id, unordered)
             return None
     return max(asked)[1]
 

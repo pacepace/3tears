@@ -687,14 +687,21 @@ def _refuse_floors_on_undeclared_aspects(floors: Sequence[Floor], aspects: Seque
         )
 
 
-def _instant_or_none(stamp: str | None) -> datetime | None:
-    """``stamp`` as an aware instant, or None when it is absent or cannot be ordered."""
-    if stamp is None:
+def _declared_instant(source: EvalCampaign) -> datetime | None:
+    """When ``source`` was declared, as an aware instant; None when it declares nothing.
+
+    :raises ValidationFailedError: ``source`` carries a declaration time that cannot be ordered. Dropping it would
+        date the created campaign's question from its other sources, earlier than it was asked.
+    """
+    if source.declared_at is None:
         return None
     try:
-        return aware_instant(stamp, "a declaration")
-    except ValueError:
-        return None
+        return aware_instant(source.declared_at, f"campaign {source.id}'s declaration")
+    except ValueError as unordered:
+        raise ValidationFailedError(
+            str(unordered),
+            remedy="correct that campaign's declared_at to an ISO-8601 time with an offset, or leave it out of aspects_from",
+        ) from unordered
 
 
 def _when_declared(sources: Sequence[EvalCampaign], *, added: bool, now: str, by: str) -> tuple[str | None, str]:
@@ -706,7 +713,7 @@ def _when_declared(sources: Sequence[EvalCampaign], *, added: bool, now: str, by
     """
     if added or not sources:
         return now, by
-    dated = [(instant, source) for source in sources if (instant := _instant_or_none(source.declared_at)) is not None]
+    dated = [(instant, source) for source in sources if (instant := _declared_instant(source)) is not None]
     if not dated:
         return None, ""
     latest = max(dated, key=lambda pair: pair[0])[1]

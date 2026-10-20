@@ -232,7 +232,7 @@ def _text(block: TextBlock) -> list[str]:
     if block.role in SUMMARY_LEADS:
         return [f"**{SUMMARY_LEADS[block.role]}** {body}"]
     if block.role == "reason":
-        return [f"- {_inert(body)}"]
+        return [f"- {_inert(body)}"]  # one line: body is _one_line(...) above
     if block.role == "next_step":
         return [f"**Next:** {body}"]
     if block.role == "caveat":
