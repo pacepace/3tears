@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, tzinfo
-from typing import Any, Final, cast
+from typing import Any, Final
 from uuid import UUID
 
 from uuid_utils import uuid7
@@ -94,10 +94,6 @@ _CONTENT_PREVIEW_LEN = 120
 # excluded -- the verb walks a want forward, never back to the start.
 _MARK_SURFACED_STATUSES = tuple(s for s in INTENTION_STATUS_VALUES if s != IntentionStatus.OPEN.value)
 
-#: :data:`STORAGE_FAILURES` as ``contain()`` takes it: every member is an ``Exception``, and the
-#: shared tuple is only typed wider
-_STORAGE_FAILURES: Final = cast("tuple[type[Exception], ...]", STORAGE_FAILURES)
-
 #: what a want's save means by "the store failed": storage unreachable, plus the three refusals a
 #: fenced save of an existing row can meet on the way -- a concurrent write advancing
 #: ``date_updated`` between the read and the save (``ConcurrentModificationError``), a committed
@@ -107,7 +103,7 @@ _STORAGE_FAILURES: Final = cast("tuple[type[Exception], ...]", STORAGE_FAILURES)
 #: string; anything else is a bug and propagates. ``ConcurrentModificationError`` is not in
 #: :data:`STORAGE_FAILURES` because a coordination primitive reads it as its own signal.
 _SAVE_FAILURES: Final[tuple[type[Exception], ...]] = (
-    *_STORAGE_FAILURES,
+    *STORAGE_FAILURES,
     ConcurrentModificationError,
     GenerationUnavailableError,
     RowcountUnreadableError,
@@ -297,7 +293,7 @@ async def load_intention_log_tool(
                 top_k=3,
                 threshold=0.0,
             )
-        except _STORAGE_FAILURES as exc:
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="intention_log: dedup lookup failed, storing the want unchecked")
             # the reply names the exception class only: a store's message can carry SQL or a URL
             unchecked = f" (not checked against your open wants, which could not be read: {type(exc).__name__})"
@@ -498,7 +494,7 @@ async def load_intention_list_tool(
             else:
                 every = await intentions_collection.find_by_user(user_id, agent_id=agent_id)
                 wants = every if wanted == "all" else [w for w in every if w.status == wanted]
-        except _STORAGE_FAILURES as exc:
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="intention_list query failed")
             return _tool_error("intention_list", "query", type(exc).__name__)
 

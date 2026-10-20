@@ -150,22 +150,22 @@ _ALIAS_INDEX = "ix_memories_user_alias"
 #: exception as its own signal, so widening the shared tuple would break it. A memory tool losing
 #: the race on one memory is an ordinary reply: nothing was changed, and the agent can read the
 #: memory again.
-_WRITE_FAILURES: Final[tuple[type[BaseException], ...]] = (
+_WRITE_FAILURES: Final[tuple[type[Exception], ...]] = (
     *STORAGE_FAILURES,
     ConcurrentModificationError,
     GenerationUnavailableError,
 )
 
 #: A side search's failures: storage, or a stored file's metadata that is not JSON.
-_SIDE_SEARCH_FAILURES: Final[tuple[type[BaseException], ...]] = (*STORAGE_FAILURES, json.JSONDecodeError)
+_SIDE_SEARCH_FAILURES: Final[tuple[type[Exception], ...]] = (*STORAGE_FAILURES, json.JSONDecodeError)
 
 #: A write that links the new memory to the ones it corrects: also a link that would close a
 #: cycle in the provenance graph.
-_LINKED_WRITE_FAILURES: Final[tuple[type[BaseException], ...]] = (*_WRITE_FAILURES, ConsolidationCycleError)
+_LINKED_WRITE_FAILURES: Final[tuple[type[Exception], ...]] = (*_WRITE_FAILURES, ConsolidationCycleError)
 
 #: A write that may replace a memory: also ``ValueError``, which ``supersede`` raises when the
 #: memory it was asked to replace turned permanent after it was read.
-_REPLACE_FAILURES: Final[tuple[type[BaseException], ...]] = (*_LINKED_WRITE_FAILURES, ValueError)
+_REPLACE_FAILURES: Final[tuple[type[Exception], ...]] = (*_LINKED_WRITE_FAILURES, ValueError)
 
 # Type alias for the optional ledger callback
 LedgerCallback = Callable[[str, str, str], Awaitable[None]]

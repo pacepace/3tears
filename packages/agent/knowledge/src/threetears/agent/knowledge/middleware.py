@@ -73,7 +73,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, Final, NotRequired, TypeVar, cast
+from typing import Annotated, Any, Final, NotRequired, TypeVar
 from uuid import UUID
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -108,10 +108,8 @@ log = get_logger(__name__)
 #: (``collections._parse_vector_text``), or an id that is not a UUID (``collections._as_uuid``),
 #: all ``ValueError``. Anything else is a bug and propagates to the invariants-only fallback in
 #: :func:`_build_governed_injection`, which names it.
-#: The cast: every member of :data:`STORAGE_FAILURES` is an ``Exception``, as ``contain()`` takes,
-#: and the shared tuple is only typed wider.
 _VECTOR_FETCH_FAILURES: Final[tuple[type[Exception], ...]] = (
-    *cast("tuple[type[Exception], ...]", STORAGE_FAILURES),
+    *STORAGE_FAILURES,
     ValueError,
 )
 

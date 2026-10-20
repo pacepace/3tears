@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Callable
-from typing import Any, Final, cast
+from typing import Any, Final
 from uuid import UUID
 
 from threetears.knowledge import (
@@ -68,10 +68,8 @@ log = get_logger(__name__)
 #: shadow chain the merge refuses as a cycle (``OriginCycleError``), an unknown ``scope_context``.
 #: Anything else (``AttributeError``, ``TypeError``, ...) is a bug in this code and propagates
 #: rather than reading as an outage.
-#: The cast: every member of :data:`STORAGE_FAILURES` is an ``Exception``, as ``contain()`` takes,
-#: and the shared tuple is only typed wider.
 _READ_FAILURES: Final[tuple[type[Exception], ...]] = (
-    *cast("tuple[type[Exception], ...]", STORAGE_FAILURES),
+    *STORAGE_FAILURES,
     ValueError,
 )
 
