@@ -15,7 +15,8 @@ from typing import Any
 
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-from slack_sdk.errors import SlackApiError
+import aiohttp
+from slack_sdk.errors import SlackApiError, SlackClientError
 
 from threetears.channels.formatting import (
     markdown_to_slack_blocks,
@@ -51,6 +52,18 @@ _USER_PROFILE_RETRY_AFTER_CAP_SECONDS = 3600.0
 #: Slack error codes that no retry will cure: the user does not exist, the app lacks the scope, the token
 #: is bad, the account is deactivated. asking again inside the TTL only spends the Tier 4 budget.
 _PERMANENT_USERS_INFO_ERRORS = frozenset({"user_not_found", "missing_scope", "not_authed", "account_inactive"})
+#: what a users.info lookup can fail with that is Slack's or the network's doing, not ours: every
+#: ``slack_sdk`` client error (``SlackApiError`` for an error reply or a body that is not JSON,
+#: ``SlackRequestError`` and the rest), ``aiohttp.ClientError`` for the transport (connect, TLS,
+#: a dropped connection), ``TimeoutError`` for a request that ran out of time, and ``ValueError``
+#: for a reply that did not decode -- a body that is not UTF-8, binary data where an object
+#: belongs, or a ``user`` that is not an object. anything else is a bug and propagates.
+_USERS_INFO_FAILURES: tuple[type[Exception], ...] = (
+    SlackClientError,
+    aiohttp.ClientError,
+    TimeoutError,
+    ValueError,
+)
 
 
 @dataclass(slots=True)
@@ -314,7 +327,12 @@ class SlackAdapter:
                 user=user_id,
                 include_locale=True,
             )
-            user_obj: dict[str, Any] = response.get("user", {}) if response else {}
+            user_obj: object = response.get("user", {}) if response else {}
+            if not isinstance(user_obj, dict):
+                # ``"user": null`` (or any non-object) is a reply that did not answer the question,
+                # so it takes the failure path below -- backoff, stale-on-error -- rather than
+                # raising AttributeError out of the profile mapping as if it were our bug
+                raise ValueError(f"slack users.info returned a non-object user: {type(user_obj).__name__}")
             profile = _profile_from_user_object(user_obj)
             if profile.email is None:
                 # named explicitly because the usual cause is a MISSING SCOPE
@@ -330,7 +348,7 @@ class SlackAdapter:
                     extra={"extra_data": {"user_id": user_id}},
                 )
             new_entry = _ProfileCacheEntry(profile, now + _USER_PROFILE_TTL_SECONDS, 0, good=profile)
-        except Exception as exc:
+        except _USERS_INFO_FAILURES as exc:
             contain(
                 exc,
                 log=log,

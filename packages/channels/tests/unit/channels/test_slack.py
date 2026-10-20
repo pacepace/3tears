@@ -7,6 +7,8 @@ import inspect
 import time
 from datetime import UTC
 from typing import Any
+
+import aiohttp
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1525,7 +1527,7 @@ class TestSlackSenderIdentity:
         router = _MockRouter()
         mock_app = _slack_app_mock()
         mock_app.client = AsyncMock()
-        mock_app.client.users_info = AsyncMock(side_effect=RuntimeError("slack is down"))
+        mock_app.client.users_info = AsyncMock(side_effect=aiohttp.ClientConnectionError("slack is down"))
         mock_app_cls.return_value = mock_app
 
         adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
@@ -1545,7 +1547,7 @@ class TestSlackSenderIdentity:
         self, mock_app_cls: MagicMock, clock: list[float]
     ) -> None:
         """failure injection: users.info keeps failing. each retry waits longer, and a recovery is picked up."""
-        probe = _Probe(mock_app_cls, [RuntimeError("down")] * 3 + [_ok_profile("Ada")])
+        probe = _Probe(mock_app_cls, [aiohttp.ClientConnectionError("down")] * 3 + [_ok_profile("Ada")])
         assert _unknown(await probe.send())
         clock[0] = 14.0
         await probe.send()
@@ -1570,12 +1572,49 @@ class TestSlackSenderIdentity:
     async def test_a_failed_refresh_serves_the_last_good_profile(
         self, mock_app_cls: MagicMock, clock: list[float]
     ) -> None:
-        probe = _Probe(mock_app_cls, [_ok_profile("Ada"), RuntimeError("down")])
+        probe = _Probe(mock_app_cls, [_ok_profile("Ada"), TimeoutError("down")])
         assert (await probe.send()).sender_name == "Ada"
         clock[0] = 301.0  # the success TTL has lapsed; the refresh fails
         stale = await probe.send()
         assert stale.sender_name == "Ada" and not _unknown(stale)
         assert probe.calls == 2
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            aiohttp.ClientConnectionError("connection reset"),
+            TimeoutError("users.info timed out"),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        ],
+        ids=["transport", "timeout", "undecodable-body"],
+    )
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_a_slack_or_network_failure_reads_as_an_unknown_sender(
+        self, mock_app_cls: MagicMock, clock: list[float], failure: BaseException
+    ) -> None:
+        probe = _Probe(mock_app_cls, [failure])
+        assert _unknown(await probe.send())
+
+    @pytest.mark.parametrize("user", [None, "U123", ["a"]], ids=["null", "string", "list"])
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_a_reply_whose_user_is_not_an_object_reads_as_an_unknown_sender(
+        self, mock_app_cls: MagicMock, clock: list[float], user: Any
+    ) -> None:
+        # a reply that did not answer the question takes the failure path -- backoff included --
+        # rather than raising AttributeError out of the profile mapping
+        probe = _Probe(mock_app_cls, [{"user": user}, _ok_profile("Ada")])
+        assert _unknown(await probe.send())
+        clock[0] = 14.0
+        await probe.send()
+        assert probe.calls == 1, "a bad reply backs off like any other failed lookup"
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_a_bug_in_the_lookup_propagates_rather_than_reading_as_an_outage(
+        self, mock_app_cls: MagicMock, clock: list[float]
+    ) -> None:
+        probe = _Probe(mock_app_cls, [AttributeError("a bug, not Slack")])
+        with pytest.raises(AttributeError, match="a bug, not Slack"):
+            await probe.adapter.handle_message_event(event=_message_event(), say=AsyncMock())
 
     @patch("threetears.channels.slack.AsyncApp")
     async def test_a_rate_limit_waits_for_retry_after(self, mock_app_cls: MagicMock, clock: list[float]) -> None:

@@ -61,6 +61,8 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
+from threetears.core.coordination.token_bucket import TokenBucketConflict
+from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger
 
 from ._private_hosts import refuse_private_hosts
@@ -77,6 +79,13 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: what a pacer's ``TokenBucket.claim`` documents raising when it cannot answer: a KV transport
+#: failure, an exhausted compare-and-swap budget, and ``ValueError`` -- a stored bucket value that
+#: will not decode, or a claim larger than the bucket's capacity (a pacer built below one token).
+#: Each degrades to the caller's unpaced fallback; anything else is a bug and propagates. Shared
+#: with :mod:`threetears.scrape.circuit`'s probe pacer, which is the same bucket for another job.
+_PACER_FAILURES: tuple[type[Exception], ...] = (KvError, TokenBucketConflict, ValueError)
 
 #: What we call ourselves when matching rules. A real token rather than a browser string,
 #: because a site that wants to write a rule for us must have something to write it about, and
@@ -544,7 +553,7 @@ class RobotsGate:
 
         try:
             claim = await self._delay_pacer.claim(origin)
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
+        except _PACER_FAILURES as exc:  # a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
             contain(
                 exc,
                 log=log,
@@ -644,7 +653,7 @@ class RobotsGate:
         parser = RobotFileParser()
         try:
             parser.parse(body.splitlines())
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a file that will not parse may hold a Disallow we cannot see, so it is answered below as a complete disallow; raising instead would stop the caller's tool, which returns a result rather than raising. Logged with its traceback below
+        except ValueError as exc:  # a file that will not parse may hold a Disallow we cannot see, so it is answered below as a complete disallow; raising instead would stop the caller's tool, which returns a result rather than raising. Logged with its traceback below
             contain(exc, log=log, what=f"scrape robots: {url} did not parse; treating it as disallow-all")
             return _Unreadable(f"{url} did not parse ({type(exc).__name__})")
         return parser

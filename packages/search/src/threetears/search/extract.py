@@ -1074,6 +1074,12 @@ class _FramesAndPointers(HTMLParser):
             self.citation_pdf = self.citation_pdf or named["content"].strip()
 
 
+#: what :func:`_pointer_of` raises on markup or an address it cannot read: the stdlib HTML parser's
+#: ``AssertionError`` on a declaration it cannot make sense of, and ``urljoin``'s ``ValueError``.
+#: Anything else is a bug in the frame scan and propagates.
+_POINTER_UNREADABLE: Final[tuple[type[Exception], ...]] = (AssertionError, ValueError)
+
+
 def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     """Where a thin page says its article is, how many frames it holds, and whether it said so outright.
 
@@ -1088,8 +1094,10 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     :return: the absolute URL (None when the page points nowhere), the frame count, and
         whether the URL came from ``citation_pdf_url``
     :rtype: tuple[str | None, int, bool]
-    :raises Exception: whatever the parser raised on the markup; the caller says the frames
-        could not be looked for, since "points nowhere" is a different answer
+    :raises AssertionError: from the stdlib HTML parser, which reports a declaration it cannot
+        make sense of that way; the caller says the frames could not be looked for, since
+        "points nowhere" is a different answer
+    :raises ValueError: from ``urljoin``, on an address that will not split (``http://[::1``)
     """
     parser = _FramesAndPointers()
     parser.feed(markup)
@@ -1189,7 +1197,7 @@ async def _follow_a_thin_page(
     page = response.final_url or page_url
     try:
         pointed, frames, outright = _pointer_of(markup, page)
-    except Exception as exc:  # noqa: BLE001 -- the page's own read stands, and says its frames were not looked for
+    except _POINTER_UNREADABLE as exc:  # the page's own read stands, and says its frames were not looked for
         contain(exc, log=_logger, what="a thin page's frames and pointers could not be parsed")
         # the exception's type, not its message: a message can quote the page
         unparsed = f"its frames could not be looked for (the HTML parser raised {type(exc).__name__})"

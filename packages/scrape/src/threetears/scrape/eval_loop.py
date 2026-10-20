@@ -51,6 +51,8 @@ from .collections import (
     ValidationStatus,
 )
 from .health import (
+    _HEALTH_STORE_READ_FAILURES,
+    _HEALTH_STORE_WRITE_FAILURES,
     ScrapeTargetHealthCollection,
     clear_classification,
     content_fingerprint,
@@ -363,7 +365,7 @@ async def _stamp_fingerprint_if_validated(
         return
     try:
         await record_validated_fetch(health_collection, target_id=target_id, html=html)
-    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- health is a diagnostic aid and the extraction is already durable; logged with its traceback below, never silenced
+    except _HEALTH_STORE_WRITE_FAILURES as exc:  # health is a diagnostic aid and the extraction is already durable; logged with its traceback below, never silenced
         # The extraction is already persisted and correct by the time this runs. Health is
         # a diagnostic aid, so letting its write failure propagate would turn a successful
         # scrape into a failed one for the caller and lose real extracted data over a
@@ -709,7 +711,7 @@ async def _resolve_failure_verdict(
     fingerprint = content_fingerprint(html)
     try:
         health = await health_collection.get(target_id)
-    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-health behaviour, not fail every poll; logged with its traceback below
+    except _HEALTH_STORE_READ_FAILURES as exc:  # an unreadable health store must degrade this target to its pre-health behaviour, not fail every poll; logged with its traceback below
         # Health is a diagnostic aid. A store that cannot be read must degrade this target to
         # the behaviour it had before health existed, not turn every poll into a hard
         # failure. Logged with its traceback, never silenced.
@@ -787,7 +789,7 @@ async def _resolve_failure_verdict(
             kind=verdict.kind,
             evidence=verdict.evidence,
         )
-    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the verdict is already in hand and routing on it beats discarding it; only the cache is lost, and it is logged with its traceback below
+    except _HEALTH_STORE_WRITE_FAILURES as exc:  # the verdict is already in hand and routing on it beats discarding it; only the cache is lost, and it is logged with its traceback below
         # The verdict is already in hand and routing on it is strictly better than not. All
         # that is lost is the cache, so the next poll asks again. Same reasoning as the
         # fingerprint stamp: bookkeeping must not cost a real result.
