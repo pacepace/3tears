@@ -449,6 +449,18 @@ class TestReplacingAConsumer:
         assert len(js.creates) == 1
         assert f"$JS.API.CONSUMER.CREATE.{_STREAM}.*.{_SUBJECT}" in caplog.text
 
+    async def test_a_bug_in_the_create_ends_the_watch_rather_than_retrying_forever(self) -> None:
+        bucket, _raw, js, log = _bucket([[], [_delivered(b"3", sequence=7)]])
+
+        async def _buggy(stream: str, config: ConsumerConfig) -> object:
+            del stream, config
+            raise TypeError("a bug in the call")
+
+        js.add_consumer = _buggy  # type: ignore[method-assign]
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST, retry=_FAST), 1), timeout=2)
+        assert [entry for entry in log if entry.startswith("subscribe")] == log[:1], "the create was retried"
+
 
 class TestRefusals:
     """a key that is not one literal key, and a closed connection, are refused."""

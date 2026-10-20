@@ -16,6 +16,8 @@ import inspect
 from datetime import timedelta
 
 import pytest
+from nats.errors import ConnectionClosedError as NatsConnectionClosedError
+from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
 from threetears.core.coordination import LockHeld, LockHold, LockLossReason, LockLost, nats_distributed_lock
@@ -139,6 +141,28 @@ class _FakeKv:
         del self.store[key]
 
 
+# parity-exempt: the JetStream context a bucket's self-heal re-opens through, on a broker that answers nothing: the re-open fails as an unreachable one does
+class _UnreachableJetStream:
+    async def add_stream(self, config: object) -> None:
+        del config
+        raise NatsTimeoutError()
+
+    async def key_value(self, name: str) -> None:
+        del name
+        raise NatsTimeoutError()
+
+
+# parity-exempt: the NatsClient a bucket holds for its self-heal; its re-open never reaches the broker, so a failed operation surfaces as KvError
+class _UnreachableNats:
+    def __init__(self) -> None:
+        self._js = _UnreachableJetStream()
+        # the connection a re-opened bucket records, and follows across a credential renewal
+        self.raw = object()
+
+    def jetstream_context(self) -> _UnreachableJetStream:
+        return self._js
+
+
 # parity-exempt: minimal NatsClient stand-in exposing only kv_bucket(); the distributed-lock body touches only that surface, so full NatsClient parity would be over-mocking
 class _FakeClient:
     """Minimal :class:`NatsClient` stand-in exposing only ``kv_bucket``.
@@ -163,7 +187,7 @@ class _FakeClient:
         del storage, create_if_missing, history
         self.kv_bucket_calls.append((name, ttl))
         return NatsKvBucket(
-            client=None,  # type: ignore[arg-type]
+            client=_UnreachableNats(),  # type: ignore[arg-type]
             full_name=f"itest-{name}",
             kv=self._fake_kv,  # type: ignore[arg-type]
             ttl=ttl,
@@ -235,7 +259,7 @@ async def test_lock_held_raises_when_key_exists() -> None:
 async def test_create_kv_error_propagates() -> None:
     """A KV-create transport failure surfaces as ``KvError`` (distinct from ``LockHeld``)."""
     fake_kv = _FakeKv()
-    fake_kv.fail_next_create = RuntimeError("nats broker died")
+    fake_kv.fail_next_create = NatsConnectionClosedError()
     client = _FakeClient(fake_kv)
     with pytest.raises(KvError):
         async with nats_distributed_lock(
@@ -299,7 +323,7 @@ async def test_body_exception_still_releases_lock() -> None:
 async def test_release_swallows_kverror_during_cleanup() -> None:
     """A delete failure during cleanup is logged at debug, not re-raised."""
     fake_kv = _FakeKv()
-    fake_kv.fail_next_delete = RuntimeError("transient")
+    fake_kv.fail_next_delete = NatsTimeoutError()
     client = _FakeClient(fake_kv)
     # the cleanup is best-effort: a transient delete failure must not
     # mask normal completion of the lock body.
@@ -403,7 +427,7 @@ async def test_ttl_mismatch_against_existing_bucket_raises() -> None:
             # the cached bucket.
             if self._cached is None:
                 self._cached = NatsKvBucket(
-                    client=None,  # type: ignore[arg-type]
+                    client=_UnreachableNats(),  # type: ignore[arg-type]
                     full_name=f"itest-{name}",
                     kv=fake_kv,  # type: ignore[arg-type]
                     ttl=ttl,
@@ -458,7 +482,7 @@ async def test_ttl_match_against_existing_bucket_acquires() -> None:
             self.kv_bucket_calls.append((name, ttl))
             if self._cached is None:
                 self._cached = NatsKvBucket(
-                    client=None,  # type: ignore[arg-type]
+                    client=_UnreachableNats(),  # type: ignore[arg-type]
                     full_name=f"itest-{name}",
                     kv=fake_kv,  # type: ignore[arg-type]
                     ttl=ttl,
@@ -500,7 +524,7 @@ async def test_heartbeat_failure_does_not_break_release() -> None:
         # means ``update_calls`` never grows, so it is the only evidence the
         # heartbeat actually ran.
         attempted.append(key)
-        raise RuntimeError("broker down")
+        raise NatsTimeoutError()
 
     fake_kv.update = failing_update  # type: ignore[assignment, method-assign]
     client = _FakeClient(fake_kv)
@@ -888,7 +912,7 @@ class TestTheHolderIsToldWhenTheLockIsLost:
         client = _FakeClient(fake_kv)
 
         async def _broker_down(key: str, value: bytes, revision: int) -> int:
-            raise RuntimeError("broker down")
+            raise NatsTimeoutError()
 
         fake_kv.update = _broker_down  # type: ignore[method-assign]
 
@@ -915,7 +939,7 @@ class TestTheHolderIsToldWhenTheLockIsLost:
         async def _one_blip(key: str, value: bytes, revision: int) -> int:
             if not failures:
                 failures.append(revision)
-                raise RuntimeError("broker blip")
+                raise NatsTimeoutError()
             return await original_update(key, value, revision)
 
         fake_kv.update = _one_blip  # type: ignore[method-assign]
@@ -1092,7 +1116,9 @@ class _OldReleaseLock:
 
 
 def _bucket_over(fake_kv: _FakeKv) -> NatsKvBucket:
-    return NatsKvBucket(client=None, full_name="itest-scheduler-locks", kv=fake_kv, ttl=timedelta(seconds=60))  # type: ignore[arg-type]
+    return NatsKvBucket(
+        client=_UnreachableNats(), full_name="itest-scheduler-locks", kv=fake_kv, ttl=timedelta(seconds=60)
+    )  # type: ignore[arg-type]
 
 
 class TestARollingUpgradeNeverFreesAHeldLock:

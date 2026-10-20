@@ -10,11 +10,15 @@ terminating replay) is the integration proof
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
+from nats.errors import ConnectionClosedError as NatsConnectionClosedError
+from nats.errors import TimeoutError as NatsTimeoutError
 from nats.aio.msg import Msg
 from nats.js.api import Header, StorageType
+from nats.js.errors import APIError
 
 from threetears.nats import (
     AppendResult,
@@ -549,3 +553,177 @@ async def test_last_seq_wraps_stream_info_failure_as_oplogerror() -> None:
     oplog = _make_oplog(_StreamInfoJetStream(error=ConnectionResetError("broker down")))  # type: ignore[arg-type]
     with pytest.raises(OpLogError):
         await oplog.last_seq()
+
+
+# ----------------------------------------------------------------------
+# a bug is not a broker failure
+# ----------------------------------------------------------------------
+
+_BUG = TypeError("a bug in the call")
+
+
+def _wrong_last_sequence() -> APIError:
+    return APIError(code=400, err_code=10071, description="wrong last sequence: 5")
+
+
+# parity-exempt: fakes the external nats JetStreamContext; each call the op-log makes raises what the test scripts, to tell nats-py's own failures from a bug
+class _ScriptedFailureJetStream:
+    def __init__(
+        self,
+        *,
+        add_stream: list[BaseException | None] | None = None,
+        stream_info: BaseException | None = None,
+        add_consumer: BaseException | None = None,
+        publish: BaseException | None = None,
+    ) -> None:
+        self._add_stream = list(add_stream or [])
+        self._stream_info = stream_info
+        self._add_consumer = add_consumer
+        self._publish = publish
+        self.infos = 0
+
+    async def add_stream(self, *, config: Any) -> Any:
+        step = self._add_stream.pop(0) if self._add_stream else None
+        if step is not None:
+            raise step
+        return config
+
+    async def stream_info(self, name: str) -> _FakeStreamInfo:
+        self.infos += 1
+        if self._stream_info is not None:
+            raise self._stream_info
+        return _FakeStreamInfo(5)
+
+    async def add_consumer(self, stream: str, *, config: Any) -> Any:
+        if self._add_consumer is not None:
+            raise self._add_consumer
+        return object()
+
+    async def pull_subscribe_bind(self, *, consumer: str, stream: str) -> Any:
+        return _FakePullSub(NatsTimeoutError())
+
+    async def publish(
+        self, subject: str, payload: bytes, *, headers: dict[str, str], stream: str, timeout: float
+    ) -> Any:
+        assert self._publish is not None
+        raise self._publish
+
+
+async def _open(js: _ScriptedFailureJetStream) -> OpLog:
+    return await OpLog.open(client=_FakeClient(js), repo="story-alpha", branch="main")  # type: ignore[arg-type]
+
+
+class TestOpeningTellsABugFromABrokerFailure:
+    async def test_an_unanswered_create_falls_through_to_the_bind(self) -> None:
+        js = _ScriptedFailureJetStream(add_stream=[NatsTimeoutError()])
+        await _open(js)
+        assert js.infos == 1
+
+    async def test_a_bug_in_the_create_propagates_without_a_bind(self) -> None:
+        js = _ScriptedFailureJetStream(add_stream=[_BUG])
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await _open(js)
+        assert js.infos == 0
+
+    async def test_a_bug_in_the_single_replica_retry_propagates_without_a_bind(self) -> None:
+        unclustered = APIError(code=500, err_code=10074, description="replicas > 1 not supported in non-clustered mode")
+        js = _ScriptedFailureJetStream(add_stream=[unclustered, _BUG])
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await _open(js)
+        assert js.infos == 0
+
+    async def test_a_refused_single_replica_retry_falls_through_to_the_bind(self) -> None:
+        unclustered = APIError(code=500, err_code=10074, description="replicas > 1 not supported in non-clustered mode")
+        js = _ScriptedFailureJetStream(add_stream=[unclustered, NatsTimeoutError()])
+        await _open(js)
+        assert js.infos == 1
+
+    async def test_an_unanswered_bind_after_a_failed_create_is_an_oplogerror(self) -> None:
+        js = _ScriptedFailureJetStream(add_stream=[NatsTimeoutError()], stream_info=NatsTimeoutError())
+        with pytest.raises(OpLogError, match="open op-log failed"):
+            await _open(js)
+
+    async def test_a_bind_reply_that_is_not_json_is_an_oplogerror(self) -> None:
+        # nats-py's own json.loads, on a JetStream API reply something other than JetStream answered
+        js = _ScriptedFailureJetStream(
+            add_stream=[NatsTimeoutError()], stream_info=json.JSONDecodeError("Expecting value", "<html>", 0)
+        )
+        with pytest.raises(OpLogError, match="open op-log failed"):
+            await _open(js)
+
+    async def test_a_bug_in_the_bind_propagates(self) -> None:
+        js = _ScriptedFailureJetStream(add_stream=[NatsTimeoutError()], stream_info=_BUG)
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await _open(js)
+
+
+class TestAppendingTellsABugFromABrokerFailure:
+    async def test_a_closed_connection_is_an_oplogerror(self) -> None:
+        oplog = _make_oplog(_ScriptedFailureJetStream(publish=NatsConnectionClosedError()))  # type: ignore[arg-type]
+        with pytest.raises(OpLogError, match="op-log append failed"):
+            await oplog.append(payload=b"x", op_id="op-1", expected_last_seq=0)
+
+    async def test_a_bug_in_the_publish_propagates(self) -> None:
+        oplog = _make_oplog(_ScriptedFailureJetStream(publish=_BUG))  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await oplog.append(payload=b"x", op_id="op-1", expected_last_seq=0)
+
+    async def test_an_unanswered_op_id_scan_is_an_oplogerror(self) -> None:
+        js = _ScriptedFailureJetStream(publish=_wrong_last_sequence(), stream_info=NatsTimeoutError())
+        with pytest.raises(OpLogError, match="op_id scan failed"):
+            await _make_oplog(js).append(payload=b"x", op_id="op-1", expected_last_seq=2)  # type: ignore[arg-type]
+
+    async def test_a_bug_in_the_op_id_scan_propagates(self) -> None:
+        js = _ScriptedFailureJetStream(publish=_wrong_last_sequence(), stream_info=_BUG)
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await _make_oplog(js).append(payload=b"x", op_id="op-1", expected_last_seq=2)  # type: ignore[arg-type]
+
+
+class TestReadingTellsABugFromABrokerFailure:
+    async def test_a_bug_in_the_head_read_propagates(self) -> None:
+        oplog = _make_oplog(_StreamInfoJetStream(error=_BUG))  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await oplog.last_seq()
+
+    async def test_an_unanswered_head_read_is_an_oplogerror(self) -> None:
+        oplog = _make_oplog(_StreamInfoJetStream(error=NatsTimeoutError()))  # type: ignore[arg-type]
+        with pytest.raises(OpLogError, match="last_seq failed"):
+            await oplog.last_seq()
+
+    async def test_an_unanswered_replay_stream_info_is_an_oplogerror(self) -> None:
+        oplog = _make_oplog(_ScriptedFailureJetStream(stream_info=NatsTimeoutError()))  # type: ignore[arg-type]
+        with pytest.raises(OpLogError, match="replay failed \\(stream_info\\)"):
+            async for _ in oplog.replay(from_seq=1):
+                pass
+
+    async def test_a_bug_in_the_replay_stream_info_propagates(self) -> None:
+        oplog = _make_oplog(_ScriptedFailureJetStream(stream_info=_BUG))  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="a bug in the call"):
+            async for _ in oplog.replay(from_seq=1):
+                pass
+
+    async def test_an_unanswered_replay_consumer_create_is_an_oplogerror(self) -> None:
+        oplog = _make_oplog(_ScriptedFailureJetStream(add_consumer=NatsTimeoutError()))  # type: ignore[arg-type]
+        with pytest.raises(OpLogError, match="replay failed \\(subscribe\\)"):
+            async for _ in oplog.replay(from_seq=1):
+                pass
+
+    async def test_a_bug_in_the_replay_consumer_create_propagates(self) -> None:
+        oplog = _make_oplog(_ScriptedFailureJetStream(add_consumer=_BUG))  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="a bug in the call"):
+            async for _ in oplog.replay(from_seq=1):
+                pass
+
+    async def test_a_closed_connection_mid_replay_is_an_oplogerror(self) -> None:
+        js = _ReplayJetStream(last_seq=5, fetch_error=NatsConnectionClosedError())
+        with pytest.raises(OpLogError, match="replay failed \\(fetch\\)"):
+            async for _ in _make_oplog(js).replay(from_seq=1):  # type: ignore[arg-type]
+                pass
+        assert js.psub.unsubscribed is True
+
+    async def test_a_bug_in_the_fetch_propagates_and_the_consumer_is_still_torn_down(self) -> None:
+        js = _ReplayJetStream(last_seq=5, fetch_error=_BUG)
+        with pytest.raises(TypeError, match="a bug in the call"):
+            async for _ in _make_oplog(js).replay(from_seq=1):  # type: ignore[arg-type]
+                pass
+        assert js.psub.unsubscribed is True
