@@ -67,7 +67,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Final, NamedTuple, Protocol
 
 from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.core.exceptions import ConcurrentModificationError
@@ -119,7 +119,7 @@ _KNOWN_CIRCUIT_STATES: dict[str, CircuitState] = {state.value: state for state i
 #: what the fleet blocked-attempt counter can fail with when ``fail_open`` is off: storage being
 #: unreachable, plus losing every compare-and-swap round -- the same pair a ``fail_open`` counter
 #: degrades on itself (``windowed_counter._DEGRADABLE_FAILURES``), for the same reason.
-_COUNTER_FAILURES: tuple[type[BaseException], ...] = (*STORAGE_FAILURES, ConcurrentModificationError)
+_COUNTER_FAILURES: Final[tuple[type[Exception], ...]] = (*STORAGE_FAILURES, ConcurrentModificationError)
 
 
 class ProbeObservableBreaker(CircuitBreakerLike, Protocol):

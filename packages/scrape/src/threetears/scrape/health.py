@@ -63,7 +63,7 @@ __all__ = [
 #:
 #: Private to this package: every degrading caller of a health read imports it from here, so the
 #: set is decided once.
-_HEALTH_STORE_READ_FAILURES: Final[tuple[type[BaseException], ...]] = STORAGE_FAILURES
+_HEALTH_STORE_READ_FAILURES: Final[tuple[type[Exception], ...]] = STORAGE_FAILURES
 
 #: what a write through :func:`_merge_health` means by "the bookkeeping did not land": the read
 #: set, plus the two failures ``BaseCollection.save_entity`` documents for a write that reached
@@ -79,7 +79,7 @@ _HEALTH_STORE_READ_FAILURES: Final[tuple[type[BaseException], ...]] = STORAGE_FA
 #:
 #: ``GenerationUnavailableError`` is a write that committed but could not advance the table's
 #: write generation; the row is stored, and the caller is told to retry, which the next poll does.
-_HEALTH_STORE_WRITE_FAILURES: Final[tuple[type[BaseException], ...]] = (
+_HEALTH_STORE_WRITE_FAILURES: Final[tuple[type[Exception], ...]] = (
     *STORAGE_FAILURES,
     ConcurrentModificationError,
     GenerationUnavailableError,
