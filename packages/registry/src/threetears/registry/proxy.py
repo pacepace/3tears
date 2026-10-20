@@ -43,6 +43,8 @@ from threetears.core.security.proxy_assertion import TOOL_POP_LEDGER_UNAVAILABLE
 from threetears.nats import (
     RESULT_ACK_TIMEOUT_SECONDS,
     IncomingMessage,
+    NatsClientError,
+    PublishError,
     RequestError,
     Subject,
     Subjects,
@@ -560,7 +562,7 @@ class CallProxy:
         with self._inflight_gauge.track():
             try:
                 request = ProxyCallRequest.model_validate_json(msg.data)
-            except Exception as exc:
+            except ValidationError as exc:
                 contain(exc, log=log, what="malformed call request")
                 response = ProxyCallResponse(
                     success=False,
@@ -880,47 +882,62 @@ class CallProxy:
                 # past its wipe check.
                 future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
             )
-            try:
-                fresh = await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at)
-            except Exception as exc:  # noqa: BLE001 -- the ledger failing fails the check closed, with a reply
-                contain(
-                    exc,
-                    log=log,
-                    what="tool call refused: the proof-of-possession replay ledger could not be reached, so the "
-                    "proof could not be checked and the call is denied; check the registry's NATS connection "
-                    "and its grant on the pop nonce bucket",
-                    extra={
-                        "tool_name": request.tool_name,
-                        "correlation_id": _correlation_id_str(request),
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                    level="error",
-                )
-                return self._pop_ledger_unavailable(request)
-            if not fresh:
-                raise IdentityTokenError("pop nonce replay")
-            return None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
-            reason = type(exc).__name__
-            extra = {
-                "extra_data": {
+            return self._pop_unverified(request, exc)
+        # outside the verification's catch: the ledger's own failure is a NatsClientError, and
+        # anything else it raises (a timezone-naive issue time, a bug) is ours, not a bad proof.
+        try:
+            fresh = await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at)
+        except NatsClientError as exc:
+            # the ledger failing fails the check closed, with a reply
+            contain(
+                exc,
+                log=log,
+                what="tool call refused: the proof-of-possession replay ledger could not be reached, so the "
+                "proof could not be checked and the call is denied; check the registry's NATS connection "
+                "and its grant on the pop nonce bucket",
+                extra={
                     "tool_name": request.tool_name,
-                    "reason": reason,
-                    # the structural pop-failure reason (absent token/pop, no cnf binding, spliced
-                    # body, replayed nonce), never token or key material.
-                    "detail": str(exc),
                     "correlation_id": _correlation_id_str(request),
-                }
-            }
-            log.warning("pop verification failed; rejecting call", extra=extra)
-            return ProxyCallResponse(
-                success=False,
-                content="",
-                error=f"pop verification failed ({reason})",
-                error_code="TOOL_POP_UNVERIFIED",
-                context=context,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+                level="error",
             )
+            return self._pop_ledger_unavailable(request)
+        if not fresh:
+            return self._pop_unverified(request, IdentityTokenError("pop nonce replay"))
+        return None
+
+    def _pop_unverified(self, request: "ProxyCallRequest", exc: Exception) -> "ProxyCallResponse":
+        """log a pop that did not verify and build its ``TOOL_POP_UNVERIFIED`` refusal.
+
+        :param request: the call request whose pop failed
+        :ptype request: ProxyCallRequest
+        :param exc: why it failed; its type is the reply's reason and its message stays in the log
+        :ptype exc: Exception
+        :return: the refusal
+        :rtype: ProxyCallResponse
+        """
+        reason = type(exc).__name__
+        extra = {
+            "extra_data": {
+                "tool_name": request.tool_name,
+                "reason": reason,
+                # the structural pop-failure reason (absent token/pop, no cnf binding, spliced
+                # body, replayed nonce), never token or key material.
+                "detail": str(exc),
+                "correlation_id": _correlation_id_str(request),
+            }
+        }
+        log.warning("pop verification failed; rejecting call", extra=extra)
+        return ProxyCallResponse(
+            success=False,
+            content="",
+            error=f"pop verification failed ({reason})",
+            error_code="TOOL_POP_UNVERIFIED",
+            context=request.context,
+        )
 
     async def _dispatch_call(
         self,
@@ -1462,7 +1479,7 @@ class CallProxy:
             try:
                 await self._nc.jetstream_publish(subject=delivery_subject, payload=payload)
                 return
-            except Exception as exc:  # noqa: BLE001 — the tool already ran; retry beats discarding it
+            except PublishError as exc:  # the tool already ran; retry beats discarding it
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
                     # NOSILENT: the answer is now lost. name it, rather than letting it surface as an
                     # unexplained timeout at the agent.

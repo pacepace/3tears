@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.context import ToolContextManager
-from threetears.agent.tools.server import ToolServer
+from threetears.agent.tools.server import CallRequest, ToolServer
 from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE
 from threetears.nats import IncomingMessage, Subject, set_default_namespace
 
@@ -354,6 +354,30 @@ async def test_baseline_audit_outcome_failure_on_malformed_request() -> None:
     assert env["details"]["tool_name"] == ""
     assert env["details"]["tool_version"] == ""
     assert "malformed" in env["details"]["failure_reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_bug_while_parsing_propagates_rather_than_reading_as_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """only an envelope that does not validate is refused as malformed; a TypeError is a bug.
+
+    It used to be contained, answered "malformed call request" and audited as the caller's failure.
+    """
+    set_default_namespace("ns")
+    nats = _FakeNats()
+    server = ToolServer(
+        namespace="ns",
+        nats_client=nats,
+    )
+
+    def _broken(cls: type[CallRequest], data: bytes) -> CallRequest:
+        raise TypeError("a bug in the parse")
+
+    monkeypatch.setattr(CallRequest, "model_validate_json", classmethod(_broken))
+    with pytest.raises(TypeError, match="a bug in the parse"):
+        await server.handle_call(_make_msg(b"{}"))
+    assert _audit_envelopes(nats, ".audit.tool.call") == []
 
 
 # ---------------------------------------------------------------------------

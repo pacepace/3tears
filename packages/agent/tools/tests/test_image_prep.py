@@ -187,3 +187,35 @@ class TestAFailedResizeIsReported:
         assert result.error is not None
         assert "could not be resized or re-encoded for a vision model" in result.error
         assert "the original image is unchanged" in result.error
+
+
+class TestInputThatIsNotBase64:
+    """Input the model got wrong is refused by name; a bug in the decode propagates."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("encoded", ["abc", "ünïcode"])
+    async def test_a_string_that_is_not_base64_is_refused(self, encoded: str) -> None:
+        result = await ImagePrepTool().execute(image_data_base64=encoded, mime_type="image/png")
+        assert result.success is False
+        assert result.error is not None and result.error.startswith("failed to decode base64 image data")
+
+    @pytest.mark.asyncio
+    @pytest.mark.expect_contained(
+        TypeError, why="TearsTool.run does not type-check kwargs, so a number from the model is bad input"
+    )
+    async def test_a_value_that_is_not_a_string_is_refused(self) -> None:
+        result = await ImagePrepTool().execute(image_data_base64=12345, mime_type="image/png")
+        assert result.success is False
+        assert result.error is not None and result.error.startswith("failed to decode base64 image data")
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_decode_propagates_rather_than_reading_as_bad_input(self, monkeypatch) -> None:
+        """it used to be contained and answered as undecodable base64, blaming the model."""
+        from threetears.agent.tools.builtin import image_prep
+
+        def _broken(data: object) -> bytes:
+            raise AttributeError("a bug in the decode")
+
+        monkeypatch.setattr(image_prep.base64, "b64decode", _broken)
+        with pytest.raises(AttributeError, match="a bug in the decode"):
+            await ImagePrepTool().execute(image_data_base64="aGVsbG8=", mime_type="image/png")

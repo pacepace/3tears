@@ -53,7 +53,7 @@ from threetears.core.security.identity_token import (
 from threetears.core.security import TOOL_POP_LEDGER_UNAVAILABLE, TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE
 from threetears.core.security.pop import access_token_hash, make_pop_proof
 from threetears.core.exceptions import DataLayerUnavailableError
-from threetears.nats import IncomingMessage, KvError, set_default_namespace
+from threetears.nats import IncomingMessage, KvConfigMismatch, KvError, set_default_namespace
 from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
@@ -1569,6 +1569,71 @@ class TestAHostFailureIsAnsweredNotTimedOut:
         # one client message, the same one the tool pod answers its own ledger outage with; the
         # exception type and text stay in the registry's ERROR log.
         assert reply.error == TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE
+
+    @pytest.mark.asyncio
+    async def test_a_ledger_that_refuses_its_bucket_config_also_refuses_with_a_reply(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        """a bind-only open's config refusal is not a KvError, but it is still the ledger failing.
+
+        :param hub: the hub key and key set
+        :ptype hub: tuple[Any, dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        guard = FakeReplayGuard(record_error=KvConfigMismatch("nonce bucket carries a different max_age"))
+
+        nc = await self._drive(req, jwks, guard=guard)
+
+        assert self._reply(nc).error_code == TOOL_POP_LEDGER_UNAVAILABLE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bug",
+        [
+            ValueError("ReplayGuard.record_unique requires a timezone-aware issued_at"),
+            TypeError("a bug in the ledger"),
+        ],
+    )
+    async def test_a_bug_in_the_ledger_call_propagates_rather_than_reading_as_an_outage(
+        self, hub: tuple[Any, dict[str, Any]], bug: Exception
+    ) -> None:
+        """only the ledger's own failure is answered as unavailable; anything else it raises is ours.
+
+        It used to be contained and answered as an outage. A ValueError here would also have
+        read as a bad proof, since the verification's catch takes ValueError.
+
+        :param hub: the hub key and key set
+        :ptype hub: tuple[Any, dict[str, Any]]
+        :param bug: what the ledger raises
+        :ptype bug: Exception
+        :return: nothing
+        :rtype: None
+        """
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        proxy = CallProxy(
+            await _catalog(),
+            AllowAllAuthorizer(),
+            FakeReplayGuard(record_error=bug),
+            limit_guard=AllowAllLimitGuard(),
+            namespace="test",
+            jwks_provider=lambda: jwks,
+        )
+        nc = AsyncMock()
+        await proxy.start(nc)
+        before = asyncio.all_tasks()
+        await proxy.handle_call(
+            IncomingMessage(data=req.model_dump_json().encode("utf-8"), reply_subject="r", subject="test.tools.call")
+        )
+        (dispatch,) = asyncio.all_tasks() - before
+
+        with pytest.raises(type(bug), match=str(bug)):
+            await dispatch
+        nc.publish_reply.assert_not_awaited()
+        nc.request_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_pod_answer_that_does_not_parse_is_answered(self, hub: tuple[Any, dict[str, Any]]) -> None:

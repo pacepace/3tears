@@ -982,7 +982,7 @@ def _parse_csv(
             sections=sections,
         )
 
-    except Exception as exc:
+    except csv.Error as exc:
         log.error(
             "CSV parsing failed",
             extra={"extra_data": {"filename": filename, "error": str(exc)}},
@@ -1003,40 +1003,29 @@ def _parse_txt(
 ) -> DocumentResult:
     """Parse plain text with encoding fallback."""
     try:
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            text = data.decode("latin-1")
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
 
-        word_count = len(text.split())
+    word_count = len(text.split())
 
-        sections = [
-            DocumentSection(
-                heading=None,
-                content=text,
-                page_number=None,
-                level=0,
-            )
-        ]
-
-        return DocumentResult(
-            text=text,
-            title=filename,
-            page_count=None,
-            word_count=word_count,
-            was_ocr=False,
-            sections=sections,
+    sections = [
+        DocumentSection(
+            heading=None,
+            content=text,
+            page_number=None,
+            level=0,
         )
+    ]
 
-    except Exception as exc:
-        log.error(
-            "TXT parsing failed",
-            extra={"extra_data": {"filename": filename, "error": str(exc)}},
-            exc_info=True,
-        )
-        raise DocumentParseError(
-            "parse_failed", f"TXT parsing failed ({type(exc).__name__})", filename=filename
-        ) from exc
+    return DocumentResult(
+        text=text,
+        title=filename,
+        page_count=None,
+        word_count=word_count,
+        was_ocr=False,
+        sections=sections,
+    )
 
 
 # -- Markdown parser ----------------------------------------------------------
@@ -1049,71 +1038,60 @@ def _parse_markdown(
 ) -> DocumentResult:
     """Parse markdown -- direct passthrough since it's already markdown."""
     try:
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            text = data.decode("latin-1")
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
 
-        word_count = len(text.split())
+    word_count = len(text.split())
 
-        # Extract sections from markdown headings
-        sections: list[DocumentSection] = []
-        current_heading: str | None = None
-        current_level = 0
-        current_text: list[str] = []
+    # Extract sections from markdown headings
+    sections: list[DocumentSection] = []
+    current_heading: str | None = None
+    current_level = 0
+    current_text: list[str] = []
 
-        for line in text.split("\n"):
-            heading_match = re.match(r"^(#{1,6})\s+(.+)$", line)
-            if heading_match:
-                if current_text or current_heading:
-                    sections.append(
-                        DocumentSection(
-                            heading=current_heading,
-                            content="\n".join(current_text).strip(),
-                            page_number=None,
-                            level=current_level,
-                        )
+    for line in text.split("\n"):
+        heading_match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading_match:
+            if current_text or current_heading:
+                sections.append(
+                    DocumentSection(
+                        heading=current_heading,
+                        content="\n".join(current_text).strip(),
+                        page_number=None,
+                        level=current_level,
                     )
-                    current_text = []
-
-                current_level = len(heading_match.group(1))
-                current_heading = heading_match.group(2).strip()
-            else:
-                current_text.append(line)
-
-        if current_text or current_heading:
-            sections.append(
-                DocumentSection(
-                    heading=current_heading,
-                    content="\n".join(current_text).strip(),
-                    page_number=None,
-                    level=current_level,
                 )
+                current_text = []
+
+            current_level = len(heading_match.group(1))
+            current_heading = heading_match.group(2).strip()
+        else:
+            current_text.append(line)
+
+    if current_text or current_heading:
+        sections.append(
+            DocumentSection(
+                heading=current_heading,
+                content="\n".join(current_text).strip(),
+                page_number=None,
+                level=current_level,
             )
-
-        # Try to extract title from first heading
-        title = filename
-        if sections and sections[0].heading:
-            title = sections[0].heading
-
-        return DocumentResult(
-            text=text,
-            title=title,
-            page_count=None,
-            word_count=word_count,
-            was_ocr=False,
-            sections=sections,
         )
 
-    except Exception as exc:
-        log.error(
-            "Markdown parsing failed",
-            extra={"extra_data": {"filename": filename, "error": str(exc)}},
-            exc_info=True,
-        )
-        raise DocumentParseError(
-            "parse_failed", f"Markdown parsing failed ({type(exc).__name__})", filename=filename
-        ) from exc
+    # Try to extract title from first heading
+    title = filename
+    if sections and sections[0].heading:
+        title = sections[0].heading
+
+    return DocumentResult(
+        text=text,
+        title=title,
+        page_count=None,
+        word_count=word_count,
+        was_ocr=False,
+        sections=sections,
+    )
 
 
 # -- LaTeX parser -------------------------------------------------------------
@@ -1126,120 +1104,109 @@ def _parse_latex(
 ) -> DocumentResult:
     """Parse LaTeX into markdown using regex transformations."""
     try:
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            text = data.decode("latin-1")
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
 
-        # Extract title before stripping preamble
-        title_match = re.search(r"\\title\{([^}]+)\}", text)
-        title = title_match.group(1) if title_match else filename
+    # Extract title before stripping preamble
+    title_match = re.search(r"\\title\{([^}]+)\}", text)
+    title = title_match.group(1) if title_match else filename
 
-        # Strip preamble
-        doc_start = re.search(r"\\begin\{document\}", text)
-        doc_end = re.search(r"\\end\{document\}", text)
-        if doc_start:
-            text = text[doc_start.end() :]
-        if doc_end:
-            text = text[: doc_end.start()]
+    # Strip preamble
+    doc_start = re.search(r"\\begin\{document\}", text)
+    doc_end = re.search(r"\\end\{document\}", text)
+    if doc_start:
+        text = text[doc_start.end() :]
+    if doc_end:
+        text = text[: doc_end.start()]
 
-        # Remove common preamble commands
-        text = re.sub(r"\\(usepackage|documentclass|author|date|maketitle)\{[^}]*\}", "", text)
-        text = re.sub(r"\\(usepackage|documentclass)\[[^\]]*\]\{[^}]*\}", "", text)
+    # Remove common preamble commands
+    text = re.sub(r"\\(usepackage|documentclass|author|date|maketitle)\{[^}]*\}", "", text)
+    text = re.sub(r"\\(usepackage|documentclass)\[[^\]]*\]\{[^}]*\}", "", text)
 
-        # Section headings
-        text = re.sub(r"\\section\*?\{([^}]+)\}", r"# \1", text)
-        text = re.sub(r"\\subsection\*?\{([^}]+)\}", r"## \1", text)
-        text = re.sub(r"\\subsubsection\*?\{([^}]+)\}", r"### \1", text)
-        text = re.sub(r"\\paragraph\*?\{([^}]+)\}", r"#### \1", text)
+    # Section headings
+    text = re.sub(r"\\section\*?\{([^}]+)\}", r"# \1", text)
+    text = re.sub(r"\\subsection\*?\{([^}]+)\}", r"## \1", text)
+    text = re.sub(r"\\subsubsection\*?\{([^}]+)\}", r"### \1", text)
+    text = re.sub(r"\\paragraph\*?\{([^}]+)\}", r"#### \1", text)
 
-        # Inline formatting
-        text = re.sub(r"\\textbf\{([^}]+)\}", r"**\1**", text)
-        text = re.sub(r"\\textit\{([^}]+)\}", r"*\1*", text)
-        text = re.sub(r"\\emph\{([^}]+)\}", r"*\1*", text)
-        text = re.sub(r"\\texttt\{([^}]+)\}", r"`\1`", text)
-        text = re.sub(r"\\underline\{([^}]+)\}", r"\1", text)
+    # Inline formatting
+    text = re.sub(r"\\textbf\{([^}]+)\}", r"**\1**", text)
+    text = re.sub(r"\\textit\{([^}]+)\}", r"*\1*", text)
+    text = re.sub(r"\\emph\{([^}]+)\}", r"*\1*", text)
+    text = re.sub(r"\\texttt\{([^}]+)\}", r"`\1`", text)
+    text = re.sub(r"\\underline\{([^}]+)\}", r"\1", text)
 
-        # Code blocks
-        text = re.sub(
-            r"\\begin\{verbatim\}(.*?)\\end\{verbatim\}",
-            r"```\n\1\n```",
-            text,
-            flags=re.DOTALL,
-        )
-        text = re.sub(
-            r"\\begin\{lstlisting\}(.*?)\\end\{lstlisting\}",
-            r"```\n\1\n```",
-            text,
-            flags=re.DOTALL,
-        )
+    # Code blocks
+    text = re.sub(
+        r"\\begin\{verbatim\}(.*?)\\end\{verbatim\}",
+        r"```\n\1\n```",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\\begin\{lstlisting\}(.*?)\\end\{lstlisting\}",
+        r"```\n\1\n```",
+        text,
+        flags=re.DOTALL,
+    )
 
-        # Lists
-        text = re.sub(r"\\begin\{(itemize|enumerate)\}", "", text)
-        text = re.sub(r"\\end\{(itemize|enumerate)\}", "", text)
-        text = re.sub(r"\\item\s*", "- ", text)
+    # Lists
+    text = re.sub(r"\\begin\{(itemize|enumerate)\}", "", text)
+    text = re.sub(r"\\end\{(itemize|enumerate)\}", "", text)
+    text = re.sub(r"\\item\s*", "- ", text)
 
-        # Remove remaining LaTeX commands (simple ones)
-        text = re.sub(r"\\[a-zA-Z]+\{([^}]*)\}", r"\1", text)
+    # Remove remaining LaTeX commands (simple ones)
+    text = re.sub(r"\\[a-zA-Z]+\{([^}]*)\}", r"\1", text)
 
-        # Clean up
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = text.strip()
+    # Clean up
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip()
 
-        word_count = len(text.split())
+    word_count = len(text.split())
 
-        # Extract sections
-        sections: list[DocumentSection] = []
-        current_heading: str | None = None
-        current_level = 0
-        current_text: list[str] = []
+    # Extract sections
+    sections: list[DocumentSection] = []
+    current_heading: str | None = None
+    current_level = 0
+    current_text: list[str] = []
 
-        for line in text.split("\n"):
-            heading_match = re.match(r"^(#{1,6})\s+(.+)$", line)
-            if heading_match:
-                if current_text or current_heading:
-                    sections.append(
-                        DocumentSection(
-                            heading=current_heading,
-                            content="\n".join(current_text).strip(),
-                            page_number=None,
-                            level=current_level,
-                        )
+    for line in text.split("\n"):
+        heading_match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading_match:
+            if current_text or current_heading:
+                sections.append(
+                    DocumentSection(
+                        heading=current_heading,
+                        content="\n".join(current_text).strip(),
+                        page_number=None,
+                        level=current_level,
                     )
-                    current_text = []
-                current_level = len(heading_match.group(1))
-                current_heading = heading_match.group(2).strip()
-            else:
-                current_text.append(line)
-
-        if current_text or current_heading:
-            sections.append(
-                DocumentSection(
-                    heading=current_heading,
-                    content="\n".join(current_text).strip(),
-                    page_number=None,
-                    level=current_level,
                 )
+                current_text = []
+            current_level = len(heading_match.group(1))
+            current_heading = heading_match.group(2).strip()
+        else:
+            current_text.append(line)
+
+    if current_text or current_heading:
+        sections.append(
+            DocumentSection(
+                heading=current_heading,
+                content="\n".join(current_text).strip(),
+                page_number=None,
+                level=current_level,
             )
-
-        return DocumentResult(
-            text=text,
-            title=title,
-            page_count=None,
-            word_count=word_count,
-            was_ocr=False,
-            sections=sections,
         )
 
-    except Exception as exc:
-        log.error(
-            "LaTeX parsing failed",
-            extra={"extra_data": {"filename": filename, "error": str(exc)}},
-            exc_info=True,
-        )
-        raise DocumentParseError(
-            "parse_failed", f"LaTeX parsing failed ({type(exc).__name__})", filename=filename
-        ) from exc
+    return DocumentResult(
+        text=text,
+        title=title,
+        page_count=None,
+        word_count=word_count,
+        was_ocr=False,
+        sections=sections,
+    )
 
 
 # -- parse_document tool factory ----------------------------------------------
@@ -1279,7 +1246,7 @@ def create_parse_document_tool(
         """Parse binary document content into clean markdown text."""
         try:
             data = base64.b64decode(content_base64)
-        except Exception as exc:
+        except ValueError as exc:  # binascii.Error, and a str with non-ASCII characters
             contain(exc, log=log, what="parse_document could not decode the base64 content")
             return _tool_error("parse_document", "decode", f"Invalid base64 ({type(exc).__name__})")
 
@@ -1300,7 +1267,7 @@ def create_parse_document_tool(
 
         try:
             result = await parse_document(data, mime_type, filename, ocr_config=ocr)
-        except Exception as exc:
+        except DocumentParseError as exc:
             contain(exc, log=log, what="parse_document failed to parse the document")
             return _tool_error("parse_document", "parse", str(exc))
 
