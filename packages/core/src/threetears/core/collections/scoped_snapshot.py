@@ -109,6 +109,7 @@ if TYPE_CHECKING:
     from threetears.nats.object_store import NatsObjectStore
 
 __all__ = [
+    "AppendedScope",
     "ScopeChange",
     "ScopedSnapshot",
     "SnapshotPhase",
@@ -151,6 +152,13 @@ _HISTORY: Final = 20
 
 #: how many passes in a row a scope's chunks may fail to apply before it is rebuilt from L3
 _BEHIND_REBUILD_AFTER: Final = 3
+
+#: how many pieces an append-only table's scope gathers before a writer folds them into its base: a
+#: cold replica fetches the base and every piece, so this bounds its reads per scope
+_DEFAULT_COMPACT_PIECES: Final = 32
+
+#: how many bytes of pieces an append-only table's scope gathers before a writer folds them
+_DEFAULT_COMPACT_BYTES: Final = 4 * 1024 * 1024
 
 
 #: what a pointer's schema entry carries after a table's column digest when the table has pieces. A
@@ -236,6 +244,19 @@ class ScopeChange:
 
 
 @dataclass(frozen=True)
+class AppendedScope:
+    """what one scope of an append-only table holds in this replica: its base and the pieces after it.
+
+    :ivar pieces: the pieces after its base
+    :ivar compacted_at: when its base was last formed whole (a fold of its pieces, a rebuild, its
+        first rows); ``None`` for a base written before that was recorded
+    """
+
+    pieces: int
+    compacted_at: datetime | None
+
+
+@dataclass(frozen=True)
 class StagedScope:
     """a scope's chunks written under a new epoch whose pointer has not moved yet (:meth:`ScopedSnapshot.stage`).
 
@@ -289,6 +310,8 @@ class SnapshotStatus:
     :ivar ready_at: when the copy first became ready
     :ivar behind: scope -> why its current chunks could not be applied here; the copy serves an older
         epoch of each until a retry, or a rebuild of the scope from L3, applies it
+    :ivar appended: append-only table -> scope -> its pieces and its last compaction, as this replica
+        holds it
     """
 
     phase: SnapshotPhase
@@ -302,6 +325,7 @@ class SnapshotStatus:
     last_change: ScopeChange | None
     ready_at: datetime | None
     behind: Mapping[str, str] = field(default_factory=dict)
+    appended: Mapping[str, Mapping[str, AppendedScope]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1171,6 +1195,11 @@ class ScopedSnapshot:
     :ptype recheck: timedelta
     :param pointer_watch_heartbeat: the pointer watch's heartbeat; a lost consumer is replaced after three
     :ptype pointer_watch_heartbeat: timedelta
+    :param compact_pieces: how many pieces an append-only table's scope gathers before the writer that
+        moved it folds them into its base
+    :ptype compact_pieces: int
+    :param compact_bytes: how many bytes of pieces it gathers before that
+    :ptype compact_bytes: int
     :raises ValueError: when the name is outside its grammar or names no table
     """
 
@@ -1193,6 +1222,8 @@ class ScopedSnapshot:
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
         recheck: timedelta = _DEFAULT_RECHECK,
         pointer_watch_heartbeat: timedelta = timedelta(seconds=5),
+        compact_pieces: int = _DEFAULT_COMPACT_PIECES,
+        compact_bytes: int = _DEFAULT_COMPACT_BYTES,
     ) -> None:
         if not name or any(ch not in _NAME_GRAMMAR for ch in name):
             raise ValueError(f"snapshot name {name!r} must be letters, digits, '-' and '_'")
@@ -1213,6 +1244,8 @@ class ScopedSnapshot:
         self._claim_ttl = claim_ttl
         self._recheck = recheck
         self._heartbeat = pointer_watch_heartbeat
+        self._compact_pieces = max(1, compact_pieces)
+        self._compact_bytes = max(1, compact_bytes)
         self._schema = {t.name: backend.schema_digest(t.name) for t in self._tables}
         self._layout = _Layout(name, self._schema)
         self._sweeper = _Sweeper(
@@ -1377,7 +1410,7 @@ class ScopedSnapshot:
         :rtype: SnapshotStatus
         """
         # each taken once: the loop rebinds them, never changes them, so this is one state of each
-        progress, rows, behind = self._progress, self._rows, self._behind
+        progress, rows, behind, applied = self._progress, self._rows, self._behind, self._applied
         return SnapshotStatus(
             phase=progress.phase,
             source=progress.source,
@@ -1390,6 +1423,20 @@ class ScopedSnapshot:
             last_change=progress.last_change,
             ready_at=progress.ready_at,
             behind={scope: why for scope, (_, why) in sorted(behind.items())},
+            appended={
+                table: {
+                    scope: AppendedScope(
+                        pieces=len(pointer.pieces.get(table, ())),
+                        compacted_at=(
+                            datetime.fromtimestamp(pointer.compacted_at[table], UTC)
+                            if table in pointer.compacted_at
+                            else None
+                        ),
+                    )
+                    for scope, pointer in sorted(applied.items())
+                }
+                for table in sorted(self._append)
+            },
         )
 
     @property
@@ -2248,6 +2295,8 @@ class ScopedSnapshot:
             self._record_change(scope, pointer, started)
             await self._update_index(add={scope})
             await self._sweeper.retire_older(scope, epoch)
+            if self._append:
+                await self._compact(scope)
 
     async def _catch_up_scope(self, scope: str) -> None:
         """apply a scope's pointer here if it is ahead of what this L1 holds: a watch that lagged.
@@ -2724,6 +2773,9 @@ class ScopedSnapshot:
                 if scope.scope in moved:
                     await self._sweeper.retire_older(scope.scope, scope.epoch)
             self._changed.set()
+        if self._append:
+            for scope_moved in moved:
+                await self._compact(scope_moved)
         if skipped:
             log.warning(
                 "scoped snapshot %s: %d staged scopes left for the catch-up from L3",
@@ -2732,6 +2784,82 @@ class ScopedSnapshot:
                 extra={"extra_data": {"scopes": skipped}},
             )
         return moved, skipped
+
+    async def _compact(self, scope: str) -> bool:
+        """fold a scope's pieces into a new base where they are past the threshold; never raises.
+
+        Each table whose pieces number ``compact_pieces`` or reach ``compact_bytes`` gets a new base at
+        the pointer's epoch: its base and pieces concatenated in order, not re-sorted, so a replica
+        loading it holds its rows in the order one that appended them does. Written under a write
+        claim on that epoch, and the pointer moves by compare-and-set from exactly the entry folded:
+        a write that moved the scope meanwhile wins, and the next writer folds. The folded pieces go
+        by the sweeper's one rule. A replica holding the scope at that epoch adopts the folded
+        pointer without fetching it.
+
+        :param scope: the scope a write just moved
+        :ptype scope: str
+        :return: whether its pointer was folded
+        :rtype: bool
+        """
+        folded = False
+        written: list[str] = []
+        try:
+            entry = await self._pointers_bucket.get_entry(key=self._layout.pointer_key(scope))
+            current = None if entry is None else _Pointer.decode(entry[0])
+            due = (
+                []
+                if current is None or not self._loadable(current)
+                else [t for t in self._tables if self._due(current.pieces.get(t.name, ()))]
+            )
+            if current is None or entry is None or not due:
+                return folded
+            claim = await self._write_claims.hold(current.epoch)
+            try:
+                objects, counts = dict(current.objects), dict(current.rows)
+                pieces, compacted = dict(current.pieces), dict(current.compacted_at)
+                reused: list[str] = []
+                for table in due:
+                    parts = [await self._read_chunk(current.objects[table.name], current.rows[table.name])]
+                    parts += [await self._read_chunk(p.name, p.rows) for p in current.pieces[table.name]]
+                    arrow = _concatenated(parts)
+                    _still_held(claim, f"folding scope {scope!r}'s pieces of {table.name}")
+                    objects[table.name], _ = await self._put_chunk(scope, current.epoch, table, arrow, reused=reused)
+                    written.append(objects[table.name])
+                    counts[table.name] = arrow.num_rows
+                    del pieces[table.name]
+                    compacted[table.name] = time.time()
+                base = replace(
+                    current, objects=objects, rows=counts, pieces=pieces, compacted_at=compacted, published_at=None
+                )
+                if await self._exist(base.names()) and claim.held:
+                    folded = await self._move_exactly(base, entry[1])
+            finally:
+                await claim.release()
+            if folded:
+                await self._sweeper.retire_older(scope, current.epoch + 1)
+                log.info(
+                    "scoped snapshot %s: scope %r's pieces folded into its base",
+                    self._name,
+                    scope,
+                    extra={"extra_data": {"scope": scope, "epoch": current.epoch, "tables": [t.name for t in due]}},
+                )
+            else:
+                await self._sweeper.retire_names_if_unserved(written, what=f"a fold of {scope!r} that lost its race")
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a fold is housekeeping: the scope is served from its base and pieces until the next writer folds it, so a failure must not fail the publish that already moved it
+            log.warning("scoped snapshot %s: folding scope %r's pieces failed: %s", self._name, scope, exc)
+        return folded
+
+    def _due(self, pieces: Sequence[_Piece]) -> bool:
+        """whether a table's pieces in one scope are past the threshold, so they fold into its base.
+
+        :param pieces: the pieces
+        :ptype pieces: Sequence[_Piece]
+        :return: True when there are ``compact_pieces`` of them, or they reach ``compact_bytes``
+        :rtype: bool
+        """
+        return bool(pieces) and (
+            len(pieces) >= self._compact_pieces or sum(p.size for p in pieces) >= self._compact_bytes
+        )
 
     def _claim_lost(self, scope: StagedScope) -> bool:
         """whether a stage's write claim is lost, logged when it is: its pointer must not move.
