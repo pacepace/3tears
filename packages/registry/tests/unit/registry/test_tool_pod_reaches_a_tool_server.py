@@ -611,7 +611,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
     async def test_a_delegated_signer_without_a_jwks_provider_warns_that_its_allowance_ends(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """the rollout allowance stays until 0.73.0, and says so at construction rather than silently.
+        """the rollout allowance is deprecated, and says so at construction rather than silently.
 
         a warning a deployment filters out still reaches an operator: the same text is logged.
         """
@@ -619,7 +619,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
 
         delegated_key = Ed25519PrivateKey.generate()
         delegated = DelegatedTokenSigner(signing_key=delegated_key, kid=jwk_thumbprint(delegated_key.public_key()))
-        with caplog.at_level("WARNING"), pytest.warns(DeprecationWarning, match=r"removed in 0\.73\.0"):
+        with caplog.at_level("WARNING"), pytest.warns(DeprecationWarning, match=r"removed in a future minor release"):
             CallProxy(
                 ToolCatalog(),
                 AllowAllAuthorizer(),
@@ -628,4 +628,4 @@ class TestTheForwardedCallCarriesADelegatedToken:
                 namespace=_NS,
                 delegated_signer=delegated,
             )
-        assert any("removed in 0.73.0" in record.getMessage() for record in caplog.records)
+        assert any("removed in a future minor release" in record.getMessage() for record in caplog.records)

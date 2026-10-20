@@ -65,7 +65,7 @@ Where that forced a choice between failing open and failing closed, the owner ru
   at ERROR and counts `threetears_registry_spend_limit_unchecked_total{exc_type}`.
 - **registry: the agent's token is withheld from a declaring pod when the hub JWKS cannot be read or reads empty.**
   A `CallProxy` with a `delegated_signer` and no `jwks_provider` still keeps it, raises a `DeprecationWarning`, and
-  loses the allowance in 0.73.0.
+  loses the allowance in a future minor release.
 - **A write that did not land fails its save.**
   - `BaseCollection.l2_is_the_store` (default False) marks collections whose only store is L2. A refused L2 write
     there raises `L2WriteRefusedError` and the save fails. A refused read raises instead of answering "absent".
