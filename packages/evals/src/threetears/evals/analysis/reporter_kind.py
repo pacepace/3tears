@@ -425,7 +425,7 @@ def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
     - every frozen value must survive the rebuild unchanged — none altered by validation.
 
     **A bundle frozen before one memo covered a campaign is refused**, before any of this: a case frozen over one
-    aspect's bundle (before 0.72), or over a bundle of a shape before 59, holds no campaign bundle, so no rebuild can
+    aspect's bundle (before the campaign rewrite), or over a bundle of a shape before 59, holds no campaign bundle, so no rebuild can
     hand the writer what it now reads, and the case is frozen again from its campaign instead.
 
     **From shape 59 on, a field the bundle model gained after the freeze is NOT a loss, and that tolerance is

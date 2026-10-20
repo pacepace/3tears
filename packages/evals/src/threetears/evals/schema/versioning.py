@@ -310,7 +310,7 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   ``FindingResolution`` lose them) and each finding names the trials it is drawn from (``Finding.trials``). A v10
 #:   analysis is refused on read and regenerated. A stored bundle is read at its own ``schema_version``, so a later
 #:   bundle shape bumps this version too.
-#: - **v12** — one memo per campaign (from ``0.72.0``): an analysis covers every aspect of its campaign
+#: - **v12** — one memo per campaign: an analysis covers every aspect of its campaign
 #:   (``EvalAnalysis.aspects``, each with its own frozen bundle, decision surface, variant and run indexes and
 #:   coverage), and freezes what the campaign adds over them (``EvalAnalysis.campaign_bundle``: question, arms,
 #:   floors, code's readings across aspects). Its memo is ``AuthoredCampaignAnalysis``: findings across aspects, one
@@ -454,7 +454,7 @@ DURABLE_BASELINE_VERSION: Final[int] = 15
 #: - **v15** — the fork from core v15 (``v0.68.0-evaladopt.26``): the eight types people author left the core with
 #:   their shapes and their stored bytes unchanged, so every durable document ``.25`` wrote as core v15 reads here as
 #:   durable v15 with no step, and ``.25`` reads this build's durable documents as core v15 at a newer minor.
-#: - **v16** — a campaign is durable, and asks one question of one or more aspects (``v0.72.0``): ``eval_campaign``
+#: - **v16** — a campaign is durable, and asks one question of one or more aspects: ``eval_campaign``
 #:   left the core with its stored bytes, and its shape is now ``question``, ``arms`` (``CampaignArm``, the control
 #:   first), ``aspects`` (``Aspect``: label, template, margin, design, runs, when its design was declared),
 #:   ``floors`` (``Floor``), ``declared_at`` and ``declared_by`` (when, and by whom, the question was worded as it

@@ -29,7 +29,7 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
 - **The core's membership moved.** A type became core or stopped being core; that is a decision about
   what is kept, recorded in ``CORE_DOC_TYPES`` and here together. The eight types people author left the core
   for the durable space at ``.26`` (``tests/test_durable_schema_pins.py``), and their ``.25`` fixtures moved with
-  them, unedited, to ``tests/fixtures/durable_documents/v15/``. The campaign followed at durable v16 (``0.72``):
+  them, unedited, to ``tests/fixtures/durable_documents/v15/``. The campaign followed at durable v16:
   its v15 fixture moved out of this released corpus the same way, unedited, its digest with it. A move is the one
   change a released corpus takes: the file leaves with its bytes, and no other frozen file is touched.
 

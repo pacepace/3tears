@@ -80,7 +80,7 @@ V0701_SECTION_TITLES = {
     "glossary": "Glossary",
 }
 
-#: The one heading 0.72 renamed: a floor warns and never decides, so its section is not headed "Decision".
+#: The one heading the campaign rewrite renamed: a floor warns and never decides, so its section is not headed "Decision".
 FLOORS_HEADING_SINCE_0_71 = {"decision": "Floors"}
 V0701_BLOCKS = [
     ("header", "disclosure", 2),

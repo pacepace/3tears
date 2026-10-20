@@ -1,6 +1,6 @@
 """The v15 campaign declaration, as a stored v15 campaign holds it: what the tests write a stored campaign from.
 
-0.72 removed ``CampaignDesign``, ``Question`` and ``DecisionRule``: a campaign is a campaign of aspects, and a stored
+The campaign rewrite (durable v16) removed ``CampaignDesign``, ``Question`` and ``DecisionRule``: a campaign is a campaign of aspects, and a stored
 v15 campaign reads as one aspect through ``upgrade_campaign_v15``, which works on the stored dict. Nothing in the
 package builds this shape any more, but a test of that upgrade, or one written against a campaign declared the old way,
 still needs to write the dict a v15 campaign stored. These models write it: each field is the v15 field of the same
