@@ -45,7 +45,7 @@ from threetears.agent.memory.collections import MemoriesCollection, MemoryConsol
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
-from threetears.nats.errors import KvError
+from threetears.nats.errors import KvError, NatsClientError
 from threetears.nats.subject_permissions import KV_KEY_SCOPE_GRAMMAR
 from threetears.observe import contain, get_logger, traced
 
@@ -470,7 +470,7 @@ class MemoryExtractor:
                 name=self._rate_limit_bucket, create_if_missing=self._rate_limit_bucket_create_if_missing
             )
             released = await bucket.delete(key=self._rate_limit_key(conversation_id), revision=claim.revision)
-        except Exception as exc:
+        except NatsClientError as exc:
             contain(
                 exc, log=log, what=f"could not release the extraction cooldown of a turn that stored nothing: {exc}"
             )
@@ -751,7 +751,7 @@ class MemoryExtractor:
                 name=self._rate_limit_bucket, create_if_missing=self._rate_limit_bucket_create_if_missing
             )
             running = await bucket.get(key=self._rate_limit_key(conversation_id)) is not None
-        except Exception as exc:
+        except NatsClientError as exc:
             # a cost throttle, not a safety check: extract anyway, and count every turn it let through
             contain(
                 exc,
@@ -842,7 +842,7 @@ class MemoryExtractor:
                     extra={"extra_data": {"bucket": bucket_name}},
                 )
                 raise
-        except Exception as exc:
+        except NatsClientError as exc:
             contain(
                 exc,
                 log=log,
