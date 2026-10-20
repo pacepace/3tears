@@ -6,6 +6,59 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: append-only tables in a scoped snapshot publish the rows a write added
+
+**Added:** `SnapshotTable(append_only=True)`, for a table whose rows are only ever added (a row once held never
+changes or goes away). `ScopedSnapshot.stage` and `publish` then take only the rows a write ADDED to the scope, kept
+as a piece under `{snapshot}.p/{scope}/{epoch}/{table}.{column digest}`. `publish_staged` appends the piece to the
+chain the scope's pointer holds at `carry_at`, by compare-and-set against exactly that entry (a new scope's first
+piece is its base). `publish` does the same on top of what this replica's L1 holds, and applies a lagging pointer
+first. A replica holding a leading run of a chain fetches only the pieces after it and appends them in the same
+one-transaction swap; anything else reloads the table's scope from base and pieces. Lost or out-of-order pointer
+events converge by that rule, and a cold replica loads base and every piece. A table not declared append-only keeps
+one whole chunk per scope. `StagedScope.sizes` gives each staged chunk's bytes. Design and decisions:
+`docs/design-scoped-snapshot.md`, "Append-only tables".
+
+**Added: compaction.** `ScopedSnapshot(compact_pieces=32, compact_bytes=4 MiB)`. A writer that moved a scope folds
+each append-only table whose pieces reach either threshold into a new base at the pointer's epoch (base and pieces
+concatenated in order, under a write claim, by exact compare-and-set). The folded pieces are retired by the
+sweeper's one rule. A replica already holding that epoch adopts the fold without fetching it. A rebuild and a
+catch-up write a fresh base with no pieces.
+
+**Added:** `SnapshotStatus.appended` (append-only table -> scope -> `AppendedScope(pieces, compacted_at)`), as this
+replica holds it. `PartitionReplacement(append=True)` in `threetears.core.cache.duckdb` adds rows to a scope inside
+the same transaction as the other replacements; a row already held is refused by the table's key.
+
+**Pointer format and compatibility.** A table with pieces keeps its base in the `object`/`rows` fields every
+replica reads, lists its pieces in `pieces`, and its `schema` entry carries `+pieces`. A 0.72 replica compares
+schema digests before it loads, so it treats such a scope as another code version's columns: it serves the scope
+from L3 and never misreads it. Pieces sit outside the `{snapshot}/` prefix a 0.72 sweep lists, so it never deletes
+one. 0.73 reads 0.72 pointers as bases with no pieces. A pointer with no pieces is written in the 0.72 shape, so a
+rebuild, catch-up or fold puts every replica back on pointers it loads. An unknown mark reads as other columns.
+
+**Rollout notes.** A `publish` (or staged piece) whose compare-and-set loses to a racing writer, or that finds the
+pointer on a chain this L1 does not hold, moves nothing and leaves the scope to `catch_up_from_l3`: a writer must
+keep calling the catch-up after its publishes, as the ENR pod does. A piece holding a row the L1 already holds (a
+writer that broke the append-only promise) puts the scope behind, and it is rebuilt from L3.
+
+### datasources, core: `read_all` takes set and typed filters; `read_counted` proves a read against a count
+
+**Added:** `read_all(..., where_in=...)` and integer values in `where`/`where_in` (`FilterValue = str | int`,
+bools refused), each bound as the type it is. A set-filtered read is proven by the grouped fingerprint, grouped by
+its first set-filtered column; an empty set reads nothing and asks nothing. `read_counted(..., rows=N, where,
+where_in, not_null)` pages the same way (sentinel row, key groups never split), takes no fingerprint, and raises
+`IncompleteReadError` unless it read exactly the `N` rows the caller counted: for rows that never change once
+written. `threetears.core.sql_fragments.filter_conditions` is the one filter builder (equality, `IN`,
+`IS NOT NULL`) behind the pages and the drivers' fingerprints. `RelationFingerprintRequest.where`/`where_in` and
+the drivers' fingerprint methods take `FilterValue`.
+
+**Rollout notes.** Integer filter values need the hub on 0.73: an older hub's model takes text only and refuses an
+integer (`MALFORMED_REQUEST`), so the read fails closed rather than coercing. The hub's
+`drain.relation_fingerprint` annotation widens to `FilterValue` when it moves to 0.73. A set-filtered `read_all`
+against Snowflake or BigQuery gets `FINGERPRINT_GROUPS_UNSUPPORTED` (no group-by-group fallback); `read_counted`
+needs no fingerprint and is unaffected. `not_null` is offered on `read_counted` only: a fingerprint ask ignores
+fields it does not know, so an older hub would drop a null filter silently.
+
 ## v0.72.0 -- 2026-10-20
 
 ### agent-memory, agent-intention, core: the embedding width is a deployment setting
