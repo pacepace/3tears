@@ -117,7 +117,7 @@ The entity tiers and the durable storage under them.
 
 | Package | Import | Description |
 |---|---|---|
-| [`3tears`](packages/core/) | `threetears.core` | Three-tier entities, collections, and caching. L1 SQLite, L2 NATS KV, L3 PostgreSQL. `DataStore` for dynamic tables. Canonical `MigrationRunner` with platform and agent scopes, multi-package composition, and topological ordering |
+| [`3tears`](packages/core/) | `threetears.core` | Three-tier entities, collections, and caching. L1 SQLite, L2 NATS KV, L3 PostgreSQL. `DataStore` for dynamic tables. A git working tree as an L3 too (`threetears.core.backends.git`, with the `nats` extra): rows are files, every change set one commit, one writer per repository by a NATS lease, compare-and-swap saves, and hand edits committed and dropped from every cache. Canonical `MigrationRunner` with platform and agent scopes, multi-package composition, and topological ordering |
 | [`3tears-conversations`](packages/conversations/) | `threetears.conversations` | `Conversation` entity, three-tier `ConversationsCollection`, and per-agent schema migrations |
 | [`3tears-datasources`](packages/datasources/) | `threetears.datasources` | Datasource entities, collections, and a driver abstraction for PostgreSQL, Redshift, Snowflake, and BigQuery backends |
 | [`3tears-object-store`](packages/object-store/) | `threetears.object_store` | Streaming S3-compatible object store for large binary artifacts. Pcaps, database dumps, rendered reports, and evidence, kept out of the entity tiers rather than pushed through them |
@@ -254,6 +254,7 @@ graph LR
         L1[L1 SQLite]
         L2[L2 NATS KV]
         L3[L3 PostgreSQL]
+        L3G[L3 git working tree]
     end
 
     SCRAPE --> TOOLS
@@ -285,6 +286,7 @@ graph LR
     CORE --> L1
     CORE --> L2
     CORE --> L3
+    CORE --> L3G
     SCRAPE -.-> WEB
     SEARCH -.-> WEB
     CHAN -.-> HUM

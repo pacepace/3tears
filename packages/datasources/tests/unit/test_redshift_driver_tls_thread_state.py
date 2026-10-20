@@ -251,6 +251,9 @@ class _Warehouse:
         self._listener = socket.create_server(("127.0.0.1", 0))
         self._accepted: list[ssl.SSLSocket] = []
         self._lock = threading.Lock()
+        #: connections the server has finished accepting, ever (the kill list is emptied by each kill)
+        self._accepted_total = 0
+        self._accepted_more = threading.Condition(self._lock)
         self.connections: list[_TlsConnection] = []
         self._thread = threading.Thread(target=self._serve, name="fake-warehouse", daemon=True)
         self._thread.start()
@@ -266,6 +269,8 @@ class _Warehouse:
             accepted = self._server_context.wrap_socket(raw, server_side=True)
             with self._lock:
                 self._accepted.append(accepted)
+                self._accepted_total += 1
+                self._accepted_more.notify_all()
 
     def connect(self, **_kwargs: Any) -> _TlsConnection:
         """the ``redshift_connector.connect`` stand-in: a new TLS connection to this server.
@@ -284,7 +289,12 @@ class _Warehouse:
         :return: None
         :rtype: None
         """
+        # the client's handshake can finish before this server's thread has recorded the connection; a kill that ran
+        # in that gap found nothing to reset and the "dead" connection lived on (seen on a slow CI runner, where the
+        # client socket then read as ready from TLS 1.3's post-handshake tickets, not from a reset)
         with self._lock:
+            ok = self._accepted_more.wait_for(lambda: self._accepted_total >= len(self.connections), _WAIT_S)
+            assert ok, "the server never finished accepting every connection the client opened"
             accepted, self._accepted = self._accepted, []
         for sock in accepted:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))

@@ -65,7 +65,7 @@ JUDGE_IDENTITIES: dict[str, str] = {
 }
 
 #: The final release the table below was taken at: the ``since`` of ``MIGRATIONS.toml``'s ``unreleased`` section.
-RELEASED_AT = "v0.70.0"
+RELEASED_AT = "v0.71.0"
 
 #: Every judge fingerprint as :data:`RELEASED_AT` shipped it, the baseline a wording change is announced against.
 #: v0.70.0 is the first release that shipped 3tears-evals. A copy for the reader: what a wording change is measured

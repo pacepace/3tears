@@ -58,6 +58,24 @@
 # callers.
 
 [[release]]
+version = "0.72.0"
+since = "v0.71.0"
+summary = """
+No public name of 3tears-evals has moved or been removed since 0.71.0, and no judge wording changed. The family moves
+to 0.72.0 for new public API in 3tears-agent-memory, 3tears-agent-intention and 3tears core.
+"""
+notes = []
+
+[[release]]
+version = "0.71.0"
+since = "v0.70.1"
+summary = """
+No public name of 3tears-evals has moved or been removed since 0.70.1. The family moves to 0.71.0 for new public API
+in 3tears core and 3tears-enforcement.
+"""
+notes = []
+
+[[release]]
 version = "0.70.1"
 since = "v0.70.0"
 summary = """

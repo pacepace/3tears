@@ -264,6 +264,10 @@ class BackgroundDispatch:
         """Wait until every fire handed off so far (and any handed off meanwhile) is recorded."""
         while self._tasks or self._writes:
             await asyncio.gather(*list(self._tasks.values()), *list(self._writes), return_exceptions=True)
+            # A finished task leaves _tasks and _writes in a done-callback the loop runs on its next
+            # turn, and gather over finished tasks completes without yielding that turn: give it one,
+            # or this loop re-gathers the same finished task forever.
+            await asyncio.sleep(0)
 
     async def aclose(self) -> None:
         """Stop: refuse new fires, cancel the running ones, and record each as failed.

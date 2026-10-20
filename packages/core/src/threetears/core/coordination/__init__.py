@@ -13,6 +13,8 @@ public surface:
 
 - :class:`KVLease` — distributed mutex factory with TTL and ownership tokens
 - :class:`HeldLease` — a lease renewed in the background that reports when it is lost
+- :class:`SyncHeldLease` — the same for synchronous code (:meth:`KVLease.hold_sync`), renewed on
+  :mod:`threetears.core.sync`'s shared loop
 - :class:`LeaseHandle` — per-acquire handle with refresh/release/async-with
 - :class:`LeaseUnavailable` — raised by fail-fast acquire when key is held
 - :class:`LeaseTimeout` — raised when acquire deadline elapses
@@ -77,6 +79,7 @@ from threetears.core.coordination.lease import (
     LeaseLost,
     LeaseTimeout,
     LeaseUnavailable,
+    SyncHeldLease,
 )
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor, ReplayAnchor
 from threetears.core.coordination.replay_guard import ReplayGuard
@@ -103,6 +106,7 @@ __all__ = [
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",
+    "SyncHeldLease",
     "LockHeld",
     "LockHold",
     "LockLossReason",
