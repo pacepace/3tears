@@ -395,7 +395,7 @@ class CallProxy:
             and the pod keeps acting with the caller's own tokens until the doors' windows close.
             Wired without a ``jwks_provider``, a declaring pod keeps the agent's token beside the
             delegation; that allowance is deprecated (a ``DeprecationWarning`` at construction) and
-            is removed in 0.73.0, after which the token is withheld as for an unreadable JWKS
+            is removed in a future minor release, after which the token is withheld as for an unreadable JWKS
         :ptype delegated_signer: DelegatedTokenSigner | None
         :param usage_emitter: post-call usage-emit seam; ``None`` (the safe default)
             emits nothing. when present, the proxy calls
@@ -433,8 +433,8 @@ class CallProxy:
         if delegated_signer is not None and jwks_provider is None:
             message = (
                 "CallProxy has a delegated_signer but no jwks_provider, so a pod that declares it proves "
-                "the delegation still receives the agent's token; this allowance is removed in 0.73.0, "
-                "after which the token is withheld as it is for an unreadable or empty JWKS"
+                "the delegation still receives the agent's token; this allowance is removed in a future minor "
+                "release, after which the token is withheld as it is for an unreadable or empty JWKS"
             )
             warnings.warn(message, DeprecationWarning, stacklevel=2)
             log.warning(message)
@@ -1904,7 +1904,7 @@ class CallProxy:
         delegation: a visible failure, where the other way was a silent credential exposure.
 
         With no ``jwks_provider`` at all the token is still kept, a rollout allowance that is
-        deprecated (the constructor warns) and removed in 0.73.0.
+        deprecated (the constructor warns) and removed in a future minor release.
 
         :return: whether the agent's token and user assertion are withheld
         :rtype: bool
