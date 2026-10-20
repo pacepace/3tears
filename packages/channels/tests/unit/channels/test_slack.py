@@ -89,7 +89,10 @@ class _Probe:
 
 
 def _unknown(msg: Any) -> bool:
-    return bool(msg.metadata.get("profile_lookup_failed"))
+    unknown = not msg.sender_profile_known
+    # the deprecated metadata twin says the same thing until it goes
+    assert bool(msg.metadata.get("profile_lookup_failed")) is unknown
+    return unknown
 
 
 class _MockRouter:
@@ -1534,7 +1537,8 @@ class TestSlackSenderIdentity:
         assert msg.sender_name is None
         assert msg.sender_email is None
         assert msg.sender_email_verified is False
-        assert msg.metadata["profile_lookup_failed"] is True, "an unknown sender must not read as a sparse one"
+        assert msg.sender_profile_known is False, "an unknown sender must not read as a sparse one"
+        assert msg.metadata["profile_lookup_failed"] is True
 
     @patch("threetears.channels.slack.AsyncApp")
     async def test_a_lookup_failure_backs_off_per_user_15_then_60_then_300(

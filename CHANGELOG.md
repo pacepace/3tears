@@ -118,7 +118,11 @@ Where that forced a choice between failing open and failing closed, the owner ru
 - **A failed lookup no longer shows as a false value.**
   - Wake tools show `unknown (lookup failed)`, not "no skill" or 0.
   - Slack serves the last good profile on a transient `users.info` failure, honours `Retry-After` (capped at
-    3600 s) and backs off 15 → 60 → 300 s. Raw event metadata carries `profile_lookup_failed`.
+    3600 s) and backs off 15 → 60 → 300 s.
+  - **New in `3tears-channels`: `ChannelMessage.sender_profile_known`** (default `True`). Slack sets it `False` when
+    the sender's profile couldn't be read, so an unknown sender doesn't read as a sparse profile. It is
+    informational only; outside `threetears.channels` only a reviewed exemption may read it. The
+    `metadata["profile_lookup_failed"]` key it replaces is still set, deprecated, and goes in the next minor release.
 - **Broad handlers catch the types they meant**, in registry discovery and registration, the namespace discovery
   client, the cron validator, langgraph tool keys and the scrape page finder.
   - **A mail-bounce parser bug answers 500, so the provider resends.** Only the parser's declared `ValueError`

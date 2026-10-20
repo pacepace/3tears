@@ -217,11 +217,12 @@ class SlackAdapter:
     :ptype user_profile_cache_max_entries: int
 
     host contract: when Slack's ``users.info`` fails and no earlier answer exists for the sender,
-    the routed :class:`ChannelMessage` carries ``metadata["profile_lookup_failed"] = True`` and
-    ``sender_name`` / ``sender_email`` / ``user_timezone`` / ``user_locale`` are ``None`` because they
-    are UNKNOWN, not absent. a host that reconciles identity by address, or stamps a timezone, must
-    treat that flag as "do not conclude anything from the missing values". the key is absent on a
-    profile Slack answered, however sparse, and on one served stale from an earlier answer.
+    the routed :class:`ChannelMessage` carries ``sender_profile_known=False`` and ``sender_name`` /
+    ``sender_email`` / ``user_timezone`` / ``user_locale`` are ``None`` because they are UNKNOWN, not
+    absent. a host that reconciles identity by address, or stamps a timezone, must treat that as "do
+    not conclude anything from the missing values". it is ``True`` on a profile Slack answered,
+    however sparse, and on one served stale from an earlier answer. the same message also carries
+    ``metadata["profile_lookup_failed"] = True``, deprecated: it goes in the next minor release.
     """
 
     def __init__(
@@ -527,7 +528,7 @@ class SlackAdapter:
             profile = await self._resolve_user_profile(sender_id)
 
         if profile.lookup_failed:
-            # the sender's name, address, zone and locale are unknown, not absent
+            # deprecated twin of sender_profile_known=False; goes in the next minor release
             metadata["profile_lookup_failed"] = True
 
         channel_message = ChannelMessage(
@@ -544,6 +545,8 @@ class SlackAdapter:
             # flag as the PLATFORM's assertion rather than proof of mailbox
             # control, and the host applies its own condition on top.
             sender_email_verified=profile.email is not None,
+            # the sender's name, address, zone and locale are unknown, not absent
+            sender_profile_known=not profile.lookup_failed,
             content=event.get("text", ""),
             channel_id=event.get("channel", ""),
             conversation_id=thread_ts if thread_ts else event.get("ts"),
