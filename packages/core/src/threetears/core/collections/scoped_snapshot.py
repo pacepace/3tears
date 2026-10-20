@@ -2986,7 +2986,7 @@ class ScopedSnapshot:
             else:
                 await self._sweeper.retire_names_if_unserved(written, what=f"a fold of {scope!r} that lost its race")
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a fold is housekeeping: the scope is served from its base and pieces until the next writer folds it, so a failure must not fail the publish that already moved it
-            log.warning("scoped snapshot %s: folding scope %r's pieces failed: %s", self._name, scope, exc)
+            contain(exc, log=log, what=f"scoped snapshot {self._name}: folding scope {scope!r}'s pieces failed: {exc}")
         return folded
 
     def _due(self, pieces: Sequence[_Piece]) -> bool:

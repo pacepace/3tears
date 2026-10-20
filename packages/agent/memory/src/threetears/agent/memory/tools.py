@@ -41,7 +41,6 @@ from datetime import UTC, datetime, tzinfo
 from typing import Any, Final, Literal
 from uuid import UUID
 
-from asyncpg import UniqueViolationError
 from uuid_utils import uuid7
 
 from langchain_core.tools import BaseTool, tool
@@ -330,6 +329,10 @@ def _tool_error(tool_name: str, action: str, error: str) -> str:
     return f"[TOOL ERROR] {tool_name}: {action} failed — {error}"
 
 
+#: PostgreSQL's SQLSTATE for a unique violation (asyncpg's ``UniqueViolationError.sqlstate``).
+_UNIQUE_VIOLATION: Final = "23505"
+
+
 def _is_alias_taken(exc: BaseException) -> bool:
     """Whether a failed write is the alias index refusing a name another memory already holds.
 
@@ -343,8 +346,10 @@ def _is_alias_taken(exc: BaseException) -> bool:
     :return: ``True`` only for a refusal by :data:`_ALIAS_INDEX`
     :rtype: bool
     """
-    if isinstance(exc, UniqueViolationError):
-        return bool(exc.constraint_name == _ALIAS_INDEX)
+    # asyncpg's UniqueViolationError, told by its SQLSTATE: this package does not depend on asyncpg
+    # (its hard dependencies are pinned), and the proxy's rebuilt error carries the same code.
+    if getattr(exc, "sqlstate", None) == _UNIQUE_VIOLATION:
+        return bool(getattr(exc, "constraint_name", None) == _ALIAS_INDEX)
     return isinstance(exc, DataLayerUnavailableError) and _ALIAS_INDEX in str(exc)
 
 

@@ -295,9 +295,9 @@ def _tell_member_end(on_member_end: Callable[[str], None], run_id: str, _task: a
     try:
         on_member_end(run_id)
     # prawduct:ok-broad-except — a done callback: a raising hook would surface only on the loop's handler, unnamed
-    except Exception:
+    except Exception as raised:
         # NOSILENT: logged with the run; the hook is the launch's bookkeeping, and the run's record is already its own.
-        log.exception("eval.start_group run=%s: the member-end hook raised", run_id)
+        contain(raised, log=log, what=f"eval.start_group run={run_id}: the member-end hook raised", level="error")
 
 
 class AdmissionTicket:

@@ -63,7 +63,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DEFAULT_MAX_TOOL_CALLS_PER_TURN",
@@ -269,6 +269,36 @@ def _reasoning_text(message: BaseMessage) -> str:
         if isinstance(value, str):
             parts.append(value)
     return "\n".join(p.strip() for p in parts if p.strip())
+
+
+@dataclass(frozen=True)
+class _MayFail:
+    """A model call whose failure the plan survives: the driver contains it and sends ``None``.
+
+    :ivar request: the request to run
+    :ivar what: the contained failure's log message
+    """
+
+    request: ModelRequest
+    what: str
+
+
+#: What the plan asks its driver to run: a call whose failure ends the step, or one it survives.
+_Step = ModelRequest | _MayFail
+
+
+def _answered(response: ModelResponse | None) -> ModelResponse:
+    """The response to a call whose failure ends the step, which the driver never answers with ``None``.
+
+    :param response: what the driver sent
+    :ptype response: ModelResponse | None
+    :return: the response
+    :rtype: ModelResponse
+    :raises TypeError: the driver sent ``None`` for a call that may not fail
+    """
+    if response is None:
+        raise TypeError("the plan's driver answered a call that may not fail with None")
+    return response
 
 
 def _response_messages(response: ModelResponse) -> list[BaseMessage]:
@@ -738,24 +768,25 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
 
     # --- the plan both seams drive ---------------------------------------------------------------
 
-    def _plan(self, request: ModelRequest) -> Generator[ModelRequest, ModelResponse, ExtendedModelResponse]:
+    def _plan(self, request: ModelRequest) -> Generator[_Step, ModelResponse | None, ExtendedModelResponse]:
         """The budget's model calls for one ``create_agent`` model step.
 
-        Yields each request to run; receives its response (or has the call's exception thrown in);
+        Yields each request to run and receives its response; a :class:`_MayFail` call that fails
+        is contained by the driver and answered with ``None``, any other failure ends the step;
         returns the step's response with the turn's updated record as its state command.
         :meth:`wrap_model_call` and :meth:`awrap_model_call` drive it, so the two seams cannot drift.
 
         :param request: the model request
         :ptype request: ModelRequest
         :return: the step's result
-        :rtype: Generator[ModelRequest, ModelResponse, ExtendedModelResponse]
+        :rtype: Generator[_Step, ModelResponse | None, ExtendedModelResponse]
         """
         tally = _TurnTally.from_state(request.state).settled(self._conversation(request))
         return (yield from self._step(request, tally))
 
     def _step(
         self, request: ModelRequest, tally: _TurnTally
-    ) -> Generator[ModelRequest, ModelResponse, ExtendedModelResponse]:
+    ) -> Generator[_Step, ModelResponse | None, ExtendedModelResponse]:
         """Assess the turn, run the model as the tier says, and record what the response did.
 
         :param request: the model request
@@ -763,7 +794,7 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         :param tally: the turn's record, its latest round judged
         :ptype tally: _TurnTally
         :return: the step's result
-        :rtype: Generator[ModelRequest, ModelResponse, ExtendedModelResponse]
+        :rtype: Generator[_Step, ModelResponse | None, ExtendedModelResponse]
         """
         tier, cause, pct = self._assess(request, tally)
         if tier > tally.tier:
@@ -794,7 +825,7 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
             template = self.warn_text if tier is ToolBudgetTier.WARN else self.urgent_text
             nudge = template.format(tool_calls=tally.tool_calls, max_tool_calls=self.max_tool_calls)
             to_run = request.override(messages=[*request.messages, self._instruction(nudge)])
-        response = yield to_run
+        response = _answered((yield to_run))
 
         answer = _last_ai(response)
         if _structured(response) or answer is None:
@@ -835,7 +866,7 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
 
     def _forced_answer(
         self, request: ModelRequest, tool_calls: int, cause: str, instruction: str
-    ) -> Generator[ModelRequest, ModelResponse, ModelResponse]:
+    ) -> Generator[_Step, ModelResponse | None, ModelResponse]:
         """Call the model told to answer; rebuild its reply as text and guard it against being empty.
 
         :param request: the model request
@@ -847,13 +878,13 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         :param instruction: the instruction appended for the pass
         :ptype instruction: str
         :return: the step's response
-        :rtype: Generator[ModelRequest, ModelResponse, ModelResponse]
+        :rtype: Generator[_Step, ModelResponse | None, ModelResponse]
         """
         log.warning(
             "tool-loop budget forced an answer",
             extra={"extra_data": {"cause": cause, "tool_calls": tool_calls, "max_tool_calls": self.max_tool_calls}},
         )
-        response = yield self._answer_only(request, instruction)
+        response = _answered((yield self._answer_only(request, instruction)))
         if _structured(response):
             return response
         answer = _last_ai(response) or AIMessage(content="")
@@ -866,7 +897,7 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
 
     def _answer_or_fallback(
         self, request: ModelRequest, response: ModelResponse, empty: AIMessage, tool_calls: int
-    ) -> Generator[ModelRequest, ModelResponse, ModelResponse]:
+    ) -> Generator[_Step, ModelResponse | None, ModelResponse]:
         """Retry an empty answer once, strictly; else end the turn with the fallback text.
 
         :param request: the model request (the original, before any instruction was appended)
@@ -878,7 +909,7 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         :param tool_calls: the turn's tool calls so far
         :ptype tool_calls: int
         :return: the step's response
-        :rtype: Generator[ModelRequest, ModelResponse, ModelResponse]
+        :rtype: Generator[_Step, ModelResponse | None, ModelResponse]
         """
         reasoning = _reasoning_text(empty)
         log.warning(
@@ -888,17 +919,10 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         retry = self.retry_text
         if reasoning:
             retry = _RETRY_REASONING_PREFIX.format(reasoning=reasoning) + retry
-        retried: ModelResponse | None
-        try:
-            retried = yield self._answer_only(request, retry)
-        except GraphBubbleUp:
-            raise
-        except Exception as exc:
-            log.warning(
-                "tool-loop budget retry failed; answering with the fallback",
-                extra={"extra_data": {"tool_calls": tool_calls, "error_type": type(exc).__name__}},
-            )
-            retried = None
+        # A failed retry is contained by the driver and comes back as ``None``: the fallback answers.
+        retried = yield _MayFail(
+            self._answer_only(request, retry), "tool-loop budget retry failed; answering with the fallback"
+        )
         if retried is not None and _structured(retried):
             return retried
         answer = _last_ai(retried)
@@ -909,16 +933,9 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
             extra={"extra_data": {"tool_calls": tool_calls, "max_tool_calls": self.max_tool_calls}},
         )
         stand_in = request.override(model=_FallbackChatModel(text=self.fallback_text), tool_choice=None)
-        try:
-            said = yield stand_in
-        except GraphBubbleUp:
-            raise
-        except Exception as exc:
+        said = yield _MayFail(stand_in, "tool-loop budget fallback call failed; answering without streaming")
+        if said is None:
             # The chain refused even the stand-in; the reply still lands in the history, unstreamed.
-            log.warning(
-                "tool-loop budget fallback call failed; answering without streaming",
-                extra={"extra_data": {"tool_calls": tool_calls, "error_type": type(exc).__name__}},
-            )
             return _with_answer(response, AIMessage(content=self.fallback_text, name=empty.name))
         return _with_answer(said, _last_ai(said) or AIMessage(content=self.fallback_text, name=empty.name))
 
@@ -939,15 +956,21 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         plan = self._plan(request)
         spent: list[ModelResponse] = []
         try:
-            to_run = next(plan)
+            step = next(plan)
             while True:
-                try:
-                    outcome = handler(to_run)
-                except Exception as exc:  # noqa: BLE001 - handed to the plan, which re-raises all but a retry's failure
-                    to_run = plan.throw(exc)
+                if isinstance(step, _MayFail):
+                    try:
+                        outcome: ModelResponse | None = handler(step.request)
+                    except GraphBubbleUp:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - a retry or stand-in that fails gives way to the fallback
+                        contain(exc, log=log, what=step.what)
+                        outcome = None
                 else:
+                    outcome = handler(step)
+                if outcome is not None:
                     spent.append(outcome)
-                    to_run = plan.send(outcome)
+                step = plan.send(outcome)
         except StopIteration as done:
             return _metered(cast("ExtendedModelResponse", done.value), spent)
 
@@ -966,14 +989,20 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         plan = self._plan(request)
         spent: list[ModelResponse] = []
         try:
-            to_run = next(plan)
+            step = next(plan)
             while True:
-                try:
-                    outcome = await handler(to_run)
-                except Exception as exc:  # noqa: BLE001 - handed to the plan, which re-raises all but a retry's failure
-                    to_run = plan.throw(exc)
+                if isinstance(step, _MayFail):
+                    try:
+                        outcome: ModelResponse | None = await handler(step.request)
+                    except GraphBubbleUp:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - a retry or stand-in that fails gives way to the fallback
+                        contain(exc, log=log, what=step.what)
+                        outcome = None
                 else:
+                    outcome = await handler(step)
+                if outcome is not None:
                     spent.append(outcome)
-                    to_run = plan.send(outcome)
+                step = plan.send(outcome)
         except StopIteration as done:
             return _metered(cast("ExtendedModelResponse", done.value), spent)
