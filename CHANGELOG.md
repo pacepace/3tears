@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.72.0 -- 2026-10-20
+
 ### agent-memory, agent-intention, core: the embedding width is a deployment setting
 
 **Added (agent-memory, agent-intention):** `embedding_dim: int = 1024` on `migrations.register(runner, *,
