@@ -41,6 +41,11 @@ if TYPE_CHECKING:
         IntentionsCollection,
         intentions_table,
     )
+    from threetears.agent.intention.embedding_width import (
+        EmbeddingWidthMismatch,
+        resize_embedding_width,
+        verify_embedding_width,
+    )
     from threetears.agent.intention.entities import IntentionEntity
     from threetears.agent.intention.events import (
         IntentionResolvedEvent,
@@ -64,6 +69,9 @@ if TYPE_CHECKING:
 
 # public attribute -> (defining module, attribute name in that module)
 _LAZY: dict[str, tuple[str, str]] = {
+    "EmbeddingWidthMismatch": ("threetears.agent.intention.embedding_width", "EmbeddingWidthMismatch"),
+    "resize_embedding_width": ("threetears.agent.intention.embedding_width", "resize_embedding_width"),
+    "verify_embedding_width": ("threetears.agent.intention.embedding_width", "verify_embedding_width"),
     "ACTION_INTENTION_READ": ("threetears.agent.intention.authorize", "ACTION_INTENTION_READ"),
     "ACTION_INTENTION_WRITE": ("threetears.agent.intention.authorize", "ACTION_INTENTION_WRITE"),
     "INTENTION_NAMESPACE_TYPE": ("threetears.agent.intention.authorize", "INTENTION_NAMESPACE_TYPE"),
@@ -99,6 +107,9 @@ _LAZY: dict[str, tuple[str, str]] = {
 }
 
 __all__ = [
+    "EmbeddingWidthMismatch",
+    "resize_embedding_width",
+    "verify_embedding_width",
     "ACTION_INTENTION_READ",
     "ACTION_INTENTION_WRITE",
     "INTENTION_NAMESPACE_TYPE",

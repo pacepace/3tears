@@ -301,6 +301,45 @@ async def test_a_body_that_itself_hands_off_is_not_finalized_twice() -> None:
     assert fires.failed == []
 
 
+@pytest.mark.timeout(10)
+async def test_join_returns_when_a_finished_fire_is_not_yet_forgotten() -> None:
+    """A fire ends; its task leaves the dispatch only in a done-callback the loop runs on its next turn.
+
+    ``gather`` over tasks that are all finished completes without giving the loop that turn
+    (Python 3.12 and later), so ``join`` must yield itself or it re-gathers the same finished
+    task forever at full CPU. Here ``aclose`` starts eagerly from a done-callback queued ahead
+    of the dispatch's own, which is the state a shutdown reaches by timing.
+    """
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires)
+    loop = asyncio.get_running_loop()
+    closing: list[asyncio.Task[None]] = []
+
+    def _close_now(_done: asyncio.Future[Any]) -> None:
+        closing.append(asyncio.Task(dispatch.aclose(), loop=loop, eager_start=True))
+
+    def _factory(loop_: asyncio.AbstractEventLoop, coro: Any, **kw: Any) -> asyncio.Task[Any]:
+        task = asyncio.Task(coro, loop=loop_, **kw)
+        if (kw.get("name") or "") == "scheduled-jobs:demo":
+            task.add_done_callback(_close_now)
+        return task
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="succeeded")
+
+    loop.set_task_factory(_factory)
+    try:
+        fire_id = uuid4()
+        await dispatch.wrap(_body)(_trigger(), fire_id)
+        while not closing:
+            await asyncio.sleep(0)
+        await closing[0]
+    finally:
+        loop.set_task_factory(None)
+    assert [row["fire_id"] for row in fires.succeeded] == [fire_id]
+    assert dispatch.in_flight == {}
+
+
 async def test_a_finalize_that_fails_is_logged_and_releases_the_kind(caplog: pytest.LogCaptureFixture) -> None:
     """A lost write leaves the row in flight for the reaper; it must not wedge the kind."""
     dispatch = _dispatch(_FakeFireStore(raise_on_finalize=True))

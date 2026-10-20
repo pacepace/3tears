@@ -76,6 +76,11 @@ if TYPE_CHECKING:
         ReflectorChatModelFactory,
     )
     from threetears.agent.memory.embedding_utils import embedding_attribution_scope
+    from threetears.agent.memory.embedding_width import (
+        EmbeddingWidthMismatch,
+        resize_embedding_width,
+        verify_embedding_width,
+    )
     from threetears.agent.memory.entities import (
         MediaContentEntity,
         MediaEntity,
@@ -132,6 +137,9 @@ if TYPE_CHECKING:
 
 # public attribute -> (defining module, attribute name in that module)
 _LAZY: dict[str, tuple[str, str]] = {
+    "EmbeddingWidthMismatch": ("threetears.agent.memory.embedding_width", "EmbeddingWidthMismatch"),
+    "resize_embedding_width": ("threetears.agent.memory.embedding_width", "resize_embedding_width"),
+    "verify_embedding_width": ("threetears.agent.memory.embedding_width", "verify_embedding_width"),
     "ACTION_MEMORY_EXTRACT": ("threetears.agent.memory.authorize", "ACTION_MEMORY_EXTRACT"),
     "ACTION_MEMORY_READ": ("threetears.agent.memory.authorize", "ACTION_MEMORY_READ"),
     "ACTION_MEMORY_WRITE": ("threetears.agent.memory.authorize", "ACTION_MEMORY_WRITE"),
@@ -239,6 +247,9 @@ _LAZY: dict[str, tuple[str, str]] = {
 }
 
 __all__ = [
+    "EmbeddingWidthMismatch",
+    "resize_embedding_width",
+    "verify_embedding_width",
     "ACTION_MEMORY_EXTRACT",
     "ACTION_MEMORY_READ",
     "ACTION_MEMORY_WRITE",
