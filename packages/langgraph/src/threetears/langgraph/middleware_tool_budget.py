@@ -5,8 +5,10 @@ and the turn ends on ``GraphRecursionError`` with no reply. :class:`ToolLoopBudg
 the loop first, and always with text:
 
 - **A per-turn cap.** At most ``max_tool_calls`` tool calls per turn (a turn is one invocation of
-  the agent; resuming an interrupted one continues it). The cap is absolute: a response whose
-  calls would take the turn past it is discarded and the forced answer pass runs instead.
+  the agent; resuming an interrupted one continues it). The cap is absolute: a round whose
+  calls would take the turn past it runs its calls up to the cap, in the order the model gave
+  them; the calls past it are removed from the response, never dispatched, and the next model
+  step is the forced answer, told how many were not run (``refused_text``).
 - **Escalating tiers.** Two pressures are measured before every model call -- tool calls against
   the cap, and the prompt against the model's context window -- and the larger sets the tier.
   At ``warn`` and ``urgent`` the model is shown a wrap-up nudge; at ``force`` it is told to
@@ -23,7 +25,7 @@ the loop first, and always with text:
   the turn ends with ``fallback_text``, run through the model chain as a one-message stand-in
   model so it streams and lands in the history like any answer. Never an empty turn.
 - **Metered.** The step's answer carries the summed ``usage_metadata`` of every model call the
-  step made (a discarded round and a retry included) and the last call's ``response_metadata``.
+  step made (a retry and the stand-in included) and the last call's ``response_metadata``.
 - **A runaway guard.** ``runaway_rounds`` consecutive rounds that wrote no text and whose every
   tool call failed force the answer pass, however far below the cap the turn is.
 
@@ -101,6 +103,10 @@ _RUNAWAY_TEXT = (
     "Your recent tool calls failed and you have written nothing. Stop calling tools and answer "
     "the user now with what you have, saying plainly what you could not do."
 )
+_REFUSED_TEXT = (
+    "{refused} of the tool calls you last asked for were not run: this turn's tool budget "
+    "({max_tool_calls} calls) is spent."
+)
 _RETRY_TEXT = (
     "Your last reply was empty. Write your answer to the user now, as plain text, using only "
     "what you already have. Do not call tools and do not think it through again."
@@ -149,6 +155,7 @@ class _TurnTally:
     :ivar tier: the highest tier the turn has reached (so a transition is logged once)
     :ivar open_call_ids: the latest round's tool-call ids, until the next model call judges its results
     :ivar open_wrote_text: whether the latest round's response wrote text
+    :ivar refused: how many calls of the latest round were not run because the cap was reached
     """
 
     tool_calls: int = 0
@@ -157,6 +164,7 @@ class _TurnTally:
     tier: int = 0
     open_call_ids: tuple[str, ...] = ()
     open_wrote_text: bool = False
+    refused: int = 0
 
     @classmethod
     def from_state(cls, state: Any) -> _TurnTally:
@@ -177,6 +185,7 @@ class _TurnTally:
             tier=int(raw.get("tier", 0)),
             open_call_ids=tuple(str(i) for i in raw.get("open_call_ids", ())),
             open_wrote_text=bool(raw.get("open_wrote_text", False)),
+            refused=int(raw.get("refused", 0)),
         )
 
     def to_state(self) -> dict[str, Any]:
@@ -192,6 +201,7 @@ class _TurnTally:
             "tier": self.tier,
             "open_call_ids": list(self.open_call_ids),
             "open_wrote_text": self.open_wrote_text,
+            "refused": self.refused,
         }
 
     def settled(self, messages: Sequence[BaseMessage]) -> _TurnTally:
@@ -215,20 +225,24 @@ class _TurnTally:
             self, failing_rounds=self.failing_rounds + 1 if failed else 0, open_call_ids=(), open_wrote_text=False
         )
 
-    def dispatched(self, answer: AIMessage) -> _TurnTally:
+    def dispatched(self, answer: AIMessage, *, running: int | None = None) -> _TurnTally:
         """The record after a response whose tool calls go on to run.
 
         :param answer: the response
         :ptype answer: AIMessage
+        :param running: how many of its calls, from the first, go on to run; ``None`` for all
+        :ptype running: int | None
         :return: the record with the round counted and left open
         :rtype: _TurnTally
         """
+        ran = answer.tool_calls if running is None else answer.tool_calls[:running]
         return replace(
             self,
-            tool_calls=self.tool_calls + len(answer.tool_calls),
+            tool_calls=self.tool_calls + len(ran),
             rounds=self.rounds + 1,
-            open_call_ids=tuple(str(c.get("id")) for c in answer.tool_calls if c.get("id")),
+            open_call_ids=tuple(str(c.get("id")) for c in ran if c.get("id")),
             open_wrote_text=bool(_visible_text(answer)),
+            refused=len(answer.tool_calls) - len(ran),
         )
 
 
@@ -433,6 +447,37 @@ def _finished(drive: _Driver) -> ExtendedModelResponse:
     return drive.result
 
 
+def _split(response: ModelResponse, answer: AIMessage, allowance: int) -> ModelResponse:
+    """A round past the cap, cut to its first ``allowance`` calls, in the order the model gave them.
+
+    The calls past the allowance are removed from the ``AIMessage`` -- its ``tool_calls`` and any
+    tool-use content block naming them -- rather than answered: a call left on the message is
+    live to every ``after_model`` hook (``HumanInTheLoopMiddleware`` would ask a person about it
+    and could give it a second result), and a call that is not there needs no result, so every
+    call that remains keeps exactly one. The forced answer's instruction says how many were not
+    run. The round costs the graph the steps any round does.
+
+    :param response: the model's response
+    :ptype response: ModelResponse
+    :param answer: its ``AIMessage``
+    :ptype answer: AIMessage
+    :param allowance: how many calls run; at least one
+    :ptype allowance: int
+    :return: the response with its ``AIMessage`` cut
+    :rtype: ModelResponse
+    """
+    kept = answer.tool_calls[:allowance]
+    cut = {c.get("id") for c in answer.tool_calls[allowance:]} - {c.get("id") for c in kept}
+    content: Any = answer.content
+    if isinstance(content, list):
+        content = [
+            b for b in content if not (isinstance(b, Mapping) and _is_tool_block(b) and _block_call_id(b) in cut)
+        ]
+    trimmed = answer.model_copy(update={"content": content, "tool_calls": kept})
+    messages = [trimmed if m is answer else m for m in _response_messages(response)]
+    return ModelResponse(result=messages, structured_response=response.structured_response)
+
+
 def _response_messages(response: ModelResponse) -> list[BaseMessage]:
     """The messages a model response carries.
 
@@ -515,6 +560,21 @@ def _is_tool_block(block: Mapping[str, Any]) -> bool:
     """
     kind = block.get("type")
     return isinstance(kind, str) and ("tool" in kind or kind == "function_call")
+
+
+def _block_call_id(block: Mapping[str, Any]) -> Any:
+    """The tool call id a content block carries, whichever key its provider keeps it under.
+
+    Anthropic's ``tool_use`` keeps it in ``id``. OpenAI's Responses API ``function_call`` keeps it
+    in ``call_id`` and puts its own ``fc_...`` item id in ``id``, so ``id`` alone would miss every
+    cut call there and leave it on the message with no result, which OpenAI refuses.
+
+    :param block: a tool-call content block
+    :ptype block: Mapping[str, Any]
+    :return: the call id, or None when it carries none
+    :rtype: Any
+    """
+    return block.get("call_id", block.get("id"))
 
 
 def _metered(result: ExtendedModelResponse, spent: Sequence[ModelResponse]) -> ExtendedModelResponse:
@@ -693,6 +753,9 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
     :ptype runaway_text: str
     :param retry_text: the stricter instruction when an answer came back empty
     :ptype retry_text: str
+    :param refused_text: added to the forced answer's instruction after a round past the cap,
+        saying how many of its calls were not run; may use ``{refused}`` and ``{max_tool_calls}``
+    :ptype refused_text: str
     :param fallback_text: the turn's reply when the retry is empty too
     :ptype fallback_text: str
     :param forced_tool_choice: the ``tool_choice`` of the forced pass and the retry, whose tools
@@ -720,6 +783,7 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         force_text: str = _FORCE_TEXT,
         runaway_text: str = _RUNAWAY_TEXT,
         retry_text: str = _RETRY_TEXT,
+        refused_text: str = _REFUSED_TEXT,
         fallback_text: str = DEFAULT_TOOL_BUDGET_FALLBACK_TEXT,
         forced_tool_choice: str | None = None,
     ) -> None:
@@ -749,6 +813,7 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         self.force_text = force_text
         self.runaway_text = runaway_text
         self.retry_text = retry_text
+        self.refused_text = refused_text
         self.fallback_text = fallback_text
         self.forced_tool_choice = forced_tool_choice
 
@@ -949,7 +1014,9 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
             answered = yield from self._forced_answer(request, tally.tool_calls, "runaway", self.runaway_text)
             return self._recorded(answered, tally)
         if tier is ToolBudgetTier.FORCE:
-            answered = yield from self._forced_answer(request, tally.tool_calls, cause, self.force_text)
+            answered = yield from self._forced_answer(
+                request, tally.tool_calls, cause, self._force_instruction(tally.refused)
+            )
             return self._recorded(answered, tally)
 
         to_run = request
@@ -963,25 +1030,58 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         if _structured(response) or answer is None:
             return self._recorded(response, tally)
         if answer.tool_calls:
-            projected = tally.tool_calls + len(answer.tool_calls)
-            if projected <= self.max_tool_calls:
+            allowance = max(self.max_tool_calls - tally.tool_calls, 0)
+            if len(answer.tool_calls) <= allowance:
                 return self._recorded(response, tally.dispatched(answer))
-            log.warning(
-                "tool-loop budget discarded a round that would pass the cap",
-                extra={
-                    "extra_data": {
-                        "tool_calls": tally.tool_calls,
-                        "round_tool_calls": len(answer.tool_calls),
-                        "max_tool_calls": self.max_tool_calls,
-                    }
-                },
-            )
-            answered = yield from self._forced_answer(request, tally.tool_calls, "tool_calls", self.force_text)
-            return self._recorded(answered, tally)
+            self._log_split(tally, allowance, len(answer.tool_calls) - allowance)
+            if allowance == 0:
+                # nothing of the round may run, so there is no round: answer in this step
+                answered = yield from self._forced_answer(
+                    request, tally.tool_calls, "tool_calls", self._force_instruction(len(answer.tool_calls))
+                )
+                return self._recorded(answered, tally)
+            return self._recorded(_split(response, answer, allowance), tally.dispatched(answer, running=allowance))
         if _visible_text(answer):
             return self._recorded(response, tally)
         answered = yield from self._answer_or_fallback(request, response, answer, tally.tool_calls)
         return self._recorded(answered, tally)
+
+    def _log_split(self, tally: _TurnTally, run: int, refused: int) -> None:
+        """Log a round past the cap: the calls it runs and the ones it does not, no prompt text.
+
+        :param tally: the turn's record before the round
+        :ptype tally: _TurnTally
+        :param run: calls that run
+        :ptype run: int
+        :param refused: calls that do not
+        :ptype refused: int
+        :return: nothing
+        :rtype: None
+        """
+        log.warning(
+            "tool-loop budget ran part of a round that would pass the cap",
+            extra={
+                "extra_data": {
+                    "tool_calls": tally.tool_calls,
+                    "calls_run": run,
+                    "calls_refused": refused,
+                    "max_tool_calls": self.max_tool_calls,
+                }
+            },
+        )
+
+    def _force_instruction(self, refused: int) -> str:
+        """The forced answer's instruction, saying how many calls went unrun when a round was cut.
+
+        :param refused: calls of the latest round that were not run
+        :ptype refused: int
+        :return: the instruction
+        :rtype: str
+        """
+        if refused <= 0:
+            return self.force_text
+        note = self.refused_text.format(refused=refused, max_tool_calls=self.max_tool_calls)
+        return f"{self.force_text}\n\n{note}"
 
     @staticmethod
     def _recorded(response: ModelResponse, tally: _TurnTally) -> ExtendedModelResponse:

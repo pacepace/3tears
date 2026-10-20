@@ -50,6 +50,24 @@ recovery wait and a hanging provider holds one for 60-120 s; a lease that short 
 new probe onto the hanging provider every window. `recovery_timeout_seconds` still means only
 the wait in OPEN before probing.
 
+### langgraph: a tool round that would pass the budget runs up to it instead of being dropped
+
+**Fixed:** `ToolLoopBudgetMiddleware` discarded a whole round whose calls would take the turn past
+`max_tool_calls` and forced the answer, so the model answered having run none of them, though the
+cap still allowed most. Reported by scriob on 0.73.0 (Claude Sonnet 4.6): three calls, then
+sixteen reads in one round under a cap of sixteen, all dropped, and the reply said it had not read
+the files. Such a round now runs its calls up to the cap, in the order the model gave them. The
+calls past the cap are removed from the round (its `tool_calls` and any tool-use content block
+naming them) and never dispatched, so no `after_model` hook -- `HumanInTheLoopMiddleware` --
+asks about a call that will not run or gives one a second result, and every call left keeps
+exactly one result. The next model step is the forced answer, as before, and its instruction says
+how many calls were not run. A round with no allowance left runs nothing and is answered in the
+same step. The round costs the graph the steps any round does, so `recursion_limit_for` is
+unchanged. One log line records the round's `calls_run` and `calls_refused` with the turn's counts.
+
+**Added:** `refused_text` on `ToolLoopBudgetMiddleware`: the sentence added to the forced answer's
+instruction after a round was cut (it may use `{refused}` and `{max_tool_calls}`).
+
 ### scrape: a suppressed or abandoned fetch hands its in-process probe back instead of inventing a failure
 
 **Changed:** `ProbeObservableBreaker` requires `release_probe()` (the models `CircuitBreaker`
