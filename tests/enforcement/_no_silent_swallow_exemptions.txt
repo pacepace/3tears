@@ -13,3 +13,5 @@ packages/evals/src/threetears/evals/kernel/offload.py:wait_through_cancellation#
 
 # rationale: a cell cancelled with its run is recorded as excluded with what it had already spent, which lives only on that cell's sink, and the cancellation is re-raised once that record is saved
 packages/evals/src/threetears/evals/run/runner.py:execute_run.run_and_record#0:CancelledError
+# rationale: holds a repeated cancellation while a git write-and-commit already under the repository's lock runs to its end, so the lock is never released over a half-written index; the outer handler re-raises the cancellation as soon as the commit has finished
+packages/core/src/threetears/core/backends/git/repo.py:GitRepo._uninterrupted#0:CancelledError

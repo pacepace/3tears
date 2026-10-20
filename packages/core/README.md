@@ -1,6 +1,6 @@
 # 3tears Core
 
-Three-tier caching library for Python applications. Provides collections (L1 SQLite -> L2 NATS KV -> L3 PostgreSQL) with subscript access, entity proxy objects, and configurable flush strategies.
+Three-tier caching library for Python applications. Provides collections (L1 SQLite -> L2 NATS KV -> L3 PostgreSQL, or a git working tree) with subscript access, entity proxy objects, and configurable flush strategies.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ L1 (SQLite, in-process, sync)  ->  L2 (NATS KV, shared, async)  ->  L3 (PostgreS
 
 - **L1**: In-memory SQLite via WAL mode. Sync access. Used by entity attribute reads and writes.
 - **L2**: NATS KV shared cache. Async. Cross-pod consistency for multi-instance deployments.
-- **L3**: PostgreSQL (or PostGIS, YugabyteDB, etc.). Async. Source of truth.
+- **L3**: PostgreSQL (or PostGIS, YugabyteDB, etc.), or a git working tree (`threetears.core.backends.git`: rows as files, every change set one commit). Async. Source of truth.
 
 Reads promote up the stack (L3 miss -> L2 miss -> L1 hit on next access). Writes flow down (L1 -> L2 -> L3, with optional deferred flush).
 
@@ -242,6 +242,35 @@ UPDATE users SET ... WHERE user_id = $1 AND date_updated = $2
 ```
 
 If `rows_affected == 0` for an UPDATE, `BaseCollection.save_entity()` raises `ConcurrentModificationError`.
+
+## Synchronous Callers
+
+3tears is async. A command line, a batch script or a worker thread with no event loop calls it through `threetears.core.sync`:
+
+```python
+from threetears.core import sync
+
+page = sync.run(lambda: client.get("/status"), timeout=30)   # a factory or a coroutine
+```
+
+Every call runs on one shared event loop in a daemon thread, so a resource one call opens (a NATS connection, an HTTP client) serves the next. Open it through `sync.run` and use it only through `sync.run`. Called from inside a running event loop, `run` raises `RuntimeError`: await the work there instead.
+
+A lease held across synchronous work is renewed on that loop while the caller's thread works:
+
+```python
+nats = sync.run(connect_nats)                           # opened on the shared loop
+lease = KVLease(nats, bucket_name="leases")
+with lease.hold_sync("set.june", ttl=60, renew_every=20, max_wait_seconds=600) as held:
+    for step in steps:
+        held.check()                                    # raises LeaseLost once the lease is lost
+        step()
+```
+
+`hold_sync` takes `hold`'s keywords and returns a `SyncHeldLease`: `held` and `lost_reason` as on `HeldLease`, `lost` as a `threading.Event`, and `check()`.
+
+## Health Checks
+
+`TracedHttpClient.probe(path, *, method="GET", headers=None, timeout=None) -> bool` asks once whether an upstream answers (a status below 400). It never retries, never touches the circuit breaker, never raises for a network failure, and logs only at DEBUG, so a machine that is often off can be checked every minute without an ERROR each time. `request` and `get` retry and log an exhausted call at ERROR, which is right for real traffic and wrong for a health check.
 
 ## Subclassing Guide
 

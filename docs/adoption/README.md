@@ -161,6 +161,7 @@ at commit time.
 | Module | Solves |
 |---|---|
 | [`core`](core.md) | Three-tier entities and collections. `DataStore`, schema, migrations. The foundation everything else sits on. |
+| [`core`: git backend](core-git.md) | `threetears.core.backends.git`: a git working tree as the durable tier: rows as files, change sets as commits, one writer. |
 | [`conversations`](conversations.md) | Owns the shared `conversations` table so no single consumer package has to. |
 | [`datasources`](datasources.md) | One canonical model for "what is a datasource," with a swappable driver abstraction. |
 
