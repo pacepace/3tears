@@ -58,7 +58,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.73.0"
 since = "v0.72.0"
 summary = """
 A campaign is a campaign of aspects: one question, its arms, one or more aspects each read on its own runs, and
