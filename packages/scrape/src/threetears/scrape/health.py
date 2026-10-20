@@ -34,9 +34,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
+from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.core.entities.base import BaseEntity
+from threetears.core.exceptions import ConcurrentModificationError, GenerationUnavailableError
 
 from .collections import ScrapeCollection, _parse_dt_or_unrecorded, _parse_dt_strict
 from .extraction import html_to_text
@@ -52,6 +54,36 @@ __all__ = [
     "record_robots_block",
     "record_validated_fetch",
 ]
+
+#: what a read of the health store means by "the store did not answer", and so what a caller that
+#: degrades on an unreadable row may catch. The framework's shared storage set as it stands: an
+#: L2 refusal, the L3-down signal, a direct pool error, or a socket, DNS or timeout failure.
+#: Anything else -- an ``AttributeError`` in a row accessor, a wiring error -- is a bug and
+#: propagates rather than reading as an outage.
+#:
+#: Private to this package: every degrading caller of a health read imports it from here, so the
+#: set is decided once.
+_HEALTH_STORE_READ_FAILURES: Final[tuple[type[BaseException], ...]] = STORAGE_FAILURES
+
+#: what a write through :func:`_merge_health` means by "the bookkeeping did not land": the read
+#: set, plus the two failures ``BaseCollection.save_entity`` documents for a write that reached
+#: the store and did not stick.
+#:
+#: ``ConcurrentModificationError`` is here and NOT in :data:`STORAGE_FAILURES` because losing the
+#: optimistic-lock fence to another pod writing the same target's row is an expected operating
+#: condition for a health write, not a signal. Several pods poll one target; each health write is
+#: a read-modify-write of one row, so two of them colliding is the normal shape of a fleet, and
+#: the next poll writes again. ``IdempotencyKeyStore`` reads the same exception as its own signal,
+#: which is why the shared tuple is not widened instead -- the reasoning
+#: ``windowed_counter._DEGRADABLE_FAILURES`` gives for the same choice.
+#:
+#: ``GenerationUnavailableError`` is a write that committed but could not advance the table's
+#: write generation; the row is stored, and the caller is told to retry, which the next poll does.
+_HEALTH_STORE_WRITE_FAILURES: Final[tuple[type[BaseException], ...]] = (
+    *STORAGE_FAILURES,
+    ConcurrentModificationError,
+    GenerationUnavailableError,
+)
 
 
 def content_fingerprint(html: str) -> str:

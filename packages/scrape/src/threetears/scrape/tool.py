@@ -55,7 +55,13 @@ from .collections import (
 from .driver import NavStep, RenderedPage, ScrapeDriver
 from .eval_loop import StrategyType, run_eval_loop, run_eval_loop_multi_row
 from .extraction import FieldSchema
-from .health import ScrapeTargetHealthCollection, clear_robots_block, record_robots_block
+from .health import (
+    _HEALTH_STORE_READ_FAILURES,
+    _HEALTH_STORE_WRITE_FAILURES,
+    ScrapeTargetHealthCollection,
+    clear_robots_block,
+    record_robots_block,
+)
 from .llm_retry import StructuredCallFailedError
 
 __all__ = ["MODEL_UNAVAILABLE_STATUS", "ROBOTS_UNREACHABLE_STATUS", "ScrapeTool"]
@@ -630,7 +636,7 @@ class ScrapeTool(TearsTool):
             if row is None or row.robots_blocked_at is None:
                 return
             await clear_robots_block(self._health_collection, target_id=target_id)
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this is housekeeping after a fetch the caller has already paid for; a health-store failure must not turn a good page into a failed ToolResult, and the stale queue entry is visible and self-corrects. Logged with its traceback below
+        except _HEALTH_STORE_WRITE_FAILURES as exc:  # this is housekeeping after a fetch the caller has already paid for; a health-store failure must not turn a good page into a failed ToolResult, and the stale queue entry is visible and self-corrects. Logged with its traceback below
             contain(
                 exc,
                 log=log,
@@ -651,7 +657,7 @@ class ScrapeTool(TearsTool):
             return None
         try:
             row = await self._health_collection.get(target_id)
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a health-store outage must degrade to fetching without a solve, exactly as the circuit degrades to fetching; losing the reuse is a cost, losing the fetch is an outage. Logged with its traceback below
+        except _HEALTH_STORE_READ_FAILURES as exc:  # a health-store outage must degrade to fetching without a solve, exactly as the circuit degrades to fetching; losing the reuse is a cost, losing the fetch is an outage. Logged with its traceback below
             contain(
                 exc,
                 log=log,
@@ -799,7 +805,7 @@ class ScrapeTool(TearsTool):
                         await record_robots_block(
                             self._health_collection, target_id=target_id, reason=robots_decision.reason
                         )
-                    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this tool's contract is to return a ToolResult, never to raise; the escalation below is the answer whether or not the queue write lands, and dropping it here loses the queue entry rather than the decision. Logged with its traceback below
+                    except _HEALTH_STORE_WRITE_FAILURES as exc:  # this tool's contract is to return a ToolResult, never to raise; the escalation below is the answer whether or not the queue write lands, and dropping it here loses the queue entry rather than the decision. Logged with its traceback below
                         contain(
                             exc,
                             log=log,
