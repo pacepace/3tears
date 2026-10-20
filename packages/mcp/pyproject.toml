@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-mcp"
-version = "0.72.0"
+version = "0.73.0"
 description = "Shared MCP framework: McpServer + McpTool + PlatformHttpClient + per-tool RBAC backed by mcp_tool_grants and the task-02 epoch broadcast"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -20,17 +20,26 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
+# The base is the server, the tools, identity and PlatformHttpClient: what a host with its own
+# Authorizer needs. The floor is pinned in tests/enforcement/test_dependency_alignment.py.
 dependencies = [
-    "3tears>=0.72.0,<0.73.0",
-    "3tears-epoch>=0.72.0,<0.73.0",
-    "3tears-nats>=0.72.0,<0.73.0",
-    "3tears-observe>=0.72.0,<0.73.0",
+    "3tears-observe>=0.73.0,<0.74.0",
     "mcp>=1.27",
     "httpx>=0.27",
-    "pydantic>=2",
-    "uuid-utils",  # uuid7 ids (mcp.rbac)
     "starlette>=0.40",
     "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+# The grant store: LocalGrantAuthorizer, mcp.rbac and mcp.migrations -- grants in Postgres, kept
+# coherent across pods by an epoch broadcast. The only part of the package that needs the rest of
+# the family, so a server that brings its own Authorizer does not install it.
+grants = [
+    "3tears>=0.73.0,<0.74.0",
+    "3tears-epoch>=0.73.0,<0.74.0",
+    "3tears-nats>=0.73.0,<0.74.0",
+    "sqlalchemy",  # mcp.rbac's table declaration
+    "uuid-utils",  # uuid7 ids (mcp.rbac)
 ]
 
 [project.urls]

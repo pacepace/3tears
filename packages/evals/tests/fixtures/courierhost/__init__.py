@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from threetears.evals.kernel import default_job_timeout
@@ -76,6 +76,7 @@ from threetears.evals.kernel.host import (
     MeasureRegistry,
     SeedRefused,
     Sweepable,
+    TemplateChecks,
     WorldDimension,
     WorldRegistry,
     default_cell_timeout,
@@ -428,15 +429,18 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
         )
         runs.append(run.model_copy(update={"status": "completed"}))
         await run_blocking(host.blocking_executor, host.storage.save_eval_run, runs[-1])
-    campaign = EvalCampaign(
-        scope_id=COURIER_SCOPE,
-        name="planner model bake-off",
-        subject_id=subject.subject_id,
-        subject_kind="route_planner_config",
-        behavior="plan_delivery_round",
-        template_id=template.id,
-        run_ids=[run.id for run in runs],
-        created_by="test:fixture",
+    campaign = EvalCampaign.model_validate(
+        {
+            "scope_id": COURIER_SCOPE,
+            "name": "planner model bake-off",
+            "subject_id": subject.subject_id,
+            "subject_kind": "route_planner_config",
+            "behavior": "plan_delivery_round",
+            "aspects": [
+                {"label": "plan_delivery_round", "template_id": template.id, "run_ids": [run.id for run in runs]}
+            ],
+            "created_by": "test:fixture",
+        }
     )
     await run_blocking(host.blocking_executor, host.storage.save_campaign, campaign)
     return campaign
@@ -454,6 +458,10 @@ COURIER_LAUNCH_SETTINGS = LaunchSettings(
     max_metered_calls=1,
     max_out_of_run_cost_usd=1.0,
 )
+
+
+def _admit(_checked: object) -> None:
+    """A template check the courier host has nothing to say about: it admits."""
 
 
 def courier_launch_host() -> LaunchHost:
@@ -500,16 +508,25 @@ def courier_launch_host() -> LaunchHost:
         return UnknownSubject(remedy=f"the courier host holds one subject, {COURIER_SUBJECT.subject_id}")
 
     launch_host = LaunchHost(
-        eval_host=eval_host,
-        kinds={
-            COURIER_KIND: LaunchableKind(
-                launch=launch,
-                resolve_subject=resolve_subject,
-                unhonoured_launch_arguments=frozenset(
-                    {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
-                ),
-            )
-        },
+        # The launch registry lives on the host's template checks, stated once; the courier host checks nothing else.
+        eval_host=replace(
+            eval_host,
+            template_checks=TemplateChecks(
+                require_known_tools_allowed=_admit,
+                refuse_undeclared_world_seed=_admit,
+                refuse_undeliverable_template=_admit,
+                refuse_inadmissible_template_case=_admit,
+                kinds={
+                    COURIER_KIND: LaunchableKind(
+                        launch=launch,
+                        resolve_subject=resolve_subject,
+                        unhonoured_launch_arguments=frozenset(
+                            {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
+                        ),
+                    )
+                },
+            ),
+        ),
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: world.place(seeded=("road_closures",), carriers=RoutePlannerKind.CARRIERS),

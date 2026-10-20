@@ -15,6 +15,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema import JudgedArtifact, JudgeEvidence
 from threetears.evals.storage import InMemoryDocumentStore
@@ -22,13 +23,12 @@ from packages.evals.tests.factories import (
     DEFAULT_SUBJECT,
     fixture_variant_key,
     make_calibration_rating,
-    make_campaign,
+    make_aspect_campaign,
     make_eval_result,
     make_eval_run,
     make_eval_trace,
     make_insight,
     make_template,
-    minimal_declaration,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -104,10 +104,10 @@ def _assembly_reads(*, runs: int, archived: int, templates: int, insights: int) 
                 id=f"ins-{index}", subject_id=DEFAULT_SUBJECT.subject_id, source_analysis_id=f"analysis-{index}"
             )
         )
-    campaign = make_campaign(
+    campaign = make_aspect_campaign(
         run_ids=run_ids,
         subject_id=DEFAULT_SUBJECT.subject_id,
-        declared_design=minimal_declaration(control=fixture_variant_key("sonnet")),
+        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key("sonnet")),
     )
     store.calls.clear()
 

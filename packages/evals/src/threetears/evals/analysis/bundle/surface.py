@@ -12,6 +12,7 @@ from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,
     describe_reported_measure,
+    subject_spend_descriptor,
 )
 from threetears.evals.kernel.surface import (
     CellFacts,
@@ -24,7 +25,9 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.bundle.cell_reads import _cell_collections
 
 
-def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> dict[str, MetricDescriptor]:
+def _measure_catalog(
+    bundle: AnalysisContextBundle, *, profile: HostProfile, judge_kind: bool = False
+) -> dict[str, MetricDescriptor]:
     """Collect the descriptor for every measure name appearing anywhere in the bundle.
 
     Built from the assembled bundle rather than alongside it, so the catalog cannot fall
@@ -35,6 +38,8 @@ def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> 
     :ptype bundle: AnalysisContextBundle
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
+    :param judge_kind: Whether every result is a judge-kind one (``candidate_kind``), whose spend is the subject's own.
+    :ptype judge_kind: bool
     :return: Descriptors keyed by measure name, in name order for a stable fingerprint.
     :rtype: dict[str, MetricDescriptor]
     """
@@ -45,7 +50,12 @@ def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> 
         *(cell.measures for cell in _time_axis_cells(bundle)),
     ]
     names = {measure.name for collection in collections for measure in collection.measures}
-    return {name: describe_reported_measure(name, profile.measures) for name in sorted(names)}
+    described = {name: describe_reported_measure(name, profile.measures) for name in sorted(names)}
+    if judge_kind:
+        # The judge under test is the subject and the only role billed: its spend is the arm's own, not spend on
+        # measuring it, and the same dollars ``production_replicating_cost`` reads.
+        return {name: subject_spend_descriptor(descriptor) for name, descriptor in described.items()}
+    return described
 
 
 def _time_axis_cells(bundle: AnalysisContextBundle) -> list[CellFacts]:
@@ -74,6 +84,7 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
             reader_name=bundle.measure_catalog[name].reader_name,
             unit=bundle.measure_catalog[name].unit,
             merit_axis=bundle.measure_catalog[name].merit_axis,
+            subject_spend=bundle.measure_catalog[name].subject_spend,
             higher_is_better=bundle.measure_catalog[name].higher_is_better,
             materiality_threshold=bundle.measure_catalog[name].materiality_threshold,
             population=bundle.measure_catalog[name].population,

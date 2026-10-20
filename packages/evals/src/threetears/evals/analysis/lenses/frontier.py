@@ -823,7 +823,14 @@ def _frontier_point(
     priced = [
         (r.test_case_id, c)
         for r, c in (
-            (r, production_replicating_cost(r.usage, substituted_deliveries=count_substituted_deliveries(r)))
+            (
+                r,
+                production_replicating_cost(
+                    r.usage,
+                    substituted_deliveries=count_substituted_deliveries(r),
+                    candidate_kind=r.candidate_kind,
+                ),
+            )
             for r in results
             if delivered_a_turn(r)
         )
@@ -1436,7 +1443,7 @@ def compute_frontier(
         cost tie, held against nothing.
     :ptype earlier_control: EarlierControl | None
     :param guardrail_margins: The margin each boundary dimension is held to, by dimension name
-        (``CampaignDesign.guardrail_margins``); a dimension absent is held at zero change.
+        (``AspectDesign.guardrail_margins``); a dimension absent is held at zero change.
     :ptype guardrail_margins: Mapping[str, float] | None
     :param tiers: The evidence tiers of the judges behind the results' scores
         (:func:`~threetears.evals.analysis.judge_profiles.judges_tiers`), which a verdict made on a judged pass^k

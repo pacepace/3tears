@@ -42,12 +42,14 @@ from threetears.evals.analysis.service import (
     list_analyses,
     list_insights,
     PreparedGeneration,
+    record_campaign_call,
     prepare_analysis_generation,
     assembled_analysis_attempt,
     run_analysis_generation,
     running_analysis_attempt,
 )
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
+from threetears.evals.kernel.declaration import CampaignCall, Margin, OverriddenBar
 from threetears.evals.kernel.campaign import AttemptOutcome, ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
 from threetears.evals.kernel.errors import (
     ConflictError,
@@ -72,11 +74,11 @@ from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.models import utc_now_iso
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, WRITER_REMEDY
 
 if TYPE_CHECKING:
-    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
 
 log = get_logger(__name__)
 
@@ -91,8 +93,9 @@ class CampaignLine(EvalBaseModel):
     run_count: int
     archived: bool
     exploratory: bool = Field(
-        description="Whether the campaign declares no design — derived from its declaration on every read, never stored"
+        description="Whether no aspect of the campaign declares a design — derived on every read, never stored"
     )
+    aspects: list[str] = Field(description="The labels of the campaign's aspects, in order; at least one.")
 
 
 class CampaignListing(EvalBaseModel):
@@ -105,87 +108,117 @@ class CampaignListing(EvalBaseModel):
 #: its client and its slot) before refusing it as still running. Unwinding is a few store writes, so this is generous.
 ENDED_TASK_UNWIND_S = 30.0
 
-#: A generation job's wall-clock ceiling on its preparation — assembling the bundle, the prompt, the client, the
-#: default-writer check and the first call's price — in seconds. The job starts with no budget of its own (its generator
-#: calls enter ``AnalysisGeneration.budget_s`` themselves), so without this a store call that hangs during assembly would
-#: leave the attempt ``running`` for as long as its lease kept renewing. Preparation makes no model call: a fixed handful
-#: of batched store reads and a catalogue fetch bounded by its own timeout, seconds on a large campaign. So the bound is
-#: tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose launchers call providers: a hang reads as refused
-#: within minutes rather than ``running`` for hours.
-ANALYSIS_PREPARATION_BUDGET_S = 900.0
+#: What a campaign's question is, said once for the operations and the actions that take it.
+QUESTION_DESCRIPTION = (
+    "The one question the campaign asks of its arms, in the operator's words: what would make a candidate the one to "
+    "adopt. A decision rule is never written here; its clauses are floors. Empty asks none."
+)
 
-#: What a declared design is, said once for the operations and the actions that take it — creating and updating alike,
-#: since a tool's flat parameters give one name one meaning.
-DECLARED_DESIGN_DESCRIPTION = (
-    "What the campaign sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, "
-    "each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: "
-    "controlled|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned|witnessed}), "
-    "and optionally questions ([{id, text, merit_axes?}]), bars ([{measure_id, threshold, direction}], no looser "
-    "than the registered ones), merit_priority and intended_repetitions. Validated and gated as every campaign "
-    "declaration is. A campaign is created with a design or with exploratory: true, never neither and never both; "
-    "its control is named by control_from_run_id. On an update it replaces the stored declaration, its questions "
-    "reconciled with the stored ones by id; declaring one on an exploratory campaign makes it declared; null "
-    "withdraws the declaration, only beside exploratory: true; omitted leaves it as it is."
+#: What a campaign's arms are, said once.
+ARMS_DESCRIPTION = (
+    "The arms, each {label, role: control|candidate (default candidate), from_run_ids: [run id, ...]}: a contestant "
+    "stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying one variant "
+    "key. One control at most, read first. Omitted, an adopted campaign's arms are carried and every other variant "
+    "among the runs is read as a candidate."
+)
+
+#: What a campaign's aspects are, said once.
+ASPECTS_DESCRIPTION = (
+    "Where the question is measured, each {label, template_id?, margin?, design?, run_ids?}. design is what the aspect "
+    "sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever "
+    "or open-family member this host declares), held_fixed ({stimulus: controlled|uncontrolled, stimulus_reason "
+    "(required when uncontrolled), apparatus: commissioned|witnessed}), and optionally merit_axes, bars "
+    "([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and "
+    "intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control "
+    "there before it is shown worse, which a declared aspect states when the campaign asks a question and names a "
+    "control, and a campaign naming no control never states (it holds its arms to bars). template_id "
+    "omitted is the one template every "
+    "run of the aspect ran. Labels are unique, and a run belongs to one aspect."
+)
+
+#: What a campaign's floors are, said once.
+FLOORS_DESCRIPTION = (
+    "Lines a candidate is warned for crossing, each {aspect, clause}: clause {kind: rate_drop, max_points, reading?} "
+    "(no pass rate, or the named one, may drop by more than max_points) or {kind: cost_lower} (it must cost less per "
+    "reply). A floor only warns, on an aspect that declares a design, of a campaign that names a control: without "
+    "one a floor is read against nothing, and a bar is declared instead. Each aspect, kind and reading once."
+)
+
+#: What a margin given at adoption is, said once.
+MARGINS_DESCRIPTION = (
+    "An adopted aspect's label to its margin, in points of a 0-100 pass rate, more than 0 and less than 100: a margin "
+    "declared at adoption, carrying the time it was added."
+)
+
+#: What adopting another campaign's aspects means, said once.
+ASPECTS_FROM_DESCRIPTION = (
+    "Campaigns of this scope whose aspects this one adopts whole — template, runs, design, margin, and when its design "
+    "was declared and its question asked — with their floors and arms: each a campaign id, or {campaign_id, label} to "
+    "adopt a campaign's one aspect under another label. An adopted aspect keeps its readings' standing; what this "
+    "campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. Two aspects under one "
+    "label, or one run in two of them, are refused."
 )
 
 #: What saying a campaign is exploratory means, said once for the operations and the actions that take it.
 EXPLORATORY_DESCRIPTION = (
-    "True says the campaign declares no design: someone learning to run evals, or testing an intuition with no "
-    "settled question. Its report and analysis say once that its readings confirm nothing, and its design is "
-    "inferred from the runs. On a create, required without declared_design and refused beside one; on an update, "
-    "required beside declared_design: null and refused beside a design, or on a declared campaign the update leaves "
-    "declared. An assertion checked and never stored: a campaign is exploratory exactly while it declares no "
-    "design, so declaring one later (campaign_update) ends it."
+    "True says no aspect of the campaign declares a design: someone learning to run evals, or testing an intuition "
+    "with no settled question. Its report and analysis say once that its readings confirm nothing, and each aspect's "
+    "design is inferred from its runs; it names no question, arm, floor or margin. Required when no aspect declares a "
+    "design, and refused beside one. An assertion checked and never stored: a campaign is exploratory exactly while "
+    "no aspect declares a design."
 )
 
 #: What the control run is, said once for the operation and the action.
 CONTROL_RUN_DESCRIPTION = (
-    "One of the campaign's runs whose variant becomes the declared control, the cell every other is read against: "
-    "its variant key is resolved from the run, so nobody types it. Requires a declaration — declared_design in the "
-    "same call, or, on an update, the stored one — and is refused beside a design that types its own control. On "
-    "an update, null clears the control and omitted leaves it as it is."
+    "One of the campaign's runs whose variant becomes the control arm, the stack every other is read against: its "
+    "variant key is resolved from the run, so nobody types it. Needs a declared campaign. Null clears the control; "
+    "omitted leaves it as it is."
 )
 
-
-CAMPAIGN_TEMPLATE_DESCRIPTION = (
-    "The template the campaign's runs ran, as templates_list names it — whose rubric dimensions and goal-state checks "
-    "a declared bar or guardrail margin may name. Omitted, it is the one template every run named ran, and none when "
-    "they ran several."
+#: What an aspect named beside a membership change is, said once.
+MEMBERSHIP_ASPECT_DESCRIPTION = (
+    "The label of the aspect the runs join or leave. Omitted, each run joins the one aspect gathered on the template "
+    "it ran (a campaign of one aspect takes every run), and leaves the aspect holding it."
 )
 
 
 class CampaignDefinition(EvalBaseModel):
-    """What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
+    """What creating a campaign names: what it is called, its subject and behavior, its question, arms, aspects and
+    floors, and the campaigns whose aspects it adopts.
 
-    It names a declared design or says ``exploratory``, exactly one: a campaign created without a design is
-    exploratory, which its report and analysis say once at the top, and its analysis reads a design inferred from
-    the runs, never one presented as declared — so the caller chooses that rather than falling into it.
+    It declares a design on some aspect or says ``exploratory``, exactly one: a campaign none of whose aspects declares
+    one is exploratory, which its report and analysis say once at the top, so the caller chooses that rather than
+    falling into it.
     """
 
     name: str
     subject_id: str
     behavior: str
     description: str = ""
-    run_ids: list[str] = Field(default_factory=list)
-    template_id: str | None = Field(default=None, min_length=1, description=CAMPAIGN_TEMPLATE_DESCRIPTION)
-    declared_design: dict[str, Any] | None = Field(default=None, description=DECLARED_DESIGN_DESCRIPTION)
-    control_from_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
+    question: str = Field(default="", description=QUESTION_DESCRIPTION)
+    arms: list[dict[str, Any]] = Field(default_factory=list, description=ARMS_DESCRIPTION)
+    aspects: list[dict[str, Any]] = Field(default_factory=list, description=ASPECTS_DESCRIPTION)
+    floors: list[dict[str, Any]] = Field(default_factory=list, description=FLOORS_DESCRIPTION)
+    margins: dict[str, Margin] = Field(default_factory=dict, description=MARGINS_DESCRIPTION)
+    aspects_from: list[str | dict[str, str]] = Field(default_factory=list, description=ASPECTS_FROM_DESCRIPTION)
     exploratory: bool = Field(default=False, description=EXPLORATORY_DESCRIPTION)
 
 
 class CampaignChanges(EvalBaseModel):
-    """What an update of a campaign may change: its name, its description, its declaration and the declaration's
-    control — each only when given.
+    """What an update of a campaign may change: its name, its description, its declaration and its control — each
+    only when given.
 
     Membership is not here: runs join and leave through :func:`campaign_runs_add` and :func:`campaign_runs_remove`,
-    whose rules a generic update would skip. An omitted field is left as stored; ``declared_design`` given as null
-    is a different request — the declaration withdrawn — told apart by the fields the caller set, and allowed only
-    beside ``exploratory``; ``control_from_run_id`` given as null clears the control.
+    whose rules a generic update would skip. An omitted field is left as stored; ``aspects`` replaces the aspects
+    whole, and ``control_from_run_id`` given as null clears the control — told apart from omitted by the fields the
+    caller set.
     """
 
     name: str | None = Field(default=None, min_length=1, description="The campaign's new name.")
     description: str | None = Field(default=None, description="The campaign's new description.")
-    declared_design: dict[str, Any] | None = Field(default=None, description=DECLARED_DESIGN_DESCRIPTION)
+    question: str | None = Field(default=None, description=QUESTION_DESCRIPTION)
+    aspects: list[dict[str, Any]] | None = Field(default=None, description=ASPECTS_DESCRIPTION)
+    floors: list[dict[str, Any]] | None = Field(default=None, description=FLOORS_DESCRIPTION)
     exploratory: bool = Field(default=False, description=EXPLORATORY_DESCRIPTION)
     control_from_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
 
@@ -202,7 +235,11 @@ class AnalysisLine(EvalBaseModel):
         )
     )
     findings: int = Field(ge=0, description="How many findings the memo holds.")
-    recommendations: int = Field(ge=0, description="How many recommendations it makes.")
+    recommendations: int = Field(
+        ge=0,
+        le=1,
+        description="How many recommendations it makes: one, or none for a measurement or a choice with no clear winner.",
+    )
     generator_model: str
     generated_at: str
     archived: bool
@@ -304,7 +341,8 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         behavior=campaign.behavior,
         run_count=len(campaign.run_ids),
         archived=campaign.archived,
-        exploratory=campaign.declared_design is None,
+        exploratory=campaign.exploratory,
+        aspects=[aspect.label for aspect in campaign.aspects],
     )
 
 
@@ -338,19 +376,20 @@ def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: st
     :ptype created_by: str
     :return: The campaign as created.
     :rtype: CampaignLine
-    :raises ValidationFailedError: The definition names neither a design nor ``exploratory``, or both; fails campaign
-        validation, names a run not in the scope, declares a design this host cannot honour, or names a control
-        run with no design or outside its runs.
+    :raises NotFoundError: A campaign it adopts from, or a template an aspect names, is not in the scope.
+    :raises ValidationFailedError: The definition declares neither a design nor ``exploratory``, or both; fails
+        campaign validation; holds a run outside the scope or in two aspects; declares an aspect without a margin, or
+        a design this host cannot honour; or names an arm from runs no aspect holds, or that carry two keys.
     :raises StorageError: The campaign failed to persist.
     """
     campaign = create_campaign(
         host.storage,
-        definition.model_dump(exclude={"control_from_run_id", "exploratory"}, exclude_none=True),
+        definition.model_dump(exclude={"aspects_from", "exploratory"}),
         scope_id=scope_id,
         created_by=created_by,
         profile=host.profile,
-        control_from_run_id=definition.control_from_run_id,
         exploratory=definition.exploratory,
+        aspects_from=definition.aspects_from,
     )
     return _campaign_line(campaign)
 
@@ -360,10 +399,9 @@ def campaign_update(
 ) -> CampaignLine:
     """Amend a campaign's name, description, declaration or control — declaring a design on an exploratory one included.
 
-    Only the fields the caller set are written (:attr:`CampaignChanges.model_fields_set`), so an omitted
-    ``declared_design`` leaves the declaration alone and a null one withdraws it, and an omitted
-    ``control_from_run_id`` leaves the control alone and a null one clears it. The declaration and its control are
-    written together, so a refused designation leaves the design as it was.
+    Only the fields the caller set are written (:attr:`CampaignChanges.model_fields_set`), so an omitted field is left
+    as stored, and an omitted ``control_from_run_id`` leaves the control alone while a null one clears it. The
+    declaration and its control are written together, so a refused designation leaves the declaration as it was.
 
     :param host: The host whose store holds the campaign.
     :ptype host: EvalHost
@@ -378,20 +416,21 @@ def campaign_update(
     :return: The campaign as persisted.
     :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
-    :raises ValidationFailedError: No field is set; a design this host cannot honour, or one dropping a stored
-        question; ``declared_design`` null without ``exploratory``; ``exploratory`` beside a design, or on a
-        declared campaign the update leaves declared; or a control run with no declaration to hold it, beside
-        a design typing its control, or that the campaign does not hold; or a design sending a control
-        pre-image (``control_levers``, ``control_identity_version``) the server would not store.
+    :raises ConflictError: The campaign holds a run, and the change writes its declaration or re-points or clears its
+        control.
+    :raises ValidationFailedError: No field is set; a design this host cannot honour, an aspect with runs or with no
+        margin; a withdrawal without ``exploratory``, or ``exploratory`` beside a design; or a control run on an
+        exploratory campaign or that the campaign does not hold.
     :raises LeverCoordinateError: The control run recorded no lever map, and the host's variant map disagrees with
         its own registry — whether or not the run has results.
     :raises StorageError: The write failed.
     """
+    written = changes.model_fields_set - {"exploratory", "control_from_run_id"}
     campaign = update_campaign(
         host.storage,
         campaign_id,
         scope_id,
-        changes.model_dump(include=changes.model_fields_set - {"exploratory", "control_from_run_id"}),
+        {name: value for name, value in changes.model_dump(include=written).items() if value is not None},
         updated_by=updated_by,
         profile=host.profile,
         exploratory=changes.exploratory,
@@ -407,11 +446,14 @@ def _refuse_no_runs(run_ids: list[str], verb: str) -> None:
         raise ValidationFailedError(f"no run was named to {verb}", remedy=f"name the runs by id ({FIND_RUN})")
 
 
-def campaign_runs_add(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine:
-    """Put runs in a campaign — runs launched after it was created, or a run first measured on its own.
+def campaign_runs_add(
+    host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str, *, aspect: str | None = None
+) -> CampaignLine:
+    """Put runs in a campaign's aspect — runs launched after it was created, or a run first measured on its own.
 
-    A run already in the campaign is not added twice, and a run outside the scope is refused, all-or-nothing, as at
-    creation (:func:`~threetears.evals.analysis.add_runs_to_campaign`).
+    Each run joins ``aspect``, or, when it is None, the one aspect gathered on the template it ran
+    (:func:`~threetears.evals.analysis.add_runs_to_campaign`). A run already in that aspect is not added twice, and a
+    run outside the scope, or held by another aspect, is refused, all-or-nothing, as at creation.
 
     :param host: The host whose store holds the campaign and the runs.
     :ptype host: EvalHost
@@ -421,23 +463,27 @@ def campaign_runs_add(host: EvalHost, campaign_id: str, run_ids: list[str], scop
     :ptype run_ids: list[str]
     :param scope_id: The scope they all live in.
     :ptype scope_id: str
+    :param aspect: The aspect they join, by label; None routes each by its template.
+    :ptype aspect: str | None
     :return: The campaign as persisted.
     :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
-    :raises ValidationFailedError: No run is named, or one does not exist in the scope; nothing was added.
+    :raises ValidationFailedError: No run is named; the aspect is not the campaign's; a run does not exist in the
+        scope, is held by another aspect, or ran a template no aspect or several aspects are gathered on.
     :raises StorageError: The write failed.
     """
     _refuse_no_runs(run_ids, "add")
-    return _campaign_line(add_runs_to_campaign(host.storage, campaign_id, scope_id, run_ids))
+    return _campaign_line(add_runs_to_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
 
 
-def campaign_runs_remove(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine:
+def campaign_runs_remove(
+    host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str, *, aspect: str | None = None
+) -> CampaignLine:
     """Take runs out of a campaign — membership only: the runs and their results stay, in any other campaign too.
 
-    A run the campaign does not hold is refused, all-or-nothing
-    (:func:`~threetears.evals.analysis.remove_runs_from_campaign`). The declared control is a variant, not a run, so
-    removing the run it was named from leaves it declared; where no remaining run carries it, the report says the
-    control is unobserved.
+    A run the campaign (or the named aspect) does not hold is refused, all-or-nothing
+    (:func:`~threetears.evals.analysis.remove_runs_from_campaign`). An arm is a variant, not a run, so removing the
+    run it was named from leaves it named; where no remaining run carries it, the report says the arm is unobserved.
 
     :param host: The host whose store holds the campaign.
     :ptype host: EvalHost
@@ -447,14 +493,81 @@ def campaign_runs_remove(host: EvalHost, campaign_id: str, run_ids: list[str], s
     :ptype run_ids: list[str]
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
+    :param aspect: The aspect holding them, by label; None takes each from wherever it is held.
+    :ptype aspect: str | None
     :return: The campaign as persisted.
     :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
-    :raises ValidationFailedError: No run is named, or one is not in the campaign; nothing was removed.
+    :raises ValidationFailedError: No run is named, or one is not in the campaign (or the aspect); nothing was removed.
     :raises StorageError: The write failed.
     """
     _refuse_no_runs(run_ids, "remove")
-    return _campaign_line(remove_runs_from_campaign(host.storage, campaign_id, scope_id, run_ids))
+    return _campaign_line(remove_runs_from_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
+
+
+class CampaignCallLine(EvalBaseModel):
+    """The call a person recorded on a campaign, as stored."""
+
+    campaign_id: str
+    call: CampaignCall
+
+
+def campaign_record(
+    host: EvalHost,
+    campaign_id: str,
+    scope_id: str,
+    *,
+    arm: str,
+    called_by: str,
+    reason: str = "",
+    floors_overridden: list[str] | None = None,
+    bars_overridden: list[OverriddenBar] | None = None,
+    analysis_id: str | None = None,
+) -> CampaignCallLine:
+    """Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
+
+    Read against code's readings of the evidence as it stands, never a memo's words
+    (:func:`~threetears.evals.analysis.record_campaign_call`): an arm with a broken floor or a missed bar is recorded
+    only when the call names each one as overridden, and an override of one the arm did not break or miss is refused.
+    A new call replaces the earlier one.
+
+    :param host: The host whose store holds the campaign.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param arm: The decided arm, by the label its page shows or by its variant key.
+    :ptype arm: str
+    :param called_by: Who made the call, as the calling surface knows them.
+    :ptype called_by: str
+    :param reason: Why, in the decider's words.
+    :ptype reason: str
+    :param floors_overridden: The key of each broken floor the call overrides.
+    :ptype floors_overridden: list[str] | None
+    :param bars_overridden: Each missed bar the call overrides, by aspect and measure.
+    :ptype bars_overridden: list[OverriddenBar] | None
+    :param analysis_id: The analysis whose memo the call was made over; None for code's readings alone.
+    :ptype analysis_id: str | None
+    :return: The call as stored.
+    :rtype: CampaignCallLine
+    :raises NotFoundError: No campaign with that id in the scope, or no such analysis.
+    :raises ValidationFailedError: See :func:`~threetears.evals.analysis.record_campaign_call`.
+    :raises ConflictError: The campaign changed while its readings were read.
+    """
+    campaign = record_campaign_call(
+        host,
+        campaign_id,
+        scope_id,
+        arm=arm,
+        called_by=called_by,
+        reason=reason,
+        floors_overridden=floors_overridden or (),
+        bars_overridden=bars_overridden or (),
+        analysis_id=analysis_id,
+    )
+    assert campaign.call is not None  # just recorded and re-read
+    return CampaignCallLine(campaign_id=campaign.id, call=campaign.call)
 
 
 def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archived: bool) -> CampaignLine:
@@ -482,7 +595,7 @@ def _analysis_line(analysis: EvalAnalysis) -> AnalysisLine:
         campaign_id=analysis.campaign_id,
         verdict=analysis_verdict(analysis),
         findings=len(analysis.document.findings),
-        recommendations=len(analysis.document.decisions),
+        recommendations=0 if analysis.document.recommended() is None else 1,
         generator_model=analysis.generation.generator_model,
         generated_at=analysis.generation.generated_at,
         archived=analysis.archived,
@@ -577,9 +690,10 @@ def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsLi
         for analysis in list_analyses(host.storage, campaign.id, scope_id):
             read += 1
             # `levels_unavailable` set, even to an empty reason, is the admission; None is a describable arm.
-            reasons = [
-                entry.levels_unavailable for entry in analysis.variant_index if entry.levels_unavailable is not None
-            ]
+            index = list(
+                {entry.variant_key: entry for aspect in analysis.aspects for entry in aspect.variant_index}.values()
+            )
+            reasons = [entry.levels_unavailable for entry in index if entry.levels_unavailable is not None]
             if reasons:
                 lines.append(
                     UndescribableArmsLine(
@@ -587,7 +701,7 @@ def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsLi
                         campaign_id=analysis.campaign_id,
                         archived=analysis.archived,
                         undescribable_arms=len(reasons),
-                        arms=len(analysis.variant_index),
+                        arms=len(index),
                         reasons=sorted({reason for reason in reasons if reason}),
                     )
                 )
@@ -748,16 +862,18 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
                 why,
             )
         # prawduct:ok-broad-except — the reason the generation stopped is what its caller is told; this is logged beside it
-        except Exception:
+        except Exception as unwritten:
             # NOSILENT: every caller of end_unrun raises the reason the generation stopped right after it, and the
             # attempt, which made no call, reads lost once its lease lapses rather than running.
-            log.exception(
-                "eval.generate_analysis campaign=%s scope=%s attempt %s stopped before any call (%s), and its ending "
-                "could not be written; it reads lost once its lease lapses",
-                campaign_id,
-                scope_id,
-                attempt_id,
-                why,
+            contain(
+                unwritten,
+                log=log,
+                what=(
+                    f"eval.generate_analysis campaign={campaign_id} scope={scope_id} attempt {attempt_id} stopped "
+                    f"before any call ({why}), and its ending could not be written; it reads lost once its lease "
+                    "lapses"
+                ),
+                level="error",
             )
 
     # The one step that decides between processes: a conditional write of the campaign's generation slot. The
@@ -776,7 +892,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         await end_unrun(str(refusal), refused_by=refusal)
         raise refusal
 
-    async def assembled(bundle: AnalysisContextBundle, resolved_model: str) -> None:
+    async def assembled(bundle: CampaignBundle, resolved_model: str) -> None:
         # What only the preparation can say goes on the running attempt before the first call is priced, so a price
         # that refuses it leaves an attempt naming its writer and bundle. The ending writes both again, so a write
         # that fails here loses nothing; one that finds the attempt ended stops the generation.
@@ -799,7 +915,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         # ending, not a task failure: the attempt records it and this returns None, so the manager logs no error for
         # it. What nobody designed for (a store that raised) is recorded the same way and raised on as itself.
         try:
-            async with manager.job_timeout_factory(ANALYSIS_PREPARATION_BUDGET_S):
+            async with manager.job_timeout_factory(generation.preparation_budget_s):
                 return await prepare_analysis_generation(
                     eval_host,
                     campaign_id,
@@ -957,8 +1073,9 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :param format: ``markdown``, ``html`` (one page that needs no script) or ``json`` (the evidence bundle the report
-        was computed from, as ``bundle.json`` beside a written report holds it).
+    :param format: ``markdown``, ``html`` (one page that needs no script) or ``json`` (the page's machine form: code's
+        readings across the campaign's aspects, the recommendation, the call, and each aspect's bundle by its
+        fingerprint, as ``campaign.json`` beside a written page holds it).
     :ptype format: ReportFormat
     :return: The report in that form.
     :rtype: ReportDocument
@@ -968,7 +1085,7 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
     return ReportDocument(
         campaign_id=campaign_id,
         basis=report.basis,
-        analysis_id=report.source.analysis_id,
+        analysis_id=report.analysis_id,
         format=format,
         body=serialize_report(report, format),
     )
@@ -1183,6 +1300,7 @@ __all__ = [
     "AnalysisLine",
     "AnalysisListing",
     "BarProposals",
+    "CampaignCallLine",
     "CampaignChanges",
     "CampaignDefinition",
     "CampaignLine",
@@ -1206,6 +1324,7 @@ __all__ = [
     "bars_propose",
     "campaign_archive",
     "campaign_create",
+    "campaign_record",
     "campaign_runs_add",
     "campaign_runs_remove",
     "campaign_update",

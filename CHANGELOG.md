@@ -6,6 +6,658 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.73.0 -- 2026-10-20
+
+### core: append-only tables in a scoped snapshot publish the rows a write added
+
+**Added:** `SnapshotTable(append_only=True)`, for a table whose rows are only ever added (a row once held never
+changes or goes away). `ScopedSnapshot.stage(..., added=)` and `publish(..., added=, after=)` take the rows a write
+ADDED to such a table in their own argument (`rows=` still means every row, a fresh base), kept as a piece under
+`{snapshot}.p/{scope}/{epoch}/{table}.{column digest}`. A piece is appended only to the chain the scope's pointer
+holds at the epoch the writer saw (`carry_at` for `publish_staged`, `after` for `publish`), by compare-and-set
+against exactly that entry; a new scope's first piece is its base. Added rows whose keys this replica already
+holds are refused with a `ValueError` before anything is written. A replica holding a leading run of a chain
+fetches only the pieces after it and appends them in the same one-transaction swap; anything else reloads the
+table's scope from base and pieces. Lost or out-of-order pointer events converge by that rule, and a cold replica
+loads base and every piece. A table not declared append-only keeps one whole chunk per scope, and a publish of
+whole rows moves the pointer by the retried compare-and-set whatever the snapshot's other tables are.
+`StagedScope.sizes` and `StagedScope.pieces` say each staged chunk's bytes and which are pieces. Design and
+decisions: `docs/design-scoped-snapshot.md`, "Append-only tables".
+
+**Changed:** `ScopedSnapshot.publish` returns whether the scope's pointer took the publish (it returned `None`).
+
+**Added: compaction.** `ScopedSnapshot(compact_pieces=32, compact_bytes=4 MiB)`. A writer that moved a scope folds
+each append-only table whose pieces reach either threshold into a new base at the pointer's epoch (base and pieces
+concatenated in order, under a write claim, by exact compare-and-set). The folded pieces are retired by the
+sweeper's one rule. A replica already holding that epoch adopts the fold without fetching it. A rebuild and a
+catch-up write a fresh base with no pieces.
+
+**Added:** `SnapshotStatus.appended` (append-only table -> scope -> `AppendedScope(pieces, compacted_at)`), as this
+replica holds it. `PartitionReplacement(append=True)` in `threetears.core.cache.duckdb` adds rows to a scope inside
+the same transaction as the other replacements; a row already held is refused by the table's key.
+
+**Pointer format and compatibility.** A table with pieces keeps its base in the `object`/`rows` fields every
+replica reads, lists its pieces in `pieces`, and its `schema` entry carries `+pieces`. A 0.72 replica compares
+schema digests before it loads, so it treats such a scope as another code version's columns: it serves the scope
+from L3 and never misreads it. Pieces sit outside the `{snapshot}/` prefix a 0.72 sweep lists, so it never deletes
+one. 0.73 reads 0.72 pointers as bases with no pieces. A pointer with no pieces is written in the 0.72 shape, so a
+rebuild, catch-up or fold puts every replica back on pointers it loads. An unknown mark reads as other columns.
+
+**Rollout notes.** A `publish` of added rows whose pointer is not at `after` on the chain this replica holds, or
+that loses its compare-and-set, moves nothing and changes nothing on this replica: it returns `False`, the scope
+shows in `status().behind`, and the next pass rebuilds it from L3, which holds the change. A staged piece off its
+`carry_at` is skipped and left with its pointer behind L3, which `catch_up_from_l3` republishes, so a writer that
+stages keeps calling the catch-up after its publishes, as the ENR pod does. A piece holding a row a replica
+already holds (written past this library's refusal) puts the scope behind there, and it is rebuilt from L3.
+
+### datasources, core: `read_all` takes set and typed filters; `read_counted` proves a read against a count
+
+**Added:** `read_all(..., where_in=...)` and integer values in `where`/`where_in` (`FilterValue = str | int`,
+bools refused), each bound as the type it is. A set-filtered read is proven by the grouped fingerprint, grouped by
+its first set-filtered column; an empty set reads nothing and asks nothing. `read_counted(..., rows=N, where,
+where_in, not_null)` pages the same way (sentinel row, key groups never split), takes no fingerprint, and raises
+`IncompleteReadError` unless it read exactly the `N` rows the caller counted: for rows that never change once
+written. `threetears.core.sql_fragments.filter_conditions` is the one filter builder (equality, `IN`,
+`IS NOT NULL`) behind the pages and the drivers' fingerprints. `RelationFingerprintRequest.where`/`where_in` and
+the drivers' fingerprint methods take `FilterValue`.
+
+**Rollout notes.** Integer filter values need the hub on 0.73: an older hub's model takes text only and refuses an
+integer (`MALFORMED_REQUEST`), so the read fails closed rather than coercing. The hub's
+`drain.relation_fingerprint` annotation widens to `FilterValue` when it moves to 0.73. A set-filtered `read_all`
+against Snowflake or BigQuery gets `FINGERPRINT_GROUPS_UNSUPPORTED` (no group-by-group fallback); `read_counted`
+needs no fingerprint and is unaffected. `not_null` is offered on `read_counted` only: a fingerprint ask ignores
+fields it does not know, so an older hub would drop a null filter silently.
+
+### langgraph: a platform tool-loop budget, so a looping model ends its turn with text
+
+**Added:** `ToolLoopBudgetMiddleware` for `create_agent`. A turn (one invocation of the agent; a resume continues
+it) may make `max_tool_calls` tool calls (default 16). Two pressures set a tier before every model call, the
+larger winning: tool calls against the cap (`warn` at `warn_pct`, `urgent` at `urgent_pct` of the cap, `force` at
+the cap) and the prompt against the model's context window (`warn`/`urgent`/`force` at 70/85/90 percent; the
+window is `context_window_tokens`, else the chat model's `profile["max_input_tokens"]`). At `warn` and `urgent`
+the model is shown a wrap-up nudge; at `force` it is told to answer from what it has. Its tools stay declared on
+that pass (Anthropic refuses a request whose history holds tool calls but declares no tools), with
+`forced_tool_choice` (`"none"` where the provider takes it) as its `tool_choice`, and the reply is rebuilt as
+text only: no tool call, no tool-use block, and no tool result left without its call, its `usage_metadata` and
+`response_metadata` kept. A round whose calls would pass the cap is discarded and the answer forced. A final
+answer with no visible text (empty or reasoning only) is retried once with a stricter instruction and the model's
+own reasoning; if that is empty too, `fallback_text` is answered through a stand-in model on the same chain, so
+it streams and lands in the history like any reply. The step's answer carries the summed usage of every call the
+step made. `runaway_rounds` (3) consecutive rounds that wrote no text and whose every tool call failed force the
+answer early. A structured response (`response_format`) is passed through untouched. Every threshold and text is
+a constructor argument.
+
+The turn's record lives in a private agent-state field (`ToolLoopBudgetState`) that the budget resets in its
+`before_agent` hook and updates with each model step, never inferred from the messages: a middleware that
+rewrites them mid-turn (`SummarizationMiddleware`'s summary `HumanMessage`) or appends a user message cannot reset
+the count. Nudges are request overrides, never written to state. Tier transitions, forced answers, retries and
+fallbacks are logged through `threetears.observe` with the turn's tool-call count and no prompt text.
+
+`recursion_limit_for(middleware=...)` gives a `recursion_limit` above the longest turn the budget allows: the cap
+is the budget's in the list (a disagreeing `max_tool_calls` or a second budget raises), and every `before_model`
+and `after_model` hook adds its node per round, `before_agent`/`after_agent` once. Also exported: `ToolBudgetTier`,
+`ToolLoopBudgetState`, `DEFAULT_MAX_TOOL_CALLS_PER_TURN`, `DEFAULT_TOOL_BUDGET_FALLBACK_TEXT`.
+
+**Adoption.** scriob, samhla and metallm replace their own loop governance with it: put
+`ToolLoopBudgetMiddleware()` first in the agent's `middleware` list and run with
+`{"recursion_limit": recursion_limit_for(middleware=<the same list>)}`. scriob drops its stopgap
+`ToolBudgetMiddleware` and its `rounds x 3 + 6` limit (its write-serializing `after_model` node is counted from
+the list); samhla replaces its fixed `recursion_limit` of 80; metallm maps `max_tool_calls_per_turn`,
+`tool_loop_budget_*_pct` and `runaway_zero_progress_rounds` onto the constructor.
+
+### langgraph: a tool-bound model's reply streams
+
+**Fixed:** `StreamingResponse.run_graph` dropped every token of a chat model that streams content blocks
+(langchain-anthropic with tools bound streams `[{"type": "text", "text": ...}]`), so the reader saw nothing
+and `stream_end` carried empty content while the reply was saved. Text blocks now stream; `tool_use`,
+`input_json_delta` and `thinking` blocks stay out. scriob drops its `_ReplyTextGraph` chunk-normalising wrapper.
+
+### 3tears-evals: a campaign is a campaign of aspects, asking one question
+
+- **One decision is one campaign.** A campaign asks one question of its arms (the control first, then candidates)
+  across one or more aspects, each read on its own runs, with its own template, design and margin. Seven
+  single-template campaigns that served one decision used to produce seven memos; adopted into one campaign
+  (`aspects_from`), they produce one page and one memo. A stored campaign reads as one aspect, so nothing stored
+  needs rewriting; campaigns move to the durable store (durable v16), which a build before 0.72 cannot read.
+- **The kind of campaign follows from its arms, never declared.** One arm is a measurement: each aspect's measures
+  with their intervals and bars. Several arms and no control is a choice: every pair on every aspect, symmetric.
+  A control and candidates is a change: each candidate against the control, shown better, shown worse or unclear
+  against the aspect's margin. A margin or a floor needs a control; without one, declare a bar.
+- **Floors replace the decision rule, and only warn.** A floor (`Floor`: a `RateDrop` or `CostLower` on one
+  aspect) is broken where the old rule would have kept the control. A broken floor, like a missed bar, is the first
+  line of the page; it never picks an arm or rewrites a sentence.
+- Breaking: `CampaignDesign`, `Question`, `DecisionRule` and the 0.70 memo types are removed, and
+  `create_campaign` takes the new shape. The migration notes list every change.
+
+### 3tears-evals: code reports each aspect, one memo recommends, a person records the call
+
+- **The campaign's page** (`CampaignReport`, served by `report_read`, `campaign_report` and `analysis_report`)
+  opens with every missed bar, broken floor and breached guardrail, then the writer's recommendation, a table of
+  every aspect, what would settle each unclear row and the recorded call, then one fold per aspect holding that
+  aspect's page. Arms are named by the page's own words (`hasty (control) vs careful`) at every door.
+- **Readings correct for looking at several aspects.** Each candidate is Holm-corrected across its aspects,
+  separately for gains and drops; a choice corrects across every pair and aspect at once. A row's change and its
+  interval are read on the same per-case values, so the change always lies in its interval, and a one-aspect
+  campaign's floor and reading never disagree.
+- **One memo per campaign** (`AuthoredCampaignAnalysis`): at most one recommendation, which must address every
+  broken floor, missed bar and aspect where another arm is ahead, one short summary per aspect, and next steps. A
+  measurement recommends nothing; a choice may say no clear winner. The writer's prompt is rewritten, so every host
+  pushes the new seed (`eval_prompt_reset`).
+- **The call is recorded** (`campaign_record`): the arm, why, and each broken floor and missed bar it overrides,
+  checked against code's readings (or the named analysis's frozen ones), never the memo's words. The page's call
+  line says which overrides no longer apply and how many runs joined since the call.
+- Breaking: stored analyses, insights and judge profiles are refused (regenerable 12). Run
+  `EvalStorage.drop_derived(scopes)` once before deploying, record the judge profiles it lists again, and generate.
+  `report_read`'s JSON and `campaign_report` are the campaign page, not the evidence bundle
+  (`inspect_campaign_bundle` or `assemble_campaign_bundle` reads that).
+
+### 3tears-evals: an analysis of several aspects is listed by its campaign's verdict
+
+- **`analyses_list` and `analysis_archive` read an analysis over several aspects** (#894). Each refused it, so one
+  such analysis made a campaign's whole listing refuse. `analysis_verdict` now lists it by the campaign's verdict:
+  what code read on each aspect, as the campaign's page says it beside that aspect's fold, in the campaign's order
+  (`billing: v2 shown worse; tone: v2 shown better`), over the readings frozen with the analysis. An analysis of
+  one aspect keeps its aspect page's verdict line. `build_report` and `analysis_bundle` still lay out one aspect and
+  refuse several; the campaign's page is read through `report_read` or `analysis_report`.
+
+### 3tears-evals: a judge campaign's report no longer labels the subject's own spend measuring spend
+
+- **In a campaign whose every result is judge-kind (`candidate_kind`) the spend measures read as the arm's own spend** (#830). The judge under test is the
+  subject and the only role billed, so `cost_usd` is the same dollars as `production_replicating_cost`, and the
+  report showed them as both "Production cost" and "Measuring spend, all roles". There `cost_usd`, `program_cost`,
+  `total_cost_usd` and `mean_cost_usd` read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per
+  result`, and a title built from them no longer ends `, measuring spend`. Every other kind keeps the label.
+
+### 3tears-evals: a finding title naming a model is checked against that arm's readings whatever qualifier its display carries
+
+- **An arm's display is matched with its trailing parenthetical dropped, as well as whole** (#831). A real display
+  such as `deepseek-v4.1-flash (production)` is written "deepseek-v4.1-flash" in a title, so the arm-mention check
+  never saw the title name it and production-labelled arms went unchecked. A title naming such an arm it cites
+  nothing of is now refused; one citing it is admitted. Where one model carries two labels (`m (production)`, `m
+  (tuned)`), or another arm shows the same name unqualified, the dropped form names no arm: it would name two.
+### 3tears-evals: a lever only one arm observed is not a level, so it aliases with nothing
+
+- **A recovered lever counts as a level only where at least two arms observed it** (#840). `observed_model_levers`
+  levers were kept once two results across the campaign made a call in the role, so a role one arm ran four times and
+  the other never ran read as a level, aliased with whatever else separated the arms (a memo reported that the
+  candidate model and the research tool's model "move together" and recommended a run to separate them, when neither
+  run set the research model). The predicate now counts arms, by variant key, among the runs that delivered results.
+  A lever whose value differs between runs of one arm (a default that moved between builds) is still a level. A
+  single-arm campaign has nothing to compare, so it keeps the result count: its lever rows and aliasing read are
+  those it had.
+- **Never observed in an arm is unknown, not a level.** The lever levels, the control's departures and the coverage
+  map leave such a run out of the lever instead of placing it at the inherited default beside the arms that observed it.
+  A lever some run named, or the campaign declared as an axis, keeps the inherited level for an arm that did not run
+  the role. A coverage row's `n` counts only the results that sit at a level.
+- `unexercised_factors` keeps the lever, and Not tested says `observed in one arm only` where several results made the
+  calls. Bundle shape 58; `UnexercisedFactor.results` is no longer capped at 1.
+### 3tears-evals: an unclear floor states the cases that would settle it, and a memo no longer guesses them
+
+- **An unclear floor says the independent cases that would show it holds, computed** (#846). For each unclear
+  floor, code computes the bounded interval the floor was read on again over the run's own cases repeated to each
+  count, and finds the fewest at which it would show the floor holds: if the arms do not differ (the optimistic
+  bound) and if they differ as observed. The Decision section tables each count with its cost (`To show the floors
+  hold`), then says each is about and, where it needs more cases than the run used, that it does. A count is always
+  more than the run had; a broken or held floor projects nothing.
+- **The count is the bounded interval's, computed, not scaled.** Scaling a dozen cases' bounded interval as 1/sqrt(n)
+  overstates its need by up to about twice, and the issue's "about 107" scaled the contrasts table's t interval,
+  which never settles a clause; on a character-shaped run the code says 121 and 223. The bundle carries the per-case
+  values each bounded interval read.
+- **The memo may not state a sample size or cost of its own** where it says what to run next: a next step, a
+  question's answer, a deferred decision's revisit. Discodon's character campaign proposed "30 cases ... would
+  formally settle question q1 for roughly $0.40". Such a sentence is now replaced by code's and listed in the
+  methods, and the seeded writer prompt no longer asks for a rough cost.
+- Breaking for a host matching on a memo's next steps: the migration notes give the strings.
+
+### 3tears-evals: a floor reads broken only on a drop shown past its margin
+
+- **A `RateDrop` rate has three states, and only one is broken** (#845). Shown to break: every arm at the case floor
+  and the drop's whole bounded interval past `max_points`. Shown to hold: the interval within the margin. Unclear:
+  everything else, including a drop past the margin on its point estimate alone. Until now an observed drop past the
+  margin settled `keep` on any number of cases: a Discodon memo headlined Keep on 6 of 21 trials to 12 while its own
+  contrasts read the pass rate as not separated, its interval reaching a 35.5-point gain.
+- **Each rate a floor reads has its own row and status in the floors table**, about that reading alone. A clause with
+  no `reading` reads every pass/fail rate the arms share, and its one outcome used to sit on the pass rate's row
+  whichever rate decided it: a readiness memo's row read "the pass rate, 0 of 18 to 0 of 18" beside an outcome
+  quoting a goal check's 12 of 18 to 14.
+- Under the case floor no floor is broken, rate or cost.
+### 3tears-evals: a launch's arms take their cells in turn, case by case, so a provider's bad minute lands on every arm alike
+
+- **`run_launch` no longer co-loads its arms** (#841). A declared two-arm comparison launched with one call started
+  both arms side by side, each at its own width; the pinned upstream rationed one model's calls, and that arm lost
+  6 to 20 cells per campaign to HTTP 429s while the other lost none. The default schedule is now `interleaved`:
+  every arm runs at once, their cells are taken in turn (case 1 on every arm, then case 2) under one width shared by
+  the launch, and every arm plays its cases in one order, so the arms' same cases run close together in time:
+  exactly side by side at a width of 1, within a few cells of each other wider. A launch of N arms loads its
+  providers as one run would, and takes about N times as long; separate launches still load them side by side.
+- **One definition of the schedule** (`arm_schedule`: `interleaved`, `sequential` or `concurrent`), declared on
+  `LaunchArguments` and read by `sweep_launch` from there, so the two cannot drift. `concurrent` keeps the old
+  side-by-side launch; latency under test (`measure_latency`) runs the arms `sequential` and refuses the others.
+  Breaking for a sweep: `max_concurrent_arms` is gone, and a sweep's default is now one interleaved launch of every
+  arm (pass `arm_schedule='sequential'` for arms one after another).
+- **The run says which.** `EvalRun.arm_schedule` (core v15.5, additive), on the launch and sweep records, the run's
+  summary and `run_get`; a campaign whose arms ran one after another or side by side discloses it in its
+  `launch_disclosure`. A disclosure only: never part of a run's identity or cell.
+- **Built over any number of runs.** `run.arm_schedule.CellInterleaver` takes the turns of every run of a launch
+  group, of one template or several, through each run's own `CellExecutor` lane; a run that ends without handing
+  over its cells is withdrawn, and one run's failure stops only that run.
+
+### 3tears-evals: a judge campaign's report states each arm's cost per reply
+
+- **`threetears.evals.kernel.production_replicating_cost` takes `candidate_kind`** (keyword, required, no default):
+  the result's `EvalResult.candidate_kind` (#828). For a judge-kind result it sums the judge role, since the judge
+  under test is the subject and is metered under that role alone; for any other kind it sums the candidate, inner
+  agent and external roles as before. Over a judge campaign every reading of an arm's own spend read nothing before
+  and now reads that spend: the scoreboard's cost per reply (a production memo over 16 judge runs printed "—" for
+  every arm while its findings quoted the spend), the cost measure a contrast tests and the decision rule's cost
+  clause reads, a frontier point's cost, the telemetry rollup and a run summary's `mean_prod_cost_usd`. Breaking for
+  a host calling it: pass `candidate_kind=result.candidate_kind`.
+
+### 3tears-evals: a host binds the cell identity the engine reads
+
+- **`bind_cell_identity` is exported** (`threetears.evals.schema`, `host-contract`): the context manager the run loop
+  binds each cell's `CellIdentity` with, restoring the previous value on exit, including on cancel. A host whose work
+  for a cell crosses a task boundary that does not carry the context (a detached job started in a fresh context, a
+  thread of its own) binds the identity there, so `current_cell_identity()` and every log line read one identity.
+  A host that kept its own cell-identity `ContextVar` for this drops it.
+
+### 3tears-evals: the generator refuses a finding title naming an arm none of its readings or trials is taken at
+
+- **A finding's title names only arms the finding cites a reading or trial of** (#829). A production memo titled a
+  finding "GPT-6 Luna Pro and Ling 3.1 Flash quadrupled evaluation cost" over readings at two other arms, so Ling's
+  cost was shown nowhere. The generator now refuses such a title through its one repair round, naming the arm as the
+  title wrote it, its levels and its cells (in the writer's aliases), and offering to drop the arm from the title,
+  cite its reading, or give that claim a finding of its own; rule 9 of the writer's prompt states the rule. Which
+  arms a title names is read off the names the bundle gives each arm (`analysis/arm_mentions.py`), chosen to miss
+  rather than refuse a sound title: any model level, and on other levers a level carrying a letter and a digit
+  (`terse-v2`, `fanout-2`), but not a quantity with a one- or two-letter unit (`4x`, `8k`, `100ms`), and one with a
+  longer unit (`1024tok`) only written unspaced. Matching is case-insensitive without case folding, and any hyphen
+  or dash from `-` to U+2014 joins or glues a name alike.
+- A title that both states a null its finding established nowhere and names an arm it cites nothing of is told of
+  both in one refusal, so its one repair can fix both. Host-facing: a reporter case whose memo titles an uncited arm
+  now fails as the candidate's own failure.
+
+### 3tears-evals: `kernel.prompt_token_bound` (provisional) is the one bound a call's ceiling is priced on
+
+- **`threetears.evals.kernel.prompt_token_bound(system, user, response_format)`** (`provisional`) is exported beside
+  `call_ceiling`: one token per UTF-8 byte of the system prompt, user message and response directive (NFKC-expanded
+  where that is more), plus `PROMPT_FRAMING_TOKENS`, a bound never below what a byte-level tokenizer bills. The
+  shipped client prices its ceiling on it, so a host bringing its own client prices with the same bound.
+
+### 3tears-evals: the generation's input-size log line is a ballpark over the exact request, and says so
+
+- **The line now reads `approx_input_tokens=N (<basis>) max_output_tokens=...`** (#827), where it read
+  `approx_input_tokens=N max_output_tokens=...`. N is the characters of the exact system prompt, user message and
+  response schema the first call sends, over two, with its basis on the line; it was characters over four of a
+  differently rendered bundle, which ran low (a JSON-heavy bundle runs about 1.7 characters a token, so the new figure
+  still reads about 15% under such a bill). A ballpark, never a bound: the cap prices on `prompt_token_bound`.
+  Breaking for a host parsing the old line: the basis now sits in parentheses between the figure and
+  `max_output_tokens`.
+
+### 3tears-evals: a judge case whose criterion the stored template lacks is withheld for a reset, not a refusal of the seed
+
+- The definition seed resolves a judge case's criterion template in the store first, so a template re-worded under the
+  same name, no longer wording a corpus case's criterion, used to refuse the whole seed. That case is now withheld
+  under `needs_reset` (`SeedOutcome.needs_reset["judge_case"]`, keyed `<judge template>/<case name>`) like one for a
+  battery already holding cases, and the seed admits everything else. `definition_drift` reads it `stale` and says the
+  stored template has no such dimension; a `definitions_reset` of it writes it, and a later seed finds it held rather
+  than withholding it again. A criterion no template holds, or a verdict the scale cannot hold, still refuses the
+  seed. Host-facing: a host that treated this refusal as its signal to re-issue the template under a new name need not.
+
+### 3tears-evals: the judge kind seats the spend ceiling it runs under, and the reader kit checks an unseated blank
+
+- `JUDGE_KIND_CONTRACT` now seats `max_cost_usd` (`host-contract`): every judge-kind run runs under the per-run cost
+  cap, so the ceiling is part of its rig rather than a dimension it does not have. It still seats nothing else. A host
+  whose profile compared judge-kind runs on the ceiling as unseated now sees it seated.
+- The reader conformance kit has a case, `apparatus.blank_when_unseated`: an apparatus reader must return blank (as the
+  declaration reads blank) for a run whose kind does not seat that apparatus. A reader that stamps a value there, such
+  as a state reader tagging every non-persona run, turns it red. `READER_CONFORMANCE_CASES` grows by one, so a host
+  parametrising it runs the new case over its own sample.
+- The warning logged when a run records a level for an apparatus its kind does not seat now reads "the seat declaration
+  or the host's reader for it is wrong", since either can be the cause.
+
+### 3tears-evals: a host reads the analysis preparation bound rather than restating it
+
+- `threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S` (`host-contract`, 900 s) is exported: the bound on an
+  analysis generation's preparation, which a host cites when it explains a generation's total wall time. It is now the
+  default: `AnalysisGeneration.preparation_budget_s` (a positive finite number of seconds) carries the bound a host
+  wants, is read on every call, so the host may set it per call, and defaults to this constant. The refusal still
+  reads `refused before any call: preparation did not finish in <N> s`, with the budget actually used.
+
+### 3tears-evals: a host reads the lease pool's width rather than copying it
+
+- `threetears.evals.kernel.LEASE_POOL_WORKERS` (`host-contract`) is exported: how many threads the job leases' own
+  pool runs store round-trips on. A host that sizes a database pool per process adds it to its blocking executor's
+  width, so a renewal never waits on a connection behind cell work, and the sizing follows the package's width.
+
+### 3tears-evals: a model bounds its own wait on the price catalogue (`Model(catalogue_fetch_timeout=)`)
+
+- **`Model(catalogue_fetch_timeout=)` overrides `CATALOGUE_FETCH_TIMEOUT_S` for one model** (`None`, the default, keeps
+  the 30 seconds; a value not above zero is refused). It is the timeout of a fetch the model starts on a client the
+  catalogue opens, and the bound on a wait for a fetch another task started: a reader joining an in-flight fetch used
+  to wait for as long as the starter's fetch took. It now gives up at its own bound and proceeds unpriced
+  (`PriceRefresh.failure` says so; a catalogue already loaded prices from its stale rows), while the fetch continues
+  for its starter, and later reads are priced. Models sharing one catalogue each keep their own bound, and
+  `Model.derive` carries it.
+- `Catalogue.load` and `Catalogue.read` take `timeout=` for the same wait, and `load` raises `TimeoutError` when it
+  passes. A host that wrapped its catalogue reads in its own timeout can drop the wrapper.
+
+### 3tears-evals: the analysis writer is told the one-claim-per-title rule its judge grades
+
+- **Rule 9 of the analysis writer's prompt carries a clause for the title the judge grades as `reporter.one_idea_per_title`.**
+  A finding's title makes one claim, one a single reading could confirm or refute; a result and its guardrail, or a
+  result and its cause, are two claims, the decision (for a cause, the finding's body) is where they meet, and a
+  qualifier that sets the claim's scope, condition or size stays inside the one claim. No new rule. The character budget rises once, 24,000
+  to 24,500, so the clause costs no other rule its reason; a shorter prompt is a measured change, not a cut by eye. `GEN_PROMPT_RULES.md` names the failure that bought the clause.
+
+### 3tears-evals: an action parameter's description says what the value is
+
+- **A parameter's description says what the value is, not what its action does with it.** `cases_rename`'s
+  `test_case_id` read "The case to rename, by its id", so a host action could not use the name for another meaning when
+  it merged the package's actions into one tool surface. `test_case_id` now reads "A test case's id, as
+  judge_cases_list or results_list names it", and `case_name`, `run_ids`, `result_ids`, `criteria` and
+  `judged_result_ids` drop the action from theirs. No name or type changes.
+
+### 3tears-evals: `current_cell_identity()` names the cell a log line or call belongs to, judge phase included
+
+- **`threetears.evals.schema.current_cell_identity() -> CellIdentity | None`** (host-contract). The run loop binds the
+  cell's `CellIdentity` in a context variable around everything it does for the cell: launch, the candidate's turn,
+  the judge phase, the cell's own log lines, the timeout and cancellation arms and the recording of its result. A host's
+  logging filter reads it to stamp `run_id`, `test_case_id` and `cell_id` with no further wiring. Concurrent cells each
+  see their own, tasks created inside a cell inherit it, and it is `None` outside every cell and again after a cell
+  ends, however it ended. The same identity is the one handed to the sink's `cell_identity` scope.
+  Run-level lines (the ceiling stop decided between cells) belong to no cell and read `None`.
+
+### 3tears-evals: TemplateChecks checks a template case, and no template case is nameless
+
+Host contract change: `TemplateChecks` gains a required field.
+
+- **`TemplateChecks.refuse_inadmissible_template_case`** (new, required, no default: a host with nothing to refuse
+  passes a function that returns `None`) is handed each `SeedTemplateCase`, `host_payload` included, typed as the
+  structural `threetears.evals.kernel.host.TemplateCaseFields` (new, `host-contract`; the kernel cannot import the run
+  package's case) and raises `ValidationFailedError` to refuse. The seed and a definition reset ask it for every
+  corpus case they would write, and `case_rename` for a template's own case under its new name, before any of them
+  writes: a refused case is written by none, and each refusal reaches the caller with the host's reason (the seed
+  and a reset refuse whole, naming every case). `run.admit_template_case` is the one door all three use. A host adds the
+  field to every `TemplateChecks(...)` it builds. `DECLARED_CEILING` is 519.
+- **No template case is nameless.** `SeedTemplateCase.name` refuses a blank name where the case is built, and `admit_template_case`
+  asks again before the host's check, for a case built another way.
+- The host guide shows a classifier bank moving onto `template_cases` with its check.
+
+### 3tears-evals: the seed names a stored case whose name is empty
+
+- **The seed fills an empty name, and only an empty one.** A stored template case with no `name` whose content (its
+  `variation_params` and `host_payload`) matches a corpus case reads with the corpus case's name after one seed, and
+  `SeedOutcome.named` (new, `dict[str, list[str]]`, `total_named`) lists it under `template_case`. A stored non-empty
+  name is never overwritten, a name another live case of the revision carries is not given twice, and only `name` is
+  written (conditionally), so the case keeps its id, `content_hash` and `seed_digest`. A host's own fill-only naming
+  pass after the seed can be dropped.
+- **A name fill that does not land says why.** It was dropped with nothing counted or logged. Now
+  `SeedOutcome.name_fill_failed` (new, `dict[str, dict[str, str]]`) maps each case whose fill the store refused to the
+  store's reason, logged at WARNING, and `SeedOutcome.name_fill_contended` (new, `dict[str, list[str]]`) lists each
+  whose conditional write lost to another writer, logged at INFO; both keyed `<template>/<name>` under
+  `template_case`, counted by `total_name_fill_failed` and `total_name_fill_contended`, and worded by `summary()`. The
+  case stays nameless and the next boot tries again.
+
+### 3tears-evals: a template whose every revision is archived is absent to the seed
+
+Behaviour change for a host that seeds `template_cases`.
+
+- **A retired template is not seeded into.** `load_template_by_name` falls back to the newest archived revision when
+  every revision is archived, so the seed wrote corpus cases into a template an operator had retired. It now writes
+  nothing into any revision of one, on every boot, and `SeedOutcome.archived` (new, `dict[str, list[str]]`) names each
+  such case under `template_case`, keyed `<template>/<name>`. It is counted as neither created, skipped nor failed,
+  `total_archived` counts it, and `summary()` says its template is archived. A template with one live revision seeds as
+  before. A host reading `SeedOutcome` field by field adds the field; one that checks `nothing_to_do` now sees it false
+  while such a case is withheld.
+
+### 3tears-evals: a host states its kind registry once, and can call one template check directly
+
+Breaking for a host in one place: `LaunchHost` takes no `kinds`.
+
+- **`LaunchHost(kinds=...)` is removed; the registry is `TemplateChecks.kinds`.** Breaking: `LaunchHost.kinds` is now
+  a read-only property over `eval_host.template_checks.kinds`, so a template is admitted against the registry its
+  launch dispatches through, and a kind registered in one place cannot be missing from the other. `TemplateChecks.kinds`
+  stays typed by what admission reads (`IgnoresTemplateFields`), and `LaunchHost` raises `TypeError`, naming the kind,
+  when an entry is not a `LaunchableKind`. A host with no template checks launches no kind (its launch is refused by
+  name). To port, drop `kinds=` from your `LaunchHost(...)` and keep it in your `TemplateChecks(kinds=...)`; code that
+  rebuilt a launch host with `replace(host, kinds=...)` replaces the `eval_host`'s template checks instead.
+  `threetears.evals.ops.OpsHost.reading` still launches nothing, whatever the checks carry.
+- **`admit_template` is exported** (`threetears.evals.run`, `host-contract`): every refusal `create_template` makes
+  before a write, over a `TemplateChecks` and a profile, with no store. A host tests one of its own template checks by
+  calling it, rather than through `create_template` with a template every earlier gate admits.
+
+### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
+
+Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).
+
+- **The metered-call ceiling and the cost cap are read between cells, against what has landed.** Once the recorded
+  cells' metered calls reach `max_metered_calls`, or their spend passes `max_cost_usd`, no new cell starts, the cells
+  already running finish whole, and the run ends `budget_stopped`. Nothing is refused inside a cell: at width above 1
+  the old refusal contaminated whichever cell asked after the ceiling was spent, so two identical runs differed in
+  which cell was cut. A run may land past a ceiling by up to the width's worth of cells; a looping cell is bounded
+  by the cell timeout. `MeteredCallLedger.admit` no longer refuses on the ceiling, `CellSink.reserve` never refuses
+  and `CellSink.cost_cap_reached` is always `False`, and `drive_conversation` asks no cap. A host that declared no
+  metered tools (`max_metered_calls=None`) is unchanged: its metered call is refused at dispatch, and that is the only
+  thing `metered_calls_refused` now counts.
+- **The stop is a typed record.** `EvalRun.budget_stops` holds a `BudgetStop` (`currency`, `ceiling`,
+  `landed_at_stop`, `landed_final`, `cells_in_flight`, `cells_not_started`, `unpriced_results`) for each ceiling
+  that stopped the run, both when both did; the overshoot is `landed_final - ceiling`, derived. The run's summary
+  prints one line from the record: `stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3 running
+  cells finished (+7); 12 cells not started`.
+- Breaking for a host that read them: `CapBreach.refused_call_usd` is gone, `CostCapReached` is no longer raised by
+  the engine (it still imports), and `MeteredCallLedger.refusal_message` raises for a host that declared metered
+  tools. `MeteredCallLedger` refuses a ceiling below 1 unless `none_declared`, and an enforcing `EvalRunCostCap` a
+  ceiling that is not positive and finite: either would stop the run before it began. New:
+  `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
+  `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
+
+### core: signing and HTTP are extras, so most of the family stops installing them
+
+**Changed (core):** `cryptography` and `pyjwt[crypto]` move to a new `3tears[security]` extra, and
+`httpx` to `3tears[http]`. The base keeps what the tiers need: `3tears-observe`, `3tears-nats`,
+sqlalchemy, asyncpg, pydantic and pyyaml. `threetears.core.security`, `threetears.core.backends`
+and `threetears.core.utils` now resolve their names lazily, like `threetears.core` itself.
+Importing the sandbox, a secret reference, `atomic_write` or the L1 cache therefore no longer loads
+the signed-token stack beside it. Before, `cache.sqlite` reached `backends.nats_proxy` through
+`backends/__init__.py`, which loaded asyncpg, cryptography and jwt. Reaching a name that needs an
+extra without it raises `ImportError` naming the extra.
+
+The family packages that use core's signing declare `3tears[security]`: agent-audit, agent-tools,
+datasources, iam, registry and scrape. agent-tools and scrape also declare `3tears[http]`. Each was
+found by importing every one of its modules with the extras refused to core, and by a static pass
+over deferred imports.
+
+**Breaking:** an app that uses `threetears.core.security`'s tokens, proofs, envelopes or sealing,
+`NatsProxyL3Backend`, or `threetears.core.http_client`, and depends on a bare `3tears`, must add the
+extra. This ships in a minor release.
+
+### every package declares what it imports, checked per package
+
+**Changed (packaging):** 3tears now runs its own declared-imports gate
+(`threetears.enforcement.imports_declared`) on each of its packages
+(`tests/enforcement/test_imports_declared.py`). Twenty-three packages imported something they never
+declared, mostly sqlalchemy and pydantic that `3tears` happened to install. Each now declares it.
+Module-level imports became hard dependencies, and their floors moved with them. Optional imports
+became extras:
+- `3tears[pgvector]`, `3tears[uuid-utils]`, and boto3 in `3tears[testing]`
+- `3tears-datasources[tracing]` and `3tears-models[tracing]`
+- `3tears-observe[prometheus]`
+- mcp in `3tears-models[claude-cli]`
+- fastmcp-slim in `3tears-evals[fastmcp]`
+- starlette in `3tears-scrape[hitl]`
+- charset-normalizer in `3tears-search[extract]`
+
+Nothing installs anything it did not before; the declarations only name what was arriving by
+accident.
+
+### core: two dependencies nothing needed are gone, and object-store declares what it imports
+
+**Changed (core):** `3tears` no longer depends on `aiosqlite`, which nothing in the family imported
+(L1 is stdlib `sqlite3`), or on `uuid-utils`, whose one hard use, the invalidation origin token in
+`collections.registry`, is now stdlib `uuid.uuid7` like the rest of core. The L1 caches still accept
+a `uuid_utils.UUID` value when that package is installed.
+
+**Fixed (object-store):** `3tears-object-store` imports `cryptography` and `pydantic` and now declares
+both. It had received them through `3tears`, so it would have broken the moment core stopped
+supplying them.
+
+### mcp: an MCP server no longer installs nats, sqlalchemy or the rest of the family
+
+**Changed (mcp):** `3tears-mcp`'s hard dependencies are now `mcp`, `3tears-observe`, httpx, starlette
+and uvicorn. The grant store -- `LocalGrantAuthorizer`, `threetears.mcp.rbac`,
+`threetears.mcp.migrations` -- moved to a new `grants` extra with `3tears`, `3tears-epoch`,
+`3tears-nats`, sqlalchemy and uuid-utils. Before, every server installed 44 packages (nats-py,
+asyncpg, sqlalchemy among them) and loaded core, epoch and nats on `import threetears.mcp`, though
+only the grant store uses them. A server with its own `Authorizer` now installs about what the `mcp`
+SDK does.
+
+**Breaking:** an app that uses the grant store must depend on `3tears-mcp[grants]`; without it,
+building a `LocalGrantAuthorizer` or reaching an rbac name raises `ImportError` naming the extra.
+An app that imported `threetears.core`, `threetears.epoch` or `threetears.nats` while depending
+only on `3tears-mcp` must now declare those itself. Every import path is unchanged. This ships in a
+minor release.
+
+### observe: traces can export over OTLP/HTTP, and the otel-http extra installs no gRPC
+
+**Added (observe):** `TelemetryConfig.protocol`, `"grpc"` (the default, unchanged) or
+`"http/protobuf"`, which posts spans to `<endpoint>/v1/traces`. A new `otel-http` extra carries the
+`otel` extra's OpenTelemetry packages with the HTTP exporter in place of the exporter metapackage,
+so it installs no grpcio: about 10 MB against the `otel` extra's 49. Log export was already
+OTLP/HTTP. The `otel` extra is unchanged. With `protocol="grpc"` and no gRPC exporter installed,
+`init_telemetry` raises `ImportError` naming the extra to install.
+
+### Swallowed exceptions: a broad handler re-raises or is contained, and a contained bug fails its test
+
+- **New in `3tears-observe`: `contain`, `contained` and `cancel_and_wait`.** `contain(exc, *, log, what, extra=None,
+  level="warning")` is the one way a broad handler absorbs a failure: it logs `what` verbatim with the traceback at
+  `level` -- `"warning"`, `"error"` or `"critical"` (`ContainedLevel`), named so a caller needs no stdlib `logging`
+  import, and nothing below WARNING -- adds `contained_site` (`module:Qualified.name` of the catching function) and
+  `exc_type` to the record's `extra_data`, and counts `contained_errors_total{site, exc_type}`. `with contained(what, *, log, extra=None):` does the same for a block whose failure falls through, and
+  absorbs `Exception` only, so a cancellation still reaches the task. `await cancel_and_wait(task)` cancels a task
+  and waits for it, raising the caller's own cancellation and the task's own failure, where the hand-written
+  `except CancelledError: pass` swallowed both.
+- **`3tears-observe` contains its own broad handlers.** `HealthServer`, `PeriodicTask`, `retry_with_backoff` and the
+  telemetry flush and shutdown log through `contain`. Each record keeps its message and its fields and gains
+  `contained_site` and `exc_type`. Two health-server teardown records rise from DEBUG to WARNING.
+- **New in `3tears-enforcement`: the no-silent-swallow walker checks broad and cancellation handlers**
+  (`find_uncontained`, categories `no_silent_swallow.broad` and `no_silent_swallow.cancel`). An `except Exception`
+  re-raises on some path or calls `contain`; an `except BaseException` or `except CancelledError` re-raises;
+  `suppress(Exception)` and `suppress(CancelledError)` are refused. A log call or a `# NOSILENT` marker excuses none
+  of these. `try`/`except*` is scanned. `NoSilentSwallowConfig` gains `contain_names` (default `{"contain"}`) and
+  `uncontained_pending`, a list of package directories not yet checked: an entry with nothing left to convert is
+  itself a violation (`no_silent_swallow.pending`), so the list only shrinks. Exemptions are read in the
+  scope-keyed form (`path:qualname#N:symbol`). 3tears checks every package, with three held cancellations
+  recorded in `tests/enforcement/_no_silent_swallow_exemptions.txt`.
+- **Every package contains its broad handlers** (`packages/evals` through its own `contain` in
+  `threetears.evals.schema.logs`, since it imports no other 3tears package). In this phase no handler's return value or
+  control flow changed (phase 2, below, changes them on purpose). What a consumer can notice:
+  - each such record now carries the traceback and `contained_site` / `exc_type` in `extra_data`, keeps its message
+    and fields, and counts on `contained_errors_total`; records that were DEBUG or INFO are now WARNING;
+  - stopping a task no longer swallows the caller's own cancellation: `NatsClient` close and unsubscribe,
+    `ToolServer.shutdown`, `DynamicToolPod.stop`, the tool-pod bootstrap teardown, `AuditPersisterHandle.stop`, the
+    conversations write buffer's `stop()`, the backup restore's stdin pump, the Claude CLI pool's `close()` and the
+    workspace `bind()` teardown;
+  - a few background loops now end cancelled rather than returning when stopped: the NATS credential-renewal and
+    successor-move loops, the conversations buffer timer, the workspace watcher and the backup read-ahead filler.
+- **Under pytest, `contain()` absorbing a `TypeError`, `AttributeError`, `NameError` or `AssertionError` fails the
+  test** (`tests/contain_tripwire.py`, repo-internal). A test that drives one there on purpose marks it
+  `@pytest.mark.expect_contained(<type>, why=...)`.
+- The rule, the decision table and the conversion recipe: `docs/exceptions.md`.
+
+### Swallowed exceptions, phase 2: a failure reaches its caller instead of reading as an answer
+
+Phase 1 kept every handler's behaviour. Phase 2 changes behaviour where the old default lied to its caller (#838).
+Where that forced a choice between failing open and failing closed, the owner ruled on each in #876.
+
+- **Security checks fail closed.**
+  - The scrape SSRF check refuses a host with an unparseable resolved address.
+  - `robots.txt` follows RFC 9309. A 4xx allows. A 5xx, 429, network error, timeout or parse failure is
+    unreachable and disallows, refused as retryable (`ROBOTS_UNREACHABLE_STATUS`) and never sent to the human queue.
+    Only a parsed earlier copy stands in for it.
+  - A failed MCP grant reload refuses non-admin calls with `AUTHZ_ERROR` (`GrantCacheUnavailableError`) until a
+    reload lands. The catch-up tick retries it, and a failed first load fails `start()`.
+  - `iam/saml.py` catches only parse, encoding and value errors.
+  - A corrupt password hash or TOTP secret still denies access, and now names the fault
+    (`PasswordVerifyResult.stored_hash_fault`, `TotpVerifyResult.secret_fault`) at ERROR.
+  - **`verify_code` returns `TotpVerifyResult`, not a `bool`.** Truth-testing it raises `TypeError`, so `if
+    verify_code(...)` fails loudly instead of accepting every code.
+- **registry: a limit-guard outage still serves the call (Fork-2), counted and alerted.** A guard that raises logs
+  at ERROR and counts `threetears_registry_spend_limit_unchecked_total{exc_type}`.
+- **registry: the agent's token is withheld from a declaring pod when the hub JWKS cannot be read or reads empty.**
+  A `CallProxy` with a `delegated_signer` and no `jwks_provider` still keeps it, raises a `DeprecationWarning`, and
+  loses the allowance in a future minor release.
+- **A write that did not land fails its save.**
+  - `BaseCollection.l2_is_the_store` (default False) marks collections whose only store is L2. A refused L2 write
+    there raises `L2WriteRefusedError` and the save fails. A refused read raises instead of answering "absent".
+    Heartbeats, presence and coordination tables with no L3 declare it.
+  - `tests/enforcement/test_l2_only_collections_declare_their_store.py` makes every in-repo collection without L3
+    declare it.
+  - Recording or checking a revocation on such a table raises during an L2 outage.
+  - During an L2 outage the registry judges liveness from its own record, so dead pods are still quarantined.
+  - A scheduled job's lost fire row is retried 3 times and counted (`threetears_scheduled_jobs_fires_unrecorded_total`).
+    `join()` raises `FireNotRecordedError`.
+- **A failure no longer deletes rows or kills processes.**
+  - A workspace bind skips a path below its root that it cannot read, keeps that path's L3 rows, and completes.
+    Each skip counts `workspace_snapshot_unreadable_skipped_total{phase}`.
+  - `CaptureBackFailedError` means the bind root itself failed. `DiskRootChangedError` refuses a root whose device
+    changed.
+  - The Claude CLI orphan sweep leaves a CLI running when its owner cannot be shown gone (an unreadable marker,
+    EPERM, a hidden `/proc`). The gauge `claude_cli_sweep_owner_unknown` counts these.
+- **An outage reads as an outage, not as nothing found.**
+  - `threetears.langgraph.embeddings.embed_query` / `embed_documents` raise `EmbeddingUnavailableError`.
+  - Memory retrieval raises. As turn enrichment, the turn still runs and the model is told its memories could not
+    be read.
+  - Extraction's model failures raise `ExtractionModelFailedError`. **An unreadable extraction cooldown extracts
+    anyway**, contained at ERROR and counted.
+  - **A failed intention dedup stores the want** and says it went unchecked.
+  - Knowledge fails the turn only when its invariants are unknown. `list_own_drafts` raises
+    `DraftListIncompleteError`.
+  - Checkpoint purges raise `CheckpointPurgeIncompleteError`.
+  - The extractor's hooks now raise, which a host subclass will see.
+- **A partial result no longer reads as complete.**
+  - The NATS op-log replay raises `OpLogError` short of the stream head, after yielding what it read.
+  - An unparseable rowcount tag raises `RowcountUnreadableError`. The NATS proxy no longer invents `"UPDATE 0"`,
+    so a fenced save behind it raises when the broker omits `row_count` (#877).
+  - KV watches recreate their consumer and raise `KvError` after 5 failures in a row.
+  - The docker probe skips only for a missing SDK, socket or connection, so docker-gated tests run wherever
+    Docker does.
+- **Extraction says what it could not read.**
+  - `DocumentResult.page_faults` names each unread page, and `parse_document` says "Not fully read".
+  - `ImagePrepError` replaces a resize that reported success with the original bytes.
+  - `page_faults` travels on scrape's `ParsedDocumentHtml` and `RenderedPage`.
+  - An invalid CSS selector is refused by name. A malformed `blocked_until` backs off.
+  - Other unreadable stored timestamps are counted and read as not recorded (`StoredTimestampUnreadable`).
+- **Input that cannot be parsed no longer drops a row silently.**
+  - `UndecodableGeometry` is raised for an undecodable geometry. A geo tile skips the row and counts
+    `geo_undecodable_rows_total{layer}`.
+  - The stored tile says so: each aggregate feature whose bucket lost rows carries `undecodable`
+    (`UNDECODABLE_PROPERTY`). A tile built over any unreadable rows carries a `<layer>.partial` layer
+    (`PARTIAL_LAYER_SUFFIX`) holding the tile's total.
+  - A Voyage pricing page that changed shape raises `PricePageUnreadable`, and an unparseable published price
+    carries `unpriced_reason`.
+- **A failed lookup no longer shows as a false value.**
+  - Wake tools show `unknown (lookup failed)`, not "no skill" or 0.
+  - Slack serves the last good profile on a transient `users.info` failure, honours `Retry-After` (capped at
+    3600 s) and backs off 15 → 60 → 300 s.
+  - **New in `3tears-channels`: `ChannelMessage.sender_profile_known`** (default `True`). Slack sets it `False` when
+    the sender's profile couldn't be read, so an unknown sender doesn't read as a sparse profile. It is
+    informational only; outside `threetears.channels` only a reviewed exemption may read it. The
+    `metadata["profile_lookup_failed"]` key it replaces is still set, deprecated, and goes in the next minor release.
+- **Broad handlers catch the types they meant**, in registry discovery and registration, the namespace discovery
+  client, the cron validator, langgraph tool keys and the scrape page finder.
+  - **A mail-bounce parser bug answers 500, so the provider resends.** Only the parser's declared `ValueError`
+    answers 400.
+- **Agent-facing text names the exception type only**, never its message. The full message goes to `contain()`.
+  Text about the agent's own input (a cron, template or regex error) is still returned so it can fix it.
+- **Check before release.**
+  - Hosts:
+    - any `if verify_code(...)` caller;
+    - extractor subclasses that relied on the hooks failing open;
+    - host callers of `datasource_ids`, `list_own_drafts` and `retrieve_across_authorized_agents`;
+    - a price refresh that catches only transport errors.
+  - scriob: materialise and failover must not commit a head after `OpLogError` arrives mid-replay.
+
 ## v0.72.0 -- 2026-10-20
 
 ### agent-memory, agent-intention, core: the embedding width is a deployment setting
@@ -431,6 +1083,17 @@ server's word, not a timeout (#802), and the iam tamper tests always change the 
   lost three conditional writes to the run's own progress writes waited a whole interval. `JobLeases` now does its
   store round-trips on a small pool of its own, renews every held lease at once, and tries a contended renewal
   again within the interval after a short jittered wait. `JobLeases(blocking_executor=)` is still accepted and ignored.
+- **Removed: `JobLeases(blocking_executor=)`.** It was accepted and ignored since the pool above; no release carried it, so
+  nothing migrates. Lease round-trips never run on a host executor.
+- **Fixed: a store call that hangs never expired its own lease record.** A renewal whose store call never returned
+  was skipped by every later interval, so its holder kept writing under a lease every reader read as lapsed. Each
+  renewal's store call is now given only what is left of its lease by the holder's own count; a call still out then
+  counts as a failed renewal for a whole lease, the record is expired and the job stopped, with a fault naming the
+  hung renewal, whether or not the call ever returns. The expiry's own two writes are bounded by a lease too, so a
+  hung store cannot hold the stop back. Other records' renewals are unaffected.
+- **Fixed: the lease tests that failed only under a loaded suite.** The renewal-under-load tests ran a 0.9s lease and
+  the two lease-expiry tests a 0.3s one, margins a stalled scheduler spent; the first now run 1.8s (every wait doubled
+  with it) and the second 0.9s, each asserting what it did.
 
 ### Text a model reads stays under the item it belongs to
 

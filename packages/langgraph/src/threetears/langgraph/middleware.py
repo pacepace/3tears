@@ -4,10 +4,14 @@ The framework-aligned successor to the hand-rolled ``AgentNodeHook`` /
 ``ToolNodeHook`` protocols. ``create_agent`` extends via
 :class:`langchain.agents.middleware.AgentMiddleware`; this module holds the
 **platform-level** middleware every 3tears consumer can reuse. Consumer-specific
-policy (tool side-effects, skill-rebind, loop governance) lives in each consumer
-as its own ``AgentMiddleware`` and is NOT here.
+policy (tool side-effects, skill-rebind) lives in each consumer as its own
+``AgentMiddleware`` and is NOT here. Tool-loop governance is platform:
+:class:`~threetears.langgraph.ToolLoopBudgetMiddleware` (``middleware_tool_budget``)
+bounds a turn's tool calls and always ends the turn with text, and
+:func:`~threetears.langgraph.recursion_limit_for` keeps the graph's recursion limit
+above what that budget allows.
 
-What lives here today:
+What lives in this module:
 
 - :class:`PromptCachingMiddleware` — Anthropic prompt-cache annotation
   (``cache_control``) + cache-usage normalization, re-expressed from the old
@@ -27,7 +31,7 @@ from threetears.langgraph.caching import (
     detect_capabilities,
     extract_cache_usage,
 )
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["PromptCachingMiddleware"]
 
@@ -91,10 +95,11 @@ def _stamp_cache_usage(response: ModelResponse) -> None:
         else:
             try:
                 message.usage_metadata = {"cache_usage": usage}  # type: ignore[assignment]
-            except Exception:  # noqa: BLE001 - exotic response shapes may refuse the assignment
-                log.debug(
-                    "response message %s does not accept usage_metadata assignment",
-                    type(message).__name__,
+            except Exception as exc:  # noqa: BLE001 - exotic response shapes may refuse the assignment
+                contain(
+                    exc,
+                    log=log,
+                    what=f"response message {type(message).__name__} does not accept usage_metadata assignment",
                 )
 
 

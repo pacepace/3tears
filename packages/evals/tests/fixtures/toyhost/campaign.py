@@ -16,12 +16,14 @@ from typing import TypedDict
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.kernel import (
+    Aspect,
+    AspectDesign,
     BarOverride,
-    CampaignDesign,
+    CampaignArm,
     ControlDeclaration,
     EvalCampaign,
+    IDENTITY_VERSION,
     EvalInsight,
-    Question,
     SweptAxis,
 )
 from threetears.evals.kernel.host import HostProfile
@@ -37,9 +39,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 
-#: The question the campaign exists to answer, by id. Named so the memo's resolution can be
-#: matched against it without a second copy of the string.
-TOYHOST_QUESTION_ID = "q-chunk-width"
+#: The one question the campaign asks of its arms, in the operator's words.
+TOYHOST_QUESTION = "is the wider chunk worth what it costs to retrieve?"
 
 #: The axis swept, spelled as the toy host's registry spells it. A declared axis is a name the
 #: host ACCEPTS — a registered sweepable LEVER, or a member of an open family its own membership
@@ -84,15 +85,17 @@ _CONTEXT_TOKENS_IN: dict[int, int] = {TOYHOST_NARROW: 2_400, TOYHOST_WIDE: 7_600
 TOYHOST_COST_BAR_USD = 0.025
 
 
-def toyhost_design() -> CampaignDesign:
-    """What the toy-host campaign declared before any of it ran.
+def toyhost_aspect_design(**changes: object) -> AspectDesign:
+    """What the toy-host campaign's one aspect set out to vary and hold itself to.
 
-    :return: The declaration: one interval-scaled axis at two levels, one live question, and ``held_fixed``
-        recording that the stimulus was never held — documents arrive from live intake, the
-        observational shape rather than a commissioned one.
-    :rtype: CampaignDesign
+    :param changes: Fields of the design to change first (``bars``, ...).
+    :ptype changes: object
+    :return: The design: one interval-scaled axis at two levels, a spend bar, and ``held_fixed`` recording that the
+        stimulus was never held — documents arrive from live intake, the observational shape rather than a
+        commissioned one. ``merit_axes`` is empty: the campaign's question is unscoped.
+    :rtype: AspectDesign
     """
-    return CampaignDesign(
+    design = AspectDesign(
         axes=[
             SweptAxis(
                 axis_id=TOYHOST_AXIS,
@@ -103,19 +106,6 @@ def toyhost_design() -> CampaignDesign:
                 rationale="does a longer chunk carry the whole field or bury it among its neighbours",
             )
         ],
-        # `asked_at` and `declared_at` are pinned for the same reason the ids
-        # are: both default to `utc_now_iso`, and the assembler derives the
-        # measurement windows and the window disclosure from the clock they
-        # carry — so one unpinned default put eleven wall-clock leaves into
-        # every bundle and made two builds of this fixture incomparable.
-        questions=[
-            Question(
-                id=TOYHOST_QUESTION_ID,
-                text="is the wider chunk worth what it costs to retrieve?",
-                asked_at=TOYHOST_INSTANT,
-            )
-        ],
-        declared_at=TOYHOST_INSTANT,
         # A spend ceiling on an engine-core measure: the host registers bars on its own
         # measures only, so this is the bar the campaign adds rather than tightens.
         bars=[BarOverride(measure_id="cost_usd", threshold=TOYHOST_COST_BAR_USD, direction="lower_is_better")],
@@ -124,6 +114,66 @@ def toyhost_design() -> CampaignDesign:
             stimulus_reason="documents arrive from live intake; the vendor mix drifts week to week",
             apparatus="witnessed",
         ),
+        merit_axes=[],
+    )
+    return design.model_copy(update=changes)
+
+
+def toyhost_campaign_of_one_aspect(
+    *,
+    design: AspectDesign | None,
+    question: str = TOYHOST_QUESTION,
+    asked_at: str = TOYHOST_INSTANT,
+    control_key: str | None = None,
+    template_id: str | None = None,
+    run_ids: Sequence[str] = (),
+    **fields: object,
+) -> EvalCampaign:
+    """A toy-host campaign of one aspect, labelled with its behavior, asking one question of its arms.
+
+    The aspect's design, the question and the time it was asked are pinned by the caller (``asked_at`` defaults to
+    :data:`TOYHOST_INSTANT`), because a default clock would put a wall-clock leaf into every bundle built from it.
+
+    :param design: The aspect's design; ``None`` declares none.
+    :ptype design: AspectDesign | None
+    :param question: The one question the campaign asks.
+    :ptype question: str
+    :param asked_at: When the question was asked in full.
+    :ptype asked_at: str
+    :param control_key: The variant key of the declared control arm; ``None`` names no arm.
+    :ptype control_key: str | None
+    :param template_id: The template the aspect's runs were gathered on.
+    :ptype template_id: str | None
+    :param run_ids: The runs the aspect holds.
+    :ptype run_ids: Sequence[str]
+    :param fields: The campaign's other fields (``id``, ``scope_id``, ``name``, ``subject_id``, ``behavior`` ...).
+    :ptype fields: object
+    :return: The campaign.
+    :rtype: EvalCampaign
+    """
+    behavior = str(fields["behavior"])
+    declared = design is not None
+    return EvalCampaign.model_validate(
+        {
+            **fields,
+            "question": question if declared else "",
+            "declared_at": asked_at if declared else None,
+            "arms": []
+            if control_key is None
+            else [
+                CampaignArm(label="control", role="control", variant_key=control_key, identity_version=IDENTITY_VERSION)
+            ],
+            "aspects": [
+                Aspect(
+                    label=behavior.replace("/", "-"),
+                    template_id=template_id,
+                    run_ids=list(run_ids),
+                    design=design,
+                    declared_at=TOYHOST_INSTANT if declared else None,
+                    asked_at=asked_at if declared else None,
+                )
+            ],
+        }
     )
 
 
@@ -178,7 +228,7 @@ def toyhost_campaign(
         },
         insights,
     )
-    campaign = EvalCampaign(
+    campaign = toyhost_campaign_of_one_aspect(
         # Pinned for the same reason the batches are: `EvalCampaign.id` defaults
         # to `uuid4`, so the campaign this fixture assembles was a different
         # campaign every call and no two bundles could fingerprint alike.
@@ -193,7 +243,7 @@ def toyhost_campaign(
         # commissioned host could assemble.
         template_id="",
         run_ids=[batch.id for batch in batches],
-        declared_design=toyhost_design(),
+        design=toyhost_aspect_design(),
         created_by="test:fixture",
     )
     return campaign, storage
@@ -226,9 +276,10 @@ __all__ = [
     "TOYHOST_AXIS",
     "TOYHOST_COST_BAR_USD",
     "TOYHOST_NARROW",
-    "TOYHOST_QUESTION_ID",
+    "TOYHOST_QUESTION",
     "TOYHOST_WIDE",
     "toyhost_bundle",
     "toyhost_campaign",
-    "toyhost_design",
+    "toyhost_campaign_of_one_aspect",
+    "toyhost_aspect_design",
 ]

@@ -13,7 +13,9 @@ import pytest
 from shapely.geometry import Point, Polygon
 
 from threetears.geo.attributes import coerce_attributes
+from threetears.geo.geometry import UndecodableGeometry
 from threetears.geo.bands import (
+    UNDECODABLE_PROPERTY,
     AggregateSpec,
     FeatureSpec,
     aggregate_band,
@@ -39,6 +41,94 @@ class TestSimplificationTolerance:
 
     def test_tighter_at_higher_zoom(self) -> None:
         assert simplification_tolerance(14) < simplification_tolerance(4)
+
+
+def _raising_point_of(row: dict[str, Any]) -> Point | None:
+    if row.get("bad"):
+        raise UndecodableGeometry("corrupt")
+    return _point_of(row)
+
+
+class TestUndecodableRows:
+    def test_feature_band_counts_the_rows_it_could_not_read(self) -> None:
+        rows = _rows(2) + [{"id": 9, "lon": 0, "lat": 0, "bad": True}]
+        result = feature_band(
+            rows,
+            tile=TileId(z=12, x=100, y=200),
+            spec=FeatureSpec(attributes=("id",), feature_id_column="id"),
+            geometry_of=_raising_point_of,
+            attributes_of=coerce_attributes,
+        )
+        assert len(result.features) == 2
+        assert result.undecodable == 1
+
+    def test_aggregate_band_counts_the_rows_it_could_not_read(self) -> None:
+        rows = _rows(2) + [{"id": 9, "lon": 0, "lat": 0, "bad": True}]
+        result = aggregate_band(
+            rows,
+            tile=TileId(z=5, x=6, y=12),
+            spec=AggregateSpec(rollup_column="state"),
+            geometry_of=_raising_point_of,
+        )
+        assert result.undecodable == 1
+
+    def test_aggregate_feature_carries_its_own_buckets_undecodable_rows(self) -> None:
+        # the marker is per bucket: a state's total falls short by its own unread rows, and a
+        # state that lost none is unmarked.
+        rows = [
+            {"id": 1, "lon": -112.0, "lat": 33.4, "state": "04", "unreg": 100},
+            {"id": 2, "lon": 0, "lat": 0, "state": "04", "unreg": 200, "bad": True},
+            {"id": 3, "lon": 0, "lat": 0, "state": "04", "unreg": 300, "bad": True},
+            {"id": 4, "lon": -115.0, "lat": 36.0, "state": "32", "unreg": 50},
+        ]
+        result = aggregate_band(
+            rows,
+            tile=TileId(z=4, x=3, y=6),
+            spec=AggregateSpec(rollup_column="state", measures={"unreg": "sum"}),
+            geometry_of=_raising_point_of,
+        )
+        by_state = {f.attributes["state"]: f.attributes for f in result.features}
+        assert by_state["04"]["unreg"] == 100
+        assert by_state["04"][UNDECODABLE_PROPERTY] == 2
+        assert UNDECODABLE_PROPERTY not in by_state["32"]
+        assert result.undecodable == 2
+
+    def test_without_a_rollup_column_the_tile_bucket_is_marked(self) -> None:
+        rows = _rows(3) + [{"id": 9, "lon": 0, "lat": 0, "bad": True}]
+        result = aggregate_band(
+            rows,
+            tile=TileId(z=4, x=3, y=6),
+            spec=AggregateSpec(),
+            geometry_of=_raising_point_of,
+        )
+        (feature,) = result.features
+        assert feature.attributes["count"] == 3
+        assert feature.attributes[UNDECODABLE_PROPERTY] == 1
+
+    def test_a_bucket_with_no_readable_row_has_no_feature_but_is_still_counted(self) -> None:
+        # nothing gives it a position, so there is nothing to stamp; the result's count still has it.
+        rows = [
+            {"id": 1, "lon": -112.0, "lat": 33.4, "state": "04"},
+            {"id": 2, "lon": 0, "lat": 0, "state": "32", "bad": True},
+        ]
+        result = aggregate_band(
+            rows,
+            tile=TileId(z=4, x=3, y=6),
+            spec=AggregateSpec(rollup_column="state"),
+            geometry_of=_raising_point_of,
+        )
+        assert [f.attributes["state"] for f in result.features] == ["04"]
+        assert UNDECODABLE_PROPERTY not in result.features[0].attributes
+        assert result.undecodable == 1
+
+    @pytest.mark.parametrize(
+        "spec_kwargs",
+        [{"rollup_column": UNDECODABLE_PROPERTY}, {"measures": {UNDECODABLE_PROPERTY: "sum"}}],
+    )
+    def test_the_marker_name_is_reserved(self, spec_kwargs: dict[str, Any]) -> None:
+        # a source column of that name would overwrite the marker, or be overwritten by it.
+        with pytest.raises(ValueError, match="reserved"):
+            AggregateSpec(**spec_kwargs)
 
 
 class TestFeatureBand:

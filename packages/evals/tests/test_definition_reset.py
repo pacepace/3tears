@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -43,7 +44,14 @@ import pytest
 from threetears.evals.actions import Caller, definition_drift_actions, eval_catalogue, standard_tools
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.campaigns import add_runs_to_campaign, create_campaign
-from threetears.evals.kernel import JUDGE_KIND, ConflictError, EvalStorage, RefusedInput, ValidationFailedError
+from threetears.evals.kernel import (
+    JUDGE_KIND,
+    ConflictError,
+    EvalStorage,
+    RefusedInput,
+    StorageError,
+    ValidationFailedError,
+)
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.host import TemplateChecks
 from threetears.evals.ops import OpsHost, case_rename, templates_list
@@ -66,6 +74,7 @@ from threetears.evals.run import (
 from threetears.evals.schema import EvalTemplate, EvalTestCase, RubricDim
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
+    make_campaign,
     make_eval_result,
     make_eval_run,
     make_judge_config,
@@ -74,7 +83,7 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND, toyhost_template
@@ -113,7 +122,7 @@ def _run_on(storage: EvalStorage, template: EvalTemplate, run_id: str, cases: in
 
 
 def _campaign(run_ids: list[str]) -> EvalCampaign:
-    return EvalCampaign(
+    return make_campaign(
         scope_id=TOYHOST_SCOPE,
         name="queue discipline over time",
         subject_id="subject-1",
@@ -155,7 +164,7 @@ def test_a_campaign_spanning_a_reset_refuses_to_pool_the_two_revisions() -> None
     said = str(refused.value)
     assert repr(toyhost_template().name) in said and "revision 1" in said and "revision 2" in said, said
 
-    for definition in ({"run_ids": ["run-four", "run-seven"]},):
+    for definition in ({"aspects": [{"label": "b", "run_ids": ["run-four", "run-seven"]}]},):
         with pytest.raises(ValidationFailedError, match="revision"):
             create_campaign(
                 storage,
@@ -167,7 +176,12 @@ def test_a_campaign_spanning_a_reset_refuses_to_pool_the_two_revisions() -> None
             )
     alone = create_campaign(
         storage,
-        {"name": "four only", "subject_id": "subject-1", "behavior": "b", "run_ids": ["run-four"]},
+        {
+            "name": "four only",
+            "subject_id": "subject-1",
+            "behavior": "b",
+            "aspects": [{"label": "b", "run_ids": ["run-four"]}],
+        },
         scope_id=TOYHOST_SCOPE,
         created_by="t",
         profile=profile,
@@ -198,7 +212,12 @@ def test_two_templates_sharing_a_name_at_revision_one_are_not_two_revisions_and_
 
     created = create_campaign(
         storage,
-        {"name": "one name", "subject_id": "subject-1", "behavior": "b", "run_ids": ["run-first", "run-second"]},
+        {
+            "name": "one name",
+            "subject_id": "subject-1",
+            "behavior": "b",
+            "aspects": [{"label": "b", "run_ids": ["run-first", "run-second"]}],
+        },
         scope_id=TOYHOST_SCOPE,
         created_by="t",
         profile=profile,
@@ -206,17 +225,25 @@ def test_two_templates_sharing_a_name_at_revision_one_are_not_two_revisions_and_
     )
     alone = create_campaign(
         storage,
-        {"name": "first only", "subject_id": "subject-1", "behavior": "b", "run_ids": ["run-first"]},
+        {
+            "name": "first only",
+            "subject_id": "subject-1",
+            "behavior": "b",
+            "aspects": [{"label": "b", "run_ids": ["run-first"]}],
+        },
         scope_id=TOYHOST_SCOPE,
         created_by="t",
         profile=profile,
         exploratory=True,
     )
-    add_runs_to_campaign(storage, alone.id, TOYHOST_SCOPE, ["run-second"])
+    # A run of the other template is refused by the aspect gathered on the first, for its template, never as a
+    # revision: an aspect reads its own template's runs, while a campaign created over both pools them.
+    with pytest.raises(ValidationFailedError, match="is gathered on 'one-name-1'") as refused:
+        add_runs_to_campaign(storage, alone.id, TOYHOST_SCOPE, ["run-second"])
     bundle = assemble_context_bundle(_campaign(["run-first", "run-second"]), storage=storage, profile=profile)
 
+    assert "revision" not in str(refused.value)
     assert created.run_ids == ["run-first", "run-second"]
-    assert storage.load_campaign(alone.id, TOYHOST_SCOPE).run_ids == ["run-first", "run-second"]  # type: ignore[union-attr]
     assert bundle.cells, "the bundle assembles"
 
 
@@ -488,6 +515,79 @@ def test_a_first_boot_seeds_a_judge_template_and_its_cases_together() -> None:
 
     assert boot.created["judge_case"] == 2 and boot.created["case_set"] == 1 and not boot.needs_reset
     assert set(_states(_drift(storage, _full_corpus())).values()) == {"current"}
+
+
+def _reworded_subject() -> EvalTemplate:
+    """The corpus's subject template, as the store holds it after an operator re-worded its rubric under the same name:
+    the faithfulness dimension is gone and a layout one is there."""
+    corpus_side = toyhost_judged_template()
+    layout = RubricDim(
+        name=DIM_KEY, description="Fields sit where the invoice put them.", scale="ordinal", judge="builtin"
+    )
+    return corpus_side.model_copy(update={"rubric": [layout]})
+
+
+def _corpus_wording_both_dimensions() -> SeedCorpus:
+    corpus_side = toyhost_judged_template()
+    layout = RubricDim(
+        name=DIM_KEY, description="Fields sit where the invoice put them.", scale="ordinal", judge="builtin"
+    )
+    subject = corpus_side.model_copy(update={"rubric": [*corpus_side.rubric, layout]})
+    return _full_corpus(
+        templates=(subject, _judge_template()),
+        judge_cases=(_judge_case("a"), _judge_case("b", criterion=DIM_KEY)),
+        case_sets=(),
+    )
+
+
+def test_a_judge_case_whose_criterion_the_stored_template_lacks_is_withheld_and_a_reset_writes_it() -> None:
+    """The store is master, so a template re-worded under the same name no longer words a corpus case's criterion. That
+    drift is repaired by one reset, so it withholds that case (``needs_reset``) and every other case is seeded; it
+    used to refuse the whole seed."""
+    storage, _ = memory_storage()
+    storage.save_template(_reworded_subject())
+    storage.save_template(_judge_template())
+    corpus = _corpus_wording_both_dimensions()
+    key = f"judge_case/{JUDGE_NAME}/a"
+
+    boot = seed_eval_definitions(toyhost_host(storage=storage), corpus)
+
+    assert boot.needs_reset == {"judge_case": [f"{JUDGE_NAME}/a"]} and "RESET IT" in boot.summary()
+    assert boot.created["judge_case"] == 1, "the case on the dimension the store still words is seeded"
+    assert boot.created["rubric_dim"] == 1 and boot.created["judge_config"] == 1, "everything else is admitted"
+    judge = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert judge is not None
+    assert [c.seed_name for c in storage.query_test_cases(TOYHOST_SCOPE, template_id=judge.id)] == ["b"]
+    drift = _drift(storage, corpus)
+    assert _states(drift)[key] == "stale", drift.render()
+    assert "no dimension" in next(r.reason for r in drift.readings if r.key == key)
+
+    reset = _reset(storage, corpus, [key])
+
+    assert _states(reset.after)[key] == "current", reset.after.render()
+    second = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert second is not None and second.revision == 2
+    battery = storage.query_test_cases(TOYHOST_SCOPE, template_id=second.id)
+    assert sorted(c.seed_name or "" for c in battery) == ["a", "b"]
+    again = seed_eval_definitions(toyhost_host(storage=storage), corpus)
+    assert not again.needs_reset and again.created["judge_case"] == 0, "a case the battery holds is not withheld again"
+
+
+def test_a_judge_case_naming_a_criterion_no_template_holds_still_refuses_the_whole_seed() -> None:
+    """Only drift a reset repairs is withheld: a criterion the corpus's own template lacks is still a corpus error."""
+    storage, _ = memory_storage()
+    storage.save_template(_reworded_subject())
+    storage.save_template(_judge_template())
+    corpus = _full_corpus(
+        templates=(toyhost_judged_template(), _judge_template()),
+        judge_cases=(_judge_case("a", criterion="extraction.tone"),),
+        case_sets=(),
+    )
+
+    with pytest.raises(ValidationFailedError, match="has no rubric dimension 'extraction.tone'"):
+        seed_eval_definitions(toyhost_host(storage=storage), corpus)
+
+    assert storage.query_test_cases(TOYHOST_SCOPE) == []
 
 
 def test_a_stale_case_set_whose_cases_are_current_is_a_new_mint_on_the_same_revision() -> None:
@@ -1004,6 +1104,7 @@ def test_a_reset_and_create_template_read_one_host_s_checks_and_a_host_with_none
             refuse_undeclared_world_seed=lambda _template: None,
             refuse_undeliverable_template=_refuse,
             kinds={},
+            refuse_inadmissible_template_case=lambda _case: None,
         ),
     )
     unchecked = toyhost_host(storage=storage, template_checks=None)
@@ -1067,3 +1168,167 @@ async def test_the_actions_read_drift_refuse_a_customized_reset_and_reset_with_d
     revisions = {line["name"]: line["revision"] for line in listed.structured["templates"]}
     assert revisions == {toyhost_judged_template().name: 2, JUDGE_NAME: 1}, revisions
     assert reset.text.splitlines()[-1] == "drift: 0 stale, 0 customized, 0 unknown, 0 absent, 7 current"
+
+
+def test_a_template_whose_every_revision_is_archived_is_absent_to_the_seed_on_every_boot() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus())
+    retired = _subject(storage)
+    storage.save_template(retired.model_copy(update={"archived": True}))
+    corpus = _own_corpus(_own("a"), _own("b"))
+
+    first = _boot(storage, corpus)
+    again = _boot(storage, corpus)
+
+    for outcome in (first, again):
+        assert outcome.archived == {"template_case": [f"{SUBJECT}/a", f"{SUBJECT}/b"]}
+        assert (outcome.created["template_case"], outcome.skipped["template_case"]) == (0, 0)
+        assert outcome.failed["template_case"] == 0 and not outcome.needs_reset and not outcome.conflicted
+        assert not outcome.nothing_to_do
+        assert "its template is archived (" + f"{SUBJECT}/a" in outcome.summary()
+    assert _cases_on(storage, retired) == [], "no revision of a retired template is written into"
+
+
+def test_a_template_with_one_live_revision_seeds_its_cases_though_an_older_revision_is_archived() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a")))
+    first = _subject(storage)
+    storage.save_template(first.model_copy(update={"archived": True}))
+    storage.save_template(first.model_copy(update={"id": "live-rev-2", "revision": 2, "archived": False}))
+
+    boot = _boot(storage, _own_corpus(_own("a")))
+
+    assert not boot.archived and boot.created_keys["template_case"] == [f"{SUBJECT}/a"]
+
+
+def _store_nameless(storage: EvalStorage, name: str, **changes: Any) -> EvalTestCase:
+    """Seed ``name``'s case, then blank its stored name as a case stored before names existed reads."""
+    _boot(storage, _own_corpus(_own(name, **changes)))
+    (case,) = _cases_on(storage, _subject(storage))
+    blank = case.model_copy(update={"name": None})
+    storage.save_test_case(blank)
+    return blank
+
+
+def test_the_seed_names_a_stored_nameless_case_from_the_corpus_case_of_its_content_and_changes_nothing_else() -> None:
+    storage, _ = memory_storage()
+    blank = _store_nameless(storage, "a")
+    corpus = _own_corpus(_own("a"))
+
+    first = _boot(storage, corpus)
+    again = _boot(storage, corpus)
+
+    (case,) = _cases_on(storage, _subject(storage))
+    assert first.named == {"template_case": [f"{SUBJECT}/a"]} and first.total_named == 1 and not first.nothing_to_do
+    assert not again.named, "a second boot finds it named"
+    assert case.name == "a"
+    assert (case.id, case.content_hash, case.seed_digest) == (blank.id, blank.content_hash, blank.seed_digest)
+
+
+def test_the_seed_never_overwrites_a_stored_name_with_the_corpus_s() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a")))
+    (case,) = _cases_on(storage, _subject(storage))
+    storage.save_test_case(case.model_copy(update={"name": "double-charge"}))
+
+    boot = _boot(storage, _own_corpus(_own("a")))
+
+    assert not boot.named
+    assert _cases_on(storage, _subject(storage))[0].name == "double-charge"
+
+
+class _NameRefusingStorage(EvalStorage):
+    """A store that refuses every conditional test-case write, as a store down for writes refuses the name fill."""
+
+    def save_test_case(self, test_case: EvalTestCase, *, if_match: str | None = None) -> None:
+        if if_match is not None:
+            raise StorageError("the document store is read-only for maintenance")
+        super().save_test_case(test_case, if_match=if_match)
+
+
+class _ContendedStorage(EvalStorage):
+    """A store where another writer writes each test case just after the seed reads it with its token."""
+
+    def load_test_case_with_etag(self, test_case_id: str, scope_id: str) -> tuple[EvalTestCase | None, str | None]:
+        current, etag = super().load_test_case_with_etag(test_case_id, scope_id)
+        if current is not None:
+            super().save_test_case(current)
+        return current, etag
+
+
+def test_a_name_fill_the_store_refuses_is_recorded_with_its_reason_and_logged_and_the_next_boot_fills_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    storage, store = memory_storage()
+    _store_nameless(storage, "a")
+    corpus = _own_corpus(_own("a"))
+    key = f"{SUBJECT}/a"
+
+    with caplog.at_level(logging.WARNING, logger="threetears.evals.run.definition_seed"):
+        refused = _boot(_NameRefusingStorage(store), corpus)
+
+    assert refused.name_fill_failed == {"template_case": {key: "the document store is read-only for maintenance"}}
+    assert refused.total_name_fill_failed == 1 and not refused.named and not refused.name_fill_contended
+    assert f"1 NAMELESS, NAMING REFUSED BY STORAGE ({key}: the document store is read-only" in refused.summary()
+    assert any(
+        r.levelno == logging.WARNING and key in r.getMessage() and "read-only for maintenance" in r.getMessage()
+        for r in caplog.records
+    ), "the refusal is logged at WARNING with the store's reason"
+    assert _cases_on(storage, _subject(storage))[0].name is None, "the case stays nameless"
+
+    assert _boot(storage, corpus).named == {"template_case": [key]}, "the next boot fills it"
+
+
+def test_a_name_fill_lost_to_another_writer_is_recorded_as_contended_and_the_next_boot_fills_it() -> None:
+    storage, store = memory_storage()
+    _store_nameless(storage, "a")
+    corpus = _own_corpus(_own("a"))
+    key = f"{SUBJECT}/a"
+
+    contended = _boot(_ContendedStorage(store), corpus)
+
+    assert contended.name_fill_contended == {"template_case": [key]}
+    assert contended.total_name_fill_contended == 1 and not contended.named and not contended.name_fill_failed
+    assert f"1 nameless, naming lost to another writer, retried next boot ({key})" in contended.summary()
+    assert _cases_on(storage, _subject(storage))[0].name is None, "the other writer's write is not undone"
+
+    assert _boot(storage, corpus).named == {"template_case": [key]}, "the next boot fills it"
+
+
+def _refusing_cases(*, refuse: str) -> Any:
+    """A toy host whose check over a template case refuses the case named ``refuse``, with its own reason."""
+
+    def check(case: Any) -> None:
+        if case.name == refuse:
+            persona = case.host_payload.get("persona")
+            raise ValidationFailedError(f"label {persona!r} is not in the bank", remedy="fix it")
+
+    return replace(
+        toyhost_host(),
+        template_checks=replace(TOYHOST_TEMPLATE_CHECKS, refuse_inadmissible_template_case=check),
+    )
+
+
+def test_a_template_case_the_hosts_check_refuses_is_written_by_none_of_the_seed_the_reset_and_the_rename() -> None:
+    storage, _ = memory_storage()
+    base = _refusing_cases(refuse="bad")
+    host = replace(base, storage=storage)
+
+    with pytest.raises(ValidationFailedError, match=r"bad: label 'buyer bad' is not in the bank"):
+        seed_eval_definitions(host, _own_corpus(_own("good"), _own("bad")))
+    assert storage.query_templates(TOYHOST_SCOPE) == [], "nothing was written"
+
+    _boot(storage, _own_corpus(_own("good")))
+    with pytest.raises(ValidationFailedError, match=r"bad: label 'buyer bad' is not in the bank|host refuses it"):
+        reset_definitions(host, _own_corpus(_own("good"), _own("bad")), [TEMPLATE_KEY], overwrite_customized=True)
+    assert [c.name for c in _cases_on(storage, _subject(storage))] == ["good"]
+
+    (case,) = _cases_on(storage, _subject(storage))
+    with pytest.raises(ValidationFailedError, match="is not in the bank"):
+        case_rename(host, TOYHOST_SCOPE, case.id, "bad")
+    assert _cases_on(storage, _subject(storage))[0].name == "good"
+
+
+def test_a_template_case_with_a_blank_name_is_refused_at_authoring() -> None:
+    with pytest.raises(ValueError, match="at least 1 character"):
+        _own("   ")

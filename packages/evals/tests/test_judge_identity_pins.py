@@ -65,10 +65,10 @@ JUDGE_IDENTITIES: dict[str, str] = {
 }
 
 #: The final release the table below was taken at: the ``since`` of ``MIGRATIONS.toml``'s ``unreleased`` section.
-RELEASED_AT = "v0.71.0"
+RELEASED_AT = "v0.72.0"
 
 #: Every judge fingerprint as :data:`RELEASED_AT` shipped it, the baseline a wording change is announced against.
-#: v0.70.0 is the first release that shipped 3tears-evals. A copy for the reader: what a wording change is measured
+#: v0.71.0 and v0.72.0 shipped the judges v0.70.0 did, unchanged. A copy for the reader: what a wording change is measured
 #: from is read from the release's tree (:func:`released_judge_identities`), and this table is held to it.
 RELEASED_JUDGE_IDENTITIES: dict[str, str] = {
     "builtin:transcript-axis": "fdfa47da36a8",

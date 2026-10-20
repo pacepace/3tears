@@ -34,8 +34,9 @@ from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import cell_dimension_facts
 from threetears.evals.analysis.bundle.insights import insight_standing
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.generator import (
-    build_user_message,
     first_request,
     generate_analysis,
     prompt_content_version,
@@ -47,6 +48,7 @@ from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclara
 from threetears.evals.kernel.metrics import WITHHELD_PARTITION_INCOMPLETE
 from threetears.evals.schema.models import LatencyMetrics, RunCompleteness, utc_now_iso
 from packages.evals.tests.fixtures.toyhost.campaign import (
+    toyhost_aspect_design,
     TOYHOST_NARROW,
     TOYHOST_WIDE,
     toyhost_bundle,
@@ -68,6 +70,7 @@ from packages.evals.tests.toyhost_memo import (
     cell_at,
     memo_payload,
 )
+from packages.evals.tests.aspect_support import with_control
 
 
 def _bundle() -> Any:
@@ -85,7 +88,7 @@ async def _generate(
     )
     profile = toyhost_profile()
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -372,10 +375,8 @@ class TestARefusedBarIsQuotedAsDeclared:
     def test_the_threshold_is_echoed_exactly_as_the_author_declared_it(self) -> None:
         profile = toyhost_profile()
         campaign, _storage = toyhost_campaign()
-        design = campaign.declared_design.model_copy(
-            update={
-                "bars": [BarOverride(measure_id="extraction_vibes", threshold=12345678.5, direction="higher_is_better")]
-            }
+        design = toyhost_aspect_design(
+            bars=[BarOverride(measure_id="extraction_vibes", threshold=12345678.5, direction="higher_is_better")]
         )
         with pytest.raises(ValueError, match=r"extraction_vibes") as raised:
             refuse_an_undeclarable_design(design, behavior=campaign.behavior, template=None, profile=profile)
@@ -395,7 +396,7 @@ class TestAGenerationFreezesTheBundlesSurface:
         bundle = _bundle()
         analysis, _client = await _generate(bundle)
 
-        surface = analysis.decision_surface
+        surface = analysis.aspects[0].decision_surface
         assert surface is not None
         assert surface.cells == bundle.cell_measures
         assert surface.bars == bundle.bar_adjudications
@@ -408,15 +409,11 @@ class TestAGenerationFreezesTheBundlesSurface:
         profile = toyhost_profile()
         campaign, storage = toyhost_campaign(profile=profile)
         narrow_key = cell_at(_bundle(), TOYHOST_NARROW).split(":")[0]
-        assert campaign.declared_design is not None
-        declared = campaign.declared_design.model_copy(update={"control": narrow_key})
-        controlled = assemble_context_bundle(
-            campaign.model_copy(update={"declared_design": declared}), storage=storage, profile=profile
-        )
+        controlled = assemble_context_bundle(with_control(campaign, narrow_key), storage=storage, profile=profile)
 
         analysis, _client = await _generate(controlled)
 
-        assert analysis.decision_surface.control_variant_key == narrow_key
+        assert analysis.aspects[0].decision_surface.control_variant_key == narrow_key
 
 
 class TestTheGeneratorsReadersArePublished:
@@ -430,10 +427,10 @@ class TestTheGeneratorsReadersArePublished:
         _analysis, client = await _generate(bundle)
 
         (call,) = client.calls
-        assert build_user_message(bundle) == call["user"]
+        assert _writer_message(bundle) == call["user"]
 
     def test_a_bundle_with_one_describable_arm_is_not_refused(self) -> None:
-        refuse_an_undescribable_arm_table(_bundle())
+        refuse_an_undescribable_arm_table(campaign_bundle(_bundle()))
 
     def test_a_bundle_whose_every_arm_is_undescribable_is_refused_before_any_call(self) -> None:
         bundle = _bundle()
@@ -443,7 +440,7 @@ class TestTheGeneratorsReadersArePublished:
         ]
 
         with pytest.raises(GenerationError, match=r"has no describable arm") as raised:
-            refuse_an_undescribable_arm_table(bundle.model_copy(update={"variant_index": opaque}))
+            refuse_an_undescribable_arm_table(campaign_bundle(bundle.model_copy(update={"variant_index": opaque})))
         assert not isinstance(raised.value, SoundnessRefusal)
 
 
@@ -455,7 +452,7 @@ class TestThePromptVersionIsWhatTheModelWasTold:
         analysis, client = await _generate(_bundle())
 
         (call,) = client.calls
-        _, _, sent = first_request(_bundle(), PROMPT, toyhost_profile())
+        _, _, sent = first_request(campaign_bundle(_bundle()), PROMPT, toyhost_profile())
         contract = json.dumps(sent, sort_keys=True, separators=(",", ":"))
         told = hashlib.sha256((call["system"] + "\n" + contract).encode("utf-8")).hexdigest()[:12]
         assert analysis.generation.prompt_version == told
@@ -464,7 +461,7 @@ class TestThePromptVersionIsWhatTheModelWasTold:
 
     def test_the_one_derivation_agrees_with_what_the_generator_sends(self) -> None:
         profile = toyhost_profile()
-        system, _, contract = first_request(_bundle(), PROMPT, profile)
+        system, _, contract = first_request(campaign_bundle(_bundle()), PROMPT, profile)
         told = system + "\n" + json.dumps(contract, sort_keys=True, separators=(",", ":"))
         assert _bundle().time_axis is None, "the toy campaign runs on one day under no build label"
         assert prompt_content_version(PROMPT, profile) == hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
@@ -574,3 +571,8 @@ class TestProseIsNotRefused:
         assert analysis.document.findings[0].title.startswith(f"{TOYHOST_NARROW}tok beats")
         assert "|---|" in analysis.document.findings[0].body
         assert analysis.document.findings[0].title == _finding(payload)["title"]
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

@@ -32,7 +32,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.analysis_measures import MeasureCollection
 from threetears.evals.kernel.declaration import (
     BarName,
-    CampaignDesign,
+    AspectDesign,
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_rubric_dim
@@ -155,7 +155,7 @@ def _judged_rows(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord]
 def _judged_measures(
     records: list[ScoreRecord],
     results_by_cell: dict[_CellKey, list[EvalResult]],
-    design: CampaignDesign | None,
+    design: AspectDesign | None,
     *,
     tiers: list[JudgeEvidenceTier],
     person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
@@ -172,7 +172,7 @@ def _judged_measures(
     :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
     :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
     :param design: The campaign's declaration, for the bar naming a dimension.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :param tiers: The judges' evidence tiers; each arm carries the weakest among the judges that served its
         counted scores (:func:`~threetears.evals.analysis.agreement.tier_for_judges`).
     :ptype tiers: list[JudgeEvidenceTier]
@@ -512,7 +512,7 @@ def _cell_strata(
     results_by_cell: dict[_CellKey, list[EvalResult]],
     stratum_of_case: dict[str, str | None],
     records: list[ScoreRecord],
-    design: CampaignDesign | None,
+    design: AspectDesign | None,
     *,
     tiers: list[JudgeEvidenceTier],
     profile: HostProfile,
@@ -536,7 +536,7 @@ def _cell_strata(
     :param records: The score projection, for judged dimensions.
     :ptype records: list[ScoreRecord]
     :param design: The campaign's declaration, for the bar a judged dimension carries.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :param tiers: The judges' evidence tiers.
     :ptype tiers: list[JudgeEvidenceTier]
     :param profile: The host whose vocabulary this reads.

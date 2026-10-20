@@ -100,6 +100,26 @@ from threetears.evals.analysis.bundle.schema import (
     BundleInspection,
     GoalCheckProofReading,
 )
+from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
+from threetears.evals.analysis.campaign_bundle import (
+    CAMPAIGN_MESSAGE_CHARS_PER_ASPECT,
+    CampaignBundle,
+    build_campaign_user_message,
+)
+from threetears.evals.analysis.campaign_readings import (
+    AspectReading,
+    BarState,
+    BarStatus,
+    CampaignKind,
+    CampaignReadings,
+    MeasureReading,
+    PairReading,
+    campaign_kind,
+    FloorState,
+    FloorStatus,
+    ShownReading,
+    campaign_readings,
+)
 from threetears.evals.analysis.campaigns import (
     DeclarableAxes,
     add_runs_to_campaign,
@@ -179,9 +199,12 @@ from threetears.evals.analysis.gate import (
     parse_fail_on,
     verdict_token,
 )
+from threetears.evals.analysis.report.decision import CasesNeeded, NeedKind, SampleProjection
 from threetears.evals.analysis.report import (
     MIN_CASES,
     SECTION_TITLES,
+    CampaignAspectFold,
+    CampaignReport,
     CellValue,
     ChartBlock,
     ChartKind,
@@ -212,8 +235,11 @@ from threetears.evals.analysis.report import (
     ReportBasis,
     analysis_bundle,
     analysis_verdict,
+    build_campaign_report,
     build_code_only_report,
     build_report,
+    campaign_report_html,
+    campaign_report_markdown,
     report_html,
     report_markdown,
 )
@@ -222,8 +248,10 @@ from threetears.evals.analysis.service import (
     BudgetedGenerator,
     PreparedGeneration,
     analysis_report,
+    assemble_campaign_bundle,
     campaign_report,
     campaign_verdicts,
+    record_campaign_call,
     describe_insight_id_filters,
     estimate_analysis_generation,
     freeze_reporter_case,
@@ -270,6 +298,8 @@ from threetears.evals.analysis.bundle.schema import (
     FactorPairPivot,
     FactorPairScan,
     FamilyComparison,
+    FloorContrast,
+    FloorContrastReading,
     JudgedArm,
     JudgedMeasure,
     LeverCoverageInput,
@@ -298,7 +328,8 @@ from threetears.evals.analysis.cells import (
     RefusedMerge,
     SubjectKeyInstability,
 )
-from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
+from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
+from threetears.evals.analysis.references import CellAddress
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
 from threetears.evals.analysis.reporter_bank import (
@@ -383,6 +414,39 @@ from threetears.evals.analysis.summary import (
 )
 
 __all__ = [
+    # A campaign read one aspect at a time, and the shapes of what code reads off it across aspects.
+    "AspectDeclaration",
+    "AspectReading",
+    "AspectView",
+    "BarState",
+    "BarStatus",
+    "CampaignKind",
+    "CampaignReadings",
+    "MeasureReading",
+    "PairReading",
+    "campaign_kind",
+    "FloorState",
+    "FloorStatus",
+    "ShownReading",
+    "aspect_view",
+    "aspect_views",
+    "campaign_readings",
+    # What the writer of a campaign's one memo reads: every aspect's evidence, the floors and code's readings.
+    "CAMPAIGN_MESSAGE_CHARS_PER_ASPECT",
+    "CampaignBundle",
+    "CellAddress",
+    "assemble_campaign_bundle",
+    "build_campaign_user_message",
+    # A campaign's page over its aspects, and its two forms a person reads.
+    "CampaignAspectFold",
+    "CampaignReport",
+    "build_campaign_report",
+    "campaign_report_html",
+    "campaign_report_markdown",
+    # The cases an unclear reading would need to settle, which a campaign's readings carry per row.
+    "CasesNeeded",
+    "NeedKind",
+    "SampleProjection",
     "GLOSSARY",
     "HumanizeKind",
     "StyleViolation",
@@ -528,6 +592,8 @@ __all__ = [
     "FactorPairScan",
     "ComparisonReading",
     "FamilyComparison",
+    "FloorContrast",
+    "FloorContrastReading",
     "PairingCorrelation",
     "FrontierCostDecision",
     "FrontierCostTie",
@@ -623,6 +689,7 @@ __all__ = [
     "SubjectFrontier",
     "SubjectKeyInstability",
     "TelemetryRollup",
+    "UnresolvableReference",
     "TokenRollup",
     "FrontierBoundaryCheck",
     "UnpairedRating",
@@ -638,6 +705,7 @@ __all__ = [
     "build_code_only_report",
     "campaign_report",
     "campaign_verdicts",
+    "record_campaign_call",
     "analysis_gen_request_settings_for",
     "assemble_context_bundle",
     "cell_label",

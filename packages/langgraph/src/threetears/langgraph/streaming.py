@@ -45,7 +45,7 @@ from threetears.langgraph.tool_structure import (
     StructuredToolResultFields,
     structure_for_stream,
 )
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "CANCELLED_ERROR_CODE",
@@ -1073,10 +1073,13 @@ class StreamingResponse:
             # prawduct:allow prawduct/broad-except -- caller-supplied predicate on the failure
             # path; any fault in it degrades to "unexpected" rather than displacing the original
             # exception, which is logged at ERROR by the caller and still propagates.
-            except Exception:
-                log.exception(
-                    "stream expected-failure predicate failed; logging the failure as unexpected",
-                    extra={"extra_data": {"correlation_id": str(self._correlation_id)}},
+            except Exception as predicate_exc:
+                contain(
+                    predicate_exc,
+                    log=log,
+                    what="stream expected-failure predicate failed; logging the failure as unexpected",
+                    extra={"correlation_id": str(self._correlation_id)},
+                    level="error",
                 )
                 expected = False
         return expected
@@ -1103,15 +1106,16 @@ class StreamingResponse:
             # prawduct:allow prawduct/broad-except -- caller-supplied classifier on the failure
             # path; any fault in it degrades to the default code rather than displacing the
             # original exception, which is logged here and still propagates to the caller.
-            except Exception:
-                log.exception(
-                    "stream error classifier failed; falling back to the default code",
+            except Exception as classifier_exc:
+                contain(
+                    classifier_exc,
+                    log=log,
+                    what="stream error classifier failed; falling back to the default code",
                     extra={
-                        "extra_data": {
-                            "correlation_id": str(self._correlation_id),
-                            "default_code": DEFAULT_ERROR_CODE,
-                        }
+                        "correlation_id": str(self._correlation_id),
+                        "default_code": DEFAULT_ERROR_CODE,
                     },
+                    level="error",
                 )
                 code = DEFAULT_ERROR_CODE
         return code
@@ -1136,10 +1140,13 @@ class StreamingResponse:
             # prawduct:allow prawduct/broad-except -- caller-supplied reader on the failure path;
             # any fault in it degrades to no gateway code rather than displacing the original
             # exception, which is logged here and still propagates to the caller.
-            except Exception:
-                log.exception(
-                    "stream gateway-code reader failed; publishing no gateway code",
-                    extra={"extra_data": {"correlation_id": str(self._correlation_id)}},
+            except Exception as reader_exc:
+                contain(
+                    reader_exc,
+                    log=log,
+                    what="stream gateway-code reader failed; publishing no gateway code",
+                    extra={"correlation_id": str(self._correlation_id)},
+                    level="error",
                 )
                 gateway_code = None
         return gateway_code
@@ -1176,17 +1183,16 @@ class StreamingResponse:
         try:
             await self._transport.publish(payload)
         except Exception as exc:
-            log.warning(
-                "stream transport publish failed",
+            contain(
+                exc,
+                log=log,
+                what="stream transport publish failed",
                 extra={
-                    "extra_data": {
-                        "correlation_id": str(self._correlation_id),
-                        "event_type": getattr(event, "type", type(event).__name__),
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    }
+                    "correlation_id": str(self._correlation_id),
+                    "event_type": getattr(event, "type", type(event).__name__),
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
                 },
-                exc_info=True,
             )
 
 
@@ -1208,7 +1214,22 @@ def _extract_token(event: dict[str, Any]) -> str:
     else:
         chunk = raw_data
     content = getattr(chunk, "content", None) if chunk is not None else None
-    return content if isinstance(content, str) else ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # a provider with tools bound streams content blocks (langchain-anthropic:
+        # ``[{"type": "text", "text": ...}]``); only text blocks are reply text --
+        # tool_use, input_json_delta and thinking blocks never reach the reader.
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
 
 
 async def detect_interrupt(compiled_graph: Any, config: dict[str, Any]) -> Any:

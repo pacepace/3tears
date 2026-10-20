@@ -24,22 +24,25 @@ usage::
     # or block until a token is available (or 5s elapses):
     outcome = await bucket.claim("global", max_wait_seconds=5.0)
 
-all KV envelope payloads flow through
-:func:`threetears.core.serialization.serialize_to_json` /
-:func:`deserialize_from_json`, matching :class:`KVLease`'s convention.
+all KV envelope payloads are written through
+:func:`threetears.core.serialization.serialize_to_json`, matching :class:`KVLease`'s convention.
+they are read back with a plain ``json.loads`` and checked field by field, because a stored value
+that does not decode must reach the caller as the ``ValueError`` :meth:`TokenBucket.claim`
+documents, not as whatever ``AttributeError`` or ``KeyError`` its shape happened to produce.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Final
 
-from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
-from threetears.observe import get_logger
+from threetears.core.serialization import json_datetime, serialize_to_json
+from threetears.observe import contain, get_logger
 
 from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
 
@@ -164,12 +167,26 @@ def _decode_state(data: bytes) -> _BucketState:
     :ptype data: bytes
     :return: decoded bucket state
     :rtype: _BucketState
-    :raises ValueError: if payload is malformed or timestamp unparseable
+    :raises ValueError: if payload is malformed or timestamp unparseable -- every way a stored
+        value can be wrong, so a caller degrading on a bad bucket catches one documented type
+        rather than whatever ``KeyError`` or ``TypeError`` the shape happened to produce
     """
-    raw = deserialize_from_json(data, field_types={})
-    tokens = float(raw["tokens"])
-    last_refill = datetime.fromisoformat(str(raw["last_refill"]))
-    return _BucketState(tokens=tokens, last_refill=last_refill)
+    raw = json.loads(data.decode("utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"stored bucket state is not an object: {type(raw).__name__}")
+    tokens = raw.get("tokens")
+    # bool is an int; a stored true is not a token count
+    if isinstance(tokens, bool) or not isinstance(tokens, (int, float)):
+        raise ValueError(f"stored bucket state has no numeric tokens: {tokens!r}")
+    stamp = raw.get("last_refill")
+    if not isinstance(stamp, str):
+        raise ValueError(f"stored bucket state has no last_refill timestamp: {stamp!r}")
+    last_refill = datetime.fromisoformat(stamp)
+    if last_refill.tzinfo is None:
+        # _encode_state only ever writes an aware instant; a naive one would raise TypeError
+        # against the aware clock in the refill arithmetic
+        raise ValueError(f"stored bucket state has a naive last_refill: {stamp!r}")
+    return _BucketState(tokens=float(tokens), last_refill=last_refill)
 
 
 class TokenBucket:
@@ -308,7 +325,8 @@ class TokenBucket:
         :return: claim outcome; caller proceeds only when ``claimed`` is true
         :rtype: TokenClaimResult
         :raises ValueError: if ``tokens`` exceeds bucket capacity (can never
-            be satisfied by any amount of waiting)
+            be satisfied by any amount of waiting), or the stored bucket value
+            does not decode
         :raises TokenBucketConflict: if the CAS retry budget is exhausted
         :raises threetears.nats.KvError: on a KV transport failure
         """
@@ -379,8 +397,13 @@ class TokenBucket:
                     backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security
                     await self._sleep(backoff)
             log.warning("token bucket: exhausted CAS retries refunding %s tokens to %r", tokens, key)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a refund runs while the caller is already unwinding; raising would turn a self-healing throughput dip into a lost error. Logged with its traceback below
-            log.exception("token bucket: could not refund %s tokens to %r; it will refill instead", tokens, key)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a refund runs while the caller is already unwinding; raising would turn a self-healing throughput dip into a lost error. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"token bucket: could not refund {tokens} tokens to {key!r}; it will refill instead",
+                level="error",
+            )
         return -1.0
 
     async def _attempt(self, bucket: "KvBucketLike", key: str, tokens: float) -> TokenClaimResult:

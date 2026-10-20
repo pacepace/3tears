@@ -52,8 +52,9 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_documents, embed_query
 from threetears.observe.text_block import under
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.tool_schema.self_contained import declared_type
 
 from threetears.agent.tools.utils import tool_no_change
@@ -134,11 +135,16 @@ class ToolSelectionResult:
         retrospective already is).
     :ivar fallback_reason: ``"embedder_error"``, ``"latency_ceiling"``, or
         ``None`` when no fallback occurred.
+    :ivar unranked: names of the tools the embedder answered no vector for.
+        They are ranked after every tool that has one, so a top-K rarely
+        reaches them; the names say why, rather than leaving them to look
+        merely irrelevant.
     """
 
     selected: list[BaseTool]
     fallback_used: bool = False
     fallback_reason: str | None = None
+    unranked: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -163,11 +169,39 @@ class ToolSearchResult:
         scores here and judges by a margin -- the gap between the first hit and
         a later one, or against a baseline of its own -- never by one fixed
         number: two embedders score in different ranges
+    :ivar unranked: names of the tools the embedder answered no vector for.
+        They carry no score, so they are not in ``ranked``; they follow it in
+        ``hits``, after every scored tool
     """
 
     hits: list[BaseTool]
     fallback_reason: str | None = None
     ranked: list[tuple[BaseTool, float]] = field(default_factory=list)
+    unranked: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _Ranking:
+    """What :meth:`ToolRelevanceIndex._rank` came to.
+
+    :ivar scored: the tools that have a vector, each beside its similarity, most relevant first
+    :ivar unranked: the tools the embedder answered no vector for, in catalog order
+    :ivar fallback_reason: why the ranking did not run at all, or ``None``
+    """
+
+    scored: list[tuple[BaseTool, float]] = field(default_factory=list)
+    unranked: list[BaseTool] = field(default_factory=list)
+    fallback_reason: str | None = None
+
+    @property
+    def order(self) -> list[BaseTool]:
+        """every tool, scored ones first: the order a top-K or a hit list is cut from."""
+        return [tool for tool, _ in self.scored] + self.unranked
+
+    @property
+    def unranked_names(self) -> list[str]:
+        """the unranked tools' names, for a result to carry."""
+        return [tool.name for tool in self.unranked]
 
 
 class ToolRelevanceIndex:
@@ -212,51 +246,20 @@ class ToolRelevanceIndex:
         # content_hash -> {tool_name: embedding_vector}. OrderedDict as a
         # simple bounded LRU (move-to-end on hit, popitem(last=False) on
         # overflow) -- no external cache dependency needed at this size.
-        self._cache: OrderedDict[str, dict[str, list[float]]] = OrderedDict()
+        self._cache: OrderedDict[str, dict[str, list[float] | None]] = OrderedDict()
         # content_hash -> the embedding of that tool set, while it runs. Its own task, so the
         # latency ceiling cancels a caller's wait and not the work: a catalog that takes longer
         # than the ceiling to embed still lands in the cache for the next turn, and turns that
         # arrive together share one embedding call.
-        self._inflight: dict[str, asyncio.Task[dict[str, list[float]] | None]] = {}
+        self._inflight: dict[str, asyncio.Task[dict[str, list[float] | None]]] = {}
 
-    async def _safe_aembed_query(self, text: str) -> list[float] | None:
-        """Soft-fail single-text embed. ``None`` on any failure or empty input."""
-        if not text:
-            return None
-        try:
-            result = await self._embedder.aembed_query(text)
-        except Exception as exc:
-            _log.warning(
-                "tool-relevance query embedding failed (soft-fail)",
-                extra={"extra_data": {"error": str(exc)}},
-            )
-            return None
-        if not result:
-            return None
-        return result
-
-    async def _safe_aembed_documents(self, texts: list[str]) -> list[list[float]] | None:
-        """Soft-fail batch embed. ``None`` on any failure or a mismatched result length."""
-        if not texts:
-            return []
-        try:
-            result = await self._embedder.aembed_documents(texts)
-        except Exception as exc:
-            _log.warning(
-                "tool-relevance batch embedding failed (soft-fail)",
-                extra={"extra_data": {"error": str(exc), "text_count": len(texts)}},
-            )
-            return None
-        if not result or len(result) != len(texts):
-            return None
-        return result
-
-    async def _embed_tool_set(self, tools: list[BaseTool]) -> dict[str, list[float]] | None:
+    async def _embed_tool_set(self, tools: list[BaseTool]) -> dict[str, list[float] | None]:
         """Return ``{tool_name: vector}`` for ``tools``, via cache when possible.
 
-        ``None`` propagates a soft-fail from the batch embed call up to the
-        caller, which must fall back to the full catalog -- this method never
-        returns a partial/smaller mapping.
+        Every tool has an entry; it is ``None`` for a tool the embedder answered no
+        vector for, which the ranking places last and names. A batch embed that fails
+        outright raises :class:`EmbeddingUnavailableError` (already recorded by
+        :meth:`_embed_and_cache`), and the caller falls back to the full catalog.
         """
         content_hash = _tool_set_content_hash(tools)
         cached = self._cache.get(content_hash)
@@ -271,26 +274,55 @@ class ToolRelevanceIndex:
             task.add_done_callback(functools.partial(self._forget_inflight, content_hash))
         return await asyncio.shield(task)
 
-    def _forget_inflight(self, content_hash: str, _done: asyncio.Future[Any]) -> None:
-        """Drop a finished embedding's task handle; its result, if any, is in the cache."""
+    def _forget_inflight(self, content_hash: str, done: asyncio.Future[Any]) -> None:
+        """Drop a finished embedding's task handle; its result, if any, is in the cache.
+
+        A failed embedding was recorded where it failed (:meth:`_embed_and_cache`), and a
+        caller that outlived the latency ceiling is no longer awaiting it, so its exception
+        is marked retrieved here rather than reported again by the event loop.
+        """
         self._inflight.pop(content_hash, None)
+        if not done.cancelled():
+            done.exception()
 
-    async def _embed_and_cache(self, content_hash: str, tools: list[BaseTool]) -> dict[str, list[float]] | None:
-        """Embed one tool set and cache it; ``None`` on a soft-failed embed (nothing cached)."""
+    async def _embed_and_cache(self, content_hash: str, tools: list[BaseTool]) -> dict[str, list[float] | None]:
+        """Embed one tool set and cache it; nothing is cached when the embed fails.
+
+        A tool the embedder answered no vector for is cached as ``None`` -- unranked --
+        rather than failing the batch: one bad tool must not cost a full re-embed of
+        the catalog on every turn. It is warned about once, here, when it is cached.
+
+        :raises EmbeddingUnavailableError: the batch could not be embedded; it is recorded here,
+            once per embedding call, however many turns were waiting on it
+        """
         texts = [f"{t.name}: {t.description or ''}" for t in tools]
-        vectors = await self._safe_aembed_documents(texts)
-        if vectors is None:
-            return None
+        try:
+            vectors = await embed_documents(self._embedder, texts)
+        except EmbeddingUnavailableError as exc:
+            contain(
+                exc,
+                log=_log,
+                what="tool-relevance batch embedding failed; ranking falls back",
+                extra={"text_count": len(texts)},
+            )
+            raise
 
-        embeddings = {t.name: vec for t, vec in zip(tools, vectors)}
+        embeddings = {t.name: vec for t, vec in zip(tools, vectors, strict=True)}
+        unranked = [name for name, vec in embeddings.items() if vec is None]
+        if unranked:
+            _log.warning(
+                "tool-relevance embedder answered no vector for %d tool(s); they rank after every other tool",
+                len(unranked),
+                extra={"extra_data": {"unranked_tools": unranked}},
+            )
         self._cache[content_hash] = embeddings
         self._cache.move_to_end(content_hash)
         while len(self._cache) > self._cache_size:
             self._cache.popitem(last=False)
         return embeddings
 
-    async def _rank(self, tools: list[BaseTool], query: str) -> tuple[list[tuple[BaseTool, float]], str | None]:
-        """Embed + rank; returns ``(ranked_pairs, fallback_reason)``.
+    async def _rank(self, tools: list[BaseTool], query: str) -> _Ranking:
+        """Embed + rank.
 
         Each pair is a tool and its cosine similarity to the query, most
         relevant first. The score is carried rather than discarded because a
@@ -299,22 +331,33 @@ class ToolRelevanceIndex:
         it" and to "morning, you". :meth:`select` and :meth:`search` keep
         their tool-only contracts and drop it.
 
-        ``fallback_reason`` is ``None`` on success. On any embedding failure
-        the ranked list is empty and the caller substitutes the full catalog
-        -- this helper never invents a partial ranking.
+        ``fallback_reason`` is ``None`` on success. On an embedding failure
+        nothing is ranked and the caller substitutes the full catalog -- this
+        helper never invents a partial ranking. A tool the embedder answered no
+        vector for is not scored at all: it is listed in ``unranked``, after
+        every scored tool, never given a made-up score.
         """
-        tool_embeddings = await self._embed_tool_set(tools)
-        if tool_embeddings is None:
-            return [], "embedder_error"
-        query_vec = await self._safe_aembed_query(query)
-        if query_vec is None:
-            return [], "embedder_error"
+        try:
+            tool_embeddings = await self._embed_tool_set(tools)
+        except EmbeddingUnavailableError:
+            # recorded where the batch failed; the reason travels in the fallback
+            return _Ranking(fallback_reason="embedder_error")
+        try:
+            query_vec = await embed_query(self._embedder, query)
+        except EmbeddingUnavailableError as exc:
+            contain(exc, log=_log, what="tool-relevance query embedding failed; ranking falls back")
+            return _Ranking(fallback_reason="embedder_error")
 
-        scored: list[tuple[BaseTool, float]] = [
-            (t, _cosine_similarity(query_vec, tool_embeddings[t.name])) for t in tools
-        ]
+        scored: list[tuple[BaseTool, float]] = []
+        unranked: list[BaseTool] = []
+        for t in tools:
+            vector = tool_embeddings[t.name]
+            if vector is None:
+                unranked.append(t)
+            else:
+                scored.append((t, _cosine_similarity(query_vec, vector)))
         scored.sort(key=lambda pair: pair[1], reverse=True)
-        return scored, None
+        return _Ranking(scored=scored, unranked=unranked)
 
     async def select(self, tools: list[BaseTool], query: str) -> ToolSelectionResult:
         """Return the top-K most relevant tools for ``query``.
@@ -337,7 +380,7 @@ class ToolRelevanceIndex:
             return ToolSelectionResult(selected=list(tools))
 
         try:
-            ranked, fallback_reason = await asyncio.wait_for(self._rank(tools, query), timeout=self._latency_ceiling_s)
+            ranking = await asyncio.wait_for(self._rank(tools, query), timeout=self._latency_ceiling_s)
         except TimeoutError:
             _log.warning(
                 "tool-relevance selection exceeded latency ceiling; falling back to full catalog",
@@ -350,9 +393,11 @@ class ToolRelevanceIndex:
             )
             return ToolSelectionResult(selected=list(tools), fallback_used=True, fallback_reason="latency_ceiling")
 
-        if fallback_reason is not None:
-            return ToolSelectionResult(selected=list(tools), fallback_used=True, fallback_reason=fallback_reason)
-        return ToolSelectionResult(selected=[tool for tool, _ in ranked][: self._top_k])
+        if ranking.fallback_reason is not None:
+            return ToolSelectionResult(
+                selected=list(tools), fallback_used=True, fallback_reason=ranking.fallback_reason
+            )
+        return ToolSelectionResult(selected=ranking.order[: self._top_k], unranked=ranking.unranked_names)
 
     async def search_scored(self, tools: list[BaseTool], query: str, limit: int = 5) -> list[tuple[BaseTool, float]]:
         """Rank ``tools`` by relevance to ``query``, keeping each score.
@@ -380,14 +425,12 @@ class ToolRelevanceIndex:
         """
         if not tools:
             return []
-        ranked, fallback_reason = await self._rank_for_search(tools, query, what="scored search")
-        if fallback_reason is not None:
+        ranking = await self._rank_for_search(tools, query, what="scored search")
+        if ranking.fallback_reason is not None:
             return []
-        return ranked[:limit]
+        return ranking.scored[:limit]
 
-    async def _rank_for_search(
-        self, tools: list[BaseTool], query: str, *, what: str
-    ) -> tuple[list[tuple[BaseTool, float]], str | None]:
+    async def _rank_for_search(self, tools: list[BaseTool], query: str, *, what: str) -> _Ranking:
         """:meth:`_rank` under the search ceiling; a timeout is a fallback reason, not an exception."""
         try:
             return await asyncio.wait_for(self._rank(tools, query), timeout=self._search_latency_ceiling_s)
@@ -401,7 +444,7 @@ class ToolRelevanceIndex:
                     }
                 },
             )
-            return [], "latency_ceiling"
+            return _Ranking(fallback_reason="latency_ceiling")
 
     async def search(self, tools: list[BaseTool], query: str, limit: int = 5) -> list[BaseTool]:
         """Rank ``tools`` (typically the FULL catalog) by relevance to ``query``.
@@ -446,14 +489,14 @@ class ToolRelevanceIndex:
         """
         if not tools:
             return ToolSearchResult(hits=[])
-        ranked, fallback_reason = await self._rank_for_search(tools, query, what="search")
-        if fallback_reason is not None:
+        ranking = await self._rank_for_search(tools, query, what="search")
+        if ranking.fallback_reason is not None:
             # The ranking failed, not the catalog: match on words so the search
             # still finds a tool. A consumer that binds only the pick and
             # tool_search has no other way to reach anything while the embedder
             # is down.
-            return ToolSearchResult(hits=match_words(tools, query)[:limit], fallback_reason=fallback_reason)
-        return ToolSearchResult(hits=[tool for tool, _ in ranked][:limit], ranked=ranked)
+            return ToolSearchResult(hits=match_words(tools, query)[:limit], fallback_reason=ranking.fallback_reason)
+        return ToolSearchResult(hits=ranking.order[:limit], ranked=ranking.scored, unranked=ranking.unranked_names)
 
 
 #: Words too common to say anything about which tool is wanted.

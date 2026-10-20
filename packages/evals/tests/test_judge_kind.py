@@ -29,6 +29,7 @@ from threetears.evals.kernel import (
     ValidationFailedError,
     judge_case_of,
     judge_trial_of,
+    production_replicating_cost,
     withhold_failure_detail,
 )
 from threetears.evals.kernel.host import EvalHost
@@ -349,6 +350,11 @@ async def test_a_judge_campaign_meters_only_judge_spend_and_never_rebuys_the_can
         assert result.usage, "a judge trial's spend is metered"
         assert {row.role for row in result.usage} == {"judge"}, "no candidate role in a judge campaign's spend"
         assert result.cost_usd == pytest.approx(sum(row.cost_usd or 0.0 for row in result.usage))
+        # The judge under test is the subject, so its spend is what the arm costs a reply (#828).
+        assert result.candidate_kind == JUDGE_KIND
+        assert production_replicating_cost(
+            result.usage, substituted_deliveries=0, candidate_kind=result.candidate_kind
+        ) == pytest.approx(result.cost_usd)
         assert result.judge_model is None and not result.rubric_scores, "no judge phase ran over a judge trial"
         assert JUDGE_PARSE_VALID_MEASURE in result.host_measures
     labelled = [result for result in campaign.results if JUDGE_LABEL_AGREEMENT_MEASURE in result.host_measures]
@@ -418,19 +424,19 @@ async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what
         world=None,
     )
 
-    room = FakeCellSink(cap_usd=10.0)
+    room = FakeCellSink()
     answered = await kind.invoke(prepared, stored, sink=room)
     spent = sum(row.cost_usd or 0.0 for row in answered.telemetry.usage)
     assert spent > 0
     assert room.spent == {"candidate": pytest.approx(spent)}, "the trial's call is counted the moment it returns"
     assert room.held == [], "its reservation was settled"
 
-    full = FakeCellSink(cap_usd=0.0001)
-    full.add_spend("candidate", 1.0)
+    spent_already = FakeCellSink()
+    spent_already.add_spend("candidate", 1.0)
     calls = len(campaign.judge.calls)
-    refused = await kind.invoke(prepared, stored, sink=full)
-    assert len(campaign.judge.calls) == calls, "a call the cap has no room for is not sent"
-    assert not refused.output and not refused.candidate_errors and not refused.telemetry.usage
+    again = await kind.invoke(prepared, stored, sink=spent_already)
+    assert len(campaign.judge.calls) > calls, "the call is sent: the run's cap is read between cells, never inside one"
+    assert again.telemetry.usage and not again.candidate_errors
 
 
 class _Untempered:
@@ -480,7 +486,7 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
         cassettes=None,
         world=None,
     )
-    room = FakeCellSink(cap_usd=10.0)
+    room = FakeCellSink()
 
     with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
         await kind.invoke(prepared, stored, sink=room)

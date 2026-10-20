@@ -861,7 +861,15 @@ def _detach_run_from_all_campaigns(
     for campaign in storage.list_campaigns(scope_id):
         if run_id not in campaign.run_ids:
             continue
-        campaign.run_ids = [rid for rid in campaign.run_ids if rid != run_id]
+        # Detached from the one aspect holding it: a run belongs to one aspect of a campaign.
+        campaign = campaign.model_copy(
+            update={
+                "aspects": [
+                    aspect.model_copy(update={"run_ids": [rid for rid in aspect.run_ids if rid != run_id]})
+                    for aspect in campaign.aspects
+                ]
+            }
+        )
         try:
             storage.save_campaign(campaign)
         except StorageError as e:

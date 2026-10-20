@@ -16,7 +16,7 @@ from threetears.evals.analysis.cells import Observation
 from threetears.evals.analysis.reporting import lever_level
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.analysis.arms import short_digest
-from threetears.evals.kernel.declaration import CampaignDesign, ResolvedControl
+from threetears.evals.kernel.declaration import AspectDesign, ResolvedControl
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.surface import EarlierControl
 from threetears.evals.schema.hashing import canonical_json
@@ -30,7 +30,7 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.bundle.config import (
     _CANDIDATE_MODEL_LEVER,
     _effective_config,
-    _effective_values,
+    _named_levers,
     _INHERITED_DEFAULT_LEVEL,
     _unexercised_levers,
 )
@@ -453,6 +453,7 @@ def _campaign_design(
     archived_control_variants: Collection[str] = (),
     has_unresolved_members: bool = False,
     folds: _SurfaceFolds | None = None,
+    declared_axes: Collection[str] = (),
     profile: HostProfile,
 ) -> RealizedDesign:
     """Derive the campaign's design from its arms and the DECLARED control — and decide which arm the control is.
@@ -468,7 +469,7 @@ def _campaign_design(
     cells under this build's predicate, with the cells under the earlier one named beside it
     (``earlier_control``) — kept out of every contrast, never pooled into the control's numbers, and
     disclosed. Pooling them would put two predicates' keys into one number; contrasting them would compare
-    the control with itself under another digest. A lens that matched ``declared_design.control`` itself
+    the control with itself under another digest. A lens that matched ``declared.control`` itself
     would disagree with this one the moment the predicate moved — the defect this signature exists to make
     unexpressible.
 
@@ -486,7 +487,7 @@ def _campaign_design(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param declared_control: The declared control as the keys that name its arm
-        (:func:`~threetears.evals.kernel.declaration.resolve_declared_control`); ``undeclared`` names none.
+        (:func:`~threetears.evals.kernel.declaration.resolve_control_arm`); ``undeclared`` names none.
     :ptype declared_control: ResolvedControl
     :param results_by_run: Each run's results, keyed by run id — the observation side of
         effective-config resolution, and where a variant key resolves.
@@ -550,11 +551,15 @@ def _campaign_design(
     earlier = _earlier_control(declared_control, control_variant, arms_by_key)
     folds = folds if folds is not None else _SurfaceFolds(runs, results_by_run, profile=profile)
     control = arms_by_key[control_variant][0]
-    control_overlays = _effective_values(control, results_by_run.get(control.id, []), profile=profile)
+    control_config = _effective_config(control, results_by_run.get(control.id, []), profile=profile)
+    control_overlays = {lever: eff.value for lever, eff in control_config.items() if eff.value is not None}
     control_model = control.candidate_model
     # Every contrast's departures from the control BEFORE any surface is folded: a fixed knob's fold is
     # decided over the contrasts whose departures fall within this one's, so they are needed for all of
     # them first. One run stands for each arm: its runs share a variant key, so they share a configuration.
+    #
+    # A lever recovered from a role one side never ran is skipped above when nobody named it (and it is no declared
+    # axis): unobserved is unknown, not a departure. That leaves the limit for the rest.
     #
     # KNOWN LIMIT: this maps both "the lever did not apply" and "it applied but resolved
     # ambiguously" to the inherited-default level, so an ambiguous control reads as a
@@ -572,11 +577,19 @@ def _campaign_design(
         if key == control_variant or (earlier is not None and key == earlier.variant_key):
             continue
         first = members[0]
-        overlays = _effective_values(first, results_by_run.get(first.id, []), profile=profile)
+        arm_config = _effective_config(first, results_by_run.get(first.id, []), profile=profile)
+        overlays = {lever: eff.value for lever, eff in arm_config.items() if eff.value is not None}
+        # Recovered from a role one side never ran, and named by nobody: unobserved there, not departed from.
+        unobserved = (
+            set(profile.observed_model_levers)
+            - _named_levers({"control": control_config, "arm": arm_config})
+            - set(declared_axes)
+        )
         departed = {
             lever: overlays.get(lever) or _INHERITED_DEFAULT_LEVEL
             for lever in sorted((set(overlays) | set(control_overlays)) - {_CANDIDATE_MODEL_LEVER})
-            if (overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
+            if not (lever in unobserved and (lever not in overlays or lever not in control_overlays))
+            and (overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
             != (control_overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
         }
         if first.candidate_model != control_model:
@@ -798,6 +811,7 @@ def _lever_levels(
     # `lever_names` is a set, so the two sources name one lever, never two.
     if len({run.candidate_model for run in runs}) > 1:
         lever_names.add(_CANDIDATE_MODEL_LEVER)
+    recovered_unnamed = set(profile.observed_model_levers) - _named_levers(configs) - set(declared_axes)
     for lever in sorted(lever_names):
         by_level: dict[str, list[str]] = {}
         for run in runs:
@@ -805,6 +819,11 @@ def _lever_levels(
                 level: str = run.candidate_model
             else:
                 effective = configs[run.id].get(lever)
+                if effective is None and lever in recovered_unnamed:
+                    # Recovered from a role this run never ran: not observed here, which is unknown rather than
+                    # a level, and not "observed at another value". Left out like an ambiguous run is, so it
+                    # moves together with nothing.
+                    continue
                 if effective is None:
                     # The lever does not apply to this run: it named no override and nothing
                     # recovers a value. That is the "ran at the subject's own setting" cohort,
@@ -979,7 +998,7 @@ def _name_arms(
     return named
 
 
-def _declared_level_names(index: list[VariantIndexEntry], declared: CampaignDesign | None) -> list[VariantIndexEntry]:
+def _declared_level_names(index: list[VariantIndexEntry], declared: AspectDesign | None) -> list[VariantIndexEntry]:
     """Name each arm's levels by what the campaign declared them as, where it declared them.
 
     A host displays a level by what it can see of it, and for a long text — a prompt in a prompt sweep — that is a
@@ -997,7 +1016,7 @@ def _declared_level_names(index: list[VariantIndexEntry], declared: CampaignDesi
     :param index: The variant index, its arms already named by :func:`_name_arms`.
     :ptype index: list[VariantIndexEntry]
     :param declared: The campaign's declaration, or None when it declared nothing.
-    :ptype declared: CampaignDesign | None
+    :ptype declared: AspectDesign | None
     :return: The index, each declared level displayed by its declared name; entries no declaration names unchanged.
     :rtype: list[VariantIndexEntry]
     """

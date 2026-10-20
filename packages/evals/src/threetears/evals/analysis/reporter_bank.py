@@ -51,12 +51,12 @@ from threetears.evals.analysis.reporter_kind import (
 from threetears.evals.kernel.errors import ValidationFailedError
 
 if TYPE_CHECKING:
-    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
     from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalTestCase, RubricScore
 
 
 def case_limits(
-    bundle: AnalysisContextBundle,
+    bundle: CampaignBundle,
     *,
     recorded_fingerprint: str | None = None,
     writer_message: str | None = None,
@@ -88,8 +88,8 @@ def case_limits(
       per-arm claim is uncheckable. Stated rather than left as an empty list, because an empty
       list is also what a bundle with nothing wrong produces.
 
-    :param bundle: The bundle being frozen.
-    :ptype bundle: AnalysisContextBundle
+    :param bundle: The campaign bundle being frozen; its arms and cells are read across every aspect.
+    :ptype bundle: CampaignBundle
     :param recorded_fingerprint: The pinned memo's ``generation.bundle_fingerprint``, or ``None`` when
         the case pins no memo.
     :ptype recorded_fingerprint: str | None
@@ -124,14 +124,15 @@ def case_limits(
             "writer did not read, so a claim resting on something only the older rendering showed scores as "
             "ungrounded here."
         )
-    if not bundle.variant_index:
+    index = list({entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}.values())
+    if not index:
         limits.append(
             "The bundle keys no variant, so no claim the memo makes about a particular arm can be checked "
             "against this case — every per-arm statement is ungrounded here whatever it says."
         )
         return limits
-    with_cells = {cell.variant_key for cell in bundle.cell_measures}
-    for entry in bundle.variant_index:
+    with_cells = {cell.variant_key for aspect in bundle.aspects for cell in aspect.cell_measures}
+    for entry in index:
         if entry.levels_unavailable is not None:
             limits.append(
                 f"Arm {entry.variant_key} re-assembles without its levels ({entry.levels_unavailable}), so the "

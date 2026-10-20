@@ -28,6 +28,7 @@ from threetears.evals.analysis import (
     NO_ANALYSIS,
     SECTION_TITLES,
     AnalysisContextBundle,
+    aspect_view,
     ChartBlock,
     DisclosureBlock,
     IntervalRow,
@@ -40,6 +41,7 @@ from threetears.evals.analysis import (
     build_code_only_report,
     build_report,
     campaign_report,
+    campaign_report_html,
     report_html,
     report_markdown,
     set_campaign_control,
@@ -81,9 +83,13 @@ class TestTheToyAnalysisSerializesTwoWays:
         # who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
         assert report.title == "chunk width sweep"
-        assert lines[0] == f"# {report.title}"
-        assert lines[1] == '"Is the wider chunk worth what it costs to retrieve?"', "the question, under the title"
-        assert lines[3].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
+        # Only a broken floor's warning may stand above the title, each in bold with a blank line under it.
+        top = lines.index(f"# {report.title}")
+        assert all(line.startswith("**Floor broken on ") or not line for line in lines[:top])
+        assert lines[top + 1] == '"Is the wider chunk worth what it costs to retrieve?"', (
+            "the question, under the title"
+        )
+        assert lines[top + 3].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
         assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown
         # A finding leads with its headline, unnumbered: nothing on the page cites a finding by number.
         assert f"**{finding.title}**" in markdown and "**F1." not in markdown
@@ -149,7 +155,7 @@ class TestTheToyReportsContent:
 
         assert table.finding == 0
         # Code's numbers, stated on each measure's one ruler for the report (a latency in s where the surface is).
-        rulers = measure_rulers(analysis.decision_surface)
+        rulers = measure_rulers(analysis.aspects[0].decision_surface)
         stated = [row.value * (rulers[row.measure_id].factor if row.reading == "measure" else 1.0) for row in evidence]
         # One row per arm, one column per reading: the toy's finding reads one measure on each arm.
         assert [row["reading_0"] for row in table.values()] == pytest.approx(stated)
@@ -164,7 +170,7 @@ class TestTheToyReportsContent:
         _, analysis, report = toy
         (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "evidence"]
         evidence = analysis.resolutions[0].evidence
-        surface = analysis.decision_surface
+        surface = analysis.aspects[0].decision_surface
         factor = measure_rulers(surface)[evidence[0].measure_id].factor
 
         # Each arm's cell carries the interval its cell holds on the reading, restated onto the same ruler.
@@ -178,9 +184,10 @@ class TestTheToyReportsContent:
 
     async def test_the_recommendation_rests_on_its_finding(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
-        (decision,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
-        assert decision.rests_on == [0]
-        assert ("Disposition", "deferred") in [(fact.name, fact.value) for fact in decision.facts]
+        (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
+        assert recommendation.rests_on == [0]
+        assert [fact.name for fact in recommendation.facts] == ["Disposition"]
+        assert recommendation.facts[0].value.startswith("recommend ")
 
     async def test_the_memo_is_labelled_as_its_writer_s_and_the_methods_say_how_it_was_generated(
         self, toy: tuple[Any, EvalAnalysis, Report]
@@ -191,7 +198,9 @@ class TestTheToyReportsContent:
         assert isinstance(table, TableBlock) and table.name == "methods"
         rows = {str(row["item"]): str(row["value"]) for row in table.values()}
         assert generation.generator_model in rows["Analysis"] and generation.prompt_id in rows["Analysis"]
-        assert generation.bundle_fingerprint in rows["Bundle"]
+        # The bundle served beside the page is the aspect's, so the page states its fingerprint, not the campaign's.
+        assert analysis.aspects[0].bundle_fingerprint in rows["Bundle"]
+        assert generation.bundle_fingerprint not in rows["Bundle"]
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.
         texts = [block.text for block in notes if isinstance(block, DisclosureBlock)]
         assert any(text.startswith("Model identity unconfirmed:") for text in texts)
@@ -380,8 +389,10 @@ class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
 
 @pytest.fixture
 def code_only() -> tuple[EvalHost, Report]:
+    """The campaign's one aspect's page, as the campaign's code-only page folds it."""
     host, campaign = toy_campaign_host()
-    return host, campaign_report(host, campaign.id, campaign.scope_id)
+    (fold,) = campaign_report(host, campaign.id, campaign.scope_id).aspects
+    return host, fold.report
 
 
 class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
@@ -409,7 +420,7 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         (methods, *notes) = [block for block in report.blocks if block.section == "methods"]
         assert isinstance(methods, TableBlock) and all(block.fold == "Disclosures" for block in notes)
         (bundle,) = [row["value"] for row in methods.values() if row["item"] == "Bundle"]
-        assert report.source.bundle_fingerprint in str(bundle) and "bundle.json beside this page" in str(bundle)
+        assert report.source.bundle_fingerprint in str(bundle) and "its JSON beside this page" in str(bundle)
 
     def test_it_serializes_as_one_page_and_its_markdown(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
@@ -441,7 +452,9 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
 async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
     host, analysis, report = toy
     resolved = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-    assert report_html(resolved) == report_html(report)
+    stored = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
+    assert campaign_report_html(resolved) == campaign_report_html(stored)
+    assert resolved.basis == "analysis" and resolved.analysis_id == analysis.id
     assert report.basis == "analysis" and report.source.analysis_id == analysis.id
 
 
@@ -451,9 +464,9 @@ async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalH
     off_loop(set_analysis_archived, host.storage, analysis.id, analysis.scope_id, archived=True, reason="shown false")
 
     report = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-    assert report.basis == "code_only" and report.source.analysis_id is None
+    assert report.basis == "code_only" and report.analysis_id is None
     # The archived analysis is still readable by its id.
-    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).source.analysis_id == analysis.id
+    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).analysis_id == analysis.id
 
 
 async def test_a_next_step_on_a_lever_no_comparison_exercised_is_not_on_the_page(
@@ -465,11 +478,9 @@ async def test_a_next_step_on_a_lever_no_comparison_exercised_is_not_on_the_page
     held = NextStep(title="evaluate with the research model held fixed", why="it moved", leverage="high", lever=lever)
     document = analysis.document.model_copy(update={"next": [held, *analysis.document.next]})
     unexercised = {"factor": lever, "role": "research", "results": 1, "arms": ["candidate"]}
-    report = build_report(
-        analysis.model_copy(
-            update={"document": document, "bundle": {**analysis.bundle, "unexercised_factors": [unexercised]}}
-        )
-    )
+    (aspect,) = analysis.aspects
+    frozen = aspect.model_copy(update={"bundle": {**aspect.bundle, "unexercised_factors": [unexercised]}})
+    report = build_report(analysis.model_copy(update={"document": document, "aspects": [frozen]}))
     steps = [block.body for block in report.blocks if isinstance(block, TextBlock) and block.role == "next_step"]
     assert steps and not [step for step in steps if "research model" in step]
     markdown = report_markdown(report)
@@ -483,11 +494,19 @@ def test_the_resolver_refuses_a_campaign_the_scope_does_not_hold() -> None:
 
 
 def _controlled() -> tuple[Any, Report]:
+    """The toy campaign with its control declared beside its question, before the runs.
+
+    Not named afterwards through ``set_campaign_control``: a control chosen once the runs exist is dated then, which
+    turns the question it is read against post hoc (``test_campaign_aspects.py``).
+    """
     host, campaign = toy_campaign_host()
-    set_campaign_control(
+    named = set_campaign_control(
         host.storage, campaign.id, campaign.scope_id, campaign.run_ids[0], set_by="t", profile=host.profile
     )
-    return campaign, campaign_report(host, campaign.id, campaign.scope_id)
+    assert named.control is not None
+    host.storage.save_campaign(named.model_copy(update={"arms": [named.control.model_copy(update={"named_at": None})]}))
+    (fold,) = campaign_report(host, campaign.id, campaign.scope_id).aspects
+    return campaign, fold.report
 
 
 def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control() -> None:
@@ -497,12 +516,15 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     comparisons, statistics = tables["comparisons"], tables["comparison_statistics"]
     assert statistics.details and len(statistics.rows) == len(comparisons.rows)
     # The page names the question by its number; a program reads it in the words it was asked, never its id.
-    asked = next(q.text for q in campaign.declared_design.questions if q.id == "q-chunk-width")
+    declared = aspect_view(campaign).declared
+    assert declared is not None
+    asked = declared.question
     assert comparisons.rows and {row["question"] for row in statistics.values()} == {"Q1"}
     assert {row["question"] for row in contrast_rows(report.bundle)} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}
-    assert by_reading["Field accuracy"] == "1024tok better than 256tok"
-    assert by_reading["Turn time"] == "1024tok worse than 256tok (lower is better)"
+    # The campaign's page folds this page, and names each arm by the campaign's label for it.
+    assert by_reading["Field accuracy"] == "1024tok better than control"
+    assert by_reading["Turn time"] == "1024tok worse than control (lower is better)"
     assert any(
         isinstance(block, DisclosureBlock) and block.source == "comparisons" and "Holm" in block.text
         for block in report.blocks

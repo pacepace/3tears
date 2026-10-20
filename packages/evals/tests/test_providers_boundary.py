@@ -211,8 +211,10 @@ def test_the_engine_never_names_the_client() -> None:
 #: The one reach below a public root the client makes, and why: the package's logger. Every module of the package
 #: takes its stdlib logger from :mod:`threetears.evals.schema.logs`, and the client logs what the engine does not
 #: store: a reply read as ``truncated`` with the provider's raw stop reason, an unread catalogue, a setting sent as
-#: the closest the model takes. A host logs through loggers of its own and never needs it.
+#: the closest the model takes. A host logs through loggers of its own and never needs it. ``contain`` is the same
+#: module's record of a failure the client absorbs on purpose (a model that failed to close).
 PACKAGE_LOGGING = "threetears.evals.schema.logs.get_logger"
+PACKAGE_CONTAINMENT = "threetears.evals.schema.logs.contain"
 
 
 def test_the_client_reaches_the_engine_only_through_public_roots() -> None:
@@ -220,7 +222,7 @@ def test_the_client_reaches_the_engine_only_through_public_roots() -> None:
     findings = [
         reach
         for reach in nonpublic_engine_reaches(PROVIDERS_ROOT)
-        if not _names_the_client(reach) and reach != PACKAGE_LOGGING
+        if not _names_the_client(reach) and reach not in (PACKAGE_LOGGING, PACKAGE_CONTAINMENT)
     ]
     assert not findings, "The client reaches below a public root of the engine:\n  " + "\n  ".join(findings)
 

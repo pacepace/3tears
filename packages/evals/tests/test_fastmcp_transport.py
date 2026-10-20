@@ -84,7 +84,12 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         )
         assert not is_error and document is not None and document["format"] == "markdown"
         assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        assert report.startswith("# ") and "| Analysis | " in report and "none written" not in report
+        # The title opens the page, below only its loud lines: each broken floor and missed bar, and the memo's why
+        # beside one.
+        title = report.index("\n# ")
+        loud = [line for line in report[:title].splitlines() if line]
+        assert loud and all(line.startswith(("**Floor broken on ", "**Bar missed on ", "**The memo ")) for line in loud)
+        assert "| Analysis | " in report and "none written" not in report
 
 
 async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:

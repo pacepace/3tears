@@ -63,9 +63,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mappin
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
-from threetears.observe import BuildOnce, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
-from threetears.core.sql_fragments import quote_identifier
+from threetears.core.sql_fragments import FilterValue, quote_identifier
 
 from threetears.datasources.export import DriverExportUnsupportedError, ExportConfig, ExportResult
 
@@ -703,13 +703,13 @@ class TransactionContext:
                     # the transaction may still be open server-side; the
                     # connection is evicted by the driver's finish hook
                     # either way, so this is observability, not control flow.
-                    log.warning(
-                        "transaction rollback failed; original error propagates",
+                    contain(
+                        rollback_exc,
+                        log=log,
+                        what="transaction rollback failed; original error propagates",
                         extra={
-                            "extra_data": {
-                                "error": str(rollback_exc),
-                                "error_type": type(rollback_exc).__name__,
-                            }
+                            "error": str(rollback_exc),
+                            "error_type": type(rollback_exc).__name__,
                         },
                     )
         return False
@@ -1061,7 +1061,7 @@ class Driver(ABC):
 
     @abstractmethod
     async def relation_fingerprint(
-        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+        self, relation: str, key: list[str], where: Mapping[str, FilterValue] | None = None
     ) -> RelationFingerprint:
         """count a relation and fingerprint its ordering key, in one statement.
 
@@ -1093,7 +1093,7 @@ class Driver(ABC):
         :ptype key: list[str]
         :param where: equality filters, column -> value, naming the rows to fingerprint;
             columns are TRUSTED identifiers, values are bound as parameters
-        :ptype where: Mapping[str, str] | None
+        :ptype where: Mapping[str, FilterValue] | None
         :return: the relation's current row count and key digest
         :rtype: RelationFingerprint
         :raises ValueError: when ``key`` is empty
@@ -1198,8 +1198,8 @@ class Driver(ABC):
         relation: str,
         key: list[str],
         group_by: str,
-        where: Mapping[str, str] | None = None,
-        where_in: Mapping[str, Sequence[str]] | None = None,
+        where: Mapping[str, FilterValue] | None = None,
+        where_in: Mapping[str, Sequence[FilterValue]] | None = None,
     ) -> dict[str | None, RelationFingerprint]:
         """count and fingerprint every group of a relation (each value of ``group_by``) in one statement.
 
@@ -1215,9 +1215,9 @@ class Driver(ABC):
         :param group_by: the column the groups are values of, a TRUSTED identifier
         :ptype group_by: str
         :param where: equality filters, column -> value
-        :ptype where: Mapping[str, str] | None
+        :ptype where: Mapping[str, FilterValue] | None
         :param where_in: set filters, column -> the values it may hold
-        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
         :return: each group's value (as text; ``None`` for NULL) -> its fingerprint; a value with no
             rows is not named
         :rtype: dict[str | None, RelationFingerprint]
@@ -1390,9 +1390,11 @@ class Driver(ABC):
                 # The cancellation still propagates, but the backend statement it was meant to stop
                 # may not have stopped: a failed cancel leaves work running server-side while this
                 # side reports cancelled.
-                log.warning(
-                    "cancel callback failed; backend work may still be running",
-                    extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+                contain(
+                    exc,
+                    log=log,
+                    what="cancel callback failed; backend work may still be running",
+                    extra={"error": str(exc), "error_type": type(exc).__name__},
                 )
             raise
         return result

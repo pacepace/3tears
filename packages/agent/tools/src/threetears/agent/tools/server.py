@@ -16,7 +16,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer, model_validator
+from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer, model_validator
 from threetears.core.wire import TolerantWireModel
 
 from threetears.agent.audit import AuditEvent, publish_audit
@@ -95,8 +95,8 @@ from threetears.nats import (
     result_subject_prefix_for_pod,
     set_default_namespace,
 )
-from threetears.nats.errors import NatsClientError
-from threetears.observe import InflightRequestsGauge, clear_context, get_logger, traced
+from threetears.nats.errors import NatsClientError, PublishError, RequestError
+from threetears.observe import cancel_and_wait, clear_context, contain, get_logger, InflightRequestsGauge, traced
 from threetears.observe.resilience import retry_bounded
 
 __all__ = [
@@ -992,6 +992,15 @@ def _effective_ceiling(pod_ceiling: float | None, caller_deadline: float | None)
     """
     bounds = [bound for bound in (pod_ceiling, caller_deadline) if bound is not None]
     return min(bounds) if bounds else None
+
+
+class _ResultLost(Exception):
+    """the answer to a durably-delivered call could not be published, after every attempt.
+
+    Raised by :meth:`ToolServer._deliver` and caught once, by the dispatch that called it, which
+    records the call as an error in its audit rather than as the outcome the tool reached: what
+    the caller received is nothing.
+    """
 
 
 class ToolCallFailure(Exception):
@@ -2202,18 +2211,19 @@ class ToolServer:
                 if own_available == expected_count:
                     ready = True
                     break
-            except Exception as exc:
+            except RequestError as exc:
                 # intentional: readiness polling must tolerate transient NATS
                 # hiccups and discovery schema drift without crashing the
-                # caller. log at debug so the symptom surfaces in diagnostics
-                # rather than a blanket silent swallow.
-                log.debug(
-                    "wait_until_ready poll iteration failed",
+                # caller; NatsClient.request raises RequestError for both (a
+                # reply that does not decode included). log at debug so the
+                # symptom surfaces in diagnostics rather than a blanket silent swallow.
+                contain(
+                    exc,
+                    log=log,
+                    what="wait_until_ready poll iteration failed",
                     extra={
-                        "extra_data": {
-                            "pod_id": self._pod_id,
-                            "error": str(exc),
-                        }
+                        "pod_id": self._pod_id,
+                        "error": str(exc),
                     },
                 )
             await asyncio.sleep(poll_interval)
@@ -2480,17 +2490,17 @@ class ToolServer:
                 response_type=RegistrationResponse,
                 timeout=_IDENTITY_REPLY_TIMEOUT,
             )
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the answer and never the registration. Logged with its type and message
-            log.warning(
-                "could not read the registration reply; this pod does not know which namespaces it "
+        except RequestError as exc:  # see docstring; the manifest was published before the reply was awaited, so a failure here costs the answer and never the registration. Logged with its type and message
+            contain(
+                exc,
+                log=log,
+                what="could not read the registration reply; this pod does not know which namespaces it "
                 "owns or whether any of its tools were refused, and any owner-routed human-in-the-loop "
                 "session will subscribe successfully and receive nothing",
                 extra={
-                    "extra_data": {
-                        "pod_id": self._pod_id,
-                        "reason": type(exc).__name__,
-                        "detail": str(exc),
-                    }
+                    "pod_id": self._pod_id,
+                    "reason": type(exc).__name__,
+                    "detail": str(exc),
                 },
             )
             return None
@@ -3292,9 +3302,11 @@ class ToolServer:
             try:
                 hook()
             except Exception as exc:
-                log.warning(
-                    "tool call cleanup hook raised during hard-timeout cleanup",
-                    extra={"extra_data": {"error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="tool call cleanup hook raised during hard-timeout cleanup",
+                    extra={"error": str(exc)},
                 )
 
     async def _dispatch_incoming_call(self, msg: IncomingMessage, owes_sync_reply: list[bool]) -> None:
@@ -3325,7 +3337,7 @@ class ToolServer:
 
         try:
             request = CallRequest.model_validate_json(msg.data)
-        except Exception as exc:
+        except ValidationError as exc:
             error_response = CallResponse(
                 success=False,
                 content="",
@@ -3337,11 +3349,13 @@ class ToolServer:
             # field failed validation or a retired one was sent: an envelope-compatibility
             # failure that can reject every call identically while the pod registers,
             # heartbeats and answers probes throughout.
-            log.warning(
-                "refusing a call whose envelope this pod cannot parse; a declared field that "
+            contain(
+                exc,
+                log=log,
+                what="refusing a call whose envelope this pod cannot parse; a declared field that "
                 "failed validation or a retired field is the usual cause, and it refuses every "
                 "call the same way",
-                extra={"extra_data": {"pod_id": self._pod_id, "error": str(exc)}},
+                extra={"pod_id": self._pod_id, "error": str(exc)},
             )
             await self._respond(msg, error_response)
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
@@ -3445,6 +3459,9 @@ class ToolServer:
                     error_code=IDENTITY_REFUSED,
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = identity_rejection
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod rejected call: identity unverified",
@@ -3457,8 +3474,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = identity_rejection
                 return
             # the verified identity now rides the re-stamped request; re-bind the log tags so this
             # dispatch's log lines + the baseline audit attribute to the authenticated identity, not
@@ -3480,6 +3495,9 @@ class ToolServer:
                     error_code=assertion_refusal.error_code,
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = assertion_refusal.reason
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod rejected call at the proxy-assertion gate",
@@ -3492,8 +3510,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = assertion_refusal.reason
                 return
 
             owner_rejection = self._foreign_caller_rejection(request)
@@ -3505,6 +3521,9 @@ class ToolServer:
                     error_code="TOOL_CALLER_NOT_OWNER",
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = owner_rejection
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod refused call: the verified caller is not the agent this in-process server belongs to",
@@ -3517,8 +3536,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = owner_rejection
                 return
 
             tool = self._tools.get(tool_key)
@@ -3530,6 +3547,9 @@ class ToolServer:
                     error=f"unknown tool: {tool_key}",
                     context=request.context,
                 )
+                # recorded before the answer goes out, so a lost answer keeps this reason
+                outcome = "failure"
+                failure_reason = f"unknown tool: {tool_key}"
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "unknown tool requested",
@@ -3540,8 +3560,6 @@ class ToolServer:
                         }
                     },
                 )
-                outcome = "failure"
-                failure_reason = f"unknown tool: {tool_key}"
                 return
 
             try:
@@ -3587,15 +3605,16 @@ class ToolServer:
                 outcome = "error"
                 failure_reason = str(exc)
             except Exception as exc:
-                log.error(
-                    "tool execution failed",
+                contain(
+                    exc,
+                    log=log,
+                    what="tool execution failed",
                     extra={
-                        "extra_data": {
-                            "tool_key": tool_key,
-                            "correlation_id": correlation_id_log,
-                            "error": str(exc),
-                        }
+                        "tool_key": tool_key,
+                        "correlation_id": correlation_id_log,
+                        "error": str(exc),
                     },
+                    level="error",
                 )
                 response = CallResponse(
                     success=False,
@@ -3613,6 +3632,13 @@ class ToolServer:
                 # the caller received, not what the tool returned
                 outcome = "failure"
                 failure_reason = sent.error
+        except _ResultLost as exc:
+            # whichever branch was answering, the caller received nothing: the audit says so, and
+            # the pod's log carries the subject and size. Not raised further: the dispatch is a
+            # NATS callback, and nothing above it can reach the caller either.
+            contain(exc, log=log, what=str(exc), extra={"tool_key": tool_key}, level="error")
+            outcome = "error"
+            failure_reason = str(exc) if failure_reason is None else f"{failure_reason}; then {exc}"
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
@@ -3733,6 +3759,7 @@ class ToolServer:
         :ptype response: CallResponse
         :return: nothing
         :rtype: None
+        :raises _ResultLost: when every attempt failed; the answer is lost
         """
         if self._nc is None:
             return
@@ -3741,20 +3768,16 @@ class ToolServer:
             try:
                 await self._nc.jetstream_publish(subject=subject, payload=payload)
                 return
-            except Exception as exc:  # noqa: BLE001 — the work is already done; retry beats discarding it
+            except PublishError as exc:  # the work is already done; retry beats discarding it
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
-                    # NOSILENT: the answer is now lost. say so, with the subject and the size, rather
-                    # than letting it surface as an unexplained timeout at the caller.
-                    log.error(
-                        "tool result could not be delivered after %d attempts; the answer is lost "
-                        "(subject=%s pod_id=%s bytes=%d): %s",
-                        _RESULT_DELIVERY_ATTEMPTS,
-                        subject.path,
-                        self._pod_id,
-                        len(payload),
-                        exc,
-                    )
-                    return
+                    # the answer is now lost. say so, with the subject and the size, rather than
+                    # letting it surface as an unexplained timeout at the caller, and as a call the
+                    # audit records as answered.
+                    raise _ResultLost(
+                        f"tool result could not be delivered after {_RESULT_DELIVERY_ATTEMPTS} attempts; "
+                        f"the answer is lost (subject={subject.path} pod_id={self._pod_id} "
+                        f"bytes={len(payload)}): {type(exc).__name__}: {exc}"
+                    ) from exc
                 log.warning(
                     "tool result delivery failed (attempt %d/%d, subject=%s); retrying: %s",
                     attempt,
@@ -3874,13 +3897,13 @@ class ToolServer:
         # AttributeError) that could otherwise taint a successful
         # tool return.
         except Exception as exc:
-            log.warning(
-                "tool server baseline audit publish failed",
+            contain(
+                exc,
+                log=log,
+                what="tool server baseline audit publish failed",
                 extra={
-                    "extra_data": {
-                        "tool_key": f"{tool_name}@{tool_version}",
-                        "error": str(exc),
-                    },
+                    "tool_key": f"{tool_name}@{tool_version}",
+                    "error": str(exc),
                 },
             )
 
@@ -3963,10 +3986,7 @@ class ToolServer:
             try:
                 await nc.publish(subject=subject, message=heartbeat)
             except Exception as exc:
-                log.warning(
-                    "heartbeat publish failed",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
+                contain(exc, log=log, what="heartbeat publish failed", extra={"error": str(exc)})
             try:
                 # re-ask ONLY while the answer is still unknown or unsettled: a pod that started
                 # before the registry did would otherwise never learn which node it owns, and a
@@ -3976,10 +3996,7 @@ class ToolServer:
                 unsettled = bool(self._refused_tools) or self._unexplained_refusal is not None
                 await self.publish_registration(await_reply=self._owned_namespaces is None or unsettled)
             except Exception as exc:
-                log.warning(
-                    "periodic re-registration failed",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
+                contain(exc, log=log, what="periodic re-registration failed", extra={"error": str(exc)})
             # Liveness supervisor (the no-k8s net; the /healthz probe is the k8s net).
             # Forever-reconnect rides out any transient drop (is_healthy stays True), but a
             # TERMINAL close (user-JWT expiry -ERR) or a persistent auth/overflow wedge never
@@ -4046,12 +4063,7 @@ class ToolServer:
         # propagates to the caller, which decides what a failed shutdown means for the process.
         try:
             if self._heartbeat_task is not None:
-                self._heartbeat_task.cancel()
-                try:
-                    await self._heartbeat_task
-                except asyncio.CancelledError:
-                    # NOSILENT: this IS the cancellation requested on the line above
-                    pass
+                await cancel_and_wait(self._heartbeat_task)
                 self._heartbeat_task = None
 
             if self._owned_jwks_provider is not None:

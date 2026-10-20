@@ -38,10 +38,16 @@ async def silent(case: Mapping[str, Any]) -> int:
 
 
 async def _summary(runner: Any, *, max_cost_usd: float | None = None, **run: Any) -> Any:
-    """The one arm's summary of ``runner`` over the cases graded by ``even``, in memory unless a host is named."""
+    """The one arm's summary of ``runner`` over the cases graded by ``even``, in memory unless a host is named.
+
+    One case at a time: a cap is read between cases against what has landed, so a run that starts all four at once
+    has nothing left to stop (``tests/test_ceilings_between_cells.py`` holds the concurrent case).
+    """
     if "host" not in run:
         run["store"] = ":memory:"
-    return (await Eval(CASES, runner, [even], k=1, max_cost_usd=max_cost_usd).run(scope=SCOPE, **run)).summary
+    return (
+        await Eval(CASES, runner, [even], k=1, max_cost_usd=max_cost_usd, measure_latency=True).run(scope=SCOPE, **run)
+    ).summary
 
 
 async def test_with_no_cap_the_run_is_uncapped_and_the_summary_says_so() -> None:
@@ -60,9 +66,12 @@ async def test_a_cap_stops_the_run_between_cases_once_its_spend_passes_it_and_th
     assert (run.max_cost_usd, run.max_cost_usd_origin) == (0.5, "chosen")
     # 30 cents, then 60: the second case passes the cap, so the run stops before the third.
     assert summary.status == "budget_stopped" and summary.n_results == 2
-    assert summary.stopped_because is not None and "$0.6000 spent against a $0.5000 cap" in summary.stopped_because
+    # The line is written from the run's stop record, so its figures are the counters': $0.60 landed against $0.50.
+    assert summary.stopped_because == (
+        "stopped by its cost cap: $0.60 of $0.50 at the stop, no cell was running; 2 cells not started"
+    )
     rendered = summary.render()
-    assert "budget_stopped" in rendered and "stopped: eval run cost cap exceeded" in rendered
+    assert "budget_stopped" in rendered and f"  {summary.stopped_because}" in rendered.splitlines()
     assert "spend cap: $0.50 for this run\n" in rendered + "\n"
     assert len(summary.results()) == 2
 
@@ -99,9 +108,9 @@ async def test_a_comparison_caps_the_whole_comparison_each_arm_at_an_equal_share
     async def cheap(case: Mapping[str, Any]) -> Answer:
         return Answer(int(case["n"]), model="cheap-model", input_tokens=10, output_tokens=2, cost_usd=0.01)
 
-    comparison = await Eval(CASES, {"cheap": cheap, "costly": costly}, [even], k=1, max_cost_usd=1.0).run(
-        store=":memory:", scope=SCOPE
-    )
+    comparison = await Eval(
+        CASES, {"cheap": cheap, "costly": costly}, [even], k=1, max_cost_usd=1.0, measure_latency=True
+    ).run(store=":memory:", scope=SCOPE)
     cheap_arm, costly_arm = comparison.arms["cheap"], comparison.arms["costly"]
     assert cheap_arm.max_cost_usd == costly_arm.max_cost_usd == 0.5
     assert cheap_arm.status == "completed" and cheap_arm.n_results == 4

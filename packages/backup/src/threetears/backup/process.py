@@ -30,10 +30,9 @@ import asyncio
 import os
 import signal
 from collections import deque
-from contextlib import suppress
 from collections.abc import AsyncIterator, Mapping
 
-from threetears.observe import get_logger
+from threetears.observe import cancel_and_wait, contain, get_logger
 
 __all__ = [
     "READ_AHEAD_BYTES",
@@ -265,7 +264,14 @@ async def fill_read_ahead(buffer: ReadAhead, source: AsyncIterator[bytes]) -> No
     try:
         async for chunk in source:
             await buffer.put(chunk)
-    except BaseException as exc:  # noqa: BLE001 -- re-raised to the consumer through the buffer
+    except asyncio.CancelledError as exc:
+        # a consumer still waiting on the buffer sees the stop rather than a clean end, and the
+        # filler itself ends cancelled, as asked
+        await buffer.close(exc)
+        raise
+    except Exception as exc:  # noqa: BLE001 -- re-raised to the consumer through the buffer
+        # not absorbed: the consumer re-raises it from get(); recorded here because this task ends quietly
+        contain(exc, log=log, what="backup source failed mid-stream; the consumer re-raises it")
         await buffer.close(exc)
     else:
         await buffer.close()
@@ -317,11 +323,9 @@ async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[by
         await buffer.close()
         # A real producer failure already reached the consumer through `buffer.close(failure)`
         # and was raised out of `get()`. This await only reaps the task.
-        filler.cancel()
         # NOSILENT: awaiting a task we just cancelled raises CancelledError by definition, and
         # that is the acknowledgement rather than an error.
-        with suppress(asyncio.CancelledError):
-            await filler
+        await cancel_and_wait(filler)
     # wait for the child to finish INSIDE the timed region, so ``timeout`` bounds the whole
     # restore (a child that reads its stdin fast but then processes for a long time is still capped).
     await proc.wait()

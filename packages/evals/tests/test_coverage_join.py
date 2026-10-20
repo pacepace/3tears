@@ -12,9 +12,9 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.analysis.report import DisclosureBlock, Report, TableBlock, TextBlock, build_report
-from threetears.evals.kernel.authored import AuthoredAnalysis, Finding, NextStep
+from threetears.evals.kernel.authored import Finding, NextStep
 from threetears.evals.kernel.campaign import CoverageLens, LeverCoverage
-from packages.evals.tests.factories import make_analysis
+from packages.evals.tests.factories import analysed_aspect, empty_document, make_analysis
 
 
 def _lever(name: str, status: str) -> LeverCoverage:
@@ -44,18 +44,20 @@ def _step(title: str, lever: str) -> NextStep:
 def _report() -> Report:
     """Four levers: one measured and found, one measured with no finding, one unswept with a step, one without."""
     analysis = make_analysis(
-        coverage=CoverageLens(
-            levers=[
-                _lever("chunk_tokens", "measured"),
-                _lever("retriever_top_k", "measured"),
-                _lever("extraction_schema", "unswept"),
-                _lever("ocr_engine_version", "thin"),
-            ]
-        ),
-        document=AuthoredAnalysis(
+        aspects=[
+            analysed_aspect(
+                coverage=CoverageLens(
+                    levers=[
+                        _lever("chunk_tokens", "measured"),
+                        _lever("retriever_top_k", "measured"),
+                        _lever("extraction_schema", "unswept"),
+                        _lever("ocr_engine_version", "thin"),
+                    ]
+                )
+            )
+        ],
+        document=empty_document(
             findings=[_finding("wider chunks extract more", ["chunk_tokens"])],
-            decisions=[],
-            questions=[],
             next=[
                 _step("sweep the schema", "extraction_schema"),
                 _step("try a reranker", "reranker"),

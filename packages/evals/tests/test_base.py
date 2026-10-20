@@ -10,6 +10,8 @@ tests here assert that through real storage.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,6 +23,7 @@ from threetears.evals.schema.versioning import (
     CORE_BASELINE_VERSION,
     CORE_SCHEMA_VERSION,
     REGENERABLE_SCHEMA_VERSION,
+    VersionSpace,
 )
 from threetears.evals.schema.models import (
     EvalCassette,
@@ -31,7 +34,7 @@ from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import memory_storage
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.stored_models import sampled_model_names, stored_models, stored_sample
+from packages.evals.tests.stored_models import doc_type_of, sampled_model_names, stored_models, stored_sample
 
 
 class _Sample(EvalBaseModel):
@@ -372,8 +375,37 @@ def test_a_cassette_at_this_build_s_cassette_version_loads() -> None:
     assert EvalCassette.from_dict(document).schema_version == CASSETTE_SCHEMA_VERSION
 
 
-@pytest.mark.parametrize("version", [CORE_BASELINE_VERSION - 1, CORE_SCHEMA_VERSION + 1, "8", None])
-@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+def _versioned(versions: Callable[[VersionSpace], Iterable[object]]) -> list[Any]:
+    """Each kept model beside each version ``versions`` names in its own space: the core's or the durable one's.
+
+    The two spaces shared their numbers only at the fork (both 15); a durable major moves the durable numbers alone,
+    so a model is read against its own space's baseline and current version, never the core's.
+    """
+    return [
+        pytest.param(model, version, id=f"{model.__name__}-{version}")
+        for model in _core_models()
+        for version in versions(model.version_space)  # type: ignore[attr-defined]
+    ]
+
+
+#: Each kept space's frozen corpus of an older major, where a document of a version below the current one is taken
+#: from: a document of an older major is in that major's shape, which only its corpus holds.
+_FROZEN = {"core": "core_documents", "durable": "durable_documents"}
+
+
+def _document_at(model: type[EvalBaseModel], version: int) -> dict[str, Any]:
+    """A stored document of ``model`` at ``version``: this build's sample at the current one, the frozen one below."""
+    space = model.version_space  # type: ignore[attr-defined]
+    if version == space.version:
+        return stored_sample(model)
+    frozen = Path(__file__).resolve().parent / "fixtures" / _FROZEN[space.name] / f"v{version}"
+    loaded: dict[str, Any] = json.loads((frozen / f"{doc_type_of(model)}.json").read_text(encoding="utf-8"))
+    return loaded
+
+
+@pytest.mark.parametrize(
+    ("model", "version"), _versioned(lambda space: [space.baseline - 1, space.version + 1, "8", None])
+)
 def test_every_core_model_refuses_a_document_at_a_version_it_does_not_read(
     model: type[EvalBaseModel], version: object
 ) -> None:
@@ -385,21 +417,21 @@ def test_every_core_model_refuses_a_document_at_a_version_it_does_not_read(
         model.from_dict({**document, "schema_version": version})
 
 
-@pytest.mark.parametrize("version", range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION + 1))
-@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+@pytest.mark.parametrize(("model", "version"), _versioned(lambda space: range(space.baseline, space.version + 1)))
 def test_every_core_model_reads_a_document_at_every_version_from_the_baseline(
     model: type[EvalBaseModel], version: int
 ) -> None:
-    """A core document at any version from the baseline to this build's reads, at this build's version."""
-    document = stored_sample(model)
+    """A kept document at any version from its space's baseline to this build's reads, at this build's version."""
+    document = _document_at(model, version)
 
-    assert model.from_dict({**document, "schema_version": version}).schema_version == CORE_SCHEMA_VERSION  # type: ignore[attr-defined]
+    read = model.from_dict({**document, "schema_version": version})
+
+    assert read.schema_version == model.version_space.version  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize("version", [CORE_SCHEMA_VERSION - 1, CORE_SCHEMA_VERSION + 1])
-@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+@pytest.mark.parametrize(("model", "version"), _versioned(lambda space: [space.version - 1, space.version + 1]))
 def test_a_core_model_is_built_only_at_the_current_version(model: type[EvalBaseModel], version: int) -> None:
-    """Only the stored read upgrades: a construction or payload naming another core version is refused."""
+    """Only the stored read upgrades: a construction or payload naming another kept version is refused."""
     document = stored_sample(model)
 
     with pytest.raises(ValidationError, match=f"not v{version}"):

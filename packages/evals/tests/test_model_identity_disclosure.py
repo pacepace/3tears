@@ -30,13 +30,13 @@ from threetears.evals.analysis import (
     summarize_run,
 )
 from threetears.evals.analysis.reporting import model_identity_disclosure, unconfirmed_model_identities
-from threetears.evals.kernel import EvalCampaign, EvalStorage
+from threetears.evals.kernel import EvalStorage
 from threetears.evals import Answer
 from threetears.evals.quick.one_call import callable_host
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.schema import EvalResult, EvalRun, RoleUsage, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
     TOYHOST_SUBJECT,
@@ -231,7 +231,7 @@ def _campaign_bundle(served: str | None) -> Any:
             batch, profile=toyhost_profile(), cost_usd=0.02, total_ms=900.0, field_accuracy=0.8
         )
     ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="5f0c9a3e-2b7d-4e41-8c6a-9d3e1f2a7b40",
         scope_id=TOYHOST_SCOPE,
         name="model-identity",
@@ -275,13 +275,23 @@ class TestTheAnalysisReport:
         frozen = analysis_bundle(analysis)
         said = frozen.model_copy(update={"model_identity_disclosure": sentence})
 
-        report = build_report(analysis.model_copy(update={"bundle": said.to_dict()}))
+        (aspect,) = analysis.aspects
+        report = build_report(
+            analysis.model_copy(update={"aspects": [aspect.model_copy(update={"bundle": said.to_dict()})]})
+        )
 
         (block,) = [block for block in report.blocks if isinstance(block, DisclosureBlock) and block.text == sentence]
         assert (block.section, block.source) == ("methods", "measurement")
         assert report_markdown(report).count(_HEADLINE) == 1
         unsaid = frozen.model_copy(update={"model_identity_disclosure": None})
-        assert _said(build_report(analysis.model_copy(update={"bundle": unsaid.to_dict()}))) == []
+        assert (
+            _said(
+                build_report(
+                    analysis.model_copy(update={"aspects": [aspect.model_copy(update={"bundle": unsaid.to_dict()})]})
+                )
+            )
+            == []
+        )
 
     async def test_reading_an_analysis_reads_the_disclosure_off_its_runs_results(self) -> None:
         host, analysis, report = await toy_report()

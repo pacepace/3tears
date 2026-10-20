@@ -26,8 +26,10 @@ class _FakeDocumentDriver(ScrapeDriver):
         pages: dict[str, str] | None = None,
         fail_urls: set[str] | None = None,
         was_ocr_urls: set[str] | None = None,
+        faults: dict[str, list[str]] | None = None,
     ) -> None:
         self._pages = pages or {}
+        self._faults = faults or {}
         self._fail_urls = fail_urls or set()
         self._was_ocr_urls = was_ocr_urls or set()
         self.fetched_urls: list[str] = []
@@ -46,7 +48,14 @@ class _FakeDocumentDriver(ScrapeDriver):
         if url in self._fail_urls:
             raise RuntimeError(f"simulated fetch failure for {url}")
         html = self._pages.get(url, f"<html><body><p>content for {url}</p></body></html>")
-        return RenderedPage(html=html, status=200, final_url=url, timing_ms=1.0, was_ocr=url in self._was_ocr_urls)
+        return RenderedPage(
+            html=html,
+            status=200,
+            final_url=url,
+            timing_ms=1.0,
+            was_ocr=url in self._was_ocr_urls,
+            page_faults=list(self._faults.get(url, [])),
+        )
 
 
 def _listing_client(handler) -> httpx.AsyncClient:
@@ -133,6 +142,18 @@ class TestMultiDocumentDriver:
         by_content = {div.get_text(): div.get("data-was-ocr") for div in notice_divs}
         assert by_content["Scanned notice"] == "true"
         assert by_content["Digital notice"] == "false"
+
+    async def test_what_each_document_could_not_read_is_carried_and_named_by_document(self):
+        links = ["https://example.gov/a.pdf", "https://example.gov/b.pdf"]
+        client = _listing_client(_html_listing_handler(links))
+        fake_docs = _FakeDocumentDriver(
+            faults={"https://example.gov/b.pdf": ["page 2: tables could not be extracted (RuntimeError)"]}
+        )
+        driver = MultiDocumentDriver(document_driver=fake_docs, client=client)
+
+        page = await driver.render("https://example.gov/listing", link_selector="a")
+
+        assert page.page_faults == ["https://example.gov/b.pdf: page 2: tables could not be extracted (RuntimeError)"]
 
     async def test_html_mode_resolves_relative_hrefs_to_absolute(self):
         client = _listing_client(_html_listing_handler(["/wp-content/notice1.pdf"]))

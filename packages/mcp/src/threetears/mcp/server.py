@@ -36,9 +36,9 @@ from typing import TYPE_CHECKING, Any
 import mcp.types as mcp_types
 from mcp.server import Server as _SdkServer
 from mcp.server.stdio import stdio_server as _stdio_server
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
-from threetears.mcp.auth import Authorizer, IdentityProvider
+from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, IdentityProvider
 from threetears.mcp.tool import ToolRegistry
 
 if TYPE_CHECKING:
@@ -109,6 +109,9 @@ class McpServer:
         self._registry = registry
         self._sdk_server: _SdkServer = _SdkServer(name)
         self._started = False
+        # one ERROR per grant-cache outage, not one traceback per refused call: the authorizer
+        # already logged the failed reload with its traceback, and an outage refuses every call.
+        self._grant_cache_outage_logged = False
         self._wire_handlers()
 
     @property
@@ -201,11 +204,12 @@ class McpServer:
 
         try:
             identity = await self._identity_provider.identify()
-        except Exception:
-            log.warning(
-                "MCP dispatch: identity resolution failed",
-                exc_info=True,
-                extra={"extra_data": {"tool_name": tool_name}},
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="MCP dispatch: identity resolution failed",
+                extra={"tool_name": tool_name},
             )
             return self._error_result(
                 tool_name=tool_name,
@@ -215,16 +219,27 @@ class McpServer:
 
         try:
             allowed = await self._authorizer.allows(identity, tool.required_permission)
-        except Exception:
-            log.warning(
-                "MCP dispatch: authorizer raised; denying by default",
-                exc_info=True,
+        except GrantCacheUnavailableError:
+            if not self._grant_cache_outage_logged:
+                self._grant_cache_outage_logged = True
+                log.error(
+                    "MCP dispatch: the grant cache is not current; refusing non-admin calls until it reloads",
+                    extra={"extra_data": {"tool_name": tool_name, "required_permission": tool.required_permission}},
+                )
+            return self._error_result(
+                tool_name=tool_name,
+                code="AUTHZ_ERROR",
+                message="authorization is temporarily unavailable (the grant cache is reloading); retry",
+            )
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="MCP dispatch: authorizer raised; denying by default",
                 extra={
-                    "extra_data": {
-                        "tool_name": tool_name,
-                        "principal_id": str(identity.principal_id),
-                        "required_permission": tool.required_permission,
-                    }
+                    "tool_name": tool_name,
+                    "principal_id": str(identity.principal_id),
+                    "required_permission": tool.required_permission,
                 },
             )
             return self._error_result(
@@ -233,6 +248,10 @@ class McpServer:
                 message="authorizer evaluation failed",
             )
 
+        if self._grant_cache_outage_logged and not identity.is_admin:
+            # an admin's call never reads the cache, so only a non-admin answer ends the outage
+            self._grant_cache_outage_logged = False
+            log.info("MCP dispatch: the grant cache answers again; calls are being authorized")
         if not allowed:
             log.info(
                 "MCP dispatch: denied",
@@ -253,14 +272,13 @@ class McpServer:
         try:
             result = await tool.handler(**arguments)
         except Exception as exc:
-            log.warning(
-                "MCP dispatch: handler exception",
-                exc_info=True,
+            contain(
+                exc,
+                log=log,
+                what="MCP dispatch: handler exception",
                 extra={
-                    "extra_data": {
-                        "tool_name": tool_name,
-                        "principal_id": str(identity.principal_id),
-                    }
+                    "tool_name": tool_name,
+                    "principal_id": str(identity.principal_id),
                 },
             )
             return self._error_result(

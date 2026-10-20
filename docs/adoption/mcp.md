@@ -47,5 +47,12 @@ routing on top of MCP tools; don't assume they're pre-wired.
 ## Install
 
 ```bash
-pip install 3tears-mcp
+pip install 3tears-mcp           # server, tools, identity, PlatformHttpClient
+pip install "3tears-mcp[grants]" # plus the grant store: LocalGrantAuthorizer over mcp_tool_grants
 ```
+
+The base installs the `mcp` SDK, `3tears-observe` and httpx, and nothing else from the family. A
+server that supplies its own `Authorizer` needs nothing more. The `grants` extra brings `3tears`,
+`3tears-epoch`, `3tears-nats` and sqlalchemy for `LocalGrantAuthorizer`, `threetears.mcp.rbac` and
+`threetears.mcp.migrations`; without it, building a `LocalGrantAuthorizer` or reaching an rbac name
+raises `ImportError` naming the extra.

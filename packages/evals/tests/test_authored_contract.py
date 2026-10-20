@@ -33,17 +33,20 @@ def _payload(**overrides: Any) -> dict[str, Any]:
     }
     base = {
         "findings": [finding],
-        "decisions": [
+        "recommendation": [
             {
-                "proposal": "Keep three rounds.",
-                "disposition": "adopted",
-                "cells": ["k1:a1"],
+                "arm": "fast",
+                "reasons": ["Three rounds halve the tail."],
                 "confidence": "medium",
                 "rests_on": [0],
-                "revisit_when": "",
+                "floors_overridden": [],
+                "behind_on": [],
+                "bars_missed": [],
             }
         ],
-        "questions": [],
+        "aspect_summaries": [
+            {"aspect": "lookup", "what_changed": "The tail halved.", "how_sure": "Sure.", "means": "Switch."}
+        ],
         "next": [],
     }
     base.update(overrides)
@@ -108,7 +111,7 @@ class TestTheSchemaFitsEveryWriter:
     def test_the_budget_guard_fires_on_a_schema_over_it(self):
         padded = create_model(
             "Padded",
-            __base__=authored.AuthoredAnalysis,
+            __base__=authored.AuthoredCampaignAnalysis,
             **{f"pad{i}": (str, ...) for i in range(authored.SLOT_BUDGET)},
         )
         assert authored.count_slots(authored.strict_schema(padded.model_json_schema())) > authored.SLOT_BUDGET

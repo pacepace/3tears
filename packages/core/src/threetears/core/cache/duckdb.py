@@ -23,7 +23,7 @@ from typing import Any
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import build_select_clause, bulk_columns
 from threetears.core.sql_fragments import quote_identifier
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DuckDBBackend",
@@ -54,7 +54,9 @@ class PartitionReplacement:
     The scope is the rows whose ``column`` equals ``value`` (``IS NULL`` for ``None``). Give
     ``arrow`` (an Arrow table, as :meth:`DuckDBBackend.export_partition` writes one) or ``rows``
     (mappings, written as :meth:`DuckDBBackend.upsert_many` writes them, which needs the
-    ``primary_key``); neither, or an empty one, leaves the scope empty.
+    ``primary_key``); neither, or an empty one, leaves the scope empty. With ``append`` the scope
+    keeps what it holds and the rows are added after it, in the same transaction as every other
+    replacement: for a table rows are only ever added to.
 
     :ivar table: a table the backend created
     :ivar column: the scope column
@@ -62,6 +64,7 @@ class PartitionReplacement:
     :ivar rows: the scope's rows as mappings
     :ivar arrow: the scope's rows as an Arrow table
     :ivar primary_key: the table's key, for ``rows``
+    :ivar append: add the rows to what the scope holds rather than replace it
     """
 
     table: str
@@ -70,6 +73,7 @@ class PartitionReplacement:
     rows: Sequence[Mapping[str, Any]] | None = None
     arrow: Any = None
     primary_key: str | tuple[str, ...] = "id"
+    append: bool = False
 
 
 #: whether this process has said pyarrow is missing (once is enough)
@@ -487,8 +491,46 @@ class DuckDBBackend:
                 self._db.execute("ROLLBACK")
         return exported
 
+    def held_keys(self, table: str, column: str, value: Any, arrow: Any, *, key: Sequence[str]) -> int:
+        """how many of ``arrow``'s rows have a key one scope of ``table`` already holds.
+
+        For a writer about to add rows to a table rows are only ever added to: a row whose key is held
+        is not an addition. Read on its own snapshot, so it never waits for a write.
+
+        :param table: a table this backend created
+        :ptype table: str
+        :param column: the scope column
+        :ptype column: str
+        :param value: the scope's value
+        :ptype value: Any
+        :param arrow: the rows, as :meth:`export_rows` types them
+        :ptype arrow: pyarrow.Table
+        :param key: the table's key columns
+        :ptype key: Sequence[str]
+        :return: how many are held
+        :rtype: int
+        :raises ValueError: when the table or column is unknown
+        """
+        if arrow.num_rows == 0:
+            return 0
+        condition, params = self._partition_filter(table, column, value)
+        columns = ", ".join(quote_identifier(c) for c in key)
+        joined = " AND ".join(f"held.{quote_identifier(c)} = probe.{quote_identifier(c)}" for c in key)
+        sql = (
+            f"SELECT count(*) FROM (SELECT {columns} FROM {quote_identifier(table)} WHERE {condition}) AS held "  # noqa: S608
+            f"JOIN _held_probe AS probe ON {joined}"
+        )
+        with self.read_snapshot() as cursor:
+            cursor.register("_held_probe", arrow)
+            try:
+                return int(cursor.execute(sql, params).fetchone()[0])
+            finally:
+                cursor.unregister("_held_probe")
+
     def replace_partitions(self, replacements: Sequence[PartitionReplacement]) -> int:
         """make each named scope hold exactly what its replacement gives, all in ONE transaction.
+
+        A replacement marked ``append`` adds its rows to what the scope holds instead.
 
         A reader on another cursor (:meth:`read_snapshot`) sees every scope as it was until the
         commit and every one as it is after, never part of the change. A failure rolls back, so
@@ -508,7 +550,8 @@ class DuckDBBackend:
             try:
                 for replacement, (condition, params) in zip(replacements, filters, strict=True):
                     table = quote_identifier(replacement.table)
-                    self._db.execute(f"DELETE FROM {table} WHERE {condition}", params)  # noqa: S608
+                    if not replacement.append:
+                        self._db.execute(f"DELETE FROM {table} WHERE {condition}", params)  # noqa: S608
                     if replacement.arrow is not None and replacement.arrow.num_rows:
                         self._db.register("_partition_chunk", replacement.arrow)
                         try:
@@ -775,23 +818,23 @@ class DuckDBBackend:
                 try:
                     conn.close()
                 # NOSILENT: teardown best-effort; a connection that will not close is already gone
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    contain(exc, log=log, what="duckdb L1 backend close: a connection did not close")
             self._pooled_connections = []
         self._local = threading.local()
         if self._reader is not None:
             try:
                 self._reader.close()
             # NOSILENT: teardown best-effort; a connection that will not close is already gone
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                contain(exc, log=log, what="duckdb L1 backend close: a connection did not close")
             self._reader = None
         if self._db is not None:
             try:
                 self._db.close()
             # NOSILENT: teardown best-effort; a connection that will not close is already gone
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                contain(exc, log=log, what="duckdb L1 backend close: a connection did not close")
         self._db = None
         self._initialized = False
         self._schema_info = {}

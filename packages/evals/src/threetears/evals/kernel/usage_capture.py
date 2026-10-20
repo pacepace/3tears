@@ -62,6 +62,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.completion import USAGE_LEDGER_ATTRIBUTES, sent_settings_of
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.kernel.spend import ExternalRateTable, reported_price_source
+from threetears.evals.kernel.judge_cases import JUDGE_KIND, JUDGE_KIND_ROLE
 from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
@@ -72,8 +73,15 @@ log = get_logger(__name__)
 #: Roles whose spend a production deployment would also incur. The judge and simulator are
 #: measurement apparatus — they cost the eval program money but would never run in
 #: production, so conflating the two views overstates what the candidate costs to operate.
-#: Derived from membership; deliberately never a stored field on ``RoleUsage``.
+#: Derived from membership; deliberately never a stored field on ``RoleUsage``. A judge-kind
+#: result is the one exception, read by :func:`production_replicating_cost`: its subject is a judge.
 PRODUCTION_REPLICATING_ROLES: frozenset[KnownUsageRole] = frozenset({"candidate", "inner_agent", "external"})
+
+#: The roles a production deployment of a judge-kind campaign's subject pays for: the judge under test, which is
+#: metered under the judge role (:data:`~threetears.evals.kernel.judge_cases.JUDGE_KIND_ROLE`) and nothing else.
+#: No candidate model runs in such a cell and no judge measures it (its grade is code), so the judge role there is
+#: the subject's own spend, not the apparatus's.
+_JUDGE_KIND_PRODUCTION_ROLES: frozenset[KnownUsageRole] = frozenset({JUDGE_KIND_ROLE})
 
 #: Roles whose spend the runner folds into the blended ``EvalResult.cost_usd``, in the
 #: order it is stored. Stamped onto every result it writes so the number can be placed:
@@ -709,11 +717,16 @@ def _sum_costs(rows: list[RoleUsage]) -> float | None:
     return math.fsum(observed) if observed else None
 
 
-def production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int) -> float | None:
+def production_replicating_cost(
+    usage: list[RoleUsage], *, substituted_deliveries: int, candidate_kind: str | None
+) -> float | None:
     """Observed cost of the roles a production deployment would also pay for.
 
     Candidate + inner agent + external, excluding the judge and simulator, which exist
-    only to measure them.
+    only to measure them — except in a judge-kind result (``candidate_kind`` is
+    :data:`~threetears.evals.kernel.judge_cases.JUDGE_KIND`), where the judge is the subject: every call such a
+    cell makes is the judge under test, metered under the judge role, and nothing measures it but code. There the
+    judge role is the one a production deployment pays for, and the candidate's roles carry nothing.
 
     **This is the observed subset, not a counterfactual.** It answers "of the dollars this
     cell really spent, which ones belong to production roles" — it does not answer "what
@@ -778,12 +791,19 @@ def production_replicating_cost(usage: list[RoleUsage], *, substituted_deliverie
     :func:`count_substituted_deliveries` derives it from a result;
     :attr:`ResolvedUsage.substituted_deliveries` carries it on the resolved view.
 
+    ``candidate_kind`` is **required for the same reason**: the rows cannot say whose spend a judge row is. A
+    default of "not a judge campaign" read every judge-kind result's spend as apparatus and reported no cost for
+    any arm of it, on every surface at once (#828).
+
     :param usage: The per-role rows to sum.
     :ptype usage: list[RoleUsage]
     :param substituted_deliveries: How many of this result's async deliveries were supplied
         by a harness rather than produced by a background run. Any non-zero value
         withholds the figure.
     :ptype substituted_deliveries: int
+    :param candidate_kind: The kind that produced the rows (``EvalResult.candidate_kind``); ``None`` where the
+        result could not say, which reads as any kind but the judge kind.
+    :ptype candidate_kind: str | None
     :return: The observed production-role dollars, or ``None`` when the figure is unknown
         rather than free.
     :rtype: float | None
@@ -792,7 +812,8 @@ def production_replicating_cost(usage: list[RoleUsage], *, substituted_deliverie
         return None
     if any(row.role not in USAGE_ROLES for row in usage):
         return None
-    return _sum_costs([row for row in usage if row.role in PRODUCTION_REPLICATING_ROLES])
+    roles = _JUDGE_KIND_PRODUCTION_ROLES if candidate_kind == JUDGE_KIND else PRODUCTION_REPLICATING_ROLES
+    return _sum_costs([row for row in usage if row.role in roles])
 
 
 def program_cost(usage: list[RoleUsage]) -> float | None:

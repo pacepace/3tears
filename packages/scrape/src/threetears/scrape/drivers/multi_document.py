@@ -84,7 +84,7 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup
 from threetears.core.egress import EgressDriver
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from .._private_hosts import refuse_private_hosts
 from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
@@ -413,6 +413,7 @@ class MultiDocumentDriver(ScrapeDriver):
             )
 
         bodies: list[str] = []
+        page_faults: list[str] = []
         for doc_url in candidate_urls:
             try:
                 # Forwarded for the same reason the network-capture wrapper forwards it: a
@@ -423,9 +424,11 @@ class MultiDocumentDriver(ScrapeDriver):
                 doc_extra: dict[str, Any] = {"session_state": session_state} if session_state else {}
                 page = await self._document_driver.render(doc_url, timeout=timeout, **doc_extra)
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others: a single unreachable or malformed document would otherwise discard every sibling already fetched in this poll
-                log.warning(
-                    "multi-document: one document fetch failed, skipping",
-                    extra={"extra_data": {"url": doc_url, "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="multi-document: one document fetch failed, skipping",
+                    extra={"url": doc_url, "error": str(exc)},
                 )
                 continue
             if seen_urls is not None:
@@ -438,6 +441,10 @@ class MultiDocumentDriver(ScrapeDriver):
             body_open_end = page.html.find(">", body_start) + 1 if body_start != -1 else -1
             body_end = page.html.rfind("</body>")
             inner = page.html[body_open_end:body_end] if body_start != -1 and body_end != -1 else page.html
+            # each document's own account of what it could not read, named by the document
+            page_faults.extend(f"{doc_url}: {fault}" for fault in page.page_faults)
+            if page.page_images_fault is not None:
+                page_faults.append(f"{doc_url}: {page.page_images_fault}")
             was_ocr = "true" if page.was_ocr else "false"
             bodies.append(f'<div class="{NOTICE_DOCUMENT_CLASS}" data-was-ocr="{was_ocr}">{inner}</div>')
 
@@ -447,6 +454,7 @@ class MultiDocumentDriver(ScrapeDriver):
             status=response.status_code,
             final_url=str(response.url),
             timing_ms=(time.monotonic() - start) * 1000,
+            page_faults=page_faults,
             # The property, not `self._egress`: a render whose two halves left by different
             # exits has no single exit to report, and `egress` is where that is decided once.
             egress=egress_name(self.egress),

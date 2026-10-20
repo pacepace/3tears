@@ -28,6 +28,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_query
 from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
 from threetears.observe.text_block import one_line, under
 from uuid_utils import uuid7
@@ -41,17 +42,17 @@ from threetears.agent.memory.authorize import (
 from langchain_core.embeddings import Embeddings
 
 from threetears.agent.memory.collections import MemoriesCollection, MemoryConsolidationsCollection
-from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
-from threetears.nats.errors import KvError
+from threetears.nats.errors import KvError, NatsClientError
 from threetears.nats.subject_permissions import KV_KEY_SCOPE_GRAMMAR
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "ChatModelFactory",
     "ExtractionGate",
+    "ExtractionModelFailedError",
     "ExtractionOutcome",
     "ExtractionResult",
     "MemoryExtractor",
@@ -228,11 +229,13 @@ def _is_own(bound: Any, own: Any) -> bool:
     return getattr(bound, "__func__", None) is own
 
 
-class _ExtractionModelFailed(RuntimeError):
-    """the extraction model's call failed, or its reply was not the JSON list it was asked for.
+class ExtractionModelFailedError(RuntimeError):
+    """a model call of the extraction pipeline failed, or its reply was not the JSON it was asked for.
 
-    raised by the pipeline so the turn answers :attr:`ExtractionOutcome.FAILED` with the reason,
-    where the public :meth:`MemoryExtractor.extract_candidates` hook keeps answering ``[]``.
+    raised by the worthiness, extraction and resolution stages, so the turn answers
+    :attr:`ExtractionOutcome.FAILED` with the reason. each used to answer a default that read as
+    a decision: a failed worthiness call read as "worthy", a failed extraction call as "found
+    nothing", a failed resolution call as "ADD every candidate" -- duplicates included.
     """
 
 
@@ -436,11 +439,12 @@ class MemoryExtractor:
             await asyncio.shield(self._release_claim(conversation_id, claim))
             raise
         except Exception as exc:
-            log.error(
-                "memory extraction failed: %s",
+            contain(
                 exc,
-                exc_info=True,
-                extra={"extra_data": {"conversation_id": str(conversation_id), "agent_id": str(agent_id)}},
+                log=log,
+                what=f"memory extraction failed: {exc}",
+                extra={"conversation_id": str(conversation_id), "agent_id": str(agent_id)},
+                level="error",
             )
             result = ExtractionResult(outcome=ExtractionOutcome.FAILED, reason=f"{type(exc).__name__}: {exc}")
         if result.outcome is ExtractionOutcome.FAILED:
@@ -466,8 +470,10 @@ class MemoryExtractor:
                 name=self._rate_limit_bucket, create_if_missing=self._rate_limit_bucket_create_if_missing
             )
             released = await bucket.delete(key=self._rate_limit_key(conversation_id), revision=claim.revision)
-        except Exception as exc:
-            log.warning("could not release the extraction cooldown of a turn that stored nothing: %s", exc)
+        except NatsClientError as exc:
+            contain(
+                exc, log=log, what=f"could not release the extraction cooldown of a turn that stored nothing: {exc}"
+            )
             return
         claim.revision = None
         # convert at border: log extra_data fields
@@ -516,7 +522,7 @@ class MemoryExtractor:
         :ptype claim: _Claim
         :return: what the turn came to
         :rtype: ExtractionResult
-        :raises _ExtractionModelFailed: when the extraction model's call or reply failed
+        :raises ExtractionModelFailedError: when a model call or its reply failed
         :raises MemoryAccessDenied: when the agent may not extract into its namespace
         :raises KvError: when the rate-limit bucket refuses a per-key lifetime
         """
@@ -580,18 +586,13 @@ class MemoryExtractor:
                 reason=f"cooldown claimed by a concurrent turn ({cooldown}s)",
             )
 
-        if _is_own(self.extract_candidates, MemoryExtractor.extract_candidates):
-            # the pipeline's own stage raises on a failed call, so an outage answers FAILED
-            candidates_raw: list[dict[str, str]] = await self._extract_candidates(
-                user_message, assistant_response, user_id=user_id, conversation_id=conversation_id
-            )
-        else:
-            candidates_raw = await self.extract_candidates(
-                user_message,
-                assistant_response,
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
+        # the stage raises on a failed call, so an outage answers FAILED, never NOTHING_FOUND
+        candidates_raw: list[dict[str, str]] = await self.extract_candidates(
+            user_message,
+            assistant_response,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
         if not candidates_raw:
             log.debug("no memories extracted from conversation turn")
             return ExtractionResult(
@@ -603,13 +604,35 @@ class MemoryExtractor:
         # each candidate's embedding and dedup search depend on nothing but
         # the candidate, so they run at once; the order of candidates is kept.
         prepared = await asyncio.gather(
-            *(self._prepare_candidate(mem, user_id=user_id, agent_id=agent_id) for mem in candidates_raw)
+            *(self._prepare_candidate(mem, user_id=user_id, agent_id=agent_id) for mem in candidates_raw),
+            return_exceptions=True,
         )
-        candidates = [candidate for candidate in prepared if candidate is not None]
+        candidates: list[dict[str, Any]] = []
+        unembedded: list[EmbeddingUnavailableError] = []
+        failures: list[BaseException] = []
+        for outcome in prepared:
+            if isinstance(outcome, EmbeddingUnavailableError):
+                unembedded.append(outcome)
+            elif isinstance(outcome, BaseException):
+                failures.append(outcome)
+            else:
+                candidates.append(outcome)
+        if failures:
+            # one is raised -- a cancellation before any error -- and every other is recorded
+            # here, so a second candidate's different fault is not lost behind the first
+            failures.sort(key=lambda failure: isinstance(failure, Exception))
+            for extra in failures[1:]:
+                if isinstance(extra, Exception):
+                    contain(
+                        extra,
+                        log=log,
+                        what=f"memory candidate preparation also failed: {type(extra).__name__}: {extra}",
+                    )
+            raise failures[0]
         if not candidates:
             return ExtractionResult(
                 outcome=ExtractionOutcome.FAILED,
-                reason=f"could not embed any of {len(candidates_raw)} candidate(s)",
+                reason=f"could not embed any of {len(candidates_raw)} candidate(s): {unembedded[0]}",
             )
 
         actions = await self.resolve_actions(candidates, user_id=user_id, conversation_id=conversation_id)
@@ -623,6 +646,9 @@ class MemoryExtractor:
             customer_id=customer_id,
             near_message_ids=near_message_ids,
         )
+        # a candidate that could not be embedded never reached an action: a failure of this
+        # turn's extraction, not something the model chose to leave out
+        tally.failed += len(unembedded)
         return tally.as_result()
 
     async def _prepare_candidate(
@@ -631,7 +657,7 @@ class MemoryExtractor:
         *,
         user_id: UUID,
         agent_id: UUID,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         """embed one extracted candidate and find the memories it may duplicate.
 
         :param mem: the candidate's ``type`` and ``content``
@@ -640,13 +666,11 @@ class MemoryExtractor:
         :ptype user_id: UUID
         :param agent_id: partition column on memories
         :ptype agent_id: UUID
-        :return: the candidate with its embedding and similar memories, or ``None`` when it
-            could not be embedded (the embedding helper logs why)
-        :rtype: dict[str, Any] | None
+        :return: the candidate with its embedding and similar memories
+        :rtype: dict[str, Any]
+        :raises EmbeddingUnavailableError: the candidate could not be embedded
         """
-        embedding = await _safe_aembed_query(self._embedding_provider, mem["content"])
-        if embedding is None:
-            return None
+        embedding = await embed_query(self._embedding_provider, mem["content"])
         similar = await self._get_similar_memories(embedding, user_id, agent_id)
         return {
             "type": mem["type"],
@@ -707,9 +731,11 @@ class MemoryExtractor:
         public stage hook on :class:`MemoryExtractor`, run BEFORE worthiness so a
         turn inside the cooldown costs no worthiness call. it only reads: the key
         is taken by :meth:`claim_rate_limit`, after worthiness says yes, so a turn
-        that stops here or at worthiness never blocks the next one. fail-open on
-        NATS errors is part of the contract. stability contract: signature and
-        return shape are part of public api.
+        that stops here or at worthiness never blocks the next one. a read that
+        fails answers ``(True, 0)`` and the turn extracts anyway, contained at
+        ERROR and counted: the cooldown is a cost throttle, not a safety check,
+        and failing the turn would lose that window's memories. stability
+        contract: signature and return shape are part of public api.
 
         :param conversation_id: conversation UUID to rate-limit
         :ptype conversation_id: UUID
@@ -725,8 +751,15 @@ class MemoryExtractor:
                 name=self._rate_limit_bucket, create_if_missing=self._rate_limit_bucket_create_if_missing
             )
             running = await bucket.get(key=self._rate_limit_key(conversation_id)) is not None
-        except Exception as exc:
-            log.warning("rate limit read failed, allowing extraction: %s", exc)
+        except NatsClientError as exc:
+            # a cost throttle, not a safety check: extract anyway, and count every turn it let through
+            contain(
+                exc,
+                log=log,
+                what=f"the extraction cooldown could not be read, extracting anyway: {type(exc).__name__}: {exc}",
+                extra={"conversation_id": str(conversation_id)},
+                level="error",
+            )
             running = False
         return (False, cooldown) if running else (True, 0)
 
@@ -747,8 +780,11 @@ class MemoryExtractor:
         cannot carry a per-message TTL (``allow_msg_ttl`` off, on a handle that
         could not reconcile it) refuses the write; that is a deployment defect,
         logged at ERROR naming the bucket and raised -- never answered by a key
-        that would outlive its cooldown. any other NATS failure fails open.
-        stability contract: signature and return shape are part of public api.
+        that would outlive its cooldown. any other NATS failure answers
+        ``(True, 0)`` and the turn extracts anyway, contained at ERROR and
+        counted: the cooldown is a cost throttle, and failing the turn would
+        lose that window's memories. stability contract: signature and return
+        shape are part of public api.
 
         :param conversation_id: conversation UUID to rate-limit
         :ptype conversation_id: UUID
@@ -766,7 +802,7 @@ class MemoryExtractor:
         :param conversation_id: conversation UUID to rate-limit
         :ptype conversation_id: UUID
         :return: ``(claimed, cooldown, revision)``; the revision is ``None`` when no key was
-            written -- the limit is off, or NATS failed and the claim failed open
+            written -- the limit is off, or NATS failed and the turn extracts unclaimed
         :rtype: tuple[bool, int, int | None]
         :raises KvError: when the bucket refuses a per-key TTL
         """
@@ -788,7 +824,13 @@ class MemoryExtractor:
             claimed = revision is not None
         except KvError as exc:
             if not _refuses_per_message_ttl(exc):
-                log.warning("rate limit claim failed, allowing extraction: %s", exc)
+                contain(
+                    exc,
+                    log=log,
+                    what=f"the extraction cooldown could not be claimed, extracting anyway: {type(exc).__name__}: {exc}",
+                    extra={"conversation_id": str(conversation_id)},
+                    level="error",
+                )
                 claimed = True
             else:
                 log.error(
@@ -800,8 +842,14 @@ class MemoryExtractor:
                     extra={"extra_data": {"bucket": bucket_name}},
                 )
                 raise
-        except Exception as exc:
-            log.warning("rate limit claim failed, allowing extraction: %s", exc)
+        except NatsClientError as exc:
+            contain(
+                exc,
+                log=log,
+                what=f"the extraction cooldown could not be claimed, extracting anyway: {type(exc).__name__}: {exc}",
+                extra={"conversation_id": str(conversation_id)},
+                level="error",
+            )
             claimed = True
         return (True, 0, revision) if claimed else (False, cooldown, None)
 
@@ -818,9 +866,10 @@ class MemoryExtractor:
         public stage hook on :class:`MemoryExtractor`. override in
         subclasses or replace via duck typing to customize the
         worthiness gate; tests stub this with a canned LLM response.
-        fail-open on parse or LLM errors is part of the contract.
-        stability contract: signature and return shape are part of
-        public api.
+        a failed call, or a reply that is not the JSON object asked for,
+        raises: it used to answer ``(True, ...)``, "worthy", so an outage
+        let every turn through to the extraction model. stability contract:
+        signature and return shape are part of public api.
 
         :param user_message: raw user message
         :ptype user_message: str
@@ -828,6 +877,7 @@ class MemoryExtractor:
         :ptype assistant_response: str
         :return: (worthy, reason) pair
         :rtype: tuple[bool, str]
+        :raises ExtractionModelFailedError: when the call or its reply failed
         """
         try:
             model = await self._chat_model_factory.create_chat_model(
@@ -849,15 +899,13 @@ class MemoryExtractor:
             )
             content = self._get_response_content(response)
             result = json.loads(self._strip_code_block(content))
-            worthy = result.get("worthy", False)
-            reason = result.get("reason", "no_reason")
-            return bool(worthy), str(reason)
-        except json.JSONDecodeError, KeyError:
-            log.warning("Failed to parse worthiness gate response, allowing extraction")
-            return True, "parse_error"
+        except json.JSONDecodeError as exc:
+            raise ExtractionModelFailedError(f"the worthiness model's reply was not valid JSON: {exc}") from exc
         except Exception as exc:
-            log.warning("Worthiness gate LLM call failed, allowing extraction: %s", exc)
-            return True, "llm_error"
+            raise ExtractionModelFailedError(f"the worthiness model call failed: {type(exc).__name__}: {exc}") from exc
+        if not isinstance(result, dict):
+            raise ExtractionModelFailedError(f"the worthiness model's reply was {type(result).__name__}, not an object")
+        return bool(result.get("worthy", False)), str(result.get("reason", "no_reason"))
 
     @traced()
     async def extract_candidates(
@@ -873,9 +921,11 @@ class MemoryExtractor:
         public stage hook on :class:`MemoryExtractor`. override in
         subclasses or replace via duck typing to customize candidate
         extraction; tests stub this with canned candidate lists.
-        returns ``[]`` on parse or LLM errors (fail-closed on this
-        stage is part of the contract). stability contract:
-        signature and return shape are part of public api.
+        ``[]`` means the model answered and found nothing; a failed call, a
+        reply that is not JSON, or JSON that is not a list raises
+        :class:`ExtractionModelFailedError`, so a caller can tell an outage
+        from a quiet turn. stability contract: signature and return shape
+        are part of public api.
 
         :param user_message: raw user message
         :ptype user_message: str
@@ -883,15 +933,11 @@ class MemoryExtractor:
         :ptype assistant_response: str
         :return: list of candidate memory dicts
         :rtype: list[dict[str, str]]
+        :raises ExtractionModelFailedError: when the model's call or its reply failed
         """
-        try:
-            candidates = await self._extract_candidates(
-                user_message, assistant_response, user_id=user_id, conversation_id=conversation_id
-            )
-        except _ExtractionModelFailed as exc:
-            log.warning("%s", exc)
-            candidates = []
-        return candidates
+        return await self._extract_candidates(
+            user_message, assistant_response, user_id=user_id, conversation_id=conversation_id
+        )
 
     async def _extract_candidates(
         self,
@@ -917,7 +963,7 @@ class MemoryExtractor:
         :ptype conversation_id: UUID | None
         :return: list of candidate memory dicts
         :rtype: list[dict[str, str]]
-        :raises _ExtractionModelFailed: when the call or its reply failed
+        :raises ExtractionModelFailedError: when the call or its reply failed
         """
         try:
             model = await self._chat_model_factory.create_chat_model(purpose="extraction")
@@ -937,11 +983,11 @@ class MemoryExtractor:
             content = self._get_response_content(response)
             memories = json.loads(self._strip_code_block(content))
         except json.JSONDecodeError as exc:
-            raise _ExtractionModelFailed(f"the extraction model's reply was not valid JSON: {exc}") from exc
+            raise ExtractionModelFailedError(f"the extraction model's reply was not valid JSON: {exc}") from exc
         except Exception as exc:
-            raise _ExtractionModelFailed(f"the extraction model call failed: {type(exc).__name__}: {exc}") from exc
+            raise ExtractionModelFailedError(f"the extraction model call failed: {type(exc).__name__}: {exc}") from exc
         if not isinstance(memories, list):
-            raise _ExtractionModelFailed(f"the extraction model's reply was {type(memories).__name__}, not a list")
+            raise ExtractionModelFailedError(f"the extraction model's reply was {type(memories).__name__}, not a list")
         valid: list[dict[str, str]] = []
         for mem in memories:
             if (
@@ -1002,14 +1048,18 @@ class MemoryExtractor:
         subclasses or replace via duck typing to customize action
         resolution; tests stub this with canned action lists. fast
         path when no candidate has similar memories returns all ADD
-        without an LLM call. fail-closed fallback to all-ADD on parse
-        or LLM errors is part of the contract. stability contract:
-        signature and return shape are part of public api.
+        without an LLM call. a failed call, or a reply that is not the
+        JSON list asked for, raises: it used to fall back to ADD for every
+        candidate, which stored as new the very duplicates this stage exists
+        to catch. stability contract: signature and return shape are part of
+        public api.
 
         :param candidates: candidate memories with similar-memory context
         :ptype candidates: list[dict[str, Any]]
         :return: list of validated action dicts
         :rtype: list[dict[str, Any]]
+        :raises ExtractionModelFailedError: when the call or its reply failed, or the reply gave
+            no valid action for a candidate that has a similar memory stored
         """
         has_any_similar = any(c["similar_memories"] for c in candidates)
         if not has_any_similar:
@@ -1033,59 +1083,65 @@ class MemoryExtractor:
             )
             content = self._get_response_content(response)
             actions = json.loads(self._strip_code_block(content))
-            if not isinstance(actions, list):
-                return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
-
-            valid_actions: list[dict[str, Any]] = []
-            seen_indices: set[int] = set()
-            for act in actions:
-                if not isinstance(act, dict):
-                    continue
-                idx = act.get("index")
-                action = act.get("action", "").upper()
-                if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
-                    continue
-                if action not in ("ADD", "UPDATE", "DELETE", "NOOP"):
-                    continue
-                if idx in seen_indices:
-                    continue
-                seen_indices.add(idx)
-
-                validated: dict[str, Any] = {"index": idx, "action": action}
-                if action == "UPDATE":
-                    mid = act.get("memory_id")
-                    new_content = act.get("content")
-                    new_type = act.get("type")
-                    if mid and new_content:
-                        validated["memory_id"] = str(mid)
-                        validated["content"] = str(new_content).strip()
-                        validated["type"] = (
-                            str(new_type)
-                            if new_type and str(new_type) in _VALID_MEMORY_TYPES
-                            else candidates[idx]["type"]
-                        )
-                    else:
-                        validated["action"] = "NOOP"
-                elif action == "DELETE":
-                    mid = act.get("memory_id")
-                    if mid:
-                        validated["memory_id"] = str(mid)
-                    else:
-                        validated["action"] = "NOOP"
-                valid_actions.append(validated)
-
-            for i in range(len(candidates)):
-                if i not in seen_indices:
-                    valid_actions.append({"index": i, "action": "ADD"})
-
-            return valid_actions
-
-        except json.JSONDecodeError, KeyError:
-            log.warning("Failed to parse memory resolution response, falling back to ADD all")
-            return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
+        except json.JSONDecodeError as exc:
+            raise ExtractionModelFailedError(f"the resolution model's reply was not valid JSON: {exc}") from exc
         except Exception as exc:
-            log.warning("Memory resolution LLM call failed: %s, falling back to ADD all", exc)
-            return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
+            raise ExtractionModelFailedError(f"the resolution model call failed: {type(exc).__name__}: {exc}") from exc
+        if not isinstance(actions, list):
+            raise ExtractionModelFailedError(f"the resolution model's reply was {type(actions).__name__}, not a list")
+
+        valid_actions: list[dict[str, Any]] = []
+        seen_indices: set[int] = set()
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            idx = act.get("index")
+            raw_action = act.get("action", "")
+            action = raw_action.upper() if isinstance(raw_action, str) else ""
+            if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+                continue
+            if action not in ("ADD", "UPDATE", "DELETE", "NOOP"):
+                continue
+            if idx in seen_indices:
+                continue
+            seen_indices.add(idx)
+
+            validated: dict[str, Any] = {"index": idx, "action": action}
+            if action == "UPDATE":
+                mid = act.get("memory_id")
+                new_content = act.get("content")
+                new_type = act.get("type")
+                if mid and new_content:
+                    validated["memory_id"] = str(mid)
+                    validated["content"] = str(new_content).strip()
+                    validated["type"] = (
+                        str(new_type) if new_type and str(new_type) in _VALID_MEMORY_TYPES else candidates[idx]["type"]
+                    )
+                else:
+                    validated["action"] = "NOOP"
+            elif action == "DELETE":
+                mid = act.get("memory_id")
+                if mid:
+                    validated["memory_id"] = str(mid)
+                else:
+                    validated["action"] = "NOOP"
+            valid_actions.append(validated)
+
+        # a candidate with a near-duplicate stored is what this call exists to judge; a reply
+        # that gave it no valid action (a bogus action, an index out of range, a non-object)
+        # has not judged it, and ADD would store the duplicate. one with nothing similar is
+        # new whatever the reply says, so it is added.
+        unresolved = [i for i in range(len(candidates)) if i not in seen_indices and candidates[i]["similar_memories"]]
+        if unresolved:
+            raise ExtractionModelFailedError(
+                f"the resolution model's reply gave no valid action for candidate(s) {unresolved}, "
+                "each with a similar memory already stored"
+            )
+        for i in range(len(candidates)):
+            if i not in seen_indices:
+                valid_actions.append({"index": i, "action": "ADD"})
+
+        return valid_actions
 
     def _build_resolution_prompt(
         self,
@@ -1251,16 +1307,16 @@ class MemoryExtractor:
                             # convert at border: callback-failed log extra_data fields
                             log_user_id = str(user_id)
                             log_conversation_id = str(conversation_id)
-                            log.warning(
-                                "on_memory_created callback failed",
+                            contain(
+                                cb_exc,
+                                log=log,
+                                what="on_memory_created callback failed",
                                 extra={
-                                    "extra_data": {
-                                        "memory_id": str(memory_id),
-                                        "user_id": log_user_id,
-                                        "conversation_id": log_conversation_id,
-                                        "error_type": type(cb_exc).__name__,
-                                        "error": str(cb_exc),
-                                    },
+                                    "memory_id": str(memory_id),
+                                    "user_id": log_user_id,
+                                    "conversation_id": log_conversation_id,
+                                    "error_type": type(cb_exc).__name__,
+                                    "error": str(cb_exc),
                                 },
                             )
 
@@ -1282,9 +1338,16 @@ class MemoryExtractor:
                         )
                         tally.skipped += 1
                         continue
-                    new_embedding = await _safe_aembed_query(self._embedding_provider, updated_content)
-                    if new_embedding is None:
-                        # the embedding helper already logged why; the revision cannot land without one.
+                    try:
+                        new_embedding = await embed_query(self._embedding_provider, updated_content)
+                    except EmbeddingUnavailableError as exc:
+                        # the revision cannot land without one; counted in tally.failed, which the
+                        # turn's ExtractionResult reports
+                        log.warning(
+                            "memory UPDATE not applied: its revision could not be embedded: %s",
+                            exc,
+                            extra={"extra_data": {"memory_id": str(memory_uuid)}},
+                        )
                         tally.failed += 1
                         continue
                     fields = {
@@ -1347,11 +1410,7 @@ class MemoryExtractor:
                     tally.skipped += 1
 
             except Exception as exc:
-                log.warning(
-                    "Failed to execute memory action %s: %s",
-                    action,
-                    exc,
-                )
+                contain(exc, log=log, what=f"Failed to execute memory action {action}: {exc}")
                 tally.failed += 1
                 continue
 

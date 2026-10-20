@@ -640,6 +640,17 @@ def _build_workspace_diff(
     }
 
 
+# parity-exempt: records only the save_item_by_type_and_key that pin.set_pin calls; no other context-manager surface is used here
+class _PinContext:
+    """the conversation context ``pin.set_pin`` writes the pin through."""
+
+    def __init__(self) -> None:
+        self.saved: list[dict[str, Any]] = []
+
+    async def save_item_by_type_and_key(self, **item: Any) -> None:
+        self.saved.append(item)
+
+
 def _build_workspace_use(
     ws: _FakeWorkspace,
     cache: Any,
@@ -647,16 +658,15 @@ def _build_workspace_use(
 ) -> tuple[Any, dict[str, Any]]:
     """build WorkspaceUseTool + kwargs.
 
-    pin.set_pin needs a working context_provider; the tool patches
-    pin module in the per-test monkeypatch fixture, so passing a
-    plain object here is enough.
+    pin.set_pin writes through the context_provider's context, so it
+    gets one that takes the pin.
     """
     from threetears.agent.workspace.tools.workspace_use import WorkspaceUseTool
 
     tool = WorkspaceUseTool(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
         agent_id=agent_id,
-        context_provider=lambda: object(),
+        context_provider=lambda: _PinContext(),
         db_pool=None,
         acl_cache=cache,
     )

@@ -71,6 +71,17 @@ class ChannelMessage:
         itself and apply its own condition before recording the address as
         verified.
     :ptype sender_email_verified: bool
+    :param sender_profile_known: whether the adapter could read the sender's
+        profile. ``False`` means the platform's profile lookup failed, so
+        ``sender_name``, ``sender_email``, ``user_timezone`` and ``user_locale``
+        are ``None`` because they are UNKNOWN, not because the sender left them
+        blank: an unknown sender, not a sparse profile. informational only --
+        never an input to authorization or identity reconciliation; a host may
+        show it to the agent and nothing more. outside ``threetears.channels``
+        only a reviewed exemption reads it
+        (``tests/enforcement/test_sender_profile_known_is_informational.py``).
+        ``True`` on every adapter whose sender comes with the message itself.
+    :ptype sender_profile_known: bool
     :param customer_id: platform customer scope for the sender, surfaced by
         the host from its server-authenticated session (e.g. the websocket
         access-token ``customer_id`` claim). carried so a host that already
@@ -134,6 +145,7 @@ class ChannelMessage:
     sender_name: str | None = None
     sender_email: str | None = None
     sender_email_verified: bool = False
+    sender_profile_known: bool = True
     customer_id: str | None = None
     conversation_id: str | None = None
     channel_id: str | None = None

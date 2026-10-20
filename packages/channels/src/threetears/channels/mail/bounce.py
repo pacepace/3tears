@@ -44,7 +44,7 @@ from typing import Protocol, runtime_checkable
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from threetears.core.security.secret_refs import resolve_secret
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.channels.webhook import (
     DEFAULT_MAX_PAYLOAD_BYTES,
@@ -123,6 +123,15 @@ class DeliveryEventParser(Protocol):
     Provider-specific by nature -- every provider names its event types differently and
     batches them differently -- so this is a seam rather than an implementation. It is
     synchronous because it is pure parsing; anything needing IO belongs in the handler.
+
+    **A body it cannot read is a** :class:`ValueError`, **and nothing else is.** That is
+    the type the receiver answers 400 for, which stops the provider resending bytes that
+    will never parse. It is also what the ordinary tools already raise for malformed
+    input -- :func:`json.loads`, a :class:`DeliveryEventType` lookup on an unknown value,
+    a pydantic validation -- so a parser built from them needs no wrapping. A missing
+    field is the parser's to turn into one: a bare :class:`KeyError` reads as a bug, and
+    any exception other than a :class:`ValueError` is answered 500, so the provider
+    resends and the bounce survives until the parser is fixed.
     """
 
     def parse(self, payload: bytes) -> Sequence[DeliveryEvent]:
@@ -132,7 +141,7 @@ class DeliveryEventParser(Protocol):
         :ptype payload: bytes
         :return: the events the body describes, possibly none
         :rtype: Sequence[DeliveryEvent]
-        :raises Exception: the body was not something this parser understands
+        :raises ValueError: the body was not something this parser understands
         """
         ...
 
@@ -246,7 +255,9 @@ class BounceReceiver:
         Refusals happen in a deliberate order: size before HMAC (the compare needs the
         whole body in memory), signature before parse (an unverified body is not read at
         all), and parse before dispatch (a body we cannot read is the provider's problem
-        and a 400 stops it retrying the same bytes forever).
+        and a 400 stops it retrying the same bytes forever). "Cannot read" is the parser
+        raising :class:`ValueError`; any other exception from it is a bug on our side and
+        answers 500, so the provider keeps the bounce and resends it.
 
         :param body: the raw request body
         :ptype body: bytes
@@ -275,9 +286,11 @@ class BounceReceiver:
             # "accepted" is precisely what tells the provider to stop resending -- so
             # admitting here would silently discard every bounce for as long as the
             # secret backend is unwell.
-            log.warning(
-                "mail bounce receiver: could not resolve the signing secret",
-                extra={"extra_data": {"error_type": type(exc).__name__, "secret_ref": self.secret_ref}},
+            contain(
+                exc,
+                log=log,
+                what="mail bounce receiver: could not resolve the signing secret",
+                extra={"error_type": type(exc).__name__, "secret_ref": self.secret_ref},
             )
             return BounceIngestResult(status_code=500, accepted=0, message="signing secret unavailable")
         if not verifier(secret.encode("utf-8"), body, signature):
@@ -288,12 +301,31 @@ class BounceReceiver:
             return BounceIngestResult(status_code=403, accepted=0, message="invalid signature")
         try:
             events = self.parser.parse(body)
-        except Exception as exc:
+        except ValueError as exc:
+            # The parser's declared refusal: the body is malformed, resending it cannot
+            # help, and a 400 is what makes the provider stop. Type only -- a provider
+            # payload quotes addresses, and parse errors quote the payload. A warning, not
+            # info: a provider that changed its format looks exactly like this, once per
+            # callback, while every bounce in them is lost.
             log.warning(
-                "mail bounce receiver: could not parse a verified callback",
+                "mail bounce receiver: a verified callback did not parse",
                 extra={"extra_data": {"error_type": type(exc).__name__}},
             )
             return BounceIngestResult(status_code=400, accepted=0, message="unparseable callback body")
+        except Exception as exc:
+            # Fail CLOSED, as for the secret above. Anything but a ValueError is a bug in
+            # the parser, not a bad body, and a 400 would tell the provider to drop a
+            # bounce nothing else will ever report. A 500 has it resend; providers cap
+            # their retries, which leaves the window to ship the fix.
+            contain(
+                exc,
+                log=log,
+                what="mail bounce receiver: the parser failed on a verified callback, asking the provider to resend",
+                extra={"error_type": type(exc).__name__},
+            )
+            return BounceIngestResult(
+                status_code=500, accepted=0, message=f"parser failed ({type(exc).__name__}); redelivery expected"
+            )
         accepted = 0
         for event in events:
             try:
@@ -302,9 +334,11 @@ class BounceReceiver:
                 # Never the exception text: a handler failing to write a suppression row
                 # routinely names the address it was writing, and an address is personal
                 # data. The type is what stays diagnostic.
-                log.warning(
-                    "mail bounce receiver: handler failed, asking the provider to resend",
-                    extra={"extra_data": {"error_type": type(exc).__name__, "accepted_before_failure": accepted}},
+                contain(
+                    exc,
+                    log=log,
+                    what="mail bounce receiver: handler failed, asking the provider to resend",
+                    extra={"error_type": type(exc).__name__, "accepted_before_failure": accepted},
                 )
                 return BounceIngestResult(
                     status_code=500,

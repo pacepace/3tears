@@ -70,7 +70,7 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from threetears.agent.tools.text_window import window_text
 from threetears.agent.tools.chunker import ChunkResult, chunk_content
 from threetears.agent.tools.context import ToolContextManager
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.search.contracts import SEARCH_RESULTS_METADATA_KEY, SearchResultsMetadata
 
 __all__ = [
@@ -156,8 +156,8 @@ def create_context_enrichment_node(
 
         try:
             entities = await entity_searcher(content)
-        except Exception:
-            logger.warning("Context enrichment search failed", exc_info=True)
+        except Exception as exc:
+            contain(exc, log=logger, what="Context enrichment search failed")
             return {"messages": []}
 
         if not entities:
@@ -407,8 +407,8 @@ def create_context_save_node(
                 chunks = chunk_content(content, strategy_hint=tool_name)
                 for chunk in chunks:
                     await _save_chunk(context_manager, ctx_id, chunk)
-            except Exception:
-                logger.warning("Failed to auto-save tool result", extra={"tool": tool_name})
+            except Exception as exc:
+                contain(exc, log=logger, what="Failed to auto-save tool result", extra={"tool": tool_name})
 
         return {"messages": []}
 
@@ -435,5 +435,5 @@ async def _save_chunk(context_manager: ToolContextManager, ctx_id: str, chunk: C
             long_desc=chunk.long_desc,
             content=chunk.content,
         )
-    except Exception:
-        logger.warning("Failed to save chunk", extra={"chunk_index": chunk.chunk_index})
+    except Exception as exc:
+        contain(exc, log=logger, what="Failed to save chunk", extra={"chunk_index": chunk.chunk_index})

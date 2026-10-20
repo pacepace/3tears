@@ -544,7 +544,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.HostProfile",
         "threetears.evals.kernel.host.CompletionClients",
         # The host's checks on a template, which create_template, update_template, the seed and a reset read off it.
+        "threetears.evals.kernel.host.TemplateCaseFields",
         "threetears.evals.kernel.host.TemplateChecks",
+        # Every refusal create_template makes before a write, as one call, so a host tests one of its own template
+        # checks (TemplateChecks) beside the engine's gates without a stored scope or a full valid create.
+        "threetears.evals.run.admit_template",
         "threetears.evals.kernel.host.default_cell_timeout",
         "threetears.evals.kernel.EvalStorage",
         "threetears.evals.kernel.withhold_failure_detail",
@@ -556,6 +560,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.StopReason",
         "threetears.evals.kernel.host.CompletionRole",
         "threetears.evals.schema.TraceSink",
+        # What a host's log filter reads to stamp a record with the cell that wrote it, and the binder a host puts
+        # that identity back with where a cell's work crosses a task boundary of its own (a fresh context).
+        "threetears.evals.schema.current_cell_identity",
+        "threetears.evals.schema.bind_cell_identity",
         # The registries a profile holds: the host's vocabulary of levers, measures, bars and world.
         "threetears.evals.kernel.host.SHARED_CORE",
         "threetears.evals.kernel.host.Sweepable",
@@ -644,6 +652,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The write that renames a stored case, which a host otherwise made by writing the case document itself.
         "threetears.evals.ops.case_rename",
         "threetears.evals.ops.CaseRenamed",
+        # The bound on an analysis generation's preparation (assembly, prompt, client, first-call price), which a host
+        # cites when it explains a generation's total wall time.
+        "threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S",
         # What the host guide tells a host to call, build, catch, type against or read in its prose: the cost-cap
         # wrapper and the error a refused reservation raises, the strict reply projection and the schema it refuses,
         # the reader of a boot seed directory, a measure's per-entry marker, the narrow store ports a function types
@@ -681,6 +692,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.StoreClock",
         "threetears.evals.schema.AsyncStoreClock",
         "threetears.evals.schema.StoreConflict",
+        # How many threads the job leases' own pool runs store round-trips on: a host sizing a database pool per
+        # process adds it, so a renewal never waits on a connection behind cell work.
+        "threetears.evals.kernel.LEASE_POOL_WORKERS",
         # The checks every store runs on `by_doc_type`'s `field_in` before it queries, so a host's store refuses what
         # the engine's refuse.
         "threetears.evals.schema.field_in_values",
@@ -849,11 +863,16 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.PriceSource",
         # What a price-catalogue read found, which a host writes its own pricing-outage line from.
         "threetears.evals.providers.PriceRefresh",
-        # A declared question and its decision rule, typed: what a host writes to have the page settle keep or switch.
-        "threetears.evals.kernel.Question",
-        "threetears.evals.kernel.DecisionRule",
+        # A floor's clause, typed: what a host writes to have a page warn when a candidate drops or costs more.
         "threetears.evals.kernel.RateDrop",
         "threetears.evals.kernel.CostLower",
+        # A campaign of aspects: what a host declares one aspect's design and its floors with, and the call a person
+        # records on the campaign's page (the bar a call overrides beside the floors it does).
+        "threetears.evals.kernel.AspectDesign",
+        "threetears.evals.kernel.Floor",
+        "threetears.evals.kernel.CampaignCall",
+        "threetears.evals.kernel.OverriddenBar",
+        "threetears.evals.ops.campaign_record",
     }
 )
 
@@ -934,11 +953,13 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.analysis.assemble_context_bundle",
         "threetears.evals.analysis.campaign_report",
         "threetears.evals.analysis.create_campaign",
+        # The campaign's page and the code-only readings it opens with, which a host serves and reads back.
+        "threetears.evals.analysis.CampaignReport",
+        "threetears.evals.analysis.CampaignReadings",
         "threetears.evals.analysis.frontier",
         "threetears.evals.analysis.gate_verdicts",
         "threetears.evals.kernel.BarOverride",
         "threetears.evals.kernel.CONFUSION_CELL_MEASURE",
-        "threetears.evals.kernel.CampaignDesign",
         "threetears.evals.kernel.ControlDeclaration",
         "threetears.evals.kernel.EvalInsight",
         "threetears.evals.kernel.MATCH_MEASURE",
@@ -1182,7 +1203,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 519  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.
+DECLARED_CEILING = 529  # campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:

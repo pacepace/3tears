@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,8 @@ from threetears.core.security.proxy_assertion import TOOL_POP_LEDGER_UNAVAILABLE
 from threetears.nats import (
     RESULT_ACK_TIMEOUT_SECONDS,
     IncomingMessage,
+    NatsClientError,
+    PublishError,
     RequestError,
     Subject,
     Subjects,
@@ -50,7 +53,7 @@ from threetears.nats import (
     requires_async_result,
     result_stream_name,
 )
-from threetears.observe import InflightRequestsGauge, clear_context, get_logger
+from threetears.observe import InflightRequestsGauge, clear_context, contain, counter, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog, ToolDefinition
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
@@ -87,6 +90,14 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: tool calls served with no spend limit checked because the limit guard raised (Fork-2 fail-open).
+#: any non-zero rate is a billing-store outage letting traffic run unmetered; alert on it.
+_SPEND_LIMIT_UNCHECKED = counter(
+    "threetears_registry_spend_limit_unchecked_total",
+    description="tool calls served with no spend limit checked because the limit guard raised, by exception type",
+    label_names=("exc_type",),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -347,8 +358,10 @@ class CallProxy:
             routing -- no silent-bypass path, same discipline as ``authorizer``. the
             money path FAILS OPEN (Fork-2): the proxy denies only on a returned
             :class:`LimitDecision(allowed=False)`; a guard that RAISES or is
-            unreachable makes the proxy SERVE the call (and log loudly) so a
-            billing-infra outage never bricks tool traffic. dev/test callers pass
+            unreachable makes the proxy SERVE the call with no spend limit checked,
+            so a billing-infra outage never bricks tool traffic. each such call is
+            counted on ``threetears_registry_spend_limit_unchecked_total`` and logged
+            at ERROR, so the outage is visible. dev/test callers pass
             :class:`AllowAllLimitGuard` / :class:`DenyAllLimitGuard`; production wires
             the counter-backed ``KvCallLimitGuard`` (gu-task-15a)
         :ptype limit_guard: LimitGuard
@@ -381,7 +394,10 @@ class CallProxy:
         :ptype proxy_signer: ProxyAssertionSigner | None
         :param delegated_signer: mints each forwarded call a delegated token for its pod, bound to
             the pod's key, the call's deadline and the doors a call may reach; ``None`` mints none,
-            and the pod keeps acting with the caller's own tokens until the doors' windows close
+            and the pod keeps acting with the caller's own tokens until the doors' windows close.
+            Wired without a ``jwks_provider``, a declaring pod keeps the agent's token beside the
+            delegation; that allowance is deprecated (a ``DeprecationWarning`` at construction) and
+            is removed in a future minor release, after which the token is withheld as for an unreadable JWKS
         :ptype delegated_signer: DelegatedTokenSigner | None
         :param usage_emitter: post-call usage-emit seam; ``None`` (the safe default)
             emits nothing. when present, the proxy calls
@@ -416,6 +432,14 @@ class CallProxy:
         self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
         self._delegated_signer = delegated_signer
+        if delegated_signer is not None and jwks_provider is None:
+            message = (
+                "CallProxy has a delegated_signer but no jwks_provider, so a pod that declares it proves "
+                "the delegation still receives the agent's token; this allowance is removed in a future minor "
+                "release, after which the token is withheld as it is for an unreadable or empty JWKS"
+            )
+            warnings.warn(message, DeprecationWarning, stacklevel=2)
+            log.warning(message)
         # a guard sized for a smaller future tolerance than this proxy accepts would let a replayed
         # proof stamped at the edge through its wipe check; refuse it here, at startup.
         pop_replay_guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
@@ -538,7 +562,8 @@ class CallProxy:
         with self._inflight_gauge.track():
             try:
                 request = ProxyCallRequest.model_validate_json(msg.data)
-            except Exception as exc:
+            except ValidationError as exc:
+                contain(exc, log=log, what="malformed call request")
                 response = ProxyCallResponse(
                     success=False,
                     content="",
@@ -857,33 +882,62 @@ class CallProxy:
                 # past its wipe check.
                 future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
             )
-            try:
-                fresh = await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at)
-            except Exception as exc:  # noqa: BLE001 -- the ledger failing fails the check closed, with a reply
-                return self._pop_ledger_unavailable(request, exc)
-            if not fresh:
-                raise IdentityTokenError("pop nonce replay")
-            return None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
-            reason = type(exc).__name__
-            extra = {
-                "extra_data": {
+            return self._pop_unverified(request, exc)
+        # outside the verification's catch: the ledger's own failure is a NatsClientError, and
+        # anything else it raises (a timezone-naive issue time, a bug) is ours, not a bad proof.
+        try:
+            fresh = await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at)
+        except NatsClientError as exc:
+            # the ledger failing fails the check closed, with a reply
+            contain(
+                exc,
+                log=log,
+                what="tool call refused: the proof-of-possession replay ledger could not be reached, so the "
+                "proof could not be checked and the call is denied; check the registry's NATS connection "
+                "and its grant on the pop nonce bucket",
+                extra={
                     "tool_name": request.tool_name,
-                    "reason": reason,
-                    # the structural pop-failure reason (absent token/pop, no cnf binding, spliced
-                    # body, replayed nonce), never token or key material.
-                    "detail": str(exc),
                     "correlation_id": _correlation_id_str(request),
-                }
-            }
-            log.warning("pop verification failed; rejecting call", extra=extra)
-            return ProxyCallResponse(
-                success=False,
-                content="",
-                error=f"pop verification failed ({reason})",
-                error_code="TOOL_POP_UNVERIFIED",
-                context=context,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+                level="error",
             )
+            return self._pop_ledger_unavailable(request)
+        if not fresh:
+            return self._pop_unverified(request, IdentityTokenError("pop nonce replay"))
+        return None
+
+    def _pop_unverified(self, request: "ProxyCallRequest", exc: Exception) -> "ProxyCallResponse":
+        """log a pop that did not verify and build its ``TOOL_POP_UNVERIFIED`` refusal.
+
+        :param request: the call request whose pop failed
+        :ptype request: ProxyCallRequest
+        :param exc: why it failed; its type is the reply's reason and its message stays in the log
+        :ptype exc: Exception
+        :return: the refusal
+        :rtype: ProxyCallResponse
+        """
+        reason = type(exc).__name__
+        extra = {
+            "extra_data": {
+                "tool_name": request.tool_name,
+                "reason": reason,
+                # the structural pop-failure reason (absent token/pop, no cnf binding, spliced
+                # body, replayed nonce), never token or key material.
+                "detail": str(exc),
+                "correlation_id": _correlation_id_str(request),
+            }
+        }
+        log.warning("pop verification failed; rejecting call", extra=extra)
+        return ProxyCallResponse(
+            success=False,
+            content="",
+            error=f"pop verification failed ({reason})",
+            error_code="TOOL_POP_UNVERIFIED",
+            context=request.context,
+        )
 
     async def _dispatch_call(
         self,
@@ -1026,10 +1080,13 @@ class CallProxy:
                 )
 
         # pre-call spend gate (gu-task-06): AFTER pop / BEFORE the authorizer + catalog routing, so a
-        # spend-denied call never consumes a catalog lookup. FAIL-OPEN (Fork-2): a guard that RAISES
-        # or is unreachable SERVES the call (loud WARNING) -- a billing-infra outage must not brick
-        # tool traffic. this inverts the fail-CLOSED identity/pop/authorizer gates ON PURPOSE. only a
-        # returned LimitDecision(allowed=False) hard-denies.
+        # spend-denied call never consumes a catalog lookup. FAIL-OPEN (Fork-2, an owner decision,
+        # re-affirmed in #876): a guard that RAISES or is unreachable SERVES the call with no spend
+        # limit checked -- a billing-store outage must never brick tool traffic. this inverts the
+        # fail-CLOSED identity/pop/authorizer gates ON PURPOSE. what it must not be is silent: every
+        # such call is counted on ``_SPEND_LIMIT_UNCHECKED`` and logged at ERROR through `contain`,
+        # so an operator sees calls running unmetered instead of discovering it on the invoice.
+        # only a returned LimitDecision(allowed=False) hard-denies.
         try:
             limit_decision = await self._limit_guard.check(
                 agent_id_log,
@@ -1038,17 +1095,20 @@ class CallProxy:
                 request.tool_name,
                 request.tool_version,
             )
-        except Exception:  # noqa: BLE001 -- fail-open per Fork-2: a guard outage must never deny
-            log.warning(
-                "limit guard unreachable; serving fail-open",
+        except Exception as exc:  # noqa: BLE001 -- fail-open per Fork-2, counted and alerted
+            _SPEND_LIMIT_UNCHECKED.labels(exc_type=type(exc).__name__).inc()
+            contain(
+                exc,
+                log=log,
+                what="spend-limit guard unreachable; serving the tool call with no spend limit checked (Fork-2)",
                 extra={
-                    "extra_data": {
-                        "agent_id": agent_id_log,
-                        "customer_id": customer_id_log,
-                        "tool_name": request.tool_name,
-                        "correlation_id": correlation_id_log,
-                    }
+                    "agent_id": agent_id_log,
+                    "customer_id": customer_id_log,
+                    "tool_name": request.tool_name,
+                    "correlation_id": correlation_id_log,
+                    "error_type": type(exc).__name__,
                 },
+                level="error",
             )
         else:
             if not limit_decision.allowed:
@@ -1059,11 +1119,10 @@ class CallProxy:
                     error_code=limit_decision.error_code,
                     context=request.context,
                 )
-                if msg.reply_subject is not None:
-                    await self._nc.publish_reply(
-                        reply_subject=msg.reply_subject,
-                        message=response,
-                    )
+                # through `_answer`, like every other branch: a call already acknowledged for
+                # durable delivery listens on its result subject, and a denial published on the
+                # inbox instead left it waiting out its whole timeout.
+                await self._answer(msg, response, delivery_subject)
                 log.warning(
                     "tool call denied by limit guard",
                     extra={
@@ -1092,19 +1151,20 @@ class CallProxy:
                     principal_is_tool_pod=principal.is_tool_pod,
                 )
             except Exception as exc:  # noqa: BLE001 -- fail closed WITH a reply; never a dropped call
-                log.error(
-                    "tool call refused: the authorizer could not reach the store it decides from, so the "
+                contain(
+                    exc,
+                    log=log,
+                    what="tool call refused: the authorizer could not reach the store it decides from, so the "
                     "call is denied rather than decided",
                     extra={
-                        "extra_data": {
-                            "agent_id": agent_id_log,
-                            "user_id": user_id_log,
-                            "tool_name": request.tool_name,
-                            "correlation_id": correlation_id_log,
-                            "error_type": type(exc).__name__,
-                            "error": str(exc),
-                        }
+                        "agent_id": agent_id_log,
+                        "user_id": user_id_log,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
                     },
+                    level="error",
                 )
                 response = ProxyCallResponse(
                     success=False,
@@ -1374,15 +1434,15 @@ class CallProxy:
         if self._usage_emitter is not None:
             try:
                 await self._usage_emitter.emit(request, response)
-            except Exception:  # noqa: BLE001 -- fire-and-forget: a usage-emit failure never affects the reply
-                log.warning(
-                    "endpoint usage emit failed",
+            except Exception as exc:  # noqa: BLE001 -- fire-and-forget: a usage-emit failure never affects the reply
+                contain(
+                    exc,
+                    log=log,
+                    what="endpoint usage emit failed",
                     extra={
-                        "extra_data": {
-                            "agent_id": agent_id_log,
-                            "tool_name": request.tool_name,
-                            "correlation_id": correlation_id_log,
-                        }
+                        "agent_id": agent_id_log,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
                     },
                 )
 
@@ -1419,17 +1479,16 @@ class CallProxy:
             try:
                 await self._nc.jetstream_publish(subject=delivery_subject, payload=payload)
                 return
-            except Exception as exc:  # noqa: BLE001 — the tool already ran; retry beats discarding it
+            except PublishError as exc:  # the tool already ran; retry beats discarding it
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
                     # NOSILENT: the answer is now lost. name it, rather than letting it surface as an
                     # unexplained timeout at the agent.
-                    log.error(
-                        "tool result could not be delivered to the caller after %d attempts; the "
-                        "answer is lost (subject=%s bytes=%d): %s",
-                        _RESULT_DELIVERY_ATTEMPTS,
-                        delivery_subject.path,
-                        len(payload),
+                    contain(
                         exc,
+                        log=log,
+                        what=f"tool result could not be delivered to the caller after {_RESULT_DELIVERY_ATTEMPTS} "
+                        f"attempts; the answer is lost (subject={delivery_subject.path} bytes={len(payload)}): {exc}",
+                        level="error",
                     )
                     return
                 log.warning(
@@ -1580,35 +1639,20 @@ class CallProxy:
             )
         return response
 
-    def _pop_ledger_unavailable(self, request: ProxyCallRequest, exc: Exception) -> ProxyCallResponse:
+    def _pop_ledger_unavailable(self, request: ProxyCallRequest) -> ProxyCallResponse:
         """the refusal for a call whose proof could not be checked against the replay ledger.
 
         The ledger's contract says a failure MUST be a failed check, never fresh, so the call is
         denied -- but not as ``TOOL_POP_UNVERIFIED``, which tells the caller its proof is bad. The
-        proof was never judged; the ledger could not be reached. Logged once at ERROR with the cause;
-        the reply carries the one shared message, the same a tool pod answers its own ledger outage
+        proof was never judged; the ledger could not be reached. The caller has already logged the cause
+        at ERROR; the reply carries the one shared message, the same a tool pod answers its own ledger outage
         with, and never the exception.
 
         :param request: the call request
         :ptype request: ProxyCallRequest
-        :param exc: what the ledger raised
-        :ptype exc: Exception
         :return: the :data:`~threetears.core.security.TOOL_POP_LEDGER_UNAVAILABLE` refusal
         :rtype: ProxyCallResponse
         """
-        log.error(
-            "tool call refused: the proof-of-possession replay ledger could not be reached, so the "
-            "proof could not be checked and the call is denied; check the registry's NATS connection "
-            "and its grant on the pop nonce bucket",
-            extra={
-                "extra_data": {
-                    "tool_name": request.tool_name,
-                    "correlation_id": _correlation_id_str(request),
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-            },
-        )
         return ProxyCallResponse(
             success=False,
             content="",
@@ -1670,16 +1714,16 @@ class CallProxy:
             # never reached a pod: TOOL_UNAVAILABLE, the retryable answer. left uncaught it killed
             # the dispatch task with the reply subject unanswered, and the caller learned nothing
             # until its own deadline -- a stream missing from a bus read as a dead tool.
-            log.warning(
-                "durable result waiter could not open; the call was never dispatched",
+            contain(
+                exc,
+                log=log,
+                what="durable result waiter could not open; the call was never dispatched",
                 extra={
-                    "extra_data": {
-                        "pod_id": pod_id,
-                        "tool_name": request.tool_name,
-                        "correlation_id": correlation_id_log,
-                        "stream": result_stream_name(),
-                        "detail": str(exc),
-                    }
+                    "pod_id": pod_id,
+                    "tool_name": request.tool_name,
+                    "correlation_id": correlation_id_log,
+                    "stream": result_stream_name(),
+                    "detail": str(exc),
                 },
             )
             return ProxyCallResponse(
@@ -1702,17 +1746,17 @@ class CallProxy:
             try:
                 delivered = await waiter.wait(timeout=timedelta(seconds=effective_timeout))
             except Exception as exc:  # noqa: BLE001 — every failure becomes a typed response, never a hang
-                log.warning(
-                    "tool result never arrived on its durable subject",
+                contain(
+                    exc,
+                    log=log,
+                    what="tool result never arrived on its durable subject",
                     extra={
-                        "extra_data": {
-                            "pod_id": pod_id,
-                            "tool_name": request.tool_name,
-                            "correlation_id": correlation_id_log,
-                            "subject": result_subject.path,
-                            "timeout": effective_timeout,
-                            "detail": str(exc),
-                        }
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "subject": result_subject.path,
+                        "timeout": effective_timeout,
+                        "detail": str(exc),
                     },
                 )
                 # TOOL_TIMEOUT, not TOOL_UNAVAILABLE: the pod ACCEPTED this call, so it may well be
@@ -1861,30 +1905,56 @@ class CallProxy:
             )
         return result
 
-    def _hub_publishes_delegation_key(self) -> bool:
-        """whether the hub JWKS publishes this registry's delegated-token key, so a pod can verify it.
+    def _withholds_agent_token(self) -> bool:
+        """whether a declaring pod is sent the delegation in place of the agent's token.
 
         A pod sent the delegation in place of the agent's token verifies it against the hub JWKS; a
         registry whose key the hub does not publish yet (the seed rolled out before the hub's pin)
         keeps sending the agent's token beside it, so no call fails for the order the two roll in.
+        That exception is granted only on a JWKS that was READ and lacks the key.
 
-        :return: whether the hub publishes it
+        A JWKS that cannot be read withholds the token, and so does one that reads EMPTY: a key set
+        with no keys says nothing about whether the hub publishes this registry's key, so it is no
+        more a reading than a failed fetch. Keeping the token there handed the agent's own
+        credential to a pod that declared it does not need one, on nothing more than a failed
+        read. Withheld, the worst case is a call the pod refuses because it cannot verify the
+        delegation: a visible failure, where the other way was a silent credential exposure.
+
+        With no ``jwks_provider`` at all the token is still kept, a rollout allowance that is
+        deprecated (the constructor warns) and removed in a future minor release.
+
+        :return: whether the agent's token and user assertion are withheld
         :rtype: bool
         """
-        published = False
+        withheld = False
         if self._delegated_signer is not None and self._jwks_provider is not None:
             try:
-                published = self._delegated_signer.kid in _published_kids(self._jwks_provider())
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a provider failure keeps the agent's token on the call, the safe side; logged
+                published = _published_kids(self._jwks_provider())
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- an unreadable JWKS withholds the agent's token, the closed side; logged with its traceback below
+                withheld = True
                 if not self._jwks_unreadable_logged:
                     self._jwks_unreadable_logged = True
-                    log.warning(
-                        "hub JWKS unreadable; the agent's token stays on calls to declaring pods until it is",
-                        extra={"extra_data": {"detail": str(exc)}},
+                    contain(
+                        exc,
+                        log=log,
+                        what="hub JWKS unreadable; declaring pods are sent the delegation without the agent's "
+                        "token, and a pod that cannot verify it will refuse the call",
+                        extra={"detail": str(exc)},
+                        level="error",
                     )
             else:
-                self._jwks_unreadable_logged = False
-        return published
+                if not published:
+                    withheld = True
+                    if not self._jwks_unreadable_logged:
+                        self._jwks_unreadable_logged = True
+                        log.error(
+                            "hub JWKS read empty; declaring pods are sent the delegation without the agent's "
+                            "token, and a pod that cannot verify it will refuse the call"
+                        )
+                else:
+                    withheld = self._delegated_signer.kid in published
+                    self._jwks_unreadable_logged = False
+        return withheld
 
     def _with_delegation(
         self, request: ProxyCallRequest, pod_id: str, principal: VerifiedPrincipal, effective_timeout: float
@@ -1927,7 +1997,7 @@ class CallProxy:
                 conversation_id=str(context.conversation_id) if context.conversation_id is not None else None,
             )
             forwarded: dict[str, str | None] = {"delegated_token": token}
-            if endpoint is not None and endpoint.proves_delegation and self._hub_publishes_delegation_key():
+            if endpoint is not None and endpoint.proves_delegation and self._withholds_agent_token():
                 forwarded |= {"identity_token": None, "user_identity_token": None}
             result = request.model_copy(update={"context": context.model_copy(update=forwarded)})
         return result

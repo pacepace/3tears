@@ -11,13 +11,13 @@ the golden test and the vocabulary test.
 
 :func:`g2_ruled_report` is the later G2 run instead: its own numbers (production passed 10 of 12, the cheaper
 candidate 2 of 12, at 0.003092 and 0.003301 per reply), its arms named as the host names them
-(``deepseek-v4.1-flash (production)``), and its decision rule declared before the run. Shared by the decision-rule
+(``deepseek-v4.1-flash (production)``), and its floors declared before the run. Shared by the floors
 and presentation tests.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.evals.analysis import (
@@ -36,7 +36,7 @@ from threetears.evals.kernel.evidence_tiers import (
     TierCriterion,
 )
 from threetears.evals import Answer, Eval, Result
-from threetears.evals.kernel.declaration import CostLower, DecisionRule, Question, RateDrop
+from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.evals.schema import EvalResult, JudgeCutShort
 from packages.evals.tests.off_loop import off_loop
@@ -100,7 +100,7 @@ def _unlabelled_judge() -> JudgeEvidenceTier:
     )
 
 
-async def _queue(case: Mapping[str, Any]) -> str:
+async def queue_case(case: Mapping[str, Any]) -> str:
     """Queues every request."""
     return "queued"
 
@@ -146,14 +146,14 @@ def g2_bundle(comparison: Result) -> AnalysisContextBundle:
 
 async def g2_report() -> Report:
     """The G2-shaped campaign's code-only report, assembled at a fixed instant."""
-    ev = Eval(CASES, {"v4.1-flash": _queue, "v4-flash": _queue}, ["label"], k=3, name="Kairo queue discipline")
+    ev = Eval(CASES, {"v4.1-flash": queue_case, "v4-flash": queue_case}, ["label"], k=3, name="Kairo queue discipline")
     # The scope the quick path once defaulted to, so the fixture's stored documents are where they were.
     comparison = await ev.run(store=":memory:", scope="quick")
     bundle = off_loop(g2_bundle, comparison)
     return build_code_only_report(bundle, assembled_at="2026-10-14T01:31:58+00:00", campaign_name=comparison.name)
 
 
-# --- the G2 numbers, replayed with arms named as a host names them, and its decision rule declared -------
+# --- the G2 numbers, replayed with arms named as a host names them, and its floors declared -------
 
 #: The G2 campaign's declared question, as its operator wrote it.
 G2_QUESTION = (
@@ -161,9 +161,9 @@ G2_QUESTION = (
     "dimension within 10 points of deepseek-v4.1-flash's pass rate, at lower cost per turn?"
 )
 
-#: The G2 campaign's decision rule, typed: switch only if no pass rate drops by more than 10 points and the cheaper
-#: model costs less per reply; otherwise keep production.
-G2_RULE = DecisionRule(clauses=(RateDrop(max_points=10), CostLower()))
+#: The G2 campaign's floors, typed: no pass rate may drop by more than 10 points, and the cheaper model must cost less
+#: per reply. Its stored decision rule reads back as these two floors.
+G2_FLOORS: tuple[DecisionClause, ...] = (RateDrop(max_points=10), CostLower())
 
 PRODUCTION = "deepseek-v4.1-flash (production)"
 CANDIDATE = "deepseek-v4-flash (cheaper candidate)"
@@ -188,16 +188,25 @@ async def g2_numbers() -> Result:
 
 
 def declaring(
-    bundle: AnalysisContextBundle, text: str, decision: DecisionRule | None = G2_RULE
+    bundle: AnalysisContextBundle, text: str, floors: Sequence[DecisionClause] = G2_FLOORS
 ) -> AnalysisContextBundle:
-    """The bundle with ``text`` and its ``decision`` rule declared before the run, as the campaign's one live
-    question."""
-    design = bundle.declared_design
-    assert design is not None, "a quick comparison declares its design"
-    asked = Question(id="q-g2", text=text, decision=decision, asked_at="2026-10-14T00:00:00+00:00")
+    """The bundle with ``text`` asked before the run, as the campaign's question, and ``floors`` on its aspect; the
+    aspect's margin is the floor reading every pass rate's, as an upgraded aspect's is."""
+    declared = bundle.declared
+    assert declared is not None, "a quick comparison declares its design"
+    margin = next((c.max_points for c in floors if isinstance(c, RateDrop) and c.reading is None), None)
+    asked = declared.model_copy(
+        update={
+            "question": text,
+            "asked_at": "2026-10-14T00:00:00+00:00",
+            "design": declared.design.model_copy(update={"merit_axes": []}),
+            "margin": margin,
+            "floors": [Floor(aspect=bundle.aspect, clause=clause) for clause in floors],
+        }
+    )
     return bundle.model_copy(
         update={
-            "declared_design": design.model_copy(update={"questions": [asked]}),
+            "declared": asked,
             "reading_scope": bundle.reading_scope.model_copy(update={"questions_declared": True}),
             "design_frozen_at": "2026-10-14T01:00:00+00:00",
         }
@@ -205,7 +214,7 @@ def declaring(
 
 
 async def g2_ruled_report() -> tuple[Result, Report]:
-    """The G2 numbers through the quick path, with the G2 decision rule declared before the run."""
+    """The G2 numbers through the quick path, with the G2 floors declared before the run."""
     comparison = await g2_numbers()
     bundle = declaring(comparison.report.bundle, G2_QUESTION)
     return comparison, build_code_only_report(

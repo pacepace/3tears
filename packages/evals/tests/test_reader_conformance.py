@@ -164,6 +164,11 @@ _FAULTS: tuple[tuple[str, Callable[[], HostProfile], str], ...] = (
         "open_family.residual_json_safe",
     ),
     (
+        "a reader stamping a value on a kind that does not seat the apparatus",
+        lambda: _with_reader("judge_model", lambda _r, _s: "not_this_kind:persona"),
+        "apparatus.blank_when_unseated",
+    ),
+    (
         "a lever map naming an undeclared lever",
         lambda: replace(toyhost_profile(tunable_retrieval=True), variant_levers=_stray_lever),
         "variant_levers.match_the_registry",

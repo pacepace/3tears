@@ -52,7 +52,7 @@ import pytest
 from threetears.nats import Subject
 import pytest_asyncio
 
-from threetears.core.backends.nats_proxy import NatsProxyL3Backend
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend, check_reply_row_count
 from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityTokenError,
@@ -444,9 +444,10 @@ class _TxBroker:
         params = [_coerce(p) for p in req.get("params", [])]
         tag = await session.conn.execute(req["query"], *params)
         row_count = int(tag.split()[-1]) if tag and tag.split() else 0
-        await msg.respond(
-            json.dumps({"success": True, "row_count": row_count}).encode(),
-        )
+        reply = {"success": True, "row_count": row_count}
+        # held to the contract the hub's broker is held to
+        check_reply_row_count(req["query"], reply)
+        await msg.respond(json.dumps(reply).encode())
 
     async def _handle_fetchrow(self, msg: Any) -> None:
         """single-row SELECT on the session's pinned connection.

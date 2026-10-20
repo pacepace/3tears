@@ -10,8 +10,10 @@ from uuid import UUID
 
 import pytest
 from threetears.nats import Subject
+from threetears.nats.errors import RequestError, RequestTimeoutError
 
-from threetears.core.backends.nats_proxy import NatsProxyL3Backend
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend, check_reply_row_count
+from threetears.core.backends.protocol import RowcountUnreadableError, parse_rowcount
 from threetears.core.exceptions import DataLayerUnavailableError
 
 
@@ -605,7 +607,17 @@ class TestExecute:
         assert int(tag.split()[-1]) == 3
 
     @pytest.mark.asyncio
-    async def test_execute_returns_zero_for_null_row_count(self) -> None:
+    @pytest.mark.parametrize(
+        ("query", "tag"),
+        [
+            ("DELETE FROM foo WHERE id = $1", "DELETE"),
+            ("UPDATE foo SET bar = $1", "UPDATE"),
+            ("INSERT INTO foo (id) VALUES ($1)", "INSERT"),
+            ("INSERT INTO foo (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", "INSERT"),
+        ],
+    )
+    async def test_a_dml_reply_with_no_row_count_carries_no_count(self, query: str, tag: str) -> None:
+        """a null row_count on a DML reply became "DELETE 0", and a fenced update read as a lost race."""
         mock_nc = MagicMock()
         mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
@@ -619,11 +631,24 @@ class TestExecute:
         )
         proxy = _make_proxy(mock_nc)
 
-        tag = await proxy.execute("DELETE FROM foo WHERE id = $1", "x")
+        answered = await proxy.execute(query, "x")
 
-        # null row_count from the broker collapses to zero on the wire.
-        assert tag == "DELETE 0"
-        assert int(tag.split()[-1]) == 0
+        assert answered == tag
+        with pytest.raises(RowcountUnreadableError):
+            parse_rowcount(answered)
+
+    @pytest.mark.asyncio
+    async def test_a_verbless_statement_with_no_row_count_still_reads_as_zero(self) -> None:
+        """DDL is labelled ``select``; it reports no count, and reads as 0 rows as before."""
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(
+            return_value=_make_reply({"success": True, "rows": [], "row_count": None, "duration_ms": 2})
+        )
+        proxy = _make_proxy(mock_nc)
+
+        answered = await proxy.execute("CREATE TABLE foo (id int)")
+
+        assert parse_rowcount(answered) == 0
 
     @pytest.mark.asyncio
     async def test_execute_detects_insert_operation(self) -> None:
@@ -789,7 +814,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_nats_timeout_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request_raw = AsyncMock(side_effect=TimeoutError("request timed out"))
+        mock_nc.request_raw = AsyncMock(side_effect=RequestTimeoutError("request timed out"))
         proxy = _make_proxy(mock_nc)
 
         with pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
@@ -798,11 +823,30 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_nats_connection_error_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request_raw = AsyncMock(side_effect=ConnectionError("no route to host"))
+        mock_nc.request_raw = AsyncMock(side_effect=RequestError("NATS connection closed during request"))
         proxy = _make_proxy(mock_nc)
 
         with pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
             await proxy.execute("INSERT INTO foo (a) VALUES ($1)", "val")
+
+    @pytest.mark.asyncio
+    async def test_a_reply_that_is_not_json_raises_data_layer_unavailable(self) -> None:
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(return_value=b"<html>bad gateway</html>")
+        proxy = _make_proxy(mock_nc)
+
+        with pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
+            await proxy.fetch("SELECT * FROM foo")
+
+    @pytest.mark.asyncio
+    async def test_a_bug_under_the_request_is_not_reported_as_an_outage(self) -> None:
+        """only the client's request failures and an undecodable reply mean the data layer is down."""
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(side_effect=AttributeError("'NoneType' object has no attribute 'request'"))
+        proxy = _make_proxy(mock_nc)
+
+        with pytest.raises(AttributeError):
+            await proxy.fetch("SELECT * FROM foo")
 
 
 # ------------------------------------------------------------------
@@ -1399,3 +1443,60 @@ class TestDeserializeRowDatetimes:
         row = {"date_created": ""}
         out = await _row_as_fetched(row)
         assert out["date_created"] == ""
+
+
+# ------------------------------------------------------------------
+# the reply contract a broker is held to
+# ------------------------------------------------------------------
+
+
+class TestTheReplyContract:
+    """``check_reply_row_count``: a successful DML reply says how many rows it touched."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "INSERT INTO foo (id) VALUES ($1)",
+            "INSERT INTO foo (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET id = $1",
+            "UPDATE foo SET bar = $1",
+            "DELETE FROM foo WHERE id = $1",
+            "WITH gone AS (SELECT 1) DELETE FROM foo",
+        ],
+    )
+    @pytest.mark.parametrize("row_count", [None, "3", 1.0, True, -1])
+    def test_a_dml_reply_without_an_integer_row_count_breaks_it(self, query: str, row_count: object) -> None:
+        """missing, null, a string, a float, a bool and a negative all leave the fence unable to read the count."""
+        reply: dict[str, object] = {"success": True, "rows": []}
+        if row_count is not None:
+            reply["row_count"] = row_count
+
+        with pytest.raises(RowcountUnreadableError):
+            check_reply_row_count(query, reply)
+
+    @pytest.mark.parametrize("row_count", [0, 1, 17])
+    def test_a_dml_reply_with_a_count_keeps_it(self, row_count: int) -> None:
+        """zero is a count: the fenced save that matched nothing lost its race."""
+        check_reply_row_count("UPDATE foo SET bar = $1", {"success": True, "row_count": row_count})
+
+    @pytest.mark.parametrize(
+        "query",
+        ["SELECT * FROM foo", "CREATE TABLE foo (id int)", "WITH moved AS (DELETE FROM foo RETURNING id) SELECT 1"],
+    )
+    def test_a_statement_that_counts_nothing_needs_no_count(self, query: str) -> None:
+        """a select, DDL, or a data-modifying CTE under a SELECT is labelled select and reports no count."""
+        check_reply_row_count(query, {"success": True, "rows": []})
+
+    def test_a_failed_reply_needs_no_count(self) -> None:
+        """a refusal carries an error, not a count; its own contract covers it."""
+        check_reply_row_count("DELETE FROM foo", {"success": False, "error_code": "QUERY_FAILED"})
+
+    @pytest.mark.asyncio
+    async def test_a_reply_that_keeps_it_reads_as_the_count_through_the_proxy(self) -> None:
+        """the contract and the proxy agree: a reply that passes is a tag parse_rowcount reads."""
+        reply = {"success": True, "rows": [], "row_count": 2, "duration_ms": 1}
+        check_reply_row_count("DELETE FROM foo WHERE id = $1", reply)
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(return_value=_make_reply(reply))
+        proxy = _make_proxy(mock_nc)
+
+        assert parse_rowcount(await proxy.execute("DELETE FROM foo WHERE id = $1", "x")) == 2

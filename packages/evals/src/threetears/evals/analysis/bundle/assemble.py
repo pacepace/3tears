@@ -45,6 +45,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
 from typing import TYPE_CHECKING, Protocol
 
+from threetears.evals.analysis.aspects import AspectDeclaration, aspect_view
 from threetears.evals.analysis.agreement import (
     judge_agreement,
     judge_self_agreement,
@@ -78,7 +79,8 @@ from threetears.evals.analysis.lenses.program_budget import compute_program_budg
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
-from threetears.evals.kernel.declaration import CampaignDesign, RateDrop, resolve_declared_control
+from threetears.evals.kernel.judge_cases import JUDGE_KIND
+from threetears.evals.kernel.declaration import aware_instant, resolve_control_arm
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,
@@ -266,11 +268,12 @@ class CampaignReadStore(Protocol):
 
 
 def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
-    """Say how the campaign's runs were started, when they were not all started as one launch.
+    """Say how the campaign's runs were started, when they were not all started as one launch taking turns.
 
     :param runs: The resolved member runs.
     :ptype runs: Collection[EvalRun]
-    :return: The sentence, or None when every run shares one launch group or there are fewer than two.
+    :return: The sentence, or None when every run shares one launch group whose arms were interleaved (or record no
+        schedule, stored before runs recorded one), or there are fewer than two.
     :rtype: str | None
     """
     if len(runs) < 2:
@@ -278,7 +281,7 @@ def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
     groups = {run.launch_group_id for run in runs if run.launch_group_id is not None}
     alone = sum(1 for run in runs if run.launch_group_id is None)
     if alone == 0 and len(groups) == 1:
-        return None
+        return _schedule_disclosure(runs)
     parts = []
     if groups:
         parts.append(f"{len(groups)} separate launch{'es' if len(groups) != 1 else ''}")
@@ -291,9 +294,66 @@ def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
     )
 
 
+def _schedule_disclosure(runs: Collection[EvalRun]) -> str | None:
+    """Say how one launch's arms shared time, when they did not take their turns case by case.
+
+    :param runs: The member runs, every one of one launch.
+    :ptype runs: Collection[EvalRun]
+    :return: The sentence for arms run one after another or side by side, or None.
+    :rtype: str | None
+    """
+    schedules = {run.arm_schedule for run in runs}
+    if "concurrent" in schedules:
+        return (
+            f"These {len(runs)} runs were launched together with their arms side by side, each at its own width, so "
+            "they loaded their providers at once: a provider rationing one arm's calls more than another's shrinks "
+            "that arm's sample, and a difference between them in failures, exclusions or latency can come from the "
+            "host's capacity as well as from their settings."
+        )
+    if "sequential" in schedules:
+        return (
+            f"These {len(runs)} runs were launched together but ran one arm after another, so each arm met its "
+            "providers at another time: a difference between them can come from when they ran as well as from their "
+            "settings."
+        )
+    return None
+
+
+def _dated_by_its_control(declared: AspectDeclaration | None, scored_at: Sequence[str]) -> AspectDeclaration | None:
+    """``declared`` with its question dated when its control was named, where that was after the first result.
+
+    :param declared: What the aspect declared, as its view reads it.
+    :ptype declared: AspectDeclaration | None
+    :param scored_at: When each of the aspect's results was written.
+    :ptype scored_at: Sequence[str]
+    :return: ``declared`` unchanged, unless its control was named after the earliest of ``scored_at``; then with
+        ``asked_at`` the control's ``named_at``. A time that cannot be ordered leaves the question undated (None),
+        read as asked after the evidence.
+    :rtype: AspectDeclaration | None
+    """
+    if declared is None or declared.control is None or declared.control.named_at is None or not scored_at:
+        return declared
+    try:
+        first = min(aware_instant(stamp, "a result") for stamp in scored_at)
+        named_late = aware_instant(declared.control.named_at, "the control") > first
+    except ValueError:
+        return declared.model_copy(update={"asked_at": None})
+    return declared.model_copy(update={"asked_at": declared.control.named_at}) if named_late else declared
+
+
+def _first_result_at(scored_at: Sequence[str]) -> str | None:
+    """The earliest of ``scored_at``, as stored; None with none, or where a time cannot be ordered against another."""
+    try:
+        return min(scored_at, key=lambda stamp: aware_instant(stamp, "a result"), default=None)
+    except ValueError:
+        # NOSILENT: an unorderable stamp leaves the evidence undated, which reads nothing as declared after it
+        return None
+
+
 def assemble_context_bundle(
     campaign: EvalCampaign,
     *,
+    aspect: str | None = None,
     storage: CampaignReadStore,
     insights_as_of: str | None = None,
     profile: HostProfile,
@@ -315,8 +375,14 @@ def assemble_context_bundle(
     otherwise enter each aggregate with nothing marking it, which is the failure the
     archive surface exists to end.
 
+    **One aspect at a time.** A bundle reads one aspect of the campaign
+    (:func:`~threetears.evals.analysis.aspects.aspect_view`): its runs, its template, and what the campaign declared as that aspect reads it. Nothing here reads the stored
+    campaign's own fields, so how a campaign holds its aspects is the view's business alone.
+
     :param campaign: The campaign whose runs to summarise.
     :ptype campaign: EvalCampaign
+    :param aspect: The label of the aspect to read; None reads the campaign's only aspect.
+    :ptype aspect: str | None
     :param storage: Eval storage — the read surface for runs, results, and insights.
     :ptype storage: CampaignReadStore
     :param insights_as_of: Read the subject's prior insights as the ledger stood at this
@@ -334,8 +400,12 @@ def assemble_context_bundle(
     :ptype profile: HostProfile
     :return: A schema-valid, JSON-serializable :class:`AnalysisContextBundle`.
     :rtype: AnalysisContextBundle
+    :raises RefusedInput: ``aspect`` is None and the campaign has several aspects, or it names none of them.
     """
-    scope_id = campaign.scope_id
+    view = aspect_view(campaign, aspect)
+    declared = view.declared
+    declared_design = declared.design if declared is not None else None
+    scope_id = view.scope_id
     # Resolve member runs, keeping an honest record of what did not resolve and what
     # was deliberately excluded — two different facts, kept in two different lists.
     #
@@ -343,13 +413,12 @@ def assemble_context_bundle(
     # and reads none of what a host declares a listing may leave out — the elided runs carry the
     # mark that makes the one reader of it refuse.
     loaded = {
-        run.id: run
-        for run in storage.load_eval_runs(campaign.run_ids, scope_id, elide_payload=profile.listing_elisions)
+        run.id: run for run in storage.load_eval_runs(view.run_ids, scope_id, elide_payload=profile.listing_elisions)
     }
     resolved: list[EvalRun] = []
     unresolved: list[str] = []
     archived: list[str] = []
-    for run_id in campaign.run_ids:
+    for run_id in view.run_ids:
         run = loaded.get(run_id)
         if run is None:
             unresolved.append(run_id)
@@ -368,9 +437,9 @@ def assemble_context_bundle(
     }
     # Before anything pools them: runs of two revisions of one template are two datasets (`revisions`), and the cell
     # algebra below has no coordinate that would keep them apart.
-    refuse_pooled_revisions((run.template_id for run in runs), templates.get, what=f"campaign {campaign.name!r}")
+    refuse_pooled_revisions((run.template_id for run in runs), templates.get, what=f"campaign {view.name!r}")
     # When the campaign's evidence began: its earliest member run, archived ones included (an archived run's results
-    # existed all the same). A question asked after it confirms nothing (`preregistered_questions`).
+    # existed all the same). A question asked after it confirms nothing (`asked_in_time`).
     first_run_at = min((run.created_at for run in loaded.values()), default=None)
     # Before any lens reads a descriptor: each host measure is read as its runs were launched to read it, not as
     # whoever reads the campaign now declares it, so every lens below reads one set of declarations.
@@ -378,7 +447,7 @@ def assemble_context_bundle(
     run_ids = [run.id for run in runs]
     known_run_ids = set(run_ids)
 
-    declared_control = resolve_declared_control(campaign.declared_design)
+    declared_control = resolve_control_arm(declared.control if declared is not None else None)
     # The archived members' results are read only when a declared control might have been curated out (below), and
     # then in the same call as the resolved members': one read of results however many runs the campaign holds.
     read_archived = bool(declared_control.variant_keys and archived)
@@ -388,6 +457,12 @@ def assemble_context_bundle(
     for result in storage.query_eval_results_by_runs(list(every_result), scope_id):
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
+    # A control chosen once the aspect's evidence existed was chosen with it in view: the aspect's question is then
+    # dated no earlier than the control was named, so every reader that asks `asked_in_time` reads it post hoc. The
+    # evidence is the aspect's first result (`EvalResult.scored_at`), never a run's creation: a control named after
+    # its arms were launched and before any result landed was named before anything could be seen.
+    scored_at = [result.scored_at for run_results in every_result.values() for result in run_results]
+    declared = _dated_by_its_control(declared, scored_at)
     results_by_run: dict[str, list[EvalResult]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
@@ -421,7 +496,7 @@ def assemble_context_bundle(
     # declared control's arm under this build — the stored key, which cells stamped under its predicate carry
     # for good, and the key its lever map re-keys to under this one. `_campaign_design` matches them against
     # the arms and is the only place that does: every lens below reads its answer (`design.control_arm`),
-    # never `declared_design.control`, so no two of them can disagree about which cell is the control.
+    # never `declared.control`, so no two of them can disagree about which cell is the control.
     # Read only when a declared control might have been curated out, and only over the archived
     # set: "the runs carrying your control were archived" and "nothing ever ran it" are different
     # operator actions, and the archived runs' results are the only place the difference lives.
@@ -451,6 +526,7 @@ def assemble_context_bundle(
         archived_control_variants=archived_control_variants,
         has_unresolved_members=bool(unresolved),
         folds=folds,
+        declared_axes=_declared_axes(declared_design),
         profile=profile,
     )
     design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, served=served, profile=profile)
@@ -465,7 +541,7 @@ def assemble_context_bundle(
         apparatus_levels,
         design,
         results_by_run,
-        campaign.declared_design,
+        declared_design,
         folds=folds,
         observations=mechanisms,
         served=served,
@@ -473,7 +549,7 @@ def assemble_context_bundle(
         profile=profile,
     )
     reportable = {entry.name for entry in coverage}
-    axes = _declared_axes(campaign.declared_design)
+    axes = _declared_axes(declared_design)
     aliasing = _factor_aliasing(
         run_ids, _lever_levels(runs, results_by_run, profile=profile, declared_axes=axes), apparatus_levels
     )
@@ -486,7 +562,7 @@ def assemble_context_bundle(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
     variant_index = _name_arms(variant_index, observations, folds, run_ids)
-    variant_index = _declared_level_names(variant_index, campaign.declared_design)
+    variant_index = _declared_level_names(variant_index, declared_design)
     cells, refused_merges, next_experiments = pool_observations(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
     )
@@ -518,7 +594,7 @@ def assemble_context_bundle(
     # have read is not one it was spared, so it is neither carried nor named as retracted.
     ledger = [
         insight
-        for insight in storage.query_insights(scope_id, subject_id=campaign.subject_id)
+        for insight in storage.query_insights(scope_id, subject_id=view.subject_id)
         if insights_as_of is None or insight.observed_at < insights_as_of
     ]
     # Every minting analysis the ledger names, asked about in one read.
@@ -531,7 +607,7 @@ def assemble_context_bundle(
     )
 
     # The campaign's effective bar on the measure the frontier ranks on, or why it takes none.
-    frontier_bar, frontier_bar_withheld = _frontier_bar(campaign.behavior, campaign.declared_design, profile=profile)
+    frontier_bar, frontier_bar_withheld = _frontier_bar(view.behavior, declared_design, profile=profile)
     # Ratings are read once, because the agreement and the prediction-powered estimates both pair them with the
     # judge (#598): the members' per run, in run order, then any in the scope labelling an output a member's judge
     # scored (#628), so the unpaired list is deterministic for the fingerprint.
@@ -544,11 +620,12 @@ def assemble_context_bundle(
     tiers = judges_tiers(storage, scope_id, runs, results, ratings=ratings, templates=templates)
     person_scores = person_scores_by_result(ratings, results)
     bundle = AnalysisContextBundle(
-        campaign_id=campaign.id,
-        subject_id=campaign.subject_id,
-        subject_kind=campaign.subject_kind,
-        behavior=campaign.behavior,
-        template_id=campaign.template_id,
+        campaign_id=view.campaign_id,
+        aspect=view.aspect,
+        subject_id=view.subject_id,
+        subject_kind=view.subject_kind,
+        behavior=view.behavior,
+        template_id=view.template_id,
         scope_id=scope_id,
         run_ids=run_ids,
         unresolved_run_ids=unresolved,
@@ -570,7 +647,7 @@ def assemble_context_bundle(
             bar=frontier_bar,
             known_run_ids=known_run_ids,
             archived_run_ids=None,
-            rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
+            rubric_threshold=profile.bars.pass_threshold(view.behavior),
             profile=profile,
             tiers=tiers,
             # The boundary pillar: each contestant's guardrail dimensions held against the campaign's control arm,
@@ -578,15 +655,15 @@ def assemble_context_bundle(
             control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
             earlier_control=design.earlier_control,
             guardrail_margins=(
-                {entry.dimension: entry.margin for entry in campaign.declared_design.guardrail_margins}
-                if campaign.declared_design is not None
+                {entry.dimension: entry.margin for entry in declared_design.guardrail_margins}
+                if declared_design is not None
                 else None
             ),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
-        declared_design=campaign.declared_design,
+        declared=declared,
         design=design,
         # A run that did not finish is still IN every aggregate above — archiving is what
         # removes a run, and a cancelled run that nobody archived stays pooled. Naming them
@@ -605,8 +682,8 @@ def assemble_context_bundle(
         # rather than folded into the first — reporting unknown as complete is the same error
         # one layer down.
         completeness_unknown_run_ids=[run.id for run in runs if run.completeness is None],
-        short_cells=_short_cells(cells, campaign.declared_design),
-        held_fixed_reading=_held_fixed_reading(runs, campaign.declared_design),
+        short_cells=_short_cells(cells, declared_design),
+        held_fixed_reading=_held_fixed_reading(runs, declared_design),
         # ``full`` because this bundle's reader is a model that cannot go and look:
         # above the inline cap the collapsed form names two spans and says where to
         # get the rest, which is an instruction only a human at a terminal can follow.
@@ -626,7 +703,7 @@ def assemble_context_bundle(
         aliased_factors=aliasing[0],
         unexercised_factors=_unexercised_factors(runs, results_by_run, arms, profile=profile, declared_axes=axes),
         factor_pairs=aliasing[1],
-        declared_crossing=_declared_crossing(campaign.declared_design, runs, results_by_run, profile=profile),
+        declared_crossing=_declared_crossing(declared_design, runs, results_by_run, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
         arm_served_models=_arm_served_models(arms, results_by_run, served),
         arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
@@ -668,7 +745,7 @@ def assemble_context_bundle(
     bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(
         results_by_cell,
         contended_ids,
-        declared=campaign.declared_design is not None and campaign.declared_design.measure_latency,
+        declared=declared_design is not None and declared_design.measure_latency,
     )
     bundle.judged_measures = [
         measure.model_copy(
@@ -681,21 +758,21 @@ def assemble_context_bundle(
         for measure in _judged_measures(
             projection.records,
             results_by_cell,
-            campaign.declared_design,
+            declared_design,
             tiers=bundle.judge_evidence_tiers,
             person_scores=person_scores,
         )
     ]
     bundle.bar_adjudications = _bar_adjudications(
-        campaign.behavior,
-        campaign.declared_design,
+        view.behavior,
+        declared_design,
         results_by_cell,
         projection.records,
         tiers=bundle.judge_evidence_tiers,
         frontier_bar=frontier_bar,
         profile=profile,
     )
-    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design, first_run_at=first_run_at)
+    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, view.aspect, declared, first_run_at=first_run_at)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
@@ -715,7 +792,7 @@ def assemble_context_bundle(
             results_by_cell,
             case_strata,
             projection.records,
-            campaign.declared_design,
+            declared_design,
             tiers=bundle.judge_evidence_tiers,
             profile=profile,
             person_scores=person_scores,
@@ -735,7 +812,7 @@ def assemble_context_bundle(
         observations,
         {c.apparatus_class_id: c for c in apparatus_classes.values()},
         projection.records,
-        campaign.declared_design,
+        declared_design,
         tiers=bundle.judge_evidence_tiers,
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
@@ -744,13 +821,18 @@ def assemble_context_bundle(
         earlier_control=design.earlier_control,
         names=names,
     )
-    bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
+    # A campaign of judge-kind results only: the judge under test is the subject and the only role billed, so its
+    # spend is the arm's own and not spend on measuring it. Decided from the results' candidate_kind, as the cost
+    # measure is; a mixed campaign keeps the measuring-spend label.
+    judge_kind = bool(results) and all(result.candidate_kind == JUDGE_KIND for result in results)
+    bundle.measure_catalog = _measure_catalog(bundle, profile=profile, judge_kind=judge_kind)
     bundle.run_margins, bundle.run_margins_withheld = _run_margins(runs)
     bundle.launch_declarations = launch_declarations
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
-    bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
-        campaign.declared_design,
+    bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = _multiple_comparisons(
+        view.aspect,
+        declared,
         design,
         results_by_cell,
         projection.records,
@@ -764,17 +846,19 @@ def assemble_context_bundle(
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
         first_run_at=first_run_at,
-        # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold, in
-        # the family of each question whose decision rule reads it.
-        rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
-        pass_rate_questions=_pass_rate_questions(campaign.declared_design),
+        # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold: in
+        # the question's family when it was asked in time with a margin, and for the floors whatever the family holds.
+        rubric_threshold=profile.bars.pass_threshold(view.behavior),
     )
     bundle.reading_scope = _reading_scope(
-        campaign.declared_design, bundle.measure_catalog, bundle.judged_measures, first_run_at=first_run_at
+        declared, bundle.measure_catalog, bundle.judged_measures, first_run_at=first_run_at
     )
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then
-    # on), and a question asked after that instant confirms nothing (`preregistered_questions`): the same instant.
+    # on), and a question asked after that instant confirms nothing (`asked_in_time`): the same instant.
     bundle.design_frozen_at = first_run_at
+    # When the aspect's evidence could first be seen: what a margin, a floor or the question's wording added later is
+    # read against on the campaign's page, by the rule its control is read by (`_dated_by_its_control`).
+    bundle.first_result_at = _first_result_at(scored_at)
     # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
     bundle.exclusions = _arm_exclusions(results_by_cell)
     bundle.differential_exclusions = _differential_exclusions(bundle.exclusions)
@@ -790,7 +874,7 @@ def assemble_context_bundle(
         strata=case_strata,
         names=case_names,
         criteria=_criteria(runs, templates),
-        rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
+        rubric_threshold=profile.bars.pass_threshold(view.behavior),
         catalog=bundle.measure_catalog,
         load_judge_evidence=lambda result_ids: storage.load_judge_evidence(result_ids, scope_id),
     )
@@ -839,19 +923,6 @@ def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) ->
         for dimension in template.rubric:
             criteria.setdefault(dimension.name, dimension.description)
     return criteria
-
-
-def _pass_rate_questions(declared: CampaignDesign | None) -> frozenset[str]:
-    """The live questions whose declared decision rule reads the overall pass rate: each with a rate clause that names
-    no one reading, so the contrast is in a family exactly when the rule it serves can read it."""
-    if declared is None:
-        return frozenset()
-    return frozenset(
-        question.id
-        for question in declared.live_questions()
-        if question.decision is not None
-        and any(isinstance(clause, RateDrop) and clause.reading is None for clause in question.decision.clauses)
-    )
 
 
 def _package_version() -> str | None:

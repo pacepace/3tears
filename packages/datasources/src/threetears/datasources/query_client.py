@@ -51,6 +51,7 @@ import asyncio
 import random
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 from uuid import UUID, uuid7
@@ -73,7 +74,7 @@ from threetears.core.security.door_request import (
     datasource_query_op,
     omit_absent_proof,
 )
-from threetears.core.sql_fragments import as_written, equality_conditions
+from threetears.core.sql_fragments import FilterValue, as_written, filter_conditions
 from threetears.core.wire import TolerantWireModel
 from threetears.datasources.export import ExportResult, check_destination
 from threetears.nats.errors import RequestError
@@ -114,6 +115,7 @@ __all__ = [
     "RelationFingerprintRequest",
     "RelationFingerprintResult",
     "read_all",
+    "read_counted",
 ]
 
 log = get_logger(__name__)
@@ -184,10 +186,12 @@ class RelationFingerprintRequest(TolerantWireModel):
     relation: str
     key_columns: list[str]
     #: equality filters, column -> value: the fingerprint describes only the matching rows.
-    #: columns are identifiers (interpolated); values are bound as parameters, never as text
-    where: dict[str, str] = Field(default_factory=dict)
+    #: columns are identifiers (interpolated); values are bound as parameters, never as text. A value
+    #: is text or an integer, bound as the type it is; a hub that predates integers refuses one (its
+    #: model takes text only), so a typed filter fails closed against it rather than being coerced
+    where: dict[str, FilterValue] = Field(default_factory=dict)
     #: set filters, column -> the values it may hold, bound as parameters as ``where``'s are
-    where_in: dict[str, list[str]] = Field(default_factory=dict)
+    where_in: dict[str, list[FilterValue]] = Field(default_factory=dict)
     #: fingerprint every value of this column apart, in one ask (answered as ``fingerprint_groups``).
     #: A hub that predates it refuses the field as unknown (``MALFORMED_REQUEST``), so it is left off
     #: the wire when not asked for, with ``where_in``
@@ -195,13 +199,13 @@ class RelationFingerprintRequest(TolerantWireModel):
 
     @field_validator("where_in")
     @classmethod
-    def _where_in_columns_are_identifiers(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+    def _where_in_columns_are_identifiers(cls, value: dict[str, list[FilterValue]]) -> dict[str, list[FilterValue]]:
         """refuse a set-filter column that is not a plain identifier; values are parameters.
 
         :param value: the filters
-        :ptype value: dict[str, list[str]]
+        :ptype value: dict[str, list[FilterValue]]
         :return: the value unchanged
-        :rtype: dict[str, list[str]]
+        :rtype: dict[str, list[FilterValue]]
         :raises ValueError: if any column is not a plain identifier
         """
         bad = [c for c in value if not _IDENTIFIER_GRAMMAR.match(c)]
@@ -257,13 +261,13 @@ class RelationFingerprintRequest(TolerantWireModel):
 
     @field_validator("where")
     @classmethod
-    def _where_columns_are_identifiers(cls, value: dict[str, str]) -> dict[str, str]:
+    def _where_columns_are_identifiers(cls, value: dict[str, FilterValue]) -> dict[str, FilterValue]:
         """refuse a filter column that is not a plain identifier; values are parameters.
 
         :param value: the filters
-        :ptype value: dict[str, str]
+        :ptype value: dict[str, FilterValue]
         :return: the value unchanged
-        :rtype: dict[str, str]
+        :rtype: dict[str, FilterValue]
         :raises ValueError: if any column is not a plain identifier
         """
         bad = [c for c in value if not _IDENTIFIER_GRAMMAR.match(c)]
@@ -990,7 +994,7 @@ class DatasourceQueryClient:
         *,
         relation: str,
         key: Sequence[str],
-        where: Mapping[str, str] | None = None,
+        where: Mapping[str, FilterValue] | None = None,
         user_identity_token: str | None = None,
         correlation_id: UUID | None = None,
     ) -> RelationFingerprintResult:
@@ -1013,7 +1017,7 @@ class DatasourceQueryClient:
         :param key: the ordering columns the digest is computed over
         :ptype key: Sequence[str]
         :param where: equality filters naming the rows to fingerprint; all of them when omitted
-        :ptype where: Mapping[str, str] | None
+        :ptype where: Mapping[str, FilterValue] | None
         :param user_identity_token: the per-turn user assertion when a human is
             in the loop; ``None`` evaluates the principal's own grants alone
         :ptype user_identity_token: str | None
@@ -1059,8 +1063,8 @@ class DatasourceQueryClient:
         relation: str,
         key: Sequence[str],
         group_by: str,
-        where: Mapping[str, str] | None = None,
-        where_in: Mapping[str, Sequence[str]] | None = None,
+        where: Mapping[str, FilterValue] | None = None,
+        where_in: Mapping[str, Sequence[FilterValue]] | None = None,
         correlation_id: UUID | None = None,
     ) -> dict[str | None, RelationFingerprintResult]:
         """count and fingerprint every value of ``group_by`` in a relation, in one ask.
@@ -1078,9 +1082,9 @@ class DatasourceQueryClient:
         :param group_by: the column whose values are the groups
         :ptype group_by: str
         :param where: equality filters
-        :ptype where: Mapping[str, str] | None
+        :ptype where: Mapping[str, FilterValue] | None
         :param where_in: set filters, column -> the values it may hold
-        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
         :param correlation_id: trace id to carry; generated when omitted
         :ptype correlation_id: UUID | None
         :return: each group's value (``None`` for NULL) -> its fingerprint
@@ -1573,7 +1577,8 @@ async def read_all(
     columns: Sequence[str],
     relation: str,
     key: Sequence[str],
-    where: Mapping[str, str] | None = None,
+    where: Mapping[str, FilterValue] | None = None,
+    where_in: Mapping[str, Sequence[FilterValue]] | None = None,
     page_size: int = _DEFAULT_PAGE_SIZE,
     max_pages: int = 10_000,
 ) -> list[dict[str, Any]]:
@@ -1653,8 +1658,16 @@ async def read_all(
     :param where: equality filters, column -> value, naming the part of the relation to read
         (the rows of one level of a table that holds several); the count, the fingerprint
         and every page apply them alike, so "the whole relation" means the whole of that part.
-        Columns are TRUSTED identifiers; values are bound as parameters
-    :ptype where: Mapping[str, str] | None
+        Columns are TRUSTED identifiers; values are text or integers, bound as parameters as the
+        type they are (an integer column compared with text is refused by a strictly typed engine)
+    :ptype where: Mapping[str, FilterValue] | None
+    :param where_in: set filters, column -> the values it may hold, bound as ``where``'s are;
+        the part read is the rows matching every filter. The hub fingerprints a set-filtered part
+        only grouped, so such a read is proven by the GROUPED fingerprint, grouped by the first
+        set-filtered column: every group's count and digest taken before the first page must match
+        the ones taken after the last, and the counts summed are the rows the read must return. An
+        empty set reads no rows and asks nothing
+    :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
     :param page_size: rows per page. Must be UNDER the hub's row cap and is
         REFUSED at or above it, because the query asks for ``page_size + 1`` and
         the sentinel must fit under the cap; at the cap the hub would cut the
@@ -1670,6 +1683,144 @@ async def read_all(
     :rtype: list[dict[str, Any]]
     :raises IncompleteReadError: when completeness cannot be demonstrated
     :raises ValueError: when the arguments cannot describe a complete read
+    """
+    _check_read(columns, key, page_size)
+
+    # THE TOTAL IS THE PROOF. Everything below this line guards a specific way to
+    # lose a row, and four releases of this function shipped a guard that was
+    # correct about the mechanism it named and blind to the next one. Counting
+    # first and comparing at the end asks a different question -- not "did I think
+    # of every way to skip a row" but "are they all here" -- and that question has
+    # one answer that does not depend on enumerating anything.
+    #
+    # It is what catches a NULL in the key, which no keyset predicate can reach:
+    # `column > value` is NULL rather than true for such a row, so it is skipped
+    # and so is everything ordered after it, and the page that excluded it comes
+    # back short, which is indistinguishable from reaching the end.
+    #
+    # The count and the pages are not one transaction, so a relation being written
+    # during the read will not match. That is reported rather than hidden: on a
+    # relation that is changing there is no "whole relation" to return, and this
+    # function's promise is the whole relation or a raise.
+    filters = _Filters.of(where, where_in)
+    if filters.reads_nothing:
+        return []
+    before = await _fingerprint(client, datasource_name, relation, key, filters)
+    rows = await _pages(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=relation,
+        key=key,
+        filters=filters,
+        page_size=page_size,
+        max_pages=max_pages,
+    )
+    return await _proven(client, datasource_name, relation, key, rows, before, filters)
+
+
+async def read_counted(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str],
+    relation: str,
+    key: Sequence[str],
+    rows: int,
+    where: Mapping[str, FilterValue] | None = None,
+    where_in: Mapping[str, Sequence[FilterValue]] | None = None,
+    not_null: Sequence[str] = (),
+    page_size: int = _DEFAULT_PAGE_SIZE,
+    max_pages: int = 10_000,
+) -> list[dict[str, Any]]:
+    """read the part of a relation the filters name, and prove it holds exactly ``rows`` rows.
+
+    For a caller that counted the part itself, in one statement over many parts (a ``GROUP BY``
+    count of each state's rows, say), and reads each part after: the pages are :func:`read_all`'s,
+    with the same sentinel row and the same refusal to split a run of equal keys over a page
+    boundary, and the read raises unless it returned exactly the rows counted.
+
+    **What the count proves, and what it does not.** That as many rows arrived as the part held
+    when it was counted. No fingerprint is taken, so a delete and an insert during the read that
+    leave the count unchanged are not seen: this is for rows that never change once written (a run
+    of a model's projections, committed with its run row), where the count taken before the pages
+    is the count the pages must reach. A part that may change under the read is read with
+    :func:`read_all`, which fingerprints it.
+
+    Because nothing here asks the hub to describe the part, every filter is in this function's own
+    statements, which is why ``not_null`` is offered here and not on :func:`read_all`: a fingerprint
+    ask ignores fields it does not know, so a null filter sent to a hub that predates one would be
+    dropped there and the proof would describe other rows.
+
+    :param client: the connected query client
+    :ptype client: DatasourceQueryClient
+    :param datasource_name: the datasource to read, as the hub names it
+    :ptype datasource_name: str
+    :param columns: columns to select, TRUSTED identifiers
+    :ptype columns: Sequence[str]
+    :param relation: the table or view to read, TRUSTED
+    :ptype relation: str
+    :param key: the ordering key, unique within the part and never null in it
+    :ptype key: Sequence[str]
+    :param rows: how many rows the part holds, as the caller counted them with the same filters
+    :ptype rows: int
+    :param where: equality filters, as :func:`read_all`'s
+    :ptype where: Mapping[str, FilterValue] | None
+    :param where_in: set filters, as :func:`read_all`'s; an empty set reads no rows
+    :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
+    :param not_null: columns that must hold a value (``column IS NOT NULL``), TRUSTED identifiers;
+        the rows the caller's count left out because they cannot be keyed or placed
+    :ptype not_null: Sequence[str]
+    :param page_size: rows per page, as :func:`read_all`'s
+    :ptype page_size: int
+    :param max_pages: refuse rather than loop forever
+    :ptype max_pages: int
+    :return: the part's rows, in key order
+    :rtype: list[dict[str, Any]]
+    :raises IncompleteReadError: when the pages do not hold exactly ``rows`` rows, or cannot be shown
+        to have stepped past every row
+    :raises ValueError: when the arguments cannot describe a complete read, or ``rows`` is negative
+    """
+    _check_read(columns, key, page_size)
+    if rows < 0:
+        raise ValueError(f"rows must not be negative, got {rows}")
+    filters = _Filters.of(where, where_in, not_null)
+    read: list[dict[str, Any]] = []
+    if not filters.reads_nothing:
+        read = await _pages(
+            client,
+            datasource_name,
+            columns=columns,
+            relation=relation,
+            key=key,
+            filters=filters,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
+    if len(read) != rows:
+        raise IncompleteReadError(
+            f"{datasource_name}: {relation}: read {len(read)} rows of the {rows} counted"
+            + (
+                "; rows are missing (a key column NULL in some row is skipped by every keyset predicate)"
+                if len(read) < rows
+                else f"; more rows than counted, so {relation} was written after the count"
+            )
+        )
+    return read
+
+
+def _check_read(columns: Sequence[str], key: Sequence[str], page_size: int) -> None:
+    """refuse arguments that cannot describe a complete paged read.
+
+    :param columns: the columns selected
+    :ptype columns: Sequence[str]
+    :param key: the ordering key
+    :ptype key: Sequence[str]
+    :param page_size: rows per page
+    :ptype page_size: int
+    :return: nothing
+    :rtype: None
+    :raises ValueError: naming what is wrong
     """
     if not columns:
         raise ValueError("columns must not be empty: a read of no columns cannot be checked for completeness")
@@ -1691,27 +1842,30 @@ async def read_all(
             f"the default is {_DEFAULT_PAGE_SIZE}."
         )
 
+
+async def _pages(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str],
+    relation: str,
+    key: Sequence[str],
+    filters: _Filters,
+    page_size: int,
+    max_pages: int,
+) -> list[dict[str, Any]]:
+    """every row of the filtered part, page after page in key order: the one paging loop.
+
+    The sentinel row, the key group held back from a page's end, the halving of a page too large
+    for one reply: each described where :func:`read_all` describes them. The rows returned are
+    proven by the caller (:func:`_proven`, or :func:`read_counted`'s count), never here.
+
+    :return: the rows read
+    :rtype: list[dict[str, Any]]
+    :raises IncompleteReadError: when paging cannot step past every row
+    """
     selected = ", ".join(columns)
     ordering = ", ".join(key)
-
-    # THE TOTAL IS THE PROOF. Everything below this line guards a specific way to
-    # lose a row, and four releases of this function shipped a guard that was
-    # correct about the mechanism it named and blind to the next one. Counting
-    # first and comparing at the end asks a different question -- not "did I think
-    # of every way to skip a row" but "are they all here" -- and that question has
-    # one answer that does not depend on enumerating anything.
-    #
-    # It is what catches a NULL in the key, which no keyset predicate can reach:
-    # `column > value` is NULL rather than true for such a row, so it is skipped
-    # and so is everything ordered after it, and the page that excluded it comes
-    # back short, which is indistinguishable from reaching the end.
-    #
-    # The count and the pages are not one transaction, so a relation being written
-    # during the read will not match. That is reported rather than hidden: on a
-    # relation that is changing there is no "whole relation" to return, and this
-    # function's promise is the whole relation or a raise.
-    filters = dict(where or {})
-    before = await client.relation_fingerprint(datasource_name, relation=relation, key=key, where=filters)
 
     rows: list[dict[str, Any]] = []
     cursor: tuple[Any, ...] | None = None
@@ -1756,14 +1910,14 @@ async def read_all(
                     f"over duplicates, or rows were deleted mid-read. {len(rows)} rows were read and they "
                     f"are NOT the whole relation."
                 )
-            return await _proven(client, datasource_name, relation, key, rows, before, filters)
+            return rows
 
         had_more = len(page.rows) > size
         if not had_more:
             # No sentinel: the warehouse had nothing past this page, so every row
             # is safe to keep and there is no boundary to worry about.
             rows.extend(page.rows)
-            return await _proven(client, datasource_name, relation, key, rows, before, filters)
+            return rows
 
         # A KEY GROUP MUST NOT STRADDLE THE BOUNDARY. The next page asks for rows
         # strictly greater than the cursor, so any row sharing the cursor's key is
@@ -1819,8 +1973,8 @@ async def _proven(
     relation: str,
     key: Sequence[str],
     rows: list[dict[str, Any]],
-    before: RelationFingerprintResult,
-    where: Mapping[str, str],
+    before: _Reading,
+    filters: _Filters,
 ) -> list[dict[str, Any]]:
     """return ``rows`` only if it provably holds the whole relation, unchanged.
 
@@ -1853,7 +2007,9 @@ async def _proven(
     :param rows: every row collected by the paging loop
     :ptype rows: list[dict[str, Any]]
     :param before: the fingerprint taken before paging began
-    :ptype before: RelationFingerprintResult
+    :ptype before: _Reading
+    :param filters: the part read, fingerprinted again the way it was before
+    :ptype filters: _Filters
     :return: ``rows`` unchanged, when it is provably complete
     :rtype: list[dict[str, Any]]
     :raises IncompleteReadError: when the row count disagrees, or the relation
@@ -1873,7 +2029,7 @@ async def _proven(
             f"{datasource_name}: {relation} counted {before.row_count} rows and the read returned {len(rows)}. {cause}"
         )
 
-    after = await client.relation_fingerprint(datasource_name, relation=relation, key=key, where=where)
+    after = await _fingerprint(client, datasource_name, relation, key, filters)
     if after != before:
         raise IncompleteReadError(
             f"{datasource_name}: {relation} changed while it was being read. the row count and the "
@@ -1886,14 +2042,124 @@ async def _proven(
     return rows
 
 
-def _filtered(where: Mapping[str, str], key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:
-    """the ``WHERE`` fragment that keeps only ``where``'s rows, and of them those after ``cursor``.
+@dataclass(frozen=True)
+class _Filters:
+    """the part of a relation a read names: equality, set and not-null filters, values checked.
+
+    :ivar where: column -> the value it equals
+    :ivar where_in: column -> the values it may hold
+    :ivar not_null: columns that must hold a value
+    """
+
+    where: Mapping[str, FilterValue]
+    where_in: Mapping[str, tuple[FilterValue, ...]]
+    not_null: tuple[str, ...] = ()
+
+    @classmethod
+    def of(
+        cls,
+        where: Mapping[str, FilterValue] | None,
+        where_in: Mapping[str, Sequence[FilterValue]] | None,
+        not_null: Sequence[str] = (),
+    ) -> _Filters:
+        """the filters, each value refused unless it is text or an integer.
+
+        :param where: equality filters
+        :ptype where: Mapping[str, FilterValue] | None
+        :param where_in: set filters
+        :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
+        :param not_null: not-null filters
+        :ptype not_null: Sequence[str]
+        :return: the filters
+        :rtype: _Filters
+        :raises ValueError: for a value that is neither text nor an integer (a bool included: it
+            would bind as 1 or 0, which no caller means); or a set given as one string
+        """
+        sets = dict(where_in or {})
+        for column, members in sets.items():
+            if isinstance(members, str):
+                raise ValueError(f"where_in[{column!r}] is one string, not a set of values; give a list")
+        filters = cls(
+            where=dict(where or {}),
+            where_in={column: tuple(members) for column, members in sets.items()},
+            not_null=tuple(not_null),
+        )
+        values = [*filters.where.values(), *(v for members in filters.where_in.values() for v in members)]
+        bad = [v for v in values if isinstance(v, bool) or not isinstance(v, str | int)]
+        if bad:
+            raise ValueError(f"filter values are text or integers, bound as the type they are; got {bad!r}")
+        return filters
+
+    @property
+    def reads_nothing(self) -> bool:
+        """whether a set filter names no value, so no row can match.
+
+        :return: True when some set is empty
+        :rtype: bool
+        """
+        return any(not members for members in self.where_in.values())
+
+    def conditions(self, *, first: int = 1) -> tuple[str, list[FilterValue]]:
+        """the filters as conditions, placeholders from ``first``, unquoted as the statement's names are.
+
+        :param first: the first placeholder's number
+        :ptype first: int
+        :return: the conditions (empty without filters) and their values in order
+        :rtype: tuple[str, list[FilterValue]]
+        """
+        return filter_conditions(self.where, self.where_in, self.not_null, first=first, quote=as_written)
+
+
+@dataclass(frozen=True)
+class _Reading:
+    """one fingerprint of the part a read names: how many rows it holds, and what to compare.
+
+    :ivar row_count: the rows the part holds
+    :ivar compared: the fingerprint, or every group's, equal across two readings only when the part
+        held still between them
+    """
+
+    row_count: int
+    compared: object
+
+
+async def _fingerprint(
+    client: DatasourceQueryClient, datasource_name: str, relation: str, key: Sequence[str], filters: _Filters
+) -> _Reading:
+    """fingerprint the part a read names, the one way the hub answers for its filters.
+
+    A part named by set filters is fingerprinted GROUPED, by its first set-filtered column, since a
+    hub answers ``where_in`` only beside ``group_by``: the groups together are exactly the part, so
+    their counts summed are its rows and the groups compared are its digest. Any other part is one
+    ungrouped fingerprint.
+
+    :return: the reading
+    :rtype: _Reading
+    :raises DatasourceQueryError: when the hub refuses (an engine that cannot group answers
+        ``FINGERPRINT_GROUPS_UNSUPPORTED``; a hub that predates integer values, ``MALFORMED_REQUEST``)
+    """
+    if filters.where_in:
+        groups = await client.relation_fingerprint_groups(
+            datasource_name,
+            relation=relation,
+            key=key,
+            group_by=next(iter(filters.where_in)),
+            where=filters.where,
+            where_in=filters.where_in,
+        )
+        return _Reading(row_count=sum(g.row_count for g in groups.values()), compared=groups)
+    fingerprint = await client.relation_fingerprint(datasource_name, relation=relation, key=key, where=filters.where)
+    return _Reading(row_count=fingerprint.row_count, compared=fingerprint)
+
+
+def _filtered(filters: _Filters, key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:
+    """the ``WHERE`` fragment that keeps only the filters' rows, and of them those after ``cursor``.
 
     The filters' values are bound first, as ``$1..$n``, and the keyset condition is numbered from
     ``$n+1`` as it is built, so each placeholder names its own parameter.
 
-    :param where: equality filters, column -> value; columns are TRUSTED identifiers
-    :ptype where: Mapping[str, str]
+    :param filters: the part read; columns are TRUSTED identifiers
+    :ptype filters: _Filters
     :param key: the ordering columns, TRUSTED identifiers
     :ptype key: Sequence[str]
     :param cursor: the last key read, or ``None`` for the first page
@@ -1902,12 +2168,12 @@ def _filtered(where: Mapping[str, str], key: Sequence[str], cursor: tuple[Any, .
     :rtype: tuple[str, list[Any]]
     """
     # unquoted, as the relation and key columns in the same statement are (sql_fragments.as_written)
-    filters, values = equality_conditions(where, quote=as_written) if where else ("", [])
+    conditions, values = filters.conditions()
     keyset, params = _keyset_predicate(key, cursor, first=len(values) + 1)
-    if filters and keyset:
-        return f" WHERE ({filters}) AND ({keyset})", [*values, *params]
-    if filters or keyset:
-        return f" WHERE {filters or keyset}", [*values, *params]
+    if conditions and keyset:
+        return f" WHERE ({conditions}) AND ({keyset})", [*values, *params]
+    if conditions or keyset:
+        return f" WHERE {conditions or keyset}", [*values, *params]
     return "", []
 
 

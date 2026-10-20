@@ -34,6 +34,7 @@ import pytest
 
 from threetears.evals.analysis.reads import bisect_runs
 from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.judge_cases import JUDGE_KIND_CONTRACT
 from threetears.evals.schema import RubricScore
 from threetears.evals.kernel.host import (
     CANDIDATE_MODEL_LEVER,
@@ -50,7 +51,7 @@ from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRAC
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -278,6 +279,12 @@ def test_a_kind_recording_a_level_it_does_not_seat_is_reported_and_logged(caplog
     assert blank_only, "nothing contradicts the seats when every run read blank"
     assert not with_a_level, "a run that recorded a judge refutes the seats, and the dimension must be reported"
     assert "has no seat for apparatus dimension 'judge_model'" in caplog.text
+    assert "the seat declaration or the host's reader for it is wrong" in caplog.text
+
+
+def test_the_judge_kind_seats_the_spend_ceiling_it_runs_under_and_nothing_else() -> None:
+    """Every judge-kind run runs under the per-run cost cap, so that seat is its rig; the judge under test is not."""
+    assert JUDGE_KIND_CONTRACT.seats == frozenset({"max_cost_usd"})
 
 
 _PROFILE_LOGGER = "threetears.evals.kernel.host.profile"
@@ -503,7 +510,6 @@ def test_bisecting_a_judged_and_a_code_only_run_of_one_kind_reads_the_judge_as_a
 def test_a_bundle_over_a_judged_and_a_code_only_run_of_one_kind_records_no_unknown_judge() -> None:
     """The cell partition and the confound scan read the code-only run's judge as unseated, never undecided."""
     from threetears.evals.analysis import assemble_context_bundle
-    from threetears.evals.kernel import EvalCampaign
     from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 
     profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
@@ -528,7 +534,7 @@ def test_a_bundle_over_a_judged_and_a_code_only_run_of_one_kind_records_no_unkno
         ],
         code_only.id: [make_eval_result(eval_run_id=code_only.id, scope_id=code_only.scope_id, rubric_scores=[])],
     }
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=judged.scope_id,
         name="judged and code-only",
         subject_id=judged.subject_snapshot.subject_id,

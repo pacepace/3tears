@@ -235,6 +235,25 @@ class TestHeartbeatSubscriberHandling:
         await subscriber.stop()
 
     @pytest.mark.asyncio
+    async def test_a_bug_while_parsing_propagates_rather_than_reading_as_malformed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """only a body that is not a heartbeat is dropped as malformed; a TypeError is a bug.
+
+        It used to be contained and dropped, so every pod's heartbeat would be lost while
+        the log blamed the pods.
+        """
+        subscriber, _collection = _make_subscriber()
+
+        def _broken(cls: type[HeartbeatMessage], data: bytes) -> HeartbeatMessage:
+            raise TypeError("a bug in the parse")
+
+        monkeypatch.setattr(HeartbeatMessage, "model_validate_json", classmethod(_broken))
+        with pytest.raises(TypeError, match="a bug in the parse"):
+            await subscriber.handle_heartbeat(_make_heartbeat_msg())
+        assert subscriber.known_pod_ids == set()
+
+    @pytest.mark.asyncio
     async def test_marks_pod_tools_available_on_heartbeat(self) -> None:
         """subscriber marks endpoints available and records tools on entity."""
         catalog = ToolCatalog()

@@ -1,10 +1,9 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the question declared before the run quoted and the subhead under it, the arms line and the
-rule's sentence, the verdict line, the
-scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
-qualification is a step down, in the sections), the decision rule clause by clause where one is declared, what it
+campaign's name —, the question declared before the run quoted and the subhead under it, the arms line, the
+verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
+qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
 cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
 table), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
@@ -33,6 +32,8 @@ which :meth:`Report.write` puts beside the page, and the page names its fingerpr
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Literal, Self, get_args
@@ -40,8 +41,11 @@ from typing import Annotated, Literal, Self, get_args
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialCheck, TrialJudgement, TrialState
+from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.quantities import number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.kernel.authored import Recommendation
+from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
@@ -52,7 +56,7 @@ CellValue = str | int | float | bool | None
 ReportBasis = Literal["analysis", "code_only"]
 
 #: Where a block sits, in reading order. ``header`` is the first screen's title, arms and verdict lines, and
-#: ``scoreboard`` the rest of the first screen; ``decision`` is a declared decision rule read clause by clause;
+#: ``scoreboard`` the rest of the first screen; ``decision`` is the floors section: each declared floor read clause by clause;
 #: ``memo`` and ``contrasts`` are what it means; ``cases`` and ``trials`` the cases and their drill-down;
 #: ``not_tested`` what the campaign could not speak to; ``methods`` how everything was measured; ``glossary`` every
 #: term of art the page used.
@@ -67,7 +71,7 @@ ReportSection = Literal[
 SECTION_TITLES: dict[str, str] = {
     "header": "",
     "scoreboard": "Scoreboard",
-    "decision": "Decision",
+    "decision": "Floors",
     "memo": "What it means",
     "contrasts": "Contrasts",
     "cases": "Cases",
@@ -80,14 +84,15 @@ SECTION_TITLES: dict[str, str] = {
 #: The sections the first screen is made of.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
 
-#: The anchor of the first screen's subhead stating a declared decision rule, which the Decision section links up to.
-RULE_ANCHOR = "rule"
-
 #: What a text block's author wrote it as.
 TextRole = Literal[
     "answer",
     "recommendation",
-    "revisit_when",
+    "reason",
+    "override",
+    "what_changed",
+    "how_sure",
+    "means",
     "finding_title",
     "finding_body",
     "caveat",
@@ -99,11 +104,10 @@ TextRole = Literal[
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
 #: scoreboard that changes how the verdict is read, in normal weight: the case floor, an arm's label that its own row
-#: contradicts. ``basis``: the question declared before the run, quoted whole under the title, and in the Decision
-#: section the line saying a rule written as prose is not read. ``rule``: on the first
-#: screen, the subhead's decision rule in the sentence code writes, under the arms line; in the Decision section, the
-#: line under the clauses table saying keep is the default, so an unsettled rule keeps the control for now, and which
-#: interval a clause reads. ``verdict``: the verdict line. ``design``, ``charts`` and
+#: contradicts. ``basis``: the question declared before the run, quoted whole under the title. ``floor``: on the first
+#: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
+#: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
+#: verdict line. ``design``, ``charts`` and
 #: ``cost``: how the run was laid out, what was not charted and where a cost is a floor, in the methods. ``memo``: who wrote the memo,
 #: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
@@ -111,12 +115,16 @@ TextRole = Literal[
 #: corrected. ``strata``: a stratum too small to read alone. ``guardrails``: how guardrails were decided.
 #: ``scope``: which readings no declared question asked about. ``not_tested``: something the campaign could not
 #: speak to. ``calibration``: a judge not yet calibrated against people's labels — a state with its next step, never a
-#: failure. ``generation``: how the report itself was made.
+#: failure. ``generation``: how the report itself was made. ``call``: on a campaign's page, the person's call, or that
+#: none is recorded yet, and every broken floor it overrides. ``bar``: on a campaign's page, a bar an arm misses, a
+#: line as loud as a broken floor's and as early.
 DisclosureSource = Literal[
     "arms",
+    "bar",
+    "call",
     "caveat",
     "basis",
-    "rule",
+    "floor",
     "verdict",
     "design",
     "charts",
@@ -213,9 +221,12 @@ class Verdict(EvalDocumentModel):
     control: str | None = Field(
         default=None, description="The control, as the report names it; None for a bar, read on one cell."
     )
-    question_id: str | None = Field(
+    aspect: str | None = Field(
         default=None,
-        description="The declared question whose family tested a contrast; None campaign-wide, and for a bar or guardrail.",
+        description=(
+            "The aspect whose question's family tested a contrast; None for the exploratory family, and for a bar or "
+            "guardrail."
+        ),
     )
     delta: float | None = Field(default=None, description="Arm mean minus control mean; None for a bar.")
     interval: tuple[float, float] | None = Field(
@@ -460,8 +471,7 @@ class TableBlock(_Block):
     title_ref: str | None = Field(
         default=None,
         description=(
-            "An anchor on the page the title links to, where the table reads a sentence said there "
-            "(`rule`: the subhead stating the decision rule); None for none."
+            "An anchor on the page the title links to, where the table reads a sentence said there; None for none."
         ),
     )
 
@@ -633,7 +643,7 @@ class TrialBlock(_Block):
 
 
 #: What kind of verdict the first screen's line is, for a page that sets each kind apart: ``decided`` (a declared
-#: rule or question settled it), ``open`` (too few cases, or no question was declared, so the line offers leads),
+#: question settled it), ``open`` (too few cases, or no question was declared, so the line offers leads),
 #: ``failed`` (the test setup failed, so there is no verdict) and ``summary`` (one arm: a count, nothing to decide).
 _VerdictTone = Literal["decided", "open", "failed", "summary"]
 
@@ -642,7 +652,6 @@ _VerdictTone = Literal["decided", "open", "failed", "summary"]
 _VERDICT_TONES: dict[str, _VerdictTone] = {
     "setup": "failed",
     "one_arm": "summary",
-    "rule": "decided",
     "declared": "decided",
     "too_small": "open",
     "exploratory": "open",
@@ -849,13 +858,218 @@ class Report(EvalDocumentModel):
         return files
 
 
+#: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
+#: shape would misread the new one.
+CAMPAIGN_JSON_SHAPE = 1
+
+
+class CampaignAspectFold(EvalDocumentModel):
+    """One aspect's fold of a campaign's page: the writer's summary of the aspect, then that aspect's own page."""
+
+    aspect: str = Field(min_length=1, description="The aspect's label: the fold's heading.")
+    shows: str = Field(
+        min_length=1,
+        description="What code read on the aspect, in a few words beside the heading (`v2 shown worse`).",
+    )
+    summary: list[ReportBlock] = Field(
+        default_factory=list,
+        description=(
+            "The writer's summary of the aspect (what changed, how sure, what it means), as text blocks; empty "
+            "with no memo, or none for this aspect."
+        ),
+    )
+    report: Report = Field(
+        description=(
+            "The aspect's own page (`build_code_only_report` over its bundle), laid out in the fold below the summary "
+            "without its title, its question, its broken floors or its verdict line (:attr:`head`)."
+        )
+    )
+
+    @property
+    def head(self) -> list[ReportBlock]:
+        """The aspect page's first screen as the fold lays it out: its arms line, scoreboard and caveats, without its
+        question and broken floors, which the campaign's first screen carries once, or its verdict line, which reads
+        the aspect alone and could contradict, or pick an arm against, the campaign's table. An aspect of one arm keeps
+        its verdict line: it counts that arm's cases passed and missed, and has no other arm to pick against."""
+        one_arm = len(self.report.bundle.scoreboard) == 1
+        dropped = {"floor", "basis"} if one_arm else {"floor", "basis", "verdict"}
+        return [
+            block
+            for block in self.report.blocks
+            if block.section in FIRST_SCREEN
+            and not (isinstance(block, DisclosureBlock) and block.section == "header" and block.source in dropped)
+        ]
+
+
+class CampaignReport(EvalDocumentModel):
+    """A campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then one
+    fold per aspect.
+
+    **The first screen, in order** (:attr:`blocks`, every one in the ``header`` section): every broken floor, one loud
+    line each, above the title; the question; the writer's recommendation, or a line saying none was written; code's
+    table of every aspect × candidate (its change against the control, the interval it was read on, the margin and
+    what it shows); the cases that would settle each unclear row; the person's call, or that none is recorded, and
+    any broken floor it overrides. :attr:`blocks` may also hold the memo's findings and next steps (``memo``), which
+    the recommendation rests on. Then :attr:`aspects`, one fold each, in the campaign's order.
+
+    **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
+    nothing else, and a code-only campaign page (no memo) holds none.
+    """
+
+    basis: ReportBasis = Field(description="`analysis` with a memo over the campaign, `code_only` without one.")
+    title: str = Field(min_length=1, description="The title line: the campaign's name.")
+    campaign_id: str = Field(min_length=1, description="The campaign.")
+    campaign_name: str | None = Field(default=None, description="The campaign's name, where known.")
+    scope_id: str = Field(min_length=1, description="The scope the campaign lives in.")
+    analysis_id: str | None = Field(
+        default=None, description="The stored analysis whose memo the page lays out; None on a code-only page."
+    )
+    finding_count: int = Field(ge=0, description="How many findings the memo holds.")
+    blocks: list[ReportBlock] = Field(description="The first screen, then the memo's findings, in reading order.")
+    aspects: list[CampaignAspectFold] = Field(description="One fold per aspect, in the campaign's order.")
+    readings: CampaignReadings = Field(description="What code read off the campaign: every row and every floor.")
+    call: CampaignCall | None = Field(default=None, description="The person's call; None while none is recorded.")
+    recommendation: Recommendation | None = Field(
+        default=None, description="The writer's recommendation, as the memo holds it; None with no memo."
+    )
+
+    @model_validator(mode="after")
+    def _the_basis_matches_what_the_page_holds(self) -> Self:
+        """Refuse a code-only page holding a finding or a writer's words, and a block linked to a finding not held.
+
+        :raises ValueError: A code-only page counts a finding or holds a text block, or a block names a finding
+            position past ``finding_count``.
+        """
+        blocks = [*self.blocks, *(block for fold in self.aspects for block in fold.summary)]
+        for index, block in enumerate(blocks):
+            named = ([block.finding] if block.finding is not None else []) + list(block.rests_on)
+            if stray := sorted({position for position in named if not 0 <= position < self.finding_count}):
+                raise ValueError(
+                    f"block {index} ({block.kind}) is linked to finding position(s) {stray}, and the page holds "
+                    f"{self.finding_count} finding(s)"
+                )
+        if self.basis == "code_only":
+            if analysed := [fold.aspect for fold in self.aspects if fold.report.basis != "code_only"]:
+                raise ValueError(
+                    f"a code-only page folds code-only aspect pages, and {', '.join(analysed)} renders an analysis"
+                )
+            if self.analysis_id is not None:
+                raise ValueError(f"a code-only page lays out no analysis, and this one names {self.analysis_id}")
+            if self.recommendation is not None:
+                raise ValueError("a code-only page has no memo, so it holds no recommendation")
+            if self.finding_count:
+                raise ValueError(f"a code-only page has no findings, and this one counts {self.finding_count}")
+            if authored := [index for index, block in enumerate(blocks) if isinstance(block, TextBlock)]:
+                raise ValueError(f"a code-only page holds no writer's words, and blocks {authored} are text blocks")
+        return self
+
+    @property
+    def terms(self) -> list[str]:
+        """Every glossary term the page links, in the order first linked: its own first screen's, then each aspect's
+        fold's — what its one glossary defines."""
+        linked: list[str] = []
+        for block in self.blocks:
+            found = (
+                [column.term for column in block.columns]
+                if isinstance(block, TableBlock)
+                else [block.term]
+                if isinstance(block, DisclosureBlock)
+                else []
+            )
+            linked += [term for term in found if term is not None and term not in linked]
+        for fold in self.aspects:
+            linked += [term for term in fold.report.terms if term not in linked]
+        return linked
+
+    @property
+    def verdicts(self) -> list[Verdict]:
+        """Every verdict code reaches on the campaign, typed: each aspect's page's, aspect by aspect in the campaign's
+        order, each naming its aspect — what a gate reads."""
+        return [verdict for fold in self.aspects for verdict in fold.report.verdicts]
+
+    def write(self, out_dir: Path | str) -> dict[str, Path]:
+        """Write the page as one self-contained HTML file, its Markdown, its JSON, and each aspect's bundle.
+
+        ``report.html`` needs nothing beside it; ``report.md`` is the same page as Markdown; ``campaign.json`` is the
+        page's machine form (:meth:`json_document`), naming each aspect's bundle by its fingerprint; and each aspect's
+        bundle is written whole as ``bundle-<fold id>.json`` (:attr:`fold_ids`), so the fingerprint the page names is
+        the one a reader computes from the file.
+
+        :param out_dir: The directory; created when missing.
+        :ptype out_dir: Path | str
+        :return: Each file written, by role: ``html``, ``markdown``, ``json``, and ``bundle:<aspect>`` per aspect.
+        :rtype: dict[str, Path]
+        """
+        # Deferred: the serializers import this module for the block types they lay out.
+        from threetears.evals.analysis.report.serialize_html import campaign_report_html
+        from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+
+        directory = Path(out_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        files: dict[str, Path] = {
+            "html": directory / "report.html",
+            "markdown": directory / "report.md",
+            "json": directory / "campaign.json",
+        }
+        files["html"].write_text(campaign_report_html(self), encoding="utf-8")
+        files["markdown"].write_text(campaign_report_markdown(self), encoding="utf-8")
+        files["json"].write_text(json.dumps(self.json_document(), indent=2) + "\n", encoding="utf-8")
+        for fold, fold_id in zip(self.aspects, self.fold_ids, strict=True):
+            path = directory / f"bundle-{fold_id}.json"
+            path.write_text(fold.report.bundle.to_json(indent=2) + "\n", encoding="utf-8")
+            files[f"bundle:{fold.aspect}"] = path
+        return files
+
+    @property
+    def fold_ids(self) -> list[str]:
+        """Each aspect's fold as the id its section and every id inside it are named by: the label in lower case,
+        each run of other characters one hyphen, numbered where two would read alike."""
+        ids: list[str] = []
+        for fold in self.aspects:
+            slug = re.sub(r"[^a-z0-9]+", "-", fold.aspect.casefold()).strip("-") or "aspect"
+            ids.append(f"{slug}-{len(ids) + 1}" if slug in ids else slug)
+        return ids
+
+    def json_document(self) -> dict[str, object]:
+        """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
+        the writer's recommendation (its arm and how sure) where there is a memo, the call, and each aspect's bundle by
+        its fingerprint and shape.
+
+        :return: A JSON-ready mapping.
+        :rtype: dict[str, object]
+        """
+        recommendation = self.recommendation
+        return {
+            "kind": "campaign",
+            "shape": CAMPAIGN_JSON_SHAPE,
+            "campaign_id": self.campaign_id,
+            "basis": self.basis,
+            "analysis_id": self.analysis_id,
+            "recommendation": None
+            if recommendation is None
+            else {"arm": recommendation.arm, "confidence": recommendation.confidence},
+            "readings": self.readings.to_dict(),
+            "call": self.call.to_dict() if self.call is not None else None,
+            "aspects": [
+                {
+                    "aspect": fold.aspect,
+                    "bundle_fingerprint": fold.report.source.bundle_fingerprint,
+                    "bundle_schema_version": fold.report.bundle.schema_version,
+                }
+                for fold in self.aspects
+            ],
+        }
+
+
 __all__ = [
+    "CAMPAIGN_JSON_SHAPE",
     "FINDING_ROLES",
     "FIRST_SCREEN",
-    "RULE_ANCHOR",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",
+    "CampaignAspectFold",
+    "CampaignReport",
     "CellValue",
     "ChartBlock",
     "ChartKind",

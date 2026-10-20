@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from nats.js.api import StorageType, StreamConfig
-from nats.js.errors import NotFoundError
+from nats.js.errors import APIError, NotFoundError
 
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 from threetears.nats.kv import build_kv_stream_config
@@ -36,16 +36,22 @@ _NS = "3tears"
 _SETTLE_SECONDS = 5.0
 
 
-class _ApiError(Exception):
-    """a JetStream API refusal carrying the server's error code, as nats-py's ``APIError`` does.
+def _name_in_use() -> APIError:
+    """the refusal nats-py raises when a stream is re-added with a different configuration.
 
-    Not a fake of a protocol: the client classifies on ``err_code`` alone, so an exception carrying
-    that attribute IS the input shape.
+    Built through nats-py's own ``APIError.from_error``, as the server's error body is, so the type
+    the client's handlers catch is the one production sees.
+
+    :return: the exception nats-py raised
+    :rtype: APIError
     """
-
-    def __init__(self, err_code: int, description: str) -> None:
-        super().__init__(f"nats: err_code={err_code} description={description!r}")
-        self.err_code = err_code
+    try:
+        APIError.from_error(
+            {"code": 400, "err_code": 10058, "description": "stream name already in use with a different configuration"}
+        )
+    except APIError as raised:
+        return raised
+    raise AssertionError("nats-py's APIError.from_error returned instead of raising")
 
 
 # parity-exempt: scripted JetStream server for the stream, consumer and bind calls the client makes on a reconnect; the real JetStreamContext surface is far larger and unrelated
@@ -87,7 +93,7 @@ class _ScriptedServer:
             raise self.add_failures.pop(0)
         existing = self.streams.get(config.name or "")
         if existing is not None and existing != config:
-            raise _ApiError(10058, "stream name already in use with a different configuration")
+            raise _name_in_use()
         self.streams[config.name or ""] = dataclasses.replace(config)
         if self.unacknowledged_add is not None:
             await self.unacknowledged_add.wait()
@@ -292,6 +298,10 @@ async def test_a_declared_file_kv_bucket_lost_with_the_brokers_storage_is_declar
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_on_a_lost_file_stream_is_bound_again() -> None:
     """the agent-router's turn consumer: its stream back, the durable on it bound again."""
     server = _ScriptedServer()
@@ -611,6 +621,10 @@ async def _ack(msg: Any) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_on_a_wiped_stream_is_created_again() -> None:
     """a durable lives on its stream: the restart that took the stream took the durable too."""
     server = _ScriptedServer()
@@ -632,6 +646,10 @@ async def test_a_pull_durable_on_a_wiped_stream_is_created_again() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the scripted connection cannot carry a pull consumer's UNSUB, and stop contains that as it would a broken transport",
+)
 async def test_a_pull_durable_that_survived_is_not_rebound() -> None:
     """a reconnect over a network blip leaves the durable in place; rebinding it is churn."""
     server = _ScriptedServer()

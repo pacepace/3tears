@@ -56,6 +56,7 @@ from threetears.evals.schema.models import VariationAxis
 from threetears.evals.gen import generate_variations
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
+    analysed_aspect,
     fixture_variant_key,
     make_analysis,
     make_campaign,
@@ -373,9 +374,11 @@ class TestTheReportCarriesStrata:
     def test_an_analysis_report_lays_out_the_strata_of_the_bundle_it_froze(self) -> None:
         bundle = _bundle(*_mixed())
         analysis = make_analysis(
-            decision_surface=bundle_decision_surface(bundle),
-            variant_index=bundle.variant_index,
-            bundle=bundle.to_dict(),
+            aspects=[
+                analysed_aspect(
+                    bundle, decision_surface=bundle_decision_surface(bundle), variant_index=bundle.variant_index
+                )
+            ],
         )
         report = build_report(analysis)
 
@@ -386,16 +389,18 @@ class TestTheReportCarriesStrata:
     def test_the_stored_surface_round_trips_its_strata(self) -> None:
         bundle = _bundle(*_mixed())
         analysis = make_analysis(
-            decision_surface=bundle_decision_surface(bundle),
-            variant_index=bundle.variant_index,
-            bundle=bundle.to_dict(),
+            aspects=[
+                analysed_aspect(
+                    bundle, decision_surface=bundle_decision_surface(bundle), variant_index=bundle.variant_index
+                )
+            ],
         )
         storage = EvalStorage(InMemoryDocumentStore())
         storage.save_analysis(analysis)
 
         loaded = storage.load_analysis(analysis.id, analysis.scope_id)
         assert loaded is not None
-        assert loaded.decision_surface.cells == analysis.decision_surface.cells
+        assert loaded.aspects[0].decision_surface.cells == analysis.aspects[0].decision_surface.cells
 
 
 # =============================================================================

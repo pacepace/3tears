@@ -98,7 +98,7 @@ log = get_logger(__name__)
 #: ``KvError`` is L2; ``DataLayerUnavailableError`` is the framework's L3-down signal;
 #: ``PostgresError`` covers a direct asyncpg pool; the builtins cover a socket, a DNS failure and
 #: a timeout wherever the backend does not wrap them.
-STORAGE_FAILURES: Final[tuple[type[BaseException], ...]] = (
+STORAGE_FAILURES: Final[tuple[type[Exception], ...]] = (
     KvError,
     DataLayerUnavailableError,
     PostgresError,
@@ -173,6 +173,9 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         self._next_expiry_sweep = 0.0
         self._flusher: PeriodicFlusher | None = None
         self._warned_no_durable_tier = False
+        # a deployment with no L3 keeps coordination state on L2 alone: a write L2 refused is a
+        # write that did not happen (save_to_store has nothing to write to), so it must raise.
+        self.l2_is_the_store = self.l3_pool is None
         if self._l1 is not None:
             # These tables are the framework's, not the consumer's, so nothing else declares them
             # to L1. Initialising here is the same move the absent-marker table makes, and it is

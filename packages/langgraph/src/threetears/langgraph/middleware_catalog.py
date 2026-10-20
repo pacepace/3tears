@@ -32,7 +32,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphBubbleUp
 
 from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["ObjectCatalogMiddleware"]
 
@@ -115,10 +115,11 @@ async def _maybe_catalog_object(
         raise
     except Exception as exc:
         object_id_log = str(handle.object_id)  # convert at border: catalog-failed log extra_data field
-        log.warning(
-            "produced object catalog failed; object will be reconciled if it stays uncataloged",
-            extra={"extra_data": {"tool_name": tool_name, "object_id": object_id_log, "error": str(exc)}},
-            exc_info=True,
+        contain(
+            exc,
+            log=log,
+            what="produced object catalog failed; object will be reconciled if it stays uncataloged",
+            extra={"tool_name": tool_name, "object_id": object_id_log, "error": str(exc)},
         )
 
 

@@ -12,8 +12,8 @@ import mapbox_vector_tile
 import pytest
 from shapely.geometry import MultiPolygon, Point, Polygon
 
-from threetears.geo.bands import TileFeature
-from threetears.geo.mvt import encode_tile, project_to_tile
+from threetears.geo.bands import UNDECODABLE_PROPERTY, TileFeature
+from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX, encode_tile, project_to_tile
 from threetears.geo.tiles import TILE_EXTENT, TileId, tile_bounds
 
 
@@ -130,6 +130,44 @@ class TestEncoding:
         # a tile covering ocean is a legitimate, cacheable empty result, not
         # a failure to build.
         assert isinstance(encode_tile({"locations": []}, TileId(z=6, x=12, y=25)), bytes)
+
+
+class TestPartialLayer:
+    """a tile built over unreadable rows carries a one-feature companion layer saying how many."""
+
+    def _features(self, tile: TileId) -> list[TileFeature]:
+        bounds = tile_bounds(tile)
+        point = Point((bounds.min_lon + bounds.max_lon) / 2, (bounds.min_lat + bounds.max_lat) / 2)
+        return [TileFeature(geometry=point, attributes={"n": 1}, feature_id=1)]
+
+    def test_a_layer_that_lost_rows_gets_a_partial_layer_with_the_count(self) -> None:
+        tile = TileId(z=6, x=12, y=25)
+        decoded = mapbox_vector_tile.decode(
+            encode_tile({"pts": self._features(tile)}, tile, undecodable={"pts": 4}),
+            default_options={"y_coord_down": True},
+        )
+        assert len(decoded["pts"]["features"]) == 1
+        (marker,) = decoded[f"pts{PARTIAL_LAYER_SUFFIX}"]["features"]
+        assert marker["properties"] == {UNDECODABLE_PROPERTY: 4}
+        assert marker["geometry"] == {"type": "Point", "coordinates": [TILE_EXTENT // 2, TILE_EXTENT // 2]}
+
+    def test_a_layer_with_no_features_still_gets_its_partial_layer(self) -> None:
+        tile = TileId(z=6, x=12, y=25)
+        decoded = mapbox_vector_tile.decode(encode_tile({"pts": []}, tile, undecodable={"pts": 2}))
+        (marker,) = decoded[f"pts{PARTIAL_LAYER_SUFFIX}"]["features"]
+        assert marker["properties"] == {UNDECODABLE_PROPERTY: 2}
+
+    def test_a_healthy_tile_encodes_byte_for_byte_as_before(self) -> None:
+        tile = TileId(z=6, x=12, y=25)
+        layers = {"pts": self._features(tile)}
+        plain = encode_tile(layers, tile)
+        assert encode_tile(layers, tile, undecodable={"pts": 0}) == plain
+        assert set(mapbox_vector_tile.decode(plain)) == {"pts"}
+
+    def test_a_partial_name_already_in_the_tile_is_refused(self) -> None:
+        tile = TileId(z=6, x=12, y=25)
+        with pytest.raises(ValueError, match="collide"):
+            encode_tile({"pts": [], f"pts{PARTIAL_LAYER_SUFFIX}": []}, tile, undecodable={"pts": 1})
 
 
 class TestTheWireIsYDown:

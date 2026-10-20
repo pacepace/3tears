@@ -49,7 +49,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.completion import CompletionProtocolDefect, sent_settings_of
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
@@ -386,12 +386,14 @@ class OutOfRunBudget:
             except Exception as unrecorded:
                 # NOSILENT: the call's own failure is raised below, and its row is kept on ``unrecorded``, which every
                 # report summing this budget's calls counts; only the store's ledger lacks it, and that is logged here.
-                log.error(
-                    "eval.out_of_run %s call on %s raised %s and its ledger row could NOT be written: %s",
-                    admitted.purpose,
-                    admitted.model,
-                    type(raised).__name__,
+                contain(
                     unrecorded,
+                    log=log,
+                    what=(
+                        f"eval.out_of_run {admitted.purpose} call on {admitted.model} raised "
+                        f"{type(raised).__name__} and its ledger row could NOT be written: {unrecorded}"
+                    ),
+                    level="error",
                 )
             raise
         # Read by CompletionResult's own attribute names — the protocol every completion the engine reads

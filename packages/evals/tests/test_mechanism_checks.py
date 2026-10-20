@@ -37,9 +37,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import REASONING_SHARE_DIVERGENCE, observed_mechanism_key
 from threetears.evals.kernel import (
     REASONING_RATIO_KEY,
-    CampaignDesign,
     ControlDeclaration,
-    EvalCampaign,
     SweptAxis,
     resolve_variant_identity,
 )
@@ -80,6 +78,8 @@ from packages.evals.tests.fixtures.toyhost.profile import (
     toyhost_profile,
 )
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_ROLES, TOYHOST_SWEEPABLES
+from packages.evals.tests.factories import make_campaign
+from packages.evals.tests.v15_shapes import V15Design
 
 _CONTEXT = "context_tokens_in"
 _PAGE_LIMIT = "extractor.page_limit"
@@ -177,12 +177,12 @@ def _observations(arm: _Arm, profile: HostProfile) -> list[EvalResult]:
 
 
 def _bundle(
-    arms: Sequence[_Arm], *, profile: HostProfile | None = None, design: CampaignDesign | None = None
+    arms: Sequence[_Arm], *, profile: HostProfile | None = None, design: V15Design | None = None
 ) -> AnalysisContextBundle:
     """Assemble a campaign over ``arms``."""
     host = profile if profile is not None else _profile()
     storage = ToyhostStorage([arm.batch for arm in arms], {arm.batch.id: _observations(arm, host) for arm in arms})
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="5f0c3b9e-7d61-4a2b-9c84-3e1f6a2d7b90",
         scope_id=TOYHOST_SCOPE,
         name="mechanism",
@@ -742,7 +742,7 @@ class TestTheMechanismCheckStatesOnlyWhatItsEvidenceDecides:
 
 
 def _model_comparison(
-    *shares: float | None, design: CampaignDesign | None = None, profile: HostProfile | None = None
+    *shares: float | None, design: V15Design | None = None, profile: HostProfile | None = None
 ) -> AnalysisContextBundle:
     models = (_MODEL_A, _MODEL_B, _MODEL_C)[: len(shares)]
     return _bundle(
@@ -859,9 +859,9 @@ class TestALeverSMediatedEffectIsNotItsConfound:
         assert _observed(_row(bundle, "chunk_tokens").confounded_by) == []
 
 
-def _three_model_design() -> CampaignDesign:
+def _three_model_design() -> V15Design:
     control = resolve_variant_identity(run=_model_batch(_MODEL_A), profile=_profile()).variant_key
-    return CampaignDesign(
+    return V15Design(
         axes=[
             SweptAxis(
                 axis_id="model",

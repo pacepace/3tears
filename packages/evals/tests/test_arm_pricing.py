@@ -60,7 +60,8 @@ from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_judge_config
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ToyExtractorKind
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import (
     TOYHOST_LAUNCH_SETTINGS,
     plan_toyhost_arm,
@@ -104,7 +105,9 @@ class _Launched:
 
         self.host: LaunchHost = replace(
             toy,
-            kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=launch, plan_arm=plan)},
+            eval_host=with_registry(
+                toy.eval_host, {TOY_EXTRACTOR_KIND: replace(launchable, launch=launch, plan_arm=plan)}
+            ),
             launch_pricer=quoted if priced and pricer is not None else None,
         )
 
@@ -405,11 +408,20 @@ class _Judged:
                 request.judge_config_ids,
                 judged_artifact=JudgedArtifact.DOCUMENT,
             )
+            world = eval_host.profile.world
+            assert world is not None, "the toy host declares a world"
+            # the kind a cell runs: the toy extractor, over the registry this host's cells bind their world to
+            kind = ToyExtractorKind(
+                client=_client,
+                world=world,
+                judged=True,
+                goal_checks=tuple(request.template.goal_state_checks),
+            )
             return await launch_run(
                 self.host,
                 request,
                 KindWiring(
-                    kind_factory=lambda _cell: None,  # type: ignore[arg-type,return-value]
+                    kind_factory=lambda _cell: kind,
                     subject=TOYHOST_SUBJECT,
                     test_cases=toyhost_test_cases(request.template),
                     judge=judge,
@@ -419,14 +431,17 @@ class _Judged:
 
         self.host: LaunchHost = replace(
             toy,
-            kinds={
-                TOY_EXTRACTOR_KIND: replace(
-                    launchable,
-                    launch=launch,
-                    plan_arm=plan,
-                    unhonoured_launch_arguments=frozenset({"cassette_mode", "n_variations", "simulator_model"}),
-                )
-            },
+            eval_host=with_registry(
+                toy.eval_host,
+                {
+                    TOY_EXTRACTOR_KIND: replace(
+                        launchable,
+                        launch=launch,
+                        plan_arm=plan,
+                        unhonoured_launch_arguments=frozenset({"cassette_mode", "n_variations", "simulator_model"}),
+                    )
+                },
+            ),
             launch_pricer=quoted,
         )
 

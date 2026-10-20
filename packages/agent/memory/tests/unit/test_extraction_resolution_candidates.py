@@ -7,6 +7,7 @@ memory is joined to one line. driven through ``resolve_actions`` with the model'
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from unittest.mock import MagicMock
@@ -18,7 +19,7 @@ _FENCE = re.compile(r"<untrusted nonce=(\w+)>\n(.*?)\n</untrusted nonce=\1>", re
 
 
 class _RecordingFactory:
-    """a chat-model factory whose model records its messages and answers with an empty list."""
+    """a chat-model factory whose model records its messages and answers NOOP for every candidate."""
 
     def __init__(self) -> None:
         self.asked: list[list[Any]] = []
@@ -31,7 +32,7 @@ class _RecordingFactory:
             _ = kwargs
             self.asked.append(list(messages))
             response = MagicMock()
-            response.content = "[]"
+            response.content = json.dumps([{"index": i, "action": "NOOP"} for i in range(10)])
             return response
 
         model.ainvoke = _ainvoke

@@ -40,8 +40,8 @@ class JudgeCasesFreeze(EvalBaseModel):
     judged_run_ids: list[str] = Field(
         default_factory=list,
         description=(
-            "The judged runs whose stored results to freeze, as runs_list names them; omitted with from_labels, and "
-            "required without it."
+            "Judged runs, by id, as runs_list names them, whose stored results the cases come from; omitted with "
+            "from_labels, and required without it."
         ),
     )
     from_labels: bool = Field(
@@ -53,10 +53,10 @@ class JudgeCasesFreeze(EvalBaseModel):
         ),
     )
     criteria: list[str] | None = Field(
-        default=None, description="The criteria to freeze; omitted freezes every dim each result was judged on."
+        default=None, description="Criteria, by dimension name; omitted takes every dimension a result was judged on."
     )
     judged_result_ids: list[str] | None = Field(
-        default=None, description="The results to freeze; omitted freezes every result of the runs."
+        default=None, description="Results, by id, as results_list names them; omitted takes every result of the runs."
     )
     into_case_set: str | None = Field(
         default=None,

@@ -664,6 +664,34 @@ class TestAKeyListingFollowsAMovedConnection:
         assert isinstance(raised, KvError), repr(raised)
         assert not isinstance(raised, KvBucketNotFoundError), "an unanswered bind is not an absence"
 
+    @pytest.mark.asyncio
+    async def test_a_bind_reply_that_is_not_json_is_a_kv_error(self) -> None:
+        # something other than JetStream answered the API subject; nats-py's json.loads refuses it
+        wire = _FakeWire()
+
+        async def _not_jetstream(subject: str, payload: bytes = b"", timeout: float | None = None) -> _WireMsg:
+            del subject, payload, timeout
+            return _WireMsg(b"<html>not the JetStream API</html>")
+
+        wire.request = _not_jetstream  # type: ignore[method-assign]
+        raised = await _raised_by(self._moved_handle(wire).list_keys())
+
+        assert isinstance(raised, KvError), repr(raised)
+        assert isinstance(raised.__cause__, json.JSONDecodeError), repr(raised.__cause__)
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_bind_on_the_successor_propagates(self) -> None:
+        wire = _FakeWire()
+
+        async def _buggy(subject: str, payload: bytes = b"", timeout: float | None = None) -> _WireMsg:
+            del subject, payload, timeout
+            raise TypeError("a bug in the call")
+
+        wire.request = _buggy  # type: ignore[method-assign]
+        raised = await _raised_by(self._moved_handle(wire).list_keys())
+
+        assert isinstance(raised, TypeError), repr(raised)
+
 
 async def _nats_py_raises(coro: Any) -> BaseException:
     """what nats-py itself raised for one request, answered by :class:`_FakeWire`.

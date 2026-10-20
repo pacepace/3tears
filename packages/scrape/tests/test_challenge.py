@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.exceptions import ConcurrentModificationError, DataLayerUnavailableError
 
 from threetears.scrape.challenge import PageVerdict, build_classification_prompt, classify_failed_page
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
@@ -698,7 +699,7 @@ async def test_an_unreadable_health_store_degrades_rather_than_failing_the_poll(
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
 
     async def _boom(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("l3 is having a day")
+        raise DataLayerUnavailableError("l3 is having a day")
 
     with (
         patch.object(health, "get", side_effect=_boom),
@@ -731,7 +732,7 @@ async def test_a_verdict_that_cannot_be_cached_is_still_acted_on(
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
 
     async def _boom(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("l3 is having a day")
+        raise ConcurrentModificationError("scrape_target_health", "warn_oh", None)
 
     with (
         patch("threetears.scrape.eval_loop.record_classification", side_effect=_boom),
@@ -756,6 +757,59 @@ async def test_a_verdict_that_cannot_be_cached_is_still_acted_on(
     recipe = await recipes.get("warn_oh")
     assert recipe is not None
     assert recipe.consecutive_validation_failures == 0
+
+
+async def test_a_bug_reading_health_propagates_rather_than_reading_as_an_outage(
+    collections: tuple[ScrapeRecipeCollection, ScrapeExtractionCollection, ScrapeTargetHealthCollection],
+) -> None:
+    """Only a storage failure degrades the classifier's health read; our own bug is not an outage."""
+    recipes, extractions, health = collections
+    await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
+
+    with (
+        patch.object(health, "get", side_effect=AttributeError("a bug, not the store")),
+        patch(
+            "threetears.scrape.llm_retry.create_chat_model",
+            side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}),
+        ),
+        pytest.raises(AttributeError, match="a bug, not the store"),
+    ):
+        await run_eval_loop_multi_row(
+            "warn_oh",
+            _WALL,
+            "https://example.gov/warn",
+            _SCHEMA,
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            health_collection=health,
+            api_key="k",
+        )
+
+
+async def test_a_bug_caching_a_verdict_propagates_rather_than_reading_as_an_outage(
+    collections: tuple[ScrapeRecipeCollection, ScrapeExtractionCollection, ScrapeTargetHealthCollection],
+) -> None:
+    recipes, extractions, health = collections
+    await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
+
+    with (
+        patch("threetears.scrape.eval_loop.record_classification", side_effect=TypeError("a bug, not the store")),
+        patch(
+            "threetears.scrape.llm_retry.create_chat_model",
+            side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}),
+        ),
+        pytest.raises(TypeError, match="a bug, not the store"),
+    ):
+        await run_eval_loop_multi_row(
+            "warn_oh",
+            _WALL,
+            "https://example.gov/warn",
+            _SCHEMA,
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            health_collection=health,
+            api_key="k",
+        )
 
 
 async def test_the_page_status_reaches_the_prompt_from_the_entry_point(

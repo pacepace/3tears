@@ -68,19 +68,16 @@ reply is validated: a malformed reply was billed like any other. That list is th
 simulator's spend; :meth:`TurnDriver.fold_usage` folds it into the cell's ``simulator`` ledger, one
 stored row per actor and purpose (``RoleUsage.actor_id`` and ``RoleUsage.purpose``), so what each
 actor's lines and each pick of the scheduler cost survives the cell. :attr:`TurnDriver.cost_usd` is
-its total, which :func:`~threetears.evals.run.conversation.drive_conversation` asks the run's cost cap
-about before every further call.
+its total, which a kind reads for the cell's simulator spend; no ceiling is asked against it inside the cell.
 
 **The worst case one conversation can spend.** With ``T = max_turns``, ``S = max_speakers_per_round`` and ``A``
 actors: at most ``T·S`` lines are delivered and at most ``A`` replies are departures, so at most ``T·S + A`` utterance
 calls are made; every ``llm_decided`` decision ends in one of those or in one ``round_done`` per round, and makes at
 most :data:`SCHEDULER_CALL_ATTEMPTS` calls, so at most ``2·(T·S + A + T)`` scheduling calls. That is ``3·(T·S + A) +
 2·T`` simulator calls under ``llm_decided`` (``T·S + A`` under ``round_robin``) — at the schema's maxima (``T = 100``,
-``S = 20``) over 6,000 calls, each capped at :data:`SIMULATOR_REQUEST_SETTINGS`'s ``max_tokens``. Under an enforcing
-cost cap the run's ceiling binds first: the loop stops ``budget_stopped`` before any call once the run's recorded
-spend plus this conversation's simulator spend exceeds the cap. It asks once per decision, and one ``llm_decided``
-decision can be :data:`SCHEDULER_CALL_ATTEMPTS` calls, so the overshoot is at most two simulator calls (one under
-``round_robin``) plus the cell's candidate spend. With no cap enforced, the structure above is the only bound.
+``S = 20``) over 6,000 calls, each capped at :data:`SIMULATOR_REQUEST_SETTINGS`'s ``max_tokens``. No run ceiling
+cuts a conversation short: the cost cap is read between cells against the cells already recorded, so the
+structure above and the cell timeout are what bound one conversation, whatever the run has spent.
 
 Why this is engine API
 ----------------------

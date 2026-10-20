@@ -15,6 +15,7 @@ from __future__ import annotations
 from threetears.evals.run.authoring import (
     RUBRIC_DIM_SERVER_FIELDS,
     TEMPLATE_SERVER_FIELDS,
+    admit_template,
     create_judge_config,
     create_rubric_dim,
     create_template,
@@ -322,6 +323,7 @@ __all__ = [
     "TurnDriver",
     "WitnessedJudging",
     "WorkFn",
+    "admit_template",
     "assert_preconditions",
     "build_judge_context",
     "freeze_judge_cases",

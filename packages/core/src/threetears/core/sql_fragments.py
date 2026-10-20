@@ -7,14 +7,20 @@ lives here once, so a table or column name means the same thing on every path th
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 __all__ = [
+    "FilterValue",
     "as_written",
     "equality_conditions",
+    "filter_conditions",
     "quote_identifier",
 ]
+
+#: a value a filter compares a column with, bound as a parameter: text, or an integer bound as one
+#: (a ``bigint`` column compared with text is refused by a strictly typed driver, asyncpg among them)
+type FilterValue = str | int
 
 
 def quote_identifier(identifier: str) -> str:
@@ -70,3 +76,45 @@ def equality_conditions(
     filters = dict(where or {})
     conditions = " AND ".join(f"{quote(column)} = ${first + index}" for index, column in enumerate(filters))
     return conditions, list(filters.values())
+
+
+def filter_conditions(
+    where: Mapping[str, FilterValue] | None = None,
+    where_in: Mapping[str, Sequence[FilterValue]] | None = None,
+    not_null: Iterable[str] = (),
+    *,
+    first: int = 1,
+    quote: Callable[[str], str] = quote_identifier,
+) -> tuple[str, list[FilterValue]]:
+    """the conditions keeping the rows that equal ``where``, are among ``where_in`` and are not null in ``not_null``.
+
+    The one filter builder: equality (:func:`equality_conditions`), then set membership
+    (``column IN ($n, ...)``, each member bound), then ``column IS NOT NULL``. Placeholders are
+    numbered from ``first`` in that order, so each names its own parameter. An empty set keeps no
+    row (``1 = 0``), which is what membership of nothing means.
+
+    :param where: column -> the value it equals
+    :ptype where: Mapping[str, FilterValue] | None
+    :param where_in: column -> the values it may hold
+    :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
+    :param not_null: columns that must hold a value
+    :ptype not_null: Iterable[str]
+    :param first: the first placeholder's number
+    :ptype first: int
+    :param quote: how each column is spelled, as for :func:`equality_conditions`
+    :ptype quote: Callable[[str], str]
+    :return: the conditions joined by ``AND`` (empty without filters), and their values in order
+    :rtype: tuple[str, list[FilterValue]]
+    """
+    clause, values = equality_conditions(where, first=first, quote=quote)
+    conditions = [clause] if clause else []
+    for column, members in (where_in or {}).items():
+        listed = list(members)
+        if not listed:
+            conditions.append("1 = 0")
+            continue
+        start = first + len(values)
+        conditions.append(f"{quote(column)} IN ({', '.join(f'${start + index}' for index in range(len(listed)))})")
+        values.extend(listed)
+    conditions.extend(f"{quote(column)} IS NOT NULL" for column in not_null)
+    return " AND ".join(conditions), values

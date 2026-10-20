@@ -63,6 +63,12 @@ A caller compares each part's fingerprint with the one recorded when it was
 last read and reads only the parts that moved. `DatasourceQueryClient` gains
 `relation_fingerprint` and `relation_fingerprint_groups` for this, and
 `read_all` (in `query_client`) reads one part whole through the query rail.
+Its filters take sets (`where_in`) and integer values as well as text, each
+bound as the type it is; a set-filtered part is proven by the grouped
+fingerprint. `read_counted` reads a part the caller has already counted (a
+`GROUP BY` count of many parts in one statement), with `not_null` filters too,
+and raises unless the pages hold exactly that count: for rows that never change
+once written, where no fingerprint is needed.
 
 ## Warehouse exports
 

@@ -173,6 +173,40 @@ class TestNodriverDownloadDriver:
         assert page.was_ocr is True
         await client.aclose()
 
+    async def test_render_carries_what_the_parser_could_not_read(self, monkeypatch):
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html",
+            AsyncMock(
+                return_value=ParsedDocumentHtml(
+                    html="<html>scanned</html>",
+                    was_ocr=True,
+                    page_images_fault="PDF page images could not be rendered (RuntimeError)",
+                    page_faults=("page 1: OCR could not run (OSError)",),
+                )
+            ),
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "status": 200,
+                    "filename": "notice.pdf",
+                    "content_type": "application/pdf",
+                    "content_base64": base64.b64encode(b"x").decode("ascii"),
+                    "timing_ms": 1.0,
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        driver = NodriverDownloadDriver("http://sidecar.test", client=client)
+
+        page = await driver.render("https://workforcewv.org/notice.pdf")
+
+        assert page.page_faults == ["page 1: OCR could not run (OSError)"]
+        assert page.page_images_fault == "PDF page images could not be rendered (RuntimeError)"
+        await client.aclose()
+
     async def test_render_propagates_document_driver_error_unwrapped(self, monkeypatch):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

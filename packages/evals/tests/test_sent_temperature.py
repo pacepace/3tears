@@ -105,6 +105,10 @@ async def test_a_reply_with_no_temperature_is_raised_as_the_host_s_defect_carryi
     assert (raised.value.member, raised.value.calls, raised.value.cost_usd) == ("temperature", 1, _COST)
 
 
+@pytest.mark.expect_contained(
+    TypeError,
+    why="the test drives a completion with no temperature through a judged run: CompletionProtocolDefect, a TypeError, is the failure it asserts",
+)
 async def test_a_judged_run_on_such_a_client_fails_naming_the_check_rather_than_finishing_with_every_dim_failed() -> (
     None
 ):

@@ -565,7 +565,9 @@ def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
     # it cost to measure (the judge's and simulator's spend included). Derived here rather than stored, so every
     # slicing the walk serves — a cell, a run, a case, a stratum — reads the one figure a contrast on cost tests.
     candidate_spend = production_replicating_cost(
-        result.usage, substituted_deliveries=count_substituted_deliveries(result)
+        result.usage,
+        substituted_deliveries=count_substituted_deliveries(result),
+        candidate_kind=result.candidate_kind,
     )
     if candidate_spend is not None:
         yield _CANDIDATE_SPEND, candidate_spend, describe_measure(_CANDIDATE_SPEND, profile.measures)

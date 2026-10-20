@@ -28,11 +28,20 @@ from threetears.evals.analysis import campaigns
 from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.run import curation
 from threetears.evals.kernel.storage import EvalStorage
-from packages.evals.tests.factories import minimal_declaration
+from packages.evals.tests.factories import make_aspect_campaign
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.declaration import CampaignArm
+
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
 SCOPE = "uni-1"
+
+
+def _controlled(run_ids: list[str], key: str, **overrides: Any) -> EvalCampaign:
+    """A campaign of one aspect holding ``run_ids``, its control the typed key ``key``."""
+    control = CampaignArm(label="control", role="control", variant_key=key)
+    return make_aspect_campaign(run_ids=run_ids, control=control, **overrides)
 
 
 def _storage_double() -> MagicMock:
@@ -240,9 +249,7 @@ def test_delete_insight_loads_its_own_target_and_raises_when_absent():
 
 def test_detaching_an_unattached_run_is_refused_before_any_write():
     storage = _storage_double()
-    campaign = MagicMock()
-    campaign.run_ids = ["r1"]
-    storage.load_campaign.return_value = campaign
+    storage.load_campaign.return_value = make_aspect_campaign(run_ids=["r1"])
 
     with pytest.raises(ValidationFailedError):
         campaigns.remove_runs_from_campaign(storage, "camp-1", SCOPE, ["r1", "never-attached"])
@@ -261,34 +268,34 @@ def test_detaching_the_run_a_control_was_declared_from_is_no_longer_refused():
     undesignated bag of runs. That question is also only answerable where the observations
     are read, which a detach has no reason to pay for.
     """
-    declaration = minimal_declaration(control="a" * 64)
+    campaign = _controlled(["ctl", "cell"], "a" * 64)
     storage = _storage_double()
-    campaign = MagicMock()
-    campaign.run_ids = ["ctl", "cell"]
-    campaign.declared_design = declaration
     storage.load_campaign.return_value = campaign
     storage.save_campaign.return_value = True
 
-    campaigns.remove_runs_from_campaign(storage, "camp-1", SCOPE, ["ctl"])
+    detached = campaigns.remove_runs_from_campaign(storage, "camp-1", SCOPE, ["ctl"])
 
-    assert campaign.run_ids == ["cell"]
-    assert campaign.declared_design is declaration, "detaching a run must not edit the declaration"
+    assert detached.run_ids == ["cell"]
+    assert detached.control == campaign.control, "detaching a run must not edit the declaration"
+    storage.save_campaign.assert_called_once_with(detached)
 
 
 def test_detaching_a_run_leaves_the_declaration_untouched():
     """Membership and the declaration are two facts, and this path writes only the first."""
-    declaration = minimal_declaration(control="b" * 64)
+    campaign = _controlled(["ctl", "cell", "stray"], "b" * 64)
     storage = _storage_double()
-    campaign = MagicMock()
-    campaign.run_ids = ["ctl", "cell", "stray"]
-    campaign.declared_design = declaration
     storage.load_campaign.return_value = campaign
     storage.save_campaign.return_value = True
 
-    campaigns.remove_runs_from_campaign(storage, "camp-1", SCOPE, ["stray"])
+    detached = campaigns.remove_runs_from_campaign(storage, "camp-1", SCOPE, ["stray"])
 
-    assert campaign.run_ids == ["ctl", "cell"]
-    assert campaign.declared_design.control == "b" * 64
+    assert detached.run_ids == ["ctl", "cell"]
+    assert detached.control is not None and detached.control.variant_key == "b" * 64
+    assert (detached.question, detached.floors, detached.declared_at) == (
+        campaign.question,
+        campaign.floors,
+        campaign.declared_at,
+    )
 
 
 def test_deleting_a_run_detaches_membership_and_leaves_the_declared_control_alone():
@@ -299,12 +306,8 @@ def test_deleting_a_run_detaches_membership_and_leaves_the_declared_control_alon
     failed to load. A variant key is not a pointer at a run, so nothing dangles, and clearing
     the declaration here would DESTROY operator input on the strength of one run's deletion.
     """
-    declaration = minimal_declaration(control="c" * 64)
+    campaign = _controlled(["ctl", "cell"], "c" * 64, id="camp-1")
     storage = _storage_double()
-    campaign = MagicMock()
-    campaign.id = "camp-1"
-    campaign.run_ids = ["ctl", "cell"]
-    campaign.declared_design = declaration
     storage.list_campaigns.return_value = [campaign]
     storage.save_campaign.return_value = True
 
@@ -314,8 +317,9 @@ def test_deleting_a_run_detaches_membership_and_leaves_the_declared_control_alon
     # Only the run's own scope is scanned: a campaign holds runs of its own scope alone.
     storage.list_campaigns.assert_called_once_with(SCOPE)
 
-    assert campaign.run_ids == ["cell"]
-    assert campaign.declared_design.control == "c" * 64
+    (saved,) = [call.args[0] for call in storage.save_campaign.call_args_list]
+    assert saved.run_ids == ["cell"], "detached from the aspect that held it"
+    assert saved.control is not None and saved.control.variant_key == "c" * 64
 
 
 def test_archiving_a_run_already_in_the_target_state_writes_nothing():

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from threetears.core.sql_fragments import as_written, equality_conditions, quote_identifier
+from threetears.core.sql_fragments import as_written, equality_conditions, filter_conditions, quote_identifier
 
 
 def test_an_identifier_is_quoted_with_any_quote_in_it_doubled() -> None:
@@ -20,3 +20,12 @@ def test_equality_conditions_can_leave_columns_as_written_for_an_unquoted_statem
 
 def test_no_filters_is_no_condition() -> None:
     assert equality_conditions(None) == ("", [])
+
+
+def test_the_filter_builder_numbers_equality_then_sets_then_names_the_null_checks() -> None:
+    assert filter_conditions({"s": "TX"}, {"r": [1, 2], "q": ["a"]}, ("c",), first=3) == (
+        '"s" = $3 AND "r" IN ($4, $5) AND "q" IN ($6) AND "c" IS NOT NULL',
+        ["TX", 1, 2, "a"],
+    )
+    assert filter_conditions(None, {"r": []}) == ("1 = 0", [])
+    assert filter_conditions() == ("", [])

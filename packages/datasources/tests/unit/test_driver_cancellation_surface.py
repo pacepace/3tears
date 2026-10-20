@@ -27,6 +27,8 @@ than a mock of it:
 
 from __future__ import annotations
 
+import logging
+
 import ast
 import asyncio
 import inspect
@@ -74,6 +76,19 @@ class _RecordingLogger:
         :rtype: None
         """
         self.warnings: list[str] = []
+
+    def log(self, level: int, message: str, *args: Any, **kwargs: Any) -> None:
+        """record a message logged at WARNING or above, as ``contain`` logs one.
+
+        :param level: the record's level
+        :ptype level: int
+        :param message: log message
+        :ptype message: str
+        :return: nothing
+        :rtype: None
+        """
+        if level >= logging.WARNING:
+            self.warnings.append(message)
 
     def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
         """record a warning message.
@@ -357,6 +372,9 @@ class TestAsyncpgDriverCancellationAgainstRealSurface:
             await task
         assert recording_log.warnings == []
 
+    @pytest.mark.expect_contained(
+        AttributeError, why="the meta-test drives the old callback's conn.cancel onto a spec'd connection on purpose"
+    )
     async def test_spec_would_have_caught_the_original_defect(
         self,
         postgres_config: PostgresConnectionConfig,

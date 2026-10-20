@@ -23,6 +23,7 @@ Config keys (passed via the tool registry ``config`` dict):
 
 from __future__ import annotations
 
+
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from uuid import UUID
@@ -46,7 +47,7 @@ from threetears.agent.tools.protocols import (
 )
 from threetears.agent.tools.text_window import find_in_text, window_text
 from threetears.langgraph.fence import explained_fence, mint_nonce
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "DESCRIBE_PROMPT",
@@ -655,16 +656,19 @@ class AnalyzeMediaTool(TearsTool):
         if self._on_analysis:
             try:
                 await self._on_analysis(mid_str, content_type, text)
-            except Exception:
+            except Exception as exc:
                 # The analysis itself succeeded; only the caller's notification failed, so this
                 # does not fail the tool. But whatever the callback was meant to do -- persist,
                 # index, notify -- did not happen, and the traceback is the only diagnosis.
-                _log.exception(
-                    "analysis callback failed; the result was produced but not delivered",
-                    extra={"extra_data": {"media_id": mid_str, "content_type": content_type}},
+                contain(
+                    exc,
+                    log=_log,
+                    what="analysis callback failed; the result was produced but not delivered",
+                    extra={"media_id": mid_str, "content_type": content_type},
+                    level="error",
                 )
 
-    async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None]:
+    async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None, list[str]]:
         """read a document's text from its stored bytes, never more than :data:`MAX_DOCUMENT_BYTES`.
 
         the fallback for a storage that serves bytes but caches no extracted
@@ -676,15 +680,22 @@ class AnalyzeMediaTool(TearsTool):
         :ptype mid: UUID
         :param mid_str: media UUID string for logging
         :ptype mid_str: str
-        :return: ``(text, None)`` on success or absence, ``(None, detail)`` on a parse failure
-        :rtype: tuple[str | None, str | None]
+        :return: ``(text, None, page_faults)`` on success or absence, ``(None, detail, [])`` on a
+            parse failure; ``page_faults`` names the parts of a read document that could not be
+            read (:attr:`~threetears.agent.tools.document.DocumentResult.page_faults`)
+        :rtype: tuple[str | None, str | None, list[str]]
         """
         text: str | None = None
         error: str | None = None
+        page_faults: list[str] = []
         try:
             dl = await self._storage.download_media(mid, max_bytes=MAX_DOCUMENT_BYTES)
         except MediaSizeLimitExceeded as exc:
-            return None, _refused_too_large("document", mid_str, exc.size_bytes, exc.limit_bytes, _DOCUMENT_ASK)
+            return (
+                None,
+                _refused_too_large("document", mid_str, exc.size_bytes, exc.limit_bytes, _DOCUMENT_ASK),
+                [],
+            )
         if dl is not None:
             data, mime_type = dl
             try:
@@ -697,7 +708,8 @@ class AnalyzeMediaTool(TearsTool):
                 error = f"This document could not be read ({exc.reason}): {exc.detail}"
             else:
                 text = parsed.text
-        return text, error
+                page_faults = list(parsed.page_faults)
+        return text, error, page_faults
 
     async def _handle_document(
         self,
@@ -746,6 +758,7 @@ class AnalyzeMediaTool(TearsTool):
         if info.extraction_status == EXTRACTION_STATUS_PENDING:
             return "This document is still being processed and cannot be read yet. Try again in a minute."
 
+        page_faults: list[str] = []
         extracted = await self._storage.get_content(mid, "extracted_text")
         if not extracted:
             extracted = await self._storage.get_content(mid, "transcript")
@@ -773,7 +786,7 @@ class AnalyzeMediaTool(TearsTool):
                     "document analysis",
                     _refused_too_large("document", mid_str, info.size_bytes, MAX_DOCUMENT_BYTES, _DOCUMENT_ASK),
                 )
-            extracted, parse_error = await self._extract_from_bytes(mid, mid_str)
+            extracted, parse_error, page_faults = await self._extract_from_bytes(mid, mid_str)
             if parse_error is not None:
                 return _tool_error("document analysis", parse_error)
         if not extracted:
@@ -827,14 +840,15 @@ class AnalyzeMediaTool(TearsTool):
         try:
             result_text = await text_provider.answer(doc_prompt)
         except Exception as exc:
-            _log.error(
-                "Document analysis failed",
+            contain(
+                exc,
+                log=_log,
+                what="Document analysis failed",
                 extra={
-                    "extra_data": {
-                        "analyzer": acfg.name,
-                        "error": str(exc),
-                    }
+                    "analyzer": acfg.name,
+                    "error": str(exc),
                 },
+                level="error",
             )
             return _tool_error("document analysis", str(exc))
 
@@ -852,13 +866,13 @@ class AnalyzeMediaTool(TearsTool):
                     metadata={"model_name": acfg.name},
                 )
             except Exception as exc:
-                _log.warning(
-                    "Failed to persist document description",
+                contain(
+                    exc,
+                    log=_log,
+                    what="Failed to persist document description",
                     extra={
-                        "extra_data": {
-                            "media_id": mid_str,
-                            "error": str(exc),
-                        }
+                        "media_id": mid_str,
+                        "error": str(exc),
                     },
                 )
 
@@ -881,8 +895,10 @@ class AnalyzeMediaTool(TearsTool):
             f"{what} {mid_str}, characters {window.offset:,}-{end:,} of {len(extracted):,}, with {acfg.name}{keep}."
         )
         # The statement first, then what the reading covered and where find landed,
-        # then the answer: the note was after the answer, where a cut drops it.
-        head = "\n".join(line for line in (statement, window_note, found_note) if line)
+        # then the answer: the note was after the answer, where a cut drops it. A part
+        # the parser could not read is said too: the answer covers the text it had.
+        not_read = "**Not fully read:** " + "; ".join(page_faults) if page_faults else ""
+        head = "\n".join(line for line in (statement, not_read, window_note, found_note) if line)
         return f"{head}\n\n{result_text}"
 
     async def _handle_audio_video(
@@ -947,14 +963,15 @@ class AnalyzeMediaTool(TearsTool):
                     mime_type,
                 )
             except Exception as exc:
-                _log.error(
-                    "Transcription failed",
+                contain(
+                    exc,
+                    log=_log,
+                    what="Transcription failed",
                     extra={
-                        "extra_data": {
-                            "media_id": mid_str,
-                            "error": str(exc),
-                        }
+                        "media_id": mid_str,
+                        "error": str(exc),
                     },
+                    level="error",
                 )
                 return _tool_error("transcription", str(exc))
 
@@ -969,13 +986,13 @@ class AnalyzeMediaTool(TearsTool):
                         metadata={"model_name": acfg.name},
                     )
                 except Exception as exc:
-                    _log.warning(
-                        "Failed to persist transcript",
+                    contain(
+                        exc,
+                        log=_log,
+                        what="Failed to persist transcript",
                         extra={
-                            "extra_data": {
-                                "media_id": mid_str,
-                                "error": str(exc),
-                            }
+                            "media_id": mid_str,
+                            "error": str(exc),
                         },
                     )
 
@@ -1041,6 +1058,7 @@ class AnalyzeMediaTool(TearsTool):
             return await self._handle_vision_by_reference(resolved, acfg.vision, question, analyzer_name)
 
         from threetears.agent.tools.builtin.image_prep import (
+            ImagePrepError,
             prepare_image_for_vision,
         )
 
@@ -1048,6 +1066,8 @@ class AnalyzeMediaTool(TearsTool):
         # MAX_VISION_IMAGE_BYTES. one image over the bound refuses the whole
         # analysis: an answer about the others would read as an answer about all.
         image_parts: list[tuple[bytes, str]] = []
+        #: images sent as they were stored because preparing them failed, one sentence each
+        unprepared: list[str] = []
         for mid_str in media_ids:
             mid = UUID(mid_str)
             info = media_info.get(mid_str)
@@ -1073,10 +1093,23 @@ class AnalyzeMediaTool(TearsTool):
 
             data, mime_type = dl
             # Preprocess — resize large images, re-encode HEIC, etc.
-            processed_data, processed_mime = prepare_image_for_vision(
-                data,
-                mime_type,
-            )
+            try:
+                processed_data, processed_mime = prepare_image_for_vision(
+                    data,
+                    mime_type,
+                )
+            except ImagePrepError as exc:
+                # The original may still be one the vision model takes (Pillow is an optional
+                # extra, and a large JPEG is often within the provider's own limit), so it is
+                # sent -- but as the original, and the result says so.
+                contain(
+                    exc,
+                    log=_log,
+                    what="image could not be prepared for vision; sending the original",
+                    extra={"media_id": mid_str},
+                )
+                processed_data, processed_mime = data, mime_type
+                unprepared.append(f"{mid_str} was sent as stored, not resized: {exc}.")
             image_parts.append((processed_data, processed_mime))
 
         if not image_parts:
@@ -1103,19 +1136,26 @@ class AnalyzeMediaTool(TearsTool):
                     results.append(r)
                 result_text = "\n\n---\n\n".join(results)
         except Exception as exc:
-            _log.error(
-                "Vision model invocation failed",
+            contain(
+                exc,
+                log=_log,
+                what="Vision model invocation failed",
                 extra={
-                    "extra_data": {
-                        "analyzer": analyzer_name,
-                        "error": str(exc),
-                    }
+                    "analyzer": analyzer_name,
+                    "error": str(exc),
                 },
+                level="error",
             )
-            return _tool_error("vision model invocation", str(exc))
+            # the error's type only: its message is the provider's, and it is in the log above
+            return _tool_error(
+                "vision model invocation", " ".join([f"the call failed ({type(exc).__name__}).", *unprepared])
+            )
 
         # Persist description for single-media analysis
-        return await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
+        finalized = await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
+        if unprepared:
+            finalized = "\n".join(["Note: " + note for note in unprepared]) + "\n\n" + finalized
+        return finalized
 
     async def _handle_vision_by_reference(
         self,
@@ -1149,9 +1189,12 @@ class AnalyzeMediaTool(TearsTool):
         try:
             result_text = await vision.analyze_ref(object_ids, prompt)
         except Exception as exc:
-            _log.error(
-                "Reference vision invocation failed",
-                extra={"extra_data": {"analyzer": analyzer_name, "error": str(exc)}},
+            contain(
+                exc,
+                log=_log,
+                what="Reference vision invocation failed",
+                extra={"analyzer": analyzer_name, "error": str(exc)},
+                level="error",
             )
             return _tool_error("vision model invocation", str(exc))
         return await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
@@ -1193,10 +1236,7 @@ class AnalyzeMediaTool(TearsTool):
                     metadata={"model_name": analyzer_name},
                 )
             except Exception as exc:
-                _log.warning(
-                    "Failed to persist description",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
+                contain(exc, log=_log, what="Failed to persist description", extra={"error": str(exc)})
 
             await self._fire_callback(media_ids[0], "description", result_text)
 

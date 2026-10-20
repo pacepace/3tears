@@ -48,6 +48,7 @@ from threetears.evals.run import (
 from threetears.evals.schema.models import EvalTemplate, JudgedArtifact, RubricDim
 from threetears.evals.schema.subject import SubjectSnapshot
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, MemoWriter, OpsFixture, ops_fixture
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT
 from packages.evals.tests.off_loop import off_loop
@@ -111,7 +112,7 @@ class _ReporterCampaign:
         launch = self.fixture.host.launch
         self.host: LaunchHost = dataclasses.replace(
             launch,
-            kinds={**launch.kinds, REPORTER_KIND: self._entry(lambda: holder[0])},
+            eval_host=with_registry(launch.eval_host, {**launch.kinds, REPORTER_KIND: self._entry(lambda: holder[0])}),
             launch_pricer=priced,
         )
         holder.append(self.host)

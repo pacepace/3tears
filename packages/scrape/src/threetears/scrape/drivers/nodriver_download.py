@@ -207,4 +207,6 @@ class NodriverDownloadDriver(ScrapeDriver):
             final_url=url,
             timing_ms=(time.monotonic() - start) * 1000,
             was_ocr=parsed.was_ocr,
+            page_faults=list(parsed.page_faults),
+            page_images_fault=parsed.page_images_fault,
         )

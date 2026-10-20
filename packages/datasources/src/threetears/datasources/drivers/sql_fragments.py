@@ -23,7 +23,13 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from threetears.core.fingerprint import relation_key_expression
-from threetears.core.sql_fragments import as_written, equality_conditions, quote_identifier
+from threetears.core.sql_fragments import (
+    FilterValue,
+    as_written,
+    equality_conditions,
+    filter_conditions,
+    quote_identifier,
+)
 
 __all__ = [
     "PlaceholderStyle",
@@ -322,7 +328,7 @@ def translate_placeholders(sql: str, target_style: PlaceholderStyle) -> str:
     return "".join(out)
 
 
-def build_equality_filter(where: Mapping[str, str] | None) -> tuple[str, list[str]]:
+def build_equality_filter(where: Mapping[str, FilterValue] | None) -> tuple[str, list[FilterValue]]:
     """a `` WHERE`` fragment keeping only the rows whose columns equal ``where``'s values.
 
     Placeholders are ``$1..$n``, the canonical style; a driver translates them for its engine
@@ -340,32 +346,22 @@ def build_equality_filter(where: Mapping[str, str] | None) -> tuple[str, list[st
 
 
 def build_filter(
-    where: Mapping[str, str] | None, where_in: Mapping[str, Sequence[str]] | None = None
-) -> tuple[str, list[str]]:
+    where: Mapping[str, FilterValue] | None, where_in: Mapping[str, Sequence[FilterValue]] | None = None
+) -> tuple[str, list[FilterValue]]:
     """a `` WHERE`` fragment keeping the rows whose columns equal ``where``'s values and are among ``where_in``'s.
 
     As :func:`build_equality_filter`, with set membership too: ``column IN ($n, ...)``, each value
-    bound. An empty set keeps no row.
+    bound (:func:`~threetears.core.sql_fragments.filter_conditions`). An empty set keeps no row.
 
     :param where: column -> value
-    :ptype where: Mapping[str, str] | None
+    :ptype where: Mapping[str, FilterValue] | None
     :param where_in: column -> the values it may hold
-    :ptype where_in: Mapping[str, Sequence[str]] | None
+    :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
     :return: the fragment (empty when there are no filters) and its values in order
-    :rtype: tuple[str, list[str]]
+    :rtype: tuple[str, list[FilterValue]]
     """
-    clause, values = equality_conditions(where, quote=as_written)
-    conditions = [clause] if clause else []
-    for column, members in (where_in or {}).items():
-        members = list(members)
-        if not members:
-            conditions.append("1 = 0")
-            continue
-        first = len(values) + 1
-        placeholders = ", ".join(f"${first + index}" for index in range(len(members)))
-        conditions.append(f"{as_written(column)} IN ({placeholders})")
-        values.extend(members)
-    return (f" WHERE {' AND '.join(conditions)}" if conditions else ""), values
+    clause, values = filter_conditions(where, where_in, quote=as_written)
+    return (f" WHERE {clause}" if clause else ""), values
 
 
 #: render the ordering key of one row as a single text value, NULLs distinguished: the

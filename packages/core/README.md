@@ -14,6 +14,19 @@ L1 (SQLite, in-process, sync)  ->  L2 (NATS KV, shared, async)  ->  L3 (PostgreS
 
 Reads promote up the stack (L3 miss -> L2 miss -> L1 hit on next access). Writes flow down (L1 -> L2 -> L3, with optional deferred flush).
 
+## Install
+
+```bash
+pip install 3tears                    # the tiers, the SQL backend, migrations, coordination, utilities
+pip install "3tears[security]"        # plus signed identity tokens, proofs, envelopes, sealing, the NATS L3 proxy
+pip install "3tears[http]"            # plus the traced HTTP client
+```
+
+`cryptography` and `pyjwt` are the `security` extra and `httpx` the `http` extra. Reaching a name in
+`threetears.core.security` or `threetears.core.backends` that needs one, without it, raises
+`ImportError` naming the extra. The sandbox, secret references and proof freshness in
+`threetears.core.security` need neither.
+
 ## Quick Start
 
 ### 1. Configure the Registry

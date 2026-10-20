@@ -89,7 +89,7 @@ def test_no_production_source_still_writes_the_retired_control_field() -> None:
             offenders[relative] = ", ".join(hits)
 
     assert offenders == {}, (
-        f"`{_RETIRED}` on a CAMPAIGN was replaced by `declared_design.control`, a variant key. Still used as one: "
+        f"`{_RETIRED}` on a CAMPAIGN was replaced by the control arm (`arms[0]`), a variant key. Still used as one: "
         f"{'; '.join(f'{f} ({why})' for f, why in sorted(offenders.items()))}. A writer that validates its "
         f"mapping later fails there, far from the line that wrote the key."
     )
@@ -130,10 +130,10 @@ def test_the_campaign_no_longer_declares_the_field_and_the_declaration_does() ->
     is a different product.
     """
     from threetears.evals.kernel.campaign import EvalCampaign
-    from threetears.evals.kernel.declaration import CampaignDesign
+    from threetears.evals.kernel.declaration import CampaignArm
 
     assert _RETIRED not in EvalCampaign.model_fields
-    assert "control" in CampaignDesign.model_fields
+    assert "arms" in EvalCampaign.model_fields and "variant_key" in CampaignArm.model_fields
 
 
 def test_a_stored_campaign_carrying_the_retired_key_is_refused() -> None:
@@ -145,8 +145,15 @@ def test_a_stored_campaign_carrying_the_retired_key_is_refused() -> None:
 
     from threetears.evals.kernel.campaign import EvalCampaign
 
+    from threetears.evals.kernel.declaration import Aspect
+
     legacy = EvalCampaign(
-        scope_id="scope-1", name="c", subject_id="subject-1", behavior="triage", created_by="test:fixture"
+        scope_id="scope-1",
+        name="c",
+        subject_id="subject-1",
+        behavior="triage",
+        aspects=[Aspect(label="triage")],
+        created_by="test:fixture",
     ).to_dict()
     legacy[_RETIRED] = "run-ctl"
 

@@ -19,15 +19,17 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.kernel.authored import (
-    AuthoredAnalysis,
+    AspectSummary,
+    AuthoredCampaignAnalysis,
     Caveat,
-    Decision,
     EvidenceRef,
     Finding,
+    FloorOverride,
     NextStep,
-    QuestionAnswer,
+    Recommendation,
 )
 from threetears.evals.kernel.campaign import (
+    CampaignDeclaration,
     CoverageLens,
     EvalAnalysis,
     EvalInsight,
@@ -37,10 +39,18 @@ from threetears.evals.kernel.campaign import (
     LeverCoverage,
     RunIndexEntry,
 )
-from threetears.evals.kernel.surface import DecisionSurface
+from threetears.evals.kernel.declaration import Aspect
+from threetears.evals.kernel.storage import DroppedJudgeProfile
+from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
 
 # Reuse the campaign tests' in-memory evals-repo stand-in + storage wiring.
-from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, empty_bundle, memory_storage
+from packages.evals.tests.factories import (
+    CURRENT_BUNDLE_SHAPE,
+    analysed_aspect,
+    empty_bundle,
+    make_campaign,
+    memory_storage,
+)
 
 
 def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overrides: Any) -> Finding:
@@ -60,25 +70,32 @@ def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overri
     return Finding(**fields)
 
 
-def _decision(**overrides: Any) -> Decision:
-    """An authored decision resting on nothing unless a caller says otherwise."""
+def _recommendation(**overrides: Any) -> Recommendation:
+    """An authored recommendation of the control, resting on nothing unless a caller says otherwise."""
     fields: dict[str, Any] = dict(
-        proposal="Adopt X.", disposition="adopted", cells=[], confidence="medium", rests_on=[], revisit_when=""
+        arm="control", reasons=[], confidence="medium", rests_on=[], floors_overridden=[], behind_on=[], bars_missed=[]
     )
     fields.update(overrides)
-    return Decision(**fields)
+    return Recommendation(**fields)
+
+
+def _summary(aspect: str = "planning", **overrides: Any) -> AspectSummary:
+    """One aspect's summary."""
+    fields: dict[str, Any] = dict(aspect=aspect, what_changed="It got faster.", how_sure="Sure.", means="Switch.")
+    fields.update(overrides)
+    return AspectSummary(**fields)
 
 
 def _make_analysis(**overrides: Any) -> EvalAnalysis:
     """Build an ``EvalAnalysis`` with EVERY nested object populated.
 
     Two findings (the second invalidating the first, with evidence, the trials it is drawn from, a caveat and a
-    durable claim), a decision and a question answer resting on real positions, a next step, one
-    resolution per finding carrying a resolved evidence row, a coverage lever (with the required n + dispersion), a
-    generation-provenance block, a run-index row and the frozen bundle — so a round-trip has something in every
-    branch.
+    durable claim), a recommendation resting on a real position and made over a broken floor, an aspect summary, a
+    next step, one resolution per finding carrying a resolved evidence row, one aspect carrying a coverage lever (with
+    the required n + dispersion), a run-index row and the frozen bundle, a generation-provenance block and the
+    campaign's declaration — so a round-trip has something in every branch.
 
-    ``findings``, ``decisions``, ``questions`` and ``next`` fold into the document; ``resolutions``
+    ``findings``, ``recommendation``, ``aspect_summaries`` and ``next`` fold into the document; ``resolutions``
     defaults to the populated pair when the findings are the default ones, and to one empty
     resolution per finding otherwise.
     """
@@ -97,20 +114,22 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
     ]
     authored_findings = overrides.pop("findings", None)
     findings = list(authored_findings or default_findings)
-    document = AuthoredAnalysis(
+    document = AuthoredCampaignAnalysis(
         findings=findings,
-        decisions=overrides.pop(
-            "decisions",
-            [
-                _decision(
-                    proposal="Keep vendor/alpha-2 as Maple's planner_model.", cells=["vk-alpha:ac-1"], rests_on=[0]
-                )
-            ],
-        ),
-        questions=overrides.pop(
-            "questions",
-            [QuestionAnswer(question_id="q-model", resolution="answered", answer="Alpha-2.", rests_on=[0])],
-        ),
+        recommendation=[
+            overrides.pop(
+                "recommendation",
+                _recommendation(
+                    arm="alpha-2",
+                    reasons=["Much faster at equal quality."],
+                    rests_on=[0],
+                    floors_overridden=[
+                        FloorOverride(floor="planning/cost_lower/*", why="Cost is not this team's concern.")
+                    ],
+                ),
+            )
+        ],
+        aspect_summaries=overrides.pop("aspect_summaries", [_summary()]),
         next=overrides.pop(
             "next",
             [NextStep(title="Confirm finalists at k=5.", why="k=1 is noise-dominated.", leverage="high", lever="")],
@@ -121,6 +140,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             FindingResolution(
                 evidence=[
                     EvidenceRow(
+                        aspect="planning",
                         cell_ref="vk-alpha:ac-1",
                         measure_id="elapsed_ms",
                         reading="measure",
@@ -134,6 +154,13 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
         ]
     else:
         resolutions = [FindingResolution() for _ in findings]
+    aspect = analysed_aspect(
+        empty_bundle(campaign_id="camp-1", aspect="planning"),
+        coverage=CoverageLens(
+            levers=[LeverCoverage(name="planner.model", cells=5, k=3, n=15, dispersion="±0.10", status="measured")],
+        ),
+        run_index=[RunIndexEntry(run_id="run-a", config={"model": "alpha-2"}, key_metrics={"latency_s": 42.0})],
+    )
     defaults: dict[str, Any] = dict(
         document=document,
         resolutions=resolutions,
@@ -159,21 +186,22 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             bundle_schema_version=CURRENT_BUNDLE_SHAPE,
             host_declarations_digest="sha256:declarations",
         ),
-        coverage=CoverageLens(
-            levers=[
-                LeverCoverage(
-                    name="planner.model",
-                    cells=5,
-                    k=3,
-                    n=15,
-                    dispersion="±0.10",
-                    status="measured",
-                )
-            ],
+        design_snapshot=CampaignDeclaration(
+            question="Which planner model?",
+            declared_at="2026-01-01T00:00:00+00:00",
+            declared_by="analyst",
+            arms=[],
+            aspects=[Aspect(label="planning")],
+            floors=[],
         ),
-        run_index=[RunIndexEntry(run_id="run-a", config={"model": "alpha-2"}, key_metrics={"latency_s": 42.0})],
-        decision_surface=DecisionSurface(),
-        bundle=empty_bundle(campaign_id="camp-1").to_dict(),
+        recommended_variant_key=(
+            None if document.recommended() is None else f"variant-of-{document.recommendation[0].arm}"
+        ),
+        aspects=[aspect],
+        campaign_bundle={
+            "schema_version": 1,
+            "aspects": [{"aspect": "planning", "fingerprint": aspect.bundle_fingerprint}],
+        },
     )
     defaults.update(overrides)
     return EvalAnalysis(**defaults)
@@ -213,18 +241,22 @@ def test_analysis_model_round_trip_preserves_every_field():
     assert len(reloaded.document.findings) == 2
     assert reloaded.resolutions[0].evidence[0].value == 41000.0
     assert reloaded.document.findings[0].trials == ["T1", "T4"]
-    assert reloaded.bundle == analysis.bundle and reloaded.bundle["campaign_id"] == "camp-1"
+    assert reloaded.aspects[0].bundle == analysis.aspects[0].bundle
+    assert reloaded.aspects[0].bundle["campaign_id"] == "camp-1"
     assert reloaded.document.findings[0].caveats == [
         Caveat(kind="sampling", text="k=1 on this template is noise-dominated.")
     ]
     assert reloaded.document.findings[1].invalidates == [0]
-    assert reloaded.document.decisions[0].rests_on == [0]
-    assert reloaded.document.questions[0].rests_on == [0]
+    assert reloaded.document.recommendation[0].rests_on == [0]
+    assert reloaded.document.recommendation[0].floors_overridden[0].floor == "planning/cost_lower/*"
+    assert reloaded.document.aspect_summaries[0].aspect == "planning"
     assert reloaded.document.next[0].leverage == "high"
-    assert reloaded.coverage.levers[0].n == 15
-    assert reloaded.coverage.levers[0].dispersion == "±0.10"
+    assert reloaded.resolutions[0].evidence[0].aspect == "planning"
+    assert reloaded.aspects[0].coverage.levers[0].n == 15
+    assert reloaded.aspects[0].coverage.levers[0].dispersion == "±0.10"
     assert reloaded.generation.token_cost == 0.42
-    assert reloaded.run_index[0].key_metrics == {"latency_s": 42.0}
+    assert reloaded.aspects[0].run_index[0].key_metrics == {"latency_s": 42.0}
+    assert reloaded.design_snapshot.question == "Which planner model?"
 
 
 def test_analysis_storage_round_trip_preserves_every_field():
@@ -237,7 +269,8 @@ def test_analysis_storage_round_trip_preserves_every_field():
     assert loaded is not None
     assert loaded == analysis
     assert loaded.resolutions == analysis.resolutions
-    assert loaded.bundle == analysis.bundle
+    assert loaded.aspects == analysis.aspects
+    assert loaded.campaign_bundle == analysis.campaign_bundle
     assert loaded.document == analysis.document
     assert loaded.generation == analysis.generation
 
@@ -285,7 +318,7 @@ def test_insight_storage_round_trip_preserves_every_field():
     "build",
     [
         pytest.param(lambda c: _finding(confidence=c), id="Finding"),
-        pytest.param(lambda c: _decision(confidence=c), id="Decision"),
+        pytest.param(lambda c: _recommendation(confidence=c), id="Recommendation"),
         pytest.param(
             lambda c: EvalInsight(
                 scope_id="uni-1",
@@ -345,7 +378,9 @@ def test_lever_coverage_requires_dispersion():
 @pytest.mark.parametrize("missing", ["n", "dispersion"])
 def test_a_resolved_evidence_row_requires_its_basis(missing):
     """A resolved number is rendered with its sample size and spread, so neither may be absent."""
-    fields: dict[str, Any] = dict(cell_ref="vk:ac", measure_id="elapsed_ms", value=1.0, n=3, dispersion="±1")
+    fields: dict[str, Any] = dict(
+        aspect="planning", cell_ref="vk:ac", measure_id="elapsed_ms", value=1.0, n=3, dispersion="±1"
+    )
     del fields[missing]
     with pytest.raises(ValidationError):
         EvidenceRow(**fields)
@@ -385,32 +420,23 @@ class TestPositionsMustResolve:
     def test_a_valid_document_is_accepted(self):
         analysis = _make_analysis(
             findings=[_finding("a"), _finding("b", invalidates=[0]), _finding("c", invalidates=[0, 1])],
-            decisions=[_decision(rests_on=[0, 2])],
-            questions=[QuestionAnswer(question_id="q", resolution="partial", answer="a", rests_on=[1])],
+            recommendation=_recommendation(rests_on=[0, 2]),
         )
         assert [finding.invalidates for finding in analysis.document.findings] == [[], [0], [0, 1]]
-        assert analysis.document.decisions[0].rests_on == [0, 2]
+        assert analysis.document.recommendation[0].rests_on == [0, 2]
 
     @pytest.mark.parametrize("bad", [2, -1], ids=["past-the-end", "negative"])
-    def test_a_decision_resting_on_a_missing_position_is_refused(self, bad):
-        with pytest.raises(ValidationError, match=r"decisions\[0\]\.rests_on names finding position"):
-            _make_analysis(findings=[_finding("a"), _finding("b")], decisions=[_decision(rests_on=[0, bad])])
-
-    def test_a_question_answer_resting_on_a_missing_position_is_refused(self):
-        with pytest.raises(ValidationError, match=r"questions\[0\]\.rests_on names finding position\(s\) \[1\]"):
-            _make_analysis(
-                findings=[_finding("a")],
-                decisions=[],
-                questions=[QuestionAnswer(question_id="q", resolution="answered", answer="a", rests_on=[1])],
-            )
+    def test_a_recommendation_resting_on_a_missing_position_is_refused(self, bad):
+        with pytest.raises(ValidationError, match=r"recommendation\.rests_on names finding position"):
+            _make_analysis(findings=[_finding("a"), _finding("b")], recommendation=_recommendation(rests_on=[0, bad]))
 
     def test_a_finding_invalidating_a_missing_position_is_refused(self):
         with pytest.raises(ValidationError, match=r"findings\[0\]\.invalidates names finding position\(s\) \[3\]"):
-            _make_analysis(findings=[_finding("a", invalidates=[3]), _finding("b")], decisions=[], questions=[])
+            _make_analysis(findings=[_finding("a", invalidates=[3]), _finding("b")])
 
     def test_a_finding_invalidating_itself_is_refused(self):
         with pytest.raises(ValidationError, match=r"findings\[1\] invalidates itself"):
-            _make_analysis(findings=[_finding("a"), _finding("b", invalidates=[1])], decisions=[], questions=[])
+            _make_analysis(findings=[_finding("a"), _finding("b", invalidates=[1])])
 
     @pytest.mark.parametrize(
         "links",
@@ -423,7 +449,7 @@ class TestPositionsMustResolve:
     def test_an_invalidates_cycle_is_refused(self, links):
         findings = [_finding(str(index), invalidates=targets) for index, targets in enumerate(links)]
         with pytest.raises(ValidationError, match="findings invalidate each other in a cycle"):
-            _make_analysis(findings=findings, decisions=[], questions=[])
+            _make_analysis(findings=findings)
 
     def test_a_diamond_is_not_a_cycle(self):
         """Two paths into one finding is ordinary gating; only a path back to its start is a cycle."""
@@ -433,45 +459,66 @@ class TestPositionsMustResolve:
             _finding("2", invalidates=[3]),
             _finding("3"),
         ]
-        assert len(_make_analysis(findings=findings, decisions=[], questions=[]).document.findings) == 4
+        assert len(_make_analysis(findings=findings).document.findings) == 4
 
     @pytest.mark.parametrize("count", [1, 3])
     def test_a_resolution_count_that_does_not_match_the_findings_is_refused(self, count):
         with pytest.raises(ValidationError, match=f"resolutions has {count} entries for 2 findings"):
             _make_analysis(
                 findings=[_finding("a"), _finding("b")],
-                decisions=[],
-                questions=[],
                 resolutions=[FindingResolution() for _ in range(count)],
             )
 
     def test_no_resolutions_at_all_is_accepted(self):
         """Empty is the unresolved state, not a mismatch — the count is checked only once there are any."""
-        document = AuthoredAnalysis(findings=[_finding("a")], decisions=[], questions=[], next=[])
-        analysis = EvalAnalysis(
-            scope_id="uni-1",
-            document=document,
-            campaign_id="c",
-            subject_id="s",
-            subject_kind="",
-            behavior="b",
-            generation=_make_analysis().generation,
-            decision_surface=DecisionSurface(),
-            bundle=empty_bundle().to_dict(),
-        )
-        assert analysis.resolutions == []
+        assert _make_analysis(findings=[_finding("a")], resolutions=[]).resolutions == []
 
     def test_the_positions_survive_the_from_dict_reload_path(self):
         analysis = _make_analysis()
         reloaded = EvalAnalysis.from_dict(analysis.to_dict())
-        assert reloaded.document.decisions[0].rests_on == [0]
+        assert reloaded.document.recommendation[0].rests_on == [0]
         assert reloaded.document.findings[1].invalidates == [0]
 
     def test_a_stored_document_with_a_bad_position_is_refused_on_load(self):
         stored = _make_analysis().to_dict()
-        stored["document"]["decisions"][0]["rests_on"] = [5]
+        stored["document"]["recommendation"][0]["rests_on"] = [5]
         with pytest.raises(ValidationError, match="names finding position"):
             EvalAnalysis.from_dict(stored)
+
+
+class TestAspectsAreOneEach:
+    """An analysis covers its campaign's aspects once each, and every row and summary names one of them."""
+
+    def test_a_resolved_row_on_an_aspect_the_analysis_lacks_is_refused(self):
+        row = EvidenceRow(
+            aspect="routing", cell_ref="vk:ac", measure_id="m", reading="measure", value=1.0, n=1, dispersion="x"
+        )
+        finding = _finding("a", evidence=[EvidenceRef(cell="vk:ac", measure_id="m", reading="measure")])
+        with pytest.raises(ValidationError, match=r"names aspect\(s\) \['routing'\], which this analysis lacks"):
+            _make_analysis(findings=[finding], resolutions=[FindingResolution(evidence=[row])])
+
+    def test_a_summary_of_an_aspect_the_analysis_lacks_is_refused(self):
+        with pytest.raises(ValidationError, match=r"aspect_summaries name \['routing'\]"):
+            _make_analysis(aspect_summaries=[_summary("routing")])
+
+    def test_an_aspect_summarised_twice_is_refused(self):
+        with pytest.raises(ValidationError, match="summarise \\['planning'\\] more than once"):
+            _make_analysis(aspect_summaries=[_summary(), _summary()])
+
+    def test_an_aspect_held_twice_is_refused(self):
+        aspect = _make_analysis().aspects[0]
+        with pytest.raises(ValidationError, match="appear more than once"):
+            _make_analysis(aspects=[aspect, aspect])
+
+    def test_an_analysis_covers_at_least_one_aspect(self):
+        with pytest.raises(ValidationError, match="aspects"):
+            _make_analysis(aspects=[])
+
+    def test_an_aspect_is_found_by_its_label(self):
+        analysis = _make_analysis()
+        assert analysis.aspect("planning") is analysis.aspects[0]
+        with pytest.raises(KeyError, match="no aspect 'routing'"):
+            analysis.aspect("routing")
 
 
 # ---------------------------------------------------------------------------
@@ -482,12 +529,7 @@ class TestPositionsMustResolve:
 @pytest.mark.parametrize(
     "build",
     [
-        pytest.param(lambda: _decision(disposition="maybe"), id="Decision.disposition"),
         pytest.param(lambda: NextStep(title="e", why="", leverage="huge", lever=""), id="NextStep.leverage"),
-        pytest.param(
-            lambda: QuestionAnswer(question_id="q", resolution="mostly", answer="", rests_on=[]),
-            id="QuestionAnswer.resolution",
-        ),
         pytest.param(
             lambda: LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="guessed"),
             id="LeverCoverage.status",
@@ -497,17 +539,6 @@ class TestPositionsMustResolve:
 def test_literal_fields_reject_out_of_set_values(build):
     with pytest.raises(ValidationError):
         build()
-
-
-@pytest.mark.parametrize("retired", ["applied", "recommended"], ids=["applied", "recommended"])
-def test_the_retired_execution_flavoured_verdicts_are_gone(retired: str):
-    """`applied` and `recommended` were one verdict at two execution states.
-
-    As sibling enum values they made the retraction — we already did it, and the evidence
-    says we should not have — unspeakable. They must not survive as a second way to say it.
-    """
-    with pytest.raises(ValidationError):
-        _decision(disposition=retired)
 
 
 @pytest.mark.parametrize(
@@ -627,6 +658,7 @@ class TestAResolutionIsTheReadingsItsFindingNames:
         refs = [EvidenceRef(cell="v:a", measure_id=measure, reading=kind) for measure, kind in named]
         rows = [
             EvidenceRow(
+                aspect="planning",
                 cell_ref="v:a",
                 measure_id=measure,
                 reading=kind,
@@ -674,3 +706,53 @@ def test_a_stored_analysis_carrying_an_unknown_key_is_refused_at_either_level(le
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
         EvalAnalysis.from_dict(stored)
+
+
+def test_drop_derived_clears_analyses_and_insights_and_keeps_the_campaign():
+    """The operator step after a regenerable bump: every derived document goes, every kept and durable one stays."""
+    storage, _ = memory_storage()
+    analysis, insight = _make_analysis(), _make_insight()
+    storage.save_analysis(analysis)
+    storage.save_insight(insight)
+    campaign = make_campaign(scope_id="uni-1")
+    storage.save_campaign(campaign)
+
+    dropped = storage.drop_derived(["uni-1"])
+
+    assert dropped.counts == {"eval_analysis": 1, "eval_insight": 1, "eval_judge_profile": 0}
+    assert dropped.judge_profiles == []
+    assert storage.load_analysis(analysis.id, "uni-1") is None
+    assert storage.query_insights("uni-1") == []
+    assert storage.load_campaign(campaign.id, "uni-1") is not None
+
+
+def test_drop_derived_returns_each_dropped_judge_profile_s_runs_to_record_it_again_from():
+    """A judge profile is recorded only by an operator, so the drop hands back the runs it was recorded from."""
+    storage, store = memory_storage()
+    old = {
+        "id": "jp-1",
+        "doc_type": "eval_judge_profile",
+        "scope_id": "uni-1",
+        "schema_version": REGENERABLE_SCHEMA_VERSION - 1,
+        "run_ids": ["judge-run-a", "judge-run-b"],
+    }
+    store.upsert(old)
+
+    dropped = storage.drop_derived(["uni-1"])
+
+    assert dropped.counts["eval_judge_profile"] == 1
+    assert dropped.judge_profiles == [
+        DroppedJudgeProfile(scope_id="uni-1", profile_id="jp-1", run_ids=["judge-run-a", "judge-run-b"])
+    ]
+    assert store.get("jp-1", "uni-1") is None
+
+
+def test_an_insight_from_before_the_bump_refuses_the_ledger_read_naming_the_operator_step():
+    """Assembly reads the subject's ledger through this read, so one old insight refuses every generation over it."""
+    storage, store = memory_storage()
+    insight = _make_insight()
+    store.upsert({**insight.to_dict(), "schema_version": REGENERABLE_SCHEMA_VERSION - 1})
+
+    with pytest.raises(ValidationError, match=r"EvalStorage\.drop_derived\(scopes\)") as refused:
+        storage.query_insights("uni-1", subject_id=insight.subject_id)
+    assert "judge_profiles_record over that profile's run_ids" in str(refused.value)

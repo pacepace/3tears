@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import (
@@ -42,6 +43,7 @@ from threetears.evals.analysis.null_claims import NULL_CLAIM_PATTERNS, null_clai
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
 from threetears.evals.schema.models import utc_now_iso
+from packages.evals.tests.aspect_support import with_control
 
 #: The #2083 headline, verbatim — now a finding's title.
 _HEADLINE_2083 = (
@@ -133,13 +135,8 @@ def _bundle(*, total_ms: ComparisonVerdict = "not_separated") -> AnalysisContext
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(profile=profile)
     bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
-    assert campaign.declared_design is not None
-    design = campaign.declared_design.model_copy(
-        update={"control": variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW))}
-    )
-    bundle = assemble_context_bundle(
-        campaign.model_copy(update={"declared_design": design}), storage=storage, profile=profile
-    )
+    controlled = with_control(campaign, variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW)))
+    bundle = assemble_context_bundle(controlled, storage=storage, profile=profile)
     families = [
         family.model_copy(
             update={
@@ -182,7 +179,7 @@ def _memo(
 
 async def _generate(bundle: AnalysisContextBundle, client: FixturedClient) -> EvalAnalysis:
     analysis, _insights = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -208,7 +205,7 @@ class TestANullItsFindingDidNotEstablishIsRefused:
         message = str(refused.value)
         assert 'findings[1].title says "does not change"' in message
         assert "that finding cites no reading the bundle established alike" in message
-        assert "`equivalent` in `multiple_comparisons`, or a guardrail reading `held`" in message
+        assert "`equivalent` in an aspect's `contrasts`, or a guardrail reading `held`" in message
         assert "is unresolved, not unchanged (rule 4)" in message
         assert "a reworded null is the same claim" in message
         assert "The bundle does establish" not in message, "it establishes nothing, so nothing is offered"
@@ -235,8 +232,9 @@ class TestANullItsFindingDidNotEstablishIsRefused:
 
         refusal = analysis.generation.repaired_refusal
         assert refusal is not None
-        assert f"The bundle does establish total_ms at cell {wide} (equivalent to the control; cited by finding " in (
-            refusal
+        assert (
+            f"The bundle does establish total_ms at cell {wide} on aspect {bundle.aspect} (equivalent to the control; "
+            "cited by finding " in refusal
         ), "named in the writer's own alias"
         assert "position(s) [0])" in refusal and "cite that reading in the finding's evidence" in refusal
         assert len(client.calls) == 2 and refusal in client.calls[1]["user"]

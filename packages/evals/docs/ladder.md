@@ -222,7 +222,7 @@ invoices = Eval(
 if __name__ == "__main__":
     result = asyncio.run(invoices.run())
     print(result)  # the verdict line, then each arm's readings; every delta and its interval is in the report
-    result.write("report")  # report.html for the reviewer, beside report.md and bundle.json
+    result.write("report")  # report.html for the reviewer, beside report.md, campaign.json and the bundle
     raise SystemExit(4 if result.gate().failed else 0)  # in CI: a regression or a guardrail not shown held fails
 ```
 
@@ -234,7 +234,7 @@ if __name__ == "__main__":
   whose `total` is `null` expects none stated, so an invented total misses there too.
 - **`grader(guard=0.02)`** makes a guardrail: something v2 must not do worse on, decided apart from everything else,
   so a gain elsewhere cannot pay for a loss here. Every grader is higher-is-better, so no direction is stated.
-- **`result.write("report")`** writes the report for a reviewer (`report.html`, `report.md`, `bundle.json`), and
+- **`result.write("report")`** writes the report for a reviewer (`report.html`, `report.md`, `campaign.json`, `bundle-<aspect>.json`), and
   `result.gate()` fails a CI step on a regression, a breach, or a guardrail not shown held.
 - **Two levers at once?** The file's docstring names arms as `k=v` pairs (`"prompt=v2, effort=high"`), so each
   pair is a factor of the design, and `result.against(...)` reads the same runs against another control.
@@ -256,13 +256,13 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
 exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it)
 ```
 
-And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen,
-the contrast row for `number`, the guardrail's row, and the trials' census:
+And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
+warning, title and reading, the contrast row for `number`, the guardrail's row, and the trials' census:
 
 ```text
-# invoices: does v2 do better than v1?
-v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
-**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
+**Not yet shown safe on classify: v2 on no invented total.**
+# invoices
+| classify | v2 | 30 | 73 of 90 | 88 of 90 | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
 | Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-1.4, 34.7] pts | v2 and v1 not separated | 30 paired |
 | No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
@@ -271,7 +271,7 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
 rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones,
 and still v2 and v1 are not separated: on 30 invoices the corrected interval on that gain reaches just below zero.
-The guardrail is the question the first screen names as unanswered: each arm stated a total once on a noisy invoice that prints
+The guardrail is the question the first screen's warning names as unanswered: each arm stated a total once on a noisy invoice that prints
 none, the interval on the difference is ±13 points against a margin of 2, and an undecided guardrail is never read as
 held, so the gate fails and the run exits 4. What would answer it is a narrower interval on that guardrail, and only
 an invoice that prints no amount due can fail it (7 of the 30 do): more of those hard-negative cases. One v2 trial

@@ -201,13 +201,14 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
             name="strict vs loose",
             subject_id="sentiment",
             behavior="classify",
-            run_ids=[strict.run_id, loose.run_id],
+            aspects=[{"label": "classify", "run_ids": [strict.run_id, loose.run_id]}],
             exploratory=True,
         ),
         SCOPE,
         created_by="test",
     )
-    report = off_loop(campaign_report, host, campaign.id, SCOPE)
+    (fold,) = off_loop(campaign_report, host, campaign.id, SCOPE).aspects
+    report = fold.report
 
     # Every label's precision and recall carries an interval inside [0, 1] around its own rate — a perfect label's
     # included. An interval is over the cases: the loose arm gave `negative` only on the two repeats of one case,

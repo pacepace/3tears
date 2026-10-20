@@ -54,7 +54,7 @@ from threetears.evals.kernel.dsl import (
     world_prose_matches,
 )
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.kernel.host.eval_host import EvalHost, IgnoresTemplateFields, TemplateChecks
+from threetears.evals.kernel.host.eval_host import EvalHost, IgnoresTemplateFields, TemplateCaseFields, TemplateChecks
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.host.world import resolve_preconditions
@@ -226,6 +226,29 @@ def create_template(
 
     host.storage.save_template(template)
     return template
+
+
+def admit_template_case(case: TemplateCaseFields, *, checks: TemplateChecks) -> None:
+    """Every refusal a template's own case meets before it is written: the engine's (it is named) and then the host's.
+
+    **The one list of template-case gates.** The definition seed, a definition reset and ``case_rename`` all admit a
+    template case through here, so a host's validation of its cases (``refuse_inadmissible_template_case``) is
+    asked once, in one place, and no case is written that the host never got to admit.
+
+    :param case: The case: a seed corpus's ``SeedTemplateCase``, or a stored case read as one.
+    :ptype case: TemplateCaseFields
+    :param checks: The host's template checks (``EvalHost.template_checks``).
+    :ptype checks: TemplateChecks
+    :return: ``None`` when the case is admitted.
+    :rtype: None
+    :raises ValidationFailedError: The case has no name, or the host's check refused it (its reason, as it raised it).
+    """
+    if not case.name.strip():
+        raise ValidationFailedError(
+            f"a case of template {case.template!r} has no name, and a report names each case",
+            remedy="name the case: a corpus file's name without `.json`, or its own `name`",
+        )
+    checks.refuse_inadmissible_template_case(case)
 
 
 def admit_template(
@@ -1159,6 +1182,7 @@ __all__ = [
     "TEMPLATE_SERVER_FIELDS",
     "active_judge_config_in",
     "admit_template",
+    "admit_template_case",
     "create_judge_config",
     "create_rubric_dim",
     "create_template",
