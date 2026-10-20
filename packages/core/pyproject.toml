@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears"
-version = "0.72.0"
+version = "0.73.0"
 description = "Three-tier caching framework for Python -- L1 SQLite, L2 NATS KV, L3 PostgreSQL or a git working tree"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,8 +22,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.72.0,<0.73.0",
-    "3tears-nats>=0.72.0,<0.73.0",
+    "3tears-observe>=0.73.0,<0.74.0",
+    "3tears-nats>=0.73.0,<0.74.0",
     "sqlalchemy",
     "asyncpg>=0.30",  # create_pool(connect=...), the hook a failed pool start closes its connections through
     "aiosqlite",
@@ -44,7 +44,7 @@ dependencies = [
 # installing it is the difference between a wheel install and a source build.
 # The git L3 (threetears.core.backends.git) needs it too: its writer lease,
 # forwarding and the advanced broadcast run over the NATS client.
-nats = ["3tears-nats[client]>=0.72.0,<0.73.0"]
+nats = ["3tears-nats[client]>=0.73.0,<0.74.0"]
 tracing = ["opentelemetry-api>=1.20,<2"]
 # needed by :func:`threetears.core.egress.SocksEgress` / :func:`WarpEgress`, which build
 # ``socks5://`` proxy URLs. httpx routes those through socksio and raises ImportError without

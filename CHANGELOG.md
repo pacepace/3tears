@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.73.0 -- 2026-10-19
+
 ### core: append-only tables in a scoped snapshot publish the rows a write added
 
 **Added:** `SnapshotTable(append_only=True)`, for a table whose rows are only ever added (a row once held never
