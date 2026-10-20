@@ -581,6 +581,24 @@ class TestPartitions:
             )
         assert backend.execute_query("SELECT race, votes FROM results") == [{"race": "r1", "votes": 1}]
 
+    def test_held_keys_counts_the_rows_one_scope_already_holds_by_key(self) -> None:
+        pytest.importorskip("pyarrow")
+
+        backend = _partitioned_backend()
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1), _result("r1", "c2", "CA", 2)], ("race", "county"))
+        probe = backend.export_rows(
+            "results",
+            "state",
+            "TX",
+            [_result("r1", "c1", "TX", 9), _result("r2", "c1", "TX", 3), _result("r1", "c2", "TX", 4)],
+            primary_key=("race", "county"),
+            order_by=("race", "county"),
+        )
+
+        # r1/c1 is held in TX; r1/c2 is held only in CA, another scope; r2/c1 is new
+        assert backend.held_keys("results", "state", "TX", probe, key=("race", "county")) == 1
+        assert backend.held_keys("results", "state", "TX", probe.slice(0, 0), key=("race", "county")) == 0
+
     def test_a_failing_replacement_changes_nothing(self) -> None:
         pytest.importorskip("pyarrow")
         from threetears.core.cache.duckdb import PartitionReplacement

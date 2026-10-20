@@ -491,6 +491,42 @@ class DuckDBBackend:
                 self._db.execute("ROLLBACK")
         return exported
 
+    def held_keys(self, table: str, column: str, value: Any, arrow: Any, *, key: Sequence[str]) -> int:
+        """how many of ``arrow``'s rows have a key one scope of ``table`` already holds.
+
+        For a writer about to add rows to a table rows are only ever added to: a row whose key is held
+        is not an addition. Read on its own snapshot, so it never waits for a write.
+
+        :param table: a table this backend created
+        :ptype table: str
+        :param column: the scope column
+        :ptype column: str
+        :param value: the scope's value
+        :ptype value: Any
+        :param arrow: the rows, as :meth:`export_rows` types them
+        :ptype arrow: pyarrow.Table
+        :param key: the table's key columns
+        :ptype key: Sequence[str]
+        :return: how many are held
+        :rtype: int
+        :raises ValueError: when the table or column is unknown
+        """
+        if arrow.num_rows == 0:
+            return 0
+        condition, params = self._partition_filter(table, column, value)
+        columns = ", ".join(quote_identifier(c) for c in key)
+        joined = " AND ".join(f"held.{quote_identifier(c)} = probe.{quote_identifier(c)}" for c in key)
+        sql = (
+            f"SELECT count(*) FROM (SELECT {columns} FROM {quote_identifier(table)} WHERE {condition}) AS held "  # noqa: S608
+            f"JOIN _held_probe AS probe ON {joined}"
+        )
+        with self.read_snapshot() as cursor:
+            cursor.register("_held_probe", arrow)
+            try:
+                return int(cursor.execute(sql, params).fetchone()[0])
+            finally:
+                cursor.unregister("_held_probe")
+
     def replace_partitions(self, replacements: Sequence[PartitionReplacement]) -> int:
         """make each named scope hold exactly what its replacement gives, all in ONE transaction.
 

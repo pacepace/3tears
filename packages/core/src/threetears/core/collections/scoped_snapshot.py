@@ -26,10 +26,10 @@ and replaces the scope in ONE DuckDB transaction, so a reader -- holding :meth:`
 for a request -- sees the scope as it was or as it is, never half of it. No replica's L1 ever goes
 back to a lower epoch of a scope. Nothing is rebuilt whole and nothing polls.
 
-**Tables that only grow.** A table declared append-only (:attr:`SnapshotTable.append_only`) is
-published by the rows each write ADDED: a scope's pointer names, for it, a base chunk and the pieces
-after it, and a replica fetches and appends only the pieces after what it holds, in the same one
-swap. Past a threshold the pieces fold into a new base. A pointer with pieces is marked so a replica
+**Tables that only grow.** A table declared append-only (:attr:`SnapshotTable.append_only`) may be
+published by the rows each write ADDED (``added=``, with the epoch they follow): a scope's pointer
+names, for it, a base chunk and the pieces after it, and a replica fetches and appends only the
+pieces after what it holds, in the same one swap. Past a threshold the pieces fold into a new base. A pointer with pieces is marked so a replica
 that predates them takes it for another code version's columns and serves the scope from L3; one
 with none is written as before (``docs/design-scoped-snapshot.md``, "Append-only tables").
 
@@ -214,9 +214,9 @@ class SnapshotTable:
     :ivar scope_column: the column whose value is a row's scope; never null
     :ivar key: the table's key, ordering a chunk's rows and paging its L3 reads
     :ivar append_only: rows are only ever added: a row once held never changes or goes away. A write
-        then gives :meth:`ScopedSnapshot.stage` and :meth:`ScopedSnapshot.publish` only the rows it
-        ADDED to the scope, kept as a piece after the scope's base, and a replica appends only the
-        pieces after what it holds (``docs/design-scoped-snapshot.md``)
+        may then give :meth:`ScopedSnapshot.stage` and :meth:`ScopedSnapshot.publish` only the rows it
+        ADDED to the scope (their ``added=``), kept as a piece after the scope's base, and a replica
+        appends only the pieces after what it holds (``docs/design-scoped-snapshot.md``)
     """
 
     name: str
@@ -266,6 +266,8 @@ class StagedScope:
         append-only table, the piece holding the rows the write added
     :ivar rows: table -> the rows its chunk holds
     :ivar sizes: table -> its chunk's bytes
+    :ivar pieces: the tables whose chunk is a piece of the rows the write added (:meth:`ScopedSnapshot.stage`'s
+        ``added``), appended to the chain rather than written whole
     :ivar claim: the write claim keeping the chunks from a sweep, held from before the first of them
         was written until :meth:`ScopedSnapshot.publish_staged` or :meth:`ScopedSnapshot.discard_staged`
         lets it go; ``None`` for a stage that holds none
@@ -277,6 +279,7 @@ class StagedScope:
     rows: Mapping[str, int]
     claim: HeldLease | None = field(default=None, repr=False, compare=False)
     sizes: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    pieces: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -362,6 +365,18 @@ class _Piece:
         :raises KeyError: when a field is missing
         """
         return cls(name=str(body["object"]), rows=int(body["rows"]), epoch=int(body["epoch"]), size=int(body["bytes"]))
+
+
+@dataclass(frozen=True)
+class _Write:
+    """one table's rows a write puts in a chunk: whole, or a piece after the scope's chain.
+
+    :ivar arrow: the rows, as the L1 types them
+    :ivar piece: whether they are appended to the chain as a piece rather than written whole
+    """
+
+    arrow: Any
+    piece: bool = False
 
 
 @dataclass(frozen=True)
@@ -1159,7 +1174,7 @@ class _Sweeper:
 
 
 class ScopedSnapshot:
-    """tables a pod needs whole, held in L2 as one chunk per scope and per table, loaded into DuckDB.
+    """tables a pod needs whole, held in L2 as chunks per scope and table, loaded into DuckDB.
 
     :param name: the snapshot's name, keying its pointers and objects; letters, digits, ``-``, ``_``
     :ptype name: str
@@ -2253,50 +2268,133 @@ class ScopedSnapshot:
     # publishing
     # ------------------------------------------------------------------
 
-    async def publish(self, scope: str, epoch: int, rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
-        """make ``rows`` the scope's content at ``epoch``: in this L1, in its chunks, then its pointer.
+    async def publish(
+        self,
+        scope: str,
+        epoch: int,
+        rows: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        added: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+        after: int | None = None,
+    ) -> bool:
+        """make the scope's content at ``epoch`` this L1's, its chunks', and then its pointer's.
 
-        Called by the writer once the scope's change is committed in L3, with every row the scope now
-        holds in each table, or for an append-only table only the rows the change ADDED. The other
-        replicas apply it when they see the pointer move. A publish below the scope's current epoch
-        changes nothing anywhere. Chunks of the scope's older epochs are retired.
+        Called by the writer once the scope's change is committed in L3. Every table is named once:
+        in ``rows`` with every row the scope now holds in it, or, for an append-only table, in
+        ``added`` with only the rows the change ADDED. The other replicas apply it when they see the
+        pointer move. A publish below the scope's current epoch changes nothing anywhere. Chunks of
+        the scope's older epochs are retired.
 
-        An append-only table's added rows are a piece after the chain the scope's pointer names, so
-        they are right only on top of what this L1 holds: the publish first applies the scope's
-        pointer if the watch has not yet, and when the pointer still names a chain other than the one
-        held here (a racing writer, another code version's columns), nothing moves and the scope is
-        left to :meth:`catch_up_from_l3`, which republishes it from L3.
+        **Whole rows only** (no ``added``): every table is written whole and the pointer moves by the
+        usual compare-and-set, retried against racing writers and never to a lower epoch. This is the
+        same for a snapshot with append-only tables as for one without; an append-only table given
+        whole rows gets a fresh base.
+
+        **Added rows.** They are a piece after the chain the scope's pointer holds at ``after``, the
+        epoch the writer saw before its change, so the pointer moves only from exactly that entry
+        (the whole tables of the same publish move with it, as one pointer). The publish first
+        applies the scope's pointer here if the watch lagged. When the pointer is not at ``after``
+        on the chain this L1 holds, or a racing writer moves it first, nothing moves, nothing here
+        changes, and the scope is shown behind (:meth:`status`) and rebuilt from L3, which holds
+        the change, at the next pass. :meth:`catch_up_from_l3` does the same for a writer that
+        calls it.
 
         :param scope: the scope; never ``None``
         :ptype scope: str
         :param epoch: its epoch after the change
         :ptype epoch: int
-        :param rows: table name -> every row of the scope in that table; for an append-only table,
-            the rows the change added
+        :param rows: table name -> every row of the scope in that table
         :ptype rows: Mapping[str, Sequence[Mapping[str, Any]]]
-        :return: nothing
-        :rtype: None
-        :raises ValueError: when the scope is ``None`` or ``rows`` does not name every table
+        :param added: append-only table name -> the rows the change added to the scope
+        :ptype added: Mapping[str, Sequence[Mapping[str, Any]]] | None
+        :param after: the scope's epoch before the change, which the added rows follow (0 for a scope
+            new to the snapshot); required with ``added``
+        :ptype after: int | None
+        :return: whether the scope's pointer took this publish; ``False`` when it was stale, or left
+            for the rebuild from L3 (a racing writer's whole publish that moved it past this one also
+            reads ``False``)
+        :rtype: bool
+        :raises ValueError: when the scope is ``None``; when a table is named in neither or both of
+            ``rows`` and ``added``, ``added`` names a table not declared append-only, or ``after`` is
+            missing with it; or when an added row's key is one the scope already holds here (rows are
+            only ever added: a caller giving every row of an append-only table is told so)
         """
         if scope is None:
             raise ValueError("a scoped snapshot holds no rows without a scope; every row's scope column is set")
-        missing = [t.name for t in self._tables if t.name not in rows]
-        if missing:
-            raise ValueError(f"a publish of scope {scope!r} gives no rows for {missing}")
+        added = dict(added or {})
+        self._check_named(scope, rows, added, every=True)
+        if added and after is None:
+            raise ValueError(f"a publish of scope {scope!r} with added rows names the epoch they follow (after=)")
+        if not added and after is not None:
+            raise ValueError(f"after= names the epoch added rows follow; the publish of scope {scope!r} adds none")
         started = time.perf_counter()
-        if self._append:
+        if added:
             await self._catch_up_scope(scope)
         async with self._local:
-            if self._append:
-                pointer = await self._publish_added_locked(scope, epoch, rows)
+            if added:
+                pointer, landed = await self._publish_added_locked(scope, epoch, rows, added, int(after or 0))
             else:
-                pointer = await self._publish_locked(scope, epoch, rows)
+                pointer, landed = await self._publish_locked(scope, epoch, rows)
         if pointer is not None:
             self._record_change(scope, pointer, started)
             await self._update_index(add={scope})
             await self._sweeper.retire_older(scope, epoch)
             if self._append:
                 await self._compact(scope)
+        return landed
+
+    def _check_named(
+        self,
+        scope: str,
+        rows: Mapping[str, Any],
+        added: Mapping[str, Any],
+        *,
+        every: bool,
+    ) -> None:
+        """refuse tables a write cannot name: unknown, named twice, added to but not append-only, or missing.
+
+        :param every: whether every table must be named (a publish) or any may be left out (a stage)
+        :ptype every: bool
+        :return: nothing
+        :rtype: None
+        :raises ValueError: naming what is wrong
+        """
+        names = {t.name for t in self._tables}
+        unknown = sorted((set(rows) | set(added)) - names)
+        if unknown:
+            raise ValueError(f"a write of scope {scope!r} names tables the snapshot does not hold: {unknown}")
+        twice = sorted(set(rows) & set(added))
+        if twice:
+            raise ValueError(f"a write of scope {scope!r} names {twice} in both rows and added")
+        whole = sorted(set(added) - self._append)
+        if whole:
+            raise ValueError(
+                f"a write of scope {scope!r} gives added rows for {whole}, which are not append-only: give every row"
+            )
+        missing = sorted(names - set(rows) - set(added)) if every else []
+        if missing:
+            raise ValueError(f"a publish of scope {scope!r} gives no rows for {missing}")
+
+    async def _refuse_held(self, scope: str, added: Mapping[str, Any]) -> None:
+        """refuse added rows whose keys the scope already holds here: they are no addition.
+
+        :param added: append-only table -> its added rows, as this L1 types them
+        :ptype added: Mapping[str, pyarrow.Table]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: naming the table and how many rows were held already
+        """
+        for table in self._tables:
+            if table.name not in added:
+                continue
+            held = await asyncio.to_thread(
+                self._backend.held_keys, table.name, table.scope_column, scope, added[table.name], key=table.key
+            )
+            if held:
+                raise ValueError(
+                    f"{held} of the rows added to scope {scope!r} of {table.name} are held already; an append-only "
+                    "table is given only the rows a write added (every row goes in rows=, as a fresh base)"
+                )
 
     async def _catch_up_scope(self, scope: str) -> None:
         """apply a scope's pointer here if it is ahead of what this L1 holds: a watch that lagged.
@@ -2312,18 +2410,38 @@ class ScopedSnapshot:
             self._note_seen(current)
             await self._apply_pointers({scope: current})
 
+    def _leave_for_l3(self, scope: str, why: str) -> None:
+        """show a scope behind, so the next pass rebuilds it from L3: a change committed there that no
+        pointer here can carry.
+
+        :param scope: the scope
+        :ptype scope: str
+        :param why: why, for the status and the log
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        """
+        log.warning("scoped snapshot %s: scope %r: %s; it is rebuilt from L3", self._name, scope, why)
+        self._behind = _updated(self._behind, {scope: (_BEHIND_REBUILD_AFTER, f"{why}; rebuilt from L3")})
+        self._changed.set()
+
     async def _publish_added_locked(
-        self, scope: str, epoch: int, rows: Mapping[str, Sequence[Mapping[str, Any]]]
-    ) -> _Pointer | None:
-        """:meth:`publish` of a snapshot holding append-only tables, under the L1 lock.
+        self,
+        scope: str,
+        epoch: int,
+        rows: Mapping[str, Sequence[Mapping[str, Any]]],
+        added: Mapping[str, Sequence[Mapping[str, Any]]],
+        after: int,
+    ) -> tuple[_Pointer | None, bool]:
+        """:meth:`publish` with added rows, under the L1 lock.
 
-        Each append-only table's rows are added here and written as a piece after the chain this L1
-        holds; every other table is replaced and written whole. The pointer moves by compare-and-set
-        from exactly the entry the chain was read from, so a piece is never appended to a chain it
-        was not written after.
+        The chunks are written first and the pointer moved from exactly the entry at ``after``; only
+        once it has moved does this L1 take the change, so ``applied_epoch`` and the last change only
+        ever name an epoch the scope's pointer took.
 
-        :return: the pointer written, or ``None`` when nothing moved
-        :rtype: _Pointer | None
+        :return: the pointer written and landed (``None`` when nothing moved), and whether it landed
+        :rtype: tuple[_Pointer | None, bool]
+        :raises ValueError: when an added row is held already
         """
         entry = await self._pointers_bucket.get_entry(key=self._layout.pointer_key(scope))
         current = None if entry is None else _Pointer.decode(entry[0])
@@ -2337,122 +2455,66 @@ class ScopedSnapshot:
             )
             if current is not None:
                 self._note_seen(current)
-            return None
-        on_top = (current is None and applied is None) or (
+            return None, False
+        new = current is None and applied is None and after == 0
+        on_chain = (
             current is not None
             and applied is not None
             and self._loadable(current)
-            and current.epoch == applied.epoch
+            and current.epoch == after == applied.epoch
             and (current.objects, current.pieces) == (applied.objects, applied.pieces)
         )
-        if not on_top:
-            log.warning(
-                "scoped snapshot %s: scope %r's pointer names rows this replica does not hold; its added rows "
-                "are left to the catch-up from L3",
-                self._name,
-                scope,
+        if not (new or on_chain):
+            self._leave_for_l3(scope, f"its added rows follow epoch {after}, which is not the chain its pointer holds")
+            return None, False
+        typed = {
+            t.name: await self._export(t, scope, added[t.name] if t.name in added else rows[t.name])
+            for t in self._tables
+        }
+        await self._refuse_held(scope, {name: arrow for name, arrow in typed.items() if name in added})
+        # a new scope's added rows are all its rows: its first piece is its base
+        writes = {t.name: _Write(typed[t.name], piece=t.name in added and current is not None) for t in self._tables}
+        pointer, held = await self._write_scope(
+            scope, epoch, writes, base=current, move_from=None if entry is None else entry[1]
+        )
+        if held is None:
+            await self._sweeper.retire_names_if_unserved(
+                [name for name in pointer.names() if current is None or name not in current.names()],
+                what=f"a publish of {scope!r} that lost its race",
             )
-            return None
-        # every table's rows as the L1 types them, before anything changes: an added row the L1
-        # already holds is refused at the local commit, before any chunk is written
-        exported: dict[str, Any] = {}
-        for table in self._tables:
-            if table.name in self._append:
-                exported[table.name] = await self._export(table, scope, rows[table.name])
+            self._leave_for_l3(scope, f"a writer moved its pointer while epoch {epoch}'s added rows were written")
+            return None, False
         local = [
-            PartitionReplacement(table=t.name, column=t.scope_column, value=scope, arrow=exported[t.name], append=True)
-            if t.name in self._append
-            else PartitionReplacement(
-                table=t.name, column=t.scope_column, value=scope, rows=rows[t.name], primary_key=t.key
+            PartitionReplacement(
+                table=t.name, column=t.scope_column, value=scope, arrow=typed[t.name], append=t.name in added
             )
             for t in self._tables
         ]
-        await self._commit(local, [scope], epochs={scope: epoch})
-        claim = await self._write_claims.hold(epoch)
         try:
-            try:
-                pointer = await self._write_added(scope, epoch, current, exported, claim)
-                self._applied = _updated(self._applied, {scope: pointer})
-            finally:
-                self._notify()
-            if not await self._exist(pointer.names()):
-                raise RuntimeError(
-                    f"scope {scope!r}: a chunk of epoch {epoch} was deleted before its pointer moved; "
-                    "no pointer is moved onto a missing chunk"
-                )
-            _still_held(claim, f"moving scope {scope!r}'s pointer to epoch {epoch}")
-            if not await self._move_exactly(pointer, None if entry is None else entry[1]):
-                log.warning(
-                    "scoped snapshot %s: scope %r's pointer moved while its added rows were written; they are "
-                    "left to the catch-up from L3",
-                    self._name,
-                    scope,
-                )
-        finally:
-            await claim.release()
-        return pointer
-
-    async def _write_added(
-        self, scope: str, epoch: int, current: _Pointer | None, exported: Mapping[str, Any], claim: HeldLease
-    ) -> _Pointer:
-        """write a publish's chunks: a piece per append-only table, a whole chunk per other table.
-
-        :param current: the scope's pointer the pieces follow; ``None`` for a scope new to the
-            snapshot, whose first rows are its base
-        :ptype current: _Pointer | None
-        :param exported: append-only table -> its added rows, as the L1 types them
-        :ptype exported: Mapping[str, Any]
-        :return: the pointer naming them
-        :rtype: _Pointer
-        """
-        objects: dict[str, str] = {}
-        counts: dict[str, int] = {}
-        pieces: dict[str, tuple[_Piece, ...]] = {}
-        compacted: dict[str, float] = {}
-        for table in self._tables:
-            _still_held(claim, f"writing scope {scope!r}'s chunk of {table.name}")
-            if table.name in self._append and current is not None:
-                arrow = exported[table.name]
-                name, size = await self._put_chunk(scope, epoch, table, arrow, piece=True)
-                objects[table.name] = current.objects[table.name]
-                counts[table.name] = current.rows[table.name]
-                pieces[table.name] = (*current.pieces.get(table.name, ()), _Piece(name, arrow.num_rows, epoch, size))
-                if table.name in current.compacted_at:
-                    compacted[table.name] = current.compacted_at[table.name]
-                continue
-            if table.name in self._append:
-                arrow = exported[table.name]
-                compacted[table.name] = time.time()
-            else:
-                arrow = await asyncio.to_thread(
-                    self._backend.export_partition, table.name, table.scope_column, scope, order_by=table.key
-                )
-            objects[table.name], _ = await self._put_chunk(scope, epoch, table, arrow)
-            counts[table.name] = arrow.num_rows
-        return _Pointer(
-            scope=scope,
-            epoch=epoch,
-            objects=objects,
-            rows=counts,
-            schema=self._schema,
-            pieces=pieces,
-            compacted_at=compacted,
-        )
+            await self._commit_fetched(local, [scope], epochs={scope: epoch})
+        except _Lost as exc:
+            # the pointer took the change; this L1 applies it from the pointer, as any replica does
+            log.warning("scoped snapshot %s: scope %r: %s; applied from its pointer instead", self._name, scope, exc)
+            self._changed.set()
+            return pointer, True
+        self._applied = _updated(self._applied, {scope: pointer})
+        self._notify()
+        return pointer, True
 
     async def _publish_locked(
         self, scope: str, epoch: int, rows: Mapping[str, Sequence[Mapping[str, Any]]]
-    ) -> _Pointer | None:
-        """the body of :meth:`publish`, under the L1 lock: refuse a stale epoch, replace locally,
-        write the chunks, move the pointer by compare-and-set.
+    ) -> tuple[_Pointer | None, bool]:
+        """the body of a whole :meth:`publish` (and of a rebuild's), under the L1 lock: refuse a stale
+        epoch, replace locally, write the chunks, move the pointer by compare-and-set.
 
-        :return: the pointer written, or ``None`` when the scope is already at a later epoch
-        :rtype: _Pointer | None
+        :return: the pointer written (``None`` when the scope is already at a later epoch), and whether
+            the scope's pointer took it
+        :rtype: tuple[_Pointer | None, bool]
         """
         held = await self._pointers_bucket.get(key=self._layout.pointer_key(scope))
         current = None if held is None else _Pointer.decode(held)
         applied = self._applied.get(scope)
         stale = (current is not None and current.epoch > epoch) or (applied is not None and applied.epoch > epoch)
-        result: _Pointer | None = None
         if stale:
             log.warning(
                 "scoped snapshot %s: a publish of scope %r at epoch %d is behind the scope's epoch; nothing moved",
@@ -2464,60 +2526,123 @@ class ScopedSnapshot:
                 # a rebuild applies what it refused here from this pointer before it declares ready;
                 # the watch may not have delivered it yet
                 self._note_seen(current)
-        else:
-            local = [
-                PartitionReplacement(
-                    table=t.name, column=t.scope_column, value=scope, rows=rows[t.name], primary_key=t.key
+            return None, False
+        local = [
+            PartitionReplacement(table=t.name, column=t.scope_column, value=scope, rows=rows[t.name], primary_key=t.key)
+            for t in self._tables
+        ]
+        await self._commit(local, [scope], epochs={scope: epoch})
+
+        def written(pointer: _Pointer) -> None:
+            # the change recorded is this replica's own: a racing writer's later pointer, or a fresh
+            # one of other columns it yields to, is not what this L1 holds
+            self._applied = _updated(self._applied, {scope: pointer})
+
+        try:
+            writes = {
+                t.name: _Write(
+                    await asyncio.to_thread(
+                        self._backend.export_partition, t.name, t.scope_column, scope, order_by=t.key
+                    )
                 )
                 for t in self._tables
-            ]
-            await self._commit(local, [scope], epochs={scope: epoch})
-            # the epoch is claimed from before its first chunk is written until the pointer names
-            # them, so no sweep takes a chunk in between
-            claim = await self._write_claims.hold(epoch)
-            try:
-                try:
-                    objects: dict[str, str] = {}
-                    counts: dict[str, int] = {}
-                    reused: list[str] = []
-                    for table in self._tables:
-                        arrow = await asyncio.to_thread(
-                            self._backend.export_partition, table.name, table.scope_column, scope, order_by=table.key
-                        )
-                        _still_held(claim, f"writing scope {scope!r}'s chunk of {table.name}")
-                        objects[table.name], _ = await self._put_chunk(scope, epoch, table, arrow, reused=reused)
-                        counts[table.name] = arrow.num_rows
-                    # a whole publish forms every append-only table's base afresh, with no pieces
-                    pointer = _Pointer(
-                        scope=scope,
-                        epoch=epoch,
-                        objects=objects,
-                        rows=counts,
-                        schema=self._schema,
-                        compacted_at=dict.fromkeys(self._append, time.time()),
-                    )
-                    self._applied = _updated(self._applied, {scope: pointer})
-                finally:
-                    # after `_applied` moves, as every other commit path does, so a listener reading
-                    # applied_epoch sees the epoch of what it reads; on a failed chunk write, still told
-                    self._notify()
-                # every chunk the pointer will name must still be there: one found already written was
-                # judged by a sweep that may have read the claims before this one was taken, and one
-                # written here may have been swept while this replica was cut off from NATS past its
-                # claim's lifetime (a lapse it cannot see until it reconnects)
-                if not await self._exist(objects.values()):
-                    raise RuntimeError(
-                        f"scope {scope!r}: a chunk of epoch {epoch} was deleted before its pointer moved "
-                        f"({sorted(objects.values())}, reused: {reused}); no pointer is moved onto a missing chunk"
-                    )
-                # the change recorded is this replica's own: a racing writer's later pointer, or a fresh
-                # one of other columns it yields to, is not what this L1 holds
-                _still_held(claim, f"moving scope {scope!r}'s pointer to epoch {epoch}")
-                await self._move_pointer(pointer)
-            finally:
-                await claim.release()
-            result = pointer
-        return result
+            }
+            pointer, moved = await self._write_scope(
+                scope, epoch, writes, base=None, move_from=_ANY_ENTRY, written=written
+            )
+        finally:
+            # after `_applied` moves, as every other commit path does, so a listener reading
+            # applied_epoch sees the epoch of what it reads; on a failed chunk write, still told
+            self._notify()
+        return pointer, moved == pointer
+
+    async def _write_scope(
+        self,
+        scope: str,
+        epoch: int,
+        writes: Mapping[str, _Write],
+        *,
+        base: _Pointer | None,
+        move_from: int | None | object,
+        written: Callable[[_Pointer], None] | None = None,
+    ) -> tuple[_Pointer, _Pointer | None]:
+        """write a scope's chunks at ``epoch`` and move its pointer onto them: the one publish sequence.
+
+        Every write (a publish, a rebuild, a fold) runs it: a write claim on the epoch, held from before
+        the first chunk until the pointer names them, so no sweep takes one in between; each table's
+        chunk written whole, or appended to ``base``'s chain as a piece, or carried from ``base``
+        when ``writes`` leaves it out; every chunk the pointer names checked to be there; and the
+        pointer moved, by the retried compare-and-set (``move_from`` ``_ANY_ENTRY``) or only from
+        exactly the entry at revision ``move_from`` (``None``: only if there is none).
+
+        :param writes: table -> its rows, and whether they are a piece after ``base``'s chain
+        :ptype writes: Mapping[str, _Write]
+        :param base: the pointer the pieces follow and the left-out tables are carried from
+        :ptype base: _Pointer | None
+        :param move_from: how the pointer moves
+        :ptype move_from: int | None | object
+        :param written: told the pointer once every chunk is written, before it moves
+        :ptype written: Callable[[_Pointer], None] | None
+        :return: the pointer written, and the one the scope holds after: it, a racing writer's later
+            one (the retried move), or ``None`` (an exact move that lost)
+        :rtype: tuple[_Pointer, _Pointer | None]
+        :raises RuntimeError: when the claim was lost, or a chunk it names is gone
+        """
+        claim = await self._write_claims.hold(epoch)
+        try:
+            objects: dict[str, str] = {}
+            counts: dict[str, int] = {}
+            pieces: dict[str, tuple[_Piece, ...]] = {}
+            compacted: dict[str, float] = {}
+            reused: list[str] = []
+            for table in self._tables:
+                write = writes.get(table.name)
+                if write is None or write.piece:
+                    if base is None:
+                        raise RuntimeError(f"scope {scope!r}: {table.name} has no chain to carry or append to")
+                    objects[table.name], counts[table.name] = base.objects[table.name], base.rows[table.name]
+                    pieces[table.name] = base.pieces.get(table.name, ())
+                    if table.name in base.compacted_at:
+                        compacted[table.name] = base.compacted_at[table.name]
+                if write is None:
+                    continue
+                _still_held(claim, f"writing scope {scope!r}'s chunk of {table.name}")
+                name, size = await self._put_chunk(scope, epoch, table, write.arrow, reused=reused, piece=write.piece)
+                if write.piece:
+                    pieces[table.name] = (*pieces[table.name], _Piece(name, write.arrow.num_rows, epoch, size))
+                else:
+                    objects[table.name], counts[table.name] = name, write.arrow.num_rows
+                    if table.append_only:
+                        # a whole write forms an append-only table's base afresh
+                        compacted[table.name] = time.time()
+            pointer = _Pointer(
+                scope=scope,
+                epoch=epoch,
+                objects=objects,
+                rows=counts,
+                schema=self._schema,
+                pieces={table: chain for table, chain in pieces.items() if chain},
+                compacted_at=compacted,
+            )
+            if written is not None:
+                written(pointer)
+            # every chunk the pointer will name must still be there: one found already written was
+            # judged by a sweep that may have read the claims before this one was taken, and one
+            # written here may have been swept while this replica was cut off from NATS past its
+            # claim's lifetime (a lapse it cannot see until it reconnects)
+            if not await self._exist(pointer.names()):
+                raise RuntimeError(
+                    f"scope {scope!r}: a chunk of epoch {epoch} was deleted before its pointer moved "
+                    f"({sorted(pointer.names())}, reused: {reused}); no pointer is moved onto a missing chunk"
+                )
+            _still_held(claim, f"moving scope {scope!r}'s pointer to epoch {epoch}")
+            if move_from is _ANY_ENTRY:
+                held: _Pointer | None = await self._move_pointer(pointer)
+            else:
+                held = pointer if await self._move_exactly(pointer, move_from) else None
+        finally:
+            await claim.release()
+        return pointer, held
 
     async def _put_chunk(
         self,
@@ -2577,7 +2702,14 @@ class ScopedSnapshot:
                 reused.append(name)
         return name, len(data)
 
-    async def stage(self, scope: str, epoch: int, rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> StagedScope:
+    async def stage(
+        self,
+        scope: str,
+        epoch: int,
+        rows: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        added: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    ) -> StagedScope:
         """write a scope's chunks under ``epoch`` without moving its pointer or touching this L1.
 
         For a writer that knows a change's epoch before it commits (the write's version is the
@@ -2594,20 +2726,30 @@ class ScopedSnapshot:
         :ptype scope: str
         :param epoch: the epoch the write will commit
         :ptype epoch: int
-        :param rows: table name -> every row the scope holds in that table after the write, or for an
-            append-only table the rows the write ADDED (staged as a piece, which :meth:`publish_staged`
-            appends to the chain the pointer holds at ``carry_at``); a table left out is one the write
-            did not change, kept from the scope's current chunk
+        :param rows: table name -> every row the scope holds in that table after the write; a table
+            left out of both ``rows`` and ``added`` is one the write did not change, kept from the
+            scope's current chunk
         :ptype rows: Mapping[str, Sequence[Mapping[str, Any]]]
+        :param added: append-only table name -> the rows the write ADDED to the scope, staged as a
+            piece that :meth:`publish_staged` appends to the chain the pointer holds at ``carry_at``
+        :ptype added: Mapping[str, Sequence[Mapping[str, Any]]] | None
         :return: the staged chunks
         :rtype: StagedScope
-        :raises ValueError: when the scope is ``None`` or a table is not one of the snapshot's
+        :raises ValueError: when the scope is ``None``; a table is not one of the snapshot's, is named
+            in both, or is given added rows but is not append-only; or an added row's key is one this
+            replica already holds for the scope (rows are only ever added: a caller giving every row of
+            an append-only table as added rows is told so, before anything is written)
         """
         if scope is None:
             raise ValueError("a scoped snapshot holds no rows without a scope; every row's scope column is set")
-        unknown = sorted(set(rows) - {t.name for t in self._tables})
-        if unknown:
-            raise ValueError(f"a stage of scope {scope!r} names tables the snapshot does not hold: {unknown}")
+        added = dict(added or {})
+        self._check_named(scope, rows, added, every=False)
+        typed = {
+            t.name: await self._export(t, scope, added[t.name] if t.name in added else rows[t.name])
+            for t in self._tables
+            if t.name in rows or t.name in added
+        }
+        await self._refuse_held(scope, {name: arrow for name, arrow in typed.items() if name in added})
         objects: dict[str, str] = {}
         counts: dict[str, int] = {}
         sizes: dict[str, int] = {}
@@ -2615,18 +2757,26 @@ class ScopedSnapshot:
         claim = await self._write_claims.hold(epoch)
         try:
             for table in self._tables:
-                if table.name in rows:
-                    arrow = await self._export(table, scope, rows[table.name])
+                if table.name in typed:
+                    arrow = typed[table.name]
                     _still_held(claim, f"staging scope {scope!r}'s chunk of {table.name}")
                     objects[table.name], sizes[table.name] = await self._put_chunk(
-                        scope, epoch, table, arrow, piece=table.name in self._append
+                        scope, epoch, table, arrow, piece=table.name in added
                     )
                     counts[table.name] = arrow.num_rows
         except BaseException:
             await claim.release()
             await self._sweeper.retire_names_if_unserved(list(objects.values()), what=f"a failed stage of {scope!r}")
             raise
-        return StagedScope(scope=scope, epoch=epoch, objects=objects, rows=counts, claim=claim, sizes=sizes)
+        return StagedScope(
+            scope=scope,
+            epoch=epoch,
+            objects=objects,
+            rows=counts,
+            claim=claim,
+            sizes=sizes,
+            pieces=frozenset(added),
+        )
 
     async def _export(self, table: SnapshotTable, scope: str, rows: Sequence[Mapping[str, Any]]) -> Any:
         """the Arrow table a scope of ``table`` holds with ``rows``, typed by this L1, changing nothing.
@@ -2813,28 +2963,14 @@ class ScopedSnapshot:
             )
             if current is None or entry is None or not due:
                 return folded
-            claim = await self._write_claims.hold(current.epoch)
-            try:
-                objects, counts = dict(current.objects), dict(current.rows)
-                pieces, compacted = dict(current.pieces), dict(current.compacted_at)
-                reused: list[str] = []
-                for table in due:
-                    parts = [await self._read_chunk(current.objects[table.name], current.rows[table.name])]
-                    parts += [await self._read_chunk(p.name, p.rows) for p in current.pieces[table.name]]
-                    arrow = _concatenated(parts)
-                    _still_held(claim, f"folding scope {scope!r}'s pieces of {table.name}")
-                    objects[table.name], _ = await self._put_chunk(scope, current.epoch, table, arrow, reused=reused)
-                    written.append(objects[table.name])
-                    counts[table.name] = arrow.num_rows
-                    del pieces[table.name]
-                    compacted[table.name] = time.time()
-                base = replace(
-                    current, objects=objects, rows=counts, pieces=pieces, compacted_at=compacted, published_at=None
-                )
-                if await self._exist(base.names()) and claim.held:
-                    folded = await self._move_exactly(base, entry[1])
-            finally:
-                await claim.release()
+            writes: dict[str, _Write] = {}
+            for table in due:
+                parts = [await self._read_chunk(current.objects[table.name], current.rows[table.name])]
+                parts += [await self._read_chunk(p.name, p.rows) for p in current.pieces[table.name]]
+                writes[table.name] = _Write(_concatenated(parts))
+            base, held = await self._write_scope(scope, current.epoch, writes, base=current, move_from=entry[1])
+            written = [base.objects[t.name] for t in due]
+            folded = held is not None
             if folded:
                 await self._sweeper.retire_older(scope, current.epoch + 1)
                 log.info(
@@ -2897,11 +3033,11 @@ class ScopedSnapshot:
         :return: the pointer and the revision it must move from
         :rtype: tuple[_Pointer, int | None | object] | None
         """
-        appended = [t for t in self._tables if t.name in staged.objects and t.name in self._append]
+        appended = [t for t in self._tables if t.name in staged.pieces]
         missing = [t for t in self._tables if t.name not in staged.objects]
         # filled as tables are completed: the pointer holds these very dicts
-        objects = {t: name for t, name in staged.objects.items() if t not in self._append}
-        counts = {t: rows for t, rows in staged.rows.items() if t not in self._append}
+        objects = {t: name for t, name in staged.objects.items() if t not in staged.pieces}
+        counts = {t: rows for t, rows in staged.rows.items() if t not in staged.pieces}
         pieces: dict[str, tuple[_Piece, ...]] = {}
         compacted: dict[str, float] = {}
         pointer = _Pointer(
@@ -3244,7 +3380,7 @@ class ScopedSnapshot:
             for scope in scopes:
                 epoch = int(epochs.get(scope, 0))
                 async with self._local:
-                    moved = await self._publish_locked(scope, epoch, read[scope])
+                    moved, _ = await self._publish_locked(scope, epoch, read[scope])
                 if moved is not None:
                     # at once, scope by scope: a rebuild that fails at a later scope (a full store)
                     # still leaves nothing superseded behind for the scopes it did move

@@ -78,11 +78,28 @@ and a row once held never changes or goes away) is published by what each write 
 - **A base and its pieces.** For such a table a scope's pointer names a base chunk and an ordered
   list of pieces after it, each the rows one write added, named by scope, epoch and column digest
   as chunks are: `{snapshot}.p/{scope}/{epoch}/{table}.{column digest}`.
-- **A writer gives the added rows.** `stage` and `publish` take only them for an append-only table.
-  The piece is appended to the chain the scope's pointer held at the epoch the writer saw
-  (`carry_at`, or for `publish` the epoch this replica's L1 holds), by a compare-and-set against
-  exactly that entry. A pointer anywhere else leaves the scope to `catch_up_from_l3`, as a carry
-  does. A new scope's first piece is its base.
+- **A writer gives the added rows, apart.** `stage(..., added=)` and `publish(..., added=, after=)`
+  take an append-only table's added rows in their own argument, so the call says which meaning
+  it has; `rows=` keeps meaning every row (an append-only table given every row gets a fresh base).
+  Added rows whose keys this replica already holds for the scope are refused before anything is
+  written, so a caller handing over every row as added rows is told, never served a repeated piece.
+- **A piece follows exactly the chain it was computed after.** The piece is appended to the chain
+  the scope's pointer holds at the epoch the writer saw before its change (`carry_at` for a stage,
+  `after` for a publish), by a compare-and-set against exactly that entry. This is what keeps every
+  pointer's chain equal to L3's rows at its epoch: two writes committed in one order and published
+  in the other can never put the later one's rows on a chain missing the earlier one's. A publish
+  whose pointer is not at `after` on the chain this L1 holds, or that loses the compare-and-set,
+  moves nothing and changes nothing here (this L1 takes a publish only once its pointer has moved,
+  so `applied_epoch` and the last change name only epochs the pointer took). `publish` returns
+  `False`, and the scope is shown behind in `status()` and rebuilt from L3 at the next pass, which
+  holds the change. A skipped stage leaves the scope with its pointer behind L3's epoch, which
+  `catch_up_from_l3` republishes. A new scope's first piece is its base.
+- **Other tables of the snapshot.** A publish of whole rows only moves the pointer exactly as a
+  snapshot with no append-only table does: the compare-and-set retried against racing writers.
+  A publish that carries added rows moves the scope's one pointer from exactly the entry at
+  `after`, and its whole tables move with it, since one pointer names every table of the scope; a
+  writer that wants a whole table's change published regardless of a race publishes it whole,
+  apart from its added rows.
 - **A replica appends what follows what it holds.** When what it holds of a table is a leading run
   of the new chain (the same base, its pieces the first of the new list), it fetches only the
   pieces after them and appends them, in the same one-transaction swap readers see today. Anything
@@ -90,6 +107,9 @@ and a row once held never changes or goes away) is published by what each write 
   The judgement is by names alone, so a lost or out-of-order pointer event converges: the next
   pointer seen is compared with what is held, and every piece after it is fetched. A cold replica
   loads base and every piece.
+- **One publish sequence.** A publish, a rebuild and a fold all write through one sequence: a
+  write claim on the epoch, each table's chunk written whole, appended as a piece or carried,
+  every named chunk checked to be there, then the pointer moved.
 - **Compaction.** Past a threshold (`compact_pieces` pieces, or `compact_bytes` of them, per table
   per scope) the writer that moved the scope folds base and pieces into a new base at the pointer's
   epoch, under a write claim, by compare-and-set; the folded pieces go by the sweeper's one rule.

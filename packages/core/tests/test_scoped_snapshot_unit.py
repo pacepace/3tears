@@ -2143,14 +2143,14 @@ async def _append_pair(
     await _started(writer, pointers)
     view = _Store()
     view.objects = store.objects
-    replica, _, _, _ = _snapshot(tables=_APPEND, pointers=pointers, store=view)
+    replica, _, _, _ = _snapshot(tables=_APPEND, pointers=pointers, store=view, l3=l3)  # one L3, as in life
     await replica.start()
     await replica.wait_ready(timeout=5)
     return writer, replica, pointers, view, l3
 
 
 async def _append_staged(writer: ScopedSnapshot, epoch: int, rows: list[dict[str, Any]], carry_at: int) -> None:
-    staged = await writer.stage("TX", epoch, {"results": rows})
+    staged = await writer.stage("TX", epoch, {}, added={"results": rows})
     moved, skipped = await writer.publish_staged([staged], carry_at={"TX": carry_at})
     assert (moved, skipped) == (["TX"], [])
 
@@ -2182,8 +2182,8 @@ async def test_a_publish_of_added_rows_appends_them_here_and_on_every_replica() 
     writer, replica, pointers, store, _ = await _append_pair()
     gets = store.gets
 
-    await writer.publish("TX", 2, {"results": [_county("c3", 3)]})
-    await writer.publish("TX", 3, {"results": [_county("c4", 4)]})
+    assert await writer.publish("TX", 2, {}, added={"results": [_county("c3", 3)]}, after=1)
+    assert await writer.publish("TX", 3, {}, added={"results": [_county("c4", 4)]}, after=2)
 
     assert _tx_counties(writer) == [("c1", 1), ("c3", 3), ("c4", 4)]
     await _until(lambda: replica.applied_epoch("TX") == 3, what="the second replica applied epoch 3")
@@ -2274,7 +2274,7 @@ async def test_a_rebuild_resets_an_append_only_table_to_one_base_and_retires_its
 async def test_a_staged_piece_off_the_epoch_its_writer_saw_moves_nothing_and_is_left_for_the_catch_up() -> None:
     writer, replica, pointers, _, _ = await _append_pair()
     standing = pointers.entries["enr.s.TX"][0]
-    staged = await writer.stage("TX", 3, {"results": [_county("c3", 3)]})
+    staged = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
 
     moved, skipped = await writer.publish_staged([staged], carry_at={"TX": 2})  # the pointer is at 1
 
@@ -2292,26 +2292,77 @@ async def test_a_publish_on_a_chain_this_replica_does_not_hold_moves_nothing() -
     pointers.put_now("enr.s.TX", json.dumps(foreign).encode())
     standing = pointers.entries["enr.s.TX"][0]
 
-    await writer.publish("TX", 3, {"results": [_county("c3", 3)]})
+    landed = await writer.publish("TX", 3, {}, added={"results": [_county("c3", 3)]}, after=1)
 
+    assert landed is False
     assert pointers.entries["enr.s.TX"][0] == standing, "a piece was appended to a chain the writer does not hold"
     assert not [name for name in store.objects if name.startswith("enr.p/")]
+    assert "TX" in writer.status().behind and "rebuilt from L3" in writer.status().behind["TX"]
+    assert writer.applied_epoch("TX") == 1
     await writer.stop()
     await replica.stop()
 
 
 async def test_a_piece_holding_a_row_already_held_is_refused_and_the_scope_rebuilt_from_l3() -> None:
-    writer, replica, _, _, l3 = await _append_pair()
+    writer, replica, pointers, store, l3 = await _append_pair()
     l3.epochs["TX"] = 2
 
-    # a writer that broke the promise: c1 is held already
-    await _append_staged(writer, 2, [_county("c1", 9)], carry_at=1)
+    # a writer that broke the promise, past this library's own refusal: c1 is held already
+    _with_pieces(pointers, store, epoch=2, pieces=[(2, [_county("c1", 9)])])
 
     await _until(lambda: replica.applied_epoch("TX") == 2, what="TX rebuilt from L3 after its piece was refused")
     assert _tx_counties(replica) == [("c1", 1)], "the refused piece's row reached the L1"
     assert replica.status().phase is SnapshotPhase.READY
     await writer.stop()
     await replica.stop()
+
+
+async def test_added_rows_already_held_are_refused_before_anything_is_written() -> None:
+    writer, replica, pointers, store, _ = await _append_pair()
+    standing, objects = pointers.entries["enr.s.TX"][0], set(store.objects)
+
+    # a caller giving every row of the append-only table as added rows, c1 among them
+    every = [_county("c1", 1), _county("c3", 3)]
+    with pytest.raises(ValueError, match="held already"):
+        await writer.stage("TX", 2, {}, added={"results": every})
+    with pytest.raises(ValueError, match="held already"):
+        await writer.publish("TX", 2, {}, added={"results": every}, after=1)
+
+    assert pointers.entries["enr.s.TX"][0] == standing
+    assert set(store.objects) == objects, "a refused write left a chunk behind"
+    assert _tx_counties(writer) == [("c1", 1)]
+    assert not [k for k in pointers.entries if k.startswith("enr.w.")], "a refused write kept a claim"
+    await writer.stop()
+    await replica.stop()
+
+
+@pytest.mark.parametrize(
+    ("rows", "added", "after", "match"),
+    [
+        ({}, None, None, "gives no rows for"),
+        ({"results": []}, {"results": []}, 1, "both rows and added"),
+        ({}, {"results": [_county("c3", 3)]}, None, "after="),
+        ({"results": [_county("c1", 1)]}, None, 1, "adds none"),
+    ],
+)
+async def test_a_publish_names_each_table_once_and_added_rows_with_the_epoch_they_follow(
+    rows: Any, added: Any, after: Any, match: str
+) -> None:
+    writer, pointers, _, _ = _snapshot(tables=_APPEND)
+    await _started(writer, pointers)
+
+    with pytest.raises(ValueError, match=match):
+        await writer.publish("TX", 2, rows, added=added, after=after)
+    await writer.stop()
+
+
+async def test_added_rows_for_a_table_not_declared_append_only_are_refused() -> None:
+    writer, pointers, _, _ = _snapshot()
+    await _started(writer, pointers)
+
+    with pytest.raises(ValueError, match="not append-only"):
+        await writer.stage("TX", 2, {}, added={"results": [_county("c3", 3)]})
+    await writer.stop()
 
 
 _TOTALS = TableSchema(
@@ -2361,7 +2412,10 @@ async def test_a_table_not_declared_append_only_keeps_one_whole_chunk_beside_an_
     await replica.start()
     await replica.wait_ready(timeout=5)
 
-    await writer.publish("TX", 2, {"results": [_county("c3", 3)], "totals": [{"state": "TX", "total": 4}]})
+    landed = await writer.publish(
+        "TX", 2, {"totals": [{"state": "TX", "total": 4}]}, added={"results": [_county("c3", 3)]}, after=1
+    )
+    assert landed
 
     await _until(lambda: replica.applied_epoch("TX") == 2, what="the second replica applied epoch 2")
     entry = json.loads(pointers.entries["enr.s.TX"][0])
@@ -2492,5 +2546,98 @@ async def test_the_status_says_each_append_only_scopes_pieces_and_last_compactio
     folded_at = writer.status().appended["results"]["TX"].compacted_at
     assert folded_at is not None and rebuilt.compacted_at is not None and folded_at > rebuilt.compacted_at
     assert _snapshot()[0].status().appended == {}, "a snapshot with no append-only table reports pieces"
+    await writer.stop()
+    await replica.stop()
+
+
+# ----------------------------------------------------------------------
+# a publish of added rows that cannot land: nothing is lost, every replica is repaired from L3
+# ----------------------------------------------------------------------
+
+
+async def test_a_later_write_published_before_an_earlier_one_loses_neither_writes_rows() -> None:
+    """write B commits TX at epoch 2 (adding c3), write A at epoch 3 (adding c4, after B); A publishes
+    first. A's rows follow epoch 2, not the chain at 1, so A's publish lands nowhere and leaves TX for
+    the rebuild from L3; B's publish then lands or loses to that rebuild. Every replica ends with both writes."""
+    writer_b, writer_a, pointers, view, l3 = await _append_pair()
+    reader_view = _Store()
+    reader_view.objects = view.objects
+    reader, _, _, _ = _snapshot(tables=_APPEND, pointers=pointers, store=reader_view, l3=l3)
+    await reader.start()
+    await reader.wait_ready(timeout=5)
+    l3.rows = [*l3.rows, _county("c3", 3), _county("c4", 4)]
+    l3.epochs["TX"] = 3
+
+    a_landed = await writer_a.publish("TX", 3, {}, added={"results": [_county("c4", 4)]}, after=2)
+    b_landed = await writer_b.publish("TX", 2, {}, added={"results": [_county("c3", 3)]}, after=1)
+
+    assert a_landed is False, "a piece landed on a chain it was not computed after"
+    for replica in (writer_a, writer_b, reader):
+        await _until(
+            lambda r=replica: r.applied_epoch("TX") == 3 and _tx_counties(r) == [("c1", 1), ("c3", 3), ("c4", 4)],
+            what="every replica holding both writes' rows at epoch 3",
+        )
+        assert replica.status().behind == {}
+    # whether B's own publish lands is a race, not the property: A's refusal hands TX to the rebuild from
+    # L3, which may move the pointer to 3 while B writes, and then B's compare-and-set loses and B leaves
+    # TX to L3 as well. The property is the state every replica ends in, asserted above.
+    del b_landed
+    for replica in (writer_a, writer_b, reader):
+        await replica.stop()
+
+
+async def test_a_publish_that_loses_its_pointer_race_records_nothing_here_says_so_and_is_repaired_from_l3() -> None:
+    writer, replica, pointers, view, l3 = await _append_pair(pointers=_HeldWatch())
+    assert isinstance(pointers, _HeldWatch)
+    real_put = view.put
+    raced: list[bool] = []
+
+    async def racing_put(name: str, data: bytes) -> None:
+        await real_put(name, data)
+        if name.startswith("enr.p/TX/2/") and not raced:
+            raced.append(True)
+            # another replica's rebuild from L3 republishes TX whole at epoch 2 while this piece is written
+            moved = json.loads(pointers.entries["enr.s.TX"][0])
+            whole = "enr/TX/2/results.rebuilt"
+            view.objects[whole] = _results_chunk([_county("c1", 1), _county("c3", 3)])
+            moved["epoch"], moved["tables"]["results"] = 2, {"object": whole, "rows": 2}
+            pointers.put_now("enr.s.TX", json.dumps(moved).encode())
+
+    view.put = racing_put  # type: ignore[method-assign]
+    pointers.put_now("enr.rebuild", b"another replica")  # no rebuild here while the signal is read
+    l3.rows = [*l3.rows, _county("c3", 3)]
+    l3.epochs["TX"] = 2
+    before = replica.status().last_change
+    pointers.holding = True  # the racing pointer's event has not reached this replica yet
+
+    landed = await replica.publish("TX", 2, {}, added={"results": [_county("c3", 3)]}, after=1)
+
+    assert raced and landed is False
+    assert replica.applied_epoch("TX") == 1, "the replica recorded an epoch the shared pointer never took"
+    assert replica.status().last_change == before
+    assert _tx_counties(replica) == [("c1", 1)], "the L1 took rows the shared pointer does not name"
+    assert "TX" in replica.status().behind and "rebuilt from L3" in replica.status().behind["TX"]
+    await asyncio.sleep(0.2)  # several passes: the scope stays shown behind until something lands it
+    assert "TX" in replica.status().behind
+    del pointers.entries["enr.rebuild"]
+    pointers.deliver(pointers.held)
+    for snapshot in (replica, writer):
+        await _until(
+            lambda s=snapshot: s.status().behind == {} and _tx_counties(s) == [("c1", 1), ("c3", 3)],
+            what="TX holding the lost write's rows",
+        )
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_whole_publish_in_a_snapshot_with_an_append_only_table_keeps_the_retried_move() -> None:
+    writer, replica, pointers, view, _ = await _append_pair()
+
+    landed = await writer.publish("TX", 2, {"results": [_county("c1", 1), _county("c3", 3)]})
+
+    assert landed is True
+    entry = _tx_entry(pointers)
+    assert "pieces" not in entry and entry["object"].startswith("enr/TX/2/"), "a whole publish wrote a piece"
+    await _until(lambda: _tx_counties(replica) == [("c1", 1), ("c3", 3)], what="the whole publish applied")
     await writer.stop()
     await replica.stop()

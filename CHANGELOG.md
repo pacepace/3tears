@@ -6,20 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.73.0 -- 2026-10-19
+## v0.73.0 -- 2026-10-20
 
 ### core: append-only tables in a scoped snapshot publish the rows a write added
 
 **Added:** `SnapshotTable(append_only=True)`, for a table whose rows are only ever added (a row once held never
-changes or goes away). `ScopedSnapshot.stage` and `publish` then take only the rows a write ADDED to the scope, kept
-as a piece under `{snapshot}.p/{scope}/{epoch}/{table}.{column digest}`. `publish_staged` appends the piece to the
-chain the scope's pointer holds at `carry_at`, by compare-and-set against exactly that entry (a new scope's first
-piece is its base). `publish` does the same on top of what this replica's L1 holds, and applies a lagging pointer
-first. A replica holding a leading run of a chain fetches only the pieces after it and appends them in the same
-one-transaction swap; anything else reloads the table's scope from base and pieces. Lost or out-of-order pointer
-events converge by that rule, and a cold replica loads base and every piece. A table not declared append-only keeps
-one whole chunk per scope. `StagedScope.sizes` gives each staged chunk's bytes. Design and decisions:
-`docs/design-scoped-snapshot.md`, "Append-only tables".
+changes or goes away). `ScopedSnapshot.stage(..., added=)` and `publish(..., added=, after=)` take the rows a write
+ADDED to such a table in their own argument (`rows=` still means every row, a fresh base), kept as a piece under
+`{snapshot}.p/{scope}/{epoch}/{table}.{column digest}`. A piece is appended only to the chain the scope's pointer
+holds at the epoch the writer saw (`carry_at` for `publish_staged`, `after` for `publish`), by compare-and-set
+against exactly that entry; a new scope's first piece is its base. Added rows whose keys this replica already
+holds are refused with a `ValueError` before anything is written. A replica holding a leading run of a chain
+fetches only the pieces after it and appends them in the same one-transaction swap; anything else reloads the
+table's scope from base and pieces. Lost or out-of-order pointer events converge by that rule, and a cold replica
+loads base and every piece. A table not declared append-only keeps one whole chunk per scope, and a publish of
+whole rows moves the pointer by the retried compare-and-set whatever the snapshot's other tables are.
+`StagedScope.sizes` and `StagedScope.pieces` say each staged chunk's bytes and which are pieces. Design and
+decisions: `docs/design-scoped-snapshot.md`, "Append-only tables".
+
+**Changed:** `ScopedSnapshot.publish` returns whether the scope's pointer took the publish (it returned `None`).
 
 **Added: compaction.** `ScopedSnapshot(compact_pieces=32, compact_bytes=4 MiB)`. A writer that moved a scope folds
 each append-only table whose pieces reach either threshold into a new base at the pointer's epoch (base and pieces
@@ -38,10 +43,12 @@ from L3 and never misreads it. Pieces sit outside the `{snapshot}/` prefix a 0.7
 one. 0.73 reads 0.72 pointers as bases with no pieces. A pointer with no pieces is written in the 0.72 shape, so a
 rebuild, catch-up or fold puts every replica back on pointers it loads. An unknown mark reads as other columns.
 
-**Rollout notes.** A `publish` (or staged piece) whose compare-and-set loses to a racing writer, or that finds the
-pointer on a chain this L1 does not hold, moves nothing and leaves the scope to `catch_up_from_l3`: a writer must
-keep calling the catch-up after its publishes, as the ENR pod does. A piece holding a row the L1 already holds (a
-writer that broke the append-only promise) puts the scope behind, and it is rebuilt from L3.
+**Rollout notes.** A `publish` of added rows whose pointer is not at `after` on the chain this replica holds, or
+that loses its compare-and-set, moves nothing and changes nothing on this replica: it returns `False`, the scope
+shows in `status().behind`, and the next pass rebuilds it from L3, which holds the change. A staged piece off its
+`carry_at` is skipped and left with its pointer behind L3, which `catch_up_from_l3` republishes, so a writer that
+stages keeps calling the catch-up after its publishes, as the ENR pod does. A piece holding a row a replica
+already holds (written past this library's refusal) puts the scope behind there, and it is rebuilt from L3.
 
 ### datasources, core: `read_all` takes set and typed filters; `read_counted` proves a read against a count
 

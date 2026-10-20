@@ -20,7 +20,9 @@ from typing import Any
 from uuid import uuid7
 
 import pytest
+from pydantic import Field, ValidationError
 
+from threetears.core.wire import TolerantWireModel
 from threetears.datasources.drivers.sql_fragments import build_filter
 from threetears.datasources.query_client import (
     DatasourceQueryResult,
@@ -410,3 +412,34 @@ def test_a_typed_filter_travels_as_the_type_it_is() -> None:
     back = RelationFingerprintRequest.model_validate_json(wire)
     assert back.where == {"run_id": 101, "state_code": "TX"}
     assert back.where_in == {"run_id": [101, 102]}
+
+
+class _FingerprintAskBefore073(TolerantWireModel):
+    """the fingerprint ask's filter fields exactly as 3tears 0.72.0 declares them, which a 0.72 hub
+    validates every ask against (``git show v0.72.0:packages/datasources/src/threetears/datasources/query_client.py``,
+    ``RelationFingerprintRequest``): text values only. Mirrored, not imported, since the released
+    model is not installed beside this one; the mirror is the contract the older hub holds."""
+
+    relation: str
+    key_columns: list[str]
+    where: dict[str, str] = Field(default_factory=dict)
+    where_in: dict[str, list[str]] = Field(default_factory=dict)
+    group_by: str | None = None
+
+
+def test_a_hub_that_predates_integer_filters_refuses_one_rather_than_coercing_it() -> None:
+    typed = RelationFingerprintRequest(
+        relation="lsf.projections", key_columns=["run_id"], where_in={"run_id": [101]}, group_by="run_id"
+    )
+    text = RelationFingerprintRequest(relation="lsf.projections", key_columns=["run_id"], where={"state_code": "TX"})
+
+    # the hub reads the ask off the wire: an integer it does not take is a refusal (MALFORMED_REQUEST),
+    # never a value bound as text against a bigint column
+    with pytest.raises(ValidationError):
+        _FingerprintAskBefore073.model_validate_json(typed.model_dump_json())
+    with pytest.raises(ValidationError):
+        _FingerprintAskBefore073.model_validate_json(
+            RelationFingerprintRequest(relation="a.b", key_columns=["k"], where={"run_id": 5}).model_dump_json()
+        )
+    # a text-only ask from this client still reads on the older hub
+    assert _FingerprintAskBefore073.model_validate_json(text.model_dump_json()).where == {"state_code": "TX"}

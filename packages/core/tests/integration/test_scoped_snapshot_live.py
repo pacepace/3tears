@@ -1151,7 +1151,7 @@ async def test_appended_rows_reach_every_replica_as_pieces_fold_into_a_base_and_
 
     for epoch in (2, 3):
         added = await _append_results(platform, "DE", epoch, races=1)
-        staged = await writer.stage("DE", epoch, {"results": added})
+        staged = await writer.stage("DE", epoch, {}, added={"results": added})
         assert await writer.publish_staged([staged], carry_at={"DE": epoch - 1}) == (["DE"], [])
         await _until(lambda e=epoch: reader.applied_epoch("DE") == e, what=f"DE epoch {epoch} applied")
         assert _count(reader, "results", "DE") == 40 * epoch
@@ -1165,7 +1165,7 @@ async def test_appended_rows_reach_every_replica_as_pieces_fold_into_a_base_and_
 
     # a third piece reaches the threshold: the writer folds DE's results into one base at epoch 4
     added = await _append_results(platform, "DE", 4, races=1)
-    staged = await writer.stage("DE", 4, {"results": added})
+    staged = await writer.stage("DE", 4, {}, added={"results": added})
     assert await writer.publish_staged([staged], carry_at={"DE": 3}) == (["DE"], [])
     raw = await pointers.get(key="enr.s.DE")
     assert raw is not None
