@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.74.0 -- 2026-10-20
+
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever
 
 **Fixed:** a HALF_OPEN breaker admits one probe and refuses the rest until it reports, and four
