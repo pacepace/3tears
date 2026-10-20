@@ -34,6 +34,7 @@ from threetears.models.circuit_breaker import (
 )
 
 from threetears.nats.errors import KvError
+from packages.scrape.tests.scrape_tool_support import holds_no_probe
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.health import ScrapeTargetHealthCollection, record_circuit_state
 
@@ -328,6 +329,9 @@ class _FakeBreaker:
 
     def record_failure(self) -> None:
         self.failures += 1
+
+    def release_probe(self) -> None:
+        """Holds no probe: it is open, and its check admits nothing."""
 
 
 # parity-with: threetears.core.coordination.windowed_counter.WindowedCounter
@@ -899,11 +903,9 @@ async def test_a_suppressed_fetch_does_not_strand_the_in_process_breaker(
     The in-process breaker is asked first, and an OPEN one whose own (short) recovery
     timeout has elapsed answers by promoting itself to HALF_OPEN and marking ITS probe in
     flight. If the durable circuit then suppresses the fetch -- which it will, because its
-    window is minutes rather than seconds -- that probe never happens, and
-    ``CircuitBreakerLike`` has no way to say "never mind": an admitted probe is cleared only
-    by an outcome. Left set, the flag outlives the durable window and fast-fails this target
-    forever with ``retry_after_seconds`` of zero, telling the caller to retry immediately
-    into a circuit that will never admit it.
+    window is minutes rather than seconds -- that probe never happens, and is handed back
+    (``release_probe``). Left held, the flag would outlive the durable window and the
+    in-process breaker, not the durable window, would answer this target's checks.
 
     Uses the real ``CircuitBreaker`` rather than a fake, because the in-flight flag IS the
     behaviour under test and a fake would be asserting against my own model of it.
@@ -923,7 +925,7 @@ async def test_a_suppressed_fetch_does_not_strand_the_in_process_breaker(
 
     first = await circuit.check(_T, now=_NOW)
     assert not first.permitted
-    assert breaker.state is CircuitState.OPEN, "the in-process breaker was left holding a phantom probe"
+    assert holds_no_probe(breaker), "the in-process breaker was left holding a phantom probe"
 
     second = await circuit.check(_T, now=_NOW + timedelta(seconds=1))
     assert not second.permitted
@@ -931,6 +933,32 @@ async def test_a_suppressed_fetch_does_not_strand_the_in_process_breaker(
         "the caller was told to retry immediately into a circuit that cannot admit it -- "
         "the stranded in-process probe answered instead of the durable window"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_suppressed_fetch_hands_the_probe_back_without_counting_a_failure(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The probe the in-process breaker admitted is released, not failed: the suppressed fetch
+    never reached the target, so the breaker's failure count does not move and its state stays
+    HALF_OPEN with no probe held -- no failure is invented to clear it."""
+    breaker = CircuitBreaker("warn_oh", failure_threshold=1, recovery_timeout_seconds=0.0)
+    breaker.record_failure()
+    circuit = TargetCircuit(health, policy=policy, breaker_for=lambda _target: breaker)
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=2,
+        blocked_until=_NOW + timedelta(seconds=300),
+    )
+
+    decision = await circuit.check(_T, now=_NOW)
+
+    assert not decision.permitted
+    assert breaker.failure_count == 1, "a fetch that never happened was counted as a failure"
+    assert breaker.state is CircuitState.HALF_OPEN
+    assert holds_no_probe(breaker)
 
 
 @pytest.mark.asyncio

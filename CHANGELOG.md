@@ -10,7 +10,7 @@ packages (bumped in lock-step).
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever
 
-**Fixed:** a HALF_OPEN breaker admits one probe and refuses the rest until it reports, and four
+**Fixed:** a HALF_OPEN breaker admits one probe and refuses the rest until it reports, and these
 ways left a probe reporting nowhere, so the breaker answered every later call
 `CircuitOpenError ... retry in 0s` until a restart (metallm dev, 2026-10-20, on 0.72.0; the
 same code is in every release since the per-model rate-limit breaker):
@@ -22,13 +22,41 @@ same code is in every release since the per-model rate-limit breaker):
 - a request the model's rate-limit breaker refused, after the provider breaker had admitted it
   as its probe, never went out. The provider's probe is handed back, and its next request
   probes.
-- a probe whose call was cancelled fires neither `on_llm_end` nor `on_llm_error`. A probe out
-  longer than `recovery_timeout_seconds` is now taken as lost, and the next request becomes
-  the probe; while the probe is younger, a refusal states the real time left, not `0s`.
+- a probe whose caller vanishes without reporting. A probe out longer than the new
+  `probe_timeout_seconds` is taken as lost, and the next request becomes the probe; while the
+  probe is younger, a refusal states the real time left, not `0s`.
+
+**Fixed: a cancelled call is no verdict.** langchain's streaming paths (which the OpenRouter and
+Claude CLI chat models use) report a cancellation to `on_llm_error`, where it counted as a
+provider failure: a stopped stream re-opened a provider on probe, closed a rate-limit breaker on
+probe, and in CLOSED enough user cancellations opened the provider for every model. A
+cancellation (`CancelledError`, `KeyboardInterrupt`, `GeneratorExit`, any `BaseException` that
+is not an `Exception`) now counts against neither breaker and hands back a probe either holds.
+An error with no answer behind it (a failed connection, a call past its deadline) still counts
+against the provider -- an unreachable or hanging provider is the outage the breaker is for --
+but no longer closes a rate-limit breaker on probe: it says nothing about the rate limit, so
+that probe is handed back. An error the provider answered (an HTTP status, or a failure it
+reported as data) ends the rate-limit probe as before.
 
 **Added (`CircuitBreaker`):** `record_probe_answered()` closes a HALF_OPEN breaker whose probe got
 an answer this breaker does not count, and changes nothing in any other state (a stray error of
-the other kind mid-streak is not a success); `release_probe()` ends a probe without a verdict.
+the other kind mid-streak is not a success); `release_probe()` ends a probe without a verdict and
+counts nothing.
+
+**Added:** `probe_timeout_seconds` on `CircuitBreaker`, `CircuitBreaker.restore()` and
+`CircuitBreakerRegistry` (`DEFAULT_PROBE_TIMEOUT_SECONDS`, 300 s): how long a probe may stay out
+before it is taken as lost. Its own setting because a model call routinely outlasts the 30 s
+recovery wait and a hanging provider holds one for 60-120 s; a lease that short would send a
+new probe onto the hanging provider every window. `recovery_timeout_seconds` still means only
+the wait in OPEN before probing.
+
+### scrape: a suppressed or abandoned fetch hands its in-process probe back instead of inventing a failure
+
+**Changed:** `ProbeObservableBreaker` requires `release_probe()` (the models `CircuitBreaker`
+has it). `TargetCircuit` hands back an in-process probe whose fetch was suppressed or abandoned
+with it, instead of reporting a failure the target never had, so a suppressed poll no longer
+moves the in-process breaker's failure count. A breaker injected through `breaker_for` must now
+provide `release_probe`.
 
 ## v0.73.0 -- 2026-10-20
 

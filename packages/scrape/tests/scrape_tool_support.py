@@ -11,13 +11,14 @@ from typing import Any
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError
 
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.robots import RobotsGate
 from threetears.scrape.tool import ScrapeTool
 
-__all__ = ["NeverRendersDriver", "derived_target_id"]
+__all__ = ["NeverRendersDriver", "derived_target_id", "holds_no_probe"]
 
 
 async def _disallow_everything(_url: str) -> tuple[int, str]:
@@ -76,3 +77,22 @@ async def derived_target_id(url: str, field_schema: dict[str, Any]) -> str:
     )
     target_id: str = result.metadata["target_id"]
     return target_id
+
+
+def holds_no_probe(breaker: CircuitBreaker) -> bool:
+    """Whether ``breaker`` would admit a request now: no probe is held, released or never taken.
+
+    Asked through the breaker's own front door -- a ``check()`` -- and any probe that check
+    admits is handed straight back, so asking changes nothing a later step sees.
+
+    :param breaker: the in-process breaker
+    :ptype breaker: CircuitBreaker
+    :return: ``True`` when a request would be admitted
+    :rtype: bool
+    """
+    try:
+        breaker.check()
+    except CircuitOpenError:
+        return False
+    breaker.release_probe()
+    return True
