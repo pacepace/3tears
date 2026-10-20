@@ -11,6 +11,7 @@ from prometheus_client import REGISTRY
 from pydantic import ValidationError
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
+from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.agent.memory.tools import (
     ChunkRecallInput,
     ChunkSearchInput,
@@ -203,13 +204,13 @@ class TestAnEmbeddingOutageInATool:
 class TestToolError:
     async def test_format(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
         result = await _search_by_alias(
-            permissive_memory_authorizer, _FakeAliasMemories(error=RuntimeError("connection timeout"))
+            permissive_memory_authorizer, _FakeAliasMemories(error=TimeoutError("connection timeout"))
         )
         assert result == "[TOOL ERROR] memory_search: alias failed — connection timeout"
 
     async def test_format_consistency(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
         result = await _search_by_alias(
-            permissive_memory_authorizer, _FakeAliasMemories(error=LookupError("not found"))
+            permissive_memory_authorizer, _FakeAliasMemories(error=DataLayerUnavailableError("not found"))
         )
         assert result.startswith("[TOOL ERROR]")
         assert "memory_search" in result
@@ -377,7 +378,9 @@ class TestPartialResultsAreSaidFirst:
     ) -> None:
         result = await _search(
             permissive_memory_authorizer,
-            memories=_FakeSearchRows(semantic=[_memory_row("lives in Leeds")], fts=RuntimeError("fts down")),
+            memories=_FakeSearchRows(
+                semantic=[_memory_row("lives in Leeds")], fts=DataLayerUnavailableError("fts down")
+            ),
             media=_FakeSearchRows(semantic=[_media_row("a photo of the house")]),
             chunks=_FakeSearchRows(),
         )
