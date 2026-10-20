@@ -70,7 +70,7 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.nats.collection_key_requests import MAX_PURGED_KEYS, CollectionKeysRequestError
 from threetears.nats.errors import KvError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["AnswerNotComputable", "VersionedAnswer", "VersionedAnswers"]
 
@@ -130,6 +130,9 @@ class _AnswerIndex(BaseCollection[_IndexRow]):
 
     primary_key_column: str | tuple[str, ...] = ("name",)
     caches_in_l1: ClassVar[bool] = False
+    #: derived: the index is rebuilt by the answers it indexes, and it changes only by
+    #: compare-and-set, which raises on its own
+    l2_is_the_store: bool = False
 
     def __init__(self, registry: CollectionRegistry, config: CoreConfig, nats_client: Any, *, table_name: str) -> None:
         self._table_name = table_name
@@ -234,6 +237,9 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
 
     primary_key_column: str | tuple[str, ...] = ("version", "request")
     caches_in_l1: ClassVar[bool] = False
+    #: derived: a miss computes the answer again, and answers are written by compare-and-set,
+    #: which raises on its own
+    l2_is_the_store: bool = False
 
     #: how long a replica waits for a peer computing the same answer before computing it too: an
     #: answer takes up to a few seconds on a large read
@@ -573,10 +579,10 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             # NOSILENT: said once, not per retirement
             if not self._markers_kept_logged:
                 self._markers_kept_logged = True
-                log.warning(
-                    "retired answers' keys could not be purged; their delete markers stay: table=%s error=%s",
-                    self.table_name,
+                contain(
                     exc,
+                    log=log,
+                    what=f"retired answers' keys could not be purged; their delete markers stay: table={self.table_name} error={exc}",
                 )
 
     async def _retire_until_current(self) -> None:
@@ -591,7 +597,11 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 await self.retire_older_than(target)
             except Exception as exc:  # noqa: BLE001 -- a retirement that fails for any reason must be tried again, not wedge the next ones
                 # NOSILENT: the old answers wait for the next call, which tries again
-                log.warning("retiring old answers failed: table=%s below=%d error=%s", self.table_name, target, exc)
+                contain(
+                    exc,
+                    log=log,
+                    what=f"retiring old answers failed: table={self.table_name} below={target} error={exc}",
+                )
                 self._wanted = self._retired_below
                 return
             self._retired_below = target

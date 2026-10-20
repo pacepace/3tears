@@ -40,11 +40,10 @@ from threetears.evals.analysis import (
     build_code_only_report,
 )
 from threetears.evals.analysis.bundle.schema import UNVERIFIED_FOLD_PREFIX
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel import (
-    CampaignDesign,
     ControlDeclaration,
-    EvalCampaign,
     SweptAxis,
     resolve_variant_identity,
 )
@@ -74,6 +73,8 @@ from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
 from packages.evals.tests.fixtures.toyhost.variant import variant_levers
+from packages.evals.tests.factories import make_campaign
+from packages.evals.tests.v15_shapes import V15Design
 
 if TYPE_CHECKING:
     from threetears.evals.schema import EvalResult
@@ -220,7 +221,7 @@ def _bundle(
     }
     design = None
     if control is not None:
-        design = CampaignDesign(
+        design = V15Design(
             axes=[
                 SweptAxis(
                     axis_id=_EFFORT,
@@ -232,7 +233,7 @@ def _bundle(
             held_fixed=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
             declared_at="2026-03-14T09:30:00+00:00",
         )
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
         scope_id=TOYHOST_SCOPE,
         name="effort",
@@ -329,9 +330,9 @@ class TestATwoArmSweepFoldsButIsMarkedUnverified:
         assert _confound(_row(bundle, _EFFORT), _UNVERIFIED_PARAMS) is not None
 
     def test_the_mark_reaches_the_generator_s_context(self) -> None:
-        message = build_user_message(self._sweep())
-        assert '"kind": "unverified_fold"' in message
-        assert f'"dimension": "{_UNVERIFIED_PARAMS}"' in message
+        message = _writer_message(self._sweep())
+        assert '"kind":"unverified_fold"' in message
+        assert f'"dimension":"{_UNVERIFIED_PARAMS}"' in message
         assert "folded, unverified:" in message
 
     def test_the_mark_reaches_the_code_only_report(self) -> None:
@@ -740,3 +741,8 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
         )
         with pytest.raises(RegistrationError, match="one of resolves_into / read_residual without the other"):
             SHARED_CORE.extend([self._lever("surface"), family])
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

@@ -165,8 +165,9 @@ Each flag passes to one `start_run` argument: `--model` to `models`, `--k` to `k
 
 ### `report` and `bundle`
 
-`report` prints the campaign's report (see [Reading reports](reading-reports.md#the-report-one-page-result-first)) —
-its analysis, or, when it has none, a code-only report of its evidence. `bundle` prints, as JSON, the analysis
+`report` prints the campaign's page (see [Reading reports](reading-reports.md#the-report-one-page-result-first)) —
+its analysis, or, when it has none, a code-only page of its evidence; `--format json` prints
+[its JSON](#the-campaign-json). `bundle` prints, as JSON, the analysis
 bundle a generation would read inside a wrapper (`BundleInspection`) that adds its campaign, scope and
 fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command calls a model.
 
@@ -254,7 +255,7 @@ ceiling — and refuses there with nothing spent; the job does the spending. An 
 its call: assembling its bundle reads every member run's results, so its job assembles it, builds the client and
 prices the first call against the cap, and a refusal at any of those ends the job `failed` with
 `refused before any call: <why>` for `job_poll` to read, with nothing spent. That preparation is bounded: one
-that has not finished in `ANALYSIS_PREPARATION_BUDGET_S` (8 hours, the engine's cap on one job) ends the same way.
+that has not finished in `AnalysisGeneration.preparation_budget_s` (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s; the host may set it per call) ends the same way.
 So a call is a few store round-trips, and a transport holds every call to one fixed timeout (`mount_fastmcp(..., call_timeout_s=...)`, 60s by default)
 rather than one sized to what a call might spend. The timeout may be a function in place of the number, read once
 as each call starts, so an operator retunes it from live configuration without remounting.
@@ -304,14 +305,17 @@ each one's final `JobStatus`, result included (cancelling the wait cancels the j
 
 **A sweep** (`sweep_launch`) is for arms that differ in more than the model: each arm names its own model,
 overlays and apparatus settings, and every arm shares the template, subject, `k` and the other settings.
-Every arm is refused up front if its launch would be. The arms run one at a time, so no arm shares another's
-provider load; `max_concurrent_arms` raises that. To compare latency, also declare `measure_latency`, which
-every arm's launch takes. Each run joins the named campaign
-as it is created. That campaign is created exploratory, since a sweep takes no design: declare what the arms were
-swept to learn with `campaign_update` once they are known. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
-the arm in flight and launches none after it. An arm refused at its launch, or whose run ends `failed`, ends
-the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the first arm's resolved
-ones hold for the rest, so a role default that moves mid-sweep cannot split the arms.
+Every arm is refused up front if its launch would be. How the arms share time is `arm_schedule`, the launch's own
+argument (below). By default they are interleaved: every arm is prepared, then all start as one launch. `sequential`
+launches one arm after another and `concurrent` launches them all at once, each its own launch. To compare latency,
+also declare `measure_latency`, which every arm's launch takes and which runs the arms sequential. Launched one after
+another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
+the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design, and its readings are leads: to ask a
+question of what it found, declare a campaign before the runs that answer it. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
+the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
+once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a
+role default that moves mid-sweep cannot split the arms.
 
 On a host that enforces its ceilings (`LaunchSettings.enforcement_enabled`), every spend operation is bounded
 in dollars before it spends: a launch by the per-run ceiling and its case generation by the host's out-of-run
@@ -349,23 +353,49 @@ An agent calls `action='help'` for the actions grouped by workflow and `action='
 one action's parameters and an example. A parameter the action does not declare is refused, naming the
 ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read through.
 
-**A campaign is declared or exploratory, and the caller says which.** `campaign_create` takes a
-`declared_design` or `exploratory: true` — exactly one; neither is refused naming both, and both are refused as a
-contradiction. `exploratory` is checked, never stored: a campaign is exploratory exactly while it declares no
-design. `campaign_update` changes a campaign's `name`, `description` or `declared_design` after it exists, so an
-operator who started exploring declares the design when the question settles, and the campaign is declared from
-that write on. Going back is said too: `declared_design: null` withdraws the declaration only beside
-`exploratory: true`.
+**A campaign is declared or exploratory, and the caller says which.** `campaign_create` takes a `design` on at
+least one of its `aspects`, or `exploratory: true` — exactly one; neither is refused naming both, and both are
+refused as a contradiction. `exploratory` is checked, never stored: a campaign is exploratory exactly while none of
+its aspects declares a design. A declared campaign also takes its one `question`, its `campaign_arms` (`{label,
+role, from_run_ids}`, the control first), each aspect's `margin`, and its `floors` (`{aspect, clause}`); an
+exploratory one takes none of them.
 
-**Everything a campaign needs is an action.** An agent can start ad hoc and end with a declared, controlled
-campaign without a line of Python:
+**Everything a campaign needs is an action:**
 
-1. `run_launch` the arms, then `campaign_create` with their `run_ids` and `exploratory: true`;
-2. `campaign_runs_add` the runs launched later (`campaign_runs_remove` takes one out; its results stay);
-3. `campaign_update` with the `declared_design` once the question settles, and `control_from_run_id` naming the
-   member run whose variant is the control — one write, so a refused control leaves the design unwritten too.
-   `control_from_run_id` alone re-names the control on a declared campaign, and `control_from_run_id: null`
-   clears it.
+1. `campaign_create` with the question and each aspect's template, margin and design, before any run (arms are
+   named from runs, so none yet: each variant the runs bring is read as a candidate); `campaign_update` may still
+   amend the `question`, `aspects` and `floors` while no aspect holds a run;
+2. `run_launch` the arms, then `campaign_runs_add` each run to its aspect (by its template, or the `aspect` you
+   name; `campaign_runs_remove` takes one out, and its results stay);
+3. `campaign_update` with `control_from_run_id`, naming the member run whose variant is the control. Once a run has
+   joined, the control is named once and never re-pointed, and a control named after an aspect's first result makes
+   that aspect's comparisons post hoc.
+
+To ask again after the runs, `campaign_create` with `aspects_from` adopts the aspects it keeps, each with the time
+its question was asked; what it adds (`margins` for an adopted aspect, a floor, an arm, the question's new words)
+is dated now and reads as declared after the runs.
+
+4. `report_read` the campaign's page; `analysis_generate` adds the writer's memo;
+5. `campaign_record` the person's call: the arm, `call_reason`, and each broken floor (`floors_overridden`, by key,
+   `billing/rate_drop/*`) and missed bar (`bars_overridden`, `tone/cost_usd`) it overrides. It is refused while the
+   arm leaves one unnamed, or names one the arm did not raise, and on a measurement
+   ([what it refuses](adopting-a-host.md#recording-the-call)).
+
+### The campaign JSON
+
+`report_read(format="json")`, `report --format json` and the `campaign.json` a written page holds are one object:
+
+| Key | Holds |
+|---|---|
+| `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 1) |
+| `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
+| `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason |
+| `recommendation` | the writer's arm and confidence, or null |
+| `call` | the recorded call (`CampaignCall`), or null |
+| `aspects` | each aspect's `aspect`, `bundle_fingerprint` and `bundle_schema_version` |
+
+Each aspect's bundle is not inlined: it is written beside the page as `bundle-<aspect>.json` (the label in lower case, hyphenated),
+and the fingerprint names it. Branch on the typed fields, never on a row's `reason`, which is words.
 
 `judge_configs_list` names the judge configs a second judge's `second_judge_config_ids` can map a dimension to.
 

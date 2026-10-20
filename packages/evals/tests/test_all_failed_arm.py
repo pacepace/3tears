@@ -60,7 +60,7 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
-from threetears.evals.kernel import CampaignDesign, CellFacts, EvalStorage, StratumFacts, delivered_a_turn
+from threetears.evals.kernel import CellFacts, EvalStorage, StratumFacts, delivered_a_turn
 from threetears.evals.schema import EvalResult, EvalTestCase, GoalStateOutcome, LatencyMetrics, RoleUsage
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET_ENDED_KEY, count_delivered_turns
@@ -74,6 +74,7 @@ from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import list_results
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
+    analysed_aspect,
     fixture_variant_key,
     make_analysis,
     make_campaign,
@@ -82,6 +83,7 @@ from packages.evals.tests.factories import (
     minimal_declaration,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.v15_shapes import V15Design
 
 _SCOPE = "uni-1"
 
@@ -163,7 +165,7 @@ def _budget_ended(model: str, case_id: str, *, ms: float = 60_000.0, cost: float
 def _store(
     arms: Mapping[str, list[EvalResult]],
     *,
-    design: CampaignDesign | None = None,
+    design: V15Design | None = None,
     cases: list[EvalTestCase] | None = None,
 ) -> tuple[EvalStorage, Any]:
     """A real store holding one run per arm, the cases when given, and a campaign over the runs."""
@@ -203,7 +205,7 @@ def _three_arms() -> dict[str, list[EvalResult]]:
 def _bundle(
     arms: Mapping[str, list[EvalResult]] | None = None,
     *,
-    design: CampaignDesign | None = None,
+    design: V15Design | None = None,
     profile: HostProfile = _PROFILE,
     cases: list[EvalTestCase] | None = None,
 ) -> AnalysisContextBundle:
@@ -211,7 +213,7 @@ def _bundle(
     return assemble_context_bundle(campaign, storage=storage, profile=profile)
 
 
-def _controlled(control: str, **bars: tuple[float, str]) -> CampaignDesign:
+def _controlled(control: str, **bars: tuple[float, str]) -> V15Design:
     """A declaration naming ``control``, holding each named measure to a ``(threshold, direction)`` bar."""
     return minimal_declaration(control=fixture_variant_key(control)).model_copy(
         update={
@@ -533,9 +535,11 @@ class TestAnArmWhereNoResultTookATurn:
     def test_a_stored_analysis_counts_it_from_its_frozen_bundle_alone(self) -> None:
         bundle = _bundle()
         analysis = make_analysis(
-            decision_surface=bundle_decision_surface(bundle),
-            variant_index=bundle.variant_index,
-            bundle=bundle.to_dict(),
+            aspects=[
+                analysed_aspect(
+                    bundle, decision_surface=bundle_decision_surface(bundle), variant_index=bundle.variant_index
+                )
+            ],
         )
         storage = EvalStorage(InMemoryDocumentStore())
         storage.save_analysis(analysis)

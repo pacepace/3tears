@@ -60,7 +60,7 @@ from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost, TemplateChecks
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, JudgeCase
-from threetears.evals.run.authoring import admit_template, validated_kind_spec
+from threetears.evals.run.authoring import admit_template, admit_template_case, validated_kind_spec
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.definition_digests import (
     case_set_digest,
@@ -75,6 +75,7 @@ from threetears.evals.run.definition_seed import (
     SeedJudgeCase,
     SeedTemplateCase,
     authored_seed_cases,
+    criterion_missing_from_stored,
     seed_case_set_digest,
     stored_template_case_digest,
 )
@@ -544,8 +545,19 @@ class _Survey:
 
     def _read_case(self, key: str, case: SeedJudgeCase, digest: str) -> DefinitionReading:
         judge = self.current.get(case.judge_template)
+        # The seed resolves the criterion's template in the store first, and withholds a case that template no longer
+        # words (it was re-worded under the same name) unless the battery already holds it: only a reset writes it.
+        reworded = criterion_missing_from_stored(case, {**self.resolved, **self.current})
+        withheld = DefinitionReading(
+            key=key,
+            definition_type="judge_case",
+            state="stale",
+            seed_digest=digest,
+            reason=f"the stored template {case.criterion_template!r} has no dimension {case.criterion!r} the corpus "
+            "words, so only a reset writes it",
+        )
         if judge is None:
-            return self._reading(key, "judge_case", digest, None, "", None)
+            return withheld if reworded else self._reading(key, "judge_case", digest, None, "", None)
         stored = self.stored_cases(judge)
         live = [c for c in stored if not c.archived]
         if match := next((c for c in live if c.content_hash == digest), None):
@@ -569,6 +581,8 @@ class _Survey:
                 recorded,
                 f"seeded into {case.judge_template!r} revision {judge.revision}",
             )
+        if reworded:
+            return withheld
         if not stored:
             # An empty battery: the boot seed fills it.
             return self._reading(key, "judge_case", digest, None, "", None)
@@ -836,6 +850,12 @@ def reset_definitions(
             )
     admitted, invalid = _admitted(host, corpus, [corpus_templates[name] for name in templates], checks)
     refusals += invalid
+    for name in templates:
+        for case_key, own in survey.own_of(name):
+            try:
+                admit_template_case(own, checks=checks)
+            except ValidationFailedError as e:
+                refusals.append(_Refusal(case_key, f"the host refuses it: {e}"))
     for name in sets:
         corpus_set = corpus_sets[name]
         ids = _current_case_ids(survey, corpus_set)

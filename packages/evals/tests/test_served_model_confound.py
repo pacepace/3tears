@@ -27,9 +27,7 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.kernel import (
-    CampaignDesign,
     ControlDeclaration,
-    EvalCampaign,
     SweptAxis,
     resolve_variant_identity,
 )
@@ -43,6 +41,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.factories import make_campaign
+from packages.evals.tests.v15_shapes import V15Design
 
 #: The alias a launch asks for, and two concrete models a provider could resolve it to.
 _ALIAS = "~vendor/extractor-latest"
@@ -90,8 +90,8 @@ def _results(batch: EvalRun, served: Served) -> list[EvalResult]:
     ]
 
 
-def _design(control: EvalRun, models: Sequence[str]) -> CampaignDesign:
-    return CampaignDesign(
+def _design(control: EvalRun, models: Sequence[str]) -> V15Design:
+    return V15Design(
         axes=[
             SweptAxis(
                 axis_id="model",
@@ -105,13 +105,11 @@ def _design(control: EvalRun, models: Sequence[str]) -> CampaignDesign:
     )
 
 
-def _bundle(
-    batches: Sequence[tuple[EvalRun, Served]], *, design: CampaignDesign | None = None
-) -> AnalysisContextBundle:
+def _bundle(batches: Sequence[tuple[EvalRun, Served]], *, design: V15Design | None = None) -> AnalysisContextBundle:
     storage = ToyhostStorage(
         [batch for batch, _ in batches], {batch.id: _results(batch, served) for batch, served in batches}
     )
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="0b6f2a54-3c1e-4d8a-9e27-5a1c7f3b2d60",
         scope_id=TOYHOST_SCOPE,
         name="served-model",

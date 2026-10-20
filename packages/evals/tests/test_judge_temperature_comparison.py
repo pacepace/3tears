@@ -274,7 +274,7 @@ async def compare_judge_temperatures(
     What the ``judge_temperature`` operation's job does, awaited here as a script awaits it; the record is also
     checked to hold what was read, so every comparison these tests make shows it was kept.
     """
-    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    leases = JobLeases(host.storage)
     try:
         work = await judge_temperature_work(host, run_id, scope_id, **options)
         ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
@@ -351,7 +351,7 @@ class TestEveryAnswerPaidForIsKept:
         judge = _StallingJudge()
         host, run_id = await _judged_run(judge)
         judge.stall_after = 3
-        leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+        leases = JobLeases(host.storage)
         work = await judge_temperature_work(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
         running = asyncio.create_task(
             run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
@@ -484,6 +484,10 @@ class TestAClientThatIgnoresTemperature:
         assert (row.pinned.cases, row.pinned.mean_variance) == (0, None)
         assert "NOT COMPARABLE" in comparison.render()
 
+    @pytest.mark.expect_contained(
+        TypeError,
+        why="the test drives a completion with no temperature into the comparison job: CompletionProtocolDefect, a TypeError, is the failure it asserts",
+    )
     async def test_a_client_that_reports_no_temperature_fails_the_comparison_naming_the_protocol(self):
         """Not two "unrecorded" settings read as a comparison, nor every call failed one by one: the host's completion
         type breaks the protocol, so the comparison's job fails at the first call, naming the check."""
@@ -491,7 +495,7 @@ class TestAClientThatIgnoresTemperature:
         host, run_id = await _judged_run(judge)
         judge.sends = _UNREPORTED
 
-        leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+        leases = JobLeases(host.storage)
         try:
             work = await judge_temperature_work(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
             ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)

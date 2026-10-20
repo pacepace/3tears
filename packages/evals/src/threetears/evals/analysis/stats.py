@@ -376,6 +376,34 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     return _wilson_bounds(n_true / n, n, z)
 
 
+def pooled_rate_interval(passed: int, trials: int, *, cases: int) -> tuple[float, float] | None:
+    """The Wilson score interval at :data:`INTERVAL_LEVEL` on ``passed`` of ``trials``, with the cases as the
+    independent draws: the rate is the trials', the effective size the cases'.
+
+    For a pass rate known only as its count over trials that may repeat a case. Repeats of a case are not independent
+    draws, so the interval is read on as many observations as there are cases, never more: wider than the trials
+    would give where repeats differ, :func:`wilson_interval` exactly where each case ran once.
+
+    :param passed: Trials that passed.
+    :ptype passed: int
+    :param trials: Trials.
+    :ptype trials: int
+    :param cases: Distinct cases the trials ran.
+    :ptype cases: int
+    :return: ``(low, high)`` containing ``passed / trials``, or ``None`` with no trials or fewer than two cases.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: ``passed`` is negative or above ``trials``, or ``cases`` is above ``trials``.
+    """
+    if not 0 <= passed <= trials:
+        raise ValueError(f"a pass rate needs 0 <= passed <= trials; got passed={passed}, trials={trials}")
+    if cases > trials:
+        raise ValueError(f"a case runs at least one trial; got cases={cases}, trials={trials}")
+    if trials == 0 or cases < 2:
+        return None
+    z = NormalDist().inv_cdf(1 - (1 - INTERVAL_LEVEL) / 2)
+    return _wilson_bounds(passed / trials, cases, z)
+
+
 def _require_aligned(values: Sequence[object], cases: Sequence[Hashable]) -> None:
     if len(values) != len(cases):
         raise ValueError(f"every observation needs its case; got {len(values)} observations and {len(cases)} cases")
@@ -2505,6 +2533,169 @@ def paired_detectable_difference(
     return high
 
 
+def cases_to_clear(half_width: float, n_cases: int, room: float) -> int | None:
+    """The independent cases a t interval needs for its half-width on ``n_cases`` to shrink within ``room``.
+
+    A t interval's half-width falls close to ``1/√n`` over independent cases once its critical value has settled, so
+    ``half_width`` read on ``n_cases`` is within ``room`` from ``⌈n_cases · (half_width / room)²⌉`` cases. Repeats of
+    a case are not independent of it: the count is of cases.
+
+    **Not for a bounded interval.** A bounded interval by betting (:func:`bounded_difference_interval`) carries a
+    finite-sample excess that falls away as cases grow, so it narrows faster than ``1/√n`` at first, and scaled from
+    a few cases it overstates the cases it needs, by about twice from a dozen. Project that one with
+    :func:`bounded_cases_to_clear`, which computes it again at each count.
+
+    :param half_width: The interval's half-width on the side that must clear, in the reading's units, at least 0.
+    :ptype half_width: float
+    :param n_cases: The independent cases it was read over, at least 1.
+    :ptype n_cases: int
+    :param room: How far that side may reach from the true difference and still clear: the margin less the true
+        difference, in the same units.
+    :ptype room: float
+    :return: The cases, at least 1; None where ``room`` is not above zero, so no number of cases clears it.
+    :rtype: int | None
+    :raises ValueError: ``n_cases`` below 1 or ``half_width`` negative.
+    """
+    if n_cases < 1:
+        raise ValueError(f"an interval is read over at least one case, got {n_cases}")
+    if half_width < 0:
+        raise ValueError(f"a half-width is never negative, got {half_width}")
+    if room <= 0:
+        return None
+    # A hair under a whole count is that count: 12 · (29.8 / 10)² is 106.5648, and 12 · (10 / 10)² must stay 12.
+    return max(1, math.ceil(n_cases * (half_width / room) ** 2 - 1e-9))
+
+
+#: The most cases :func:`bounded_cases_to_clear` searches: past it a projection says "more than" this many.
+PROJECTION_CASE_CAP: Final = 10_000
+
+#: The most cases a projection of an unpaired rate searches, and the share of its count it bisects to. Each arm's
+#: interval is a betting bound read over every case, so reads over thousands of unpaired cases took over a second a
+#: row, and a page holding a dozen unclear rows half a minute. A projection searches to 500 cases, or to four times
+#: the cases the run observed where that is more, so it never stops short of the run itself; past its cap a plan
+#: reads "more than" the cap, and below it is counted to within five percent.
+UNPAIRED_PROJECTION_CAP: Final = 500
+UNPAIRED_PROJECTION_RESOLUTION: Final = 0.05
+
+
+#: How many orders of a repeated sample :func:`bounded_cases_to_clear` reads the bounded interval in, taking the median
+#: reach: a betting interval on one order of a sample lands up to a third either side of another order's.
+PROJECTION_ORDERS: Final = 5
+
+
+@functools.lru_cache(maxsize=4096)
+def _repeated_reach(
+    control: tuple[float, ...],
+    contrast: tuple[float, ...],
+    n_cases: int,
+    *,
+    paired: bool,
+    value_range: tuple[float, float],
+    confidence: float,
+) -> float | None:
+    """How far below its own estimate the bounded interval reaches on the observed cases repeated to ``n_cases``: the
+    median over :data:`PROJECTION_ORDERS` seeded orders of them, so neither the order the cases were listed in nor one
+    lucky order decides it."""
+    pairs = sorted(zip(control, contrast)) if paired else None
+    reaches = []
+    for seed in range(PROJECTION_ORDERS):
+        shuffle = random.Random(f"projection-order-{seed}-{n_cases}").shuffle
+        if pairs is not None:
+            repeated = [pairs[index % len(pairs)] for index in range(n_cases)]
+            shuffle(repeated)
+            a, b = [x for x, _ in repeated], [y for _, y in repeated]
+        else:
+            a = [sorted(control)[index % len(control)] for index in range(n_cases)]
+            b = [sorted(contrast)[index % len(contrast)] for index in range(n_cases)]
+            shuffle(a)
+            shuffle(b)
+        interval = bounded_difference_interval(a, b, paired=paired, value_range=value_range, confidence=confidence)
+        if interval is None:
+            return None
+        reaches.append((sum(b) - sum(a)) / n_cases - interval[0])
+    return sorted(reaches)[len(reaches) // 2]
+
+
+def bounded_cases_to_clear(
+    control: Sequence[float],
+    contrast: Sequence[float],
+    *,
+    paired: bool,
+    value_range: tuple[float, float],
+    confidence: float,
+    room: float,
+    cap: int = PROJECTION_CASE_CAP,
+    resolution: float = 0.0,
+) -> int | None:
+    """The fewest cases at which the bounded interval, on cases like these, reaches no further than ``room`` below
+    its estimate, to within ``resolution`` of it.
+
+    **Cases like these** are the observed per-case values repeated in order to ``N`` cases (case ``i`` is observed
+    case ``i mod n``, pairs kept together): the run's own spread, taken as the spread new cases would have. At each
+    ``N`` the bounded interval (:func:`bounded_difference_interval`) is computed again, so its small-sample excess
+    is in the count, not scaled from it: scaling a dozen cases' bounded interval by ``1/√n`` overstates the cases it
+    needs, by up to about twice. The reach is measured from the repeated sample's own estimate, so the count holds
+    wherever the true difference sits: ``room`` is the margin less that difference.
+
+    The search starts at the cases observed, doubles until the reach is within ``room`` or passes ``cap``, then
+    bisects, so a projection reads about ``2·log2(N/n)`` intervals. It is the size to plan, at the spread these cases
+    showed, never a promise that the next run settles: a fresh sample's interval lands either side of it. With a
+    ``resolution`` the bisection stops once the count that fails is within that share of the count that clears, and
+    answers the one that clears: an interval read over many cases costs in proportion to them, and a plan needs no
+    exact count in the hundreds.
+
+    :param control: The control's per-case values, aligned with ``contrast`` when ``paired``.
+    :ptype control: Sequence[float]
+    :param contrast: The arm's per-case values, oriented so higher is better.
+    :ptype contrast: Sequence[float]
+    :param paired: Whether the two are one-to-one on the same cases.
+    :ptype paired: bool
+    :param value_range: The reading's declared inclusive bounds.
+    :ptype value_range: tuple[float, float]
+    :param confidence: The two-sided coverage the interval is read at, the family's level.
+    :ptype confidence: float
+    :param room: How far below the estimate the interval may reach, in the reading's units.
+    :ptype room: float
+    :param cap: The most cases searched.
+    :ptype cap: int
+    :param resolution: The share of the count the bisection may stop within, from 0 (the exact fewest) below 1.
+    :ptype resolution: float
+    :return: The cases, the observed count where it already clears; ``cap + 1`` where even ``cap`` does not; None
+        where ``room`` is not above zero, or no interval can be computed on these values.
+    :rtype: int | None
+    """
+    if room <= 0 or len(control) < 2 or len(contrast) < 2:
+        return None
+    observed = len(control) if paired else max(len(control), len(contrast))
+    a, b = tuple(float(v) for v in control), tuple(float(v) for v in contrast)
+
+    def clears(n_cases: int) -> bool | None:
+        reach = _repeated_reach(a, b, n_cases, paired=paired, value_range=value_range, confidence=confidence)
+        return None if reach is None else reach <= room
+
+    first = clears(observed)
+    if first is None:
+        return None
+    if first:
+        return observed
+    low, high = observed, observed
+    while True:
+        high = min(2 * high, cap)
+        if clears(high):
+            break
+        if high >= cap:
+            return cap + 1
+        low = high
+    # ``low`` fails and ``high`` clears: the fewest that clear lies above ``low``, at most ``high``.
+    while high - low > max(1, int(high * resolution)):
+        middle = (low + high) // 2
+        if clears(middle):
+            high = middle
+        else:
+            low = middle
+    return high
+
+
 class VarianceComponents(NamedTuple):
     """How one reading varies across cases and across repeats of one case, estimated from earlier runs.
 
@@ -2613,6 +2804,10 @@ __all__ = [
     "INTERVAL_LEVEL",
     "MIN_PAIRS_FOR_CORRELATION",
     "MIN_PAIRS_FOR_DETERMINISTIC_GAP",
+    "PROJECTION_CASE_CAP",
+    "UNPAIRED_PROJECTION_CAP",
+    "UNPAIRED_PROJECTION_RESOLUTION",
+    "PROJECTION_ORDERS",
     "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",
     "PPI_MIN_LABELLED_RESULTS",
@@ -2629,6 +2824,7 @@ __all__ = [
     "bounded_mean_p",
     "case_means",
     "case_rate_interval",
+    "cases_to_clear",
     "ci_half_width",
     "clustered_standard_error",
     "cohen_kappa",
@@ -2637,6 +2833,7 @@ __all__ = [
     "difference_interval",
     "equivalence_untested_reason",
     "exact_decimal",
+    "bounded_cases_to_clear",
     "bounded_difference_interval",
     "interval_permits_separation",
     "bounded_mean_lower_bound",
@@ -2658,6 +2855,7 @@ __all__ = [
     "pairing_correlation",
     "PredictionPoweredMean",
     "prediction_powered_mean",
+    "pooled_rate_interval",
     "proportion_interval",
     "separation_p",
     "separation_test",

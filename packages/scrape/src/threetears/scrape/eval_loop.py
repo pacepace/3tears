@@ -32,7 +32,7 @@ judge -- and the ceiling scales with your schema
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar, get_args
@@ -40,7 +40,7 @@ from typing import Any, Literal, Protocol, TypeVar, get_args
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 from threetears.models import LlmPurpose
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from .challenge import DEFAULT_CLASSIFIER_MODEL_ID, PageVerdictKind, classify_failed_page
 from .collections import (
@@ -51,6 +51,8 @@ from .collections import (
     ValidationStatus,
 )
 from .health import (
+    _HEALTH_STORE_READ_FAILURES,
+    _HEALTH_STORE_WRITE_FAILURES,
     ScrapeTargetHealthCollection,
     clear_classification,
     content_fingerprint,
@@ -363,15 +365,17 @@ async def _stamp_fingerprint_if_validated(
         return
     try:
         await record_validated_fetch(health_collection, target_id=target_id, html=html)
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- health is a diagnostic aid and the extraction is already durable; logged with its traceback below, never silenced
+    except _HEALTH_STORE_WRITE_FAILURES as exc:  # health is a diagnostic aid and the extraction is already durable; logged with its traceback below, never silenced
         # The extraction is already persisted and correct by the time this runs. Health is
         # a diagnostic aid, so letting its write failure propagate would turn a successful
         # scrape into a failed one for the caller and lose real extracted data over a
         # bookkeeping row. Logged at exception level with the traceback, never silenced.
-        log.exception(
-            "scrape health: fingerprint stamp failed for target %s; extraction is unaffected",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+        contain(
+            exc,
+            log=log,
+            what=f"scrape health: fingerprint stamp failed for target {target_id}; extraction is unaffected",
+            extra={"target_id": target_id},
+            level="error",
         )
 
 
@@ -384,7 +388,12 @@ async def _persist_extraction(
     validation_status: ValidationStatus,
     extraction_recipe_id: str | None,
     field_confidences: dict[str, Any] | None = None,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
+    if page_faults:
+        # What the document's parser could not read rides in the row's eval-loop notes, so a
+        # row read from a partly read document says so rather than reading as a complete one.
+        field_confidences = {**(field_confidences or {}), "page_faults": list(page_faults)}
     entity = extraction_collection.create(
         {
             "target_id": target_id,
@@ -419,6 +428,31 @@ async def _save_recipe(
         }
     )
     await recipe_collection.save_entity(recipe_entity)
+
+
+def _next_failure_count(existing_recipe: ScrapeRecipe | None, *, succeeded: bool, page_faults: Sequence[str]) -> int:
+    """The recipe's ``consecutive_validation_failures`` after this poll.
+
+    A miss on a document its parser could not fully read (*page_faults*) is not a miss: the
+    records may be in the part that was not read, so it says nothing about whether the recipe
+    still works, and counting it would march a working recipe toward regeneration. The count
+    stands, exactly as it does for a page we were walled off from.
+
+    :param existing_recipe: the recipe before this poll, or ``None`` when there is none
+    :ptype existing_recipe: ScrapeRecipe | None
+    :param succeeded: whether this poll extracted records
+    :ptype succeeded: bool
+    :param page_faults: what the document's parser could not read, empty when it read everything
+    :ptype page_faults: Sequence[str]
+    :return: the new count
+    :rtype: int
+    """
+    prior = existing_recipe.consecutive_validation_failures if existing_recipe is not None else 0
+    if succeeded:
+        return 0
+    if page_faults:
+        return prior
+    return prior + 1
 
 
 @dataclass(frozen=True)
@@ -538,6 +572,7 @@ async def _commit_reuse(
     *,
     recipe_collection: ScrapeRecipeCollection,
     extraction_collection: ScrapeExtractionCollection,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """Persist the outcome of re-running a stored strategy; keep the recipe either way.
 
@@ -554,10 +589,13 @@ async def _commit_reuse(
         extraction_strategy=existing_recipe.extraction_strategy,
         won_at=existing_recipe.won_at or now,
         last_validated_at=now if check.valid else (existing_recipe.last_validated_at or now),
-        consecutive_validation_failures=0 if check.valid else existing_recipe.consecutive_validation_failures + 1,
+        consecutive_validation_failures=_next_failure_count(
+            existing_recipe, succeeded=check.valid, page_faults=page_faults
+        ),
     )
     return await _persist_extraction(
         extraction_collection,
+        page_faults=page_faults,
         target_id=target_id,
         source_url=source_url,
         structured_fields={"records": check.records},
@@ -572,6 +610,7 @@ async def _commit_blocked(
     source_url: str,
     *,
     extraction_collection: ScrapeExtractionCollection,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """Record that we never received the content, and touch nothing else.
 
@@ -600,6 +639,7 @@ async def _commit_blocked(
     )
     return await _persist_extraction(
         extraction_collection,
+        page_faults=page_faults,
         target_id=target_id,
         source_url=source_url,
         structured_fields={"records": []},
@@ -671,14 +711,16 @@ async def _resolve_failure_verdict(
     fingerprint = content_fingerprint(html)
     try:
         health = await health_collection.get(target_id)
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-health behaviour, not fail every poll; logged with its traceback below
+    except _HEALTH_STORE_READ_FAILURES as exc:  # an unreadable health store must degrade this target to its pre-health behaviour, not fail every poll; logged with its traceback below
         # Health is a diagnostic aid. A store that cannot be read must degrade this target to
         # the behaviour it had before health existed, not turn every poll into a hard
         # failure. Logged with its traceback, never silenced.
-        log.exception(
-            "scrape health: could not read health for target %s; classifying nothing",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+        contain(
+            exc,
+            log=log,
+            what=f"scrape health: could not read health for target {target_id}; classifying nothing",
+            extra={"target_id": target_id},
+            level="error",
         )
         return None
 
@@ -747,14 +789,16 @@ async def _resolve_failure_verdict(
             kind=verdict.kind,
             evidence=verdict.evidence,
         )
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the verdict is already in hand and routing on it beats discarding it; only the cache is lost, and it is logged with its traceback below
+    except _HEALTH_STORE_WRITE_FAILURES as exc:  # the verdict is already in hand and routing on it beats discarding it; only the cache is lost, and it is logged with its traceback below
         # The verdict is already in hand and routing on it is strictly better than not. All
         # that is lost is the cache, so the next poll asks again. Same reasoning as the
         # fingerprint stamp: bookkeeping must not cost a real result.
-        log.exception(
-            "scrape health: could not cache the page verdict for target %s; routing on it anyway",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+        contain(
+            exc,
+            log=log,
+            what=f"scrape health: could not cache the page verdict for target {target_id}; routing on it anyway",
+            extra={"target_id": target_id},
+            level="error",
         )
     return _FailureVerdict(kind=verdict.kind, evidence=verdict.evidence, from_cache=False)
 
@@ -775,6 +819,7 @@ async def _regenerate(
     judge_model_id: str,
     classifier_model_id: str,
     page_status: int | None,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """No healthy recipe exists: generate fresh candidates and consult the LLM judge.
 
@@ -813,6 +858,7 @@ async def _regenerate(
             api_key=api_key,
             classifier_model_id=classifier_model_id,
             page_status=page_status,
+            page_faults=page_faults,
         )
 
     verdict: _JudgeVerdict | None = None
@@ -849,6 +895,7 @@ async def _regenerate(
         _, best_validation = max(survivors, key=lambda pair: len(shape.records(pair[1])))
         return await _persist_extraction(
             extraction_collection,
+            page_faults=page_faults,
             target_id=target_id,
             source_url=source_url,
             structured_fields={"records": shape.records(best_validation)},
@@ -869,6 +916,7 @@ async def _regenerate(
     )
     return await _persist_extraction(
         extraction_collection,
+        page_faults=page_faults,
         target_id=target_id,
         source_url=source_url,
         structured_fields={"records": shape.records(winning_validation)},
@@ -893,6 +941,7 @@ async def _run_reuse_cycle(
     api_key: str,
     classifier_model_id: str,
     page_status: int | None,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """Re-run a stored strategy, and decide what its failure meant before acting on it.
 
@@ -913,9 +962,18 @@ async def _run_reuse_cycle(
     - **anything else, or no opinion at all**: today's behaviour, unchanged. Count the
       failure and let the threshold decide, which is the right response to "our selectors
       are wrong" and the safe response to "we could not tell".
+    - **a document its parser could not fully read** (*page_faults*): not a basis for any of
+      the above. The records may be in the part that was not read, so the miss is recorded
+      with what was not read, the count stands, and nothing is classified or regenerated.
     """
     check = await asyncio.to_thread(_check_reuse, shape, existing_recipe, html, schema, target_id)
-    if check.valid:
+    if check.valid or page_faults:
+        if not check.valid:
+            log.warning(
+                "scrape eval loop: target %s's document was only partly read; the miss is not counted",
+                target_id,
+                extra={"extra_data": {"target_id": target_id, "page_faults": list(page_faults)}},
+            )
         return await _commit_reuse(
             existing_recipe,
             check,
@@ -923,6 +981,7 @@ async def _run_reuse_cycle(
             source_url,
             recipe_collection=recipe_collection,
             extraction_collection=extraction_collection,
+            page_faults=page_faults,
         )
 
     verdict = await _resolve_failure_verdict(
@@ -936,7 +995,9 @@ async def _run_reuse_cycle(
     )
     if verdict is not None:
         if verdict.kind == "blocked":
-            return await _commit_blocked(verdict, target_id, source_url, extraction_collection=extraction_collection)
+            return await _commit_blocked(
+                verdict, target_id, source_url, extraction_collection=extraction_collection, page_faults=page_faults
+            )
         if verdict.kind == "changed" and not verdict.from_cache:
             log.info(
                 "scrape eval loop: target %s's page changed (%s); regenerating now rather than counting to the threshold",
@@ -988,11 +1049,13 @@ async def _withdraw_verdict(
         return
     try:
         await clear_classification(health_collection, target_id=target_id, fingerprint=content_fingerprint(html))
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- runs while a model failure propagates; it must not mask that error, and it is logged with its traceback below
-        log.exception(
-            "scrape health: could not withdraw the page verdict for target %s; the next poll may count a failure",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- runs while a model failure propagates; it must not mask that error, and it is logged with its traceback below
+        contain(
+            exc,
+            log=log,
+            what=f"scrape health: could not withdraw the page verdict for target {target_id}; the next poll may count a failure",
+            extra={"target_id": target_id},
+            level="error",
         )
 
 
@@ -1009,6 +1072,7 @@ async def _persist_no_survivors(
     api_key: str,
     classifier_model_id: str,
     page_status: int | None,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """Regeneration proposed candidates and none of them structurally matched the page.
 
@@ -1035,9 +1099,12 @@ async def _persist_no_survivors(
         page_status=page_status,
     )
     if verdict is not None and verdict.kind == "blocked":
-        return await _commit_blocked(verdict, target_id, source_url, extraction_collection=extraction_collection)
+        return await _commit_blocked(
+            verdict, target_id, source_url, extraction_collection=extraction_collection, page_faults=page_faults
+        )
     return await _persist_extraction(
         extraction_collection,
+        page_faults=page_faults,
         target_id=target_id,
         source_url=source_url,
         structured_fields={"records": []},
@@ -1063,6 +1130,7 @@ async def run_eval_loop(
     strategy_type: StrategyType = "css",
     health_collection: ScrapeTargetHealthCollection | None = None,
     page_status: int | None = None,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """Run one fetch through the eval loop and persist a ``ScrapeExtraction`` row.
 
@@ -1114,6 +1182,11 @@ async def run_eval_loop(
         it -- real evidence for the classifier, though rarely decisive on its own since
         most walls return 200
     :ptype page_status: int | None
+    :param page_faults: what a document driver's parser could not read of this page's document
+        (:attr:`~threetears.scrape.driver.RenderedPage.page_faults`). Recorded in the row's
+        ``field_confidences["page_faults"]``; a reuse miss on such a page is not counted toward
+        *failure_threshold* and triggers no classification or regeneration
+    :ptype page_faults: Sequence[str]
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]``
         holds a single-element list -- the same shape :func:`run_eval_loop_multi_row`
         uses, just always exactly one record)
@@ -1144,6 +1217,7 @@ async def run_eval_loop(
             judge_model_id=judge_model_id,
             classifier_model_id=classifier_model_id,
             page_status=page_status,
+            page_faults=page_faults,
         )
 
     existing_recipe = await recipe_collection.get(target_id)
@@ -1162,6 +1236,7 @@ async def run_eval_loop(
             api_key=api_key,
             classifier_model_id=classifier_model_id,
             page_status=page_status,
+            page_faults=page_faults,
         )
     else:
         result = await _regenerate_now()
@@ -1562,6 +1637,7 @@ async def _run_per_document_extraction(
     judge_model_id: str,
     judge: DocumentJudge,
     deadline_seconds: float,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """``"per_document"`` StrategyType: no cached pattern is possible (see that
     Literal's own comment) -- every document gets a fresh, independent extraction
@@ -1690,8 +1766,8 @@ async def _run_per_document_extraction(
         extraction_strategy={"strategy": "per_document"},
         won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
         last_validated_at=now,
-        consecutive_validation_failures=(
-            0 if records else (existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1)
+        consecutive_validation_failures=_next_failure_count(
+            existing_recipe, succeeded=bool(records), page_faults=page_faults
         ),
     )
     log.info(
@@ -1703,6 +1779,7 @@ async def _run_per_document_extraction(
     )
     return await _persist_extraction(
         extraction_collection,
+        page_faults=page_faults,
         target_id=target_id,
         source_url=source_url,
         structured_fields={"records": records},
@@ -1722,6 +1799,7 @@ async def _run_multi_row_vision_extraction(
     api_key: str,
     judge: MultiRowJudge,
     deadline_seconds: float,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """``"multi_row_vision"`` StrategyType: one page, one table, read once via vision,
     every record grounded against the same source image(s) before counting as real.
@@ -1759,12 +1837,13 @@ async def _run_multi_row_vision_extraction(
             extraction_strategy={"strategy": "multi_row_vision"},
             won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
             last_validated_at=now,
-            consecutive_validation_failures=(
-                existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1
+            consecutive_validation_failures=_next_failure_count(
+                existing_recipe, succeeded=False, page_faults=page_faults
             ),
         )
         return await _persist_extraction(
             extraction_collection,
+            page_faults=page_faults,
             target_id=target_id,
             source_url=source_url,
             structured_fields={"records": []},
@@ -1799,12 +1878,13 @@ async def _run_multi_row_vision_extraction(
             extraction_strategy={"strategy": "multi_row_vision"},
             won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
             last_validated_at=now,
-            consecutive_validation_failures=(
-                existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1
+            consecutive_validation_failures=_next_failure_count(
+                existing_recipe, succeeded=False, page_faults=page_faults
             ),
         )
         return await _persist_extraction(
             extraction_collection,
+            page_faults=page_faults,
             target_id=target_id,
             source_url=source_url,
             structured_fields={"records": []},
@@ -1836,8 +1916,8 @@ async def _run_multi_row_vision_extraction(
         extraction_strategy={"strategy": "multi_row_vision"},
         won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
         last_validated_at=now,
-        consecutive_validation_failures=(
-            0 if confirmed_records else (existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1)
+        consecutive_validation_failures=_next_failure_count(
+            existing_recipe, succeeded=bool(confirmed_records), page_faults=page_faults
         ),
     )
     log.info(
@@ -1856,6 +1936,7 @@ async def _run_multi_row_vision_extraction(
         validation_status = "needs_review"
     return await _persist_extraction(
         extraction_collection,
+        page_faults=page_faults,
         target_id=target_id,
         source_url=source_url,
         structured_fields={"records": confirmed_records},
@@ -1881,6 +1962,7 @@ async def run_eval_loop_multi_row(
     strategy_type: StrategyType = "css",
     health_collection: ScrapeTargetHealthCollection | None = None,
     page_status: int | None = None,
+    page_faults: Sequence[str] = (),
     document_judge: DocumentJudge = _judge_one_document_extraction,
     multi_row_judge: MultiRowJudge = _judge_multi_row_extraction,
     per_document_deadline_seconds: float = _PER_DOCUMENT_TIMEOUT_SECONDS,
@@ -1956,6 +2038,10 @@ async def run_eval_loop_multi_row(
         ``"multi_row_vision"`` extraction and judge calls (default 150s; a whole table is
         read in one call)
     :ptype multi_row_vision_deadline_seconds: float
+    :param page_faults: what a document driver's parser could not read of this page's document;
+        recorded in the row's ``field_confidences["page_faults"]``, and a miss on such a page is not
+        counted toward *failure_threshold* (see :func:`run_eval_loop`)
+    :ptype page_faults: Sequence[str]
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]`` holds every record)
     :rtype: ScrapeExtraction
     :raises StructuredCallFailedError: if a model call this poll depended on failed every
@@ -1985,6 +2071,7 @@ async def run_eval_loop_multi_row(
             judge_model_id=judge_model_id,
             judge=document_judge,
             deadline_seconds=per_document_deadline_seconds,
+            page_faults=page_faults,
         )
     elif strategy_type == "multi_row_vision":
         result = await _run_multi_row_vision_extraction(
@@ -1997,6 +2084,7 @@ async def run_eval_loop_multi_row(
             api_key=api_key,
             judge=multi_row_judge,
             deadline_seconds=multi_row_vision_deadline_seconds,
+            page_faults=page_faults,
         )
     else:
         result = await _run_row_strategy(
@@ -2015,6 +2103,7 @@ async def run_eval_loop_multi_row(
             classifier_model_id=classifier_model_id,
             strategy_type=strategy_type,
             page_status=page_status,
+            page_faults=page_faults,
         )
     await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
     return result
@@ -2037,6 +2126,7 @@ async def _run_row_strategy(
     classifier_model_id: str,
     strategy_type: StrategyType,
     page_status: int | None,
+    page_faults: Sequence[str] = (),
 ) -> ScrapeExtraction:
     """The cached-recipe cycle for the ``css`` and ``regex`` row strategies.
 
@@ -2062,6 +2152,7 @@ async def _run_row_strategy(
             judge_model_id=judge_model_id,
             classifier_model_id=classifier_model_id,
             page_status=page_status,
+            page_faults=page_faults,
         )
 
     existing_recipe = await recipe_collection.get(target_id)
@@ -2080,6 +2171,7 @@ async def _run_row_strategy(
             api_key=api_key,
             classifier_model_id=classifier_model_id,
             page_status=page_status,
+            page_faults=page_faults,
         )
     else:
         result = await _regenerate_now()

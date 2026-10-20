@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
+from threetears.nats.errors import KvError
 
 from threetears.channels.presence.collection import PresenceCollection
 from threetears.channels.presence.room_state import RoomState
@@ -99,3 +101,37 @@ class TestSweep:
         assert sweeper.has_active_check_task
         await sweeper.stop()
         assert not sweeper.has_active_check_task
+
+
+class TestASweepGoesOnPastAnL2Failure:
+    async def test_one_refused_delete_does_not_stop_the_others(self, bus: InMemoryNatsBus) -> None:
+        state, sweeper, collection = _setup(bus)
+        for connection_id in ("conn-1", "conn-2"):
+            await state.join("cust:s:main:f.md", connection_id, "user-1", "cust")
+            sweeper.track(connection_id)
+            await _make_stale(collection, connection_id)
+        bucket = await bus.kv_bucket(name="collections")
+        working_delete = bucket.delete
+        refused_key = collection.connections.l2_key("conn-1")
+
+        async def _delete(*, key: str, revision: int | None = None) -> bool:
+            if key == refused_key:
+                raise KvError("broker unreachable")
+            return await working_delete(key=key, revision=revision)
+
+        bucket.delete = AsyncMock(side_effect=_delete)  # type: ignore[method-assign]
+
+        evicted = await sweeper.run_sweep()
+
+        assert evicted == ["conn-2"]
+        assert sweeper.known_connection_ids == {"conn-1"}, "conn-1 is retried next sweep"
+
+    async def test_an_unreadable_row_is_not_taken_for_a_gone_connection(self, bus: InMemoryNatsBus) -> None:
+        state, sweeper, collection = _setup(bus)
+        await state.join("cust:s:main:f.md", "conn-1", "user-1", "cust")
+        sweeper.track("conn-1")
+        collection.connections.evict_from_cache_sync("conn-1")
+        (await bus.kv_bucket(name="collections")).become_unreachable(KvError("broker unreachable"))
+
+        assert await sweeper.run_sweep() == []
+        assert "conn-1" in sweeper.known_connection_ids

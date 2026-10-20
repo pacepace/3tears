@@ -5,8 +5,8 @@ pins the readers of three of them, and the curation write the fourth was missing
 
 - ``intended_repetitions`` → ``AnalysisContextBundle.short_cells``, one entry per cell whose
   least-repeated case ran fewer times than declared;
-- ``merit_priority`` and ``Question.merit_axes`` → ``AnalysisContextBundle.verdict_order``, the bars
-  ranked by the declared priority and scoped per question, read off each bar's own ``merit_axis``;
+- ``merit_priority`` and the aspect's ``merit_axes`` → ``AnalysisContextBundle.verdict_order``, the bars
+  ranked by the declared priority and scoped to the question, read off each bar's own ``merit_axis``;
 - ``EvalCampaign.archived`` → :func:`~threetears.evals.run.set_campaign_archived`.
 
 Mutations that turn this file red: comparing ``>`` for ``>=`` in ``_short_cells``; reading a cell's
@@ -25,25 +25,26 @@ import pytest
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
+    aspect_view,
     DisclosureBlock,
     assemble_context_bundle,
     build_code_only_report,
 )
 from threetears.evals.kernel import NotFoundError
-from threetears.evals.kernel.declaration import Question
 from threetears.evals.run import set_campaign_archived
-from packages.evals.tests.factories import make_campaign, memory_storage
-from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_QUESTION_ID, toyhost_campaign
+from packages.evals.tests.factories import make_campaign, memory_storage, minimal_aspect_design
+from packages.evals.tests.aspect_support import redeclared
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
-def _bundle(**design_updates: Any) -> AnalysisContextBundle:
-    """The toy campaign's bundle, with its declaration amended."""
+def _bundle(*, question: str | None = None, **design_updates: Any) -> AnalysisContextBundle:
+    """The toy campaign's bundle, with its aspect's design amended and, where given, its question asked anew before
+    its runs."""
     campaign, storage = toyhost_campaign()
-    design = campaign.declared_design
-    assert design is not None
-    campaign = campaign.model_copy(update={"declared_design": design.model_copy(update=design_updates)})
+    asked = {} if question is None else {"question": question, "asked_at": TOYHOST_INSTANT}
+    campaign = redeclared(campaign, design=design_updates, **asked)
     return assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
 
@@ -57,17 +58,14 @@ class TestShortCells:
         and nothing above could tell which the reader takes.
         """
         campaign, storage = toyhost_campaign()
-        runs = storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
-        results = {run.id: storage.query_eval_results_by_run(run.id, campaign.scope_id) for run in runs}
+        view = aspect_view(campaign)
+        runs = storage.load_eval_runs(view.run_ids, view.scope_id)
+        results = {run.id: storage.query_eval_results_by_run(run.id, view.scope_id) for run in runs}
         thinned, other = runs
         first_case = results[thinned.id][0].test_case_id
         dropped = next(r for r in results[thinned.id] if r.test_case_id == first_case)
         results[thinned.id] = [r for r in results[thinned.id] if r.id != dropped.id]
-        design = campaign.declared_design
-        assert design is not None
-        declared = campaign.model_copy(
-            update={"declared_design": design.model_copy(update={"intended_repetitions": 3})}
-        )
+        declared = redeclared(campaign, design={"intended_repetitions": 3})
 
         bundle = assemble_context_bundle(declared, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
 
@@ -96,7 +94,7 @@ class TestShortCells:
         bundle = _bundle(intended_repetitions=None)
 
         assert bundle.short_cells == []
-        assert bundle.declared_design is not None and bundle.declared_design.intended_repetitions is None
+        assert bundle.declared is not None and bundle.declared.design.intended_repetitions is None
 
 
 class TestVerdictOrder:
@@ -134,26 +132,32 @@ class TestVerdictOrder:
         assert [tier.axis for tier in backward.tiers] == ["latency", "quality"]
 
     def test_a_question_lists_the_bars_on_its_axes_and_the_axes_no_bar_answers(self) -> None:
-        question = Question(
-            id=TOYHOST_QUESTION_ID,
-            text="is it accurate, and what does it cost?",
+        # Asked as the corpus question was: before its runs, so it scopes the order.
+        bundle = _bundle(
+            question="is it accurate, and what does it cost?",
+            merit_priority=["quality"],
             merit_axes=["cost", "quality"],
-            asked_at=TOYHOST_INSTANT,  # as the corpus question was: before its runs, so it scopes the order
         )
-        order = _bundle(merit_priority=["quality"], questions=[question]).verdict_order
+        scope = bundle.verdict_order.question
 
-        (scope,) = order.questions
-        assert scope.question_id == TOYHOST_QUESTION_ID
+        assert scope is not None
+        assert scope.aspect == bundle.aspect
         assert scope.merit_axes == ["quality", "cost"], "the ranked axis first, then the question's own order"
         assert scope.bar_measure_ids == ["field_accuracy"]
         assert scope.unbarred_axes == ["cost"]
 
-    def test_an_unscoped_or_retired_question_is_absent(self) -> None:
-        unscoped = Question(id="q-unscoped", text="anything else?")
-        retired = Question(id="q-retired", text="old?", merit_axes=["quality"], retired_at="2026-01-01T00:00:00+00:00")
-        order = _bundle(questions=[unscoped, retired]).verdict_order
+    def test_an_unscoped_question_is_absent(self) -> None:
+        assert _bundle(question="anything else?", merit_axes=[]).verdict_order.question is None
 
-        assert order.questions == []
+    def test_a_question_asked_after_the_first_run_scopes_nothing(self) -> None:
+        campaign, storage = toyhost_campaign()
+        late = redeclared(
+            campaign,
+            question="is it accurate?",
+            asked_at="2099-01-01T00:00:00+00:00",
+            design={"merit_axes": ["quality"]},
+        )
+        assert assemble_context_bundle(late, storage=storage, profile=toyhost_profile()).verdict_order.question is None
 
 
 class TestTheDeclaredPriorityReachesTheReport:
@@ -181,18 +185,19 @@ class TestAMeritRankingNamesEachAxisOnce:
 
     def test_a_priority_naming_an_axis_twice_is_refused(self) -> None:
         campaign, _storage = toyhost_campaign()
-        design = campaign.declared_design
-        assert design is not None
+        declared = aspect_view(campaign).declared
+        assert declared is not None
+        design = declared.design
         type(design).model_validate(design.model_dump() | {"merit_priority": ["quality", "latency"]})
 
         with pytest.raises(ValueError, match="merit_priority names quality more than once"):
             type(design).model_validate(design.model_dump() | {"merit_priority": ["quality", "quality"]})
 
-    def test_a_question_naming_an_axis_twice_is_refused(self) -> None:
-        Question(id="q", text="accurate and cheap?", merit_axes=["quality", "cost"])
+    def test_an_aspect_naming_a_merit_axis_twice_is_refused(self) -> None:
+        minimal_aspect_design(merit_axes=["quality", "cost"])
 
         with pytest.raises(ValueError, match="merit_axes names quality more than once"):
-            Question(id="q", text="accurate?", merit_axes=["quality", "quality"])
+            minimal_aspect_design(merit_axes=["quality", "quality"])
 
 
 class TestSetCampaignArchived:

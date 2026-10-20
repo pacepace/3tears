@@ -12,7 +12,7 @@ from typing import Any
 from threetears.evals.analysis import (
     Report,
     TableBlock,
-    analysis_report,
+    build_report,
     prepare_analysis_generation,
     report_markdown,
     run_analysis_generation,
@@ -62,7 +62,7 @@ def toy_campaign_host(clients: Any = None) -> tuple[EvalHost, EvalCampaign]:
 
 
 async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
-    """The toy campaign generated through the host and read back as its report."""
+    """The toy campaign generated through the host, and its one aspect's page laid out over the stored analysis."""
     built: list[FixturedClient] = []
 
     def clients(role: str, model: str | None, *, temperature: float | None = None) -> FixturedClient:
@@ -80,4 +80,4 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
     )
     built[0].completion.content = json.dumps(memo_payload(prepared.bundle))
     analysis, _ = await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
-    return host, analysis, off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
+    return host, analysis, build_report(analysis, campaign_name=campaign.name)

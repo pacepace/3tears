@@ -24,12 +24,19 @@ from threetears.evals.schema.versioning import (
     upgrade_document,
 )
 
-#: A run as the current build stored it.
-_RUN = json.loads(
-    (
-        Path(__file__).resolve().parent / "fixtures" / "core_documents" / f"v{CORE_SCHEMA_VERSION}" / "eval_run.json"
-    ).read_text(encoding="utf-8")
-)
+#: A run as the current build stores it: the frozen corpus's run, which the release that shipped the corpus wrote at
+#: its own minor, read and written again by this build, so it carries this build's minor.
+_RUN = EvalRun.from_dict(
+    json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "core_documents"
+            / f"v{CORE_SCHEMA_VERSION}"
+            / "eval_run.json"
+        ).read_text(encoding="utf-8")
+    )
+).to_dict()
 
 
 def _rename(old: str, new: str) -> Any:

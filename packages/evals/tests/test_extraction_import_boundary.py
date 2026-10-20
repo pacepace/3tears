@@ -72,7 +72,9 @@ IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
 #: installed without it, and one extra's subpackage naming ANOTHER extra's dependency would tie the two
 #: extras together.
 IMPORT_ROOTS_BY_EXTRA: dict[str, tuple[str, dict[str, tuple[str, ...]]]] = {
-    "fastmcp": ("threetears.evals.transports.fastmcp", {"fastmcp": ("fastmcp",)}),
+    # since 3.x the `fastmcp` module ships in fastmcp-slim, and fastmcp is the wrapper that installs it;
+    # the manifest declares both, and either one missing leaves `fastmcp` unimportable
+    "fastmcp": ("threetears.evals.transports.fastmcp", {"fastmcp": ("fastmcp",), "fastmcp-slim": ("fastmcp",)}),
 }
 
 #: Packages the portable test support may neither name nor load: the first host, and the web and
@@ -316,6 +318,7 @@ print(json.dumps(sorted(root for root in PUBLIC_ROOTS if not importable(root))))
 #: with one extra and not another still has those.
 _DISTRIBUTION_ROOT: dict[str, str] = {
     "fastmcp": "fastmcp",
+    "fastmcp-slim": "fastmcp",
 }
 
 

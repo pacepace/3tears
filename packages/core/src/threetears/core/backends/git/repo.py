@@ -83,7 +83,7 @@ from threetears.core.backends.git.wire import (
 from threetears.core.backends.git.writer import COMMIT_HANDLER, READ_HANDLER, WriterRole
 from threetears.nats.errors import NatsClientError
 from threetears.nats.forward import ForwardedHandlerError, ForwardHandler, NoOwnerError
-from threetears.observe import PeriodicTask, get_logger, retry_bounded
+from threetears.observe import PeriodicTask, contain, get_logger, retry_bounded
 
 if TYPE_CHECKING:
     from threetears.core.coordination import ReplayAnchor
@@ -934,10 +934,11 @@ class GitRepo:
             except (
                 Exception
             ) as exc:  # prawduct:allow prawduct/broad-except -- one listener's failure must not stop the rest
-                log.warning(
-                    "git_store.commit_listener.failed: a commit listener raised",
-                    extra={"extra_data": {**self._log, "error": f"{type(exc).__name__}: {exc}"}},
-                    exc_info=True,
+                contain(
+                    exc,
+                    log=log,
+                    what="git_store.commit_listener.failed: a commit listener raised",
+                    extra={**self._log, "error": f"{type(exc).__name__}: {exc}"},
                 )
         return result
 
@@ -2015,10 +2016,11 @@ class GitRepo:
             except (
                 Exception
             ) as exc:  # prawduct:allow prawduct/broad-except -- one listener's failure must not stop the rest
-                log.warning(
-                    "git_store.listener.failed: a changed-rows listener raised",
-                    extra={"extra_data": {**self._log, "error": f"{type(exc).__name__}: {exc}"}},
-                    exc_info=True,
+                contain(
+                    exc,
+                    log=log,
+                    what="git_store.listener.failed: a changed-rows listener raised",
+                    extra={**self._log, "error": f"{type(exc).__name__}: {exc}"},
                 )
 
     def _rows_of(self, changes: Sequence[FileChange], old: str | None, new: str, local: bool) -> list[RowChange]:

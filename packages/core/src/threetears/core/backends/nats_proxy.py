@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 from uuid import UUID, uuid7
 
@@ -37,7 +37,7 @@ from threetears.core.backends.broker_generation import (
     forget_reply_generations,
     record_reply_generations,
 )
-from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, RowcountUnreadableError
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
@@ -53,10 +53,11 @@ from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredenti
 # whole point of the `[client]` extra, and `test_l1_surface_imports_without_the_client`
 # holds it. A plain `from threetears.nats import NatsClient` triggers the package's
 # lazy loader and raises at import time on an L1-only install. `subjects` pulls in
-# no client, so it is safe eagerly; the annotation needs no runtime object because
-# this module has `from __future__ import annotations`.
+# no client, so it is safe eagerly, as is `errors`; the annotation needs no runtime
+# object because this module has `from __future__ import annotations`.
+from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
@@ -268,6 +269,42 @@ def _parse_iso_datetime(raw: str) -> Any:
     return parsed
 
 
+#: the operation labels whose tag reports rows affected; a broker reply without a count for one of
+#: these is not a zero.
+_DML_VERBS: frozenset[str] = frozenset({"INSERT", "UPDATE", "DELETE", "UPSERT"})
+
+
+def check_reply_row_count(query: str, reply: Mapping[str, Any]) -> None:
+    """check that a broker's reply to ``query`` says how many rows a DML statement touched.
+
+    The reply contract for ``l3.query`` and ``l3.tx.execute``, for the broker to check before it
+    replies and in its tests: a successful reply to an ``insert``, ``update``, ``delete`` or ``upsert`` carries ``row_count``,
+    a non-negative integer. Without it the proxy can only answer the bare verb, and a fenced save
+    raises :class:`~threetears.core.backends.protocol.RowcountUnreadableError`. A failed reply, and
+    a reply to any other statement, is not checked. The statement is labelled as the proxy labels
+    it, so the broker needn't know the labels.
+
+    :param query: the SQL the reply answers
+    :ptype query: str
+    :param reply: the decoded reply body
+    :ptype reply: Mapping[str, Any]
+    :return: None
+    :rtype: None
+    :raises RowcountUnreadableError: a successful DML reply has no ``row_count``, or one that is not
+        a non-negative integer
+    """
+    if not reply.get("success", False):
+        return
+    operation = _detect_operation(query)
+    if operation.upper() not in _DML_VERBS:
+        return
+    row_count = reply.get("row_count")
+    if isinstance(row_count, bool) or not isinstance(row_count, int) or row_count < 0:
+        raise RowcountUnreadableError(
+            f"a successful {operation} reply must carry row_count as a non-negative integer; it carries {row_count!r}"
+        )
+
+
 def _format_execute_tag(operation: str, row_count: Any) -> str:
     """build an asyncpg-shape status tag for a given operation + row count.
 
@@ -279,9 +316,14 @@ def _format_execute_tag(operation: str, row_count: Any) -> str:
     - ``UPDATE`` / ``DELETE`` / ``UPSERT``: ``"{VERB} {count}"``
     - ``SELECT`` (rare for execute): ``"SELECT {count}"``
 
-    ``row_count`` may be ``None`` when the broker did not populate it
-    (DDL, transactional no-ops). that's treated as zero so the tag
-    remains parseable by every caller.
+    ``row_count`` may be ``None`` when the broker did not populate it. for a
+    statement labelled ``select`` (which is also how DDL and other verbless
+    statements are labelled) that reads as zero. for a DML statement --
+    ``insert``, ``update``, ``delete``, ``upsert`` -- it does NOT: the tag is
+    the bare verb, with no count, so :func:`~threetears.core.backends.protocol.parse_rowcount`
+    raises :class:`~threetears.core.backends.protocol.RowcountUnreadableError`
+    rather than a fenced update reading as a lost race. a caller that never
+    reads the count is unaffected.
 
     :param operation: detected op verb (select/insert/update/delete/upsert)
     :ptype operation: str
@@ -290,8 +332,11 @@ def _format_execute_tag(operation: str, row_count: Any) -> str:
     :return: asyncpg-compatible status tag
     :rtype: str
     """
-    count = 0 if row_count is None else int(row_count)
     verb = operation.upper()
+    if row_count is None and verb in _DML_VERBS:
+        # the statement ran and the broker did not say how many rows it touched: no count is invented
+        return "INSERT" if verb == "UPSERT" else verb
+    count = 0 if row_count is None else int(row_count)
     if verb == "INSERT":
         return f"INSERT 0 {count}"
     if verb == "UPSERT":
@@ -857,10 +902,13 @@ class NatsProxyL3Backend:
             return
         try:
             self._on_superseded(error)
-        except Exception:  # prawduct:allow prawduct/broad-except -- a runtime exit hook that fails must not replace the refusal the caller is owed
-            _logger.exception(
-                "on_superseded callback raised; the supersession error is still raised to the caller",
-                extra={"extra_data": {"namespace": self.default_namespace}},
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a runtime exit hook that fails must not replace the refusal the caller is owed
+            contain(
+                exc,
+                log=_logger,
+                what="on_superseded callback raised; the supersession error is still raised to the caller",
+                extra={"namespace": self.default_namespace},
+                level="error",
             )
 
     async def execute_batch(
@@ -1042,7 +1090,7 @@ class NatsProxyL3Backend:
                 timeout=timedelta(seconds=nats_timeout),
             )
             result: dict[str, Any] = json.loads(reply)
-        except Exception as exc:
+        except (RequestError, ValueError) as exc:
             raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
 
         return result
@@ -1241,9 +1289,10 @@ class _ProxyAcquireCM:
             try:
                 await self._connection.abort_tx()
             except Exception as abort_exc:
-                _logger.warning(
-                    "proxy connection close: dangling tx rollback failed: %s",
+                contain(
                     abort_exc,
+                    log=_logger,
+                    what=f"proxy connection close: dangling tx rollback failed: {abort_exc}",
                 )
 
 

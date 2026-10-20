@@ -66,7 +66,8 @@ from threetears.evals.schema import (
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_judge_config
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ToyExtractorKind
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import (
     TOYHOST_LAUNCH_SETTINGS,
     plan_toyhost_arm,
@@ -173,11 +174,20 @@ class _Subject:
                 request.judge_config_ids,
                 judged_artifact=judged_artifact,
             )
+            world = eval_host.profile.world
+            assert world is not None, "the toy host declares a world"
+            # the kind a cell runs: the toy extractor, over the registry this host's cells bind their world to
+            kind = ToyExtractorKind(
+                client=_client,
+                world=world,
+                judged=judged_artifact is JudgedArtifact.DOCUMENT,
+                goal_checks=tuple(request.template.goal_state_checks),
+            )
             return await launch_run(
                 self.host,
                 request,
                 KindWiring(
-                    kind_factory=lambda _cell: None,  # type: ignore[arg-type,return-value]
+                    kind_factory=lambda _cell: kind,
                     subject=TOYHOST_SUBJECT,
                     test_cases=toyhost_test_cases(request.template),
                     judge=judge,
@@ -187,17 +197,20 @@ class _Subject:
 
         self.host: LaunchHost = replace(
             toy,
-            kinds={
-                TOY_EXTRACTOR_KIND: replace(
-                    launchable,
-                    launch=launch,
-                    plan_arm=plan,
-                    price_largest_call=lambda request: price_subject_call_floor(
-                        eval_host, request, judged_artifact=judged_artifact
-                    ),
-                    unhonoured_launch_arguments=frozenset({"cassette_mode", "n_variations", "simulator_model"}),
-                )
-            },
+            eval_host=with_registry(
+                toy.eval_host,
+                {
+                    TOY_EXTRACTOR_KIND: replace(
+                        launchable,
+                        launch=launch,
+                        plan_arm=plan,
+                        price_largest_call=lambda request: price_subject_call_floor(
+                            eval_host, request, judged_artifact=judged_artifact
+                        ),
+                        unhonoured_launch_arguments=frozenset({"cassette_mode", "n_variations", "simulator_model"}),
+                    )
+                },
+            ),
             launch_pricer=price_toyhost_arm,
         )
 
@@ -537,7 +550,10 @@ async def _request(subject: _Subject, plan: ArmPlan) -> LaunchRequest:
 
     host = replace(
         subject.host,
-        kinds={TOY_EXTRACTOR_KIND: replace(launchable, plan_arm=lambda _request: plan, price_largest_call=capture)},
+        eval_host=with_registry(
+            subject.host.eval_host,
+            {TOY_EXTRACTOR_KIND: replace(launchable, plan_arm=lambda _request: plan, price_largest_call=capture)},
+        ),
     )
     await quote_launch(
         host,

@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from langchain_core.messages import AIMessageChunk
 from langgraph.types import Command
 from uuid_utils import uuid7
 
@@ -757,6 +758,41 @@ class TestStreamingResponseRunGraph:
         end_evt = [e for e in transport.events if isinstance(e, StreamEndEvent)][0]
         assert end_evt.content == "Hi there"
         assert result["summary"] == "ok"
+
+    async def test_streams_the_text_blocks_of_a_tool_bound_model(self) -> None:
+        """a chat model with tools bound streams content blocks, not strings; its text still streams.
+
+        regression: langchain-anthropic with tools bound streams ``[{"type": "text", ...}]``
+        chunks, and only string content used to pass, so every token of the reply was dropped
+        and ``stream_end`` carried nothing. tool_use, input_json_delta and thinking blocks are
+        not reply text and stay out.
+        """
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+
+        def _blocks(*blocks: dict[str, Any]) -> dict[str, Any]:
+            return {"event": "on_chat_model_stream", "data": {"chunk": AIMessageChunk(content=list(blocks))}}
+
+        graph = _StubGraph(
+            [
+                _blocks({"type": "thinking", "thinking": "THINKING LEAK", "index": 0}),
+                _blocks({"type": "text", "text": "Saved", "index": 1}),
+                _blocks({"type": "tool_use", "id": "t1", "name": "read_note", "input": {}, "index": 2}),
+                _blocks({"type": "input_json_delta", "partial_json": '{"JSON LEAK"', "index": 2}),
+                _blocks({"type": "text", "text": " the note.", "index": 3}),
+                {"event": "on_chat_model_stream", "data": {"chunk": AIMessageChunk(content="")}},
+            ]
+        )
+        await stream.run_graph(graph, {"messages": []}, {})
+
+        token_texts = [e.token for e in transport.events if isinstance(e, StreamTokenEvent)]
+        assert token_texts == ["Saved", " the note."]
+        end_evt = [e for e in transport.events if isinstance(e, StreamEndEvent)][0]
+        assert end_evt.content == "Saved the note."
 
     async def test_run_graph_accepts_a_command_resume_without_crashing(self) -> None:
         """``run_graph`` drives a resume with a ``Command`` (not a dict) — the streaming twin of

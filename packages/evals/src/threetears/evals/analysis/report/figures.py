@@ -215,18 +215,22 @@ def report_rulers(surface: DecisionSurface, catalog: Mapping[str, MetricDescript
     return Rulers(measure_rulers(surface, catalog), dimensions)
 
 
-def analysis_rulers(analysis: EvalAnalysis) -> Rulers:
-    """Every ruler a stored analysis's readings are stated on, over the surface and catalog frozen with it.
+def analysis_rulers(analysis: EvalAnalysis, aspect: str) -> Rulers:
+    """Every ruler one aspect's readings in a stored analysis are stated on, over the surface and catalog frozen there.
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
-    :return: The rulers, chosen as :func:`report_rulers` chooses them over the bundle the analysis was written over.
+    :param aspect: The label of the aspect whose readings are stated.
+    :ptype aspect: str
+    :return: The rulers, chosen as :func:`report_rulers` chooses them over the bundle the aspect was written over.
     :rtype: Rulers
+    :raises KeyError: The analysis holds no aspect with that label.
     """
-    frozen: Mapping[str, Any] = analysis.bundle
+    held = analysis.aspect(aspect)
+    frozen: Mapping[str, Any] = held.bundle
     entries = frozen.get("measure_catalog") or {}
     catalog = {name: MetricDescriptor.model_validate(entry) for name, entry in entries.items()}
-    return report_rulers(analysis.decision_surface, catalog)
+    return report_rulers(held.decision_surface, catalog)
 
 
 __all__ = [

@@ -18,7 +18,7 @@ from threetears.evals.kernel import default_job_timeout
 from threetears.evals.schema import EvalRun, EvalTestCase
 from threetears.evals.kernel import EvalStorage, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.errors import AdmissionRefusedError
-from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.host import EvalHost, WorldRegistry
 from threetears.evals.schema.models import VariationCounts
 from threetears.evals.run import (
     ArmPlan,
@@ -34,7 +34,7 @@ from threetears.evals.run import (
     start_run,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT, toyhost_observation
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host, with_registry
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -125,7 +125,7 @@ async def test_admission_is_refused_against_the_hosts_ceiling_naming_its_setting
 async def test_a_kind_the_host_registers_no_launcher_for_is_refused():
     """The launch registry is the host's: a host with no entry for the template's kind launches nothing."""
     host, _ = off_loop(_launching)
-    bare = replace(host, kinds={})
+    bare = replace(host, eval_host=with_registry(host.eval_host, {}))
 
     with pytest.raises(ValidationFailedError, match="has no launcher"):
         await start_run(
@@ -156,6 +156,20 @@ def test_a_host_declaring_no_world_has_nothing_to_place_a_run_in():
 
     placed = replace(host, eval_host=replace(host.eval_host, profile=worldless), world_placements=None)
     assert placed.place(toyhost_observation(chunk_tokens=256)) == {}, "a host with no world records it placed nothing"
+
+
+def test_a_registry_entry_that_cannot_launch_is_refused_naming_its_kind():
+    host, _ = _launching()
+    checks = host.eval_host.template_checks
+    assert checks is not None
+
+    class _AdmitsOnly:
+        ignored_template_fields: frozenset[str] = frozenset()
+
+    unlaunchable = replace(checks, kinds={**checks.kinds, "admits_only": _AdmitsOnly()})
+
+    with pytest.raises(TypeError, match="'admits_only' is a _AdmitsOnly, not a LaunchableKind"):
+        replace(host, eval_host=replace(host.eval_host, template_checks=unlaunchable))
 
 
 def test_settings_name_only_the_settings_a_launch_has():
@@ -206,7 +220,6 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
     eval_host = replace(toyhost_host(), clients=lambda role, model, *, temperature=None: None)  # type: ignore[arg-type,return-value]
     launch_host = LaunchHost(
         eval_host=eval_host,
-        kinds={},
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: {},
@@ -218,7 +231,6 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
     with pytest.raises(TypeError, match="job_manager"):
         LaunchHost(  # type: ignore[call-arg]
             eval_host=eval_host,
-            kinds={},
             settings=lambda: TOYHOST_LAUNCH_SETTINGS,
             job_timeout_factory=default_job_timeout,
             world_placements=lambda _run: {},
@@ -226,10 +238,12 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
         )
 
 
-def _wired(request: LaunchRequest, **overrides: object) -> KindWiring:
-    """What a well-behaved toy launcher resolves for ``request``, with ``overrides`` applied."""
-    world = toyhost_profile().world
-    assert world is not None
+def _wired(request: LaunchRequest, world: WorldRegistry, **overrides: object) -> KindWiring:
+    """What a well-behaved toy launcher resolves for ``request``, with ``overrides`` applied.
+
+    ``world`` is the launching host's own registry: a cell binds its session over that one, and the
+    kind asserts it seeds the world it was built with, so a registry built beside it is a different world.
+    """
     kind = ToyExtractorKind(
         client=ScriptedExtractionClient(), world=world, goal_checks=tuple(request.template.goal_state_checks)
     )
@@ -243,7 +257,7 @@ def _wired(request: LaunchRequest, **overrides: object) -> KindWiring:
 
 
 def _launching_with(
-    wire: Callable[[LaunchRequest], KindWiring], *, unhonoured: frozenset[LaunchArgument] = frozenset()
+    wire: Callable[[LaunchRequest, WorldRegistry], KindWiring], *, unhonoured: frozenset[LaunchArgument] = frozenset()
 ) -> tuple[LaunchHost, EvalStorage, list[LaunchRequest]]:
     """The toy launch host with a launcher that hands the tail whatever ``wire`` resolves.
 
@@ -256,7 +270,9 @@ def _launching_with(
 
     async def launch(request: LaunchRequest) -> EvalRun:
         handed.append(request)
-        return await launch_run(launching, request, wire(request))
+        world = launching.eval_host.profile.world
+        assert world is not None, "the toy host declares a world"
+        return await launch_run(launching, request, wire(request, world))
 
     def plan(request: LaunchRequest) -> ArmPlan:
         # The toy invoices, whatever a generation would have asked for: a launcher that generates nothing.
@@ -271,14 +287,17 @@ def _launching_with(
 
     launching = replace(
         host,
-        kinds={
-            TOY_EXTRACTOR_KIND: LaunchableKind(
-                launch=launch,
-                resolve_subject=lambda _subject, _scope: None,
-                unhonoured_launch_arguments=unhonoured,
-                plan_arm=None if "n_variations" in unhonoured else plan,
-            )
-        },
+        eval_host=with_registry(
+            host.eval_host,
+            {
+                TOY_EXTRACTOR_KIND: LaunchableKind(
+                    launch=launch,
+                    resolve_subject=lambda _subject, _scope: None,
+                    unhonoured_launch_arguments=unhonoured,
+                    plan_arm=None if "n_variations" in unhonoured else plan,
+                )
+            },
+        ),
         # Every arm priced at nothing, so a generating launch reaches the launcher this drives.
         launch_pricer=lambda _quote: ArmPrice(predicted_usd=0.0, basis="scripted"),
     )
@@ -441,7 +460,7 @@ _OTHER_TEMPLATE_CASE = EvalTestCase(scope_id=TOYHOST_SCOPE, template_id="another
 )
 async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(overrides, arguments, said):
     """Where the request and the wiring speak to one fact they must agree, or the run records one thing and runs another."""
-    host, storage, _handed = off_loop(_launching_with, lambda request: _wired(request, **overrides))
+    host, storage, _handed = off_loop(_launching_with, lambda request, world: _wired(request, world, **overrides))
 
     with pytest.raises(ValueError, match=said):
         await _launch_one(host, **arguments)

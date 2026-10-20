@@ -40,7 +40,7 @@ from threetears.geo.mvt import encode_tile
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
 from threetears.media.contracts.keys import build_object_key
-from threetears.observe import get_logger, traced
+from threetears.observe import counter, get_logger, traced
 from shapely.geometry.base import BaseGeometry
 
 __all__ = ["LayerDefinition", "TileEntity", "TileCollection", "ViewportRequest"]
@@ -346,6 +346,10 @@ class TileCollection(DerivedCollection[TileEntity]):
         returns ``None`` for an undeclared layer or an out-of-range zoom.
         that is a miss rather than an error: a client asking for a zoom the
         layer does not serve should get nothing to draw, not a failure.
+
+        a tile built over source rows whose geometry could not be read, in either band, carries
+        the layer's :data:`~threetears.geo.mvt.PARTIAL_LAYER_SUFFIX` companion layer saying how
+        many, besides the counter and the warning.
         """
         layer_name, version, z, x, y = self.normalize_pk(entity_id)
         definition = self._layers.get(layer_name)
@@ -358,8 +362,30 @@ class TileCollection(DerivedCollection[TileEntity]):
         tile = TileId(z=z, x=x, y=y)
         rows = await self._features_for(definition, version, tile)
         band = self._build_band(rows, tile=tile, definition=definition)
-        payload = encode_tile({layer_name: band.features}, tile)
+        # both bands meet here, so this is where a tile built over unreadable rows is marked:
+        # the per-bucket property covers only buckets that kept a feature
+        payload = encode_tile({layer_name: band.features}, tile, undecodable={layer_name: band.undecodable})
 
+        if band.undecodable:
+            counter(
+                "geo_undecodable_rows_total",
+                description="source rows left out of a tile because their geometry could not be read",
+                label_names=("layer",),
+            ).labels(layer=layer_name).inc(band.undecodable)
+            log.warning(
+                "tile %s/%s left out %d source rows whose geometry could not be read (first: %r)",
+                layer_name,
+                tile,
+                band.undecodable,
+                band.first_undecodable,
+                extra={
+                    "extra_data": {
+                        "layer": layer_name,
+                        "undecodable": band.undecodable,
+                        "first_undecodable": str(band.first_undecodable),
+                    }
+                },
+            )
         if band.truncated:
             log.info(
                 "tile %s/%s dropped %d features to the per-tile cap",

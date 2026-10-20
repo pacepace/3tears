@@ -47,7 +47,7 @@ from threetears.agent.tools.base_tool import (
 )
 from threetears.agent.tools.context import ToolContextManager
 from threetears.nats import Subjects
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.collections import (
@@ -305,10 +305,7 @@ class WorkspaceCreateTool(TearsTool):
                     pinned_by_actor_id=self._agent_id,
                 )
             except Exception as pin_exc:
-                log.exception(
-                    "workspace_create pin failed after insert: %s",
-                    pin_exc,
-                )
+                contain(pin_exc, log=log, what=f"workspace_create pin failed after insert: {pin_exc}", level="error")
                 result = ToolResult(
                     success=False,
                     content="",
@@ -381,9 +378,11 @@ class WorkspaceCreateTool(TearsTool):
                         )
                 # NOSILENT: audit failure must never taint a successful create
                 except Exception as audit_exc:
-                    log.exception(
-                        "workspace_create audit publish swallow caught: %s",
+                    contain(
                         audit_exc,
+                        log=log,
+                        what=f"workspace_create audit publish swallow caught: {audit_exc}",
+                        level="error",
                     )
                 result = ToolResult(
                     success=True,
@@ -404,7 +403,7 @@ class WorkspaceCreateTool(TearsTool):
                 error=f"workspace {name!r} already exists for this agent",
             )
         except Exception as exc:
-            log.exception("workspace_create failed: %s", exc)
+            contain(exc, log=log, what=f"workspace_create failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

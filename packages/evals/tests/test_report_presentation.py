@@ -2,7 +2,7 @@
 
 The G2 campaign's numbers (4 cases × 3 repeats; production passed 10 of 12, the cheaper candidate 2 of 12; cost per
 reply 0.003092 against 0.003301) are replayed here through the quick path with arms named as a host names them —
-``deepseek-v4.1-flash (production)`` — and the campaign's own decision rule declared before the run. Every page the
+``deepseek-v4.1-flash (production)`` — and the campaign's own floors declared before the run. Every page the
 suite renders here passes :func:`~threetears.evals.analysis.style.lint_page`.
 """
 
@@ -30,15 +30,18 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock, TrialBlock
-from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule
+from threetears.evals.analysis.report.decision import FloorReadings, RateReading, read_floor
+from threetears.evals.kernel.declaration import Floor
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
 from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from packages.evals.tests.g2_support import (
     CANDIDATE,
     CASES,
     G2_QUESTION,
-    G2_RULE,
+    G2_FLOORS,
     PRODUCTION,
     answering,
     declaring,
@@ -49,16 +52,9 @@ from packages.evals.tests.g2_support import (
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 
-#: The G2 rule as the page states it: one sentence code writes from the typed clauses, the arms by name.
-G2_STATEMENT = (
-    "Switch to cheaper candidate only if no pass rate drops by more than 10 points and cheaper candidate costs less "
-    "per reply. Otherwise stay on production."
-)
-
-
 @pytest.fixture
 async def g2_ruled() -> tuple[Result, Report]:
-    """The G2 numbers through the quick path, with the G2 decision rule declared before the run."""
+    """The G2 numbers through the quick path, with the G2 floors declared before the run."""
     return await g2_ruled_report()
 
 
@@ -70,40 +66,39 @@ async def g2_ruled() -> tuple[Result, Report]:
 async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
-    # The title is the campaign's name; the question declared before the run is quoted whole on its own line under
-    # it, the contract the verdict reads; then the subhead says what the question need not: each arm with its
-    # version, and the typed rule in code's sentence. Then the verdict.
+    # The title is the campaign's name (no floor is broken on four cases, so none opens the page above it); the
+    # question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
+    # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
     assert lines[0] == "# G2: can the cheaper model replace production?"
     assert lines[1] == f'"{G2_QUESTION}"'
     assert lines[3] == (
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
-    assert lines[5] == G2_STATEMENT
-    # Said once: the Decision section opens on its clauses, whose title links up to the subhead.
-    assert "\n## Decision\n\n**Clauses**\n" in report_markdown(report)
-    assert '<h3><a href="#rule">Clauses</a></h3>' in report_html(report)
-    assert f'<p class="arms" id="rule">{html.escape(G2_STATEMENT)}</p>' in report_html(report)
-    assert lines[7].startswith("**Keep production: ")
+    assert '<p class="floor"' not in report_html(report)
+    # The Decision section opens on the aspect's floors.
+    assert "\n## Floors\n\n**Floors on classify**\n" in report_markdown(report)
+    assert lines[5] == "**cheaper candidate passed less often than production; too few cases to call a difference.**"
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
-    assert lines[9:12] == [
+    assert lines[7:10] == [
         "**Scoreboard**",
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
+    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
-    # The rule settled keep on the counts, so the floor caveat says what is withheld under four cases and why, in
-    # the reader's terms; then the one other fact that changes how the verdict reads, the label its row contradicts.
-    # Nothing else is under the scoreboard: the design is on line 2.
+    # The case floor's caveat says what is withheld under four cases and why, in the reader's terms; then the one
+    # other fact that changes how the verdict reads, the label its row contradicts. Nothing else is under the
+    # scoreboard: the design is on the arms line.
     caveat = (
-        "4 cases per arm: keep follows from the counts above. Whether the gap holds on more cases is not estimated: "
-        "an interval takes 5 independent cases."
+        "Usable cases: production 4, cheaper candidate 4. Under 5 independent cases a rate is shown as a count, and "
+        "whether the arms' gap holds on more cases is not estimated."
     )
     label = "'cheaper candidate' is not cheaper: it cost more per reply than production."
     assert caveat in first.splitlines(), "the case floor, in normal weight"
     assert "Too few" not in first and "needs 5" not in first
-    assert first.index("**Keep production") < first.index("**Scoreboard**") < first.index(caveat) < first.index(label)
+    assert first.index("**cheaper candidate passed") < first.index("**Scoreboard**") < first.index(caveat)
+    assert first.index(caveat) < first.index(label)
     assert first.rstrip().endswith(label), "nothing under the scoreboard but the caveat and the label's claim"
     assert "The label" not in report_markdown(report)
 
@@ -150,32 +145,21 @@ async def test_the_question_is_quoted_once_under_the_title_and_never_in_the_body
     _, report = g2_ruled
     markdown = report_markdown(report)
     assert markdown.count("does deepseek-v4-flash hold every pass/fail queue-discipline dimension") == 1
-    assert markdown.count(G2_STATEMENT) == 1
+    assert "Switch to" not in markdown
     (asked,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
-    (rule,) = [
-        b
-        for b in report.blocks
-        if isinstance(b, DisclosureBlock) and b.source == "rule" and b.text.startswith("Switch")
-    ]
     assert asked.section == "header" and asked.text == f'"{G2_QUESTION}"'
-    assert rule.section == "header" and rule.text == G2_STATEMENT
     assert f'<p class="question">{html.escape(asked.text)}</p>' in report_html(report)
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
 async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
-    # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
-    # The quoted question aside too, the author's words whole, and the rule's sentence beside it.
-    (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    # The quoted question aside, the author's words whole.
     (asked,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
-    (rule,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.text == G2_STATEMENT]
-    quoted = report_markdown(report).replace(verdict, "").replace(asked, "").replace(rule, "")
+    quoted = report_markdown(report).replace(asked, "")
     sections = re.split(r"\n## ", quoted) + [
-        _visible_text(part).replace(verdict, "").replace(asked, "").replace(rule, "")
-        for part in report_html(report).split("<h2>")
+        _visible_text(part).replace(asked, "") for part in report_html(report).split("<h2>")
     ]
-    assert "deepseek-v4-flash passed" in verdict
     for section in sections:
         for model in ("deepseek-v4.1-flash", "deepseek-v4-flash"):
             assert len(re.findall(rf"(?<![\w.-]){re.escape(model)}(?![\w.-])", section)) <= 1, (model, section[:80])
@@ -238,8 +222,9 @@ async def test_the_glossary_lists_only_what_the_page_uses_and_explains_the_contr
     assert "exploratory" not in report.terms
     # The ▸ in the scoreboard and the cases table is defined with the control.
     assert "control" in report.terms and "▸" in GLOSSARY["control"]
-    # Settled says what settles each way, never that the outcome cannot change.
-    assert "cannot change" not in GLOSSARY["settled"] and "interval" in GLOSSARY["settled"]
+    # A floor's status says what reads it each way, never that the outcome cannot change.
+    assert "floor status" in report.terms and "floor" in report.terms
+    assert "cannot change" not in GLOSSARY["floor status"] and "interval" in GLOSSARY["floor status"]
 
 
 async def test_one_arm_reads_n_of_n_cases_passed_first() -> None:
@@ -581,31 +566,35 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
 
 
 # =============================================================================
-# The memo: fixed where code can fix it, listed where it cannot, never contradicting the rule
+# The memo: fixed where code can fix it, listed where it cannot; a floor never rewrites its decision words
 # =============================================================================
 
 
-def test_a_memo_sentence_contradicting_the_settled_rule_is_replaced_and_disclosed() -> None:
-    verdict = evaluate_rule(
-        G2_RULE,
-        RuleReadings(
-            rates=(RateReading("the pass rate", 10, 12, 2, 12),), control_cost=0.003092, candidate_cost=0.003301
-        ),
-        control="production",
-        candidate="cheaper candidate",
+def test_a_memo_sentence_a_broken_floor_warns_against_is_printed_as_written() -> None:
+    """Until floors, a settled rule replaced a memo sentence whose decision word disagreed with it. A floor warns and
+    never decides, so the writer's decision words stand; the broken floor is the page's first line instead."""
+    readings = FloorReadings(
+        rates=(RateReading("the pass rate", 10, 12, 2, 12),),
+        control_cost=0.003092,
+        candidate_cost=0.003301,
+        control_cases=20,
+        candidate_cases=20,
+        cost_interval=(0.0001, 0.0003),
+        cost_compared=True,
     )
-    said = "Keep production: the pass rate drops at least 67 points, and cheaper candidate costs more per reply."
+    floors = tuple(
+        read_floor(Floor(aspect="queue", clause=clause), readings, control="production", candidate="cheaper candidate")
+        for clause in G2_FLOORS
+    )
+    assert [floor.outcome for floor in floors] == ["unclear", "broken"]
     style = MemoStyle(
         bundle=AnalysisContextBundle.model_construct(scoreboard=[], cell_measures=[]),
         names={"p": arm_name(f"model={PRODUCTION}", control=True), "c": arm_name(f"model={CANDIDATE}")},
-        rule=verdict,
-        rule_sentence=said,
+        floors=floors,
     )
-    unanswerable = "Unanswerable on this campaign because four cases leave both rates unresolved."
-    assert style.sentence(unanswerable) == said
-    assert style.replaced == [unanswerable]
-    (disclosed,) = decision_disclosures(style)
-    assert unanswerable in disclosed and "replaced it" in disclosed
+    switch = "Switch to the cheaper candidate: it holds the queue well enough."
+    assert style.sentence(switch) == switch
+    assert decision_disclosures(style) == []
     # A raw model id an arm carries reads as the arm's label.
     assert style.names_arms("deepseek-v4-flash queued fewer tracks than deepseek-v4.1-flash.") == (
         "cheaper candidate queued fewer tracks than production."
@@ -663,20 +652,19 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
                 "durable": "",
             },
         ],
-        "decisions": [],
-        "questions": [
-            {
-                "question_id": "q-g2",
-                "resolution": "unanswerable",
-                "answer": "Unanswerable because four cases leave the pass rates statistically unresolved.",
-                "rests_on": [0],
-            }
-        ],
-        "next": [],
+        **{
+            key: value
+            for key, value in authored_memo(
+                bundle,
+                [{}],
+                means="Unanswerable because four cases leave the pass rates statistically unresolved.",
+            ).items()
+            if key != "findings"
+        },
     }
     client = FixturedClient(json.dumps(memo))
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
@@ -696,12 +684,10 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     assert " usd" not in markdown
     assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
     assert "The candidate skipped the queue." in markdown
-    # The rule settled every clause, so the verdict line and the decision table answer its question: the page prints
-    # no answer line for it, and the methods still say the memo's answer contradicted the rule.
-    assert "Answered." not in markdown and "See the decision rule above." not in markdown
-    assert "Unanswerable because" not in markdown.split("## Methods", 1)[0]
-    assert markdown.count("Keep production: ") == 1
-    assert any("“Unanswerable because" in b.text for b in report.blocks if isinstance(b, DisclosureBlock))
+    # A floor decides nothing, so the memo's summary is printed as written (until floors, a settled rule replaced it).
+    assert "Unanswerable because four cases leave the pass rates statistically unresolved." in markdown
+    assert "See the decision rule above." not in markdown and "Keep production: " not in markdown
+    assert not any("“Unanswerable because" in b.text for b in report.blocks if isinstance(b, DisclosureBlock))
     # What code could not fix is kept, counted in the methods table and listed in a fold.
     assert "| Memo style | style: 1 violations |" in markdown
     (listed,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.fold == "Style"]

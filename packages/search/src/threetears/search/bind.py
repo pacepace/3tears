@@ -35,7 +35,7 @@ from datetime import UTC, datetime, time
 from typing import Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.observe.text_block import one_line, under
 from threetears.search.call import search
 from threetears.search.contracts import (
@@ -414,7 +414,12 @@ async def bind_search(
         # a defect in Call or in a provider property. It is logged as one --
         # and still rendered, because D10's guarantee is unconditional: the
         # alternative is an exception crossing a wire that cannot carry it.
-        _logger.exception("search raised past the typed taxonomy against %s", provider.provider_instance)
+        contain(
+            exc,
+            log=_logger,
+            what=f"search raised past the typed taxonomy against {provider.provider_instance}",
+            level="error",
+        )
         unmapped = TransportFailed(
             f"search failed with an unmapped {type(exc).__name__}: {exc}",
             spend=Spend(),

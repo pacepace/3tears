@@ -29,7 +29,8 @@ S3 or parquet stays a fallback only. L3 is the truth, and NATS is a cache rebuil
 
 - **One chunk per scope and table.** Each is one Arrow IPC stream, zstd-compressed, in the pod's
   own Object Store. It is named `{snapshot}/{scope}/{epoch}/{table}.{column digest}`. The digest
-  means a rebuild under other columns never reuses an old chunk's name.
+  means a rebuild under other columns never reuses an old chunk's name. A table declared
+  append-only holds a base chunk and the pieces after it instead (below).
 - **One pointer per scope.** It is a small KV entry naming the scope's epoch and its chunk for
   every table, so a scope's change across tables is one swap.
 - **An index.** It names every scope, so a missing pointer is noticed, not skipped.
@@ -66,6 +67,96 @@ publishing after the commit with the rows in hand would hold them all in memory.
 - **Hold the claim across commit and publish.** Otherwise a replica waiting on the write rebuilds
   every scope from L3 in the moment between them.
 
+## Append-only tables: a base and its pieces
+
+**Decided 2026-10-19, for the ENR pod's LSF projections** (about 1,000 rows a model run, a run
+every 3 to 5 minutes across nearly every state, about 400,000 rows by morning). Republishing a
+scope's whole rows to add a run's few means every replica fetches and reloads the whole scope each
+time. A table declared append-only (`SnapshotTable(append_only=True)`: rows are only ever added,
+and a row once held never changes or goes away) is published by what each write ADDED.
+
+- **A base and its pieces.** For such a table a scope's pointer names a base chunk and an ordered
+  list of pieces after it, each the rows one write added, named by scope, epoch and column digest
+  as chunks are: `{snapshot}.p/{scope}/{epoch}/{table}.{column digest}`.
+- **A writer gives the added rows, apart.** `stage(..., added=)` and `publish(..., added=, after=)`
+  take an append-only table's added rows in their own argument, so the call says which meaning
+  it has; `rows=` keeps meaning every row (an append-only table given every row gets a fresh base).
+  Added rows whose keys this replica already holds for the scope are refused before anything is
+  written, so a caller handing over every row as added rows is told, never served a repeated piece.
+- **A piece follows exactly the chain it was computed after.** The piece is appended to the chain
+  the scope's pointer holds at the epoch the writer saw before its change (`carry_at` for a stage,
+  `after` for a publish), by a compare-and-set against exactly that entry. This is what keeps every
+  pointer's chain equal to L3's rows at its epoch: two writes committed in one order and published
+  in the other can never put the later one's rows on a chain missing the earlier one's. A publish
+  whose pointer is not at `after` on the chain this L1 holds, or that loses the compare-and-set,
+  moves nothing and changes nothing here (this L1 takes a publish only once its pointer has moved,
+  so `applied_epoch` and the last change name only epochs the pointer took). `publish` returns
+  `False`, and the scope is shown behind in `status()` and rebuilt from L3 at the next pass, which
+  holds the change. A skipped stage leaves the scope with its pointer behind L3's epoch, which
+  `catch_up_from_l3` republishes. A new scope's first piece is its base.
+- **Other tables of the snapshot.** A publish of whole rows only moves the pointer exactly as a
+  snapshot with no append-only table does: the compare-and-set retried against racing writers.
+  A publish that carries added rows moves the scope's one pointer from exactly the entry at
+  `after`, and its whole tables move with it, since one pointer names every table of the scope; a
+  writer that wants a whole table's change published regardless of a race publishes it whole,
+  apart from its added rows.
+- **A replica appends what follows what it holds.** When what it holds of a table is a leading run
+  of the new chain (the same base, its pieces the first of the new list), it fetches only the
+  pieces after them and appends them, in the same one-transaction swap readers see today. Anything
+  else (a new base, a chain it does not hold) reloads the table's scope whole from base and pieces.
+  The judgement is by names alone, so a lost or out-of-order pointer event converges: the next
+  pointer seen is compared with what is held, and every piece after it is fetched. A cold replica
+  loads base and every piece.
+- **One publish sequence.** A publish, a rebuild and a fold all write through one sequence: a
+  write claim on the epoch, each table's chunk written whole, appended as a piece or carried,
+  every named chunk checked to be there, then the pointer moved.
+- **Compaction.** Past a threshold (`compact_pieces` pieces, or `compact_bytes` of them, per table
+  per scope) the writer that moved the scope folds base and pieces into a new base at the pointer's
+  epoch, under a write claim, by compare-and-set; the folded pieces go by the sweeper's one rule.
+  The new base is the old base and its pieces concatenated in order, not re-sorted, so a replica
+  that loads it holds its rows in the same order as one that appended them. A replica already
+  holding the scope at that epoch adopts the folded pointer without fetching it: the rows of an
+  append-only table at one epoch are one set. A rebuild and a catch-up write a fresh base with no
+  pieces. `status().appended` says, per append-only table, how many pieces each scope holds and when
+  its base was last formed.
+- **Everything else holds.** L3 is the truth; the pointer compare-and-set, the write claims, the
+  sweeper and the status cover pieces; a table not declared append-only keeps one whole chunk per
+  scope; `carry_at` carries an unchanged table with its pieces.
+
+### The pointer format, and two code versions
+
+The pointer is a persisted format read by every replica of every code version in a rolling deploy,
+so it is a lock-in decision. It stays one KV entry per scope at the same key, and is written so that
+a replica that predates pieces (0.72) can never misread it and a replica that knows them (0.73)
+reads every older pointer:
+
+| Field | What it holds |
+|---|---|
+| `tables[t].object`, `tables[t].rows` | the table's base chunk and its rows: exactly the 0.72 fields |
+| `tables[t].pieces` | the ordered pieces, each `{object, rows, epoch, bytes}`; present only when there are some |
+| `tables[t].compacted_at` | when an append-only table's base was last formed whole (epoch seconds); optional |
+| `schema[t]` | the table's column digest, followed by `+pieces` exactly when `pieces` is present |
+
+- **0.72 fails closed.** It compares each table's schema entry with its own column digest before it
+  loads anything. A marked entry never equals it, so 0.72 treats the scope as another code
+  version's: it serves the scope from its own L1 rebuilt from L3, and it does not repoint the scope
+  at the same epoch (the rule in "Two code versions at once" below). It never decodes a piece as
+  rows. Nothing had to change in 0.72 for this.
+- **0.72 cannot sweep a piece.** It lists and judges only objects under `{snapshot}/`; pieces live
+  under `{snapshot}.p/`. A snapshot's name holds no `.`, so no other snapshot's chunks share that
+  prefix. 0.72 keeps the base, because the base is in the field it reads.
+- **0.73 reads 0.72.** A pointer with no `pieces` is a table of whole chunks: a base with none.
+- **Back to the common shape.** A pointer whose tables have no pieces is written exactly in the 0.72
+  shape, so a rebuild, a catch-up or a compaction puts every replica, 0.72 included, back on
+  pointers it loads.
+- **A future format fails closed too.** 0.73 refuses an entry whose pieces and mark disagree, and
+  keeps any other suffix on the digest, so a pointer of a later format reads as other columns.
+
+The alternatives were a second pointer key per scope (two pointers a scope could disagree across,
+and 0.72 would see the scope's pointer missing and rebuild it under the old key, the two versions
+fighting) and a format number 0.72 does not read (it would load the base alone and serve a scope
+missing every piece: the misread this rules out).
+
 ## Chunk lifecycle
 
 One rule (`_Sweeper.deletable`, beside the snapshot in its module) decides whether a chunk may be
@@ -75,7 +166,7 @@ listed), never a replica's view, which lags another replica's publish:
 
 | The chunk | Kept or deleted |
 |---|---|
-| Named by its scope's pointer | Kept: it is being served |
+| Named by its scope's pointer, as a base or a piece | Kept: it is being served |
 | At an epoch a live write claims | Kept: it is being written, or waits for its pointer to move |
 | Anything else | Deleted: it serves nothing and nothing will point at it |
 

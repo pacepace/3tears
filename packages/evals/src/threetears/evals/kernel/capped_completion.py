@@ -1,12 +1,10 @@
 """A completion client held to the run's cost cap, one call at a time, through one cell's sink.
 
-A cell's paid calls are what a run's cost cap exists to bound, and the cap counts a cell's spend only
-once its result lands unless the cell reports it as it goes. :class:`CappedCompletion` is that report
-for a completion client, written once: before each call it reserves the call's ceiling on the cell's
-sink (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`) — or, for a client that cannot
-price the call, asks whether the cap is reached — and when the call returns it settles the reservation
-to what the call cost. A call the cap has no room for is never made: the reservation raises
-:class:`~threetears.evals.kernel.candidate_kind.CostCapReached` instead.
+A cell's paid calls are what a run's cost cap counts, once the cell's result is recorded; the cap is read
+between cells and refuses no call inside one. :class:`CappedCompletion` reports a cell's spend as it goes,
+for a completion client, written once: before each call it opens a reservation on the cell's sink
+(:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`), and when the call returns it settles the
+reservation to what the call cost.
 
 The engine wraps its own cell-side clients in it — the simulated user's
 (:func:`~threetears.evals.run.conversation.drive_conversation`) and the reporter kind's generator — and a
@@ -16,8 +14,7 @@ whose service sends it).
 
 **What a ceiling is comes from the client** (:meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling`):
 the engine knows neither a model's rates nor the output cap the client was built with. A client with no
-``price_ceiling``, or one answering ``None``, is unpriced: its calls hold nothing and are admitted only
-while the cap is not yet reached.
+``price_ceiling``, or one answering ``None``, is unpriced: its calls open a reservation with no ceiling.
 
 **A client may refresh its prices before they are read.** ``price_ceiling`` is synchronous, so a client whose rates
 come from somewhere that goes stale (the shipped client's catalogue) offers ``async refresh_prices()``, and the engine
@@ -27,14 +24,57 @@ not refused for old ones. A client without one is priced from what it holds.
 
 from __future__ import annotations
 
+import json
 import math
-from typing import Any, Protocol, runtime_checkable
+import unicodedata
+from collections.abc import Mapping
+from typing import Any, Final, Protocol, runtime_checkable
 
 from threetears.evals.kernel.candidate_kind import CellPending, CellSink
 from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.evals.schema.completion import CompletionGenerator
 
-__all__ = ["CappedCompletion", "call_ceiling", "refresh_prices"]
+__all__ = ["PROMPT_FRAMING_TOKENS", "CappedCompletion", "call_ceiling", "prompt_token_bound", "refresh_prices"]
+
+#: The tokens :func:`prompt_token_bound` allows for a prompt's framing beyond its text (role markers, a schema's
+#: re-encoding).
+PROMPT_FRAMING_TOKENS: Final = 2048
+
+
+def _text_bytes(text: str) -> int:
+    """The most tokens a tokenizer can read ``text`` as: one per UTF-8 byte, as written or after NFKC normalisation,
+    whichever is more (a normalising tokenizer can expand a compatibility character: ``U+FDFA`` is 3 bytes, 33 after).
+    """
+    return max(
+        len(text.encode("utf-8", errors="surrogatepass")),
+        len(unicodedata.normalize("NFKC", text).encode("utf-8", errors="surrogatepass")),
+    )
+
+
+def prompt_token_bound(system: str, user: str, response_format: Mapping[str, Any] | None) -> int:  # Any: JSON
+    """A bound on the prompt tokens a call sends, never below what the provider bills: one per UTF-8 byte.
+
+    No token of a byte-level tokenizer is shorter than a byte, so one per byte of each text (and of the directive,
+    written out as JSON either way), plus :data:`PROMPT_FRAMING_TOKENS` for the framing around them, is at or above
+    any such tokenizer's count, however densely the text tokenizes. The shipped client prices a call's ceiling on it
+    (:meth:`~threetears.evals.providers.Model.price_ceiling`). It is a bound, well above the bill (about 1.7 times it
+    for a JSON-heavy request, 4 for prose), so the analysis generation does not log it as the request's size: its
+    ``approx_input_tokens`` line is a separate characters-over-two ballpark of the same request.
+
+    :param system: The system prompt the call sends.
+    :ptype system: str
+    :param user: The user message the call sends.
+    :ptype user: str
+    :param response_format: The provider directive the call sends, or ``None``.
+    :ptype response_format: Mapping[str, Any] | None
+    :return: The bound, in tokens.
+    :rtype: int
+    """
+    bound = _text_bytes(system) + _text_bytes(user) + PROMPT_FRAMING_TOKENS
+    if response_format is not None:
+        written = json.dumps(response_format, ensure_ascii=False, default=str)
+        bound += max(_text_bytes(written), len(json.dumps(response_format, default=str)))
+    return bound
 
 
 @runtime_checkable
@@ -121,7 +161,7 @@ class CappedCompletion:
         self._source: CellPending = source
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
-        """Reserve the call's ceiling, make it, and settle the reservation to what it cost.
+        """Open the call's reservation, make the call, and settle the reservation to what it cost.
 
         :param system: The system prompt.
         :ptype system: str
@@ -131,7 +171,6 @@ class CappedCompletion:
         :ptype response_format: dict[str, Any] | None
         :return: The client's completion, unchanged.
         :rtype: Any
-        :raises CostCapReached: The cap has no room for the call, which is not made.
         """
         await refresh_prices(self._inner)
         held = self._sink.reserve(

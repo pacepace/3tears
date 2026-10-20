@@ -17,7 +17,7 @@ from types import ModuleType
 import pytest
 
 from threetears.evals import Eval
-from threetears.evals.analysis import AnalysisContextBundle, inspect_campaign_bundle
+from threetears.evals.analysis import CampaignBundle, assemble_campaign_bundle
 from packages.evals.tests.example_loader import replaying
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
@@ -58,8 +58,8 @@ async def test_with_no_api_key_the_writer_repairs_the_canned_draft_from_the_reco
     saved = tmp_path / "bundle.json"
     printed = re.search(r"fingerprint ([0-9a-f]{64})", out)
     assert printed is not None and saved.is_file()
-    assert AnalysisContextBundle.from_json(saved.read_text()).fingerprint() == printed.group(1)
-    recorded = AnalysisContextBundle.from_json(module.RECORDED_BUNDLE.read_text()).fingerprint()
+    assert CampaignBundle.from_json(saved.read_text()).fingerprint() == printed.group(1)
+    recorded = CampaignBundle.from_json(module.RECORDED_BUNDLE.read_text()).fingerprint()
     assert analysis.generation.bundle_fingerprint == recorded
     assert f"Replaying: the writer reads {module.RECORDED_BUNDLE.name}" in out
     # The canned first draft cited a reading the bundle lacks; the generator refused it, and the model repaired it.
@@ -81,11 +81,11 @@ async def test_assembling_the_same_campaign_twice_gives_the_same_fingerprint() -
     arms["candidate"] = module.keyword_classifier(module.CANDIDATE_RULES)
     comparison = await Eval(module.CASES, arms, ["queue"], k=2).run(store=":memory:", scope="determinism")
     once, twice = (
-        off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
+        off_loop(assemble_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id)
         for _ in range(2)
     )
     assert once.fingerprint() == twice.fingerprint()
-    assert AnalysisContextBundle.from_json(once.to_json(indent=2)).fingerprint() == once.fingerprint()
+    assert CampaignBundle.from_json(once.to_json(indent=2)).fingerprint() == once.fingerprint()
 
 
 def test_the_fixture_reaches_the_engine_only_through_public_roots() -> None:

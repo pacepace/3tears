@@ -14,11 +14,10 @@ from dataclasses import replace
 from typing import Any
 
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.kernel.host import BarRegistry, EvalHost
 from threetears.evals.ops import BarProposals, OpsHost, bars_propose
-from packages.evals.tests.factories import memory_storage
+from packages.evals.tests.factories import memory_storage, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
@@ -56,7 +55,7 @@ def _host(batches: Sequence[tuple[EvalRun, list[EvalResult]]]) -> OpsHost:
         for result in results:
             storage.save_eval_result(result)
     storage.save_campaign(
-        EvalCampaign(
+        make_campaign(
             id="baseline",
             scope_id=TOYHOST_SCOPE,
             name="incumbent baseline",

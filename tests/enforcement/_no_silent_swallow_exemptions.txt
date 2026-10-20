@@ -1,0 +1,19 @@
+# no-silent-swallow exemptions.
+#
+# for a handler that must absorb what the gate refuses, and cannot be written any other way. every
+# entry is `path:qualname#N:symbol` -- the scope enclosing the handler and the ordinal among
+# same-scope, same-symbol handlers, not a line number, so an edit above it does not stop it matching
+# -- preceded by a `# rationale:` line saying why the failure is not lost.
+
+# rationale: holds the caller's cancellation until a stopped run has ended, and its only caller re-raises it at once, so a lease is never released while the run may still be writing
+packages/core/src/threetears/core/coordination/coalesced_run.py:_until_ended#0:CancelledError
+
+# rationale: waits out work already handed to an executor thread, holding a cancellation aimed at the waiter and returning it as a flag, because the work cannot be stopped and its outcome must still be read; every caller raises CancelledError once it has
+packages/evals/src/threetears/evals/kernel/offload.py:wait_through_cancellation#0:CancelledError
+
+# rationale: a cell cancelled with its run is recorded as excluded with what it had already spent, which lives only on that cell's sink, and the cancellation is re-raised once that record is saved
+packages/evals/src/threetears/evals/run/runner.py:execute_run.run_and_record#0:CancelledError
+# rationale: holds a repeated cancellation while a git write-and-commit already under the repository's lock runs to its end, so the lock is never released over a half-written index; the outer handler re-raises the cancellation as soon as the commit has finished
+packages/core/src/threetears/core/backends/git/repo.py:GitRepo._uninterrupted#0:CancelledError
+# rationale: holds the canceller's cancellation while the socket's reader and writer tasks finish stopping, so the connection's teardown never runs under a live child, and re-raises that same cancellation once both have stopped
+packages/channels/src/threetears/channels/websocket.py:_stop_both#0:CancelledError

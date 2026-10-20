@@ -10,7 +10,8 @@ imports none of them.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -38,6 +39,7 @@ from threetears.evals.analysis.cells import (
     RefusedMerge,
     SubjectKeyInstability,
 )
+from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import served_model_state
@@ -52,7 +54,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
-from threetears.evals.kernel.declaration import CampaignDesign, preregistered_questions
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
@@ -542,13 +544,13 @@ class RealizedDesign(EvalDocumentModel):
     """What kind of experiment this campaign turned out to be — INFERRED from the runs, never declared.
 
     **The derived twin of the declaration, and the two must not share a name.** The declaration
-    (:class:`~threetears.evals.kernel.declaration.CampaignDesign`, on the campaign) says what an
+    (:class:`~threetears.evals.kernel.declaration.AspectDesign`, on the campaign's aspect) says what an
     operator SET OUT to learn; this says what the observations actually show. The delta between
     them is the coverage story — a declared value with no observations is NAMED, ``not_run`` in its
     axis row's ``declared_levels`` (``undetermined`` where some run's level cannot be established),
     where this one can only ever report what happened to run.
 
-    They were briefly both called ``CampaignDesign``, in one package, and the collision silently
+    They were briefly both called ``CampaignDesign`` (the declaration's name until the campaign rewrite), in one package, and the collision silently
     renamed a published OpenAPI component: two live classes, one schema name, and whichever the
     generator reached first won.
 
@@ -595,7 +597,7 @@ class RealizedDesign(EvalDocumentModel):
             "recurring state in a real store, and this is the arm that keeps it from being reported as a coverage "
             "gap. 'stale' = every member resolved, none carries the stored key, and no run this build stamps can: "
             "it is a bare key (typed, with no `control_levers` beside it) computed under an identity predicate "
-            "other than this build's (`declared_design.control_identity_version` says which) — re-address it "
+            "other than this build's (`declared.control.identity_version` says which) — re-address it "
             "from a run with `control_from_run_id` on campaign_update, which records the lever map a later "
             "predicate re-keys it from (`stale_control_disclosure` says so). 'unobserved' = every member "
             "resolved and none carried it, though a run of the arm launched now would, which is the only one "
@@ -1262,14 +1264,15 @@ class AliasedFactors(EvalDocumentModel):
 
 
 class UnexercisedFactor(EvalDocumentModel):
-    """A lever read off what ran that the campaign never exercised, so no level and no lever: a factor whose role made
-    fewer than two calls across every result, at most one, on one arm."""
+    """A lever read off what ran that the campaign never exercised, so no level and no lever: a factor whose role no arm
+    ran, or only one arm did (any number of its results), so no arm ran at a level of it beside another that did too."""
 
     factor: str = Field(min_length=1, description="The lever, as the host names it.")
     role: str = Field(min_length=1, description="The role whose calls its level is read from.")
-    results: int = Field(ge=0, le=1, description="The results that made a call in the role: 0 or 1.")
+    results: int = Field(ge=0, description="The results that made a call in the role, across the campaign.")
     arms: list[str] = Field(
-        default_factory=list, description="The variant key of the arm whose result made that call; empty for none."
+        default_factory=list,
+        description="The variant key of the one arm whose results made those calls; empty for none.",
     )
 
 
@@ -1520,12 +1523,12 @@ class MeritTier(EvalDocumentModel):
 
 
 class QuestionScope(EvalDocumentModel):
-    """Which verdicts bear on one declared question — read off the axes the question names."""
+    """Which verdicts bear on the aspect's question — read off the merit axes the aspect names for it."""
 
-    question_id: str = Field(min_length=1, description="The live question's id.")
+    aspect: str = Field(min_length=1, description="The aspect whose question this scopes.")
     merit_axes: list[MeritAxis] = Field(
         min_length=1,
-        description="The axes the question names, ranked by `merit_priority` first and then in the question's own order.",
+        description="The axes the aspect names, ranked by `merit_priority` first and then in the aspect's own order.",
     )
     bar_measure_ids: list[str] = Field(
         default_factory=list,
@@ -1534,7 +1537,7 @@ class QuestionScope(EvalDocumentModel):
     unbarred_axes: list[MeritAxis] = Field(
         default_factory=list,
         description=(
-            "Axes the question names that no adjudicated bar is on, in the order of `merit_axes`. An answer on "
+            "Axes the aspect names that no adjudicated bar is on, in the order of `merit_axes`. An answer on "
             "one of these rests on the cell measures alone, with no verdict to quote."
         ),
     )
@@ -1563,9 +1566,12 @@ class VerdictOrder(EvalDocumentModel):
             "`bar_adjudications` order. Every bar when no priority was stated."
         ),
     )
-    questions: list[QuestionScope] = Field(
-        default_factory=list,
-        description="One per live declared question that names at least one merit axis, in declaration order. An unscoped question is absent.",
+    question: QuestionScope | None = Field(
+        default=None,
+        description=(
+            "The bars on the axes the aspect's question names, where it was asked before the first run and names at "
+            "least one. None for an unscoped question, or none asked in time."
+        ),
     )
 
 
@@ -1639,8 +1645,7 @@ class FamilyComparison(EvalDocumentModel):
         description=(
             "Whether `name` is a measure, a judged dimension, or `trial`: how each trial ended, with `name` "
             f"`{TRIAL_PASS_NAME}`, the share of a case's usable trials that passed (the scoreboard's passed of usable, "
-            "read per case). A `trial` comparison is only in the family of a question whose decision rule reads the "
-            "pass rate."
+            "read per case). A `trial` comparison is in the family exactly when the aspect declares a margin."
         )
     )
     name: str = Field(min_length=1, description="The measure or judged dimension compared, as the bundle spells it.")
@@ -1670,8 +1675,17 @@ class FamilyComparison(EvalDocumentModel):
             "The bounded test's interval on `delta` on the reading's declared range, at the family's `interval_level`: "
             "valid for every distribution on the range at every n, where `interval` (a t interval wherever the values "
             "have spread) is not. A claim that the contrast is no worse than the control by more than a margin, such "
-            "as a decision rule's `switch` on a rate, reads this one. None when no test ran, when the reading declares "
+            "as a floor on a rate, reads this one. None when no test ran, when the reading declares "
             "no range, and in a bundle before shape 55."
+        ),
+    )
+    case_values: tuple[list[float], list[float]] | None = Field(
+        default=None,
+        description=(
+            "The control's and the contrast's per-case values the bounded test read, aligned case by case when "
+            "`test` is `paired`: carried wherever `bounded_interval` is, so a floor's projection can compute "
+            "that interval again at more cases. Left out of what the writer is shown. None where `bounded_interval` "
+            "is None, and in a bundle before shape 58."
         ),
     )
     hedges_g: float | None = Field(
@@ -1795,24 +1809,25 @@ class FamilyComparison(EvalDocumentModel):
 
 
 class ComparisonFamily(EvalDocumentModel):
-    """Every comparison one declared question could draw a verdict from, corrected as one family.
+    """Every comparison the aspect's question could draw a verdict from, corrected as one family.
 
     Ten comparisons at α=0.05 find a "difference" by chance more often than not, so the readings a
-    question asks about (each contrast against the control, on every reading on the question's merit
+    question asks about (each contrast against the control, on every reading on the aspect's merit
     axes) are adjusted together, and a verdict stands only on the adjusted p.
     """
 
-    question_id: str | None = Field(
+    aspect: str | None = Field(
         min_length=1,
         description=(
-            "The live declared question this family serves. None for the campaign-wide family a campaign declaring no "
-            "question gets: every comparison it holds, on every reading on a merit axis, corrected as one — so a "
-            "chance difference is no more a finding for a campaign that asked nothing than for one that asked."
+            "The aspect whose question, asked before the first run, this family serves. None for the exploratory "
+            "family an aspect that asked nothing in time gets: every comparison it holds, on every reading on a merit "
+            "axis, corrected as one — so a chance difference is no more a finding for an aspect that asked nothing "
+            "than for one that asked."
         ),
     )
     merit_axes: list[MeritAxis] = Field(
         default_factory=list,
-        description="The axes the question names. Empty = an unscoped question, whose family covers every axis.",
+        description="The axes the aspect's question names. Empty = an unscoped question, whose family covers every axis.",
     )
     correction: Literal["holm"] = Field(
         default=MULTIPLE_COMPARISON_CORRECTION, description="The family-wise correction applied."
@@ -1849,14 +1864,48 @@ class ComparisonFamily(EvalDocumentModel):
     disclosure: str = Field(min_length=1, description="The sentence a writer quotes about this family's correction.")
 
 
+#: The measure a cost floor reads per case: the candidate's own spend per reply, the scoreboard's cost per reply.
+FLOOR_COST_MEASURE = "production_replicating_cost"
+
+#: The readings a floor reads per case whatever the family compares: the overall pass rate and the cost per reply.
+FloorContrastReading = Literal["trial", "measure"]
+
+
+class FloorContrast(EvalDocumentModel):
+    """One arm against the control under one rig, on a reading a floor or an aspect's reading reads per case; with no
+    control (a choice), one pair of arms on the overall pass rate, ``control`` then the arm first in variant-key
+    order, a position and never a role.
+
+    Carried whatever the aspect's family compares, so a floor on the overall pass rate or the cost per reply, and the
+    aspect's pass-rate reading, never depend on which readings a question asked about: each reads its own interval,
+    at its own level, from these values. Never tested or corrected here: a floor reads it at the nominal level.
+    """
+
+    reading: FloorContrastReading = Field(
+        description=f"`trial` (`name` `{TRIAL_PASS_NAME}`: each case's share of usable trials that passed) or `measure`."
+    )
+    name: str = Field(min_length=1, description="The reading's name: `passed`, or the cost-per-reply measure's key.")
+    control: ComparedCell = Field(description="The control arm's cell under this rig.")
+    contrast: ComparedCell = Field(description="The other arm's cell under the same rig.")
+    test: Literal["paired", "unpaired"] = Field(
+        description="Paired over the cases both cells ran when they share at least two, else unpaired."
+    )
+    case_values: tuple[list[float], list[float]] = Field(
+        description=(
+            "The control's and the arm's per-case values, in the reading's own units, aligned by case when paired: "
+            "what a floor's interval, and an aspect reading's, is computed from."
+        )
+    )
+
+
 class MultipleComparisons(EvalDocumentModel):
-    """The campaign's comparisons, one corrected family per live declared question — or one for the whole campaign."""
+    """The aspect's comparisons, corrected as one family: its question's, or the exploratory one over every reading."""
 
     families: list[ComparisonFamily] = Field(
         default_factory=list,
         description=(
-            "One per live declared question, in declaration order; with no question declared, one campaign-wide "
-            "family over every reading (`question_id` None)."
+            "The aspect's one family: its question's, where one was asked before the first run, else one exploratory "
+            "family over every reading (`aspect` None). Empty only with `withheld` set."
         ),
     )
     withheld: str | None = Field(
@@ -1869,111 +1918,205 @@ class MultipleComparisons(EvalDocumentModel):
 
 
 class ReadingScope(EvalDocumentModel):
-    """Which readings the campaign's declared questions asked about — and which it reads only exploratorily.
+    """Which readings the aspect's question asked about — and which it reads only exploratorily.
 
     A reading no question asked about can still be reported, as a lead: it was not looked for, so a
-    pattern in it is the kind a reader finds in any data. Labelled where questions are declared, on the
-    readings outside them only; where none are, the whole campaign is exploratory and that is said once
+    pattern in it is the kind a reader finds in any data. Labelled where a question was asked, on the
+    readings outside it only; where none was, the whole aspect is exploratory and that is said once
     (``disclosure``), never on every row — a label that fires on every row is one readers learn to skip.
     """
 
     questions_declared: bool = Field(
         default=False,
         description=(
-            "Whether the campaign declares at least one live question asked before its first run "
-            "(preregistered_questions): only such a question makes a reading confirmatory. A question declared "
-            "after the first run is in `post_hoc_questions`, not here."
+            "Whether the campaign asked its question before the aspect's first run (`asked_in_time`): only such a "
+            "question makes a reading confirmatory. A question asked after the first run sets `question_post_hoc`."
         ),
     )
-    post_hoc_questions: list[str] = Field(
-        default_factory=list,
+    question_post_hoc: bool = Field(
+        default=False,
         description=(
-            "The ids of live questions asked after the campaign's first member run was created, in declaration "
-            "order: read as exploratory, since a question asked once results existed may have been asked of them. "
-            "Their families are not built and their axes confirm nothing; the disclosure names them."
+            "Whether the campaign asked its question only after the aspect's first member run was created: read as "
+            "exploratory, since a question asked once results existed may have been asked of them. No family is "
+            "built for it and its axes confirm nothing; the disclosure says so."
         ),
     )
     exploratory_measures: list[str] = Field(
         default_factory=list,
         description=(
-            "Measures in `measure_catalog` on no axis a live question names, sorted — exploratory: reportable as "
-            "leads, never as a confirmed answer. Empty when no question is declared (see `disclosure`). A "
+            "Measures in `measure_catalog` on no axis the aspect's question names, sorted — exploratory: reportable "
+            "as leads, never as a confirmed answer. Empty when no question was asked in time (see `disclosure`). A "
             "guardrail is never listed: it is held because it was declared one."
         ),
     )
     exploratory_dimensions: list[str] = Field(
         default_factory=list,
         description=(
-            "Capability judged dimensions no live question covers (none names `quality`, and none is unscoped), "
-            "sorted. Empty when no question is declared."
+            "Capability judged dimensions the aspect's question does not cover (its axes leave out `quality`), "
+            "sorted. Empty when no question was asked in time."
         ),
     )
     disclosure: str | None = Field(
         default=None,
         description=(
-            "Set when the campaign declares no live question asked before its first run: the one sentence saying "
-            "every finding is exploratory — naming the questions declared after it, when that is why, and, when it "
-            "declared no design at all (`declared_design` null), that it is an exploratory campaign whose design "
-            "was inferred from the runs. None when a question was declared before the first run, where the two "
-            "lists above carry the label."
+            "Set when the campaign asked no question before the aspect's first run: the one sentence saying every "
+            "finding is exploratory — saying the question came after it, when that is why, and, when the aspect "
+            "declared no design at all (`declared` null), that it is exploratory and its design was inferred from "
+            "the runs. None when the question was asked before the first run, where the two lists above carry the "
+            "label."
         ),
     )
 
 
-#: The one sentence a campaign with no live question gets, in place of a label on every reading.
+#: The one sentence an aspect whose campaign asks no question gets, in place of a label on every reading.
 NO_QUESTION_EXPLORATORY = (
-    "This campaign declares no live question, so every finding it supports is exploratory: nothing was asked "
+    "This campaign declares no question, so every finding it supports is exploratory: nothing was asked "
     "before the evidence was read, and a pattern found in it is a lead for a campaign that asks, not an answer."
 )
 
-#: The same sentence for a campaign that declared no design at all — an exploratory campaign, which is a valid
-#: one: it has no question either, and the arms its comparisons read were inferred from the runs.
+#: The same sentence for an aspect that declared no design at all — an exploratory one, which is a valid one: it has
+#: no question either, and the arms its comparisons read were inferred from the runs.
 NO_DESIGN_EXPLORATORY = (
     "This campaign declares no design, so it is exploratory and its readings confirm nothing: nothing was asked "
     "before the evidence was read, a pattern found in it is a lead for a campaign that declares one, not an "
     "answer, and the design its comparisons read was inferred from the runs, not declared."
 )
 
+#: The sentence an aspect gets when its campaign asks a question that names none of this aspect's merit axes: the
+#: question is the campaign's, and this aspect is not asked about.
+NO_AXIS_EXPLORATORY = (
+    "This campaign's question names no axis this aspect measures, so every finding this aspect supports is "
+    "exploratory: nothing here was asked about, and a pattern found in it is a lead, not an answer."
+)
 
-def post_hoc_disclosure(question_ids: Sequence[str]) -> str:
-    """The sentence a campaign gets when its only live questions were declared after its first run.
+#: The sentence an aspect gets when its campaign's question was asked only after its first run.
+POST_HOC_EXPLORATORY = (
+    "This campaign's question was declared after its first run, so every finding it supports is exploratory: a "
+    "question asked once results existed may have been asked of them, and a pattern found here is a lead for a "
+    "campaign that declares its question before it launches, not an answer."
+)
 
-    :param question_ids: The post-hoc questions' ids, in declaration order.
-    :ptype question_ids: Sequence[str]
-    :return: The disclosure.
-    :rtype: str
+
+#: The first bundle shape that reads one aspect of its campaign: a bundle of an earlier shape holds a declaration this
+#: build cannot read, so it is refused rather than half-read.
+ASPECT_BUNDLE_SHAPE = 59
+
+
+def refuse_a_bundle_before_aspects(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
+    """Refuse a stored bundle of a shape from before a bundle read one aspect, naming what holds it and the remedy.
+
+    A stored read is strict, so such a bundle would otherwise fail on the first field it lacks, in pydantic's words; it
+    is refused here, before it is read, in the reader's.
+
+    :param data: The stored bundle, as a mapping.
+    :ptype data: Mapping[str, Any]
+    :param what: What holds it, as a sentence names it (``this analysis``).
+    :ptype what: str
+    :param remedy: What to do instead: regenerate what holds it, or freeze it again.
+    :ptype remedy: str
+    :raises RefusedInput: The bundle's ``schema_version`` is missing or earlier than :data:`ASPECT_BUNDLE_SHAPE`.
     """
-    return (
-        f"This campaign's question(s) {', '.join(question_ids)} were declared after its first run, so every finding "
-        "it supports is exploratory: a question asked once results existed may have been asked of them, and a "
-        "pattern found here is a lead for a campaign that declares its question before it launches, not an answer."
-    )
+    shape = data.get("schema_version")
+    if not isinstance(shape, int) or shape < ASPECT_BUNDLE_SHAPE:
+        raise RefusedInput(
+            f"{what} holds an evidence bundle of shape {shape}, from before a bundle read one aspect of its campaign "
+            f"(shape {ASPECT_BUNDLE_SHAPE}), so this build cannot read it",
+            remedy=remedy,
+        )
 
 
-def exploratory_disclosure(declared: CampaignDesign | None, first_run_at: str | None = None) -> str | None:
-    """The one sentence saying a whole campaign is exploratory, or None when a question asked in time confirms it.
+def asks_a_question(declared: AspectDeclaration | None) -> bool:
+    """Whether the aspect's campaign asks a question at all, in time or not.
+
+    :param declared: What the campaign declared, as the aspect reads it; None when the aspect declared no design.
+    :ptype declared: AspectDeclaration | None
+    :return: True when a question is declared and its merit axes are stated (``[]`` reads every axis).
+    :rtype: bool
+    """
+    return declared is not None and bool(declared.question.strip()) and declared.design.merit_axes is not None
+
+
+def asked_in_time(declared: AspectDeclaration | None, first_run_at: str | None) -> bool:
+    """Whether the aspect's question was asked no later than its first run: the one question a reading may confirm.
+
+    **A question asked after the evidence existed may have been asked of it**, so it confirms nothing: a reading it
+    names is a lead, as if no question had named it. Read off the declaration's ``asked_at`` against the earliest
+    member run's ``created_at``, so a design written by an older build, or edited after every run was removed and
+    re-added, is still read by when its question was asked. Every reader that scopes a reading by the question (the
+    comparison family, the reading scope, the verdict order, the exploratory disclosure, the page) reads this, so
+    none can count a question another treats as post hoc.
+
+    :param declared: What the campaign declared, as the aspect reads it; None when the aspect declared no design.
+    :ptype declared: AspectDeclaration | None
+    :param first_run_at: The earliest ``created_at`` among the aspect's member runs (ISO-8601), or None when no run's
+        time is to hand, where nothing can have been asked after one.
+    :ptype first_run_at: str | None
+    :return: True when a question is asked and was asked at or before ``first_run_at``; a question with no recorded
+        time is asked in time only where no run's time is to hand either.
+    :rtype: bool
+    :raises ValueError: ``first_run_at`` or ``asked_at`` is not an ISO-8601 time with an offset, so which came first
+        cannot be said.
+    """
+    if declared is None or not asks_a_question(declared):
+        return False
+    if first_run_at is None:
+        return True
+    if declared.asked_at is None:
+        return False
+    return _instant(declared.asked_at, "the campaign's question") <= _instant(first_run_at, "the first run")
+
+
+def question_axes(declared: AspectDeclaration | None, first_run_at: str | None) -> list[MeritAxis] | None:
+    """The merit axes the aspect's question asks about, where it was asked in time; None where it is exploratory.
+
+    :param declared: What the campaign declared, as the aspect reads it.
+    :ptype declared: AspectDeclaration | None
+    :param first_run_at: The earliest member run's ``created_at``, as :func:`asked_in_time` reads it.
+    :ptype first_run_at: str | None
+    :return: The axes, ``[]`` for an unscoped question (every axis); None when no question was asked in time.
+    :rtype: list[MeritAxis] | None
+    """
+    if declared is None or not asked_in_time(declared, first_run_at):
+        return None
+    return list(declared.design.merit_axes or [])
+
+
+def _instant(stamp: str, what: str) -> datetime:
+    """``stamp`` as an aware instant, refused by name when it is not one."""
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError as unreadable:
+        raise ValueError(f"{what} is stamped {stamp!r}, which is not an ISO-8601 time") from unreadable
+    if instant.tzinfo is None:
+        raise ValueError(f"{what} is stamped {stamp!r}, with no offset, so it cannot be ordered against another time")
+    return instant
+
+
+def exploratory_disclosure(declared: AspectDeclaration | None, first_run_at: str | None = None) -> str | None:
+    """The one sentence saying a whole aspect is exploratory, or None when a question asked in time confirms it.
 
     One derivation for the bundle's ``reading_scope`` and the report built from a stored analysis, so the two
-    cannot word it differently. An undeclared campaign (``declared is None``) is exploratory by definition — that
-    is derived here, never stored as a flag of its own — and says so as such; a declared one with no live
-    question gets the no-question line, and one whose live questions were all declared after its first run
-    (:func:`~threetears.evals.kernel.declaration.preregistered_questions`) the post-hoc line naming them.
+    cannot word it differently. An aspect with no design (``declared is None``) is exploratory by definition — that
+    is derived here, never stored as a flag of its own — and says so as such; one whose campaign asks no question
+    gets the no-question line; one whose campaign asks a question naming no axis of this aspect (its ``merit_axes``
+    None) the no-axis line; and one whose question was asked after its first run (:func:`asked_in_time`) the post-hoc
+    line.
 
-    :param declared: The campaign's declaration, or None when it declared none.
-    :ptype declared: CampaignDesign | None
-    :param first_run_at: When the campaign's first member run was created, or None where no run's time is to hand (a
-        report laid out from a stored analysis, which keeps none, or a campaign with no run yet), where every
-        live question reads as asked before.
+    :param declared: What the campaign declared, as the aspect reads it, or None when it declared no design.
+    :ptype declared: AspectDeclaration | None
+    :param first_run_at: When the aspect's first member run was created, or None where no run's time is to hand,
+        where a question reads as asked before.
     :ptype first_run_at: str | None
-    :return: The disclosure, or None when the campaign declares at least one live question asked before its first run.
+    :return: The disclosure, or None when the question was asked before the first run.
     :rtype: str | None
     """
     if declared is None:
         return NO_DESIGN_EXPLORATORY
-    if preregistered_questions(declared, first_run_at):
+    if asked_in_time(declared, first_run_at):
         return None
-    post_hoc = [question.id for question in declared.live_questions()]
-    return post_hoc_disclosure(post_hoc) if post_hoc else NO_QUESTION_EXPLORATORY
+    if asks_a_question(declared):
+        return POST_HOC_EXPLORATORY
+    return NO_AXIS_EXPLORATORY if declared.question.strip() else NO_QUESTION_EXPLORATORY
 
 
 class ArmExclusions(EvalDocumentModel):
@@ -2204,20 +2347,32 @@ class AnalysisContextBundle(EvalDocumentModel):
     # change level and every judge-identity row carry the settings a judge was sent with, and
     # `request_settings_disclosure` is fingerprinted. 54: `exclusions` (each arm's excluded trials by cause, a cut-off
     # judge reply counted as `truncated` with the cap it was sent) and `differential_exclusions`; a question declared
-    # after the campaign's first run no longer makes it confirmatory (`reading_scope.post_hoc_questions`,
-    # `question_declared`), which moves the families, the reading scope and the verdict order over unchanged runs; and
+    # after the campaign's first run no longer makes it confirmatory (then `reading_scope.post_hoc_questions`, now
+    # `question_post_hoc`; `question_declared`), which moves the families, the reading scope and the verdict order over unchanged runs; and
     # the trials and their census — `scoreboard` (each arm's ran, lost, usable, passed and failed), `trials` (one row
     # per trial, capped) and `trials_omitted`, `case_sets`, `design_frozen_at` and each run summary's
     # `judge_shares_candidate_model` — added; `package_version` is carried and left out of the fingerprint. 55: each
     # family comparison's `bounded_interval` (the interval a non-inferiority claim reads), and the overall pass rate
     # compared as a `trial` reading in the family of each question whose decision rule reads it, which moves that
     # family's size and adjusted p's over unchanged runs. 56: a declared question's decision rule is typed
-    # (`declared_design.questions[].decision`, `RateDrop` and `CostLower` clauses) where a rule was parsed from its
+    # (then `declared_design.questions[].decision`, now the aspect's floors; `RateDrop` and `CostLower` clauses) where a rule was parsed from its
     # words; a question whose words state a rule and that declares none typed reads no rule, so the pass rate leaves
     # its family. 57: `unexercised_factors`; a lever read off what ran that fewer than two results exercised leaves the
     # lever levels, the aliasing read, the factor pairs, the divergences and the coverage map over unchanged runs.
+    # 58: that rule counts the ARMS that observed the lever, not the results, so a lever one arm observed in any number
+    # of results is unexercised too (`UnexercisedFactor.results` is no longer capped at 1), and a run that never
+    # observed a recovered lever is unknown in the coverage map, not a level of its own.
+    # Also 58: each family comparison's `case_values`, the per-case values its bounded interval read, which a decision
+    # rule's projection computes that interval again from at more cases.
+    # 59: a bundle reads ONE aspect of its campaign: `aspect` (its label) joins the keys, and `declared` (the aspect's
+    # declaration: the campaign's one question, its control, the aspect's margin, design and floors) replaces
+    # `declared_design`. The family is keyed by the aspect (`ComparisonFamily.aspect`, None for the exploratory one),
+    # the overall pass rate joins it when the question was asked before the first run and the aspect declares a
+    # margin, the reading scope says whether the question came after the first run (`question_post_hoc`), the verdict
+    # order scopes the one question (`verdict_order.question`), and `floor_contrasts` carries the overall pass rate's
+    # and the cost per reply's per-case values whatever the family compares, which the floors read.
     schema_version: int = Field(
-        default=57, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=59, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2230,7 +2385,14 @@ class AnalysisContextBundle(EvalDocumentModel):
             "blank when the campaign declared no kind — never defaulted to the host's usual kind."
         ),
     )
-    behavior: str = Field(description="Which aspect is under test, e.g. 'extraction'.")
+    behavior: str = Field(description="The campaign's behavior under test, e.g. 'extraction'.")
+    aspect: str = Field(
+        min_length=1,
+        description=(
+            "The label of the campaign's aspect this bundle reads: one template's runs, its design and its floors. "
+            "A campaign of several aspects is read one bundle per aspect."
+        ),
+    )
     template_id: str | None = Field(default=None, description="Referenced eval_template (the Behavior), or None.")
     scope_id: str = Field(
         description=(
@@ -2319,17 +2481,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "both for the bounded test to read it. Nothing is known of them."
         ),
     )
-    declared_design: CampaignDesign | None = Field(
+    declared: AspectDeclaration | None = Field(
         default=None,
         description=(
-            "What the campaign SET OUT to do, carried whole rather than reduced to its control. It is the "
-            "denominator every completeness claim needs: 'the answer addressed every declared axis' and 'each "
-            "declared question got exactly one resolution' are both uncheckable without it, and inferring the "
-            "declaration from `design` below would make coverage a description of whatever ran. None means the "
-            "campaign declared nothing — an exploratory campaign, as `reading_scope.disclosure` says — which is a "
-            "different fact from declaring nothing to sweep. Carried as declared, its `control` included: which "
-            "arm that control is among these cells is `design.control_arm`, decided once, and every reading here "
-            "that names the control reads that."
+            "What the campaign SET OUT to do, as this aspect reads it: the campaign's one question and when it was "
+            "asked, its control arm, and the aspect's margin, design and floors. It is the denominator every "
+            "completeness claim needs: 'the answer addressed every declared axis' is uncheckable without it, and "
+            "inferring the declaration from `design` below would make coverage a description of whatever ran. None "
+            "means the aspect declared nothing — an exploratory one, as `reading_scope.disclosure` says — which is a "
+            "different fact from declaring nothing to sweep. Carried as declared, its `control` included: which arm "
+            "that control is among these cells is `design.control_arm`, decided once, and every reading here that "
+            "names the control reads that."
         ),
     )
     design: RealizedDesign = Field(
@@ -2339,7 +2501,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "called declared: the run carrying the declared control, each cell's moved levers, and "
             "whether the design is one-factor-at-a-time. Read it before any comparison: it says which "
             "runs were meant to be read together, which a curated bag of run ids cannot. What the campaign "
-            "declared is `declared_design`; where that is null, this is the only design there is, and it is "
+            "declared is `declared`; where that is null, this is the only design there is, and it is "
             "inferred from the runs."
         ),
     )
@@ -2383,7 +2545,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "`short_runs` cannot see: every run can deliver its whole matrix and an arm still hold fewer "
             "repetitions than the design set out to buy. Counted by each cell's least-repeated case. Empty when "
             "every cell met the intention — and empty too when the declaration states none, which makes a "
-            "shortfall undetectable rather than zero (`declared_design.intended_repetitions` is null then)."
+            "shortfall undetectable rather than zero (`declared.design.intended_repetitions` is null then)."
         ),
     )
     cost_unmeasured_cells: list[CellCoordinate] = Field(
@@ -2530,11 +2692,20 @@ class AnalysisContextBundle(EvalDocumentModel):
             "that did nothing would score, so it never reads as the behaviour measured."
         ),
     )
+    floor_contrasts: list[FloorContrast] = Field(
+        default_factory=list,
+        description=(
+            "Each arm against the control under each rig, on the overall pass rate and on the cost per reply, with "
+            "the per-case values a floor reads: carried whatever the family compares, so neither a floor nor the "
+            "aspect's pass-rate reading depends on which readings the question asked about. With no control, each "
+            "pair of arms under one rig on the overall pass rate alone: what a choice's pairwise readings read."
+        ),
+    )
     multiple_comparisons: MultipleComparisons = Field(
         default_factory=MultipleComparisons,
         description=(
-            "Each contrast tested against the control on every reading a live question asks about, per rig, with "
-            "Holm correction inside each question's family: the family's size, each comparison's adjusted p and "
+            "Each contrast tested against the control on every reading the aspect's question asks about, per rig, "
+            "with Holm correction inside the family: the family's size, each comparison's adjusted p and "
             "the verdict read off it. A separation stands only where its verdict says so."
         ),
     )
@@ -2610,7 +2781,17 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs "
             "included, after which a design edit is refused and a question asked confirms nothing "
-            "(`reading_scope.post_hoc_questions`). None when the campaign holds no run yet."
+            "(`reading_scope.question_post_hoc`). None when the campaign holds no run yet."
+        ),
+    )
+    first_result_at: str | None = Field(
+        default=None,
+        description=(
+            "When the aspect's evidence could first be seen (ISO-8601): the earliest `scored_at` among its member "
+            "runs' results, the instant a control named later is read against. A margin, a floor or the question's "
+            "wording declared later than it is declared after the evidence, and the campaign's page says so. None "
+            "when no result has landed, or a bundle assembled before it was carried. Left out of `fingerprint()`: "
+            "when a result was written is not what it measured."
         ),
     )
     package_version: str | None = Field(
@@ -2649,7 +2830,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=VerdictOrder,
         description=(
             "The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest "
-            "first, the bars on no ranked axis, and for each live question the bars on the axes it names. An "
+            "first, the bars on no ranked axis, and for the aspect's question the bars on the axes it names. An "
             "empty priority means no stated preference — never rank the axes yourself."
         ),
     )
@@ -2673,8 +2854,10 @@ class AnalysisContextBundle(EvalDocumentModel):
             "different launches, or were started on their own. Arms started together share one "
             "concurrency slot, so their measurement windows overlap by construction; arms started apart "
             "overlap only by the scheduler's chance, and a difference between them can be when they ran "
-            "as well as what they ran. None when every run shares one launch group, or there are fewer "
-            "than two runs."
+            "as well as what they ran. Also set when they were started as one launch whose arms ran one after "
+            "another, or side by side each at its own width, co-loading their providers (the runs' "
+            "arm_schedule). None when every run shares one launch group whose arms took their turns case by "
+            "case (or record no schedule), or there are fewer than two runs."
         ),
     )
     model_identity_disclosure: str | None = Field(
@@ -2744,7 +2927,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         exclude_if=lambda value: not value,
         description=(
             "Levers read off what ran (a role's model) that no arm exercised beside another: no call in the role, or "
-            "one call on one arm. Each is no level and no lever: it is in no aliasing group, factor pair, coverage "
+            "calls in one arm only. Each is no level and no lever: it is in no aliasing group, factor pair, coverage "
             "row or divergence, and is not a next step; the page lists it under Not tested."
         ),
     )
@@ -2985,7 +3168,7 @@ class AnalysisContextBundle(EvalDocumentModel):
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
-            "Whether the campaign declared a live question before its first run (`reading_scope.questions_declared`): "
+            "Whether the campaign asked its question before the aspect's first run (`reading_scope.questions_declared`): "
             "the one condition under which any of its readings is confirmatory."
         )
     )
@@ -2993,17 +3176,6 @@ class AnalysisContextBundle(EvalDocumentModel):
     def question_declared(self) -> bool:
         """Whether a question was declared before the evidence existed, as the reading scope derived it."""
         return self.reading_scope.questions_declared
-
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "The ids of live questions declared after the campaign's first run (`reading_scope.post_hoc_questions`): "
-            "read as exploratory, whatever they ask."
-        )
-    )
-    @property
-    def post_hoc_questions(self) -> list[str]:
-        """The questions declared once results existed, as the reading scope derived them."""
-        return list(self.reading_scope.post_hoc_questions)
 
     def fingerprint(self) -> str:
         """Return the sha256 of the bundle's canonical JSON — a stable A/B key.
@@ -3029,8 +3201,9 @@ class AnalysisContextBundle(EvalDocumentModel):
         return evidence_digest(self.to_dict())
 
 
-#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, not what it read.
-_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version"})
+#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, and when its results
+#: were written, not what it read.
+_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version", "first_result_at"})
 
 
 def evidence_digest(document: Mapping[str, Any]) -> str:
@@ -3068,9 +3241,10 @@ class BundleInspection(EvalDocumentModel):
     **Which is why the fingerprint is compared rather than assumed.** A bundle
     re-assembled today is not automatically the bundle a generation ran over
     months ago: a member run can have been archived, or results deleted, since.
-    Addressed by analysis id, this therefore carries the recorded
-    ``generation.bundle_fingerprint`` beside the freshly computed one and states
-    whether they agree. A ``False`` is itself the finding, not a failure of the read.
+    Addressed by analysis id, this therefore carries the fingerprint the analysis
+    recorded for this aspect's bundle (``AspectAnalysis.bundle_fingerprint``; the
+    generation's own ``bundle_fingerprint`` is the whole campaign bundle's) beside
+    the freshly computed one and states whether they agree. A ``False`` is itself the finding, not a failure of the read.
 
     **An insight minted after the generation is NOT one of those moves.** The re-assembly
     reads prior insights as of the instant the generation's bundle was assembled
@@ -3108,8 +3282,9 @@ class BundleInspection(EvalDocumentModel):
     recorded_fingerprint: str | None = Field(
         default=None,
         description=(
-            "The addressed analysis's stored generation.bundle_fingerprint — what the paid call actually "
-            "ran over. None when addressed by campaign, since no generation is being spoken about."
+            "The fingerprint the addressed analysis stored for this aspect's bundle (`AspectAnalysis.bundle_fingerprint`) "
+            "— what the paid call read of this aspect; the generation's own `bundle_fingerprint` is the whole campaign "
+            "bundle's. None when addressed by campaign, since no generation is being spoken about."
         ),
     )
     reproduces_generation: bool | None = Field(
@@ -3295,10 +3470,19 @@ __all__ = [
     "DeclaredLevelCoverage",
     "DesignArm",
     "exploratory_disclosure",
+    "ASPECT_BUNDLE_SHAPE",
+    "asked_in_time",
+    "refuse_a_bundle_before_aspects",
+    "asks_a_question",
+    "question_axes",
+    "POST_HOC_EXPLORATORY",
     "FactorPairCell",
     "FactorPairPivot",
     "FactorPairScan",
     "FamilyComparison",
+    "FLOOR_COST_MEASURE",
+    "FloorContrast",
+    "FloorContrastReading",
     "GoalCheckProofReading",
     "HeldFixedReading",
     "host_declarations_digest",
@@ -3318,6 +3502,7 @@ __all__ = [
     "PairingCorrelation",
     "MultipleComparisons",
     "NO_DESIGN_EXPLORATORY",
+    "NO_AXIS_EXPLORATORY",
     "NO_QUESTION_EXPLORATORY",
     "observed_mechanism_key",
     "OBSERVED_MECHANISM_PREFIX",

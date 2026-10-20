@@ -27,7 +27,7 @@ from threetears.agent.tools.base_tool import (
 from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
 from threetears.core.serialization import UnknownFormatError, handler_for
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
@@ -271,9 +271,11 @@ class DocSetTool(TearsTool):
                                 )
                         # NOSILENT: audit failure never taints doc_set
                         except Exception as audit_exc:
-                            log.exception(
-                                "doc_set audit publish swallow caught: %s",
+                            contain(
                                 audit_exc,
+                                log=log,
+                                what=f"doc_set audit publish swallow caught: {audit_exc}",
+                                level="error",
                             )
                         result = ToolResult(
                             success=True,
@@ -303,7 +305,7 @@ class DocSetTool(TearsTool):
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            log.exception("doc_set failed: %s", exc)
+            contain(exc, log=log, what=f"doc_set failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

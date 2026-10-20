@@ -9,11 +9,9 @@ file and replays them offline through :class:`~threetears.evals.testing.Recorded
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import string
 import time
-import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -23,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Final, Self, get_args
 import httpx
 from pydantic import BaseModel
 
-from threetears.evals.kernel import beside_eval_file, note_spend, strict_response_format
+from threetears.evals.kernel import beside_eval_file, note_spend, prompt_token_bound, strict_response_format
 from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.negotiation import (
     ANTHROPIC_MIN_THINKING_BUDGET,
@@ -49,7 +47,7 @@ from threetears.evals.providers.wire import (
 )
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS
 from threetears.evals.schema import BoundCompletionClient, ClientRequestSettings, CompletionResult, StopReason
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.testing import RecordedCompletions
@@ -64,9 +62,6 @@ DEFAULT_MAX_TOKENS: Final = 8192
 #: How long one request may take, in seconds, on a client the model opens itself, unless ``timeout=`` says
 #: otherwise. Nothing is retried.
 _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
-
-#: The tokens a price ceiling allows for a prompt's framing beyond its text (role markers, a schema's re-encoding).
-_FRAMING_TOKENS: Final = 2048
 
 #: What a catalogue-priced cost's source gains when a cache read or write was priced at a rate the catalogue row does
 #: not list for it: the plain prompt rate, or the dearer of two write rates the reply does not split between.
@@ -205,26 +200,6 @@ def _asked(
     )
 
 
-def _text_bytes(text: str) -> int:
-    """The most tokens a tokenizer can read ``text`` as: one per UTF-8 byte, as written or after NFKC normalisation,
-    whichever is more (a normalising tokenizer can expand a compatibility character: ``U+FDFA`` is 3 bytes, 33 after).
-    """
-    return max(
-        len(text.encode("utf-8", errors="surrogatepass")),
-        len(unicodedata.normalize("NFKC", text).encode("utf-8", errors="surrogatepass")),
-    )
-
-
-def _prompt_bound(system: str, user: str, response_format: Mapping[str, Any] | None) -> int:  # Any: a JSON directive
-    """A bound on the prompt tokens a call sends: no token is shorter than a byte, so one per byte of each text (and
-    of the directive, written out as JSON either way), and an allowance for the framing around them."""
-    bound = _text_bytes(system) + _text_bytes(user) + _FRAMING_TOKENS
-    if response_format is not None:
-        written = json.dumps(response_format, ensure_ascii=False, default=str)
-        bound += max(_text_bytes(written), len(json.dumps(response_format, default=str)))
-    return bound
-
-
 class _Live:
     """The model over HTTP: what :class:`Model` sends through when it is not replaying a recording."""
 
@@ -241,8 +216,10 @@ class _Live:
         transport: httpx.AsyncBaseTransport | None,
         timeout: float | httpx.Timeout | None,
         headers: Mapping[str, str] | None,
+        catalogue_fetch_timeout: float | None,
     ) -> None:
         self.model_name = model_name
+        self._catalogue_fetch_timeout = catalogue_fetch_timeout
         self.provider: Provider = provider
         self._key = key
         self._url = (base_url or BASE_URLS[provider]).rstrip("/")
@@ -280,7 +257,7 @@ class _Live:
         if made is not None and made.held():
             made.consumed = True
             return made.read
-        return await self._catalogue.read()
+        return await self._catalogue.read(timeout=self._catalogue_fetch_timeout)
 
     def _catalogue_id(self) -> str | None:
         """The catalogue's id for this model: its own on OpenRouter, the matching row's elsewhere."""
@@ -424,7 +401,7 @@ class _Live:
         return float(dollars), source, None, self._catalogue.stale_since
 
     async def refresh_prices(self) -> PriceRefresh:
-        read = await self._catalogue.read()
+        read = await self._catalogue.read(timeout=self._catalogue_fetch_timeout)
         self.last_refresh = read
         self._made_read.set(
             _MadeRead(
@@ -451,7 +428,7 @@ class _Live:
             return None
         ceiling, why = self._catalogue.ceiling(
             matched,
-            prompt_tokens=_prompt_bound(system, user, response_format),
+            prompt_tokens=prompt_token_bound(system, user, response_format),
             output_tokens=self._asked.max_tokens,
         )
         if ceiling is None:
@@ -533,6 +510,7 @@ class Model:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float | httpx.Timeout | None = None,
         headers: Mapping[str, str] | None = None,
+        catalogue_fetch_timeout: float | None = None,
     ) -> None:
         """Build the client; nothing is sent until the first call.
 
@@ -578,11 +556,18 @@ class Model:
             provider's key and version headers, which each request sets, win over one of the same name. Refused
             beside ``http``, whose own headers hold.
         :ptype headers: Mapping[str, str] | None
+        :param catalogue_fetch_timeout: How long this model's price-catalogue read waits, in seconds: on a fetch another
+            task started (it then gives up, unpriced, while that fetch goes on for its starter), and as the timeout of
+            a fetch it starts itself on a client the catalogue opens. ``None`` is
+            :data:`~threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S`. Models sharing a catalogue each keep their own.
+        :ptype catalogue_fetch_timeout: float | None
         :raises ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
             variable), ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it, or a
             setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
-            ``max_tokens``, an Anthropic budget below 1024).
+            ``max_tokens``, an Anthropic budget below 1024), or a ``catalogue_fetch_timeout`` that is not above zero.
         """
+        if catalogue_fetch_timeout is not None and catalogue_fetch_timeout <= 0:
+            raise ValueError(f"catalogue_fetch_timeout {catalogue_fetch_timeout} is not above zero seconds")
         if http is not None and (transport is not None or timeout is not None or headers is not None):
             raise ValueError(
                 "transport=, timeout= and headers= set up the client the model opens itself, and http= hands it one: "
@@ -604,6 +589,7 @@ class Model:
             "transport": transport,
             "timeout": timeout,
             "headers": headers,
+            "catalogue_fetch_timeout": catalogue_fetch_timeout,
         }
         #: The client handed in that :meth:`aclose` closes, live or replaying: ``http`` when the model owns it.
         self._owned_http = http if own_http else None
@@ -648,6 +634,7 @@ class Model:
             transport=transport,
             timeout=timeout,
             headers=headers,
+            catalogue_fetch_timeout=catalogue_fetch_timeout,
         )
         self._live = live
         if self.recording is None:
@@ -1027,11 +1014,15 @@ class Clients:
             try:
                 await model.aclose()
             except Exception as failure:  # collected, and raised below once every other model is closed
+                contain(
+                    failure, log=log, what="a model failed to close; collected and raised once every other is closed"
+                )
                 failures.append(failure)
         if owned is not None:
             try:
                 await owned.aclose()
             except Exception as failure:  # collected with the models' and raised below
+                contain(failure, log=log, what="the owned http client failed to close; collected and raised below")
                 failures.append(failure)
         if failures:
             closed = f"{len(models)} models" + (" and the http client" if owned is not None else "")

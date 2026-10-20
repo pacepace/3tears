@@ -44,6 +44,7 @@ from threetears.scheduled_jobs.background import (
     IN_FLIGHT_SKIP_OUTPUT_KEY,
     REAP_MARGIN_SECONDS,
     BackgroundDispatch,
+    FireNotRecordedError,
     in_flight_lock_key,
 )
 from threetears.scheduled_jobs.collections import (
@@ -82,6 +83,7 @@ from threetears.scheduled_jobs.metrics import (
     SCHEDULED_JOBS_DRIFT_SECONDS,
     SCHEDULED_JOBS_FAILURES_TOTAL,
     SCHEDULED_JOBS_FIRES_TOTAL,
+    SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL,
     SCHEDULED_JOBS_LABEL_SETS,
     SCHEDULED_JOBS_PROMETHEUS_NAMES,
     SCHEDULED_JOBS_TICK_DURATION_SECONDS,
@@ -141,6 +143,7 @@ __all__ = [
     "SCHEDULED_JOBS_DRIFT_SECONDS",
     "SCHEDULED_JOBS_FAILURES_TOTAL",
     "SCHEDULED_JOBS_FIRES_TOTAL",
+    "SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL",
     "SCHEDULED_JOBS_LABEL_SETS",
     "SCHEDULED_JOBS_PROMETHEUS_NAMES",
     "SCHEDULED_JOBS_TICK_DURATION_SECONDS",
@@ -149,6 +152,7 @@ __all__ = [
     "DispatchCallback",
     "DispatchRoutes",
     "DueSchedule",
+    "FireNotRecordedError",
     "FireStore",
     "JobConfig",
     "JobFireCollection",

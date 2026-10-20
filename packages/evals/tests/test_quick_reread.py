@@ -70,7 +70,9 @@ host = callable_host([correct, no_leak], arms=True, store=SqliteDocumentStore({p
 report = campaign_report(host, {campaign!r}, "kept")
 print(json.dumps({{
     "verdicts": [[v.kind, v.name, v.arm, v.outcome, v.margin] for v in report.verdicts],
-    "disclosures": [block.text for block in report.blocks if isinstance(block, DisclosureBlock)],
+    "disclosures": [
+        block.text for fold in report.aspects for block in fold.report.blocks if isinstance(block, DisclosureBlock)
+    ],
 }}))
 """
 
@@ -98,7 +100,7 @@ def _read(path: Path, campaign_id: str, declares: str) -> tuple[Verdicts, list[s
 
 
 def _launched(comparison: Result) -> Verdicts:
-    return sorted((v.kind, v.name, v.arm, v.outcome, v.margin) for v in comparison.report.verdicts)
+    return sorted((v.kind, v.name, v.arm, v.outcome, v.margin) for v in comparison.page.verdicts)
 
 
 def _rewrite_runs(host: EvalHost, rewrite: Any) -> None:
@@ -119,8 +121,10 @@ async def test_a_reader_declaring_otherwise_reads_the_launched_verdicts_and_is_n
     path = tmp_path / "evals.sqlite"
     comparison = await _compare(path)
     launched = _launched(comparison)
-    assert ("contrast", "correct", "cheaper", "equivalent", 0.1) in launched
-    assert ("guardrail", "no_leak", "cheaper", "held", 0.1) in launched
+    # The page names the arm by the campaign's label for it.
+    cheaper = comparison.page.readings.arm_labels()[comparison.arm_variants["cheaper"]]
+    assert ("contrast", "correct", cheaper, "equivalent", 0.1) in launched
+    assert ("guardrail", "no_leak", cheaper, "held", 0.1) in launched
 
     # A reader declaring nothing, one declaring another margin, and one declaring the guardrail a quality score.
     for declares, named in (

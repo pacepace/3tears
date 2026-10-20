@@ -74,3 +74,33 @@ def test_a_write_claim_key_is_recognised_and_nothing_else() -> None:
     assert not any(
         is_write_claim_key(key) for key in ("enr.s.TX", "enr.index", "enr.rebuild", "enr.w.x.a", "enr.w.17", "w.1.a.b")
     )
+
+
+# parity-exempt: a JetStream stand-in answering only the metadata read that NatsObjectStore.info makes; the rest of the surface is not exercised
+class _MetaJetStream:
+    """JetStream answering one metadata read with a recorded ObjectInfo whose write time is ``mtime``."""
+
+    def __init__(self, mtime: str) -> None:
+        self._mtime = mtime
+
+    async def get_last_msg(self, stream: str, subject: str, *, direct: bool = False) -> Any:
+        import json
+        from types import SimpleNamespace
+
+        body = {"name": "a/b", "bucket": "pod-objects", "nuid": "n", "size": 1, "chunks": 1, "digest": "d"}
+        body["mtime"] = self._mtime
+        return SimpleNamespace(data=json.dumps(body).encode())
+
+
+async def test_an_unparseable_recorded_mtime_is_warned_with_the_object_named(caplog: pytest.LogCaptureFixture) -> None:
+    """failure injection: the writer recorded a time that is not ISO-8601; None must not read as 'never recorded'."""
+
+    class _Client:
+        def jetstream_context(self) -> _MetaJetStream:
+            return _MetaJetStream("yesterday-ish")
+
+    store = NatsObjectStore(client=_Client(), full_name="OBJ_pod-objects")  # type: ignore[arg-type]
+    with caplog.at_level("WARNING"):
+        info = await store.info("a/b")
+    assert info is not None and info.mtime is None
+    assert any("a/b" in r.getMessage() and "does not parse" in r.getMessage() for r in caplog.records)

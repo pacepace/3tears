@@ -1,0 +1,22 @@
+{
+  "archived": false,
+  "axis": "capability",
+  "created_at": "2026-10-18T02:27:38.431513+00:00",
+  "dim": {
+    "axis": "capability",
+    "description": "Sounds like itself",
+    "judge": null,
+    "name": "conversation.tone",
+    "scale": "ordinal",
+    "scoring_guide": {}
+  },
+  "doc_type": "rubric_dim",
+  "id": "01a14cd6-0b3f-7763-8004-eb24a5ce8311",
+  "key": "conversation.tone",
+  "schema_minor": 0,
+  "schema_version": 16,
+  "scope_id": "uni-1",
+  "seed_digest": null,
+  "universal": false,
+  "updated_at": "2026-10-18T02:27:38.431522+00:00"
+}

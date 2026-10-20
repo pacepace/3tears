@@ -1,9 +1,10 @@
 """WKB/EWKB decoding and the bounds math a build needs.
 
-decoding is deliberately forgiving: one malformed row must not abort a tile
-build, let alone a whole precompute pass over millions of tiles. a geometry
-that cannot be read is logged and skipped, which loses one feature rather
-than the map.
+one malformed row must not abort a tile build, let alone a whole precompute
+pass over millions of tiles. but neither may it vanish: a geometry that cannot
+be read raises :class:`UndecodableGeometry`, and the band builders skip that
+row and COUNT it on the band's result (``BandResult.undecodable``), so a tile
+missing features says how many, rather than reading as complete.
 
 bounds are computed here as well as materialised into indexed source columns
 at ingest. those serve different purposes and both are needed: the indexed
@@ -18,12 +19,14 @@ from __future__ import annotations
 from typing import Any
 
 from shapely import wkb as shapely_wkb
+from shapely.errors import ShapelyError
 from shapely.geometry.base import BaseGeometry
 
 from threetears.geo.tiles import BoundingBox
 from threetears.observe import get_logger
 
 __all__ = [
+    "UndecodableGeometry",
     "decode_geometry",
     "geometry_bounds",
     "point_geometry",
@@ -32,8 +35,16 @@ __all__ = [
 log = get_logger(__name__)
 
 
+class UndecodableGeometry(ValueError):
+    """a row's geometry is present but cannot be read.
+
+    distinct from "no geometry" (``None``): the row HAS one and it is broken, so dropping it
+    without a word would make the tile read as complete.
+    """
+
+
 def decode_geometry(raw: bytes | bytearray | memoryview | None) -> BaseGeometry | None:
-    """decode WKB or EWKB bytes, returning ``None`` when unreadable.
+    """decode WKB or EWKB bytes; ``None`` only when there is nothing to decode.
 
     EWKB (the PostGIS-flavoured variant carrying an SRID flag) is accepted
     directly -- shapely reads the SRID-tagged form without a separate column
@@ -41,18 +52,17 @@ def decode_geometry(raw: bytes | bytearray | memoryview | None) -> BaseGeometry 
 
     :param raw: WKB/EWKB bytes, or ``None``
     :ptype raw: bytes | bytearray | memoryview | None
-    :return: decoded geometry, or ``None`` if absent, empty or undecodable
+    :return: decoded geometry, or ``None`` if absent or empty
     :rtype: BaseGeometry | None
+    :raises UndecodableGeometry: when the bytes are not valid WKB/EWKB
     """
     if not raw:
         return None
+    data = bytes(raw)
     try:
-        geometry = shapely_wkb.loads(bytes(raw))
-    except Exception:
-        # one bad row must not abort a build; skipping loses a feature,
-        # raising loses the tile.
-        log.warning("skipping undecodable geometry (%d bytes)", len(bytes(raw)))
-        return None
+        geometry = shapely_wkb.loads(data)
+    except (ShapelyError, ValueError, TypeError) as exc:
+        raise UndecodableGeometry(f"{len(data)} bytes are not valid WKB/EWKB: {exc}") from exc
     if geometry.is_empty:
         return None
     return geometry
@@ -89,8 +99,9 @@ def point_geometry(row: dict[str, Any], longitude_column: str, latitude_column: 
     :ptype longitude_column: str
     :param latitude_column: column holding degrees north
     :ptype latitude_column: str
-    :return: a point, or ``None`` when either coordinate is absent or unparseable
+    :return: a point, or ``None`` when either coordinate is absent
     :rtype: BaseGeometry | None
+    :raises UndecodableGeometry: when a coordinate is present but is not a number
     """
     from shapely.geometry import Point
 
@@ -101,5 +112,6 @@ def point_geometry(row: dict[str, Any], longitude_column: str, latitude_column: 
     try:
         return Point(float(longitude), float(latitude))
     except TypeError, ValueError:
-        log.warning("skipping row with unparseable coordinates: %r/%r", longitude, latitude)
-        return None
+        raise UndecodableGeometry(
+            f"coordinates {longitude_column}={longitude!r}, {latitude_column}={latitude!r} are not numbers"
+        ) from None

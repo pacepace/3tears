@@ -124,7 +124,7 @@ def test_the_repairable_class_is_what_the_validators_raise():
     # Named rather than counted, and a floor rather than the whole set: the chain itself (a reply off
     # the contract, or a stored-model refusal), the parse step, and the chain's `_reject_*` member.
     # A scan that collapsed loses one of them; a validator added beside them joins without an edit.
-    chain_sites = {"_assemble_and_validate", "_parse_payload", "_reject_mismatched_question_answers"}
+    chain_sites = {"_assemble_and_validate", "_parse_payload", "_reject_mismatched_aspect_summaries"}
     assert chain_sites <= repairing, f"the repairable population lost {sorted(chain_sites - repairing)}"
     assert "_reject_incomplete_generation" not in repairing, "the truncation guard must never buy a repair"
 

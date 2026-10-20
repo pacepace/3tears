@@ -25,6 +25,7 @@ from unittest.mock import patch
 import asyncpg
 import pytest
 
+from threetears.core.exceptions import ConcurrentModificationError
 
 from threetears.agent.intention.events import (
     IntentionResolvedEvent,
@@ -231,12 +232,12 @@ class TestIntentionLog:
 
             # force the refresh save to fail (simulates a CAS conflict / L3 error)
             async def _boom(entity: Any) -> None:
-                raise RuntimeError("simulated CAS conflict")
+                raise ConcurrentModificationError("intentions", "simulated CAS conflict", None)
 
             coll.save_entity = _boom  # type: ignore[method-assign]
             out = await log_tool.ainvoke({"content": "same want, will re-log"})
-            assert "[TOOL ERROR] intention_log: refresh failed" in out
-            assert "simulated CAS conflict" in out
+            assert out == "[TOOL ERROR] intention_log: refresh failed — ConcurrentModificationError"
+            assert "simulated CAS conflict" not in out, "the store's own message goes to contain(), not the reply"
         finally:
             await pool.close()
 

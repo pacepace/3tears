@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-search"
-version = "0.72.0"
+version = "0.73.0"
 description = "Provider-agnostic web and media search for the 3tears family: contracts, adapters, and the staged pipeline"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -25,9 +25,10 @@ classifiers = [
 # family leaves. Provider adapters are pure logic over the injected transport
 # and ship in the base package; anything with weight rides an extra.
 dependencies = [
-    "3tears-media-contracts>=0.72.0,<0.73.0",
-    "3tears-observe>=0.72.0,<0.73.0",
+    "3tears-media-contracts>=0.73.0,<0.74.0",
+    "3tears-observe>=0.73.0,<0.74.0",
     "pydantic>=2.0",
+    "pydantic-core",  # to_jsonable_python, PydanticUndefined (search.contracts._canonical); pydantic pins it
 ]
 
 [project.optional-dependencies]
@@ -35,7 +36,10 @@ dependencies = [
 # their own transport (embedded consumers without core). D24 / D19.
 standalone = ["httpx>=0.27"]
 # Extract's HTML-to-text path. D24.
-extract = ["trafilatura>=2.0.0"]
+extract = [
+    "trafilatura>=2.0.0",
+    "charset-normalizer",  # decoding a body that names no charset (search.extract); trafilatura brings it
+]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

@@ -26,7 +26,7 @@ reading.
 
 **Lifecycle follows from whether the document can be made again, and from who made it**, not from its origin. A
 ``derived`` document is always regenerable. What a person authored — a template, a rubric dim, a judge config and
-their tombstones, a case set, a test case, a calibration rating — is ``durable``: nothing can make it again, and it
+their tombstones, a case set, a test case, a calibration rating, a campaign — is ``durable``: nothing can make it again, and it
 must outlive every core baseline reset, so its version space never resets
 (:mod:`threetears.evals.schema.versioning`). Every other input or record is kept unless the engine can make it
 again without loss: the one record that is regenerable is the cassette, whose replacement is a fresh capture under a
@@ -103,7 +103,7 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "judge_config_tombstone": DocTypeFacts(origin="input", lifecycle="durable", suppresses="judge_config"),
         "case_set": DocTypeFacts(origin="input", lifecycle="durable"),
         "eval_test_case": DocTypeFacts(origin="input", lifecycle="durable"),
-        "eval_campaign": DocTypeFacts(origin="input", lifecycle="kept"),
+        "eval_campaign": DocTypeFacts(origin="input", lifecycle="durable"),
         # What happened.
         "eval_run": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_result": DocTypeFacts(origin="record", lifecycle="kept"),

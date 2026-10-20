@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.reporter_bank import (
     case_limits,
     criterion_drift,
@@ -123,14 +124,17 @@ def toy_bundle():
 class TestCaseLimits:
     def test_a_bundle_that_reproduces_with_every_arm_described_and_celled_has_no_limits(self, toy_bundle) -> None:
         assert len(toy_bundle.variant_index) == 2, "the fixture must carry arms, or 'no limits' is vacuous"
-        assert case_limits(toy_bundle) == []
-        assert case_limits(toy_bundle, recorded_fingerprint=toy_bundle.fingerprint()) == []
+        assert case_limits(campaign_bundle(toy_bundle)) == []
+        assert (
+            case_limits(campaign_bundle(toy_bundle), recorded_fingerprint=campaign_bundle(toy_bundle).fingerprint())
+            == []
+        )
 
     def test_a_recorded_memo_read_from_another_bundle_is_stated_first(self, toy_bundle) -> None:
         stale = "sha256:not-this-bundle"
-        limits = case_limits(toy_bundle, recorded_fingerprint=stale)
+        limits = case_limits(campaign_bundle(toy_bundle), recorded_fingerprint=stale)
         assert len(limits) == 1
-        assert stale in limits[0] and toy_bundle.fingerprint() in limits[0]
+        assert stale in limits[0] and campaign_bundle(toy_bundle).fingerprint() in limits[0]
 
     def test_an_arm_without_its_levels_and_an_arm_without_a_cell_are_each_one_sentence(self, toy_bundle) -> None:
         first, second = toy_bundle.variant_index
@@ -141,13 +145,13 @@ class TestCaseLimits:
                 "cell_measures": [c for c in toy_bundle.cell_measures if c.variant_key != second.variant_key],
             }
         )
-        limits = case_limits(bundle)
+        limits = case_limits(campaign_bundle(bundle))
         assert len(limits) == 2
         assert first.variant_key in limits[0] and "keyed by a predicate this build lacks" in limits[0]
         assert second.variant_key in limits[1] and "no per-arm cell" in limits[1]
 
     def test_a_bundle_keying_no_variant_says_so_rather_than_returning_nothing(self, toy_bundle) -> None:
-        limits = case_limits(toy_bundle.model_copy(update={"variant_index": []}))
+        limits = case_limits(campaign_bundle(toy_bundle.model_copy(update={"variant_index": []})))
         assert len(limits) == 1
         assert "keys no variant" in limits[0]
 

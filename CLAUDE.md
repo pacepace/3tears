@@ -154,7 +154,7 @@ Extra args pass through: `./scripts/test.sh core -v -x`
 
 `test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 
-- **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`, and account for every skip.** CI has no Docker, so nothing but you ever runs it, and a skip reads exactly like a pass. When reporting, give the pass count AND each remaining skip with its reason.
+- **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`, and account for every skip.** CI runs a partial integration set: its `integration` job covers core, nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS. Everything else (the sidecar, S3/minio, SearXNG, Redshift and the remaining packages) never runs in CI, so nothing but you runs it, and a skip reads exactly like a pass. When reporting, give the pass count AND each remaining skip with its reason.
 - **Build the sidecar image first, for the Docker host's own architecture**, or its tests skip (or fail under emulation).
 
 The command, the incident behind each rule, and the list of legitimate dev-box skips: [docs/testing.md](docs/testing.md).
@@ -176,6 +176,16 @@ A leading underscore means implementation detail: nothing outside the defining c
 - Reaching into a third-party library's private members is confined to one module per library (the `nats/_nats_py_internals.py` shape), recorded in `tests/enforcement/_underscore_exemptions.txt` with a specific rationale, and nothing else touches those members.
 
 Owner ruling, 2026-10-01.
+
+## Exceptions
+
+A failure either reaches the caller, or it is recorded where an operator will see it -- never neither. A handler that logs and then returns `None`, `[]` or a partial result has still lied to its caller.
+
+- `except Exception` re-raises or calls `threetears.observe.contain(exc, log=..., what=...)`; `suppress(Exception)` is `with contained(...)`. A log line or a `# NOSILENT` comment does not excuse a broad handler.
+- `except CancelledError` re-raises; stop another task with `await cancel_and_wait(task)`.
+- Catch the specific type when the failure is an expected condition. Never write a soft-fail wrapper that returns `None` on any error.
+
+`tests/enforcement/test_no_silent_swallow.py` enforces it, and under pytest a programming error reaching `contain()` fails the test. The rules, the decision table and the conversion recipe: [docs/exceptions.md](docs/exceptions.md).
 
 ## Test fakes
 

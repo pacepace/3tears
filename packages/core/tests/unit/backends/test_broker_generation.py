@@ -29,7 +29,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table
-from threetears.nats import Subject
+from threetears.core.backends.protocol import DurableStore
+from threetears.nats import RequestTimeoutError, Subject
 
 from threetears.core.backends import BrokerGenerationSource
 from threetears.core.backends.broker_generation import (
@@ -64,8 +65,20 @@ _TABLE = "group_members"
 _TX_ID = "019d9a00-0000-7000-8000-000000000000"
 
 
+class _NoL3(DurableStore):
+    """a durable L3 with no ``transaction()``: it satisfies ``DurableStore``, so the registry does not wrap it as SQL.
+
+    this test is not about L3. a bare ``object()`` here was wrapped in ``SqlL3Backend``, whose ``transaction()``
+    calls ``.acquire()``; the flush took its atomic-batch path, failed, and fell back to per-entity writes through
+    a broad ``except``. this goes to the per-entity writes directly, which is what the test means.
+    """
+
+
 class _Broker:
-    """answers each request with the next scripted reply, and records what was asked."""
+    """answers each request with the next scripted reply, and records what was asked.
+
+    a request past the last scripted reply gets none: it times out, as ``NatsClient.request_raw`` reports it.
+    """
 
     def __init__(self, *replies: dict[str, Any]) -> None:
         self.replies = list(replies)
@@ -74,6 +87,8 @@ class _Broker:
     async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
         del payload, timeout
         self.subjects.append(str(subject))
+        if not self.replies:
+            raise RequestTimeoutError(f"no reply on {subject}")
         return json.dumps(self.replies.pop(0)).encode("utf-8")
 
     def proxy(self) -> NatsProxyL3Backend:
@@ -425,7 +440,7 @@ def _pod(
     l1 = SQLiteBackend(db_name=f"broker_generation_{uuid.uuid4().hex[:8]}")
     l1.initialize(metadata)
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=object(), kv_key_scope="pod")  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=_NoL3(), kv_key_scope="pod")  # type: ignore[arg-type]
     registry.set_generation_source(source if source is not None else BrokerGenerationSource())
     return cls(registry, broker.proxy())
 
@@ -541,7 +556,7 @@ class TestASourceThatCannotReadLeavesAbsenceCachingOff:
     @staticmethod
     def _guard(source: BrokerGenerationSource | None) -> Exception | RevocationGuard:
         registry = CollectionRegistry()
-        registry.configure(l2_client=FakeNatsClient(), l3_pool=object(), kv_key_scope="pod")  # type: ignore[arg-type]
+        registry.configure(l2_client=FakeNatsClient(), l3_pool=_NoL3(), kv_key_scope="pod")  # type: ignore[arg-type]
         if source is not None:
             registry.set_generation_source(source)
         assert (registry.readable_generation_source is not None) == (source is not None and source.reads_generations)

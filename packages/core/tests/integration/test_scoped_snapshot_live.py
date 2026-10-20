@@ -10,6 +10,8 @@ DuckDB:
 - objects of epochs no longer served are retired;
 - when NATS loses the snapshot, a replica rebuilds it from L3, and the status names that path;
 - a scope L3 moved without a publish (a writer that died after its commit) is caught up from L3.
+- an append-only table's added rows reach every replica as pieces, fold into one base past the
+  threshold, and load cold from L2 alone.
 
 Uses the session-scoped ``nats_container`` and ``db_container`` fixtures; a checkout without docker
 skips cleanly.
@@ -1115,3 +1117,71 @@ async def test_two_code_versions_with_other_columns_never_load_or_repoint_each_o
         assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(11,)]
     await old.stop()
     await new.stop()
+
+
+# results grows by appends; counties is replaced whole
+_APPEND_TABLES = (
+    SnapshotTable(name="results", scope_column="state", key=("race", "county"), append_only=True),
+    SnapshotTable(name="counties", scope_column="state", key=("county",)),
+)
+
+
+async def _append_results(platform: _Platform, state: str, epoch: int, races: int) -> list[dict[str, Any]]:
+    """commit ``races`` new race rows per county of ``state`` in L3 at ``epoch``: the rows the write added."""
+    added: list[dict[str, Any]] = []
+    for county in [r["county"] for r in await _rows(platform.pool, "counties", state)]:
+        for race in range(races):
+            row = {"race": f"{state}-e{epoch}-r{race}", "county": county, "state": state, "votes": epoch}
+            await platform.pool.execute(
+                "INSERT INTO results VALUES ($1, $2, $3, $4)", row["race"], row["county"], row["state"], row["votes"]
+            )
+            added.append(row)
+    platform.epochs[state] = epoch
+    return added
+
+
+async def test_appended_rows_reach_every_replica_as_pieces_fold_into_a_base_and_load_cold(platform: _Platform) -> None:
+    writer, _ = await platform.replica(tables=_APPEND_TABLES, compact_pieces=3)
+    await writer.start()
+    await writer.wait_ready(timeout=_WAIT)
+    reader, _ = await platform.replica(tables=_APPEND_TABLES, compact_pieces=3)
+    await reader.start()
+    await reader.wait_ready(timeout=_WAIT)
+    pointers = await platform.hub.kv_bucket(name="pod-pointers", create_if_missing=False)
+
+    for epoch in (2, 3):
+        added = await _append_results(platform, "DE", epoch, races=1)
+        staged = await writer.stage("DE", epoch, {}, added={"results": added})
+        assert await writer.publish_staged([staged], carry_at={"DE": epoch - 1}) == (["DE"], [])
+        await _until(lambda e=epoch: reader.applied_epoch("DE") == e, what=f"DE epoch {epoch} applied")
+        assert _count(reader, "results", "DE") == 40 * epoch
+    raw = await pointers.get(key="enr.s.DE")
+    assert raw is not None
+    entry = json.loads(raw)
+    assert len(entry["tables"]["results"]["pieces"]) == 2
+    assert entry["schema"]["results"].endswith("+pieces"), "a pointer with pieces is not marked for older replicas"
+    assert "pieces" not in entry["tables"]["counties"], "the whole-chunk table took pieces"
+    assert reader.status().appended["results"]["DE"].pieces == 2
+
+    # a third piece reaches the threshold: the writer folds DE's results into one base at epoch 4
+    added = await _append_results(platform, "DE", 4, races=1)
+    staged = await writer.stage("DE", 4, {}, added={"results": added})
+    assert await writer.publish_staged([staged], carry_at={"DE": 3}) == (["DE"], [])
+    raw = await pointers.get(key="enr.s.DE")
+    assert raw is not None
+    folded = json.loads(raw)
+    assert "pieces" not in folded["tables"]["results"] and folded["tables"]["results"]["rows"] == 160
+    assert "/DE/4/results." in folded["tables"]["results"]["object"]
+    await _until(lambda: reader.status().appended["results"]["DE"].pieces == 0, what="the fold reached the reader")
+    assert _count(reader, "results", "DE") == 160
+    await _until(
+        lambda: any(name.startswith("enr.p/DE/") for name in platform.retired), what="the folded pieces retired"
+    )
+
+    cold, l3 = await platform.replica(tables=_APPEND_TABLES)
+    await cold.start()
+    await cold.wait_ready(timeout=_WAIT)
+    assert cold.status().source is SnapshotSource.L2 and l3.statements == 0
+    assert _count(cold, "results", "DE") == 160 and _count(cold, "results") == 1500 + 40 + 160
+    for replica in (writer, reader, cold):
+        await replica.stop()

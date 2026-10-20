@@ -29,6 +29,7 @@ from threetears.evals.analysis import JudgeAgreement, assemble_context_bundle, j
 from threetears.evals.analysis.reporter_kind import ReporterCase, reporter_case_payload
 from threetears.evals.analysis.stats import cohen_kappa
 from threetears.evals.schema import (
+    DURABLE_BASELINE_VERSION,
     DURABLE_SCHEMA_MINOR,
     RATING_WRITTEN_BEFORE_CONTENT,
     TRANSCRIPT_DIM_ID,
@@ -155,7 +156,8 @@ class TestTheRatedContent:
 
     def test_a_rating_25_wrote_reads_as_withheld_for_being_written_before_ratings_carried_it(self) -> None:
         document = {key: value for key, value in _carrying().items() if key not in ("rated", "rated_withheld")}
-        document["schema_minor"] = 0
+        # What .25 wrote is durable v15.0; a later major's first minor (v16.0) is no rating from before the field.
+        document.update(schema_version=DURABLE_BASELINE_VERSION, schema_minor=0)
 
         rating = CalibrationRating.from_dict(document)
 
@@ -671,7 +673,7 @@ class TestTheBundleReadsRatingsWrittenThroughTheOperation:
         assert layout.raters == ["reviewer-1", "reviewer-2"]
         assert after.judge_agreement.unpaired == []
         assert after.fingerprint() != before.fingerprint(), "a new rating is evidence that moved"
-        assert after.schema_version == 57
+        assert after.schema_version == 59
 
 
 class TestTheReporterReadCarriesTheRunsRatings:

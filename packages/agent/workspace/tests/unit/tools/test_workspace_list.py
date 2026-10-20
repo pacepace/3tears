@@ -175,6 +175,19 @@ async def test_execute_traps_discovery_errors_as_data() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_unexpected_failure_reaches_the_agent_by_type_only() -> None:
+    """the broad catch's message can name hosts; the agent sees the type, contain() the message."""
+    client = _FakeDiscoveryClient(items=[], raise_exc=ConnectionError("refused by hub-db.internal:5432"))
+    tool = WorkspaceListTool(discovery_client=client, agent_id=uuid4())  # type: ignore[arg-type]
+
+    async with enter_call_scope(_make_scope()):
+        result = await tool.execute()
+
+    assert result.success is False
+    assert result.error == "list failed (ConnectionError)"
+
+
+@pytest.mark.asyncio
 async def test_execute_requires_an_identity_token_on_scope() -> None:
     """a scope carrying neither token yields a clean errors-as-data message."""
     client = _FakeDiscoveryClient(items=[])

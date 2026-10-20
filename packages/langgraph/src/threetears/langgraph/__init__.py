@@ -41,11 +41,16 @@ from threetears.langgraph.caching import (
     should_bind_tools_fresh,
 )
 from threetears.langgraph.catalog import ObjectCataloger
-from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint import (
+    CheckpointCacheError,
+    CheckpointPurgeIncompleteError,
+    ThreeTierCheckpointSaver,
+)
 from threetears.langgraph.checkpoint_scope import (
     DEFAULT_CUSTOMER_CONFIG_KEY,
     CheckpointScope,
 )
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_documents, embed_query
 from threetears.langgraph.events import (
     FrameworkEvent,
     FrameworkEventRegistry,
@@ -79,6 +84,14 @@ from threetears.langgraph.middleware_rolling_summary import (
     SummaryStore,
 )
 from threetears.langgraph.middleware_summarize import SummarizationMiddleware
+from threetears.langgraph.middleware_tool_budget import (
+    DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    DEFAULT_TOOL_BUDGET_FALLBACK_TEXT,
+    ToolBudgetTier,
+    ToolLoopBudgetMiddleware,
+    ToolLoopBudgetState,
+    recursion_limit_for,
+)
 from threetears.langgraph.offload import (
     DEFAULT_OFFLOAD_THRESHOLD_CHARS,
     NEVER_OFFLOAD_TOOLS,
@@ -138,6 +151,8 @@ __all__ = [
     "AsyncpgPoolAdapter",
     "ChatModelCapabilities",
     "CheckpointAnonymization",
+    "CheckpointCacheError",
+    "CheckpointPurgeIncompleteError",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
@@ -145,9 +160,12 @@ __all__ = [
     "ContextMergeMiddleware",
     "ConversationContextProvider",
     "DEFAULT_CUSTOMER_CONFIG_KEY",
+    "DEFAULT_MAX_TOOL_CALLS_PER_TURN",
     "DEFAULT_OFFLOAD_THRESHOLD_CHARS",
     "DEFAULT_STRUCTURED_INLINE_MAX_CHARS",
     "DEFAULT_SUMMARIZATION_PROMPT",
+    "DEFAULT_TOOL_BUDGET_FALLBACK_TEXT",
+    "EmbeddingUnavailableError",
     "FlushCallback",
     "FrameworkEvent",
     "FrameworkEventRegistry",
@@ -194,9 +212,12 @@ __all__ = [
     "ThreeTierCheckpointSaver",
     "ToolCallEndEvent",
     "ToolCallProgressEvent",
+    "ToolBudgetTier",
     "ToolCallStartEvent",
     "ToolCompletedEvent",
     "ToolDispatchedEvent",
+    "ToolLoopBudgetMiddleware",
+    "ToolLoopBudgetState",
     "ToolResultOffloadMiddleware",
     "ToolResultOffloader",
     "ToolStartedEvent",
@@ -214,6 +235,8 @@ __all__ = [
     "compute_tool_key",
     "default_registry",
     "detect_capabilities",
+    "embed_documents",
+    "embed_query",
     "dispatch_event",
     "extract_cache_usage",
     "format_offload_handle",
@@ -221,6 +244,7 @@ __all__ = [
     "is_never_offload_tool",
     "merge_metadata",
     "parse_stream_event",
+    "recursion_limit_for",
     "should_bind_tools_fresh",
     "structure_for_stream",
     "summarize_args",

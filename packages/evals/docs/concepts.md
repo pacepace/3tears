@@ -68,6 +68,7 @@ against people.
 | margin, guardrail, gate | the difference too small to matter; a reading no arm may get worse on; the CI check over the verdicts | [rung 3](ladder.md#rung-3-two-prompts-compared) |
 | world, goal check, did-nothing control | the state an agent acts on; a check of the state it left; the proof that a check can fail | [rung 4](ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) |
 | store, scope, host | where runs are kept; the name they are found by; the value that serves them | [serving](serving.md#keep-your-runs-and-read-them-back) |
+| campaign, aspect, floor | one question asked of the arms; where it is measured; a line a candidate is warned for crossing | [measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects) |
 
 ## The picture underneath
 
@@ -92,16 +93,19 @@ An `Eval` builds all of this for you (`as_host`); a host of your own declares it
      |
      |  you put the runs you want compared into
      v
-  campaign  e.g. "v1 vs v2", in one scope; its results pool into
-            analysis cells: one variant measured under one rig
+  campaign  one question asked of its arms, e.g. "should v2 replace v1?", in one scope
+     |  measured on one or more
+     v
+  aspect    one template and the runs gathered on it, with its margin and design;
+            its results pool into analysis cells: one variant measured under one rig
      |
      v
-  analysis bundle   every number code computed about the campaign, frozen and fingerprinted
+  analysis bundle   every number code computed about one aspect, frozen and fingerprinted
      |
      |  optionally, a model reads the bundle and writes findings: an analysis
      v
-  report    one page, HTML and Markdown, beside the bundle.json it was computed from;
-            "code-only" when no analysis was generated
+  report    one page per campaign, HTML and Markdown, a fold per aspect, beside campaign.json
+            and each aspect's bundle; "code-only" when no analysis was generated
 ```
 
 Underneath all of it sits your **host**: the one value through which your app tells the engine what it can
@@ -281,6 +285,19 @@ under concurrency (`execution_mode`
 bar, a question or a ranking on it) without declaring it is refused. Each run records both
 (`measure_latency`, `cell_concurrency`).
 
+#### Arm schedule (`arm_schedule`)
+How the arms of one launch share time and provider capacity, on `run_launch`, `sweep_launch` and `start_run`.
+Running every arm side by side at its own width (`concurrent`) loads one provider with every arm at once, and a
+provider rationing one arm's calls shrinks that arm's sample and not the other's: the comparison reads host capacity
+as a difference between arms. Running them one after another (`sequential`) puts a provider's bad minute on whichever
+arm was running. So by default the arms are `interleaved`: every arm runs at once, their cells taken in turn, case by
+case, under one width shared by the launch, and every arm plays its cases in one order, so a bad minute lands on every
+arm alike and the arms' same cases run close together in time (exactly side by side at a width of 1). The shared
+width holds within one launch: separate launches are separate widths, so arms launched apart still load their
+providers side by side. Latency under test runs the arms `sequential`, the
+only schedule it takes. Each run records the schedule it ran under (`arm_schedule`), and a campaign whose arms were
+run one after another or side by side says so beside its readings. It is a disclosure, never part of a run's identity.
+
 #### k (repeats)
 How many times each case is played in a run (`k_runs`, `Eval(k=...)`, CLI `--k`; default 3). LLM
 answers vary, so one play per case under-reports that variance. *Example:* 40 tickets, `k=3`, 120 trials.
@@ -379,23 +396,61 @@ agreement, never its point estimate, and an undecided one says how many more res
 ### Comparing and reading
 
 #### Campaign
-A curated set of runs under one subject and behaviour, the hub an analysis attaches to (`EvalCampaign`).
-Membership is chosen, not queried; a run may sit in several campaigns. Its declared design names a
-**control**, which is a variant key, not a run, kept beside the lever map and identity version it was computed
-from (`control_levers`, `control_identity_version`); what it **held fixed** (`held_fixed`: the stimulus,
-controlled or not, and the apparatus, commissioned or witnessed); and its **questions**, each with the rule that
-settles it, if any (`Question.decision`: typed clauses the engine settles, never words it parses). A campaign with
-no declared design is **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing
-design, never stored, so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:*
-"triage v1 vs v2", control = the v1 variant, held fixed = one case battery on a commissioned rig. Which design to
-declare for a question: [Measuring soundly](measuring-soundly.md#declare-the-design-and-its-control).
+What a person set out to learn, and the runs gathered to learn it (`EvalCampaign`): **one question** asked of its
+**arms**, measured on one or more **aspects**, with the **floors** a candidate is warned for crossing, in one scope.
+Membership is chosen, not queried: a run joins one aspect of a campaign, and may sit in several campaigns. The
+hierarchy is campaign → aspect → run → cell. A campaign is authored, so it is durable: no core baseline reset
+deletes it ([Stored data](adopting-a-host.md#stored-data-what-is-kept)). A campaign none of whose aspects declares
+a design is **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing designs,
+never stored. One that declares a design but asks no question asks nothing, so its readings are exploratory too.
+*Example:* "Should v2 replace v1?", control v1, measured on two aspects, routing and replies. Declaring one:
+[Measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects).
+
+#### Aspect
+One place a campaign's question is measured (`Aspect`): a template, the runs gathered on it, its **margin** (how
+far, in points of the pass rate, a candidate may fall below the control there before it is shown worse) and its
+**design** (the axes it varies, what it held fixed, the merit axes its readings are tested on, its bars). Each
+aspect is read on its own, against the same control, and keeps its own pre-registration time (`asked_at`): a
+reading confirms only what was asked before that aspect's first run. A campaign adopting another's aspect
+(`aspects_from`) keeps that time; whatever it adds is dated when it is added. A campaign stored before aspects
+existed reads as one aspect labelled with its behavior.
+
+#### Floor
+A line a candidate is warned for crossing on one aspect (`Floor`): a typed clause, `RateDrop` (no pass rate drops
+by more than `max_points`) or `CostLower` (the candidate costs less per reply), never words the engine parses. A
+floor reads `broken`, `held` or `unclear`, on its own interval at the nominal level. It only **warns**, loudly: a
+broken floor is the first line of the page. It never decides, blocks or writes the verdict; code reports, the
+writer recommends, and a person decides.
+
+#### Campaign kind
+What a campaign can decide, read off its arms and never declared (`campaign_kind`):
+
+| Kind | Arms | Code reports, per aspect | The writer |
+|---|---|---|---|
+| measurement | one | each measure with its interval, and each bar met or missed | findings only; no recommendation |
+| choice | two or more, no control | every pair's difference with its interval, and which arm is shown ahead | picks an arm, or says no clear winner |
+| change | a control and candidates | each candidate against the control: shown better, shown worse or unclear | recommends a switch or keeping the control |
+
+A margin and a relative floor read a candidate against a control, so a campaign naming none is refused either,
+with the remedy to declare a bar instead. A bar is absolute, so every kind is held to its bars.
+
+#### Recommendation and call
+**Code reports, the writer recommends, a person decides.** The writer's memo makes at most one recommendation per
+campaign (`Recommendation`): an arm, its reasons, how sure, and the findings it rests on. It answers every warning
+its arm raises: each broken floor in `floors_overridden`, each aspect where another arm is shown ahead in
+`behind_on`, each missed bar in `bars_missed`, each with a why. The person's decision is the **call**
+(`CampaignCall`, recorded by `campaign_record`): the arm, why, and each broken floor and missed bar it overrides by
+name. The call is read against code's readings, never the memo, and is matched by variant key, since a derived arm's
+label can shift when a variant joins.
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
 so any run of that configuration counts toward it. An `Eval` comparison sets it from its runner mapping's first
-key; elsewhere it is addressed
-from a run (`control_from_run_id`), which records the run's lever map and identity version beside the key, as a
-run records its own; nobody sets those by hand. Every read resolves it through `resolve_declared_control` to the
+key; elsewhere it is the campaign's first arm, with role `control` (`CampaignArm`), addressed from a run: an arm's
+`from_run_ids` at creation, or `set_campaign_control` (`control_from_run_id` on the `campaign_update` action)
+afterwards. The server records the run's variant key beside its lever map and identity version, as a run records
+its own; nobody types those. A control named after an aspect's first result makes that aspect's readings post hoc.
+Every read resolves it through `resolve_control_arm` to the
 keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
 version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a
 change to how a lever map is digested, not a renamed lever, kind or overlay field. So a control keeps matching its
@@ -405,7 +460,8 @@ wherever any run carries the recomputed key; the cells under the earlier version
 version (`design.earlier_control`), named on every surface, disclosed once, in no contrast or adoption check, no contestant on the frontier,
 and not in the control's numbers. A key typed by hand records no lever map; when no cell carries it under a later
 identity version it is **stale**: the bundle says it cannot be resolved (`control_excluded`), and the remedy is to
-address it again from a run. *Example:* the v1 arm.
+address it again from a run. A candidate arm nobody named is read off the runs: each other variant among them is
+one. *Example:* the v1 arm.
 
 #### Delta, interval and adjusted p
 What a comparison reports for each arm against the control, per reading. The **delta** (the report's **Change**
@@ -432,16 +488,21 @@ miss. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#ru
 to read them.
 
 #### Analysis bundle
-Everything code computed about a campaign, assembled once and fingerprinted (`AnalysisContextBundle`), so
-two analysis prompts run over the same fingerprint are comparable. Nothing is fetched while an analysis is
+Everything code computed about one aspect of a campaign, assembled once and fingerprinted
+(`AnalysisContextBundle`, its `aspect` naming which), so two analysis prompts run over the same fingerprint are
+comparable. A campaign of several aspects is assembled one aspect at a time (`assemble_context_bundle(...,
+aspect=...)`). Nothing is fetched while an analysis is
 written: the bundle is the whole context. The CLI's `bundle` prints it inside a `BundleInspection` wrapper
 (campaign, scope, fingerprint, and the bundle as its `bundle` field); save the bundle alone with
 `bundle.to_json()`.
 
 #### Analysis
-Findings a model wrote over a bundle (`EvalAnalysis`): findings, recommendations and next steps, with every number
-in its prose replaced by the value code read, stored with the bundle it was written over. Optional, and it costs
-money; the verdict and every count on the report are code's either way.
+One memo a model wrote over a whole campaign (`EvalAnalysis`): its findings, at most one recommendation, a short
+summary of each aspect and next steps, with every number in its prose replaced by the value code read. It is
+written over the **campaign bundle** (`CampaignBundle`): the campaign's arms, floors and bars, and each aspect's
+readings, each aspect's part held to its own budget of characters, so adding an aspect never crowds out another.
+Each aspect's bundle is stored with it. Optional, and it costs money; the verdict and every count on the report are
+code's either way.
 
 #### Trial
 One case run once on one arm — one stored result. It is passed, failed (the candidate's failure: its model, its
@@ -523,9 +584,9 @@ A place the engine calls code your host supplies, through a protocol the engine 
 #### Sink and reservation
 A **sink** is what code reports into rather than returns: a cell's `CellSink` keeps its spend by source,
 `TraceSink` is your tracing, and a `RegressionWatch` awaits a sink of yours with each alert. A **reservation**
-holds a priced call's worst case against the run's cost cap while the call is in flight (`sink.reserve(source,
-ceiling)`, then `settle(cost)` or `release()`), so cells running side by side cannot together pass the cap;
-`CappedCompletion` does it for every call. See [Caps](cost-and-budgets.md#caps).
+is the handle of a paid call a cell is making (`sink.reserve(source, ceiling)`, then `settle(cost)` or
+`release()`), which lands the call's cost on the cell's spend; it holds nothing back, because the run's cost cap is
+read between cells and refuses no call inside one. `CappedCompletion` does it for every call. See [Caps](cost-and-budgets.md#caps).
 
 #### Store, `DocumentStore` and port
 A **port** is a protocol the engine declares and your host implements: `DocumentStore`, `CompletionClient`,

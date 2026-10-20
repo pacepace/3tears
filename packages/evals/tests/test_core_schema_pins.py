@@ -29,7 +29,9 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
 - **The core's membership moved.** A type became core or stopped being core; that is a decision about
   what is kept, recorded in ``CORE_DOC_TYPES`` and here together. The eight types people author left the core
   for the durable space at ``.26`` (``tests/test_durable_schema_pins.py``), and their ``.25`` fixtures moved with
-  them, unedited, to ``tests/fixtures/durable_documents/v15/``.
+  them, unedited, to ``tests/fixtures/durable_documents/v15/``. The campaign followed at durable v16:
+  its v15 fixture moved out of this released corpus the same way, unedited, its digest with it. A move is the one
+  change a released corpus takes: the file leaves with its bytes, and no other frozen file is touched.
 
 The v15 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
 v15 document yet, so while that is true a baseline change regenerates it in place rather than copying it. (The v14
@@ -79,22 +81,21 @@ from threetears.evals.schema.versioning import (
 PINNED_CORE_SCHEMA_VERSION = 15
 
 #: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_CORE_SCHEMA_MINOR = 3
+PINNED_CORE_SCHEMA_MINOR = 5
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "eval_action_job": "0535e1d7f0cc45eb08b43379c7d41458aae55b53c9ddf8d63500e68d12a044a9",
-    "eval_analysis_attempt": "96e56fd2d681b0f6b49f3472c603fe58d6b5f70500af335ea987b4b35c70d7a8",
-    "eval_campaign": "5b04dea7fb0bc1a6ed2119b5410cc9d4adc53745dea22f887d9df90d048e15a6",
-    "eval_generation_slot": "be301fc08ef87c13a879308d381f1297208cb5b64e2890aabb1b195c5aaa5e25",
-    "eval_judge_temperature_check": "8e897e5ecc6698797d7c055f3361b7c81a31e029832d4d28d4e99c9117b600fb",
-    "eval_launch": "263bbc00851abd88d40ee708e3af118d37f3503dc9785b900d1203c2f237bdb0",
-    "eval_out_of_run_spend": "87309b0dc86c50b4edf0c333234c7c7f9bf6e533826ee212f6b2a640b8ebab45",
-    "eval_result": "1d01c192774ae56aa622490347fe5f1479374c5774f8e49e310809646d2db31d",
-    "eval_run": "0d1adb264d0b943d1686b62d4ef45106f0d3f4f2717013c0bd566f5df7f05e86",
-    "eval_second_judge_pass": "dcbec4b9a2369bd09b7137f686a092e4162da2143129bd8d4b115814fe07c852",
-    "eval_sweep": "a8d7bfc3a89b518966bc122bcc6c9eb653667b5632e65d5d2ce538b64719a891",
-    "eval_trace": "b3e44e84b9fe5684a8f73c0ecb9b17919473b9c3663c5dca512c56b08f730554",
+    "eval_action_job": "c4ba4afa81458b9622c671c6f9e7b68597ec4a61ed6d8b30ab6100630eb17576",
+    "eval_analysis_attempt": "f2e2f717c585f848d303f50e6281ce612b0e2ac98ee3ea9d9723b3f2f3336e7d",
+    "eval_generation_slot": "15390327b5b6768b941afae65297ea9f4bb0483519348704c1916ddff87534c1",
+    "eval_judge_temperature_check": "cf53d911912573a9e3f018eb60d2ade38aefe8ec3608c865d2cbd9516ea041b5",
+    "eval_launch": "048c6cb18b727a32c4c99677266aa082b4b3fe91ace5c2bff8c75f3f976c2bd6",
+    "eval_out_of_run_spend": "cd5afe6373ccdec1341c943709eb08374c97c37a64094d0e9445f8a1c4e6ffa1",
+    "eval_result": "e66be509e28b7f1aa27a979b60ee5425be733990d05b24f1c9dd3bc18780317f",
+    "eval_run": "ef72879c57e4162c7cd68a6dba18535f510902958fd48a989bdb69b2ec476697",
+    "eval_second_judge_pass": "bdffb96213ccbaa42aafa15fc4bb4e6d750b62ec80e75cf43580057aeccd43e8",
+    "eval_sweep": "4ee1f794ddda46357fd3fdfc2aebecc58b39377233189fb828d0e027211e1225",
+    "eval_trace": "5b6a3b2068a47aef626008eeac4064b893124ca09648ea4918c83b528da4eaf1",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
@@ -129,9 +130,6 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     ),
     "eval_out_of_run_spend": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "purpose", "launch_group_id", "template_id", "created_at"}
-    ),
-    "eval_campaign": frozenset(
-        {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
     ),
     "eval_sweep": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "cancel_requested_at", "cancel_request_reason"}
@@ -169,7 +167,6 @@ FIRST_STORED_AT: dict[str, int] = {}
 FIXTURE_DIGESTS: dict[str, str] = {
     "v15/eval_action_job.json": "e60d422e3e3abb8566b70a4aba8045d9edd6db7c59fd2e59195decefa085600a",
     "v15/eval_analysis_attempt.json": "7224e64e5ac9834fe48a1d01b06b14d8385697e166e09e080eabc0a86e6b218c",
-    "v15/eval_campaign.json": "b2f12dfb925d69d599de0d9040a2f1a5bfed57d268aa60ca87cc57eb4c9b46bb",
     "v15/eval_generation_slot.json": "8247c1c6d36cc4e0194b10c9fec78e3136915d498f0c3954b94716c6f514eb6e",
     "v15/eval_judge_temperature_check.json": "8a10da2dd4533731e201eb4f72a651e0b82b849e97edb4f709e809abe5975563",
     "v15/eval_launch.json": "e747653cad60721d6990e48625b511f4ec35ae532828364fa1ff635e3e148c70",

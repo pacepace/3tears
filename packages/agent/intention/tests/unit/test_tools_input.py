@@ -16,9 +16,16 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 from pydantic import ValidationError
 
 from threetears.agent.acl import AclCache
+from threetears.core.backends import RowcountUnreadableError
+from threetears.core.exceptions import (
+    ConcurrentModificationError,
+    DataLayerUnavailableError,
+    GenerationUnavailableError,
+)
 from threetears.agent.intention.authorize import IntentionAuthorizerDependencies
 from threetears.agent.intention.entities import IntentionEntity
 from threetears.agent.intention.events import IntentionSurfacedEvent
@@ -26,6 +33,7 @@ from threetears.agent.intention.tools import (
     IntentionListInput,
     IntentionLogInput,
     IntentionMarkSurfacedInput,
+    load_intention_list_tool,
     load_intention_log_tool,
     load_intention_mark_surfaced_tool,
 )
@@ -130,6 +138,22 @@ class _FakeIntentions:
         return []
 
 
+class _FakeIntentionsDedupDown(_FakeIntentions):
+    """the dedup lookup fails, as an L3 timeout does."""
+
+    async def find_similar_for_dedup(self, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = kwargs
+        raise ConnectionError("l3 timeout")
+
+
+class _FakeIntentionsStoreDown(_FakeIntentions):
+    """the save fails with a driver message that quotes the SQL, as asyncpg's do."""
+
+    async def save_entity(self, entity: IntentionEntity) -> None:
+        _ = entity
+        raise ConnectionError('relation "intentions" ... INSERT INTO intentions VALUES ($1, $2) at postgres://u:pw@db')
+
+
 class _RaisingEmbedder:
     def __init__(self) -> None:
         self.calls = 0
@@ -169,7 +193,20 @@ class TestToolError:
         """a tool failure reads ``[TOOL ERROR] <tool>: <action> failed — <reason>``."""
         msg = await _log(_RaisingEmbedder(), _FakeIntentions(), "want")
         assert msg.startswith("[TOOL ERROR] intention_log: embed failed")
-        assert "embedding provider returned None" in msg
+        assert "the embedder failed (RuntimeError)" in msg
+        assert "upstream embedding outage" not in msg
+
+    async def test_an_embedding_outage_is_counted_and_its_provider_text_never_reaches_the_reply(self) -> None:
+        class _KeyLeaking(_RaisingEmbedder):
+            async def aembed_query(self, text: str) -> list[float]:
+                raise ValueError("Incorrect API key provided: sk-proj-FAKE1234567890")
+
+        site = "threetears.agent.intention.tools:load_intention_log_tool.<locals>.intention_log"
+        labels = {"site": site, "exc_type": "EmbeddingUnavailableError"}
+        before = REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0
+        msg = await _log(_KeyLeaking(), _FakeIntentions(), "want")
+        assert "sk-proj" not in msg
+        assert (REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0) == before + 1
 
 
 class TestEmbeddingSoftFail:
@@ -189,6 +226,29 @@ class TestEmbeddingSoftFail:
         assert collection.dedup_embeddings == []
         assert collection.saved == []
 
+    async def test_a_want_logged_without_its_dedup_check_says_so(self) -> None:
+        """a duplicate can be cleaned up; a refused want may never be retried, so it is stored."""
+        collection = _FakeIntentionsDedupDown()
+        site = "threetears.agent.intention.tools:load_intention_log_tool.<locals>.intention_log"
+        labels = {"site": site, "exc_type": "ConnectionError"}
+        before = REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0
+        msg = await _log(_OkEmbedder(), collection, "want")
+        assert len(collection.saved) == 1
+        assert msg == (
+            f"Logged as [intention:{collection.saved[0].intention_id}]: want "
+            "(not checked against your open wants, which could not be read: ConnectionError)"
+        )
+        assert "l3 timeout" not in msg, "a store's own message stays in the log, out of the reply"
+        assert (REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0) == before + 1
+
+    async def test_a_checked_want_claims_nothing_extra(self) -> None:
+        msg = await _log(_OkEmbedder(), _FakeIntentions(), "want")
+        assert "not checked" not in msg
+
+    async def test_a_failed_store_names_the_step_and_class_only(self) -> None:
+        msg = await _log(_OkEmbedder(), _FakeIntentionsStoreDown(), "want")
+        assert msg == "[TOOL ERROR] intention_log: store failed — ConnectionError"
+
     async def test_success_carries_the_vector_into_dedup_and_the_row(self) -> None:
         collection = _FakeIntentions()
         msg = await _log(_OkEmbedder(), collection, "want")
@@ -197,12 +257,10 @@ class TestEmbeddingSoftFail:
         assert collection.saved[0].embedding == [0.1, 0.2, 0.3]
 
 
-async def _mark_asked() -> str:
-    """move one owned want to ``asked`` through the tool, which emits the surfaced event."""
-    user_id = uuid4()
-    agent_id = uuid4()
+def _owned_want(user_id: UUID, agent_id: UUID) -> IntentionEntity:
+    """one stored ``open`` want owned by ``user_id``."""
     now = datetime.now(UTC)
-    entity = IntentionEntity(
+    return IntentionEntity(
         {
             "intention_id": uuid4(),
             "agent_id": agent_id,
@@ -221,12 +279,19 @@ async def _mark_asked() -> str:
         },
         is_new=False,
     )
+
+
+async def _mark_asked(collection_cls: type[_FakeIntentions] = _FakeIntentions) -> str:
+    """move one owned want to ``asked`` through the tool, which emits the surfaced event."""
+    user_id = uuid4()
+    agent_id = uuid4()
+    entity = _owned_want(user_id, agent_id)
     (tool,) = await load_intention_mark_surfaced_tool(
         user_id=user_id,
         agent_id=agent_id,
         customer_id=uuid4(),
         authorizer=_authorizer(),
-        intentions_collection=_FakeIntentions(entity),  # type: ignore[arg-type]
+        intentions_collection=collection_cls(entity),  # type: ignore[arg-type]
     )
     result = await tool.ainvoke({"intention_id": str(entity.intention_id), "new_status": "asked"})
     assert isinstance(result, str)
@@ -277,3 +342,110 @@ class TestEmitIntentionEvent:
         with patch("threetears.agent.intention.tools.dispatch_event", new=_raise_value_error):
             with pytest.raises(ValueError, match="schema regression"):
                 await _mark_asked()
+
+
+def _with_failing_reads(failure: Exception) -> type[_FakeIntentions]:
+    """a collection whose dedup lookup and listing scans raise ``failure``."""
+
+    class _ReadsFail(_FakeIntentions):
+        async def find_similar_for_dedup(self, **kwargs: Any) -> list[dict[str, Any]]:
+            _ = kwargs
+            raise failure
+
+        async def find_by_user(self, user_id: UUID, *, agent_id: UUID) -> list[IntentionEntity]:
+            _ = user_id, agent_id
+            raise failure
+
+    return _ReadsFail
+
+
+def _with_failing_saves(failure: Exception) -> type[_FakeIntentions]:
+    """a collection holding one near-duplicate of every want logged, whose saves raise ``failure``."""
+
+    class _SavesFail(_FakeIntentions):
+        async def find_similar_for_dedup(self, **kwargs: Any) -> list[dict[str, Any]]:
+            _ = kwargs
+            assert self.entity is not None
+            return [{"intention_id": self.entity.intention_id, "content": "", "salience": 0.5, "similarity": 0.99}]
+
+        async def save_entity(self, entity: IntentionEntity) -> None:
+            _ = entity
+            raise failure
+
+        async def bump_salience(self, intention_ids: list[UUID], *, agent_id: UUID, access_bump: float) -> None:
+            _ = intention_ids, agent_id, access_bump
+
+    return _SavesFail
+
+
+async def _list_all(collection: _FakeIntentions) -> str:
+    (tool,) = await load_intention_list_tool(
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        _authorizer(),
+        collection,  # type: ignore[arg-type]
+    )
+    result = await tool.ainvoke({"status": "all"})
+    assert isinstance(result, str)
+    return result
+
+
+async def _relog(failure: Exception) -> str:
+    """log a want that refreshes its stored near-duplicate, whose save raises ``failure``."""
+    user_id, agent_id = uuid4(), uuid4()
+    collection = _with_failing_saves(failure)(_owned_want(user_id, agent_id))
+    (tool,) = await load_intention_log_tool(
+        user_id=user_id,
+        embedding_provider=_OkEmbedder(),  # type: ignore[arg-type]
+        agent_id=agent_id,
+        customer_id=uuid4(),
+        authorizer=_authorizer(),
+        intentions_collection=collection,  # type: ignore[arg-type]
+    )
+    result = await tool.ainvoke({"content": "ask about the wake threads"})
+    assert isinstance(result, str)
+    return result
+
+
+#: what a fenced save of a stored want can meet that is not a bug: an outage, a lost CAS race, a
+#: generation that could not advance, a row count the store did not report
+_SAVE_REFUSALS: list[Exception] = [
+    DataLayerUnavailableError("broker down"),
+    ConcurrentModificationError("intentions", uuid4(), datetime.now(UTC)),
+    GenerationUnavailableError("generation not advanced"),
+    RowcountUnreadableError("a successful update reply must carry row_count"),
+]
+
+
+class TestOnlyAStoreFailureReadsAsOne:
+    """each handler answers the failures its store raises; a bug in our code propagates as itself."""
+
+    async def test_a_dedup_lookup_bug_propagates(self) -> None:
+        with pytest.raises(TypeError, match="bug"):
+            await _log(_OkEmbedder(), _with_failing_reads(TypeError("bug"))(), "want")
+
+    async def test_a_store_outage_listing_is_a_tool_error(self) -> None:
+        out = await _list_all(_with_failing_reads(DataLayerUnavailableError("broker down"))())
+        assert out == "[TOOL ERROR] intention_list: query failed — DataLayerUnavailableError"
+
+    async def test_a_listing_bug_propagates(self) -> None:
+        with pytest.raises(AttributeError, match="bug"):
+            await _list_all(_with_failing_reads(AttributeError("bug"))())
+
+    @pytest.mark.parametrize("failure", _SAVE_REFUSALS, ids=lambda e: type(e).__name__)
+    async def test_a_refused_refresh_is_a_tool_error(self, failure: Exception) -> None:
+        assert await _relog(failure) == f"[TOOL ERROR] intention_log: refresh failed — {type(failure).__name__}"
+
+    async def test_a_refresh_bug_propagates(self) -> None:
+        with pytest.raises(TypeError, match="bug"):
+            await _relog(TypeError("bug"))
+
+    @pytest.mark.parametrize("failure", _SAVE_REFUSALS, ids=lambda e: type(e).__name__)
+    async def test_a_refused_mark_is_a_tool_error(self, failure: Exception) -> None:
+        out = await _mark_asked(_with_failing_saves(failure))
+        assert out == f"[TOOL ERROR] intention_mark_surfaced: store failed — {type(failure).__name__}"
+
+    async def test_a_mark_bug_propagates(self) -> None:
+        with pytest.raises(KeyError, match="bug"):
+            await _mark_asked(_with_failing_saves(KeyError("bug")))

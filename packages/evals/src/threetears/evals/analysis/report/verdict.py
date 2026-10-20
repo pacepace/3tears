@@ -6,19 +6,15 @@
    by more than a third of their trials: the run measured its test setup, not the models, so there is no verdict,
    and the line names the arm, how many it lost, the cause most of them share in words, and the remedy.
 2. **One arm.** ``<eval>: n/N cases passed; k misses: …`` — how its cases came out.
-3. **A declared decision rule.** Each clause settled or not (:mod:`~threetears.evals.analysis.report.decision`),
-   and the rule's outcome in plain words: keep, switch, or unsettled with the fix and its cost. A keep names the
-   counts that settled it, the arms by their models where they have one: ``Keep production: v4-flash passed 2 of 12
-   trials to v4.1-flash's 10, and cost more per reply.`` The line is one sentence held to the page's numeral limit;
-   the decision table directly below carries every figure and every clause's reason.
-4. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
+3. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
    difference is called; the case floor itself is a caveat line under the scoreboard (:func:`caveat_lines`).
-5. **A declared question.** What its contrasts and guardrails came to, in their own verdict words. A question that
-   wrote its decision rule as prose and declares none typed answers nothing here: no rule was applied, so the line is
-   exploratory.
-6. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or ``nothing separated v2 from v1 on any
+4. **A declared question.** What its contrasts and guardrails came to, in their own verdict words.
+5. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or ``nothing separated v2 from v1 on any
    reading``, never "no difference". A guardrail an arm is not shown safe on is a second sentence: ``Not yet shown
    safe: v2 on no invented total.``
+
+**No floor decides the verdict.** A floor only warns: a broken one is the page's first line, above this one
+(:mod:`~threetears.evals.analysis.report.decision`), and the verdict says what the contrasts came to beside it.
 
 **A cause cannot exist without its words.** Every way a trial is lost (:data:`LOSS_CAUSE_WORDS`) and every way one
 fails (:data:`FAIL_CAUSE_WORDS`) is worded here, with the remedy a reader acts on, and each table is checked against
@@ -38,19 +34,9 @@ from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
     FailCause,
 )
-from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.report.decision import (
-    RateReading,
-    RuleVerdict,
-    evaluate_rule,
-    prose_ruled,
-    rule_readings,
-    ruled_question,
-)
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
-from threetears.evals.analysis.style import humanize, lint_prose, measure_name
+from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.analysis.report.words import LOWER_IS_BETTER, comparison_words
-from threetears.evals.kernel.declaration import Question, preregistered_questions
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 
 #: The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or
@@ -58,9 +44,10 @@ from threetears.evals.kernel.result_condition import CandidateFailureCause, Excl
 #: so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
 #:
 #: The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too
-#: few, and no rate (a pass rate, pass^k) is estimated for an arm; a measure's mean is still shown with its interval,
-#: and a declared rule can still settle keep on what was observed, never switch. So a host's seed gate covers every
-#: template whose results are compared across arms, whatever its declared reading.
+#: few, and no rate (a pass rate, pass^k) is estimated for an arm; a measure's mean is still shown with its interval.
+#: A rate floor is read neither broken nor held below it, since both need an interval; a cost floor can still be
+#: broken on a cost observed no lower. So a host's seed gate covers every template whose results are compared
+#: across arms, whatever its declared reading.
 MIN_CASES: Final = SMALL_N_BAND_FLOOR
 
 #: The share of an arm's trials whose loss to the test setup, alone or as the gap between two arms, means the run
@@ -68,7 +55,7 @@ MIN_CASES: Final = SMALL_N_BAND_FLOOR
 SETUP_GATE_SHARE: Final = 1 / 3
 
 #: Which rule decided the verdict line.
-VerdictRule = Literal["setup", "one_arm", "rule", "too_small", "declared", "exploratory"]
+VerdictRule = Literal["setup", "one_arm", "too_small", "declared", "exploratory"]
 
 
 @dataclass(frozen=True)
@@ -220,19 +207,6 @@ class VerdictLine:
     text: str
 
 
-def _declared_questions(bundle: AnalysisContextBundle) -> list[Question]:
-    """The live questions the campaign declared before its first run, in declaration order.
-
-    Read by :func:`~threetears.evals.kernel.declaration.preregistered_questions` against the instant the design froze
-    (``design_frozen_at``, the first run's), the one rule the families, the reading scope and the bundle's
-    ``post_hoc_questions`` were read by, so the verdict cannot count a question they treat as post hoc.
-    """
-    design = bundle.declared_design
-    if design is None:
-        return []
-    return preregistered_questions(design, bundle.design_frozen_at)
-
-
 def lost_share(board: ArmScoreboard) -> float:
     """The share of an arm's trials lost to the test setup; 0 for an arm that ran none."""
     return sum(board.lost.values()) / board.ran if board.ran else 0.0
@@ -244,7 +218,6 @@ def verdict_line(
     *,
     name: str = "",
     case_name: Callable[[str], str] | None = None,
-    model: Callable[[str], str] | None = None,
 ) -> VerdictLine:
     """The verdict line, by the first rule that fires (the module docstring's order).
 
@@ -256,8 +229,6 @@ def verdict_line(
     :ptype name: str
     :param case_name: Names a case by its id, as the cases table does; its id where None.
     :ptype case_name: Callable[[str], str] | None
-    :param model: Names an arm by its model, where it has one, for the counts a settled rule states; ``arm`` where None.
-    :ptype model: Callable[[str], str] | None
     :return: The rule and its sentences.
     :rtype: VerdictLine
     """
@@ -268,16 +239,13 @@ def verdict_line(
         return VerdictLine(rule="setup", text=setup)
     if len(boards) == 1:
         return VerdictLine(rule="one_arm", text=_one_arm(bundle, name, case_name or (lambda case: case)))
-    if (ruled := _rule_line(bundle, arm, model or arm)) is not None:
-        return VerdictLine(rule="rule", text=ruled)
-    # A rule written as prose was applied by nothing, so the question it states is answered by nothing either.
-    declared_question = bundle.question_declared and not prose_ruled(_declared_questions(bundle))
+    declared_question = bundle.question_declared
     if any(board.usable_cases < MIN_CASES for board in boards):
         lead = "" if declared_question else "Exploratory: "
         return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm))
     if declared_question and (declared := _declared(bundle, arm)):
         return VerdictLine(rule="declared", text=declared)
-    leads = _separated(bundle, arm, question_id=None, every_family=True)
+    leads = _separated(bundle, arm, asked=False)
     return VerdictLine(
         rule="exploratory",
         text="Exploratory: "
@@ -296,50 +264,16 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     :ptype arm: Callable[[str], str]
     :return: The lines: today, that an arm is under the case floor. A "too few" line says what is withheld and why, in
         the reader's terms, never a bare count: under the floor no interval is estimated, so a rate is shown as a
-        count and no gap between the arms is sized. Where a declared rule settled keep on every candidate, the line
-        says keep follows from the counts and only how much worse the candidate has no estimate.
+        count and no gap between the arms is sized.
     :rtype: list[str]
     """
     small = [board for board in bundle.scoreboard if board.usable_cases < MIN_CASES]
     if not small:
         return []
-    verdicts = _rule_verdicts(bundle, arm)
-    if verdicts and all(verdict.outcome == "keep" for verdict in verdicts):
-        counts = {board.usable_cases for board in bundle.scoreboard}
-        if len(counts) == 1 and len(small) == len(bundle.scoreboard):
-            cases = f"{small[0].usable_cases} cases per arm"
-        else:
-            cases = "Usable cases " + ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
-        # The gap itself is measured and stated; what the floor withholds is the interval: whether it would hold.
-        return [
-            f"{cases}: keep follows from the counts above. Whether the gap holds on more cases is not estimated: an "
-            f"interval takes {MIN_CASES} independent cases."
-        ]
     named = ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
     return [
         f"Usable cases: {named}. Under {MIN_CASES} independent cases a rate is shown as a count, and whether the "
         "arms' gap holds on more cases is not estimated."
-    ]
-
-
-def _rule_verdicts(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[RuleVerdict]:
-    """The declared rule read on each other arm against the control, each arm by ``arm``'s name; empty when no live
-    question declares one."""
-    control = _control_key(bundle)
-    if not bundle.question_declared or control is None:
-        return []
-    asked = ruled_question(_declared_questions(bundle))
-    if asked is None or asked.decision is None:
-        return []
-    return [
-        evaluate_rule(
-            asked.decision,
-            rule_readings(bundle, control, board.variant_key, question_id=asked.id),
-            control=arm(control),
-            candidate=arm(board.variant_key),
-        )
-        for board in bundle.scoreboard
-        if board.variant_key != control
     ]
 
 
@@ -396,123 +330,6 @@ def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     return "; ".join(said) + "; too few cases to call a difference."
 
 
-def _rule_line(bundle: AnalysisContextBundle, arm: Callable[[str], str], model: Callable[[str], str]) -> str | None:
-    """The declared decision rule's outcome in plain words, or None when no live question states one."""
-    control = _control_key(bundle)
-    verdicts = _rule_verdicts(bundle, arm)
-    if control is None or not verdicts:
-        return None
-    candidates = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
-    return " ".join(
-        rule_sentence(
-            verdict,
-            control=arm(control),
-            candidate=arm(candidate),
-            bundle=bundle,
-            control_model=model(control),
-            candidate_model=model(candidate),
-        )
-        for verdict, candidate in zip(verdicts, candidates, strict=True)
-    )
-
-
-def rule_sentence(
-    verdict: RuleVerdict,
-    *,
-    control: str,
-    candidate: str,
-    bundle: AnalysisContextBundle,
-    control_model: str | None = None,
-    candidate_model: str | None = None,
-) -> str:
-    """A rule's outcome as the verdict line says it: the decision, then what settled it or the fix with its cost.
-
-    A keep states the counts that settled it (``v4-flash passed 2 of 12 trials to v4.1-flash's 10, and cost more per
-    reply``). Each sentence keeps its clauses only while it stays within the page's numeral and length limits
-    (:func:`~threetears.evals.analysis.style.lint_prose`): the decision table below carries every clause.
-
-    :param verdict: The rule read on one candidate.
-    :ptype verdict: RuleVerdict
-    :param control: The control, by name.
-    :ptype control: str
-    :param candidate: The candidate, by name.
-    :ptype candidate: str
-    :param bundle: The campaign's evidence, for the cost of more cases.
-    :ptype bundle: AnalysisContextBundle
-    :param control_model: The control by its model, which a keep's counts name it by; ``control`` where None.
-    :ptype control_model: str | None
-    :param candidate_model: The candidate by its model, likewise; ``candidate`` where None.
-    :ptype candidate_model: str | None
-    :return: The sentence.
-    :rtype: str
-    """
-
-    if verdict.outcome == "keep":
-        said = _kept(verdict, control_model or control, candidate_model or candidate)
-        return _within_limits(f"Keep {control}: ", said)
-    if verdict.outcome == "switch":
-        return f"Switch to {candidate}: every clause of the decision rule holds."
-    reasons = [clause.reason for clause in verdict.clauses if clause.outcome == "unsettled"]
-    cost = _cost_per_case(bundle)
-    fix = f" Each more case costs about {cost} over every arm." if cost else ""
-    return _within_limits(f"Unsettled between {control} and {candidate}: ", reasons) + fix
-
-
-def _within_limits(lead: str, parts: list[str]) -> str:
-    """``lead`` and as many of ``parts`` as one sentence holds within the page's limits, joined by ", and ".
-
-    The first part is always said; each later one only while the sentence stays within the numeral and length
-    limits, the decision table carrying the rest.
-    """
-    kept = parts[:1]
-    for part in parts[1:]:
-        if lint_prose(f"{lead}{', and '.join([*kept, part])}."):
-            break
-        kept.append(part)
-    return f"{lead}{', and '.join(kept)}."
-
-
-def _kept(verdict: RuleVerdict, control: str, candidate: str) -> list[str]:
-    """What settled a keep, clause by clause, as counts with the candidate as their one subject."""
-    said: list[str] = []
-    readings = verdict.readings
-    for clause in verdict.clauses:
-        if clause.outcome != "keep":
-            continue
-        subject = "" if said else f"{candidate} "
-        if clause.rate is not None:
-            said.append(subject + _counts(clause.rate, control))
-        else:
-            # A clause settles keep on a rate it names, or on a cost observed no lower: this is the cost.
-            ours, theirs = (readings.control_cost, readings.candidate_cost) if readings is not None else (None, None)
-            more = "more" if ours is not None and theirs is not None and theirs > ours else "no less"
-            said.append(f"{subject}cost {more} per reply")
-    return said
-
-
-def _counts(rate: RateReading, control: str) -> str:
-    """A rate that settled keep, as plain counts: ``passed 2 of 12 trials to production's 10``.
-
-    The control's total is said only where it differs from the candidate's, so the counts stay three figures.
-    """
-    theirs = f"{rate.candidate_passed} of {rate.candidate_n}"
-    ours = (
-        str(rate.control_passed) if rate.control_n == rate.candidate_n else f"{rate.control_passed} of {rate.control_n}"
-    )
-    if rate.name == "the pass rate":
-        return f"passed {theirs} trials to {control}'s {ours}"
-    return f"passed {rate.name} on {theirs} to {control}'s {ours}"
-
-
-def _cost_per_case(bundle: AnalysisContextBundle) -> str | None:
-    """What one more case costs over every arm, from what the run spent per case; None where unpriced."""
-    spent = [board.test_cost_usd for board in bundle.scoreboard]
-    cases = max((board.cases for board in bundle.scoreboard), default=0)
-    if not cases or any(cost is None for cost in spent):
-        return None
-    return f"${format_number(sum(cost or 0.0 for cost in spent) / cases)}"
-
-
 #: How the verdict leads a guardrail an arm is not shown safe on, by the guardrail's decision, the breached first.
 _GUARDRAIL_LEADS: dict[str, str] = {"breached": "Guardrail breached", "undecided": "Not yet shown safe"}
 
@@ -564,37 +381,32 @@ def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str
 
 
 def _declared(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
-    """One clause per declared question: what its contrasts and guardrails came to, in their own words."""
-    clauses = []
-    questions = _declared_questions(bundle)
-    for index, question in enumerate(questions, start=1):
-        # The first screen quotes the question's words; the verdict names it, never repeats it.
-        lead = "Declared question" if len(questions) == 1 else f"Question {index}"
-        separated = _separated(bundle, arm, question_id=question.id, every_family=False)
-        tested = any(family.question_id == question.id for family in bundle.multiple_comparisons.families)
-        if separated:
-            clauses.append(f"{lead}: " + "; ".join(separated))
-        elif tested:
-            clauses.append(f"{lead}: {_nothing_separated(bundle, arm)}")
-        else:
-            clauses.append(f"{lead}: not tested")
-    if not clauses:
+    """What the declared question's contrasts and guardrails came to, in their own words."""
+    if not bundle.question_declared:
         return None
-    return ". ".join(clauses) + "." + _guardrail_words(bundle, arm)
+    # The first screen quotes the question's words; the verdict names it, never repeats it.
+    separated = _separated(bundle, arm, asked=True)
+    tested = any(family.aspect is not None for family in bundle.multiple_comparisons.families)
+    if separated:
+        said = "Declared question: " + "; ".join(separated)
+    elif tested:
+        said = f"Declared question: {_nothing_separated(bundle, arm)}"
+    else:
+        said = "Declared question: not tested"
+    return said + "." + _guardrail_words(bundle, arm)
 
 
 #: The contrast verdicts that separated, which the verdict line names.
 _SEPARATED = ("improved", "regressed")
 
 
-def _separated(
-    bundle: AnalysisContextBundle, arm: Callable[[str], str], *, question_id: str | None, every_family: bool
-) -> list[str]:
+def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, asked: bool) -> list[str]:
     """Each contrast that separated from the control, in words, both arms by label:
-    ``v2 better than v1 on <reading>``, a lower-is-better reading's better end in brackets after it."""
+    ``v2 better than v1 on <reading>``, a lower-is-better reading's better end in brackets after it. ``asked`` reads
+    only the question's family; otherwise every family."""
     said = []
     for family in bundle.multiple_comparisons.families:
-        if not every_family and family.question_id != question_id:
+        if asked and family.aspect is None:
             continue
         for comparison in family.comparisons:
             if comparison.verdict in _SEPARATED:
@@ -620,7 +432,6 @@ __all__ = [
     "SETUP_GATE_SHARE",
     "CauseWords",
     "caveat_lines",
-    "rule_sentence",
     "VerdictLine",
     "VerdictRule",
     "arm_exclusions",

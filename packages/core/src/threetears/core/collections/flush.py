@@ -15,8 +15,9 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.generation import WriteGeneration
 from threetears.core.collections.l2_order import l2_order_of
+from threetears.core.backends.protocol import RowcountUnreadableError
 from threetears.core.exceptions import CorruptCacheEntry, GenerationUnavailableError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "FlushStrategy",
@@ -699,6 +700,21 @@ async def _flush_per_entity(
             # already refused, so replaying it refuses again, and an ``ON CONFLICT DO
             # NOTHING`` no-op would burn the retry budget on every duplicate.
             await write_buffer.ack(pw.table_name, pw.entity_id)
+        except RowcountUnreadableError as exc:
+            # the statement ran -- the tag is its answer -- but how many rows it touched is unknown.
+            # replaying it would run it again, and dropping it as "affected no row" would be a guess,
+            # so it is acknowledged, counted as landed (an announce for a row that did not change
+            # is harmless; a missed one leaves a derived cache stale), and said, distinctly.
+            contain(
+                exc,
+                log=log,
+                what="Deferred L3 write ran but its row count could not be read; acknowledged, not replayed",
+                extra={"table": pw.table_name, "entity_id": str(pw.entity_id), "error": str(exc)},
+                level="error",
+            )
+            flushed += 1
+            landed.append(pw)
+            await write_buffer.ack(pw.table_name, pw.entity_id)
         except Exception as exc:
             # FK violations are "my parent hasn't landed yet" -- treat
             # them as deferral, not failure: re-enqueue with the
@@ -713,20 +729,23 @@ async def _flush_per_entity(
                 # parent will never land -- log as an "orphan chain"
                 # event so operators can run the conversation repair
                 # endpoint (or otherwise reset the cache).
-                log.error(
-                    "Orphan chain — FK violation exhausted retries, dropping"
-                    if fk_violation
-                    else "Flush write permanently failed after max retries, dropping",
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        "Orphan chain — FK violation exhausted retries, dropping"
+                        if fk_violation
+                        else "Flush write permanently failed after max retries, dropping"
+                    ),
                     extra={
-                        "extra_data": {
-                            "table": pw.table_name,
-                            "entity_id": str(pw.entity_id),
-                            "retries": next_retry,
-                            "retry_limit": retry_limit,
-                            "fk_violation": fk_violation,
-                            "error": str(exc),
-                        }
+                        "table": pw.table_name,
+                        "entity_id": str(pw.entity_id),
+                        "retries": next_retry,
+                        "retry_limit": retry_limit,
+                        "fk_violation": fk_violation,
+                        "error": str(exc),
                     },
+                    level="error",
                 )
                 # permanent drop: release the in-flight claim and evict the
                 # durable row (version-guarded — a newer coalesced write is kept).
@@ -843,9 +862,11 @@ async def flush_pending(
                 # in the fresh set was committed -- replay it through the per-entity
                 # loop, which preserves the FK-aware re-enqueue policy per write.
                 # The fallback is the safety net, never weakened.
-                log.warning(
-                    "Atomic batch flush failed, falling back to per-entity flush",
-                    extra={"extra_data": {"total": len(fresh), "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="Atomic batch flush failed, falling back to per-entity flush",
+                    extra={"total": len(fresh), "error": str(exc)},
                 )
                 flushed += await _flush_per_entity(fresh, write_buffer, registry, landed)
         else:

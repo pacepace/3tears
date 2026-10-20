@@ -82,7 +82,11 @@ class _FakeDriver:
         # exercise it.
         raise_exc: BaseException | None = None,
         status: int = 200,
+        page_faults: list[str] | None = None,
+        page_images_fault: str | None = None,
     ):
+        self._page_faults = page_faults or []
+        self._page_images_fault = page_images_fault
         self._html = html
         self._final_url = final_url
         self._raise_exc = raise_exc
@@ -115,7 +119,14 @@ class _FakeDriver:
         self.nav_steps_calls.append(nav_steps)
         if self._raise_exc is not None:
             raise self._raise_exc
-        return RenderedPage(html=self._html, status=self._status, final_url=self._final_url, timing_ms=1.0)
+        return RenderedPage(
+            html=self._html,
+            status=self._status,
+            final_url=self._final_url,
+            timing_ms=1.0,
+            page_faults=list(self._page_faults),
+            page_images_fault=self._page_images_fault,
+        )
 
 
 def _collections():
@@ -258,6 +269,32 @@ class TestScrapeToolSchema:
 
 
 class TestScrapeToolExecute:
+    async def test_what_the_document_could_not_read_reaches_the_eval_loop(self):
+        """The eval loop decides what a partly read document's miss means; it has to be told."""
+        recipe_collection, extraction_collection = _collections()
+        driver = _FakeDriver(
+            _SINGLE_HTML,
+            page_faults=["page 2: tables could not be extracted (RuntimeError)"],
+            page_images_fault="PDF page images could not be rendered (RuntimeError)",
+        )
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": driver},
+            api_key="k",
+            block_private_hosts=False,
+        )
+        loop = AsyncMock(side_effect=RuntimeError("stop here"))
+
+        with patch("threetears.scrape.tool.run_eval_loop", loop), pytest.raises(RuntimeError, match="stop here"):
+            await tool.execute(url="https://example.gov/notice.pdf", field_schema={"employer": "str"})
+
+        assert loop.await_args is not None
+        assert loop.await_args.kwargs["page_faults"] == [
+            "page 2: tables could not be extracted (RuntimeError)",
+            "PDF page images could not be rendered (RuntimeError)",
+        ]
+
     async def test_missing_url_is_an_error(self):
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
@@ -2059,6 +2096,29 @@ class TestSsrfGuard:
 
         assert (result.error or "").startswith("refused: ")
         assert "10.0.0.5" in (result.error or "")
+        assert driver.render_calls == []
+
+    async def test_blocks_hostname_with_an_unparseable_resolved_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One record parses as public, the other does not parse at all: the host is refused.
+
+        Skipping the unparseable record let the fetch through on the public record's word, and
+        the connect step could then dial the record nobody classified.
+        """
+        fake = [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 80)),
+            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("not-an-ip", 80, 0, 0)),
+        ]
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: fake)
+        # Fails if reached, so a guard that lets the host through stops at the render rather
+        # than going on to the extraction model.
+        driver = _FakeDriver(_SINGLE_HTML, raise_exc=RuntimeError("stop after the fetch"))
+
+        result = await self._guarded_tool(driver).execute(
+            url="http://mixed.example.com/", field_schema={"employer": "str"}
+        )
+
+        assert (result.error or "").startswith("refused: ")
+        assert "not-an-ip" in (result.error or "")
         assert driver.render_calls == []
 
     @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.ops import analysis_estimate, analysis_generate
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
@@ -83,7 +84,7 @@ class TestGenerateAnalysis:
         bundle = toyhost_bundle(profile=profile)
         client = FixturedClient(json.dumps(memo_payload(bundle)))
         await generate_analysis(
-            bundle,
+            campaign_bundle(bundle),
             prompt=PROMPT,
             model=model,
             client=client,
@@ -100,7 +101,7 @@ class TestGenerateAnalysis:
 
         with pytest.raises(GenerationError, match="nothing was spent"):
             await generate_analysis(
-                bundle,
+                campaign_bundle(bundle),
                 prompt=PROMPT,
                 model=UNLISTED,
                 client=client,

@@ -48,10 +48,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.actions import Action, ActionCatalogue, Caller, ConformanceSample, ConformanceStage
 from threetears.evals.kernel import EvalServiceError, running_job
 from threetears.evals.kernel.host import CompletionClients
 from threetears.evals.ops import JobsStarted, OpsHost, job_poll
+
+log = get_logger(__name__)
+
 
 __all__ = [
     "DEFAULT_CALL_RETURN_TIMEOUT_S",
@@ -270,6 +274,9 @@ def _call_case(action: Action, call_return_timeout_s: float) -> JobsConformanceC
                 # The example's ids name nothing in the conformance host, so the call may refuse; how it ends is not
                 # this case's question -- only whether it made a completion request, read just below. How it ended
                 # is kept, and named in that failure, so a request made on the way to a crash is not misread.
+                contain(
+                    refused, log=log, what=f"the example call of {action.name} then raised {type(refused).__name__}"
+                )
                 ended = f"it then raised {type(refused).__name__}: {refused}"
             finally:
                 guard.call_returned()

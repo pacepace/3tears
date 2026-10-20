@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears"
-version = "0.72.0"
+version = "0.73.0"
 description = "Three-tier caching framework for Python -- L1 SQLite, L2 NATS KV, L3 PostgreSQL or a git working tree"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,20 +22,27 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.72.0,<0.73.0",
-    "3tears-nats>=0.72.0,<0.73.0",
+    "3tears-observe>=0.73.0,<0.74.0",
+    "3tears-nats>=0.73.0,<0.74.0",
     "sqlalchemy",
     "asyncpg>=0.30",  # create_pool(connect=...), the hook a failed pool start closes its connections through
-    "aiosqlite",
     "pydantic",
-    "uuid-utils",  # uuid7 ids (core.collections.registry, core.cache.sqlite/duckdb)
-    "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
-    "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
-    "httpx",  # traced outbound HTTP transport (core.http_client)
     "pyyaml>=6.0",  # duplicate-key-refusing loader for human-authored files (core.authored_yaml)
+    "pydantic-core",  # to_jsonable_python (core.serialization); pydantic pins the release
 ]
 
 [project.optional-dependencies]
+# The signed-token and encryption half of core.security (identity tokens, proofs of possession,
+# service envelopes, sealing), and the NATS L3 proxy, which signs its door requests with it. The
+# tiers, the SQL backend, migrations, coordination and the sandbox / secret-reference / freshness
+# modules import without it; threetears.core.security and .backends name this extra when a name
+# behind it is reached without it.
+security = [
+    "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
+    "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
+]
+# The traced outbound HTTP transport (core.http_client) and the egress selector's clients.
+http = ["httpx"]
 # The L2 (NATS KV) tier. Core never imports `nats-py` itself -- it reaches the
 # client only through `threetears.nats`, whose nats-py-backed names are now
 # lazy -- so this extra is the single switch for "this process talks to NATS".
@@ -44,7 +51,7 @@ dependencies = [
 # installing it is the difference between a wheel install and a source build.
 # The git L3 (threetears.core.backends.git) needs it too: its writer lease,
 # forwarding and the advanced broadcast run over the NATS client.
-nats = ["3tears-nats[client]>=0.72.0,<0.73.0"]
+nats = ["3tears-nats[client]>=0.73.0,<0.74.0"]
 tracing = ["opentelemetry-api>=1.20,<2"]
 # needed by :func:`threetears.core.egress.SocksEgress` / :func:`WarpEgress`, which build
 # ``socks5://`` proxy URLs. httpx routes those through socksio and raises ImportError without
@@ -68,7 +75,12 @@ testing = [
     "testcontainers[nats,postgres]>=4.0",
     "docker>=7.0",
     "pytest>=8.0",
+    "boto3",  # the MinIO bucket fixture (core.testing.fixtures)
 ]
+# Value types core's L1 caches and schema mapping accept when the host already uses them: pgvector's
+# Vector columns and uuid_utils' UUID. Core probes for each and works without it.
+pgvector = ["pgvector"]
+uuid-utils = ["uuid-utils"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

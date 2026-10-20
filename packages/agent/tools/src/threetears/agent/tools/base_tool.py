@@ -12,7 +12,7 @@ from typing import Any
 
 from threetears.agent.tools.coercion import normalize_kwargs
 from threetears.agent.tools.http_operation import RestAffordance
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "CONFLICT",
@@ -296,15 +296,16 @@ class TearsTool(ABC):
         try:
             schema = self.mcp_schema()
             normalized = normalize_kwargs(kwargs, schema.input_schema)
-        except Exception:
+        except Exception as exc:
             # coercion never breaks a tool: fall back to raw kwargs if
             # mcp_schema() or normalize_kwargs raises. log so the fallback
             # is visible in diagnostics instead of silently masking a bug
             # in the tool's schema.
-            _log.warning(
-                "tool input coercion fell back to raw kwargs",
-                extra={"extra_data": {"tool_class": type(self).__name__}},
-                exc_info=True,
+            contain(
+                exc,
+                log=_log,
+                what="tool input coercion fell back to raw kwargs",
+                extra={"tool_class": type(self).__name__},
             )
             normalized = kwargs
         return await self.execute(**normalized)

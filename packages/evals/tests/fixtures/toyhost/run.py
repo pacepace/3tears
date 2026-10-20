@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.kernel import CampaignDesign, EvalCampaign
+from threetears.evals.kernel import AspectDesign, EvalCampaign
 from threetears.evals.schema import (
     DEFAULT_JUDGE_TEMPERATURE,
     ControlEndState,
@@ -68,6 +68,7 @@ from threetears.evals.schema import (
 )
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost, WorldRegistry
 from threetears.evals.run import JudgeService, RunnerOptions, execute_run, run_blocking
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign_of_one_aspect
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_COST_CEILING_USD,
     TOYHOST_GRADER_VERSION,
@@ -120,8 +121,8 @@ EVERY_FIELD_EMITTED = f'call_count("{EXTRACTOR_TOOL}.{EMIT_FIELD_ACTION}") == {l
 HOLD_FIRED = f'fired("{PAYMENT_HOLD}")'
 HOLD_IN_FORCE = f'state.{PAYMENT_HOLD} == "held"'
 
-#: The question this campaign declares, by id.
-RUN_QUESTION_ID = "q-extractor-model"
+#: The one question this campaign asks of its arms.
+RUN_QUESTION = "is the dearer extractor worth what it costs per document?"
 
 
 def toyhost_template() -> EvalTemplate:
@@ -459,7 +460,7 @@ async def execute_toyhost_run(
     )
 
 
-def toyhost_run_design() -> CampaignDesign:
+def toyhost_run_design() -> AspectDesign:
     """What the run-path campaign declared before any of it ran.
 
     One nominal axis at two levels — the extractor model, which is the shared core's own lever
@@ -468,10 +469,11 @@ def toyhost_run_design() -> CampaignDesign:
     of the corpus campaign's observational shape and is the reason both exist.
 
     :return: The declaration.
-    :rtype: CampaignDesign
+    :rtype: AspectDesign
     """
-    return CampaignDesign.model_validate(
+    return AspectDesign.model_validate(
         {
+            "merit_axes": [],
             "axes": [
                 {
                     "axis_id": CANDIDATE_MODEL_LEVER,
@@ -485,14 +487,6 @@ def toyhost_run_design() -> CampaignDesign:
                     "rationale": "does the dearer extractor earn its price on the fields it is graded on",
                 }
             ],
-            "questions": [
-                {
-                    "id": RUN_QUESTION_ID,
-                    "text": "is the dearer extractor worth what it costs per document?",
-                    "asked_at": TOYHOST_INSTANT,
-                }
-            ],
-            "declared_at": TOYHOST_INSTANT,
             "intended_repetitions": RUN_K,
             # The opposite of the corpus campaign's pair on BOTH axes, which is why both
             # fixtures exist: three fixed invoices every arm saw is a controlled stimulus, and a
@@ -515,7 +509,7 @@ def toyhost_run_campaign(path: ToyhostRunPath) -> EvalCampaign:
     :return: The campaign, naming both arms in declaration order.
     :rtype: EvalCampaign
     """
-    return EvalCampaign(
+    return toyhost_campaign_of_one_aspect(
         id="7c1e2f05-4b83-42d7-9a6e-8d0f35b91c47",
         scope_id=TOYHOST_SCOPE,
         name="extractor model bake-off",
@@ -524,7 +518,8 @@ def toyhost_run_campaign(path: ToyhostRunPath) -> EvalCampaign:
         behavior="extract_invoice_fields",
         template_id=path.template.id,
         run_ids=[run.id for run in path.runs],
-        declared_design=toyhost_run_design(),
+        design=toyhost_run_design(),
+        question=RUN_QUESTION,
         created_by="test:fixture",
     )
 
@@ -595,7 +590,7 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
 
     control_key = variant_key_of_run(path.host.storage.query_eval_results_by_run(control.id, control.scope_id))
     assert control_key is not None, "the control batch resolves no variant"
-    design = CampaignDesign.model_validate(
+    design = AspectDesign.model_validate(
         {
             "axes": [
                 {
@@ -604,12 +599,10 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
                     "rationale": "does reranking deeper earn its latency",
                 }
             ],
-            "declared_at": TOYHOST_INSTANT,
-            "control": control_key,
             "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
         }
     )
-    return EvalCampaign(
+    return toyhost_campaign_of_one_aspect(
         id=str(uuid.uuid5(_RUN_ID_NAMESPACE, "campaign|" + "|".join(run.id for run in members))),
         scope_id=TOYHOST_SCOPE,
         name="retrieval depth sweep",
@@ -618,7 +611,9 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
         behavior="extract_invoice_fields",
         template_id=path.template.id,
         run_ids=[run.id for run in members],
-        declared_design=design,
+        design=design,
+        question="",
+        control_key=control_key,
         created_by="test:fixture",
     )
 
@@ -634,7 +629,7 @@ __all__ = [
     "RUN_DOCUMENTS",
     "RUN_K",
     "RUN_MODELS",
-    "RUN_QUESTION_ID",
+    "RUN_QUESTION",
     "RUN_RETRIEVER_TOP_K",
     "ToyhostArm",
     "ToyhostRunPath",

@@ -17,13 +17,15 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
+from threetears.observe.containment import contain
 from threetears.observe.logging import get_logger
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SpanExporter
 
     from threetears.observe._otel_internals import OtelLogExport
 
@@ -45,10 +47,16 @@ class TelemetryConfig:
     Host applications build this from their own settings and pass it to
     ``init_telemetry()``.  All fields have sensible defaults for local
     development.
+
+    ``protocol`` picks how spans reach ``endpoint``. ``"grpc"`` sends OTLP/gRPC to it and needs
+    the ``otel`` extra. ``"http/protobuf"`` posts OTLP/HTTP to ``<endpoint>/v1/traces`` -- the
+    OTLP exporter spec's rule for a base endpoint, so ``endpoint`` is the collector's base URL,
+    conventionally port 4318 -- and runs on the ``otel-http`` extra, which installs no gRPC.
     """
 
     enabled: bool = False
     endpoint: str = "http://localhost:4317"
+    protocol: Literal["grpc", "http/protobuf"] = "grpc"
     service_name: str = "threetears"
     service_version: str = "0.1.0"
     sample_rate: float = 1.0
@@ -124,8 +132,8 @@ class _CallSiteEnrichingHandler(logging.Handler):
 def init_telemetry(config: TelemetryConfig) -> bool:
     """Initialize OpenTelemetry tracing and (optionally) log export.
 
-    Sets up a ``TracerProvider`` with OTLP gRPC span export and ratio-based
-    sampling.  Standard ``OTEL_*`` env vars are suppressed to prevent ambient
+    Sets up a ``TracerProvider`` with OTLP span export (gRPC or HTTP, per
+    ``config.protocol``) and ratio-based sampling.  Standard ``OTEL_*`` env vars are suppressed to prevent ambient
     configuration from leaking in.
 
     If ``config.loki_endpoint`` is set, also initializes OTel log export
@@ -135,19 +143,23 @@ def init_telemetry(config: TelemetryConfig) -> bool:
 
     :param config: telemetry configuration built by the host application.
     :returns: True if tracing was successfully initialized, False if disabled.
+    :raises ValueError: when ``config.protocol`` is not one this module exports over
+    :raises ImportError: when ``config.protocol`` is ``"grpc"`` and the ``otel`` extra's gRPC
+        exporter is not installed
     """
     global _tracer_provider, _shutdown_called  # noqa: PLW0603
 
     if not config.enabled:
         logger.info("OpenTelemetry tracing disabled")
         return False
+    if config.protocol not in ("grpc", "http/protobuf"):
+        raise ValueError(f"unknown OTLP protocol {config.protocol!r}; expected 'grpc' or 'http/protobuf'")
 
     # Suppress ambient OTEL_* env vars
     for var in config.suppressed_env_vars:
         os.environ.pop(var, None)
 
     from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -165,13 +177,7 @@ def init_telemetry(config: TelemetryConfig) -> bool:
     sampler = TraceIdRatioBased(config.sample_rate)
     provider = TracerProvider(resource=resource, sampler=sampler)
 
-    exporter = OTLPSpanExporter(
-        endpoint=config.endpoint,
-        timeout=config.export_timeout_seconds,
-        insecure=True,
-    )
-
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(BatchSpanProcessor(_span_exporter(config)))
 
     # Reset the once-only flag so we can (re-)set the provider: on OTel >=1.39
     # set_tracer_provider is guarded so it only takes effect once. See _otel_internals.
@@ -192,6 +198,7 @@ def init_telemetry(config: TelemetryConfig) -> bool:
         extra={
             "extra_data": {
                 "endpoint": config.endpoint,
+                "protocol": config.protocol,
                 "service_name": config.service_name,
                 "sample_rate": config.sample_rate,
             }
@@ -203,6 +210,36 @@ def init_telemetry(config: TelemetryConfig) -> bool:
         _init_log_export(config, resource)
 
     return True
+
+
+def _span_exporter(config: TelemetryConfig) -> SpanExporter:
+    """the OTLP span exporter ``config.protocol`` names.
+
+    :param config: telemetry configuration
+    :ptype config: TelemetryConfig
+    :return: an exporter to ``config.endpoint``
+    :rtype: SpanExporter
+    :raises ImportError: when the protocol is ``"grpc"`` and the gRPC exporter is not installed
+    """
+    if config.protocol == "http/protobuf":
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter as HttpSpanExporter
+
+        return HttpSpanExporter(
+            endpoint=f"{config.endpoint.rstrip('/')}/v1/traces",
+            timeout=config.export_timeout_seconds,
+        )
+    try:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as GrpcSpanExporter
+    except ImportError as exc:
+        raise ImportError(
+            "OTLP/gRPC trace export needs the otel extra: install 3tears-observe[otel], "
+            "or set TelemetryConfig.protocol='http/protobuf' and install 3tears-observe[otel-http]",
+        ) from exc
+    return GrpcSpanExporter(
+        endpoint=config.endpoint,
+        timeout=config.export_timeout_seconds,
+        insecure=True,
+    )
 
 
 def _init_log_export(config: TelemetryConfig, resource: Resource) -> None:
@@ -363,10 +400,11 @@ class _BoundedFlush:
             try:
                 completed = bool(signal_flush.flush(timeout_millis=remaining_millis))
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything, and one signal's failure must not stop the others flushing; logged, and reported as not flushed
-                logger.warning(
-                    "telemetry flush failed",
-                    exc_info=True,
-                    extra={"extra_data": {"signal": signal, "error_type": type(exc).__name__}},
+                contain(
+                    exc,
+                    log=logger,
+                    what="telemetry flush failed",
+                    extra={"signal": signal, "error_type": type(exc).__name__},
                 )
                 completed = False
                 raised = True
@@ -552,8 +590,8 @@ def shutdown_telemetry() -> None:
         # may not prevent ``init_telemetry()`` being called again; logged, for the reason above.
         try:
             _log_export.shutdown()
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not prevent init_telemetry() being callable again; logged, not silenced
-            logger.warning("telemetry shutdown: log provider shutdown failed", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not prevent init_telemetry() being callable again; logged, not silenced
+            contain(exc, log=logger, what="telemetry shutdown: log provider shutdown failed")
         _log_export = None
 
     if _tracer_provider is None:
@@ -573,9 +611,11 @@ def shutdown_telemetry() -> None:
     try:
         _tracer_provider.shutdown()
     except Exception as exc:  # noqa: BLE001 -- shutdown continues regardless
-        logger.warning(
-            "OTel provider shutdown failed; exporter resources may not be released",
-            extra={"extra_data": {"error": str(exc)}},
+        contain(
+            exc,
+            log=logger,
+            what="OTel provider shutdown failed; exporter resources may not be released",
+            extra={"error": str(exc)},
         )
 
     # Reset the global provider so new init_telemetry calls work

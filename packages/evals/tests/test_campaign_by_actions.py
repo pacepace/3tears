@@ -5,10 +5,10 @@ join it, and a control could be named only at creation. Their refusals sent the 
 (``analysis.add_runs_to_campaign``, ``set_campaign_control``) no action reaches. Pinned here, driven through
 :meth:`MountedTool.call` as every transport drives it:
 
-- **The whole path is actions**: create exploratory, ``campaign_update`` a design before any run joins (a design is
-  frozen once one has: ``test_campaign_freeze.py``), ``campaign_runs_add`` the runs, and ``campaign_update`` its
-  control from one of them, once — the key resolved as ``set_campaign_control`` resolves it.
-- **The design and its control are one write**: a refused control leaves the design unwritten too.
+- **The whole path is actions**: create exploratory, ``campaign_update`` an aspect's design before any run joins (a
+  declaration is frozen once one has: ``test_campaign_freeze.py``), ``campaign_runs_add`` the runs, and
+  ``campaign_update`` its control from one of them, once — the key resolved as ``set_campaign_control`` resolves it.
+- **The declaration and its control are one write**: a refused control leaves the declaration unwritten too.
 - **Membership keeps its rules**: a run outside the scope is not added, a run the campaign does not hold is not
   removed, and removing takes nothing but membership.
 - **A refusal names an action**: the judge configs a second judge names are listed by ``judge_configs_list``.
@@ -27,7 +27,7 @@ from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG
 from threetears.evals.ops import CampaignLine, JudgeConfigListing
 from threetears.evals.schema.models import JudgeConfig
 from packages.evals.tests.factories import make_eval_run
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
 
@@ -38,9 +38,17 @@ def evals() -> MountedTool:
 
 
 def _design(**changes: Any) -> dict[str, Any]:
-    design = toyhost_design().model_dump(mode="json", exclude={"declared_at", "declared_by"})
+    design = toyhost_aspect_design().model_dump(mode="json")
     design.update(changes)
     return design
+
+
+def _aspects(fixture: OpsFixture, run_ids: list[str], *, declared: bool) -> list[dict[str, Any]]:
+    """The toy campaign's one aspect, holding ``run_ids``, declaring its design and a margin or exploratory."""
+    aspect: dict[str, Any] = {"label": fixture.campaign.behavior, "run_ids": run_ids}
+    if declared:
+        aspect.update(design=_design())
+    return [aspect]
 
 
 async def _call(tool: MountedTool, fixture: OpsFixture, action: str, **arguments: Any) -> Any:
@@ -53,7 +61,10 @@ def _stored(fixture: OpsFixture, campaign_id: str) -> EvalCampaign:
     return campaign
 
 
-async def _create(tool: MountedTool, fixture: OpsFixture, run_ids: list[str], **arguments: Any) -> str:
+async def _create(
+    tool: MountedTool, fixture: OpsFixture, run_ids: list[str], *, declared: bool = False, control: str | None = None
+) -> str:
+    arms = [{"label": "control", "role": "control", "from_run_ids": [control]}] if control is not None else []
     created = await _call(
         tool,
         fixture,
@@ -61,9 +72,9 @@ async def _create(tool: MountedTool, fixture: OpsFixture, run_ids: list[str], **
         name="by actions",
         subject_id=TOYHOST_SUBJECT.subject_id,
         behavior=fixture.campaign.behavior,
-        run_ids=run_ids,
-        **({"exploratory": True} if "declared_design" not in arguments else {}),
-        **arguments,
+        aspects=_aspects(fixture, run_ids, declared=declared),
+        **({"campaign_arms": arms} if arms else {}),
+        **({} if declared else {"exploratory": True}),
     )
     assert not created.is_error, created.text
     return str(created.structured["id"])
@@ -75,8 +86,8 @@ def _key_set_campaign_control_resolves(fixture: OpsFixture, run_id: str) -> str:
     designated = set_campaign_control(
         eval_host.storage, fixture.campaign.id, TOYHOST_SCOPE, run_id, set_by="op", profile=eval_host.profile
     )
-    assert designated.declared_design is not None and designated.declared_design.control is not None
-    return designated.declared_design.control
+    assert designated.control is not None
+    return designated.control.variant_key
 
 
 async def test_an_operator_using_only_actions_starts_ad_hoc_and_ends_declared_with_a_control(
@@ -86,7 +97,9 @@ async def test_an_operator_using_only_actions_starts_ad_hoc_and_ends_declared_wi
     first, later = fixture.campaign.run_ids[0], fixture.campaign.run_ids[1]
     campaign_id = await _create(evals, fixture, [])
 
-    declared = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=_design())
+    declared = await _call(
+        evals, fixture, "campaign_update", campaign_id=campaign_id, aspects=_aspects(fixture, [], declared=True)
+    )
     added = await _call(evals, fixture, "campaign_runs_add", campaign_id=campaign_id, run_ids=[first, later])
     controlled = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, control_from_run_id=later)
 
@@ -96,8 +109,9 @@ async def test_an_operator_using_only_actions_starts_ad_hoc_and_ends_declared_wi
     assert not CampaignLine.model_validate(declared.structured).exploratory
     stored = _stored(fixture, campaign_id)
     assert stored.run_ids == [first, later]
-    assert stored.declared_design is not None and stored.declared_design.declared_by == CALLER.identity
-    assert stored.declared_design.control == off_loop(_key_set_campaign_control_resolves, fixture, later)
+    assert not stored.exploratory and stored.declared_by == CALLER.identity
+    assert stored.control is not None
+    assert stored.control.variant_key == off_loop(_key_set_campaign_control_resolves, fixture, later)
 
 
 async def test_control_from_run_id_alone_cannot_re_name_the_control_of_a_campaign_with_runs(
@@ -106,16 +120,16 @@ async def test_control_from_run_id_alone_cannot_re_name_the_control_of_a_campaig
     """A control is addressed once: re-pointing it after the runs joined would re-read them against another arm."""
     fixture = off_loop(ops_fixture)
     first, second = fixture.campaign.run_ids[0], fixture.campaign.run_ids[1]
-    campaign_id = await _create(evals, fixture, [first, second], declared_design=_design(), control_from_run_id=first)
+    campaign_id = await _create(evals, fixture, [first, second], declared=True, control=first)
     before = _stored(fixture, campaign_id)
 
     outcome = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, control_from_run_id=second)
 
-    assert outcome.is_error and "design is frozen" in outcome.text and "re-pointing it" in outcome.text, outcome.text
+    assert outcome.is_error and "declared is frozen" in outcome.text and "re-pointing it" in outcome.text, outcome.text
     after = _stored(fixture, campaign_id)
     assert after == before, "nothing is written"
-    assert after.declared_design is not None
-    assert after.declared_design.control == off_loop(_key_set_campaign_control_resolves, fixture, first)
+    assert after.control is not None
+    assert after.control.variant_key == off_loop(_key_set_campaign_control_resolves, fixture, first)
 
 
 async def test_a_null_control_is_refused_on_a_campaign_with_runs_and_on_an_undeclared_one_is_no_refusal(
@@ -123,7 +137,7 @@ async def test_a_null_control_is_refused_on_a_campaign_with_runs_and_on_an_undec
 ) -> None:
     fixture = off_loop(ops_fixture)
     run = fixture.campaign.run_ids[0]
-    declared = await _create(evals, fixture, [run], declared_design=_design(), control_from_run_id=run)
+    declared = await _create(evals, fixture, [run], declared=True, control=run)
     exploratory = await _create(evals, fixture, [run])
 
     cleared = await _call(evals, fixture, "campaign_update", campaign_id=declared, control_from_run_id=None)
@@ -131,31 +145,24 @@ async def test_a_null_control_is_refused_on_a_campaign_with_runs_and_on_an_undec
 
     assert cleared.is_error and "clearing it" in cleared.text, cleared.text
     assert not nothing_to_clear.is_error, nothing_to_clear.text
-    stored = _stored(fixture, declared).declared_design
-    assert stored is not None and stored.control is not None, "the control the runs were read against stays"
-    assert _stored(fixture, exploratory).declared_design is None
+    assert _stored(fixture, declared).control is not None, "the control the runs were read against stays"
+    assert _stored(fixture, exploratory).exploratory
 
 
 @pytest.mark.parametrize(
     ("start", "arguments", "says"),
     [
-        pytest.param("exploratory", {"control_from_run_id": "{run}"}, "declared_design", id="no-declaration"),
+        pytest.param("exploratory", {"control_from_run_id": "{run}"}, "declares nothing", id="no-declaration"),
         pytest.param(
             "exploratory",
-            {"declared_design": "{design}", "control_from_run_id": "run-not-in-the-campaign"},
+            {"aspects": "{declared}", "control_from_run_id": "run-not-in-the-campaign"},
             "is not attached",
             id="a-run-the-campaign-does-not-hold",
         ),
         pytest.param(
-            "exploratory",
-            {"declared_design": "{typed}", "control_from_run_id": "{run}"},
-            "give one",
-            id="a-typed-control-beside-a-control-run",
-        ),
-        pytest.param(
             "declared",
-            {"declared_design": None, "exploratory": True, "control_from_run_id": "{run}"},
-            "withdrawing",
+            {"aspects": "{withdrawn}", "exploratory": True, "control_from_run_id": "{run}"},
+            "withdraws its declaration",
             id="a-control-on-a-withdrawn-declaration",
         ),
     ],
@@ -165,17 +172,20 @@ async def test_a_control_with_nothing_to_hold_it_is_refused_and_the_design_is_no
 ) -> None:
     fixture = off_loop(ops_fixture)
     run = fixture.campaign.run_ids[0]
-    starting = {"declared_design": _design()} if start == "declared" else {}
-    # With no run yet, so each refusal is the one under test rather than the frozen design's.
-    campaign_id = await _create(evals, fixture, [], **starting)
+    # With no run yet, so each refusal is the one under test rather than the frozen declaration's.
+    campaign_id = await _create(evals, fixture, [], declared=start == "declared")
     before = _stored(fixture, campaign_id)
-    values = {"{run}": run, "{design}": _design(), "{typed}": _design(control="a" * 64)}
+    values = {
+        "{run}": run,
+        "{declared}": _aspects(fixture, [], declared=True),
+        "{withdrawn}": _aspects(fixture, [], declared=False),
+    }
     resolved = {key: values.get(value, value) if isinstance(value, str) else value for key, value in arguments.items()}
 
     outcome = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, **resolved)
 
     assert outcome.is_error and says in outcome.text, outcome.text
-    assert _stored(fixture, campaign_id) == before, "the design and its control are one write"
+    assert _stored(fixture, campaign_id) == before, "the declaration and its control are one write"
 
 
 async def test_a_run_outside_the_scope_is_not_added_and_none_beside_it_is(evals: MountedTool) -> None:

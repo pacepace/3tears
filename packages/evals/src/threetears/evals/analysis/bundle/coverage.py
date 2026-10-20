@@ -19,7 +19,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.analysis.stats import clustered_standard_error
 from threetears.evals.kernel.declaration import (
-    CampaignDesign,
+    AspectDesign,
     SweptAxis,
 )
 from threetears.evals.schema.hashing import canonical_digest
@@ -51,6 +51,7 @@ from threetears.evals.analysis.bundle.config import (
     _resolve_config,
     _declared_axes,
     _unexercised_levers,
+    _with_unobserved_unknown,
     EffectiveLever,
 )
 from threetears.evals.analysis.bundle.design import (
@@ -185,7 +186,7 @@ def _reportable_levers(
     resolved: set[str],
     records: list[ScoreRecord],
     effective_by_run: dict[str, dict[str, EffectiveLever]],
-    declared_design: CampaignDesign | None,
+    declared_design: AspectDesign | None,
     engaged: set[str],
 ) -> set[str]:
     """Which levers earn a coverage row: the ones that MOVED, plus the ones the campaign declared.
@@ -233,7 +234,7 @@ def _reportable_levers(
     :param effective_by_run: Each run's resolved levers, keyed by run id.
     :ptype effective_by_run: dict[str, dict[str, EffectiveLever]]
     :param declared_design: What the campaign SET OUT to sweep, or None when it declared nothing.
-    :ptype declared_design: CampaignDesign | None
+    :ptype declared_design: AspectDesign | None
     :param engaged: Levers the launch named or observation recovered, across every run.
     :ptype engaged: set[str]
     :return: The levers to build rows for.
@@ -281,7 +282,7 @@ def _run_axis_identities(
 
 
 def _declared_crossing(
-    design: CampaignDesign | None,
+    design: AspectDesign | None,
     runs: list[EvalRun],
     results_by_run: dict[str, list[EvalResult]],
     *,
@@ -291,12 +292,12 @@ def _declared_crossing(
 
     A cell is one declared level of every declared axis. A run sits at a cell when each axis's level joins to
     that cell's level (:func:`_run_axis_identities`). An unrun cell the design left out on purpose
-    (:meth:`~threetears.evals.kernel.declaration.CampaignDesign.skipped_by_design`) is ``skipped_by_design``
+    (:meth:`~threetears.evals.kernel.declaration.AspectDesign.skipped_by_design`) is ``skipped_by_design``
     and is never a gap; an unrun cell it meant to run is ``not_run``, unless some run's level on an axis cannot
     be established, when it may be sitting there and the cell is ``undetermined``.
 
     :param design: The campaign's declaration.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results.
@@ -420,7 +421,7 @@ def _coverage_map(
     apparatus_levels: dict[str, dict[str, str | None]],
     design: RealizedDesign,
     results_by_run: dict[str, list[EvalResult]],
-    declared_design: CampaignDesign | None,
+    declared_design: AspectDesign | None,
     *,
     folds: _SurfaceFolds,
     observations: _MechanismObservations,
@@ -480,7 +481,7 @@ def _coverage_map(
     :ptype results_by_run: dict[str, list[EvalResult]]
     :param declared_design: What the campaign SET OUT to sweep. A declared axis earns a row even
         when nothing resolved it — see :func:`_reportable_levers`.
-    :ptype declared_design: CampaignDesign | None
+    :ptype declared_design: AspectDesign | None
     :param folds: The campaign's :class:`_SurfaceFolds`. A resolved surface earns no row of its own
         where its movement across its cohort is its swept members' movement — the member rows
         already report that change, and a second row levelled by content hash would count one
@@ -532,6 +533,9 @@ def _coverage_map(
     # A lever read off what ran that no comparison exercised is no lever, unless the campaign declared it as an axis.
     unexercised = _unexercised_levers(runs, results_by_run, profile=profile, declared_axes=axes)
     levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged) - unexercised
+    # A recovered lever a run never observed is unknown there, not a level of its own: its records leave that lever's
+    # levels, cells and k rather than sitting at the inherited default beside the arms that did observe it.
+    effective_by_run = _with_unobserved_unknown(effective_by_run, profile=profile, exempt=axes)
 
     coverage: list[LeverCoverageInput] = []
     declared_axes = {axis.axis_id: axis for axis in declared_design.axes} if declared_design else {}
@@ -550,11 +554,14 @@ def _coverage_map(
         # / n=0 / unswept, which is the honest reading — nothing here measured it.
         cohort_records = [record for record in records if record.run_id in cohort]
         composite_records = [r for r in cohort_records if r.metric == METRIC_COMPOSITE and r.value is not None]
-        n_distinct_results = len({record.result_id for record in cohort_records})
         levels = sorted(
             {level for record in cohort_records if (level := _lever_value(record, lever, effective_by_run)) is not None}
         )
         cells = len(levels)
+        # Over the records that sit at a level: a run that never observed a recovered lever is not measured on it.
+        n_distinct_results = len(
+            {r.result_id for r in cohort_records if _lever_value(r, lever, effective_by_run) is not None}
+        )
         # The same records the levels were read from, so a mechanism is compared over exactly the
         # levels and cohort every other number on the row describes.
         result_ids_by_level: dict[str, set[str]] = {}

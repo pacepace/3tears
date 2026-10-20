@@ -57,7 +57,7 @@ async def dear(case):
     """Answer at a price."""
     return Answer("yes", model="m", cost_usd=1.0)
 
-over = Eval([{"label": "yes"}] * 4, dear, ["label"], k=1, max_cost_usd=0.5, name="over")
+over = Eval([{"label": "yes"}] * 4, dear, ["label"], k=1, max_cost_usd=0.5, measure_latency=True, name="over")
 '''
 
 
@@ -99,7 +99,7 @@ def test_a_comparison_whose_gate_fails_exits_4(capsys: pytest.CaptureFixture[str
 def test_a_run_stopped_short_exits_1(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([_write("over.py", OVER_BUDGET)]) == EXIT_RUN_DID_NOT_COMPLETE
 
-    assert "stopped: eval run cost cap exceeded" in capsys.readouterr().out
+    assert "stopped by its cost cap: $1.00 of $0.50 at the stop" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

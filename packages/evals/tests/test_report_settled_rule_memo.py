@@ -1,52 +1,102 @@
-"""A memo page where the declared decision rule settled: no answer line repeating it, no finding disputing it, and no
-arm label claiming what its own row contradicts.
+"""A memo page over floors read either way: the memo's own answer, no finding disputing a floor's reading, and no arm
+label claiming what its own row contradicts.
 
-The owner's read of the G2 report (`.29`): "**Answered.** See the decision rule above." repeated what the verdict
-line and the decision table had said; a finding headlined "four cases cannot statistically confirm the drop" sat under
-a ``keep`` the rule had settled on that drop, and read as disputing it; and an arm labelled "cheaper candidate" cost
-more per reply, so the verdict and the tables read as a contradiction. The G2 numbers are replayed through the quick
-path, with the G2 decision rule declared before the run, as the presentation tests replay them.
+A floor warns and never decides, so the memo's answer to the question is printed as written, under the page's warning
+line for each floor broken. The owner's read of the G2 report (`.29`) still holds for a reading a floor settled: a
+finding headlined "four cases cannot statistically confirm the drop" under a drop a floor read as broken reads as
+disputing it; and an arm labelled "cheaper candidate" cost more per reply, so the verdict and the tables read as a
+contradiction. The G2 numbers are replayed through the quick path, with the G2 floors declared before the run, as the
+presentation tests replay them.
+
+Since #845 a rate floor is read either way only on an interval over enough cases, so G2's four cases leave its rate
+floor unclear. Where a test needs the rate settled, the same arms run twenty cases, the candidate failing half of them
+outright: a drop whose whole interval is past the margin.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
 
-from threetears.evals import Eval, Result
+from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     Report,
+    assemble_context_bundle,
     build_code_only_report,
     build_report,
     generate_analysis,
+    get_campaign,
     report_markdown,
 )
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TextBlock
-from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule
+from threetears.evals.analysis.report.decision import FloorReadings, RateReading, read_floor, settles, settles_cost
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.style import LABEL_CLAIMS, lint_page, lint_prose
-from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_QUESTION, G2_RULE, PRODUCTION, answering, declaring
+from threetears.evals.kernel.declaration import Floor
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_bundle_support import memo as authored_memo
+from packages.evals.tests.aspect_support import redeclared
+from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_FLOORS, G2_QUESTION, PRODUCTION, answering, declaring
+from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 #: The G2 campaign's title.
 TITLE = "G2: can the cheaper model replace production?"
 
-#: The G2 finding headline the owner read as disputing the settled keep.
+#: The G2 finding headline the owner read as disputing the drop a floor read as broken.
 DISPUTING = "Candidate model frequently underfilled the queue, but four cases cannot statistically confirm the drop"
 
 
-async def _compare(candidate_cost: float, *, candidate: str = CANDIDATE) -> tuple[Result, AnalysisContextBundle]:
+async def _compare(
+    candidate_cost: float, *, candidate: str = CANDIDATE, shown: bool = False
+) -> tuple[Result, AnalysisContextBundle]:
     """G2's pass counts (production 10 of 12, the candidate 2 of 12), the candidate at ``candidate_cost`` per reply,
-    with the G2 decision rule declared before the run."""
-    arms = {PRODUCTION: answering(10, 0.003092), candidate: answering(2, candidate_cost)}
-    comparison = await Eval(CASES, arms, ["label"], k=3, name="Kairo queue discipline").run(store=":memory:")
-    return comparison, declaring(comparison.report.bundle, G2_QUESTION)
+    with the G2 floors declared before the run.
+
+    ``shown`` runs twenty cases instead, production passing every trial and the candidate the trials of the first ten
+    cases only (30 of 60): a drop shown past the margin on its whole interval, which breaks the rate floor.
+    """
+    if shown:
+        cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(20)]
+        arms = {PRODUCTION: answering(60, 0.003092), candidate: _first_cases(10, candidate_cost)}
+    else:
+        cases = CASES
+        arms = {PRODUCTION: answering(10, 0.003092), candidate: answering(2, candidate_cost)}
+    comparison = await Eval(cases, arms, ["label"], k=3, name="Kairo queue discipline").run(store=":memory:")
+    if not shown:
+        return comparison, declaring(comparison.report.bundle, G2_QUESTION)
+    # The question and the floors are on the campaign before its bundle is assembled, so its family carries the per-case
+    # values a rate floor reads.
+    storage = comparison.host.storage
+    campaign = off_loop(get_campaign, storage, comparison.campaign_id, comparison.scope_id)
+    campaign = redeclared(
+        campaign,
+        question=G2_QUESTION,
+        asked_at="2026-10-14T00:00:00+00:00",
+        design={"merit_axes": []},
+        margin=10.0,
+        floors=G2_FLOORS,
+    )
+    bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=comparison.host.profile)
+    return comparison, declaring(bundle, G2_QUESTION)
+
+
+def _first_cases(right: int, cost: float) -> Any:
+    """A runner answering right on every trial of the first ``right`` cases and wrong on the rest, at ``cost``."""
+
+    async def run(case: Mapping[str, Any]) -> Answer:
+        passes = int(case["text"].rsplit(" ", 1)[1]) < right
+        return Answer(
+            case["label"] if passes else "skipped", model="deepseek", input_tokens=100, output_tokens=10, cost_usd=cost
+        )
+
+    return run
 
 
 def _finding(title: str, measure: str, aliases: dict[str, str], body: str = "") -> dict[str, Any]:
@@ -68,14 +118,9 @@ async def _memo_page(
     comparison: Result, bundle: AnalysisContextBundle, findings: list[dict[str, Any]], answer: str
 ) -> Report:
     """The page a stored analysis of ``findings`` and one answer to the G2 question renders."""
-    memo = {
-        "findings": findings,
-        "decisions": [],
-        "questions": [{"question_id": "q-g2", "resolution": "answered", "answer": answer, "rests_on": [0]}],
-        "next": [],
-    }
+    memo = authored_memo(bundle, findings, means=answer)
     analysis, _ = await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=FixturedClient(json.dumps(memo)),
@@ -97,45 +142,70 @@ def _answers(report: Report) -> list[TextBlock]:
 
 
 # =============================================================================
-# 1. The answer line: none where the rule settled every clause, the open clauses where it did not
+# 1. The answer line: the memo's own, under the warning a broken floor opens the page with
 # =============================================================================
 
 
-async def test_a_rule_settled_on_every_clause_leaves_its_question_no_answer_line() -> None:
-    comparison, bundle = await _compare(0.003301)
-    aliases = _aliases(comparison, bundle)
-    report = await _memo_page(
-        comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Keep production."
-    )
-    markdown = report_markdown(report)
-    assert _answers(report) == []
-    assert "Answered." not in markdown and "See the decision rule above." not in markdown
-    assert markdown.count("Keep production") == 1, "the verdict line, once"
-    assert lint_page(markdown, question=G2_QUESTION) == []
+def _warnings(report: Report) -> list[str]:
+    return [
+        b.text
+        for b in report.blocks
+        if isinstance(b, DisclosureBlock) and b.section == "header" and b.source == "floor"
+    ]
 
 
-async def test_a_clause_left_open_is_the_one_answer_line() -> None:
-    # The candidate costs less per reply, which four cases cannot show; its pass rate settles keep.
-    comparison, bundle = await _compare(0.0029)
+async def test_a_broken_floor_never_replaces_the_memo_s_answer() -> None:
+    """Until floors, a settled rule's question got no answer line ("See the decision rule above."). A floor decides
+    nothing: the memo's answer is printed as written, and each broken floor is the page's first line."""
+    comparison, bundle = await _compare(0.003301, shown=True)
     aliases = _aliases(comparison, bundle)
     report = await _memo_page(
         comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Keep production."
     )
     (answer,) = _answers(report)
-    assert answer.body == "Still open: whether cheaper candidate costs less per reply."
+    assert answer.body == "Keep production."
     markdown = report_markdown(report)
-    assert "**Partly answered.** Still open: whether cheaper candidate costs less per reply." in markdown
-    assert "Keep production." not in markdown, "the memo's own answer is not printed"
+    assert "Keep production." in markdown
+    assert "See the decision rule above." not in markdown and "Still open" not in markdown
+    (warning,) = _warnings(report)
+    assert warning.startswith(f"Floor broken on {bundle.aspect}: ")
+    assert markdown.startswith(f"**{warning}**\n\n# ")
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
+async def test_a_memo_recommending_the_arm_a_floor_warns_against_is_printed_as_written() -> None:
+    comparison, bundle = await _compare(0.003301, shown=True)
+    aliases = _aliases(comparison, bundle)
+    report = await _memo_page(
+        comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Switch to the candidate."
+    )
+    (answer,) = _answers(report)
+    assert answer.body == "Switch to the candidate."
+    assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "contradicts" in b.text]
+
+
+async def test_the_broken_rate_floor_is_one_warning_and_the_verdict_names_no_keep() -> None:
+    """The candidate costs more on every case by one amount: no interval reads the cost floor, so it is unclear and
+    warns of nothing, though the candidate is dearer (until the cost floor read its own interval, it broke)."""
+    _, bundle = await _compare(0.003301, shown=True)
+    report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
+    (rate,) = _warnings(report)
+    assert rate.startswith(
+        f"Floor broken on {bundle.aspect}: cheaper candidate's pass rate falls past the 10-point margin on its whole "
+        "interval, a drop of "
+    ), rate
+    assert lint_prose(rate) == []
+    (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    assert not verdict.startswith("Keep")
+
+
 # =============================================================================
-# 2. A finding never disputes a difference a settled clause decided
+# 2. A finding never disputes a difference a floor read either way decided
 # =============================================================================
 
 
 async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_hedge_goes() -> None:
-    comparison, bundle = await _compare(0.003301)
+    comparison, bundle = await _compare(0.003301, shown=True)
     aliases = _aliases(comparison, bundle)
     body = "The candidate skipped the queue. The drop is not statistically significant."
     cost = "Cheaper candidate cost more per reply, but four cases cannot establish the difference"
@@ -148,20 +218,33 @@ async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_he
     markdown = report_markdown(report)
     titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
     # The two values plainly (the gap is measured and stated), then one sentence of what is withheld and why: the
-    # gap's interval, never the gap, and never a bare "needs 5".
-    assert titles == [
-        "Cheaper candidate passed 2 of 12 on Label matched to production's 10. Whether that gap holds on more cases "
-        "is not estimated below 5 independent cases.",
-        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092. Whether that gap holds on more "
-        "cases is not estimated below 5 independent cases.",
-    ]
+    # gap's interval, never the gap, and never a bare "needs 5". The cost floor read nothing either way (every case
+    # cost alike), so the cost finding is the writer's own, its hedge left to it.
+    assert titles == ["Cheaper candidate passed 30 of 60 on Label matched to production's 60.", cost]
     assert "cannot statistically confirm" not in markdown.split("## Methods", 1)[0]
     # The body keeps what it adds and drops its hedge: the title already states code's counts.
     (said,) = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_body"]
     assert said == "The candidate skipped the queue."
     disclosed = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and "disputes a difference" in b.text]
-    assert len(disclosed) == 3 and DISPUTING in disclosed[0]
+    assert len(disclosed) == 2 and DISPUTING in disclosed[0]
     assert lint_page(markdown, question=G2_QUESTION) == []
+
+
+async def test_a_hedge_on_a_drop_past_the_margin_on_its_point_estimate_alone_stands() -> None:
+    """G2's own four cases: the drop is past the margin on its point estimate only, so the rate floor is unclear (#845),
+    and a finding saying four cases cannot confirm it says what the floor says. The cost floor is unclear on four cases
+    too, so its finding stands as well (until the cost floor read its own interval, it was replaced)."""
+    comparison, bundle = await _compare(0.003301)
+    aliases = _aliases(comparison, bundle)
+    cost = "Cheaper candidate cost more per reply, but four cases cannot establish the difference"
+    report = await _memo_page(
+        comparison,
+        bundle,
+        [_finding(DISPUTING, "match", aliases), _finding(cost, "production_replicating_cost", aliases)],
+        "Keep production.",
+    )
+    titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
+    assert titles == [DISPUTING, cost]
 
 
 async def test_a_finding_naming_no_reading_is_noted_with_what_was_not_tested_and_leaves_the_memo() -> None:
@@ -222,40 +305,45 @@ def test_a_settled_difference_is_disputed_only_in_a_narrow_set_of_words(said: st
     style = MemoStyle(bundle=AnalysisContextBundle.model_construct(scoreboard=[], cell_measures=[]), names={})
     assert (style.sentence(said, settled="Code's counts.") == "Code's counts.") is disputes
     assert style.hedged == ([said] if disputes else [])
-    # Without a settled clause on the reading, nothing is replaced.
+    # Without a floor read either way on the reading, nothing is replaced.
     assert MemoStyle(bundle=style.bundle, names={}).sentence(said) == said
     if disputes:
         (line,) = decision_disclosures(style)
         assert said in line and "code's sentence on that reading replaced it" in line
 
 
-def test_a_keep_settles_every_rate_observed_past_the_margin_and_no_other() -> None:
-    rule = G2_RULE
-    verdict = evaluate_rule(
-        rule,
-        RuleReadings(
-            rates=(RateReading("the pass rate", 10, 12, 2, 12),), control_cost=0.003092, candidate_cost=0.003301
-        ),
-        control="production",
-        candidate="cheaper candidate",
-    )
+def test_a_floor_settles_a_rate_it_read_and_showed_either_way_and_no_other() -> None:
+    """#845 changed this contract: under a keep, any rate observed past the margin was settled, even one the rule
+    never read. Now a rate is settled only where a rate floor read it and showed it broken or held."""
     check = 'goal_state:call_count("music.queue_track") >= 2'
-    # A check the rule did not read, observed 42 points down: the clause it breaks has settled it.
-    assert verdict.settles(RateReading("check", 11, 12, 6, 12, measure=check))
-    # Within the margin, or past it only if every lost trial went the candidate's way, it is not settled.
-    assert not verdict.settles(RateReading("check", 11, 12, 10, 12, measure=check))
-    assert verdict.settles(RateReading("check", 11, 12, 9, 12, measure=check))
-    assert not verdict.settles(RateReading("check", 11, 12, 9, 12, candidate_remaining=6, measure=check))
-    assert verdict.settles_cost()
-    unsettled = evaluate_rule(
-        rule,
-        RuleReadings(rates=(RateReading("the pass rate", 10, 12, 10, 12),), control_cases=4, candidate_cases=4),
-        control="production",
-        candidate="cheaper candidate",
+    broken = RateReading("check", 60, 60, 30, 60, interval=(-0.81, -0.124), measure=check)
+    held = RateReading("held", 60, 60, 60, 60, interval=(-0.05, 0.05), measure="held")
+    past = RateReading("past", 60, 60, 48, 60, interval=(-0.4, 0.05), measure="past")
+    readings = FloorReadings(
+        rates=(RateReading("the pass rate", 60, 60, 60, 60, interval=(-0.05, 0.05)), broken, held, past),
+        control_cost=0.003092,
+        candidate_cost=0.003301,
+        control_cases=20,
+        candidate_cases=20,
+        cost_interval=(0.0001, 0.0003),
+        cost_compared=True,
     )
-    assert unsettled.outcome == "unsettled"
-    assert not unsettled.settles(RateReading("check", 11, 12, 6, 12, measure=check))
-    assert not unsettled.settles_cost()
+    on = {"control": "production", "candidate": "cheaper candidate"}
+    verdicts = [read_floor(Floor(aspect="queue", clause=clause), readings, **on) for clause in G2_FLOORS]
+    assert [verdict.outcome for verdict in verdicts] == ["broken", "broken"]
+    assert [read.outcome for read in verdicts[0].rates] == ["held", "broken", "held", "unclear"]
+    # Shown broken, and shown held: both settled.
+    assert settles(verdicts, broken) and settles(verdicts, held)
+    # Past the margin on its point estimate alone: 20 points down, and not settled.
+    assert not settles(verdicts, past)
+    # A check no floor read, observed 42 points down: no floor settled it.
+    assert not settles(verdicts, RateReading("other", 11, 12, 6, 12, measure="goal_state:other"))
+    assert settles_cost(verdicts)
+    thin = FloorReadings(rates=(RateReading("the pass rate", 10, 12, 10, 12),), control_cases=4, candidate_cases=4)
+    unclear = [read_floor(Floor(aspect="queue", clause=clause), thin, **on) for clause in G2_FLOORS]
+    assert [verdict.outcome for verdict in unclear] == ["unclear", "unclear"]
+    assert not settles(unclear, RateReading("check", 11, 12, 6, 12, measure=check))
+    assert not settles_cost(unclear)
 
 
 # =============================================================================

@@ -9,10 +9,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from threetears.agent.tools.http_operation import RestAffordanceError
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
 from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.ownership import RefusalCode
 from threetears.registry.registration import (
     RegistrationHandler,
     RegistrationResponse,
@@ -175,6 +177,52 @@ class TestRegistrationHandlerValidation:
         response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert "malformed" in response_data["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.expect_contained(
+        RestAffordanceError,
+        why="a remote pod's incoherent REST face is a malformed manifest, which pydantic does not wrap",
+    )
+    async def test_rejects_a_manifest_whose_rest_face_is_incoherent(self) -> None:
+        """a REST face naming a method outside the vocabulary is refused as a malformed manifest.
+
+        Its dataclass raises RestAffordanceError, a TypeError pydantic does not wrap in a
+        ValidationError, so the narrowed catch names it alongside ValidationError.
+        """
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test")
+        nc = _make_registry_nc()
+        await handler.start(nc)
+
+        manifest = json.loads(_make_manifest().model_dump_json())
+        manifest["tools"][0]["face_rest"] = {"method": "FETCH", "path_template": "/things"}
+        await handler.handle_registration(_make_nats_msg(data=json.dumps(manifest).encode("utf-8")))
+
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
+        assert response_data["success"] is False
+        assert response_data["error_code"] == RefusalCode.INVALID_MANIFEST.value
+
+    @pytest.mark.asyncio
+    async def test_a_bug_while_parsing_propagates_rather_than_reading_as_malformed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """only a body that is not a manifest is refused as malformed; a TypeError is a bug.
+
+        It used to be contained and answered as "malformed manifest", blaming the pod.
+        """
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test")
+        nc = _make_registry_nc()
+        await handler.start(nc)
+
+        def _broken(cls: type[RegistrationManifest], data: bytes) -> RegistrationManifest:
+            raise TypeError("a bug in the parse")
+
+        monkeypatch.setattr(RegistrationManifest, "model_validate_json", classmethod(_broken))
+        with pytest.raises(TypeError, match="a bug in the parse"):
+            await handler.handle_registration(_make_nats_msg(data=_make_manifest().model_dump_json().encode("utf-8")))
+        nc.publish_reply.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rejects_empty_pod_id(self) -> None:

@@ -136,6 +136,8 @@ class RevocationGuard:
         :raises ValueError: when ``revoked_at`` is timezone-naive
         :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure -- the
             caller MUST deny. An L2 failure degrades: the write still commits to L3
+        :raises threetears.nats.errors.KvError: on a deployment with no L3, where L2 is the only
+            store, when L2 refused the write: the revocation is not recorded
         """
         if revoked_at.tzinfo is None:
             raise ValueError("RevocationGuard.record_revocation requires a timezone-aware revoked_at")

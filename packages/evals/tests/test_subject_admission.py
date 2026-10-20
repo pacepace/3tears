@@ -27,6 +27,7 @@ from threetears.evals.run import (
     quote_launch,
 )
 from threetears.evals.schema import EvalTemplate
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -84,7 +85,9 @@ def _two_kind_host() -> LaunchHost:
         )
     )
     holder: list[LaunchHost] = []
-    host = dataclasses.replace(toy, kinds={**toy.kinds, JUDGE_KIND: launchable_judge_kind(lambda: holder[0])})
+    host = dataclasses.replace(
+        toy, eval_host=with_registry(toy.eval_host, {**toy.kinds, JUDGE_KIND: launchable_judge_kind(lambda: holder[0])})
+    )
     holder.append(host)
     host.eval_host.storage.save_template(toyhost_template())
     host.eval_host.storage.save_template(
@@ -121,6 +124,10 @@ async def test_the_kinds_resolver_decides_not_one_the_host_holds() -> None:
     fixture = off_loop(ops_fixture)
     [(name, kind)] = fixture.host.launch.kinds.items()
     admitting = dataclasses.replace(kind, resolve_subject=lambda _subject, _scope: None)
-    host = OpsHost(launch=dataclasses.replace(fixture.host.launch, kinds={name: admitting}))
+    host = OpsHost(
+        launch=dataclasses.replace(
+            fixture.host.launch, eval_host=with_registry(fixture.host.launch.eval_host, {name: admitting})
+        )
+    )
     estimate = await launch_estimate(host, _arguments("Vera"), TOYHOST_SCOPE)
     assert estimate.subject_id == "Vera"

@@ -40,9 +40,10 @@ state schema does not declare would be silently dropped.
 The integration is read OPAQUELY off ``config["configurable"]`` as a duck-type: no
 concrete import binds the framework to the host's memory wiring. Opt-in by
 construction: with no integration on ``config["configurable"]`` the seam is a
-pass-through. Every operation soft-fails -- a retrieval fault logs a warning and
-proceeds on the un-merged request rather than failing the turn, exactly like the
-original node.
+pass-through. A retrieval fault does not fail the turn: it is contained (logged and
+counted on ``contained_errors_total``) and the model is told its memories could not be
+read this turn (:data:`_MEMORY_UNREAD_NOTICE`), so an outage never reads as "nothing is
+remembered about this user".
 
 Async is the real path -- the retriever's ``retrieve`` is ``async def``. The
 synchronous :meth:`~MemoryInjectionMiddleware.wrap_model_call` mirror cannot drive it,
@@ -61,7 +62,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.config import get_config
 from langgraph.types import Command
 from threetears.langgraph.state import merge_metadata
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.memory.integration import retrieve_memories
 
@@ -75,6 +76,15 @@ log = get_logger(__name__)
 #: context, used only when relevant to the current turn.
 _MEMORY_CONTEXT_PREFIX = (
     "## Relevant memories about this user\nUse these memories to personalize your response when relevant.\n\n"
+)
+
+#: What the model reads in place of the memory block when retrieval FAILED. No block
+#: reads as "nothing is remembered about this user", and the model then says so -- or
+#: asks again for what it was already told. This says the read failed, and only that.
+_MEMORY_UNREAD_NOTICE = (
+    "## Memories about this user\n"
+    "Memories about this user could not be read this turn, so none are shown here. "
+    "That does not mean there are none: do not tell the user you remember nothing about them."
 )
 
 #: metadata channel key for the surfaced-memory-id ledger. deduped across turns so a
@@ -192,8 +202,8 @@ class MemoryInjectionMiddleware(AgentMiddleware[MemoryInjectionState, Any, Any])
     under :data:`_MEMORY_CONTEXT_PREFIX` (yielding exactly one system message), and the
     surfaced ids are deduped into ``metadata["surfaced_memory_ids"]`` via a returned
     ``Command`` state update. Opt-in: no integration (or no verified identity) on
-    ``config["configurable"]`` -> the seam is a pass-through. Every operation
-    soft-fails: a retrieval fault logs and proceeds on the un-merged request.
+    ``config["configurable"]`` -> the seam is a pass-through. A retrieval fault is
+    contained and the model is told its memories could not be read this turn.
     """
 
     name = "MemoryInjectionMiddleware"
@@ -215,8 +225,8 @@ class MemoryInjectionMiddleware(AgentMiddleware[MemoryInjectionState, Any, Any])
         :class:`ExtendedModelResponse` whose ``Command`` persists the deduped surfaced
         ids under ``metadata["surfaced_memory_ids"]``. Proceeds on the un-merged
         request (a plain response) when no integration/identity is configured, when
-        there is no query, when no memory is surfaced, or when retrieval faults
-        (soft-fail).
+        there is no query, or when no memory is surfaced. When retrieval faults the
+        failure is contained and :data:`_MEMORY_UNREAD_NOTICE` is folded in instead.
 
         :param request: the model request (carries ``system_message`` + ``messages``
             + ``state``).
@@ -234,6 +244,7 @@ class MemoryInjectionMiddleware(AgentMiddleware[MemoryInjectionState, Any, Any])
         call_context = configurable.get("call_context") if integration is not None else None
         memory_text = ""
         surfaced_ids: list[str] = []
+        retrieval_failed = False
         if integration is not None and call_context is not None:
             try:
                 agent_id = call_context.agent_id
@@ -262,9 +273,15 @@ class MemoryInjectionMiddleware(AgentMiddleware[MemoryInjectionState, Any, Any])
                     surfaced: set[str] = set(existing.get(_SURFACED_MEMORY_IDS_KEY, []))
                     surfaced.update(memories)
                     surfaced_ids = list(surfaced)
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- memory injection is best-effort context enrichment; a fault proceeds on the un-merged request rather than failing the turn
-                log.warning("memory injection middleware failed (soft-fail): %s", exc)
-                memory_text, surfaced_ids = "", []
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- memory injection is best-effort context enrichment; a fault runs the turn without memories rather than failing it
+                # contained -- counted on contained_errors_total against this site -- and said
+                # to the model, so an outage is never read as "nothing remembered".
+                contain(exc, log=log, what=f"memory injection middleware failed (soft-fail): {exc}")
+                retrieval_failed = True
+        if retrieval_failed:
+            unread = _fold_into_system(request.system_message, _MEMORY_UNREAD_NOTICE)
+            unread_response: ModelResponse[Any] = await handler(request.override(system_message=unread))
+            return unread_response
         if not memory_text:
             passthrough: ModelResponse[Any] = await handler(request)
             return passthrough

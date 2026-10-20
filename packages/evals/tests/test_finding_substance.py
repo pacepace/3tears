@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.toyhost_memo import (
@@ -30,11 +31,10 @@ from packages.evals.tests.toyhost_memo import (
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.kernel.authored import AuthoredAnalysis, Caveat, Finding, OffVocabulary, validate_authored
-from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS, EvalAnalysis, EvidenceRow, GenerationProvenance
+from threetears.evals.kernel.authored import Caveat, Finding, OffVocabulary, validate_authored
+from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS, EvalAnalysis, EvidenceRow
 from threetears.evals.schema.models import utc_now_iso
-from threetears.evals.kernel.surface import DecisionSurface
-from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, empty_bundle
+from packages.evals.tests.factories import empty_document, make_analysis
 
 
 def _finding(*, invalidates: list[int] | None = None, **overrides) -> Finding:
@@ -55,31 +55,7 @@ def _finding(*, invalidates: list[int] | None = None, **overrides) -> Finding:
 
 def _analysis(findings: list[Finding]) -> EvalAnalysis:
     """An analysis carrying ``findings`` and nothing that links to them."""
-    return EvalAnalysis(
-        scope_id="uni-1",
-        campaign_id="campaign-1",
-        subject_id="ent-maple",
-        subject_kind="agent",
-        behavior="conversation",
-        generation=GenerationProvenance(
-            prompt_id="eval_analysis_gen",
-            prompt_version="v1",
-            generator_model="anthropic/claude-opus",
-            bundle_fingerprint="sha256:abc",
-            generated_at="2026-08-22T00:00:00+00:00",
-            token_cost=0.0,
-            bundle_assembled_at="2026-01-01T00:00:00+00:00",
-            repair_attempts=0,
-            repaired_refusal=None,
-            cell_model_version=1,
-            user_message_digest="sha256:message",
-            bundle_schema_version=CURRENT_BUNDLE_SHAPE,
-            host_declarations_digest="sha256:declarations",
-        ),
-        document=AuthoredAnalysis(findings=findings, decisions=[], questions=[], next=[]),
-        decision_surface=DecisionSurface(),
-        bundle=empty_bundle().to_dict(),
-    )
+    return make_analysis(document=empty_document(findings=findings))
 
 
 class TestGatingIsAPartitionAndSoNeedsAStrictOrder:
@@ -205,8 +181,18 @@ class TestACaveatSaysWhichClassOfQualificationItIs:
         finding = _finding(caveats=[Caveat(kind=kind, text="Two raters only.")])
         return {
             "findings": [finding.model_dump()],
-            "decisions": [],
-            "questions": [],
+            "recommendation": [
+                {
+                    "arm": "control",
+                    "reasons": [],
+                    "confidence": "low",
+                    "rests_on": [0],
+                    "floors_overridden": [],
+                    "behind_on": [],
+                    "bars_missed": [],
+                }
+            ],
+            "aspect_summaries": [],
             "next": [],
         }
 
@@ -224,15 +210,33 @@ class TestACaveatSaysWhichClassOfQualificationItIs:
 class TestEvidenceRowsCarryTheirBasis:
     def test_a_row_with_no_cell_is_refused(self):
         with pytest.raises(ValidationError, match="cell_ref"):
-            EvidenceRow(measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+            EvidenceRow(
+                aspect="conversation", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1"
+            )
 
     def test_a_cell_keyed_row_is_legitimate(self):
-        row = EvidenceRow(cell_ref="v:a", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+        row = EvidenceRow(
+            aspect="conversation",
+            cell_ref="v:a",
+            measure_id="cost_usd",
+            reading="measure",
+            value=0.5,
+            n=3,
+            dispersion="±0.1",
+        )
         assert row.cell_ref == "v:a"
 
     def test_an_empty_cell_ref_is_refused_rather_than_passing_for_a_coordinate(self):
         with pytest.raises(ValidationError):
-            EvidenceRow(cell_ref="", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1")
+            EvidenceRow(
+                aspect="conversation",
+                cell_ref="",
+                measure_id="cost_usd",
+                reading="measure",
+                value=0.5,
+                n=3,
+                dispersion="±0.1",
+            )
 
     @pytest.mark.parametrize("missing", ["n", "dispersion", "reading"])
     def test_n_dispersion_and_the_reading_kind_are_required(self, missing):
@@ -281,7 +285,7 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
         payload["findings"] = [finding, {**copy.deepcopy(finding), "evidence": list(rows)}]
         profile = toyhost_profile()
         analysis, _insights = await generate_analysis(
-            bundle,
+            campaign_bundle(bundle),
             prompt=PROMPT,
             model=MODEL,
             client=FixturedClient(json.dumps(payload)),

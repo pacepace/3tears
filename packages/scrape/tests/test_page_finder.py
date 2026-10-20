@@ -12,12 +12,15 @@ reads, so a helper's shape can change freely as long as the result does not.
 from __future__ import annotations
 
 import json
+import ssl
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
@@ -276,6 +279,70 @@ class TestVerifyCandidatePage:
         assert result.verified is False
         assert result.driver_backend == "nodriver"
         assert "could not fetch" in result.verification_note
+
+    async def test_a_url_httpx_cannot_parse_degrades_to_unverified(self):
+        # a real URL httpx refuses while building the request
+        result = await _find(found=_found("http://[::1/"), verify_client=_serving(_VERIFYING_PAGE))
+        assert result.verified is False
+        assert "could not fetch" in result.verification_note
+        # the note reaches the agent: the failure's type, never its message
+        assert "InvalidURL" in result.verification_note
+        assert "Invalid port" not in result.verification_note
+
+    async def test_a_host_idna_refuses_degrades_to_unverified(self):
+        result = await _find(found=_found("http://xn--ab/"), verify_client=_serving(_VERIFYING_PAGE))
+        assert result.verified is False
+        assert "could not fetch" in result.verification_note
+        assert "InvalidCodepoint" in result.verification_note
+
+    async def test_a_redirect_to_a_host_idna_refuses_degrades_to_unverified(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(302, headers={"location": "http://xn--ab/"})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+        result = await _find(verify_client=client)
+        assert result.verified is False
+        assert "InvalidCodepoint" in result.verification_note
+
+    async def test_a_port_past_65535_degrades_to_unverified(self):
+        # the default transport's connect refuses the port before any socket opens, inside a task
+        # group, so the failure is ExceptionGroup[OverflowError]
+        async with httpx.AsyncClient() as client:
+            result = await _find(found=_found("http://127.0.0.1:99999/"), verify_client=client)
+        assert result.verified is False
+        assert "could not fetch" in result.verification_note
+        assert "ExceptionGroup" in result.verification_note
+
+    async def test_a_failure_group_carrying_a_bug_propagates_whole(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise ExceptionGroup("connect", [OverflowError("port"), TypeError("a bug beside it")])
+
+        with pytest.raises(ExceptionGroup) as excinfo:
+            await _find(verify_client=_client_for(handler))
+        assert excinfo.group_contains(TypeError, match="a bug beside it")
+
+    async def test_a_tls_failure_while_reading_the_body_degrades_to_unverified(self):
+        class _FailingBody(httpx.AsyncByteStream):
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                yield b"<html>"
+                raise ssl.SSLError(1, "[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] bad record mac")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=_FailingBody())
+
+        result = await _find(verify_client=_client_for(handler))
+        assert result.verified is False
+        assert "SSLError" in result.verification_note
+        assert "bad record mac" not in result.verification_note
+
+    async def test_a_bug_in_the_fetch_propagates_rather_than_reading_as_unverified(self):
+        # only httpx's own failures are an unfetchable page; a TypeError is a bug, and used to be
+        # reported as "could not fetch candidate page".
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise TypeError("a bug in the transport")
+
+        with pytest.raises(TypeError, match="a bug in the transport"):
+            await _find(verify_client=_client_for(handler))
 
     async def test_no_injected_client_constructs_and_closes_its_own(self):
         owned_client = _serving(b"<html><body><p>none</p></body></html>")

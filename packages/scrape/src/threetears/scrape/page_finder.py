@@ -33,6 +33,7 @@ which is what check 4 asks: the new facts arrive as additive
 from __future__ import annotations
 
 import json
+import ssl
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,7 +46,7 @@ from threetears.agent.tools import ToolExecutor
 from threetears.agent.tools.builtin.web_fetch import create_web_fetch_tool
 from threetears.agent.tools.builtin.web_search import create_web_search_tool
 from threetears.models import LlmPurpose, create_chat_model
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.search.aggregate import aggregate
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
@@ -404,6 +405,21 @@ def _decode(raw: bytes, declared_charset: str | None) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _unfetched(url: str, exc: Exception) -> tuple[bool, str, str]:
+    """the unverified answer for a candidate page the fetch could not read, with the failure contained.
+
+    :param url: the candidate URL
+    :ptype url: str
+    :param exc: what the fetch raised
+    :ptype exc: Exception
+    :return: (verified, driver_backend guess, note)
+    :rtype: tuple[bool, str, str]
+    """
+    contain(exc, log=log, what=f"page-finder verification fetch failed for {url}: {exc}")
+    # the note reaches the agent, so it names the failure's type only; contain() has the message.
+    return False, "nodriver", f"could not fetch candidate page for verification ({type(exc).__name__})"
+
+
 async def _verify_candidate_page(
     url: str, *, client: httpx.AsyncClient | None = None, max_bytes: int = _VERIFY_MAX_BYTES
 ) -> tuple[bool, str, str]:
@@ -455,11 +471,22 @@ async def _verify_candidate_page(
                     read += len(chunk)
                     if read > max_bytes:
                         break
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-unverified
+        except (httpx.HTTPError, httpx.InvalidURL, UnicodeError, ssl.SSLError) as exc:
             # a fetch failure here must degrade to "unverified," never raise into the caller --
             # same "surface for review, never silently drop" discipline as bounded_retry_structured_call.
-            log.warning("page-finder verification fetch failed for %s: %s", url, exc)
-            return False, "nodriver", f"could not fetch candidate page for verification: {exc}"
+            # what a page can make the fetch raise: httpx's own failures (transport, timeout, protocol,
+            # redirect), InvalidURL for a URL httpx cannot parse, a UnicodeError (idna.IDNAError) for a
+            # host IDNA refuses, directly or by redirect, and an ssl.SSLError raised raw from a body read.
+            # anything else is a bug and propagates.
+            return _unfetched(url, exc)
+        except ExceptionGroup as group:
+            # the default transport's connect runs in a task group, so a port past 65535 -- named by the
+            # URL or by a redirect -- arrives as ExceptionGroup[OverflowError]. a group of connect
+            # failures only is the page's doing; one carrying anything else is re-raised whole.
+            _, rest = group.split((OSError, OverflowError))
+            if rest is not None:
+                raise
+            return _unfetched(url, group)
     finally:
         if owns_client:
             await client.aclose()

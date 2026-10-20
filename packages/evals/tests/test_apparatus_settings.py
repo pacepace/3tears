@@ -51,6 +51,7 @@ from packages.evals.tests.fixtures.courierhost import (
 )
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_REVIEWER_POOL, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import CALLER, launched_runs, ops_fixture
@@ -149,7 +150,10 @@ async def test_a_launch_setting_some_of_a_kinds_settings_records_the_rest_at_the
     (launchable,) = host.kinds.values()
     two = replace(
         host,
-        kinds={TOY_EXTRACTOR_KIND: replace(launchable, apparatus_settings={POOL: "pool-a", "grader_version": "g1"})},
+        eval_host=with_registry(
+            host.eval_host,
+            {TOY_EXTRACTOR_KIND: replace(launchable, apparatus_settings={POOL: "pool-a", "grader_version": "g1"})},
+        ),
     )
 
     (run,) = await _launch(two, apparatus_settings={POOL: "pool-b"})
@@ -198,7 +202,9 @@ async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_b
         handed.append(request)
         return await launchable.launch(request)
 
-    watched = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=launch)})
+    watched = replace(
+        host, eval_host=with_registry(host.eval_host, {TOY_EXTRACTOR_KIND: replace(launchable, launch=launch)})
+    )
 
     with pytest.raises(ValidationFailedError, match=said):
         await _launch(watched, apparatus_settings=settings)
@@ -222,7 +228,12 @@ def test_a_kind_claiming_a_setting_the_host_does_not_declare_as_its_own_apparatu
     (launchable,) = host.kinds.values()
 
     with pytest.raises(ValueError, match=said):
-        replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, apparatus_settings={claimed: "standing"})})
+        replace(
+            host,
+            eval_host=with_registry(
+                host.eval_host, {TOY_EXTRACTOR_KIND: replace(launchable, apparatus_settings={claimed: "standing"})}
+            ),
+        )
 
 
 @pytest.mark.parametrize("default", [["pool-a"], None, float("nan")], ids=["a-list", "none", "not-finite"])

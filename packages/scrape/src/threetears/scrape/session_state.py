@@ -27,8 +27,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import SecretStr
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
+from .collections import StoredTimestampUnreadable
 from .health import _merge_health
 
 if TYPE_CHECKING:
@@ -194,7 +195,18 @@ def usable_session_state(
     sealed = health.session_state_sealed
     if not sealed:
         return None
-    expires_at = health.session_state_expires_at
+    try:
+        expires_at = health.session_state_expires_at
+    except StoredTimestampUnreadable as exc:
+        # the same reading as no expiry below, for the same reason: a stored solve whose expiry
+        # cannot be read is not one to replay
+        contain(
+            exc,
+            log=log,
+            what="scrape session state: the stored expiry could not be read; treating the state as expired",
+            extra={"target_id": health.target_id},
+        )
+        expires_at = None
     moment = now or datetime.now(UTC)
     if expires_at is None or moment >= expires_at:
         # A stored state with no expiry is treated as expired rather than as eternal. The

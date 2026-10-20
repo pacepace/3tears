@@ -397,8 +397,8 @@ difference yet. Add cases where the arms disagree, not more cases where both are
 bar on its own. Folded into one score, a large saving can buy back a real loss of accuracy.
 
 **Measure latency on calls that were not competing.** Accuracy and cost do not depend on how many calls run at
-once; latency does. By default a run executes several cells at once and a launch's arms side by side, and the
-latency they record is marked read under concurrency and never compared. For a latency gate, launch with
+once; latency does. By default a run executes several cells at once and a launch's arms take their cells in turn
+beside each other, and the latency they record is marked read under concurrency and never compared. For a latency gate, launch with
 `measure_latency=True` (and declare it on the campaign's design): the cells then run one at a time and the
 arms one after another, with nothing beside them.
 

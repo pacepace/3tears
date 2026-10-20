@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
@@ -47,6 +48,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_checkable
 
 from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
+from nats.errors import Error as NatsError
 from nats.errors import NotJSMessageError
 from nats.js.api import (
     AckPolicy,
@@ -59,7 +61,7 @@ from nats.js.api import (
     StreamInfo,
 )
 from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError, ServiceUnavailableError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from threetears.observe.resilience import retry_bounded
 
 from threetears.nats.diagnostics import kv_grant_remedy, kv_timeout_remedy
@@ -314,6 +316,11 @@ DEFAULT_KV_TIMINGS: Final[KvTimings] = KvTimings()
 #: ordinary scheduling jitter; three is a consumer the server no longer has.
 _KEY_WATCH_MISSED_HEARTBEATS: Final[int] = 3
 
+#: Consumers in a row a key watch may see end on a message whose stream sequence cannot be read
+#: before it raises. Each replacement waits ``retry`` first; a broker that keeps sending unsequenced
+#: deliveries is not one a watch can outlast, and five in a row is not chance.
+_KEY_WATCH_MAX_UNSEQUENCED: Final[int] = 5
+
 #: The status an idle heartbeat carries. Any OTHER status on a key watch's inbox is the server
 #: ending the consumer.
 _STATUS_IDLE_HEARTBEAT: Final[str] = "100"
@@ -373,6 +380,25 @@ def _msg_ttl_seconds(ttl: timedelta | None) -> float | None:
 #: and must raise it as itself rather than through :func:`_kv_error` -- wrapped, it would be caught
 #: and downgraded to a per-operation warning, and the process would run on against the bucket.
 _OPEN_REFUSALS: Final[tuple[type[NatsClientError], ...]] = (KvConfigMismatch, StreamSubjectsOverlapError)
+
+#: What a nats-py call that reaches the broker raises when the CALL failed, as opposed to the code
+#: around it. Every nats-py exception -- a refusal, a deadline, a closed connection -- derives from
+#: ``nats.errors.Error``. Two failures leave nats-py as something else: a socket error from the
+#: inline flush a publish or request falls back to when the flusher task is gone, as an ``OSError``;
+#: and a JetStream API reply that is not JSON (an API prefix or account import answered by something
+#: other than JetStream), as the ``JSONDecodeError`` of nats-py's own ``json.loads``. No try body
+#: that catches these does file I/O or decodes JSON of ours, so neither hides a bug. Anything else
+#: raised there is a bug of ours, and propagates rather than reading as an outage.
+_NATS_CALL_FAILURES: Final[tuple[type[Exception], ...]] = (NatsError, OSError, json.JSONDecodeError)
+
+#: A nats-py call run under :func:`~threetears.nats._publish.run_bounded` (or
+#: :func:`~threetears.nats._publish.publish_bounded`) fails as one of those, or as the deadline it blew.
+_BOUNDED_CALL_FAILURES: Final[tuple[type[Exception], ...]] = (*_NATS_CALL_FAILURES, PublishTimeoutError)
+
+#: What one operation's self-heal (:meth:`NatsKvBucket._run_with_reopen`) fails with: a bounded call,
+#: or the re-open's own ``KvError`` (``KvBucketNotFoundError`` among them), which
+#: :meth:`NatsKvBucket._run_op` wraps like any other -- :func:`_kv_error` keeps an absent bucket's type.
+_OPERATION_FAILURES: Final[tuple[type[Exception], ...]] = (*_BOUNDED_CALL_FAILURES, KvError)
 
 
 def _kv_error(message: str, *, bucket: str, cause: BaseException) -> KvError:
@@ -638,8 +664,12 @@ async def open_kv_stream(
     created = False
     try:
         await js.add_stream(config)
-    except Exception as exc:  # noqa: BLE001 -- classified below, never swallowed
+    except _NATS_CALL_FAILURES as exc:  # classified below, never swallowed
         _raise_if_subjects_overlap(exc, full_name=full_name, config=config)
+        if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
+            # name-in-use is the expected answer for an existing bucket and is reconciled below; anything
+            # else is a create that failed, absorbed by falling through to the bind
+            contain(exc, log=log, what=f"JetStream KV stream {full_name} was not created; binding instead")
         add_exc = exc
     if add_exc is None:
         created = absent_before
@@ -673,7 +703,7 @@ async def open_kv_stream(
     kv: KeyValue
     try:
         kv = await js.key_value(full_name)
-    except Exception as bind_exc:
+    except _NATS_CALL_FAILURES as bind_exc:
         if is_bucket_not_found(bind_exc):
             # the server ANSWERED the bind: the bucket is absent, so the create before it is the call
             # that decides the remedy -- unanswered, it is the shape a principal refused STREAM.CREATE
@@ -736,7 +766,7 @@ async def _bind_when_declared(*, js: Any, full_name: str, timings: KvTimings) ->
             deadline_seconds=timings.bind_wait_for_declarer_seconds,
             on_retry=_absent_again,
         )
-    except Exception as exc:
+    except _NATS_CALL_FAILURES as exc:
         if is_bucket_not_found(exc):
             raise KvBucketNotFoundError(
                 f"bind KV bucket failed: bucket={full_name} does not exist, and its declarer did not "
@@ -984,7 +1014,7 @@ async def _recreate_owned_kv_stream(
     recreated = {field: value for field, value in differences.items() if field in _OWNED_RECREATE_KV_STREAM_FIELDS}
     try:
         await js.delete_stream(config.name)
-    except Exception as exc:
+    except _NATS_CALL_FAILURES as exc:
         if not is_bucket_not_found(exc):
             raise _kv_error(
                 f"recreating KV bucket {full_name!r} failed: deleting its stream was refused: {exc}. it is "
@@ -1001,7 +1031,7 @@ async def _recreate_owned_kv_stream(
     result = config
     try:
         await js.add_stream(config)
-    except Exception as exc:
+    except _NATS_CALL_FAILURES as exc:
         _raise_if_subjects_overlap(exc, full_name=full_name, config=config)
         if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
             raise _kv_error(
@@ -1103,7 +1133,7 @@ async def _reconcile_in_place(
         update = dataclasses.replace(live, **changes)
         try:
             await js.update_stream(update)
-        except Exception as exc:
+        except _NATS_CALL_FAILURES as exc:
             raise _kv_error(
                 f"reconciling KV bucket {full_name!r} failed: {exc}. it is live with "
                 f"{_render_differences(reconcilable)} and this principal could not update it. "
@@ -1279,7 +1309,7 @@ async def _live_stream_config(*, js: Any, full_name: str, stream: str | None) ->
     """
     try:
         info = await js.stream_info(stream)
-    except Exception as exc:
+    except _NATS_CALL_FAILURES as exc:
         if is_bucket_not_found(exc):
             # answered: the stream is gone, which no grant would fix.
             raise KvBucketNotFoundError(
@@ -1789,7 +1819,10 @@ class NatsKvBucket:
             # PublishTimeoutError, not this line.
             self._log_timeout_remedy()
             raise
-        except Exception:  # noqa: BLE001 - transport failure: self-heal once, then let it surface
+        except _NATS_CALL_FAILURES as exc:  # transport failure: self-heal once, then let it surface
+            contain(
+                exc, log=log, what="KV operation failed on a transport error; reopening the bucket and retrying once"
+            )
             await self._reopen()
             return await self._bounded(op)
 
@@ -1823,7 +1856,7 @@ class NatsKvBucket:
         except _OPEN_REFUSALS:
             # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
             raise
-        except Exception as exc:
+        except _OPERATION_FAILURES as exc:
             raise _kv_error(f"{failure}: {exc}", bucket=self._full_name, cause=exc) from exc
 
     def _log_timeout_remedy(self) -> None:
@@ -2228,8 +2261,8 @@ class NatsKvBucket:
         gets a FRESH name: a name still held by a consumer the server has not yet reaped would
         refuse the create. It sends a heartbeat while the key is quiet, and when three go missing --
         a broker restart emptied the stream, or the consumer was reaped during a long disconnect --
-        or the server says it ended the consumer, the watch replaces it. The replacement redelivers the key's latest
-        message, so nothing written in between is missed; a redelivery of the message this watch
+        or the server says it ended the consumer, or a delivered message's stream sequence cannot be read, the watch
+        replaces it. The replacement redelivers the key's latest message, so nothing written in between is missed; a redelivery of the message this watch
         last yielded is not yielded again.
 
         A consumer create that fails is logged, naming the grant to check, and retried after
@@ -2249,13 +2282,16 @@ class NatsKvBucket:
         :return: the key's messages, in order; a delete or purge arrives with ``value=None``
         :rtype: AsyncGenerator[KvKeyUpdate]
         :raises ValueError: when ``key`` is empty or not a literal subject token sequence
-        :raises KvError: when the NATS connection is closed, so no consumer can ever deliver again
+        :raises KvError: when the NATS connection is closed, so no consumer can ever deliver again, or
+            when five consumers in a row (:data:`_KEY_WATCH_MAX_UNSEQUENCED`) each ended on a message
+            whose stream sequence could not be read -- each replacement waits ``retry`` first
         """
         if not key or any(char in _KEY_WATCH_FORBIDDEN for char in key):
             raise ValueError(f"watch_key needs one literal key, got {key!r}")
         subject = f"$KV.{self._full_name}.{key}"
         stream = kv_stream_name(self._full_name)
         last: KvKeyUpdate | None = None
+        unsequenced = 0
         while True:
             consumer = await _KeyWatchConsumer.open(
                 client=self._client,
@@ -2271,12 +2307,14 @@ class NatsKvBucket:
             try:
                 async with aclosing(consumer.updates(key=key)) as updates:
                     async for update in updates:
+                        unsequenced = 0
                         if update == last:
                             continue
                         last = update
                         yield update
             finally:
                 await consumer.close()
+            unsequenced = await _pause_after_unsequenced(consumer, unsequenced, retry=retry, subject=subject)
 
     async def watch_prefix(
         self,
@@ -2316,7 +2354,8 @@ class NatsKvBucket:
         :rtype: AsyncGenerator[KvKeyUpdate | None]
         :raises ValueError: when ``prefix`` carries a wildcard or whitespace, or does not end on a
             token boundary
-        :raises KvError: when the NATS connection is closed, so no consumer can ever deliver again
+        :raises KvError: when the NATS connection is closed, so no consumer can ever deliver again, or
+            when five consumers in a row each ended on a message whose stream sequence could not be read
         """
         if any(char in _KEY_WATCH_FORBIDDEN for char in prefix) or (prefix and not prefix.endswith(".")):
             raise ValueError(f"watch_prefix needs '' or a literal prefix ending in '.', got {prefix!r}")
@@ -2326,6 +2365,7 @@ class NatsKvBucket:
         # each yielded key's (revision, value). the value is part of the identity: a wiped bucket
         # starts its sequence again, so a NEW value can arrive on the revision the old one had.
         known: dict[str, tuple[int, bytes]] = {}
+        unsequenced = 0
         while True:
             consumer = await _KeyWatchConsumer.open(
                 client=self._client,
@@ -2347,6 +2387,7 @@ class NatsKvBucket:
                     yield None
                 async with aclosing(consumer.updates(key=None, key_prefix=key_prefix)) as updates:
                     async for update in updates:
+                        unsequenced = 0
                         seen.add(update.key)
                         if update.deleted:
                             if known.pop(update.key, None) is not None:
@@ -2362,6 +2403,7 @@ class NatsKvBucket:
                                 yield None
             finally:
                 await consumer.close()
+            unsequenced = await _pause_after_unsequenced(consumer, unsequenced, retry=retry, subject=subject)
 
     async def list_keys(self, *, prefix: str = "") -> list[str]:
         """every live key in the bucket that starts with ``prefix``.
@@ -2405,7 +2447,7 @@ class NatsKvBucket:
             # like every other operation: a handle whose connection was replaced (a credential
             # renewal, a move off a lame-duck server) is bound again on the current one first.
             await self._follow_connection()
-        except Exception as exc:
+        except _BOUNDED_CALL_FAILURES as exc:
             if not is_bucket_not_found(exc):
                 raise _kv_error(
                     f"listing keys of {self._full_name} failed binding it on the current connection: {exc}",
@@ -2512,7 +2554,16 @@ class _KeyWatchConsumer:
     :ptype pending: int
     """
 
-    __slots__ = ("_client", "_heartbeat", "_name", "_pending", "_stream", "_subject", "_subscription")
+    __slots__ = (
+        "_client",
+        "_ended_unsequenced",
+        "_heartbeat",
+        "_name",
+        "_pending",
+        "_stream",
+        "_subject",
+        "_subscription",
+    )
 
     def __init__(
         self,
@@ -2532,6 +2583,16 @@ class _KeyWatchConsumer:
         self._heartbeat = heartbeat
         self._client = client
         self._pending = pending
+        self._ended_unsequenced = False
+
+    @property
+    def ended_unsequenced(self) -> bool:
+        """whether :meth:`updates` ended on a message whose stream sequence could not be read.
+
+        :return: ``True`` once it has
+        :rtype: bool
+        """
+        return self._ended_unsequenced
 
     @property
     def pending(self) -> int:
@@ -2609,18 +2670,16 @@ class _KeyWatchConsumer:
                 pending=int(getattr(info, "num_pending", 0) or 0),
             )
         # NOSILENT: logged naming the grant to check; the caller pauses and creates another
-        except Exception as exc:  # noqa: BLE001 -- a failed create is retried, never raised
-            log.warning(
-                "key watch consumer %s on %s could not be created; retrying in %.0fs. an ungranted "
-                "create blocks to its deadline -- check this principal's grant on "
-                "$JS.API.CONSUMER.CREATE.%s.*.%s: %s",
-                name,
-                subject,
-                retry.total_seconds(),
-                stream,
-                subject,
+        except _BOUNDED_CALL_FAILURES as exc:  # a failed create is retried, never raised
+            contain(
                 exc,
-                extra={"extra_data": {"subject": subject, "stream": stream, "consumer": name, "error": str(exc)}},
+                log=log,
+                what=(
+                    f"key watch consumer {name} on {subject} could not be created; retrying in "
+                    f"{retry.total_seconds():.0f}s. an ungranted create blocks to its deadline -- check this "
+                    f"principal's grant on $JS.API.CONSUMER.CREATE.{stream}.*.{subject}: {exc}"
+                ),
+                extra={"subject": subject, "stream": stream, "consumer": name, "error": str(exc)},
             )
             await _drop_subscription(subscription, subject=subject)
         if consumer is not None:
@@ -2635,7 +2694,9 @@ class _KeyWatchConsumer:
 
         A message counts only when it carries this consumer's own ack reply: any client in the
         account can get bytes delivered onto the inbox, and only the server's delivery for this
-        consumer names it. Anything else is dropped and logged.
+        consumer names it. Anything else is dropped and logged. One of its own whose stream
+        sequence cannot be read ends the iteration, with a WARNING, so the caller replaces the
+        consumer rather than run on past a message it never yielded.
 
         :param key: the watched key, carried onto each update; ``None`` for a prefix watch, whose
             updates carry the key their subject names
@@ -2706,32 +2767,41 @@ class _KeyWatchConsumer:
                 # no proof of life: a forgery must not keep a consumer the broker lost looking alive
                 continue
             last_heard = time.monotonic()
-            update = self._update_of(msg, key=key if key is not None else msg.subject[len(key_prefix) :])
-            if update is not None:
-                yield update
+            try:
+                revision = int(msg.metadata.sequence.stream)
+            except (NotJSMessageError, ValueError, IndexError) as exc:
+                # a value with no revision cannot be ordered against the next one, and dropping it
+                # while the consumer runs on leaves a gap the watcher never hears of -- a prefix
+                # watch never even catches up, its pending count waiting on the dropped message. so
+                # the consumer ends here: the caller replaces it, and the replacement redelivers the
+                # latest message of every watched key with its real revision.
+                log.warning(
+                    "key watch message on %s carries no stream sequence; replacing the consumer so the "
+                    "latest message is redelivered with its revision: %s",
+                    self._subject,
+                    exc,
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
+                )
+                self._ended_unsequenced = True
+                return
+            yield self._update_of(
+                msg, key=key if key is not None else msg.subject[len(key_prefix) :], revision=revision
+            )
 
-    def _update_of(self, msg: Msg, *, key: str) -> KvKeyUpdate | None:
-        """the update a delivered data message carries, or ``None`` when its revision cannot be read.
+    @staticmethod
+    def _update_of(msg: Msg, *, key: str, revision: int) -> KvKeyUpdate:
+        """the update a delivered data message carries.
 
         :param msg: the delivered message, already known to be this consumer's own
         :ptype msg: Msg
         :param key: the watched key
         :ptype key: str
-        :return: the update, or ``None`` for a message dropped because its ack reply names no sequence
-        :rtype: KvKeyUpdate | None
+        :param revision: the message's stream sequence, read off its ack reply
+        :ptype revision: int
+        :return: the update
+        :rtype: KvKeyUpdate
         """
         headers = msg.headers or {}
-        try:
-            revision = int(msg.metadata.sequence.stream)
-        except (NotJSMessageError, ValueError, IndexError) as exc:
-            # a value with no revision cannot be ordered against the next one: dropped, not applied
-            log.warning(
-                "key watch message on %s carries no stream sequence; dropped: %s",
-                self._subject,
-                exc,
-                extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
-            )
-            return None
         removed = headers.get(_KV_OPERATION_HEADER) in _KV_REMOVAL_OPERATIONS
         return KvKeyUpdate(key=key, value=None if removed else bytes(msg.data), revision=revision)
 
@@ -2760,6 +2830,35 @@ def _forget_unseen(known: dict[str, tuple[int, bytes]], seen: set[str]) -> list[
     return [KvKeyUpdate(key=key, value=None, revision=0) for key in gone]
 
 
+async def _pause_after_unsequenced(
+    consumer: _KeyWatchConsumer, unsequenced: int, *, retry: timedelta, subject: str
+) -> int:
+    """after a key watch's consumer ends, wait ``retry`` if it ended on an unsequenced message.
+
+    :param consumer: the consumer that just ended
+    :ptype consumer: _KeyWatchConsumer
+    :param unsequenced: consumers in a row, before this one, that ended that way
+    :ptype unsequenced: int
+    :param retry: the pause before the replacement is opened
+    :ptype retry: timedelta
+    :param subject: the watched subject, for the error
+    :ptype subject: str
+    :return: the new run length: ``0`` when this consumer ended for any other reason
+    :rtype: int
+    :raises KvError: when :data:`_KEY_WATCH_MAX_UNSEQUENCED` consumers in a row ended that way
+    """
+    if not consumer.ended_unsequenced:
+        return 0
+    unsequenced += 1
+    if unsequenced >= _KEY_WATCH_MAX_UNSEQUENCED:
+        raise KvError(
+            f"key watch on {subject} ended: {unsequenced} consumers in a row delivered a message whose stream "
+            f"sequence could not be read, so its updates cannot be ordered"
+        )
+    await asyncio.sleep(retry.total_seconds())
+    return unsequenced
+
+
 async def _drop_subscription(subscription: _NatsSubscription, *, subject: str) -> None:
     """unsubscribe a key watch's inbox, logging rather than raising a failure.
 
@@ -2774,7 +2873,7 @@ async def _drop_subscription(subscription: _NatsSubscription, *, subject: str) -
         await subscription.unsubscribe()
     # NOSILENT: logged; the consumer behind it is reaped by the server once nothing listens
     except Exception as exc:  # noqa: BLE001 -- teardown continues regardless
-        log.debug("key watch unsubscribe on %s failed: %s", subject, exc)
+        contain(exc, log=log, what=f"key watch unsubscribe on {subject} failed: {exc}")
 
 
 @runtime_checkable

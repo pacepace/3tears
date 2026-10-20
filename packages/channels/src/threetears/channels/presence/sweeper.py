@@ -21,7 +21,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
-from threetears.observe import PeriodicTask, get_logger
+from threetears.nats.errors import KvError
+from threetears.observe import PeriodicTask, contain, get_logger
 
 from threetears.channels.presence.collection import PresenceCollection
 
@@ -155,7 +156,17 @@ class PresenceSweeper:
         evicted: list[str] = []
         gone: list[str] = []
         for connection_id in list(self._known_connection_ids):
-            entity = await self._collection.connections.get(connection_id)
+            try:
+                entity = await self._collection.connections.get(connection_id)
+            except KvError as exc:
+                # an outage is not an absence: the connection stays tracked for the next sweep
+                contain(
+                    exc,
+                    log=log,
+                    what="presence row unreadable; the connection is judged on the next sweep",
+                    extra={"connection_id": connection_id},
+                )
+                continue
             if entity is None:
                 gone.append(connection_id)
                 continue
@@ -163,8 +174,18 @@ class PresenceSweeper:
             if elapsed <= self._timeout:
                 continue
             room_id = entity.room_id
-            await self._collection.rooms.remove_member(room_id, connection_id)
-            await self._collection.connections.delete(connection_id)
+            try:
+                await self._collection.rooms.remove_member(room_id, connection_id)
+                await self._collection.connections.delete(connection_id)
+            except KvError as exc:
+                # stays tracked, so the next sweep tries again; the rest of this sweep goes on
+                contain(
+                    exc,
+                    log=log,
+                    what="stale presence connection not evicted from L2; retried on the next sweep",
+                    extra={"connection_id": connection_id, "room_id": room_id},
+                )
+                continue
             evicted.append(connection_id)
             log.warning(
                 "evicting stale presence connection",

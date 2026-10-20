@@ -24,6 +24,7 @@ from sqlalchemy import Column, MetaData, String, Table
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.media.contracts import ObjectHandle
+from threetears.nats.errors import KvError
 
 from threetears.agent.tools.l1_cache import create_tool_pod_l1_backend
 from threetears.agent.tools.object_resolution_collection import (
@@ -83,6 +84,26 @@ class _RecordingNats:
 
     async def publish(self, *, subject: Any, message: Any) -> None:
         self.published.append(message)
+
+
+class _RefusingKvBucket(_InMemoryKvBucket):
+    """a bucket whose broker is unreachable for writes: every put and delete raises."""
+
+    async def put(self, *, key: str, value: bytes) -> int:
+        del key, value
+        raise KvError("broker unreachable")
+
+    async def delete(self, *, key: str) -> bool:
+        del key
+        raise KvError("broker unreachable")
+
+
+class _RefusingNats(_RecordingNats):
+    """hands out a bucket that refuses writes, over the same shared store."""
+
+    async def kv_bucket(self, *, name: str, create_if_missing: bool) -> _InMemoryKvBucket:
+        del name, create_if_missing
+        return _RefusingKvBucket(self.store)
 
 
 def _replica(store: dict[str, bytes], nats: _RecordingNats) -> ObjectResolutionCollection:
@@ -240,6 +261,16 @@ class TestRememberAndLookup:
         assert [m.table for m in nats.published] == [OBJECT_RESOLUTIONS_TABLE]
 
 
+class TestAnL2RefusalDegradesAsACache:
+    """the hub is the mapping's durable source, so L2 here is a cache: a write it refused costs the
+    siblings a round trip, never this replica its mapping."""
+
+    async def test_remember_l2_refused_keeps_the_mapping_in_l1(self) -> None:
+        collection = _replica({}, _RefusingNats({}))
+        await collection.remember(_CUSTOMER, _handle())
+        assert await collection.lookup(_CUSTOMER, _OBJECT) == _handle()
+
+
 class _RecordingResolveNats:
     """records resolve requests and returns one queued reply."""
 
@@ -295,6 +326,14 @@ class TestTheResolverUsesTheCollection:
         await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
         await resolver.resolve(_OBJECT, customer_id=_OTHER_CUSTOMER, identity_token=_TOKEN)
         assert len(nc.requests) == 2
+
+    async def test_a_cache_whose_l2_refuses_still_serves_the_repeat_from_l1(self) -> None:
+        nc = _RecordingResolveNats(_ok())
+        resolver = HubObjectResolver(nc, request_timeout_seconds=5.0, resolution_cache=_replica({}, _RefusingNats({})))  # type: ignore[arg-type]
+        handle = await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
+        await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
+        assert handle.s3_key == _KEY
+        assert len(nc.requests) == 1
 
     async def test_without_a_cache_the_in_process_dict_still_serves(self) -> None:
         """a pod that declared no collection tables keeps the historical behaviour."""

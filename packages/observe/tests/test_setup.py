@@ -480,7 +480,14 @@ class TestFlushFailuresAndConcurrency:
 
         assert force_flush_telemetry(timeout=timedelta(seconds=5)) is False
 
-        assert _reports(caplog, "telemetry flush failed") == [{"signal": "traces", "error_type": "RuntimeError"}]
+        assert _reports(caplog, "telemetry flush failed") == [
+            {
+                "signal": "traces",
+                "error_type": "RuntimeError",
+                "contained_site": "threetears.observe.setup:_BoundedFlush._work",
+                "exc_type": "RuntimeError",
+            }
+        ]
         assert _reports(caplog, "telemetry flush did not finish within its timeout") == []
         exported = _exported_records()
         assert ("threetears.observe.tests.app", "flushed after the traces failed") in exported, exported

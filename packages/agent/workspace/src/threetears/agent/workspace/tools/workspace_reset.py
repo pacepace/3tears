@@ -28,7 +28,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import (
@@ -253,9 +253,11 @@ class WorkspaceResetTool(TearsTool):
                         )
                 # NOSILENT: audit failure must never taint a successful reset
                 except Exception as audit_exc:
-                    log.exception(
-                        "workspace_reset audit publish swallow caught: %s",
+                    contain(
                         audit_exc,
+                        log=log,
+                        what=f"workspace_reset audit publish swallow caught: {audit_exc}",
+                        level="error",
                     )
                 result = ToolResult(
                     success=True,
@@ -274,7 +276,7 @@ class WorkspaceResetTool(TearsTool):
                 error=f"validation failed: {exc.pattern} -> {exc.reason}",
             )
         except Exception as exc:
-            log.exception("workspace_reset failed: %s", exc)
+            contain(exc, log=log, what=f"workspace_reset failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

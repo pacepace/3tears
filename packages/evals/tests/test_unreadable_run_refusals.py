@@ -130,7 +130,7 @@ def _calls(fixture: OpsFixture, unreadable: str, readable: str) -> dict[str, dic
             "subject_id": TOYHOST_SUBJECT.subject_id,
             "behavior": "extraction",
             "exploratory": True,
-            "run_ids": [readable, unreadable],
+            "aspects": [{"label": "extraction", "run_ids": [readable, unreadable]}],
         },
         "judge_second_estimate": {"run_id": unreadable, "second_judge_model": "judge/b", "sample_fraction": 0.5},
         "launch_estimate": {

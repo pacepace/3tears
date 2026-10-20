@@ -38,6 +38,7 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.aspect_support import with_aspect
 
 #: The id of the commissioned twin of the toy host's narrow batch.
 _COMMISSIONED = "commissioned-narrow"
@@ -66,11 +67,11 @@ def _with_a_commissioned_twin(
     results[twin.id] = [
         result.model_copy(update={"id": f"twin-{result.id}", "eval_run_id": twin.id}) for result in results[narrow_id]
     ]
-    design = campaign.declared_design
-    assert design is not None
-    if held_fixed is not None:
-        design = design.model_copy(update={"held_fixed": held_fixed})
-    campaign = campaign.model_copy(update={"run_ids": [narrow_id, wide_id, twin.id], "declared_design": design})
+    campaign = with_aspect(
+        campaign,
+        design={"held_fixed": held_fixed} if held_fixed is not None else {},
+        run_ids=[narrow_id, wide_id, twin.id],
+    )
     return campaign, [narrow, wide, twin], results
 
 
@@ -188,7 +189,11 @@ class TestTheDeclaredControlsAreReadAgainstTheRuns:
 
     def test_a_mix_with_nothing_declared_is_disclosed(self) -> None:
         campaign, runs, results = _with_a_commissioned_twin()
-        reading = _assemble(campaign.model_copy(update={"declared_design": None}), runs, results).held_fixed_reading
+        (aspect,) = campaign.aspects
+        undeclared = campaign.model_copy(
+            update={"aspects": [aspect.model_copy(update={"design": None})], "arms": [], "floors": [], "question": ""}
+        )
+        reading = _assemble(undeclared, runs, results).held_fixed_reading
 
         assert reading.declared_apparatus is None
         assert reading.contradicting_run_ids == [], "nothing was declared, so nothing is contradicted"
@@ -206,9 +211,7 @@ class TestTheDeclaredControlsAreReadAgainstTheRuns:
     def test_a_controlled_agreeing_campaign_has_nothing_to_disclose(self) -> None:
         controlled = ControlDeclaration(stimulus="controlled", apparatus="witnessed")
         campaign, storage = toyhost_campaign()
-        design = campaign.declared_design
-        assert design is not None
-        campaign = campaign.model_copy(update={"declared_design": design.model_copy(update={"held_fixed": controlled})})
+        campaign = with_aspect(campaign, design={"held_fixed": controlled})
 
         reading = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile()).held_fixed_reading
 

@@ -14,10 +14,13 @@ is exactly what goes stale.
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Any
 
 import pytest
+from nats.errors import NoRespondersError
+from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import DiscardPolicy, StorageType, StreamConfig
 from nats.js.errors import APIError, BucketNotFoundError, NotFoundError
 
@@ -30,19 +33,6 @@ from threetears.nats.kv import (
     kv_stream_differences,
     open_kv_stream,
 )
-
-
-class _ApiError(Exception):
-    """Stand-in for a nats-py ``APIError`` carrying the server's own error code.
-
-    Not a fake of a protocol: the production classifier reads ``err_code`` off
-    whatever ``add_stream`` raised, so an exception with that attribute IS the
-    input shape.
-    """
-
-    def __init__(self, err_code: int, description: str) -> None:
-        super().__init__(f"nats: code=400 err_code={err_code} description={description!r}")
-        self.err_code = err_code
 
 
 # parity-exempt: JetStream stand-in scripted per-test for the add/update/info/bind calls the KV opener makes; the real JetStreamContext surface is an order of magnitude larger and unrelated
@@ -63,6 +53,7 @@ class _ScriptedJetStream:
         self.updated: list[StreamConfig] = []
         self.info_calls: list[str] = []
         self.update_raises: Exception | None = None
+        self.info_raises: Exception | None = None
 
     async def add_stream(self, config: StreamConfig) -> Any:
         if self.add_raises is not None:
@@ -78,6 +69,8 @@ class _ScriptedJetStream:
 
     async def stream_info(self, name: str) -> Any:
         self.info_calls.append(name)
+        if self.info_raises is not None:
+            raise self.info_raises
         if self.live is None:
             raise AssertionError("stream_info called with no live stream scripted")
         return type("_Info", (), {"config": self.live})()
@@ -226,7 +219,9 @@ class TestTheDeclarerReconciles:
     @pytest.mark.asyncio
     async def test_a_live_bucket_with_the_wrong_direct_is_updated_in_place(self) -> None:
         js = _ScriptedJetStream(
-            add_raises=_ApiError(10058, "stream name already in use with a different configuration"),
+            add_raises=_server_answer(
+                code=400, err_code=10058, description="stream name already in use with a different configuration"
+            ),
             live=_live(allow_direct=False),
         )
         await NatsKvBucket.open(
@@ -249,7 +244,9 @@ class TestTheDeclarerReconciles:
         for as long as the bucket lives -- which, for a memory bucket nobody deletes, is forever.
         """
         js = _ScriptedJetStream(
-            add_raises=_ApiError(10058, "stream name already in use with a different configuration"),
+            add_raises=_server_answer(
+                code=400, err_code=10058, description="stream name already in use with a different configuration"
+            ),
             live=_live(allow_direct=True, allow_msg_ttl=None),
         )
         await NatsKvBucket.open(
@@ -272,7 +269,9 @@ class TestTheDeclarerReconciles:
         fail the in-place enable along with it -- and the opener with it, for every guard on that
         bucket. The update carries the live storage and the drift is reported, not requested."""
         js = _ScriptedJetStream(
-            add_raises=_ApiError(10058, "stream name already in use with a different configuration"),
+            add_raises=_server_answer(
+                code=400, err_code=10058, description="stream name already in use with a different configuration"
+            ),
             live=_live(storage=StorageType.FILE, allow_direct=True, allow_msg_ttl=None, max_age=30.0),
         )
         with caplog.at_level("WARNING"):
@@ -300,7 +299,9 @@ class TestTheDeclarerReconciles:
         unconditionally would start failing for every pod.
         """
         js = _ScriptedJetStream(
-            add_raises=_ApiError(10058, "stream name already in use with a different configuration"),
+            add_raises=_server_answer(
+                code=400, err_code=10058, description="stream name already in use with a different configuration"
+            ),
             live=_live(allow_direct=True),
         )
         await NatsKvBucket.open(
@@ -326,7 +327,9 @@ class TestTheDeclarerReconciles:
         processes fight over one bucket -- but it no longer does so in silence.
         """
         js = _ScriptedJetStream(
-            add_raises=_ApiError(10058, "stream name already in use with a different configuration"),
+            add_raises=_server_answer(
+                code=400, err_code=10058, description="stream name already in use with a different configuration"
+            ),
             live=_live(max_age=60.0, allow_direct=None),
         )
         with caplog.at_level("WARNING"):
@@ -345,9 +348,11 @@ class TestTheDeclarerReconciles:
         assert js.updated == [], "an undeclared field must not be reconciled"
 
 
-def _name_in_use() -> _ApiError:
+def _name_in_use() -> APIError:
     """the server's answer to a create of a bucket that is live with another configuration."""
-    return _ApiError(10058, "stream name already in use with a different configuration")
+    return _server_answer(
+        code=400, err_code=10058, description="stream name already in use with a different configuration"
+    )
 
 
 def _memory_declaration(*, ttl_seconds: int = 0, history: int = 1) -> StreamConfig:
@@ -457,7 +462,9 @@ class TestADeclarerThatOwnsItsBucket:
     async def test_an_update_the_server_answers_with_a_refusal_does_not_blame_a_grant(self) -> None:
         """an answered refusal names a configuration the server will not take; a missing grant is never answered."""
         js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=True, max_age=300.0))
-        js.update_raises = _ApiError(10052, "duplicates window can not be larger then max age")
+        js.update_raises = _server_answer(
+            code=400, err_code=10052, description="duplicates window can not be larger then max age"
+        )
         with pytest.raises(KvError) as caught:
             await open_kv_stream(
                 js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
@@ -469,7 +476,7 @@ class TestADeclarerThatOwnsItsBucket:
     @pytest.mark.asyncio
     async def test_an_unanswered_update_still_names_the_grant(self) -> None:
         js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=False))
-        js.update_raises = TimeoutError("nats: timeout")
+        js.update_raises = NatsTimeoutError()
         with pytest.raises(KvError, match="grant this principal"):
             await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True)
 
@@ -740,7 +747,7 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
 
     @pytest.mark.asyncio
     async def test_an_unanswered_delete_names_the_grant(self) -> None:
-        js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), delete_raises=TimeoutError("nats: timeout"))
+        js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), delete_raises=NatsTimeoutError())
         with pytest.raises(KvError, match="grant this principal"):
             await open_kv_stream(
                 js=js,
@@ -755,7 +762,8 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
     @pytest.mark.asyncio
     async def test_a_refused_recreate_says_the_stream_is_gone(self) -> None:
         js = _OwnedRecreateJetStream(
-            live=_nonce_bucket_on_file(), recreate_raises=_ApiError(10074, "insufficient resources")
+            live=_nonce_bucket_on_file(),
+            recreate_raises=_server_answer(code=400, err_code=10074, description="insufficient resources"),
         )
         with pytest.raises(KvError, match="its stream was deleted and creating it again was refused"):
             await open_kv_stream(
@@ -849,7 +857,7 @@ class TestARefusalIsNotAnExistingBucket:
 
     @pytest.mark.asyncio
     async def test_an_unanswered_create_never_reaches_update_stream(self) -> None:
-        js = _ScriptedJetStream(add_raises=TimeoutError("nats: timeout"), bind_raises=TimeoutError("nats: timeout"))
+        js = _ScriptedJetStream(add_raises=NatsTimeoutError(), bind_raises=NatsTimeoutError())
         with pytest.raises(KvError):
             await NatsKvBucket.open(
                 client=_ScriptedClient(js),  # type: ignore[arg-type]
@@ -870,7 +878,7 @@ class TestARefusalIsNotAnExistingBucket:
         This is what pods look like once `coll-task-05a` narrows their grant, so
         turning an unanswered create into a hard failure would break them.
         """
-        js = _ScriptedJetStream(add_raises=TimeoutError("nats: timeout"))
+        js = _ScriptedJetStream(add_raises=NatsTimeoutError())
         bucket = await NatsKvBucket.open(
             client=_ScriptedClient(js),  # type: ignore[arg-type]
             full_name="probe",
@@ -884,7 +892,9 @@ class TestARefusalIsNotAnExistingBucket:
 
     @pytest.mark.asyncio
     async def test_subjects_overlap_is_still_its_own_typed_error(self) -> None:
-        js = _ScriptedJetStream(add_raises=_ApiError(10065, "subjects overlap with an existing stream"))
+        js = _ScriptedJetStream(
+            add_raises=_server_answer(code=400, err_code=10065, description="subjects overlap with an existing stream")
+        )
         with pytest.raises(StreamSubjectsOverlapError):
             await NatsKvBucket.open(
                 client=_ScriptedClient(js),  # type: ignore[arg-type]
@@ -935,7 +945,7 @@ class _VanishedKv:
     """a handle whose stream a broker restart wiped: every read fails as nats-py reports it."""
 
     async def get(self, _key: str) -> Any:
-        raise RuntimeError("nats: no response from stream")
+        raise NoRespondersError()
 
 
 # parity-exempt: nats-py KeyValue stand-in exposing only get, the one call the self-heal test drives
@@ -1053,3 +1063,91 @@ class TestAStreamManagementCallTheServerAnsweredIsNotBlamedOnAGrant:
         assert "insufficient resources" in message, "the server's own answer to the create must survive"
         assert "grant this principal" not in message, message
         assert "temporarily unavailable" not in message, "a capacity answer is not an outage"
+
+
+class TestABugInTheOpenerIsNotARefusal:
+    """only what a nats-py call raises is the server's refusal or an outage; a bug of ours propagates.
+
+    Read as a failed call, a bug would fall through to the bind or be raised as a ``KvError``
+    naming a grant to fix, and the L2 accessors catch ``KvError`` and degrade.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_create_propagates_rather_than_falling_through_to_the_bind(self) -> None:
+        js = _ScriptedJetStream(add_raises=TypeError("a bug in the call"), bind_raises=AssertionError("bound"))
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True)
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_bind_after_a_failed_create_propagates(self) -> None:
+        js = _ScriptedJetStream(add_raises=NatsTimeoutError(), bind_raises=TypeError("a bug in the call"))
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True)
+
+    @pytest.mark.asyncio
+    async def test_a_bind_only_open_raises_a_bug_in_the_bind(self) -> None:
+        js = _ScriptedJetStream(bind_raises=TypeError("a bug in the call"))
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=False)
+
+    @pytest.mark.asyncio
+    async def test_a_bind_only_open_still_reports_an_unanswered_bind_as_a_kv_error(self) -> None:
+        js = _ScriptedJetStream(bind_raises=NatsTimeoutError())
+        with pytest.raises(KvError, match="bind KV bucket failed"):
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=False)
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_live_config_read_propagates(self) -> None:
+        js = _ScriptedJetStream(add_raises=_name_in_use())
+        js.info_raises = AttributeError("a bug in the call")
+        with pytest.raises(AttributeError, match="a bug in the call"):
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True)
+
+    @pytest.mark.asyncio
+    async def test_an_unanswered_live_config_read_is_a_kv_error(self) -> None:
+        js = _ScriptedJetStream(add_raises=_name_in_use())
+        js.info_raises = NatsTimeoutError()
+        with pytest.raises(KvError, match="reading the live configuration"):
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True)
+
+    @pytest.mark.asyncio
+    async def test_a_live_config_reply_that_is_not_json_is_a_kv_error(self) -> None:
+        # nats-py's own json.loads, on a JetStream API reply something other than JetStream answered
+        js = _ScriptedJetStream(add_raises=_name_in_use())
+        js.info_raises = json.JSONDecodeError("Expecting value", "<html>", 0)
+        with pytest.raises(KvError, match="reading the live configuration"):
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True)
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_in_place_update_propagates(self) -> None:
+        js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=False))
+        js.update_raises = TypeError("a bug in the call")
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True)
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_recreates_delete_propagates(self) -> None:
+        js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), delete_raises=TypeError("a bug in the call"))
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await open_kv_stream(
+                js=js,
+                full_name="probe",
+                config=_memory_declaration(),
+                create_if_missing=True,
+                owns_bucket=True,
+                drop_file_storage=True,
+            )
+        assert js.added == []
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_recreates_create_propagates(self) -> None:
+        js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), recreate_raises=TypeError("a bug in the call"))
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await open_kv_stream(
+                js=js,
+                full_name="probe",
+                config=_memory_declaration(),
+                create_if_missing=True,
+                owns_bucket=True,
+                drop_file_storage=True,
+            )

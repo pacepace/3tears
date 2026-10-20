@@ -36,6 +36,7 @@ __all__ = [
     "SCHEDULED_JOBS_DRIFT_SECONDS",
     "SCHEDULED_JOBS_FAILURES_TOTAL",
     "SCHEDULED_JOBS_FIRES_TOTAL",
+    "SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL",
     "SCHEDULED_JOBS_LABEL_SETS",
     "SCHEDULED_JOBS_PROMETHEUS_NAMES",
     "SCHEDULED_JOBS_TICK_DURATION_SECONDS",
@@ -72,6 +73,9 @@ SCHEDULED_JOBS_FIRES_TOTAL: Final[str] = "threetears_scheduled_jobs_fires_total"
 SCHEDULED_JOBS_FAILURES_TOTAL: Final[str] = "threetears_scheduled_jobs_failures_total"
 SCHEDULED_JOBS_TICK_DURATION_SECONDS: Final[str] = "threetears_scheduled_jobs_tick_duration_seconds"
 SCHEDULED_JOBS_DRIFT_SECONDS: Final[str] = "threetears_scheduled_jobs_drift_seconds"
+#: fires whose outcome ran but whose row could not be finalized, left to the reaper to record as
+#: failed: the one count of outcomes the fire table itself lost
+SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL: Final[str] = "threetears_scheduled_jobs_fires_unrecorded_total"
 
 
 # Public roll-up of every instrument name. Lets the consumer (and the
@@ -81,6 +85,7 @@ SCHEDULED_JOBS_PROMETHEUS_NAMES: Final[tuple[str, ...]] = (
     SCHEDULED_JOBS_FAILURES_TOTAL,
     SCHEDULED_JOBS_TICK_DURATION_SECONDS,
     SCHEDULED_JOBS_DRIFT_SECONDS,
+    SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL,
 )
 
 
@@ -106,6 +111,7 @@ SCHEDULED_JOBS_LABEL_SETS: Final[dict[str, tuple[str, ...]]] = {
     SCHEDULED_JOBS_FAILURES_TOTAL: _LABELS_FAILURES,
     SCHEDULED_JOBS_TICK_DURATION_SECONDS: (),
     SCHEDULED_JOBS_DRIFT_SECONDS: (),
+    SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL: (),
 }
 
 
@@ -132,6 +138,7 @@ class ScheduledJobsMetricsEmitter:
         self._failures: Any = None
         self._tick_duration: Any = None
         self._drift: Any = None
+        self._unrecorded: Any = None
         self._initialise()
 
     def _initialise(self) -> None:
@@ -176,6 +183,11 @@ class ScheduledJobsMetricsEmitter:
             "Fire drift (actual_fired_at - scheduled_fire_at) in seconds",
             **_kwargs(()),
         )
+        self._unrecorded = Counter(
+            SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL,
+            "Background fires whose row could not be finalized and is left to the reaper",
+            **_kwargs(()),
+        )
         self._available = True
 
     @property
@@ -193,7 +205,7 @@ class ScheduledJobsMetricsEmitter:
         """
         if not self._available or self._resolved_registry is None:
             return
-        for collector in (self._fires, self._failures, self._tick_duration, self._drift):
+        for collector in (self._fires, self._failures, self._tick_duration, self._drift, self._unrecorded):
             if collector is None:
                 continue
             try:
@@ -218,6 +230,7 @@ class ScheduledJobsMetricsEmitter:
         self._failures = None
         self._tick_duration = None
         self._drift = None
+        self._unrecorded = None
         self._available = False
 
     # ------------------------------------------------------------------
@@ -262,6 +275,12 @@ class ScheduledJobsMetricsEmitter:
         if not self._available:
             return
         self._failures.labels(reason=reason).inc()
+
+    def inc_fire_unrecorded(self) -> None:
+        """Increment :data:`SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL`: one fire row not finalized."""
+        if not self._available:
+            return
+        self._unrecorded.inc()
 
     def observe_tick_duration(self, seconds: float) -> None:
         """Observe one tick body's duration.

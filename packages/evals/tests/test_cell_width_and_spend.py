@@ -1,4 +1,4 @@
-"""How many cells run at once is the kind's to declare, and the cost cap counts every source of a cell's spend.
+"""How many cells run at once is the kind's to declare, and the cost cap is read between cells, never inside one.
 
 Driven through the real launch and the real runner over the toy host, reading what was stored:
 
@@ -6,12 +6,10 @@ Driven through the real launch and the real runner over the toy host, reading wh
   safe at, the host's ceiling and its matrix. A launcher that says nothing runs its kind serially, and
   the runner refuses — before anything is spent — a kind declaring less than the run executes at.
 * **Spend by source, never overwritten.** A cell's sink keeps one running total per source, each only
-  ever added to, and every cell's question of the cap reads their sum and every sibling's.
-* **The cap signal.** A conversing kind's candidate turn that the cap has no room for ends the cell
-  ``budget_stopped`` — excluded, never failed — keeping the rounds it recorded.
-* **Reservation.** A priced call holds its ceiling against the cap while it is in flight, so concurrent
-  cells cannot together be admitted past it: a run whose paid calls are all reserved never spends past
-  its cap, the judge phase's included.
+  ever added to.
+* **No refusal inside a cell.** A priced call, an unpriced one and a judge call are all made whatever the
+  run has spent: the cap is read between cells, against what the recorded cells landed, so a cell is measured
+  whole or never begun, and a run lands past its cap by up to the width's worth of cells.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -41,13 +39,13 @@ from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
 from packages.evals.tests.scripted_table import FakeCellSink, ScriptedResponse, ScriptedTable, actor
 from threetears.evals.kernel import CappedCompletion, call_ceiling
-from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, CostCapReached
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run import KindWiring, LaunchHost, RunnerOptions, drive_conversation, execute_run, start_run
-from threetears.evals.run.budget import BudgetStoppedError, CapBreach, EvalRunCostCap
-from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
+from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
+from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 from threetears.evals.schema import CompletionProtocolDefect, EvalResult, EvalRun
@@ -280,8 +278,8 @@ class _PricedClient:
 class _PaysInCellKind(ToyExtractorKind):
     """A kind whose candidate makes ``calls`` paid calls per cell through the cell's sink, and grades nothing.
 
-    Each call goes through :class:`CappedCompletion`, so a priced one is reserved before it is made; when the cap
-    has no room the kind stops and returns what it paid for, as a kind driving its own loop does.
+    Each call goes through :class:`CappedCompletion`, so its spend lands on the cell's sink. The cap refuses
+    none: every call a cell sets out to make is made.
     """
 
     def __init__(self, *args: Any, paid: _PricedClient, calls: int, **kwargs: Any) -> None:
@@ -293,12 +291,9 @@ class _PaysInCellKind(ToyExtractorKind):
         client = CappedCompletion(self.paid, sink=sink, source="candidate")
         ledger = RoleUsageLedger(role="candidate")
         made = 0
-        try:
-            for _ in range(self.calls):
-                ledger.add_llm_result(await client.generate(system="s", user="u"))
-                made += 1
-        except CostCapReached:
-            pass
+        for _ in range(self.calls):
+            ledger.add_llm_result(await client.generate(system="s", user="u"))
+            made += 1
         return CandidateOutput(output=[{"paid_calls": made}], telemetry=CandidateTelemetry(usage=ledger.rows()))
 
 
@@ -315,9 +310,19 @@ def _no_goal_checks() -> EvalTemplate:
 
 
 async def _capped_run(
-    kind_for: Any, *, cap_usd: float, width: int, k: int = 1, n_cases: int | None = None
+    kind_for: Any,
+    *,
+    cap_usd: float,
+    width: int,
+    k: int = 1,
+    n_cases: int | None = None,
+    on_breach: Callable[[], None] | None = None,
 ) -> tuple[EvalHost, EvalRun, list[EvalResult], BudgetStoppedError | None, EvalRunCostCap]:
-    """Run ``kind_for(world)`` over the toy cases at ``width``, under an enforcing cap of ``cap_usd``."""
+    """Run ``kind_for(world)`` over the toy cases at ``width``, under an enforcing cap of ``cap_usd``.
+
+    ``on_breach`` is called the moment the cap's gate reports a breach, which is when the run decides to start no
+    new cell: a test holds a running cell until then, so what had landed at the stop does not depend on timing.
+    """
     host = toyhost_host()
     world = host.profile.world
     assert world is not None
@@ -329,6 +334,13 @@ async def _capped_run(
         run = run.model_copy(update={"test_case_ids": [case.id for case in cases]})
     cap = EvalRunCostCap(run.id, cap_usd, enabled=True)
     stopped: BudgetStoppedError | None = None
+
+    def gate(pending: float | None) -> Any:
+        breach = cap.check(pending)
+        if breach is not None and on_breach is not None:
+            on_breach()
+        return breach
+
     try:
         await execute_run(
             host,
@@ -337,7 +349,7 @@ async def _capped_run(
             test_cases=cases,
             judge_service=None,
             options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}, max_concurrent_cells=width),
-            budget_gate=cap.check,
+            budget_gate=gate,
             on_cost=cap.record,
         )
     except BudgetStoppedError as error:
@@ -345,63 +357,92 @@ async def _capped_run(
     return host, run, off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), stopped, cap
 
 
-async def test_a_tiny_cap_stops_a_two_cell_run_before_the_second_cells_paid_work() -> None:
-    """The failing scenario: two cells start together, and the cap has room for the first one's paid call alone.
+async def test_a_tiny_cap_starts_no_third_cell_and_refuses_the_running_cell_nothing() -> None:
+    """Two cells run together under a cap the first one's landing passes: the third never starts, the second finishes.
 
-    Counted only once each cell's result landed, both cells would have paid; counted as the first call's ceiling is
-    held, the second cell's call is refused before it is made.
+    The second cell is held until the run has decided to stop, so it is still running at the stop. It is not refused
+    its paid call: it finishes whole, and the stop record says what had landed at the stop and once it had finished.
     """
     paid = _PricedClient(cost_usd=1.0, ceiling_usd=1.0)
+    release = asyncio.Event()
+
+    class _HoldsTheSecondCell(_PaysInCellKind):
+        invoked = 0
+
+        async def invoke(
+            self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink
+        ) -> CandidateOutput:
+            type(self).invoked += 1
+            if type(self).invoked == 2:
+                await release.wait()
+            return await super().invoke(instance, test_case, sink)
 
     def kind_for(world: Any) -> ToyExtractorKind:
-        return _PaysInCellKind(client=ScriptedExtractionClient(), world=world, goal_checks=(), paid=paid, calls=1)
+        return _HoldsTheSecondCell(client=ScriptedExtractionClient(), world=world, goal_checks=(), paid=paid, calls=1)
 
-    host, run, results, stopped, cap = await _capped_run(kind_for, cap_usd=1.5, width=2, n_cases=2)
-
-    assert paid.calls == 1, "the second cell's paid call was refused before it was made"
-    assert stopped is not None, "the run stops budget_stopped"
-    assert stopped.breach.refused_call_usd == pytest.approx(1.0)
-    assert "a call priced at up to $1.0000" in str(stopped)
-    assert cap.accumulated_usd <= 1.5, "nothing was spent past the cap"
-    refused = [result for result in results if off_loop(_output, host, run, result) == [{"paid_calls": 0}]]
-    assert len(refused) == 1
-    assert classify_result(refused[0]) is ResultOutcome.INFRA_EXCLUDE, (
-        "a cell the cap cut short is excluded, not failed"
+    host, run, results, stopped, cap = await _capped_run(
+        kind_for, cap_usd=0.5, width=2, n_cases=3, on_breach=release.set
     )
-    assert "cost cap" in (refused[0].runner_error or "")
+
+    assert paid.calls == 2, "two cells paid, whole; the third never started"
+    assert len(results) == 2
+    assert all(off_loop(_output, host, run, result) == [{"paid_calls": 1}] for result in results)
+    assert all(classify_result(result) is ResultOutcome.OK for result in results), "no cell was cut short"
+    assert all(not result.runner_error for result in results)
+    assert stopped is not None, "the run stops budget_stopped"
+    (stop,) = stopped.stops
+    assert stop.currency == "cost_usd" and stop.ceiling == pytest.approx(0.5)
+    assert stop.landed_at_stop == pytest.approx(1.0), "only the first cell had landed when the stop was decided"
+    assert stop.cells_in_flight == 1
+    assert stop.landed_final == pytest.approx(2.0) == pytest.approx(cap.accumulated_usd)
+    assert stop.overshoot == pytest.approx(1.5)
+    assert stop.cells_not_started == 1
 
 
-async def test_reservation_keeps_a_concurrent_run_inside_its_cap() -> None:
-    """Twelve cells, four at a time, three priced calls each: whatever overlaps, the run never spends past its cap."""
+async def test_a_concurrent_run_lands_past_its_cap_by_at_most_the_widths_worth_of_cells() -> None:
+    """Twelve cells, four at a time, three priced calls each: no cell is cut short, and the overshoot is bounded.
+
+    The cap is read between cells against what has landed, so the cell that crosses it and the cells running
+    beside it finish whole; nothing starts after.
+    """
     paid = _PricedClient(cost_usd=0.008, ceiling_usd=0.01)
 
     def kind_for(world: Any) -> ToyExtractorKind:
         return _PaysInCellKind(client=ScriptedExtractionClient(), world=world, goal_checks=(), paid=paid, calls=3)
 
-    _host, _run, results, stopped, cap = await _capped_run(kind_for, cap_usd=0.1, width=4, k=4)
+    host, run, results, stopped, cap = await _capped_run(kind_for, cap_usd=0.1, width=4, k=4)
 
     assert stopped is not None
     assert paid.peak > 1, "the cells' calls overlapped"
-    assert cap.accumulated_usd <= 0.1, f"the run spent ${cap.accumulated_usd:.4f} against a $0.1 cap"
+    assert len(results) < 12, "no cell started once the cap had been reached by what landed"
+    assert all(off_loop(_output, host, run, result) == [{"paid_calls": 3}] for result in results), (
+        "every cell made all of its calls: none was refused inside a cell"
+    )
+    assert all(classify_result(result) is ResultOutcome.OK for result in results)
     assert sum(result.cost_usd or 0.0 for result in results) == pytest.approx(cap.accumulated_usd)
-    assert len(results) < 12, "no cell started once the cap had no room left"
+    assert cap.accumulated_usd > 0.1
+    (stop,) = stopped.stops
+    assert stop.landed_final == pytest.approx(cap.accumulated_usd)
+    assert stop.cells_not_started == 12 - len(results)
+    assert stop.cells_in_flight <= 3, "the cell that decided is the fourth running"
+    assert stop.overshoot <= 0.024 * 4, "by no more than the cells in flight and the one that crossed it"
 
 
-async def test_an_unpriced_call_is_admitted_only_while_the_cap_is_not_reached_so_it_passes_by_one_call_per_cell() -> (
-    None
-):
-    """The bound that remains: a call nobody can price holds nothing, so cells running together may each make one."""
+async def test_an_unpriced_call_is_made_like_any_other_so_every_cell_makes_all_of_its_calls() -> None:
+    """A call nobody can price is never refused either: two cells running together make all six calls."""
     paid = _PricedClient(cost_usd=1.0, ceiling_usd=None)
 
     def kind_for(world: Any) -> ToyExtractorKind:
         return _PaysInCellKind(client=ScriptedExtractionClient(), world=world, goal_checks=(), paid=paid, calls=3)
 
-    _host, _run, _results, stopped, cap = await _capped_run(kind_for, cap_usd=1.5, width=2, n_cases=2)
+    _host, _run, results, stopped, cap = await _capped_run(kind_for, cap_usd=1.5, width=2, n_cases=2)
 
-    assert stopped is not None
-    assert cap.accumulated_usd > 1.5, "an unpriced call holds nothing, so cells running together can pass the cap"
-    assert cap.accumulated_usd <= 1.5 + 2 * 1.0, "by no more than one call per running cell"
-    assert paid.calls < 6, "and once the cap is reached, no further call is made"
+    assert paid.calls == 6
+    assert cap.accumulated_usd == pytest.approx(6.0)
+    assert len(results) == 2
+    assert stopped is None, (
+        "both cells had started before anything landed: there was no cell left to keep from starting"
+    )
 
 
 # =============================================================================
@@ -410,10 +451,11 @@ async def test_an_unpriced_call_is_admitted_only_while_the_cap_is_not_reached_so
 
 
 class _ReportsBySourceKind(ToyExtractorKind):
-    """Two cells of one run, side by side: the first reports spend on two sources, the second asks the cap.
+    """Two cells of one run, side by side: the first reports spend on two sources, the second asks the sink.
 
-    The first to invoke reports $0.6 of candidate spend and $0.3 of background work — each under the $1 cap — and
-    waits; the second, once it has, asks to hold a $0.2 call, which only the SUM of the first's sources rules out.
+    The first to invoke reports $0.6 of candidate spend and $0.3 of background work and waits; the second, once it
+    has, asks to hold a $0.2 call and asks whether the cap is reached. Neither is refused: the $1 cap is read
+    between cells.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -423,6 +465,7 @@ class _ReportsBySourceKind(ToyExtractorKind):
         self.order: list[str] = []
         self.refused: list[str] = []
         self.negative_refused: list[str] = []
+        self.cap_reached: list[bool] = []
 
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         self.order.append(test_case.id)
@@ -433,20 +476,18 @@ class _ReportsBySourceKind(ToyExtractorKind):
                 sink.add_spend("candidate", -0.6)
             except ValueError as refused:
                 self.negative_refused.append(str(refused))
-            assert not sink.cost_cap_reached(), "$0.9 of the cell's own is inside a $1 cap"
+            self.cap_reached.append(sink.cost_cap_reached())
             self.reported.set()
             await self.asked.wait()
             return CandidateOutput(output=[{"first": True}])
         await self.reported.wait()
-        try:
-            sink.reserve("candidate", 0.2)
-        except CostCapReached as refused:
-            self.refused.append(refused.detail)
+        sink.reserve("candidate", 0.2).release()
+        self.cap_reached.append(sink.cost_cap_reached())
         self.asked.set()
         return CandidateOutput(output=[{"first": False}])
 
 
-async def test_a_cells_spend_by_source_only_grows_and_its_siblings_see_the_sum() -> None:
+async def test_a_cells_spend_by_source_only_grows_and_no_sibling_is_refused_by_it() -> None:
     kinds: list[_ReportsBySourceKind] = []
 
     def kind_for(world: Any) -> ToyExtractorKind:
@@ -456,15 +497,15 @@ async def test_a_cells_spend_by_source_only_grows_and_its_siblings_see_the_sum()
     _host, _run, _results, stopped, _cap = await _capped_run(kind_for, cap_usd=1.0, width=2, n_cases=2)
 
     (kind,) = kinds
-    assert kind.refused, "the second cell's $0.2 call was refused: $0.6 + $0.3 + $0.2 passes the $1 cap"
-    assert "would take the run past its $1.0000 cost cap" in kind.refused[0]
     assert kind.negative_refused and "0 or more" in kind.negative_refused[0], "a source's total never decreases"
-    assert stopped is not None and stopped.breach.refused_call_usd == pytest.approx(0.2)
-    assert stopped.breach.accumulated_usd == pytest.approx(1.1), "the sibling's two sources and the refused call"
+    assert kind.cap_reached == [False, False], (
+        "$0.9 beside a $0.2 call is asked of no cell: the cap is read between cells"
+    )
+    assert stopped is None
 
 
 # =============================================================================
-# The cap signal: a candidate turn the cap has no room for ends the cell budget_stopped
+# A conversing kind is not cut short by the run's spend
 # =============================================================================
 
 
@@ -482,7 +523,7 @@ class _ConversingPaidKind(ToyExtractorKind):
         candidate = RoleUsageLedger(role="candidate")
 
         async def answer(round_turns: Sequence[SimulatorTurn]) -> CandidateTurn:
-            held = sink.reserve("candidate", 0.01)  # the cap's refusal raises CostCapReached out of the turn
+            held = sink.reserve("candidate", 0.01)
             response = ScriptedResponse(content="answer", model=RUN_MODELS[0], cost_usd=0.01)
             candidate.add_llm_result(response)
             held.settle(response.cost_usd)
@@ -503,23 +544,23 @@ class _ConversingPaidKind(ToyExtractorKind):
         )
 
 
-async def test_the_cap_signal_out_of_a_candidate_turn_ends_the_cell_budget_stopped_keeping_what_it_measured() -> None:
+async def test_a_conversation_the_run_has_outspent_is_not_cut_short_mid_cell() -> None:
     kinds: list[_ConversingPaidKind] = []
 
     def kind_for(world: Any) -> ToyExtractorKind:
         kinds.append(_ConversingPaidKind(client=ScriptedExtractionClient(), world=world, goal_checks=()))
         return kinds[0]
 
-    # Room for two rounds — two lines and two answers, $0.022 — and the third line, but not its answer.
+    # A cap the cell passes in its second round: the cell still answers all five.
     host, run, results, stopped, cap = await _capped_run(kind_for, cap_usd=0.025, width=1, n_cases=1)
 
     (result,) = results
-    assert result.stop_cause is ConversationStopCause.BUDGET_STOPPED, "the cap's stop reason, never candidate_error"
-    assert result.candidate_error is None, "the cap doing its job is no failure of the candidate's"
-    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE
-    assert off_loop(_output, host, run, result) == [{"answered": ["a1", "a2"]}], "the rounds already answered are kept"
-    assert stopped is not None, "the run stops budget_stopped once the cell is saved"
-    assert cap.accumulated_usd == pytest.approx(0.023) and cap.accumulated_usd <= 0.025
+    assert result.stop_cause is ConversationStopCause.MAX_TURNS, "the conversation ran to its own end"
+    assert result.candidate_error is None and result.runner_error is None
+    assert classify_result(result) is ResultOutcome.OK
+    assert off_loop(_output, host, run, result) == [{"answered": ["a1", "a2", "a3", "a4", "a5"]}]
+    assert cap.accumulated_usd > 0.025, "the cell landed past the cap, whole"
+    assert stopped is None, "no cell was left to keep from starting"
 
 
 # =============================================================================
@@ -598,14 +639,14 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
     return off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), stopped
 
 
-async def test_a_judge_call_the_cap_has_no_room_for_is_not_sent_and_its_dim_names_the_cap() -> None:
+async def test_a_judge_call_is_sent_whatever_the_cap_has_room_for() -> None:
     judge = _PricedJudge(cost_usd=0.0004, ceiling_usd=1.0)
 
     (result,), stopped = await _judged_run(judge, cap_usd=0.5)
 
-    assert judge.calls == [], f"each judge call is reserved at ${JUDGE_CALL_ATTEMPTS * 1.0} and none fits a $0.5 cap"
-    assert "not judged" in (result.judge_error or "") and "cost cap" in (result.judge_error or "")
-    assert stopped is not None, "a judge call the cap refused stops the run once the cell is saved"
+    assert judge.calls, "every dim was judged: a judge call is not held against the cap inside the cell"
+    assert result.judge_error is None
+    assert stopped is None, "one cell, already started: there was none left to keep from starting"
 
 
 async def test_a_judge_phase_the_cap_has_room_for_is_judged_and_its_spend_counted() -> None:
@@ -623,22 +664,16 @@ async def test_a_judge_phase_the_cap_has_room_for_is_judged_and_its_spend_counte
 # =============================================================================
 
 
-async def test_a_capped_client_reserves_each_priced_call_and_settles_it_to_what_it_cost() -> None:
+async def test_a_capped_client_makes_every_priced_call_and_settles_each_to_what_it_cost() -> None:
     paid = _PricedClient(cost_usd=0.004, ceiling_usd=0.01)
-    sink = FakeCellSink(cap_usd=0.025)
+    sink = FakeCellSink()
     client = CappedCompletion(paid, sink=sink, source="candidate")
 
-    await client.generate(system="s", user="u")
-    await client.generate(system="s", user="u")
-    with pytest.raises(CostCapReached):
-        # Each $0.01 ceiling is held while its call runs and settled to $0.004: the fifth call's ceiling on top of
-        # $0.016 spent would pass the $0.025 cap, so it is refused before it is made.
-        for _ in range(3):
-            await client.generate(system="s", user="u")
+    for _ in range(5):
+        await client.generate(system="s", user="u")
 
-    assert paid.calls == 4
-    assert sink.spent == {"candidate": pytest.approx(0.016)}
-    assert sink.refused == [0.01]
+    assert paid.calls == 5
+    assert sink.spent == {"candidate": pytest.approx(0.02)}
     assert sink.held == [], "every reservation was closed"
 
 
@@ -647,7 +682,7 @@ async def test_a_capped_client_releases_its_reservation_when_the_call_raises() -
         async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
             raise RuntimeError("the provider fell over")
 
-    sink = FakeCellSink(cap_usd=1.0)
+    sink = FakeCellSink()
     client = CappedCompletion(_Broken(cost_usd=0.1, ceiling_usd=0.5), sink=sink, source="candidate")
 
     with pytest.raises(RuntimeError, match="fell over"):
@@ -676,7 +711,7 @@ class _MistypedSentClient(_PricedClient):
 async def test_a_capped_client_settles_a_billed_call_whatever_its_sent_settings_hold(source: Any) -> None:
     """The cap reads the spend alone: a wrong-typed ``sent_settings`` neither leaves the ceiling held nor fails the
     call, and a candidate's call is never read for what it was sent with."""
-    sink = FakeCellSink(cap_usd=1.0)
+    sink = FakeCellSink()
     client = CappedCompletion(_MistypedSentClient(cost_usd=0.004, ceiling_usd=0.01), sink=sink, source=source)
 
     returned = await client.generate(system="s", user="u")
@@ -690,7 +725,7 @@ async def test_a_simulator_call_whose_sent_settings_is_refused_is_settled_and_re
 ):
     """Through the conversation loop: the reservation is settled to the call's cost, the driver's calls hold it, and
     the host's defect stops the driver ``simulator_error`` and propagates."""
-    sink = FakeCellSink(cap_usd=1.0)
+    sink = FakeCellSink()
     driver = TurnDriver(conversation=ConversationSpec(actors=[actor("a")], max_turns=2), variation={})
 
     async def answer(_turns: Sequence[SimulatorTurn]) -> CandidateTurn:
@@ -718,12 +753,3 @@ def test_a_ceiling_is_the_clients_own_times_the_attempts_and_unpriced_without_on
     assert call_ceiling(object(), system="s", user="u") is None, "a client with no price_ceiling cannot say"
     with pytest.raises(ValueError, match="a ceiling is a finite amount"):
         call_ceiling(_PricedClient(cost_usd=0.0, ceiling_usd=-1.0), system="s", user="u")
-
-
-def test_a_refused_calls_breach_says_the_call_was_not_made() -> None:
-    breach = CapBreach(max_cost_usd=1.0, accumulated_usd=1.2, unpriced_results=0, refused_call_usd=0.5)
-
-    message = str(BudgetStoppedError(1, 2, breach))
-
-    assert "a call priced at up to $0.5000 would have taken the run to $1.2000 against a $1.0000 cap" in message
-    assert "so it was not made" in message

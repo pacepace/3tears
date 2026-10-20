@@ -2,6 +2,8 @@
 
 - :mod:`model` — the :class:`Report` and its blocks (``text``, ``table``, ``chart``, ``trial``, ``disclosure``), and
   :meth:`Report.write`, which puts the page, its Markdown and ``bundle.json`` in one directory.
+- :mod:`campaign_page` — :func:`build_campaign_report`, a campaign's page over its aspects: code's readings, the
+  writer's recommendation, the person's call, then one fold per aspect holding that aspect's page.
 - :mod:`build` — :func:`build_report`, laying a stored analysis out over the bundle frozen with it, and
   :func:`build_code_only_report`, laying a campaign's evidence out when no analysis exists. One page either way.
 - :mod:`verdict` — the first screen's basis and verdict lines, and the words for every way a trial is lost or fails.
@@ -22,9 +24,12 @@ from threetears.evals.analysis.report.build import (
     build_code_only_report,
     build_report,
 )
+from threetears.evals.analysis.report.campaign_page import build_campaign_report
 from threetears.evals.analysis.report.model import (
     SECTION_TITLES,
     BarOutcome,
+    CampaignAspectFold,
+    CampaignReport,
     CellValue,
     ChartBlock,
     ChartKind,
@@ -52,8 +57,8 @@ from threetears.evals.analysis.report.model import (
     VerdictKind,
     VerdictReason,
 )
-from threetears.evals.analysis.report.serialize_html import report_html
-from threetears.evals.analysis.report.serialize_md import report_markdown
+from threetears.evals.analysis.report.serialize_html import campaign_report_html, report_html
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 from threetears.evals.analysis.report.verdict import MIN_CASES
 
 __all__ = [
@@ -61,6 +66,8 @@ __all__ = [
     "NO_ANALYSIS",
     "SECTION_TITLES",
     "BarOutcome",
+    "CampaignAspectFold",
+    "CampaignReport",
     "CellValue",
     "ChartBlock",
     "ChartKind",
@@ -89,8 +96,11 @@ __all__ = [
     "VerdictReason",
     "analysis_bundle",
     "analysis_verdict",
+    "build_campaign_report",
     "build_code_only_report",
     "build_report",
+    "campaign_report_html",
+    "campaign_report_markdown",
     "report_html",
     "report_markdown",
 ]

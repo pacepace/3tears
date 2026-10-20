@@ -37,6 +37,7 @@ from threetears.agent.acl import AccessDenied
 from threetears.channels.frames import Frame, OpResult
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
 from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused
+from threetears.nats.errors import KvError
 
 from .websocket_support import EchoRouter, MockWebSocket, valid_auth
 
@@ -450,6 +451,53 @@ class TestDisconnectCleanup:
         assert len(state.unregistered) == 1
         assert len(state.registered) == 1
         assert state.unregistered[0] == state.registered[0][0]
+
+
+class _FanoutThatCannotLeaveTheFirstRoom(_FakeFanout):
+    """a fanout whose L2 refuses the first room's leave, as during a broker outage."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refused: list[str] = []
+
+    async def leave_room(self, room_id: str, connection_id: str) -> None:
+        if not self.refused:
+            self.refused.append(room_id)
+            raise KvError("broker unreachable")
+        await super().leave_room(room_id, connection_id)
+
+
+class TestDisconnectCleanupSurvivesARefusedLeave:
+    @pytest.mark.asyncio
+    async def test_one_room_that_cannot_be_left_does_not_skip_the_rest_or_the_unregister(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from threetears.channels.websocket import WebSocketHandler
+
+        state = _FakeRoomState()
+        fanout = _FanoutThatCannotLeaveTheFirstRoom()
+        _capture_authz(monkeypatch)
+        handler = WebSocketHandler(
+            router=EchoRouter(),
+            auth_validator=_auth_with_customer("valid-token"),
+            room_state=state,
+            room_fanout=fanout,
+            acl_cache=object(),
+            ns_resolver=_AllowAuthorizer(),
+        )
+        rooms = ["cust:story:main:a.md", "cust:story:main:b.md"]
+        ws = MockWebSocket(
+            messages=[json.dumps({"type": "join", "room": room}) for room in rooms],
+            query_params={"token": "valid-token"},
+        )
+
+        with caplog.at_level("WARNING"):
+            await handler.handle_connection(ws)
+
+        assert fanout.refused == [rooms[0]]
+        assert [room for room, _ in fanout.left] == [rooms[1]], "the room after the refused one is still left"
+        assert len(state.unregistered) == 1
+        assert any("leaving a room on disconnect failed" in r.getMessage() for r in caplog.records)
 
 
 # ============================================================

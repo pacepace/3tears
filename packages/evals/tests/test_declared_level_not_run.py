@@ -23,6 +23,7 @@ from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.aspect_support import with_aspect
 
 #: A third chunk width the campaign declares and never runs.
 _UNRUN = 2048
@@ -32,12 +33,12 @@ def _bundle(*, extra_level: bool) -> AnalysisContextBundle:
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(profile=profile)
     if extra_level:
-        design = campaign.declared_design
+        design = campaign.aspects[0].design
         assert design is not None
         (axis,) = design.axes
         unrun = SweepableValue.of(_UNRUN, scale=IntervalScale(value=_UNRUN, unit="tok"), keep_raw=True)
         widened = axis.model_copy(update={"values": [*axis.values, unrun]})
-        campaign = campaign.model_copy(update={"declared_design": design.model_copy(update={"axes": [widened]})})
+        campaign = with_aspect(campaign, design={"axes": [widened]})
     return assemble_context_bundle(campaign, storage=storage, profile=profile)
 
 
@@ -104,14 +105,9 @@ def test_a_level_no_run_matched_is_undetermined_where_a_run_inherited() -> None:
         axis_id="retrieval.rerank_depth",
         values=[SweepableValue.of(depth, display=str(depth), keep_raw=True) for depth in (8, 16)],
     )
-    design = campaign.declared_design
+    design = campaign.aspects[0].design
     assert design is not None
-    campaign = campaign.model_copy(
-        update={
-            "run_ids": [*campaign.run_ids, tuned.id],
-            "declared_design": design.model_copy(update={"axes": [*design.axes, axis]}),
-        }
-    )
+    campaign = with_aspect(campaign, design={"axes": [*design.axes, axis]}, run_ids=[*campaign.run_ids, tuned.id])
 
     bundle = assemble_context_bundle(campaign, storage=ToyhostStorage([*runs, tuned], results), profile=profile)
 

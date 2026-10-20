@@ -1,6 +1,6 @@
-"""Multiple comparisons and guardrails: each contrast tested against the control per live question, corrected together.
+"""Multiple comparisons and guardrails: each contrast tested against the control in the aspect's family, corrected together.
 
-:func:`_multiple_comparisons` builds each question's family, tests every contrast (:func:`_compare`), corrects the
+:func:`_multiple_comparisons` builds the aspect's family, tests every contrast (:func:`_compare`), corrects the
 family by Holm's method (:func:`_corrected_family`) and decides every guardrail (:func:`_guardrail_check`).
 :func:`planning_readings` and :func:`_reading_scope` read the same families for planning and exploratory labels.
 """
@@ -36,12 +36,11 @@ from threetears.evals.analysis.stats import (
     separation_test,
 )
 from threetears.evals.kernel.campaign import ReadingKind
+from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.kernel.declaration import (
     JUDGED_MERIT_AXIS,
-    CampaignDesign,
+    AspectDesign,
     axis_in_question_scope,
-    exploratory_reading,
-    preregistered_questions,
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
@@ -69,13 +68,17 @@ from threetears.evals.analysis.bundle.schema import (
     ComparisonFamily,
     ComparisonReading,
     ComparisonVerdict,
+    asks_a_question,
     exploratory_disclosure,
+    FLOOR_COST_MEASURE,
     FamilyComparison,
+    FloorContrast,
     PairingCorrelation,
     JudgedMeasure,
     MultipleComparisons,
     ReadingScope,
     RealizedDesign,
+    question_axes,
 )
 from threetears.evals.analysis.bundle.measures import (
     _failures_as_misses,
@@ -101,10 +104,10 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
 
 
 #: Why a bundle carries no family of comparisons, one sentence per cause.
-#: Opens the campaign-wide family's disclosure, where the campaign declares no question.
+#: Opens the exploratory family's disclosure, where the campaign asked no question before the aspect's first run.
 _NO_QUESTION_FAMILY = (
-    "This campaign declares no live question, so every comparison it holds — each contrast against the control, "
-    "on every reading on a merit axis — is corrected as one family."
+    "This campaign asked no question before its first run, so every comparison it holds — each contrast against the "
+    "control, on every reading on a merit axis — is corrected as one family."
 )
 _NO_CONTROL_TO_COMPARE_AGAINST = (
     "No control resolved, so there is no arm for a contrast to be tested against and no separation between arms is "
@@ -520,7 +523,7 @@ def _family_disclosure(
     return f"{_NO_QUESTION_FAMILY} {sentence}" if campaign_wide else sentence
 
 
-def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: list[_Tested]) -> ComparisonFamily:
+def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_Tested]) -> ComparisonFamily:
     """Correct one family's tests together, and read each comparison's verdict and interval off the result.
 
     Every separation p and every equivalence p is Holm-adjusted as one family, capped at the separation
@@ -540,12 +543,12 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
 
     **A claim of no worse by more than a margin reads the bounded interval** (``bounded_interval``), the bounded
     test's on the declared range at the same level, valid at every n; the t interval is not. Read for non-inferiority
-    on a pass rate's coarse per-case shares at the margin, it let a decision rule's ``switch`` through up to 12% of
+    on a pass rate's coarse per-case shares at the margin, it let a ``switch`` on a rate through up to 12% of
     the time against the 2.5% it states (``docs/measuring-soundly.md``), the failure a guardrail's ``held`` was moved
     off it for. A reading with no declared range has none.
 
-    :param question_id: The question the family serves, or None for the campaign-wide family.
-    :ptype question_id: str | None
+    :param aspect: The aspect whose question the family serves, or None for the exploratory family.
+    :ptype aspect: str | None
     :param axes: The question's merit axes.
     :ptype axes: list[MeritAxis]
     :param tested: The family's comparisons, tested and uncorrected.
@@ -608,13 +611,15 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
                     "equivalence_p_adjusted": equivalence_p_adjusted,
                     "interval": interval,
                     "bounded_interval": bounded,
+                    # What the bounded interval read, so a projection can read it again at more cases.
+                    "case_values": None if bounded is None else (list(control_sample), list(contrast_sample)),
                     "verdict": verdict,
                 }
             )
         comparisons.append(comparison)
     n_untested = sum(1 for comparison in comparisons if comparison.verdict == "untested")
     return ComparisonFamily(
-        question_id=question_id,
+        aspect=aspect,
         merit_axes=axes,
         family_size=family_size,
         n_equivalence_tests=n_equivalence,
@@ -622,13 +627,14 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
         n_untested=n_untested,
         comparisons=comparisons,
         disclosure=_family_disclosure(
-            family_size, n_untested, SIGNIFICANCE_ALPHA, n_equivalence=n_equivalence, campaign_wide=question_id is None
+            family_size, n_untested, SIGNIFICANCE_ALPHA, n_equivalence=n_equivalence, campaign_wide=aspect is None
         ),
     )
 
 
 def _multiple_comparisons(
-    declared: CampaignDesign | None,
+    aspect: str,
+    declared: AspectDeclaration | None,
     realized: RealizedDesign,
     results_by_cell: dict[_CellKey, list[EvalResult]],
     records: list[ScoreRecord],
@@ -642,29 +648,36 @@ def _multiple_comparisons(
     contended: Collection[_CellKey] = frozenset(),
     first_run_at: str | None,
     rubric_threshold: int,
-    pass_rate_questions: Collection[str] = frozenset(),
-) -> tuple[MultipleComparisons, GuardrailReadings]:
-    """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
+) -> tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]:
+    """Test each contrast against the control in the aspect's one family, decide every guardrail, and carry what the
+    floors read.
 
-    A question's family is every comparison it could draw a verdict from: each contrast cell against
+    The aspect's family is every comparison its question could draw a verdict from: each contrast cell against
     the control cell under the same rig (a contrast across rigs differs by its instrument too, so it is
-    not this test), on every reading on the question's axes (:func:`_family_readings`). The family is
+    not this test), on every reading on the aspect's merit axes (:func:`_family_readings`). With no question
+    asked before the first run it is the exploratory family, every reading on a merit axis. The family is
     corrected by Holm's method over the comparisons that carried a p, and each verdict is read off its
     adjusted p, so a family of ten cannot hand the writer a chance "difference" as a finding.
 
     The guardrails are read over the same pairs and the same per-case values, and kept out of every
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
-    **The overall pass rate joins only the family of a question whose decision rule reads it** (a rate clause naming
-    no one reading, ``pass_rate_questions``): there it is a hypothesis the question asks, so its family grows by one and
-    every adjusted p in it moves with it. No other family tests it, and with no such question it is compared nowhere: it
-    is the scoreboard's count, exploratory. Each case's value is the share of its usable trials that passed
+    **The overall pass rate joins the question's family when the question was asked before the first run and the aspect
+    declares a margin**: the margin is how far the pass rate may fall, so the pass rate is a hypothesis the question
+    asks and its family grows by one, every adjusted p in it moving with it. It never joins the exploratory family,
+    whose size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
     (:func:`_trial_pass_values`), tested and bounded as a check's pass rate is, on its 0-1 range.
 
-    :param declared: The campaign's declaration, for its live questions asked before its first run
-        (:func:`~threetears.evals.kernel.declaration.preregistered_questions`): a question asked after it builds
-        no family of its own, and the campaign is read as if it had asked nothing.
-    :ptype declared: CampaignDesign | None
+    **The floors read their own values, whatever the family compares** (:class:`FloorContrast`): each arm against the
+    control under each rig, on the overall pass rate and on the cost per reply, per case, so a floor's interval, read
+    at its own level, never depends on which readings the question asked about.
+
+    :param aspect: The aspect's label, which keys its question's family.
+    :ptype aspect: str
+    :param declared: What the campaign declared, as the aspect reads it: its question, asked before the first run
+        or not (:func:`~threetears.evals.analysis.bundle.schema.asked_in_time`), its merit axes and its margin. A
+        question asked after it builds no family of its own, and the aspect is read as if it had asked nothing.
+    :ptype declared: AspectDeclaration | None
     :param realized: The derived design, for the control arm.
     :ptype realized: RealizedDesign
     :param results_by_cell: Each cell's results.
@@ -692,26 +705,30 @@ def _multiple_comparisons(
     :param rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
         rate's per-case shares read (:func:`_trial_pass_values`), as the scoreboard does.
     :ptype rubric_threshold: int
-    :param pass_rate_questions: The ids of the live questions whose decision rule reads the overall pass rate.
-    :ptype pass_rate_questions: Collection[str]
-    :return: One family per live question, in declaration order; one campaign-wide family over every reading when
-        the campaign declares no live question; or none, with the reason, when no control resolved. Beside
-        them, every guardrail decided for each arm against the control.
-    :rtype: tuple[MultipleComparisons, GuardrailReadings]
+    :return: The aspect's question's family; the exploratory family over every reading when no question was asked
+        in time; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
+        against the control, and the floors' per-case values; with no control, each pair of arms' pass rate per case
+        instead (:func:`_choice_contrasts`), what a choice reads.
+    :rtype: tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]
     """
-    guardrail_readings = _guardrail_readings(catalog, judged_measures, declared)
+    guardrail_readings = _guardrail_readings(catalog, judged_measures, declared.design if declared else None)
     if realized.control_arm is None:
-        return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST), _guardrails_of(
-            guardrail_readings,
-            [],
-            withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
+        return (
+            MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST),
+            _guardrails_of(
+                guardrail_readings,
+                [],
+                withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
+            ),
+            _choice_contrasts(results_by_cell, rubric_threshold=rubric_threshold, catalog=catalog),
         )
-    questions = preregistered_questions(declared, first_run_at) if declared is not None else []
-    # A campaign that asked nothing (or only once its results existed) is not thereby licensed to report chance
+    axes_asked = question_axes(declared, first_run_at)
+    # An aspect that asked nothing (or only once its results existed) is not thereby licensed to report chance
     # differences: its family is every comparison it holds, on every reading, corrected as one.
-    scopes: list[tuple[str | None, list[MeritAxis]]] = (
-        [(question.id, list(question.merit_axes)) for question in questions] if questions else [(None, [])]
-    )
+    scopes: list[tuple[str | None, list[MeritAxis]]] = [(aspect, axes_asked) if axes_asked is not None else (None, [])]
+    # The pass rate is a hypothesis only of a question asked in time with a margin to fall by (never the exploratory
+    # family's: it would move every other reading's adjusted p there over unchanged runs).
+    pass_rate_asked = axes_asked is not None and declared is not None and declared.margin is not None
     control_variant = realized.control_arm.variant_key
     # The control's cells under an earlier identity predicate are the control, not a rival arm: compared with the
     # control they would read the control against itself under another digest, so they are in no pair.
@@ -748,9 +765,9 @@ def _multiple_comparisons(
     # A judged dimension's scale bounds the interval on its delta; it declares no margin, so no equivalence reads it.
     judged_ranges = {judged.name: judged.value_range for judged in judged_measures if judged.value_range is not None}
     families = []
-    for question_id, axes in scopes:
+    for family_aspect, axes in scopes:
         readings = _family_readings(axes, catalog, judged_measures)
-        if question_id in pass_rate_questions:
+        if pass_rate_asked and family_aspect is not None:
             readings[("trial", TRIAL_PASS_NAME)] = True
         tested: list[_Tested] = []
         for reading in sorted(readings):
@@ -790,7 +807,7 @@ def _multiple_comparisons(
                 tested.append(
                     one._replace(comparison=one.comparison.model_copy(update={"mechanism_confounds": confounds}))
                 )
-        families.append(_corrected_family(question_id, axes, tested))
+        families.append(_corrected_family(family_aspect, axes, tested))
     checks = [
         _guardrail_check(
             reading,
@@ -803,47 +820,112 @@ def _multiple_comparisons(
         for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
         if values[control_key].get(reading) or values[contrast_key].get(reading)
     ]
-    return MultipleComparisons(families=families), _guardrails_of(guardrail_readings, checks)
+    floor_contrasts = [
+        _floor_contrast(
+            reading,
+            (control_key, values[control_key].get(reading, {})),
+            (contrast_key, values[contrast_key].get(reading, {})),
+        )
+        for reading in (("trial", TRIAL_PASS_NAME), ("measure", FLOOR_COST_MEASURE))
+        for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
+        if values[control_key].get(reading) and values[contrast_key].get(reading)
+    ]
+    return (
+        MultipleComparisons(families=families),
+        _guardrails_of(guardrail_readings, checks),
+        [contrast for contrast in floor_contrasts if contrast is not None],
+    )
+
+
+def _choice_contrasts(
+    results_by_cell: dict[_CellKey, list[EvalResult]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
+) -> list[FloorContrast]:
+    """With no control, every pair of arms under one rig on the overall pass rate, per case: what a choice's pairwise
+    readings read. The pair's ``control`` is the arm first in variant-key order, a position and never a role.
+
+    :return: One contrast per pair of cells under one rig with two cases a side, in variant-key order.
+    :rtype: list[FloorContrast]
+    """
+    values = {
+        key: _trial_pass_values(members, rubric_threshold=rubric_threshold, catalog=catalog)
+        for key, members in results_by_cell.items()
+    }
+    keys = sorted(values)
+    contrasts = [
+        _floor_contrast(("trial", TRIAL_PASS_NAME), (first, values[first]), (second, values[second]))
+        for index, first in enumerate(keys)
+        for second in keys[index + 1 :]
+        if first[1] == second[1] and values[first] and values[second]
+    ]
+    return [contrast for contrast in contrasts if contrast is not None]
+
+
+def _floor_contrast(
+    reading: tuple[ComparisonReading, str],
+    control: tuple[_CellKey, dict[str, float]],
+    contrast: tuple[_CellKey, dict[str, float]],
+) -> FloorContrast | None:
+    """One arm against the control under one rig on a reading a floor reads, its samples as a comparison's would be
+    (:func:`_test_samples`); None where a side has fewer than two cases, which no interval reads."""
+    (control_key, control_values), (contrast_key, contrast_values) = control, contrast
+    a, b, paired = _test_samples(control_values, contrast_values)
+    if len(a) < 2 or len(b) < 2:
+        return None
+    kind, name = reading
+    return FloorContrast(
+        reading="trial" if kind == "trial" else "measure",
+        name=name,
+        control=ComparedCell(
+            variant_key=control_key[0],
+            apparatus_class_id=control_key[1],
+            n_cases=len(a),
+            mean=sum(a) / len(a),
+            n_left_out=len(control_values) - len(a),
+        ),
+        contrast=ComparedCell(
+            variant_key=contrast_key[0],
+            apparatus_class_id=contrast_key[1],
+            n_cases=len(b),
+            mean=sum(b) / len(b),
+            n_left_out=len(contrast_values) - len(b),
+        ),
+        test="paired" if paired else "unpaired",
+        case_values=(list(a), list(b)),
+    )
 
 
 def _reading_scope(
-    declared: CampaignDesign | None,
+    declared: AspectDeclaration | None,
     catalog: dict[str, MetricDescriptor],
     judged_measures: list[JudgedMeasure],
     *,
     first_run_at: str | None,
 ) -> ReadingScope:
-    """Label the readings no question asked before the first run asks about exploratory — or, with none, say so once.
+    """Label the readings the aspect's question, asked before the first run, does not ask about exploratory — or,
+    with none asked in time, say so once.
 
-    The same rule the families are scoped by (:func:`~threetears.evals.kernel.declaration.exploratory_reading`, over
-    :func:`~threetears.evals.kernel.declaration.preregistered_questions`), so a reading is exploratory exactly when no
-    question's family could test it, and a question declared after the first run is named as post hoc.
+    The same rule the family is scoped by (:func:`~threetears.evals.kernel.declaration.axis_in_question_scope` over
+    :func:`~threetears.evals.analysis.bundle.schema.question_axes`), so a reading is exploratory exactly when the
+    family could not test it, and a question asked after the first run is said to be post hoc.
     """
-    questions = preregistered_questions(declared, first_run_at) if declared is not None else []
-    asked_before = {question.id for question in questions}
-    post_hoc = (
-        [question.id for question in declared.live_questions() if question.id not in asked_before]
-        if declared is not None
-        else []
-    )
-    if not questions:
+    axes = question_axes(declared, first_run_at)
+    if axes is None:
         return ReadingScope(
             questions_declared=False,
-            post_hoc_questions=post_hoc,
+            question_post_hoc=asks_a_question(declared),
             disclosure=exploratory_disclosure(declared, first_run_at),
         )
     return ReadingScope(
         questions_declared=True,
-        post_hoc_questions=post_hoc,
         exploratory_measures=sorted(
             name
             for name, descriptor in catalog.items()
-            if not descriptor.guardrail and exploratory_reading(descriptor.merit_axis, questions)
+            if not descriptor.guardrail and not axis_in_question_scope(descriptor.merit_axis, axes)
         ),
         exploratory_dimensions=sorted(
             measure.name
             for measure in judged_measures
-            if measure.axis == "capability" and exploratory_reading(JUDGED_MERIT_AXIS, questions)
+            if measure.axis == "capability" and not axis_in_question_scope(JUDGED_MERIT_AXIS, axes)
         ),
     )
 
@@ -866,12 +948,12 @@ class _Guardrail(NamedTuple):
 
 
 def _guardrail_readings(
-    catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure], declared: CampaignDesign | None
+    catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure], declared: AspectDesign | None
 ) -> dict[tuple[ReadingKind, str], _Guardrail]:
     """Every guardrail reading the bundle carries: the measures declared one and the boundary judged dimensions.
 
     A measure's margin is its declared ``materiality_threshold``, the one margin a measure has; a judged
-    dimension's is the one the campaign declares for it (``CampaignDesign.guardrail_margins``), and with none
+    dimension's is the one the campaign declares for it (``AspectDesign.guardrail_margins``), and with none
     it is held at zero change.
     """
     judged_margins = {entry.dimension: entry.margin for entry in declared.guardrail_margins} if declared else {}

@@ -22,6 +22,7 @@ from threetears.evals.analysis.generator import GenerationTally, generate_analys
 from threetears.evals.schema.completion import StopReason
 from threetears.evals.kernel.provider import describe_incomplete_completion
 from threetears.evals.schema.models import EvalResult, RoleUsage, utc_now_iso
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
@@ -153,7 +154,7 @@ async def test_the_generation_log_names_an_unreported_count(caplog) -> None:
     caplog.set_level(logging.INFO, logger="threetears.evals.analysis.generator")
     tally = GenerationTally()
     await generate_analysis(
-        bundle,
+        campaign_bundle(bundle),
         prompt=PROMPT,
         model=MODEL,
         client=client,
