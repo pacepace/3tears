@@ -901,6 +901,11 @@ class LentClient:
         return getattr(self.client, name)
 
 
+#: Set in the process environment, it stops claude_agent_sdk spawning `claude -v` on the event loop before
+#: every CLI start (read as ``os.environ`` by its transport's ``connect``, claude_agent_sdk 0.2.163).
+_SKIP_VERSION_CHECK_ENV = "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"
+
+
 class PooledCliSession:
     """One live CLI subprocess, lent to exactly one caller at a time."""
 
@@ -943,6 +948,12 @@ class PooledCliSession:
                 name: sdk.AgentDefinition(description=_AGENT_DESCRIPTION, prompt=prompt)
                 for name, prompt in prompts.items()
             }
+        # The SDK spawns `claude -v` before every start unless this is set in the PROCESS environment (it
+        # reads os.environ, not the options): an asyncio subprocess spawn on the event loop, which froze
+        # large workers long enough to be killed. The check only warns about an old CLI, so a pooled start
+        # skips it, the first included.
+        if not os.environ.get(_SKIP_VERSION_CHECK_ENV):
+            os.environ[_SKIP_VERSION_CHECK_ENV] = "1"
         client = sdk.ClaudeSDKClient(options=options)
         try:
             await client.connect()
