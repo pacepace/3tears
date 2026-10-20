@@ -84,6 +84,7 @@ from threetears.langgraph.middleware_tool_budget import (
     DEFAULT_TOOL_BUDGET_FALLBACK_TEXT,
     ToolBudgetTier,
     ToolLoopBudgetMiddleware,
+    ToolLoopBudgetState,
     recursion_limit_for,
 )
 from threetears.langgraph.offload import (
@@ -208,6 +209,7 @@ __all__ = [
     "ToolCompletedEvent",
     "ToolDispatchedEvent",
     "ToolLoopBudgetMiddleware",
+    "ToolLoopBudgetState",
     "ToolResultOffloadMiddleware",
     "ToolResultOffloader",
     "ToolStartedEvent",
