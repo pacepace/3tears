@@ -14,6 +14,7 @@ from uuid import uuid7
 
 import pytest
 
+from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.knowledge import ConceptSnapshot, EntrySnapshot, Scope
 from threetears.knowledge import KnowledgeDraftCommand, KnowledgeDraftEvent
 
@@ -31,22 +32,22 @@ from threetears.agent.knowledge.integration import (
 class _EntryColl:
     """entry collection stand-in returning a fixed snapshot list."""
 
-    def __init__(self, snapshots: list[EntrySnapshot], *, raises: bool = False) -> None:
+    def __init__(self, snapshots: list[EntrySnapshot], *, raises: Exception | None = None) -> None:
         self._snapshots = snapshots
         self._raises = raises
 
     async def list_visible_to_user(
         self, user_id: Any, *, datasource_id: Any = None, customer_scope: Any
     ) -> list[EntrySnapshot]:
-        if self._raises:
-            raise RuntimeError("entry boom")
+        if self._raises is not None:
+            raise self._raises
         return list(self._snapshots)
 
 
 class _ConceptColl:
     """concept collection stand-in returning a fixed snapshot list."""
 
-    def __init__(self, snapshots: list[ConceptSnapshot], *, raises: bool = False) -> None:
+    def __init__(self, snapshots: list[ConceptSnapshot], *, raises: Exception | None = None) -> None:
         self._snapshots = snapshots
         self._raises = raises
 
@@ -58,21 +59,21 @@ class _ConceptColl:
         datasource_table_id: Any = None,
         customer_scope: Any,
     ) -> list[ConceptSnapshot]:
-        if self._raises:
-            raise RuntimeError("concept boom")
+        if self._raises is not None:
+            raise self._raises
         return list(self._snapshots)
 
 
 class _DraftColl:
     """collection stand-in exposing ``list_own_drafts``."""
 
-    def __init__(self, drafts: list[DraftView], *, raises: bool = False) -> None:
+    def __init__(self, drafts: list[DraftView], *, raises: Exception | None = None) -> None:
         self._drafts = drafts
         self._raises = raises
 
     async def list_own_drafts(self, user_id: Any, *, customer_scope: Any) -> list[DraftView]:
-        if self._raises:
-            raise RuntimeError("draft boom")
+        if self._raises is not None:
+            raise self._raises
         return list(self._drafts)
 
 
@@ -122,8 +123,19 @@ class TestRetrieveEntries:
 
     async def test_retrieval_fault_fails_closed(self) -> None:
         """an entry fault fails closed too -- an invariant ENTRY is a hard rule."""
-        integration = KnowledgeIntegration(entry_collection=_EntryColl([], raises=True))
+        integration = KnowledgeIntegration(entry_collection=_EntryColl([], raises=DataLayerUnavailableError("boom")))
         with pytest.raises(GovernedKnowledgeUnavailableError, match="always-inject"):
+            await retrieve_entries(integration, uuid7(), customer_scope=uuid7())
+
+    async def test_a_scope_context_it_cannot_use_fails_closed(self) -> None:
+        integration = KnowledgeIntegration(entry_collection=_EntryColl([_entry(Scope.PLATFORM)]))
+        with pytest.raises(GovernedKnowledgeUnavailableError, match="ValueError"):
+            await retrieve_entries(integration, uuid7(), scope_context="nonsense", customer_scope=uuid7())
+
+    async def test_a_bug_in_the_read_propagates_as_itself(self) -> None:
+        """only a store failure or a row the read cannot use reads as "could not be read"."""
+        integration = KnowledgeIntegration(entry_collection=_EntryColl([], raises=TypeError("bug")))
+        with pytest.raises(TypeError, match="bug"):
             await retrieve_entries(integration, uuid7(), customer_scope=uuid7())
 
     async def test_scope_clamp_baseline_drops_non_platform(self) -> None:
@@ -162,8 +174,20 @@ class TestRetrieveConcepts:
         never reached that check, because there was nothing to render. Same
         fail-open, reached from the other side.
         """
-        integration = KnowledgeIntegration(concept_collection=_ConceptColl([], raises=True))
+        integration = KnowledgeIntegration(
+            concept_collection=_ConceptColl([], raises=DataLayerUnavailableError("aibots.l3.query: nats: timeout")),
+        )
         with pytest.raises(GovernedKnowledgeUnavailableError, match="always-inject"):
+            await retrieve_concepts(integration, uuid7(), customer_scope=uuid7())
+
+    async def test_a_scope_context_it_cannot_use_fails_closed(self) -> None:
+        integration = KnowledgeIntegration(concept_collection=_ConceptColl([_concept(Scope.PLATFORM)]))
+        with pytest.raises(GovernedKnowledgeUnavailableError, match="ValueError"):
+            await retrieve_concepts(integration, uuid7(), scope_context="nonsense", customer_scope=uuid7())
+
+    async def test_a_bug_in_the_read_propagates_as_itself(self) -> None:
+        integration = KnowledgeIntegration(concept_collection=_ConceptColl([], raises=AttributeError("bug")))
+        with pytest.raises(AttributeError, match="bug"):
             await retrieve_concepts(integration, uuid7(), customer_scope=uuid7())
 
     async def test_disabled_collection_is_not_a_fault(self) -> None:
@@ -245,10 +269,28 @@ class TestListOwnDrafts:
     async def test_a_concept_fault_neither_hides_the_entry_drafts_nor_passes_for_no_concept_drafts(self) -> None:
         integration = KnowledgeIntegration(
             entry_collection=_DraftColl([_draft("entry")]),
-            concept_collection=_DraftColl([], raises=True),
+            concept_collection=_DraftColl([], raises=DataLayerUnavailableError("draft boom")),
         )
-        with pytest.raises(DraftListIncompleteError, match=r"concept drafts \(RuntimeError\)") as caught:
+        with pytest.raises(DraftListIncompleteError, match=r"concept drafts \(DataLayerUnavailableError\)") as caught:
             await integration.list_own_drafts(uuid7(), customer_scope=uuid7())
         assert "draft boom" not in str(caught.value), "the backend's own text stays in the log"
         assert [d.target for d in caught.value.drafts] == ["entry"]
         assert caught.value.unread == ["concept"]
+
+    async def test_a_draft_row_it_cannot_use_is_an_unread_side(self) -> None:
+        """a proxied id that is not a UUID raises ``ValueError`` from ``_as_uuid``; that side is unread."""
+        integration = KnowledgeIntegration(
+            entry_collection=_DraftColl([], raises=ValueError("badly formed hexadecimal UUID string")),
+            concept_collection=_DraftColl([_draft("concept")]),
+        )
+        with pytest.raises(DraftListIncompleteError, match=r"entry drafts \(ValueError\)") as caught:
+            await integration.list_own_drafts(uuid7(), customer_scope=uuid7())
+        assert [d.target for d in caught.value.drafts] == ["concept"]
+
+    async def test_a_bug_reading_one_side_propagates_as_itself(self) -> None:
+        integration = KnowledgeIntegration(
+            entry_collection=_DraftColl([_draft("entry")]),
+            concept_collection=_DraftColl([], raises=TypeError("bug")),
+        )
+        with pytest.raises(TypeError, match="bug"):
+            await integration.list_own_drafts(uuid7(), customer_scope=uuid7())

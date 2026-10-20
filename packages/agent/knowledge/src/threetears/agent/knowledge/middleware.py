@@ -73,7 +73,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, NotRequired, TypeVar
+from typing import Annotated, Any, Final, NotRequired, TypeVar, cast
 from uuid import UUID
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -83,6 +83,7 @@ from langgraph.config import get_config
 from langgraph.types import Command
 from threetears.agent.memory.embedding_utils import embedding_attribution_scope
 from threetears.knowledge import ConceptEffective, EntryEffective, Scope
+from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.langgraph import merge_metadata
 from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_query
 from threetears.observe import contain, get_logger
@@ -101,6 +102,18 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: what the situational vector fetch means by "failed": the store failing, or a row it cannot use
+#: -- a stored vector whose text is not JSON or holds a string that is not a number
+#: (``collections._parse_vector_text``), or an id that is not a UUID (``collections._as_uuid``),
+#: all ``ValueError``. Anything else is a bug and propagates to the invariants-only fallback in
+#: :func:`_build_governed_injection`, which names it.
+#: The cast: every member of :data:`STORAGE_FAILURES` is an ``Exception``, as ``contain()`` takes,
+#: and the shared tuple is only typed wider.
+_VECTOR_FETCH_FAILURES: Final[tuple[type[Exception], ...]] = (
+    *cast("tuple[type[Exception], ...]", STORAGE_FAILURES),
+    ValueError,
+)
 
 
 class GovernedKnowledgeRenderError(RuntimeError):
@@ -639,7 +652,7 @@ async def _rank_and_render(
             query_embedding=query_embedding,
             customer_scope=customer_id,
         )
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- vector fetch is ranking input only; a fault puts the whole pool in stable order rather than failing the turn
+    except _VECTOR_FETCH_FAILURES as exc:  # vector fetch is ranking input only; a fault puts the whole pool in stable order rather than failing the turn
         # all or nothing: had one side's vectors arrived, its items would rank ahead of
         # every item of the side that failed -- a ranking that reads as a real one
         contain(
