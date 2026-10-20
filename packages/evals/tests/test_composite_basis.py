@@ -18,7 +18,7 @@ from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RubricScore
 from threetears.evals.kernel.scoring import composite_basis, compute_composite_summary, pool_composite_bases
 from threetears.evals.ops.lenses import RunsCompared, history_text, pivot_text, runs_compared_text
-from packages.evals.tests.factories import make_eval_result, make_eval_run, make_subject
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_subject, make_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 _HOST = toyhost_profile(every_seat=True)
@@ -171,7 +171,6 @@ class TestWhereThePoolIsShown:
 def test_a_lever_dispersion_built_from_a_ragged_pool_says_so() -> None:
     """The bundle's per-lever spread is a figure built from composites; its text carries the ragged mark."""
     from threetears.evals.analysis import assemble_context_bundle
-    from threetears.evals.kernel import EvalCampaign
 
     from packages.evals.tests.factories import fixture_variant_key, minimal_declaration
     from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
@@ -184,7 +183,7 @@ def test_a_lever_dispersion_built_from_a_ragged_pool_says_so() -> None:
             _result(run, f"tc-{case}", _LEFT if case % 2 else _RIGHT, score=2 + case % 3, id=f"{model}-{case}")
             for case in range(6)
         ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=runs[0].scope_id,
         name="ragged",
         subject_id=runs[0].subject_snapshot.subject_id,

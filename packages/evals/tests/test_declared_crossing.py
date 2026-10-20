@@ -15,11 +15,10 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
 from threetears.evals.analysis.report import DisclosureBlock
-from threetears.evals.kernel import CampaignDesign, ControlDeclaration, EvalCampaign, SweptAxis
+from threetears.evals.kernel import AspectDesign, ControlDeclaration, SweptAxis
 from threetears.evals.schema import IntervalScale, SweepableValue
-from packages.evals.tests.factories import memory_storage
+from packages.evals.tests.factories import make_aspect_campaign, memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import (
-    TOYHOST_INSTANT,
     TOYHOST_SCOPE,
     toyhost_batch,
     toyhost_measurements,
@@ -42,16 +41,15 @@ def _axis(axis_id: str, levels: Sequence[int], unit: str) -> SweptAxis:
     )
 
 
-def _design(**declared: object) -> CampaignDesign:
-    return CampaignDesign(
+def _design(**declared: object) -> AspectDesign:
+    return AspectDesign(
         axes=[_axis("chunk_tokens", CHUNKS, "tok"), _axis("retriever_top_k", TOP_KS, "chunks")],
-        declared_at=TOYHOST_INSTANT,
         held_fixed=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
         **declared,  # type: ignore[arg-type]
     )
 
 
-def _bundle(design: CampaignDesign, cells: Sequence[tuple[int, int]] = STAR) -> AnalysisContextBundle:
+def _bundle(design: AspectDesign, cells: Sequence[tuple[int, int]] = STAR) -> AnalysisContextBundle:
     profile = toyhost_profile()
     storage, _ = memory_storage()
     runs = []
@@ -61,16 +59,15 @@ def _bundle(design: CampaignDesign, cells: Sequence[tuple[int, int]] = STAR) -> 
         for result in toyhost_measurements(run, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8):
             storage.save_eval_result(result)
         runs.append(run)
-    campaign = EvalCampaign(
+    campaign = make_aspect_campaign(
+        label="extract_invoice_fields",
+        run_ids=[run.id for run in runs],
+        design=design,
         id="crossing",
         scope_id=TOYHOST_SCOPE,
         name="crossing",
         subject_id=runs[0].subject_snapshot.subject_id,
         subject_kind="extractor_config",
-        behavior="extract_invoice_fields",
-        run_ids=[run.id for run in runs],
-        created_by="test:fixture",
-        declared_design=design,
     )
     storage.save_campaign(campaign)
     return assemble_context_bundle(campaign, storage=storage, profile=profile)

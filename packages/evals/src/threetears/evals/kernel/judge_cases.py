@@ -631,10 +631,11 @@ class JudgeKindOverlays(BaseModel):
     )
 
 
-#: The judge kind's contract: its overlays, and the rig it fills. It fills no seat — the judge under test is the
-#: candidate, not the run's judge, so the engine's judge and simulator dimensions are not blanks on its runs but
-#: things they do not have.
-JUDGE_KIND_CONTRACT = KindContract(JUDGE_KIND, overlays=JudgeKindOverlays, seats=frozenset())
+#: The judge kind's contract: its overlays, and the rig it fills. It seats the spend ceiling — every judge-kind run
+#: runs under the per-run cost cap, which the launch stamps and trial spend counts against — and nothing else: the
+#: judge under test is the candidate, not the run's judge, so the engine's judge and simulator dimensions are not
+#: blanks on its runs but things they do not have.
+JUDGE_KIND_CONTRACT = KindContract(JUDGE_KIND, overlays=JudgeKindOverlays, seats=frozenset({"max_cost_usd"}))
 
 #: The measures a judge trial lands on ``host_measures``, for a host to declare on its measure registry. Both are
 #: graded by code against what the case froze; agreement with the judge's own repeats is read across trials, by the

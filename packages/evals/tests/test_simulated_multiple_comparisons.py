@@ -27,9 +27,15 @@ import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, ComparisonFamily, assemble_context_bundle
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, holm_adjust
-from threetears.evals.kernel import EvalCampaign, Question
+from threetears.evals.kernel import CampaignArm
 from threetears.evals.schema import EvalResult
-from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_aspect_campaign,
+    make_eval_result,
+    make_eval_run,
+    minimal_aspect_design,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.simulation_support import (
@@ -380,28 +386,18 @@ def _seeded_campaign(
                     )
                 )
         results[run.id] = members
-    declaration = minimal_declaration(control=fixture_variant_key(_CONTROL)).model_copy(
-        # Asked no later than the first run, so it scopes a family (``preregistered_questions``).
-        update={
-            "questions": [
-                Question(
-                    id="q-quality",
-                    text="is a contrast better?",
-                    merit_axes=["quality"],
-                    asked_at=min(run.created_at for run in runs),
-                )
-            ]
-        }
-    )
-    campaign = EvalCampaign(
+    # Asked no later than the first run, so it scopes a family (``asked_in_time``).
+    campaign = make_aspect_campaign(
+        label="b",
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=["quality"]),
+        question="is a contrast better?",
+        asked_at=min(run.created_at for run in runs),
+        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(_CONTROL)),
         scope_id=runs[0].scope_id,
         name="seeded family",
         subject_id=runs[0].subject_snapshot.subject_id,
         subject_kind="s",
-        behavior="b",
-        run_ids=[run.id for run in runs],
-        declared_design=declaration,
-        created_by="test:fixture",
     )
     bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
     return bundle, written

@@ -69,6 +69,7 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.versioning import (
     CASSETTE_SCHEMA_VERSION,
     CORE_SCHEMA_VERSION,
+    DURABLE_BASELINE_VERSION,
     DURABLE_SCHEMA_VERSION,
     REGENERABLE_SCHEMA_VERSION,
 )
@@ -101,7 +102,9 @@ def _current_schema_only(version: int) -> int:
         raise ValueError(
             f"this document was written under eval schema v{version} and this build reads "
             f"v{REGENERABLE_SCHEMA_VERSION} only; a regenerable document is regenerated across a schema change, "
-            "never migrated"
+            "never migrated. An operator clears every old one in a scope with EvalStorage.drop_derived(scopes), then "
+            "generates its analyses again (analysis_generate) and records each judge profile it returns again "
+            "(judge_profiles_record over that profile's run_ids)"
         )
     return version
 
@@ -1544,7 +1547,8 @@ class CalibrationRating(DurableDocumentModel):
 
         A rating stored at durable v15.0 (by ``.25``, or by a build that did not know the field) carries neither
         ``rated`` nor ``rated_withheld``; it is read with ``rated_withheld`` set to
-        :data:`RATING_WRITTEN_BEFORE_CONTENT`. A rating at v15.1 or later that carries neither is refused as drift.
+        :data:`RATING_WRITTEN_BEFORE_CONTENT`. A rating at v15.1 or later that carries neither is refused as drift,
+        a later major's first minor (v16.0) included: only v15.0 predates the field.
 
         :param data: The stored document, as the store returned it.
         :ptype data: dict[str, Any]
@@ -1556,6 +1560,7 @@ class CalibrationRating(DurableDocumentModel):
             isinstance(data, Mapping)
             and "rated" not in data
             and "rated_withheld" not in data
+            and data.get("schema_version") == DURABLE_BASELINE_VERSION
             and data.get("schema_minor", 0) == 0
         ):
             data = {**data, "rated_withheld": RATING_WRITTEN_BEFORE_CONTENT}
@@ -2252,6 +2257,51 @@ def case_set_doc_id(name: str, version: int) -> str:
     return f"case_set:{name}:v{version}"
 
 
+BudgetStopCurrency = Literal["cost_usd", "metered_calls"]
+"""What a per-run ceiling counts: ``cost_usd`` is LLM dollars (``max_cost_usd``), ``metered_calls`` is third-party
+calls (``max_metered_calls``). Closed: a new currency changes how an older build reads the stop."""
+
+
+class BudgetStop(EvalBaseModel, CoreShapeModel):
+    """One per-run ceiling that stopped a run between cells: the numbers it was stopped on, from the counters.
+
+    A ceiling never refuses a call inside a cell. It is read between cells, against what has LANDED — the
+    cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
+    finish, so the run ends past the ceiling by up to the width's worth of cells; that overshoot is
+    ``landed_final - ceiling``, derived (:attr:`overshoot`) and never stored, and every figure here is a
+    counter's reading, never parsed from prose. A run stopped by both ceilings at one boundary carries one
+    record for each (``EvalRun.budget_stops``).
+
+    :ivar currency: What the ceiling counts.
+    :ivar ceiling: The ceiling, in the currency.
+    :ivar landed_at_stop: The landed amount when the stop was decided, which is when the next cell would have
+        started. Dollars are the priced spend of the recorded cells.
+    :ivar landed_final: The landed amount once the cells in flight at the stop had finished and been recorded.
+    :ivar cells_in_flight: Cells running when the stop was decided.
+    :ivar cells_not_started: Cells of the matrix that never started because of the stop.
+    :ivar unpriced_results: ``cost_usd`` only: recorded results whose spend could not be priced. An enforcing
+        cap cannot count against what it cannot price, so any of these stops the run on their own, whatever
+        ``landed_at_stop`` says. Zero for ``metered_calls``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    currency: BudgetStopCurrency
+    ceiling: int | float = Field(gt=0, description="The ceiling the run was held to, in the currency.")
+    landed_at_stop: int | float = Field(ge=0, description="The landed amount when the stop was decided.")
+    landed_final: int | float = Field(ge=0, description="The landed amount once the in-flight cells finished.")
+    cells_in_flight: int = Field(ge=0, description="Cells running when the stop was decided.")
+    cells_not_started: int = Field(ge=0, description="Cells that never started because of the stop.")
+    unpriced_results: int = Field(
+        default=0, ge=0, description="Cost stops only: recorded results whose spend could not be priced."
+    )
+
+    @property
+    def overshoot(self) -> int | float:
+        """How far past the ceiling the run landed, once its in-flight cells finished; derived, never stored."""
+        return self.landed_final - self.ceiling
+
+
 class CaseSetRef(EvalBaseModel, CoreShapeModel):
     """Which named, versioned case set a run was launched against: a label on its frozen case ids.
 
@@ -2650,6 +2700,19 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
 #: refused the same way. The run stops, keeps what it delivered, and names the account — not the
 #: harness and not the candidate — as the reason it is short.
 EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled", "budget_stopped", "exhausted"]
+
+#: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
+#:
+#: - ``interleaved`` — every arm ran at once, its cells taken in turn with every other arm's case by case under one
+#:   width shared by the whole launch, so a provider's bad minute lands on every arm alike and the arms' same cases
+#:   ran close together in time.
+#: - ``sequential`` — one arm ran after another, so no arm shared another's provider load, and a difference between
+#:   them can also be when each ran.
+#: - ``concurrent`` — every arm ran side by side at its own width, so the launch loaded its providers with every arm
+#:   at once, and a provider's rationing could land on one arm more than another.
+#:
+#: A launch of one arm records the schedule it was launched under, which runs that one arm alone either way.
+ArmSchedule = Literal["interleaved", "sequential", "concurrent"]
 
 #: Statuses a run can still leave under its own power — it is either queued or
 #: executing, and something in-process is expected to write its terminal status.
@@ -3270,8 +3333,9 @@ class EvalRun(CoreDocumentModel):
     run-vs-run comparison subtract the same denominator.
 
     ``budget_stopped`` is a run a budget it was launched under stopped GRACEFULLY
-    mid-flight, with its already-delivered results preserved: the per-run cost cap, once
-    its accumulated spend exceeded the cap, or the job's wall-clock budget (sized to the
+    mid-flight, with its already-delivered results preserved: a per-run ceiling (the cost cap or the
+    metered-call ceiling) that the recorded cells had reached, which stops new cells from starting while
+    the running ones finish (``budget_stops`` holds the numbers), or the job's wall-clock budget (sized to the
     matrix), once it ran out. ``budget_stop_reason`` says which. That is an honest terminal
     outcome, not an infra failure, so it is its own status rather than ``failed``.
     """
@@ -3662,6 +3726,16 @@ class EvalRun(CoreDocumentModel):
             "A run its host assembled without a launch states its own width, and is serial unless it says otherwise."
         ),
     )
+    arm_schedule: ArmSchedule | None = Field(
+        default=None,
+        description=(
+            "How this run's arm shared time and provider capacity with the other arms of its comparison "
+            "(`ArmSchedule`): `interleaved`, every arm's cells taken in turn case by case under one width shared by "
+            "the launch; `sequential`, one arm after another; `concurrent`, every arm side by side at its own width, "
+            "co-loading the providers. A disclosure, never part of the run's identity or its context key, so it never "
+            "splits a cell. None: a run its host assembled without a launch, or stored before the field existed."
+        ),
+    )
 
     # Pinned roles + spend ceiling: inputs that can move a run's numbers, recorded on the run so
     # a diff of two runs can see them.
@@ -3713,7 +3787,10 @@ class EvalRun(CoreDocumentModel):
         description=(
             "Effective per-run spend ceiling in force, after the override-or-config cascade. None means the "
             "run was uncapped (cost enforcement disabled, origin ``uncapped``) or its writer recorded no "
-            "ceiling (origin None); a truncated run is visible either way through the budget_stopped status."
+            "ceiling (origin None); a run the ceiling stopped is visible either way through the budget_stopped "
+            "status and budget_stops. The cap is read between cells against the spend of the cells already "
+            "recorded: once that reaches it no new cell starts, and cells already running finish, so a run may "
+            "land past it by up to the width's worth of cells."
         ),
     )
     max_cost_usd_origin: StoredCostCapOrigin | None = Field(
@@ -3738,9 +3815,11 @@ class EvalRun(CoreDocumentModel):
             "LLM dollars and a search credit or a billed image generation is neither. None "
             "means the run was unbounded (eval enforcement disabled) or its writer recorded no "
             "ceiling; max_metered_calls_origin tells those apart. 0 means the host declared it has no "
-            "metered tools (origin none_declared), so any metered call is refused. Reaching it REFUSES further metered "
-            "calls and records the count on metered_calls_refused — it never stops the run, "
-            "because a hard stop would discard a partly-measured matrix."
+            "metered tools (origin none_declared), so any metered call is refused at dispatch, as a check on that "
+            "declaration rather than a budget. Otherwise it is a budget read between cells: once the metered "
+            "calls of the cells already recorded reach it, no new cell starts and the run ends budget_stopped "
+            "(budget_stops holds the numbers). It never refuses a call inside a cell, so cells already running "
+            "finish whole and the run may land past it by up to the width's worth of cells."
         ),
     )
     max_metered_calls_origin: StoredMeteredCallOrigin | None = Field(
@@ -3758,10 +3837,12 @@ class EvalRun(CoreDocumentModel):
         default=None,
         ge=0,
         description=(
-            "How many metered third-party calls this run's ceiling turned away, across every "
-            "cell. Non-zero means the run's measurement was BOUNDED — the candidate asked for "
-            "provider calls it did not get, so what it could not call it could not be measured "
-            "on, and a truncated run must not read as a complete one. Written once, when the "
+            "How many metered third-party calls were turned away at dispatch, across every "
+            "cell. Only a host that declared no metered tools (max_metered_calls_origin none_declared) "
+            "refuses a call; a per-run ceiling stops the run between cells instead and refuses nothing, "
+            "so this is zero for every other run. Non-zero means the host's declaration is wrong: the candidate "
+            "asked for provider calls it did not get, so what it could not call it could not be measured "
+            "on. Written once, when the "
             "run loop finishes, beside completeness and for the same reason: it is the "
             "disclosure that cannot be reconstructed from storage afterwards. Zero is the "
             "honest record of a run that stayed inside its ceiling; None means no ledger "
@@ -3904,6 +3985,19 @@ class EvalRun(CoreDocumentModel):
             "the host's configured default), so that would not be a rare miscount. Says nothing "
             "about whether the run's data is usable — that is ``completeness``'s answer. None on a "
             "run no budget stopped."
+        ),
+    )
+    budget_stops: list[BudgetStop] | None = Field(
+        default=None,
+        description=(
+            "The per-run ceilings that stopped this run between cells, one record per ceiling, each with the "
+            "counters' numbers: the ceiling, what had landed when the stop was decided and once the cells in "
+            "flight finished, how many were running and how many never started. Both the cost cap and the "
+            "metered-call ceiling are read between cells against what has landed; neither refuses a call inside a "
+            "cell, so the cells running at the stop finish whole and the run may land past a ceiling by up to the "
+            "width's worth of cells. Both are recorded when both tripped at the same boundary. Written with the "
+            "``budget_stopped`` status. None on a run no ceiling stopped, including a run stopped by its wall-clock "
+            "budget (``budget_stop_reason``) and one whose writer predates the field."
         ),
     )
     error_details: list[str] = Field(
@@ -4802,15 +4896,13 @@ class ConversationStopCause(StrEnum):
       ``apparatus_error``  the eval apparatus failed during a turn or a delivery drain.
       ``candidate_error``  the candidate's turn raised out of the harness boundary.
 
-    One is the run's own ceiling, and it too excludes the cell:
+    One was the run's own ceiling, and is no longer produced:
 
-      ``budget_stopped``   the run's cost cap had no room for the conversation's next paid call — a simulator
-                           call, or the candidate's own when its kind raised
-                           :class:`~threetears.evals.kernel.candidate_kind.CostCapReached`
-                           (:func:`~threetears.evals.run.conversation.drive_conversation`) — so no
-                           further paid call was made. The conversation is cut short rather than finished, so
-                           the runner puts an infra error on the result, which excludes it, and the run stops
-                           ``budget_stopped`` after the cell is saved. Never a judgement of the candidate.
+      ``budget_stopped``   a conversation the run's cost cap cut short. The engine no longer cuts a cell short on
+                           a ceiling: the cost cap and the metered-call ceiling are read between cells, so a
+                           conversation runs to ``max_turns`` or ``user_done`` whatever the run has spent. The
+                           value stays, a closed vocabulary on a stored core shape, so a cell an earlier build
+                           stored under it still reads.
 
     There is deliberately no member for a refusal. Whether the candidate refused well is a
     judged property of the transcript, and stopping on the words of a refusal truncated exactly
@@ -5528,15 +5620,15 @@ class EvalResult(CoreDocumentModel):
     metered_calls_refused: int | None = Field(
         default=None,
         description=(
-            "How many metered third-party calls this cell asked for and the RUN's ceiling "
-            "refused (the host's configured default, or the launch override). A "
-            "non-zero value means the candidate was measured on a world it could not fully "
-            "reach — it asked to search, or to generate, and was told no — so a score here is "
-            "not comparable with a score from a cell that ran unbounded. Zero says the ceiling "
-            "was in force and never bound this cell; None says nothing counted: a cell run with no "
+            "How many metered third-party calls this cell asked for and dispatch refused. Only a host that "
+            "declared no metered tools (max_metered_calls_origin none_declared) refuses a call, as a check on "
+            "that declaration; the run's per-run ceiling never refuses a call inside a cell (it stops new cells "
+            "from starting, so a cell is measured whole or never begun). A non-zero value means the candidate "
+            "asked to search, or to generate, and was told no because the host's declaration is wrong, so a score "
+            "here was measured on a world it could not fully reach. Zero says nothing was refused in this cell; "
+            "None says nothing counted: a cell run with no "
             "run ledger, or one that ended before its dispatch read the ledger back. The refusals are "
-            "NOT errors and are deliberately not in error_details: a ceiling doing its "
-            "configured job is a designed outcome, the same reasoning that gave a cancel and a "
+            "NOT errors and are deliberately not in error_details: the same reasoning that gave a cancel and a "
             "budget stop their own channels on EvalRun."
         ),
     )
@@ -6013,6 +6105,8 @@ __all__ = [
     "WORLD_SPEAKER",
     "WorldRound",
     "CaseSet",
+    "BudgetStop",
+    "BudgetStopCurrency",
     "CaseSetRef",
     "case_set_doc_id",
     "CANDIDATE_SPEAKER",
@@ -6055,6 +6149,7 @@ __all__ = [
     "run_label_problem",
     "MeasureDeclaration",
     "EvalRunStatus",
+    "ArmSchedule",
     "EvalTemplate",
     "EvalTestCase",
     "GoalCheckControl",

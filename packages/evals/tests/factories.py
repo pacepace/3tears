@@ -19,20 +19,32 @@ Two consequences for a test that reads a run built here:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TelemetryRollup
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
-from threetears.evals.kernel.authored import AuthoredAnalysis
+from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Recommendation
+from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.kernel.campaign import (
+    AspectAnalysis,
+    CampaignDeclaration,
     EvalAnalysis,
     EvalAnalysisAttempt,
     EvalCampaign,
     EvalInsight,
     GenerationProvenance,
 )
-from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.kernel.declaration import (
+    Aspect,
+    AspectDesign,
+    CampaignArm,
+    ControlDeclaration,
+    DecisionClause,
+    Floor,
+    SweptAxis,
+)
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.schema.values import SweepableValue
@@ -61,23 +73,27 @@ from threetears.evals.schema.models import (
     WorldSeed,
     VariationAxis,
     eval_trace_doc_id,
+    utc_now_iso,
 )
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import omit_paths
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.kernel.usage_capture import blended_cost_roles
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.v15_shapes import V15Design
 
 __all__ = [
     "CURRENT_BUNDLE_SHAPE",
     "DEFAULT_KIND",
     "DEFAULT_SUBJECT",
     "RECORDED_REQUEST_SETTINGS",
+    "analysed_aspect",
     "as_listed",
     "declared",
     "fixture_variant_key",
     "load_listed",
     "empty_bundle",
+    "empty_document",
     "make_analysis",
     "make_analysis_attempt",
     "make_campaign",
@@ -386,8 +402,9 @@ def minimal_declaration(
     control_levers: dict[str, SweepableValue] | None = None,
     control_identity_version: int | None = None,
     axis_id: str | None = None,
-) -> CampaignDesign:
-    """The smallest valid ``CampaignDesign``, optionally carrying a control variant key.
+) -> V15Design:
+    """The smallest valid stored v15 design (:class:`~packages.evals.tests.v15_shapes.V15Design`), optionally carrying a
+    control variant key.
 
     Takes a key VERBATIM. Where the point is a control an observation actually carries, pass the
     key its run resolves (:func:`~threetears.evals.analysis.variant_key_of_run`) -- a hand-written
@@ -405,9 +422,9 @@ def minimal_declaration(
         declares.
     :ptype axis_id: str | None
     :return: The declaration.
-    :rtype: CampaignDesign
+    :rtype: V15Design
     """
-    return CampaignDesign(
+    return V15Design(
         axes=[SweptAxis(axis_id=axis_id or CANDIDATE_MODEL_LEVER, values=[SweepableValue.of("glm", display="GLM")])],
         control=control,
         control_levers=control_levers,
@@ -475,13 +492,147 @@ def make_rubric_dim(**overrides: Any) -> CatalogRubricDim:
     return CatalogRubricDim(**fields)
 
 
+#: The keywords a campaign took before it held aspects, which :func:`make_campaign` still reads as one aspect.
+_ONE_ASPECT_KEYWORDS = ("template_id", "run_ids", "declared_design")
+
+
 def make_campaign(**overrides: Any) -> EvalCampaign:
-    """Create an ``EvalCampaign`` in the default scope, holding no runs."""
+    """Create an ``EvalCampaign`` in the default scope, holding no runs.
+
+    A test may still describe a campaign of one aspect by the keywords a campaign took before it held aspects:
+    ``template_id``, ``run_ids`` and ``declared_design`` (a :class:`~packages.evals.tests.v15_shapes.V15Design`). They are read as a stored v15
+    campaign is, through ``upgrade_campaign_v15``, so the campaign built is the one such a campaign upgrades to: one
+    aspect labelled with ``behavior``, its control arm, its question and its floors. A test about aspects passes
+    ``aspects`` (or uses :func:`make_aspect_campaign`) instead, and never both.
+
+    :param overrides: Any campaign field, or the one-aspect keywords above.
+    :ptype overrides: Any
+    :return: The campaign.
+    :rtype: EvalCampaign
+    :raises ValueError: The one-aspect keywords are given beside ``aspects``.
+    """
     fields: dict[str, Any] = dict(
         scope_id="uni-1", name="campaign", subject_id="subject-1", behavior="conversation", created_by="test:fixture"
     )
+    legacy = {key: overrides.pop(key) for key in _ONE_ASPECT_KEYWORDS if key in overrides}
     fields.update(overrides)
-    return EvalCampaign(**fields)
+    if "aspects" in fields:
+        if legacy:
+            raise ValueError(f"pass aspects or the one-aspect keywords {sorted(legacy)}, not both")
+        return EvalCampaign(**fields)
+    design = legacy.get("declared_design")
+    stored = upgrade_campaign_v15(
+        {
+            "behavior": fields["behavior"],
+            "template_id": legacy.get("template_id"),
+            "run_ids": list(legacy.get("run_ids", [])),
+            "declared_design": design.model_dump(mode="json") if isinstance(design, V15Design) else design,
+        }
+    )
+    for key in ("question", "arms", "aspects", "floors", "declared_at", "declared_by"):
+        fields.setdefault(key, stored[key])
+    return EvalCampaign.model_validate(fields)
+
+
+def minimal_aspect_design(*, axis_id: str | None = None, **overrides: Any) -> AspectDesign:
+    """The smallest valid ``AspectDesign``: one axis at one level, its stimulus controlled and its rig commissioned.
+
+    :param axis_id: The axis to declare. Defaults to the candidate model, the one lever every host declares.
+    :ptype axis_id: str | None
+    :param overrides: Any other ``AspectDesign`` field.
+    :ptype overrides: Any
+    :return: The design.
+    :rtype: AspectDesign
+    """
+    fields: dict[str, Any] = dict(
+        axes=[SweptAxis(axis_id=axis_id or CANDIDATE_MODEL_LEVER, values=[SweepableValue.of("glm", display="GLM")])],
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+    )
+    fields.update(overrides)
+    return AspectDesign(**fields)
+
+
+#: The ``design`` :func:`make_aspect_campaign` declares when a test names none: :func:`minimal_aspect_design`'s.
+_MINIMAL_DESIGN = object()
+
+
+def make_aspect_campaign(
+    *,
+    label: str = "conversation",
+    template_id: str | None = None,
+    run_ids: Sequence[str] = (),
+    design: AspectDesign | None | object = _MINIMAL_DESIGN,
+    question: str = "",
+    control: CampaignArm | None = None,
+    margin: float | None = None,
+    floors: Sequence[DecisionClause] = (),
+    asked_at: str | None = None,
+    **overrides: Any,
+) -> EvalCampaign:
+    """A stored campaign of ONE aspect, built from what the aspect declares.
+
+    A per-aspect test builds its campaign here and reads it through ``aspect_view``, so it never depends on how a
+    campaign holds its aspects. The campaign's ``behavior`` defaults to ``label``; a declared aspect and the
+    campaign's question are dated now, an exploratory one (``design`` None) is dated never. A declared design's
+    ``merit_axes`` are the question's: None exactly when there is no question, a list (empty for an unscoped
+    question) when there is one.
+
+    :param label: The aspect's label.
+    :ptype label: str
+    :param template_id: The template its runs were gathered on.
+    :ptype template_id: str | None
+    :param run_ids: Its runs.
+    :ptype run_ids: Sequence[str]
+    :param design: Its design: :func:`minimal_aspect_design` when omitted, None for an exploratory aspect.
+    :ptype design: AspectDesign | None
+    :param question: The campaign's question; empty asks none.
+    :ptype question: str
+    :param control: The campaign's control arm; None declares none.
+    :ptype control: CampaignArm | None
+    :param margin: The aspect's margin; None declares none.
+    :ptype margin: float | None
+    :param floors: The clauses of the floors on the aspect, in order.
+    :ptype floors: Sequence[DecisionClause]
+    :param asked_at: When the question was asked (ISO-8601), which a reading confirms only if it predates the first
+        run; None asks it now. Only with a ``question``.
+    :ptype asked_at: str | None
+    :param overrides: Any other campaign field but ``aspects``, ``arms``, ``floors`` and ``question``.
+    :ptype overrides: Any
+    :return: The campaign.
+    :rtype: EvalCampaign
+    :raises ValueError: A declared design's ``merit_axes`` disagree with whether there is a question.
+    """
+    aspect_design = minimal_aspect_design() if design is _MINIMAL_DESIGN else design
+    if aspect_design is not None and not isinstance(aspect_design, AspectDesign):
+        raise TypeError(f"design is an AspectDesign or None, not {type(aspect_design).__name__}")
+    if asked_at is not None and not question:
+        raise ValueError("asked_at dates a question; pass the question")
+    if aspect_design is not None and (aspect_design.merit_axes is None) != (not question):
+        raise ValueError(
+            "a design's merit_axes are its question's: None with no question, a list with one (empty for an unscoped "
+            f"question); this one has {aspect_design.merit_axes!r} and question={question!r}"
+        )
+    now = (asked_at or utc_now_iso()) if aspect_design is not None else None
+    fields: dict[str, Any] = dict(
+        behavior=label,
+        question=question,
+        arms=[control] if control is not None else [],
+        aspects=[
+            Aspect(
+                label=label,
+                template_id=template_id,
+                margin=margin,
+                design=aspect_design,
+                run_ids=list(run_ids),
+                declared_at=now,
+                asked_at=now,
+            )
+        ],
+        floors=[Floor(aspect=label, clause=clause) for clause in floors],
+        declared_at=now,
+    )
+    fields.update(overrides)
+    return make_campaign(**fields)
 
 
 def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
@@ -490,6 +641,7 @@ def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
         campaign_id="campaign-1",
         subject_id="subject-1",
         behavior="conversation",
+        aspect="conversation",
         scope_id="uni-1",
         comparison=ComparisonSetsResult(),
         frontier=FrontierResult(),
@@ -507,8 +659,45 @@ def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
     return AnalysisContextBundle(**fields)
 
 
+def empty_document(**overrides: Any) -> AuthoredCampaignAnalysis:
+    """A memo with nothing in it but a recommendation to keep the control, resting on no finding."""
+    fields: dict[str, Any] = dict(
+        findings=[],
+        recommendation=[
+            Recommendation(
+                arm="control",
+                reasons=[],
+                confidence="low",
+                rests_on=[],
+                floors_overridden=[],
+                behind_on=[],
+                bars_missed=[],
+            )
+        ],
+        aspect_summaries=[],
+        next=[],
+    )
+    fields.update(overrides)
+    return AuthoredCampaignAnalysis(**fields)
+
+
+def analysed_aspect(bundle: AnalysisContextBundle | None = None, **overrides: Any) -> AspectAnalysis:
+    """One aspect of a stored analysis: ``bundle`` frozen (an empty one when None) over an empty surface."""
+    frozen = bundle if bundle is not None else empty_bundle()
+    fields: dict[str, Any] = dict(
+        label=frozen.aspect,
+        bundle=frozen.to_dict(),
+        bundle_fingerprint=frozen.fingerprint(),
+        decision_surface=DecisionSurface(),
+    )
+    fields.update(overrides)
+    return AspectAnalysis(**fields)
+
+
 def make_analysis(**overrides: Any) -> EvalAnalysis:
-    """Create an ``EvalAnalysis`` in the default scope with an empty authored document over an empty bundle."""
+    """Create an ``EvalAnalysis`` in the default scope with an empty memo over one aspect's empty bundle."""
+    campaign_id = overrides.get("campaign_id", "campaign-1")
+    aspect = analysed_aspect(empty_bundle(campaign_id=campaign_id))
     fields: dict[str, Any] = dict(
         scope_id="uni-1",
         campaign_id="campaign-1",
@@ -530,11 +719,22 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
             bundle_schema_version=CURRENT_BUNDLE_SHAPE,
             host_declarations_digest="sha256:declarations",
         ),
-        document=AuthoredAnalysis(findings=[], decisions=[], questions=[], next=[]),
-        decision_surface=DecisionSurface(),
-        bundle=empty_bundle(campaign_id=overrides.get("campaign_id", "campaign-1")).to_dict(),
+        design_snapshot=CampaignDeclaration(
+            question="", declared_at=None, declared_by=None, arms=[], aspects=[Aspect(label="conversation")], floors=[]
+        ),
+        document=empty_document(),
+        recommended_variant_key=None,
+        aspects=[aspect],
+        campaign_bundle={
+            "schema_version": 1,
+            "aspects": [{"aspect": aspect.label, "fingerprint": aspect.bundle_fingerprint}],
+        },
     )
     fields.update(overrides)
+    if "recommended_variant_key" not in overrides:
+        # The variant the memo's arm resolves to, as code stores it: set exactly when the memo recommends an arm.
+        recommended = fields["document"].recommended()
+        fields["recommended_variant_key"] = None if recommended is None else f"variant-of-{recommended.arm}"
     return EvalAnalysis(**fields)
 
 

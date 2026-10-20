@@ -5,17 +5,20 @@ expiry and the runs were written lost while the process was alive. Renewals ran 
 blocking executor, behind the cells' store work, and a renewal that lost three conditional writes to the holder's own
 progress writes waited a whole interval. Pinned, each against the shape that failed:
 
-- **Starved host pool**: leases renew though every worker of a ``blocking_executor`` is busy for longer than a lease.
+- **Starved host pool**: leases renew though every worker of the loop's default executor is busy for longer than a lease.
 - **One slow record** delays no other record's renewal.
+- **A hung renewal** never returns, and its record still lapses at its own deadline, the others untouched.
 - **Contended renewal**: tried again within the interval, after a short wait, not a whole interval later.
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from collections.abc import Callable
 from typing import Any
 
 
@@ -28,19 +31,21 @@ from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "scope-leases"
 
-#: A lease short enough to keep these tests fast; renewed every third of it.
-LEASE_S = 0.9
+#: A lease short enough to keep these tests fast; renewed every third of it (0.6 s). Twice the 0.9 s these first
+#: used: the margin each test leaves between a healthy renewal and a lapse (a lease less the renewal interval, 1.2 s)
+#: must outlast a scheduling stall on a machine running the whole suite, which a 0.6 s margin did not.
+LEASE_S = 1.8
 
 
 def _storage(store: InMemoryDocumentStore | None = None) -> EvalStorage:
     return EvalStorage(store or InMemoryDocumentStore())
 
 
-def _hold(leases: JobLeases, storage: EvalStorage, run_id: str) -> None:
+def _hold(leases: JobLeases, storage: EvalStorage, run_id: str, stop: Callable[[], object] = lambda: None) -> None:
     """Store a running run carrying a fresh lease and start renewing it (as a job manager starts a job)."""
     run = make_eval_run(id=run_id, scope_id=SCOPE, status="running", lease=off_loop(leases.grant))
     off_loop(storage.save_job_record, run.to_dict(), if_match=None, create_only=True)
-    leases.hold(RUN_JOB, run_id, SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+    leases.hold(RUN_JOB, run_id, SCOPE, cancel=lambda _reason: None, stop=stop)
 
 
 def _stored(storage: EvalStorage, run_id: str) -> EvalRun:
@@ -71,16 +76,17 @@ class _SpyLeases(JobLeases):
 async def test_leases_renew_though_every_worker_of_the_hosts_pool_is_busy_for_longer_than_a_lease() -> None:
     storage = _storage()
     host_pool = ThreadPoolExecutor(max_workers=2)
-    leases = _SpyLeases(storage, lease_s=LEASE_S, blocking_executor=host_pool)
+    asyncio.get_running_loop().set_default_executor(host_pool)
+    leases = _SpyLeases(storage, lease_s=LEASE_S)
     try:
         # the host's cells: every worker occupied for well over two leases
         for _ in range(2):
-            host_pool.submit(time.sleep, 2.6)
+            host_pool.submit(time.sleep, 5.2)
         ids = [f"run-{n}" for n in range(9)]
         for run_id in ids:
             _hold(leases, storage, run_id)
 
-        await asyncio.sleep(1.9)  # past two lease durations: a lease not renewed has lapsed
+        await asyncio.sleep(3.8)  # past two lease durations: a lease not renewed has lapsed
 
         assert all(_live(storage, run_id) for run_id in ids), "every lease was renewed while the host's pool was busy"
         assert leases.expired == [] and not any(leases.fenced(run_id) for run_id in ids)
@@ -105,14 +111,14 @@ class _SlowRecordStore(InMemoryDocumentStore):
 
 
 async def test_one_slow_record_delays_no_other_records_renewal() -> None:
-    store = _SlowRecordStore("run-slow", 1.5)
+    store = _SlowRecordStore("run-slow", 3.0)  # a stall longer than a lease
     storage = _storage(store)
     leases = _SpyLeases(storage, lease_s=LEASE_S)
     try:
         for run_id in ("run-slow", "run-b", "run-c"):  # the slow one is renewed first
             _hold(leases, storage, run_id)
 
-        await asyncio.sleep(1.4)
+        await asyncio.sleep(2.8)  # past one lease: a record waiting on the slow one would have lapsed
 
         assert _live(storage, "run-b") and _live(storage, "run-c")
         assert "run-b" not in leases.expired and "run-c" not in leases.expired
@@ -154,4 +160,52 @@ async def test_a_renewal_that_loses_its_races_is_tried_again_within_the_interval
         assert store.landed_at - started < 1.9, "after the first interval and a short backoff, not another interval"
         assert leases.expired == [] and not leases.fenced("run-a")
     finally:
+        await leases.shut_down()
+
+
+class _HangingRenewalStore(InMemoryDocumentStore):
+    """A store whose first conditional write of one record never returns (until ``release``), as a hung hop does."""
+
+    def __init__(self, hung_id: str) -> None:
+        super().__init__()
+        self.hung_id = hung_id
+        self.release = threading.Event()  # never set while a test asserts; set after, so the worker thread ends
+        self.hung = threading.Event()
+        self._hang_next = True
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Block the first conditional write of the hung record; every other write goes through."""
+        if document.get("id") == self.hung_id and if_match is not None and self._hang_next:
+            self._hang_next = False
+            self.hung.set()
+            self.release.wait()
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_renewal_that_never_returns_expires_its_own_record_at_the_lease_and_no_other() -> None:
+    store = _HangingRenewalStore("run-hung")
+    storage = _storage(store)
+    leases = _SpyLeases(storage, lease_s=LEASE_S)
+    stopped: list[str] = []
+    try:
+        for run_id in ("run-hung", "run-b"):
+            _hold(leases, storage, run_id, stop=lambda run_id=run_id: stopped.append(run_id))
+
+        # the lease, the interval its expiry check waits for, and two bounded writes of the expiry, with a margin
+        # for a loaded machine; the hung call itself is never released while this waits
+        started = time.monotonic()
+        for _ in range(100):
+            if stopped:
+                break
+            await asyncio.sleep(0.1)
+
+        assert time.monotonic() - started < 2 * LEASE_S, "stopped within about one lease, not left to hang"
+        assert store.hung.is_set(), "the renewal's store call is the one that hangs"
+        assert stopped == ["run-hung"], "the job whose renewal hung was stopped, and only that one"
+        assert leases.expired == ["run-hung"] and leases.fenced("run-hung") and not leases.fenced("run-b")
+        assert _live(storage, "run-b"), "another record's renewals went on"
+        faults = _stored(storage, "run-hung").faults
+        assert any("had not returned" in fault for fault in faults), f"a fault names the hung renewal: {faults}"
+    finally:
+        store.release.set()
         await leases.shut_down()

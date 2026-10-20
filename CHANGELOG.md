@@ -105,6 +105,345 @@ and `after_model` hook adds its node per round, `before_agent`/`after_agent` onc
 the list); samhla replaces its fixed `recursion_limit` of 80; metallm maps `max_tool_calls_per_turn`,
 `tool_loop_budget_*_pct` and `runaway_zero_progress_rounds` onto the constructor.
 
+### 3tears-evals: a campaign is a campaign of aspects, asking one question
+
+- **One decision is one campaign.** A campaign asks one question of its arms (the control first, then candidates)
+  across one or more aspects, each read on its own runs, with its own template, design and margin. Seven
+  single-template campaigns that served one decision used to produce seven memos; adopted into one campaign
+  (`aspects_from`), they produce one page and one memo. A stored campaign reads as one aspect, so nothing stored
+  needs rewriting; campaigns move to the durable store (durable v16), which a build before 0.72 cannot read.
+- **The kind of campaign follows from its arms, never declared.** One arm is a measurement: each aspect's measures
+  with their intervals and bars. Several arms and no control is a choice: every pair on every aspect, symmetric.
+  A control and candidates is a change: each candidate against the control, shown better, shown worse or unclear
+  against the aspect's margin. A margin or a floor needs a control; without one, declare a bar.
+- **Floors replace the decision rule, and only warn.** A floor (`Floor`: a `RateDrop` or `CostLower` on one
+  aspect) is broken where the old rule would have kept the control. A broken floor, like a missed bar, is the first
+  line of the page; it never picks an arm or rewrites a sentence.
+- Breaking: `CampaignDesign`, `Question`, `DecisionRule` and the 0.70 memo types are removed, and
+  `create_campaign` takes the new shape. The migration notes list every change.
+
+### 3tears-evals: code reports each aspect, one memo recommends, a person records the call
+
+- **The campaign's page** (`CampaignReport`, served by `report_read`, `campaign_report` and `analysis_report`)
+  opens with every missed bar, broken floor and breached guardrail, then the writer's recommendation, a table of
+  every aspect, what would settle each unclear row and the recorded call, then one fold per aspect holding that
+  aspect's page. Arms are named by the page's own words (`hasty (control) vs careful`) at every door.
+- **Readings correct for looking at several aspects.** Each candidate is Holm-corrected across its aspects,
+  separately for gains and drops; a choice corrects across every pair and aspect at once. A row's change and its
+  interval are read on the same per-case values, so the change always lies in its interval, and a one-aspect
+  campaign's floor and reading never disagree.
+- **One memo per campaign** (`AuthoredCampaignAnalysis`): at most one recommendation, which must address every
+  broken floor, missed bar and aspect where another arm is ahead, one short summary per aspect, and next steps. A
+  measurement recommends nothing; a choice may say no clear winner. The writer's prompt is rewritten, so every host
+  pushes the new seed (`eval_prompt_reset`).
+- **The call is recorded** (`campaign_record`): the arm, why, and each broken floor and missed bar it overrides,
+  checked against code's readings (or the named analysis's frozen ones), never the memo's words. The page's call
+  line says which overrides no longer apply and how many runs joined since the call.
+- Breaking: stored analyses, insights and judge profiles are refused (regenerable 12). Run
+  `EvalStorage.drop_derived(scopes)` once before deploying, record the judge profiles it lists again, and generate.
+  `report_read`'s JSON and `campaign_report` are the campaign page, not the evidence bundle
+  (`inspect_campaign_bundle` or `assemble_campaign_bundle` reads that).
+
+### 3tears-evals: an analysis of several aspects is listed by its campaign's verdict
+
+- **`analyses_list` and `analysis_archive` read an analysis over several aspects** (#894). Each refused it, so one
+  such analysis made a campaign's whole listing refuse. `analysis_verdict` now lists it by the campaign's verdict:
+  what code read on each aspect, as the campaign's page says it beside that aspect's fold, in the campaign's order
+  (`billing: v2 shown worse; tone: v2 shown better`), over the readings frozen with the analysis. An analysis of
+  one aspect keeps its aspect page's verdict line. `build_report` and `analysis_bundle` still lay out one aspect and
+  refuse several; the campaign's page is read through `report_read` or `analysis_report`.
+
+### 3tears-evals: a judge campaign's report no longer labels the subject's own spend measuring spend
+
+- **In a campaign whose every result is judge-kind (`candidate_kind`) the spend measures read as the arm's own spend** (#830). The judge under test is the
+  subject and the only role billed, so `cost_usd` is the same dollars as `production_replicating_cost`, and the
+  report showed them as both "Production cost" and "Measuring spend, all roles". There `cost_usd`, `program_cost`,
+  `total_cost_usd` and `mean_cost_usd` read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per
+  result`, and a title built from them no longer ends `, measuring spend`. Every other kind keeps the label.
+
+### 3tears-evals: a finding title naming a model is checked against that arm's readings whatever qualifier its display carries
+
+- **An arm's display is matched with its trailing parenthetical dropped, as well as whole** (#831). A real display
+  such as `deepseek-v4.1-flash (production)` is written "deepseek-v4.1-flash" in a title, so the arm-mention check
+  never saw the title name it and production-labelled arms went unchecked. A title naming such an arm it cites
+  nothing of is now refused; one citing it is admitted. Where one model carries two labels (`m (production)`, `m
+  (tuned)`), or another arm shows the same name unqualified, the dropped form names no arm: it would name two.
+### 3tears-evals: a lever only one arm observed is not a level, so it aliases with nothing
+
+- **A recovered lever counts as a level only where at least two arms observed it** (#840). `observed_model_levers`
+  levers were kept once two results across the campaign made a call in the role, so a role one arm ran four times and
+  the other never ran read as a level, aliased with whatever else separated the arms (a memo reported that the
+  candidate model and the research tool's model "move together" and recommended a run to separate them, when neither
+  run set the research model). The predicate now counts arms, by variant key, among the runs that delivered results.
+  A lever whose value differs between runs of one arm (a default that moved between builds) is still a level. A
+  single-arm campaign has nothing to compare, so it keeps the result count: its lever rows and aliasing read are
+  those it had.
+- **Never observed in an arm is unknown, not a level.** The lever levels, the control's departures and the coverage
+  map leave such a run out of the lever instead of placing it at the inherited default beside the arms that observed it.
+  A lever some run named, or the campaign declared as an axis, keeps the inherited level for an arm that did not run
+  the role. A coverage row's `n` counts only the results that sit at a level.
+- `unexercised_factors` keeps the lever, and Not tested says `observed in one arm only` where several results made the
+  calls. Bundle shape 58; `UnexercisedFactor.results` is no longer capped at 1.
+### 3tears-evals: an unclear floor states the cases that would settle it, and a memo no longer guesses them
+
+- **An unclear floor says the independent cases that would show it holds, computed** (#846). For each unclear
+  floor, code computes the bounded interval the floor was read on again over the run's own cases repeated to each
+  count, and finds the fewest at which it would show the floor holds: if the arms do not differ (the optimistic
+  bound) and if they differ as observed. The Decision section tables each count with its cost (`To show the floors
+  hold`), then says each is about and, where it needs more cases than the run used, that it does. A count is always
+  more than the run had; a broken or held floor projects nothing.
+- **The count is the bounded interval's, computed, not scaled.** Scaling a dozen cases' bounded interval as 1/sqrt(n)
+  overstates its need by up to about twice, and the issue's "about 107" scaled the contrasts table's t interval,
+  which never settles a clause; on a character-shaped run the code says 121 and 223. The bundle carries the per-case
+  values each bounded interval read.
+- **The memo may not state a sample size or cost of its own** where it says what to run next: a next step, a
+  question's answer, a deferred decision's revisit. Discodon's character campaign proposed "30 cases ... would
+  formally settle question q1 for roughly $0.40". Such a sentence is now replaced by code's and listed in the
+  methods, and the seeded writer prompt no longer asks for a rough cost.
+- Breaking for a host matching on a memo's next steps: the migration notes give the strings.
+
+### 3tears-evals: a floor reads broken only on a drop shown past its margin
+
+- **A `RateDrop` rate has three states, and only one is broken** (#845). Shown to break: every arm at the case floor
+  and the drop's whole bounded interval past `max_points`. Shown to hold: the interval within the margin. Unclear:
+  everything else, including a drop past the margin on its point estimate alone. Until now an observed drop past the
+  margin settled `keep` on any number of cases: a Discodon memo headlined Keep on 6 of 21 trials to 12 while its own
+  contrasts read the pass rate as not separated, its interval reaching a 35.5-point gain.
+- **Each rate a floor reads has its own row and status in the floors table**, about that reading alone. A clause with
+  no `reading` reads every pass/fail rate the arms share, and its one outcome used to sit on the pass rate's row
+  whichever rate decided it: a readiness memo's row read "the pass rate, 0 of 18 to 0 of 18" beside an outcome
+  quoting a goal check's 12 of 18 to 14.
+- Under the case floor no floor is broken, rate or cost.
+### 3tears-evals: a launch's arms take their cells in turn, case by case, so a provider's bad minute lands on every arm alike
+
+- **`run_launch` no longer co-loads its arms** (#841). A declared two-arm comparison launched with one call started
+  both arms side by side, each at its own width; the pinned upstream rationed one model's calls, and that arm lost
+  6 to 20 cells per campaign to HTTP 429s while the other lost none. The default schedule is now `interleaved`:
+  every arm runs at once, their cells are taken in turn (case 1 on every arm, then case 2) under one width shared by
+  the launch, and every arm plays its cases in one order, so the arms' same cases run close together in time:
+  exactly side by side at a width of 1, within a few cells of each other wider. A launch of N arms loads its
+  providers as one run would, and takes about N times as long; separate launches still load them side by side.
+- **One definition of the schedule** (`arm_schedule`: `interleaved`, `sequential` or `concurrent`), declared on
+  `LaunchArguments` and read by `sweep_launch` from there, so the two cannot drift. `concurrent` keeps the old
+  side-by-side launch; latency under test (`measure_latency`) runs the arms `sequential` and refuses the others.
+  Breaking for a sweep: `max_concurrent_arms` is gone, and a sweep's default is now one interleaved launch of every
+  arm (pass `arm_schedule='sequential'` for arms one after another).
+- **The run says which.** `EvalRun.arm_schedule` (core v15.5, additive), on the launch and sweep records, the run's
+  summary and `run_get`; a campaign whose arms ran one after another or side by side discloses it in its
+  `launch_disclosure`. A disclosure only: never part of a run's identity or cell.
+- **Built over any number of runs.** `run.arm_schedule.CellInterleaver` takes the turns of every run of a launch
+  group, of one template or several, through each run's own `CellExecutor` lane; a run that ends without handing
+  over its cells is withdrawn, and one run's failure stops only that run.
+
+### 3tears-evals: a judge campaign's report states each arm's cost per reply
+
+- **`threetears.evals.kernel.production_replicating_cost` takes `candidate_kind`** (keyword, required, no default):
+  the result's `EvalResult.candidate_kind` (#828). For a judge-kind result it sums the judge role, since the judge
+  under test is the subject and is metered under that role alone; for any other kind it sums the candidate, inner
+  agent and external roles as before. Over a judge campaign every reading of an arm's own spend read nothing before
+  and now reads that spend: the scoreboard's cost per reply (a production memo over 16 judge runs printed "—" for
+  every arm while its findings quoted the spend), the cost measure a contrast tests and the decision rule's cost
+  clause reads, a frontier point's cost, the telemetry rollup and a run summary's `mean_prod_cost_usd`. Breaking for
+  a host calling it: pass `candidate_kind=result.candidate_kind`.
+
+### 3tears-evals: a host binds the cell identity the engine reads
+
+- **`bind_cell_identity` is exported** (`threetears.evals.schema`, `host-contract`): the context manager the run loop
+  binds each cell's `CellIdentity` with, restoring the previous value on exit, including on cancel. A host whose work
+  for a cell crosses a task boundary that does not carry the context (a detached job started in a fresh context, a
+  thread of its own) binds the identity there, so `current_cell_identity()` and every log line read one identity.
+  A host that kept its own cell-identity `ContextVar` for this drops it.
+
+### 3tears-evals: the generator refuses a finding title naming an arm none of its readings or trials is taken at
+
+- **A finding's title names only arms the finding cites a reading or trial of** (#829). A production memo titled a
+  finding "GPT-6 Luna Pro and Ling 3.1 Flash quadrupled evaluation cost" over readings at two other arms, so Ling's
+  cost was shown nowhere. The generator now refuses such a title through its one repair round, naming the arm as the
+  title wrote it, its levels and its cells (in the writer's aliases), and offering to drop the arm from the title,
+  cite its reading, or give that claim a finding of its own; rule 9 of the writer's prompt states the rule. Which
+  arms a title names is read off the names the bundle gives each arm (`analysis/arm_mentions.py`), chosen to miss
+  rather than refuse a sound title: any model level, and on other levers a level carrying a letter and a digit
+  (`terse-v2`, `fanout-2`), but not a quantity with a one- or two-letter unit (`4x`, `8k`, `100ms`), and one with a
+  longer unit (`1024tok`) only written unspaced. Matching is case-insensitive without case folding, and any hyphen
+  or dash from `-` to U+2014 joins or glues a name alike.
+- A title that both states a null its finding established nowhere and names an arm it cites nothing of is told of
+  both in one refusal, so its one repair can fix both. Host-facing: a reporter case whose memo titles an uncited arm
+  now fails as the candidate's own failure.
+
+### 3tears-evals: `kernel.prompt_token_bound` (provisional) is the one bound a call's ceiling is priced on
+
+- **`threetears.evals.kernel.prompt_token_bound(system, user, response_format)`** (`provisional`) is exported beside
+  `call_ceiling`: one token per UTF-8 byte of the system prompt, user message and response directive (NFKC-expanded
+  where that is more), plus `PROMPT_FRAMING_TOKENS`, a bound never below what a byte-level tokenizer bills. The
+  shipped client prices its ceiling on it, so a host bringing its own client prices with the same bound.
+
+### 3tears-evals: the generation's input-size log line is a ballpark over the exact request, and says so
+
+- **The line now reads `approx_input_tokens=N (<basis>) max_output_tokens=...`** (#827), where it read
+  `approx_input_tokens=N max_output_tokens=...`. N is the characters of the exact system prompt, user message and
+  response schema the first call sends, over two, with its basis on the line; it was characters over four of a
+  differently rendered bundle, which ran low (a JSON-heavy bundle runs about 1.7 characters a token, so the new figure
+  still reads about 15% under such a bill). A ballpark, never a bound: the cap prices on `prompt_token_bound`.
+  Breaking for a host parsing the old line: the basis now sits in parentheses between the figure and
+  `max_output_tokens`.
+
+### 3tears-evals: a judge case whose criterion the stored template lacks is withheld for a reset, not a refusal of the seed
+
+- The definition seed resolves a judge case's criterion template in the store first, so a template re-worded under the
+  same name, no longer wording a corpus case's criterion, used to refuse the whole seed. That case is now withheld
+  under `needs_reset` (`SeedOutcome.needs_reset["judge_case"]`, keyed `<judge template>/<case name>`) like one for a
+  battery already holding cases, and the seed admits everything else. `definition_drift` reads it `stale` and says the
+  stored template has no such dimension; a `definitions_reset` of it writes it, and a later seed finds it held rather
+  than withholding it again. A criterion no template holds, or a verdict the scale cannot hold, still refuses the
+  seed. Host-facing: a host that treated this refusal as its signal to re-issue the template under a new name need not.
+
+### 3tears-evals: the judge kind seats the spend ceiling it runs under, and the reader kit checks an unseated blank
+
+- `JUDGE_KIND_CONTRACT` now seats `max_cost_usd` (`host-contract`): every judge-kind run runs under the per-run cost
+  cap, so the ceiling is part of its rig rather than a dimension it does not have. It still seats nothing else. A host
+  whose profile compared judge-kind runs on the ceiling as unseated now sees it seated.
+- The reader conformance kit has a case, `apparatus.blank_when_unseated`: an apparatus reader must return blank (as the
+  declaration reads blank) for a run whose kind does not seat that apparatus. A reader that stamps a value there, such
+  as a state reader tagging every non-persona run, turns it red. `READER_CONFORMANCE_CASES` grows by one, so a host
+  parametrising it runs the new case over its own sample.
+- The warning logged when a run records a level for an apparatus its kind does not seat now reads "the seat declaration
+  or the host's reader for it is wrong", since either can be the cause.
+
+### 3tears-evals: a host reads the analysis preparation bound rather than restating it
+
+- `threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S` (`host-contract`, 900 s) is exported: the bound on an
+  analysis generation's preparation, which a host cites when it explains a generation's total wall time. It is now the
+  default: `AnalysisGeneration.preparation_budget_s` (a positive finite number of seconds) carries the bound a host
+  wants, is read on every call, so the host may set it per call, and defaults to this constant. The refusal still
+  reads `refused before any call: preparation did not finish in <N> s`, with the budget actually used.
+
+### 3tears-evals: a host reads the lease pool's width rather than copying it
+
+- `threetears.evals.kernel.LEASE_POOL_WORKERS` (`host-contract`) is exported: how many threads the job leases' own
+  pool runs store round-trips on. A host that sizes a database pool per process adds it to its blocking executor's
+  width, so a renewal never waits on a connection behind cell work, and the sizing follows the package's width.
+
+### 3tears-evals: a model bounds its own wait on the price catalogue (`Model(catalogue_fetch_timeout=)`)
+
+- **`Model(catalogue_fetch_timeout=)` overrides `CATALOGUE_FETCH_TIMEOUT_S` for one model** (`None`, the default, keeps
+  the 30 seconds; a value not above zero is refused). It is the timeout of a fetch the model starts on a client the
+  catalogue opens, and the bound on a wait for a fetch another task started: a reader joining an in-flight fetch used
+  to wait for as long as the starter's fetch took. It now gives up at its own bound and proceeds unpriced
+  (`PriceRefresh.failure` says so; a catalogue already loaded prices from its stale rows), while the fetch continues
+  for its starter, and later reads are priced. Models sharing one catalogue each keep their own bound, and
+  `Model.derive` carries it.
+- `Catalogue.load` and `Catalogue.read` take `timeout=` for the same wait, and `load` raises `TimeoutError` when it
+  passes. A host that wrapped its catalogue reads in its own timeout can drop the wrapper.
+
+### 3tears-evals: the analysis writer is told the one-claim-per-title rule its judge grades
+
+- **Rule 9 of the analysis writer's prompt carries a clause for the title the judge grades as `reporter.one_idea_per_title`.**
+  A finding's title makes one claim, one a single reading could confirm or refute; a result and its guardrail, or a
+  result and its cause, are two claims, the decision (for a cause, the finding's body) is where they meet, and a
+  qualifier that sets the claim's scope, condition or size stays inside the one claim. No new rule. The character budget rises once, 24,000
+  to 24,500, so the clause costs no other rule its reason; a shorter prompt is a measured change, not a cut by eye. `GEN_PROMPT_RULES.md` names the failure that bought the clause.
+
+### 3tears-evals: an action parameter's description says what the value is
+
+- **A parameter's description says what the value is, not what its action does with it.** `cases_rename`'s
+  `test_case_id` read "The case to rename, by its id", so a host action could not use the name for another meaning when
+  it merged the package's actions into one tool surface. `test_case_id` now reads "A test case's id, as
+  judge_cases_list or results_list names it", and `case_name`, `run_ids`, `result_ids`, `criteria` and
+  `judged_result_ids` drop the action from theirs. No name or type changes.
+
+### 3tears-evals: `current_cell_identity()` names the cell a log line or call belongs to, judge phase included
+
+- **`threetears.evals.schema.current_cell_identity() -> CellIdentity | None`** (host-contract). The run loop binds the
+  cell's `CellIdentity` in a context variable around everything it does for the cell: launch, the candidate's turn,
+  the judge phase, the cell's own log lines, the timeout and cancellation arms and the recording of its result. A host's
+  logging filter reads it to stamp `run_id`, `test_case_id` and `cell_id` with no further wiring. Concurrent cells each
+  see their own, tasks created inside a cell inherit it, and it is `None` outside every cell and again after a cell
+  ends, however it ended. The same identity is the one handed to the sink's `cell_identity` scope.
+  Run-level lines (the ceiling stop decided between cells) belong to no cell and read `None`.
+
+### 3tears-evals: TemplateChecks checks a template case, and no template case is nameless
+
+Host contract change: `TemplateChecks` gains a required field.
+
+- **`TemplateChecks.refuse_inadmissible_template_case`** (new, required, no default: a host with nothing to refuse
+  passes a function that returns `None`) is handed each `SeedTemplateCase`, `host_payload` included, typed as the
+  structural `threetears.evals.kernel.host.TemplateCaseFields` (new, `host-contract`; the kernel cannot import the run
+  package's case) and raises `ValidationFailedError` to refuse. The seed and a definition reset ask it for every
+  corpus case they would write, and `case_rename` for a template's own case under its new name, before any of them
+  writes: a refused case is written by none, and each refusal reaches the caller with the host's reason (the seed
+  and a reset refuse whole, naming every case). `run.admit_template_case` is the one door all three use. A host adds the
+  field to every `TemplateChecks(...)` it builds. `DECLARED_CEILING` is 519.
+- **No template case is nameless.** `SeedTemplateCase.name` refuses a blank name where the case is built, and `admit_template_case`
+  asks again before the host's check, for a case built another way.
+- The host guide shows a classifier bank moving onto `template_cases` with its check.
+
+### 3tears-evals: the seed names a stored case whose name is empty
+
+- **The seed fills an empty name, and only an empty one.** A stored template case with no `name` whose content (its
+  `variation_params` and `host_payload`) matches a corpus case reads with the corpus case's name after one seed, and
+  `SeedOutcome.named` (new, `dict[str, list[str]]`, `total_named`) lists it under `template_case`. A stored non-empty
+  name is never overwritten, a name another live case of the revision carries is not given twice, and only `name` is
+  written (conditionally), so the case keeps its id, `content_hash` and `seed_digest`. A host's own fill-only naming
+  pass after the seed can be dropped.
+- **A name fill that does not land says why.** It was dropped with nothing counted or logged. Now
+  `SeedOutcome.name_fill_failed` (new, `dict[str, dict[str, str]]`) maps each case whose fill the store refused to the
+  store's reason, logged at WARNING, and `SeedOutcome.name_fill_contended` (new, `dict[str, list[str]]`) lists each
+  whose conditional write lost to another writer, logged at INFO; both keyed `<template>/<name>` under
+  `template_case`, counted by `total_name_fill_failed` and `total_name_fill_contended`, and worded by `summary()`. The
+  case stays nameless and the next boot tries again.
+
+### 3tears-evals: a template whose every revision is archived is absent to the seed
+
+Behaviour change for a host that seeds `template_cases`.
+
+- **A retired template is not seeded into.** `load_template_by_name` falls back to the newest archived revision when
+  every revision is archived, so the seed wrote corpus cases into a template an operator had retired. It now writes
+  nothing into any revision of one, on every boot, and `SeedOutcome.archived` (new, `dict[str, list[str]]`) names each
+  such case under `template_case`, keyed `<template>/<name>`. It is counted as neither created, skipped nor failed,
+  `total_archived` counts it, and `summary()` says its template is archived. A template with one live revision seeds as
+  before. A host reading `SeedOutcome` field by field adds the field; one that checks `nothing_to_do` now sees it false
+  while such a case is withheld.
+
+### 3tears-evals: a host states its kind registry once, and can call one template check directly
+
+Breaking for a host in one place: `LaunchHost` takes no `kinds`.
+
+- **`LaunchHost(kinds=...)` is removed; the registry is `TemplateChecks.kinds`.** Breaking: `LaunchHost.kinds` is now
+  a read-only property over `eval_host.template_checks.kinds`, so a template is admitted against the registry its
+  launch dispatches through, and a kind registered in one place cannot be missing from the other. `TemplateChecks.kinds`
+  stays typed by what admission reads (`IgnoresTemplateFields`), and `LaunchHost` raises `TypeError`, naming the kind,
+  when an entry is not a `LaunchableKind`. A host with no template checks launches no kind (its launch is refused by
+  name). To port, drop `kinds=` from your `LaunchHost(...)` and keep it in your `TemplateChecks(kinds=...)`; code that
+  rebuilt a launch host with `replace(host, kinds=...)` replaces the `eval_host`'s template checks instead.
+  `threetears.evals.ops.OpsHost.reading` still launches nothing, whatever the checks carry.
+- **`admit_template` is exported** (`threetears.evals.run`, `host-contract`): every refusal `create_template` makes
+  before a write, over a `TemplateChecks` and a profile, with no store. A host tests one of its own template checks by
+  calling it, rather than through `create_template` with a template every earlier gate admits.
+
+### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
+
+Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).
+
+- **The metered-call ceiling and the cost cap are read between cells, against what has landed.** Once the recorded
+  cells' metered calls reach `max_metered_calls`, or their spend passes `max_cost_usd`, no new cell starts, the cells
+  already running finish whole, and the run ends `budget_stopped`. Nothing is refused inside a cell: at width above 1
+  the old refusal contaminated whichever cell asked after the ceiling was spent, so two identical runs differed in
+  which cell was cut. A run may land past a ceiling by up to the width's worth of cells; a looping cell is bounded
+  by the cell timeout. `MeteredCallLedger.admit` no longer refuses on the ceiling, `CellSink.reserve` never refuses
+  and `CellSink.cost_cap_reached` is always `False`, and `drive_conversation` asks no cap. A host that declared no
+  metered tools (`max_metered_calls=None`) is unchanged: its metered call is refused at dispatch, and that is the only
+  thing `metered_calls_refused` now counts.
+- **The stop is a typed record.** `EvalRun.budget_stops` holds a `BudgetStop` (`currency`, `ceiling`,
+  `landed_at_stop`, `landed_final`, `cells_in_flight`, `cells_not_started`, `unpriced_results`) for each ceiling
+  that stopped the run, both when both did; the overshoot is `landed_final - ceiling`, derived. The run's summary
+  prints one line from the record: `stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3 running
+  cells finished (+7); 12 cells not started`.
+- Breaking for a host that read them: `CapBreach.refused_call_usd` is gone, `CostCapReached` is no longer raised by
+  the engine (it still imports), and `MeteredCallLedger.refusal_message` raises for a host that declared metered
+  tools. `MeteredCallLedger` refuses a ceiling below 1 unless `none_declared`, and an enforcing `EvalRunCostCap` a
+  ceiling that is not positive and finite: either would stop the run before it began. New:
+  `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
+  `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
 ## v0.72.0 -- 2026-10-20
 
 ### agent-memory, agent-intention, core: the embedding width is a deployment setting
@@ -530,6 +869,17 @@ server's word, not a timeout (#802), and the iam tamper tests always change the 
   lost three conditional writes to the run's own progress writes waited a whole interval. `JobLeases` now does its
   store round-trips on a small pool of its own, renews every held lease at once, and tries a contended renewal
   again within the interval after a short jittered wait. `JobLeases(blocking_executor=)` is still accepted and ignored.
+- **Removed: `JobLeases(blocking_executor=)`.** It was accepted and ignored since the pool above; no release carried it, so
+  nothing migrates. Lease round-trips never run on a host executor.
+- **Fixed: a store call that hangs never expired its own lease record.** A renewal whose store call never returned
+  was skipped by every later interval, so its holder kept writing under a lease every reader read as lapsed. Each
+  renewal's store call is now given only what is left of its lease by the holder's own count; a call still out then
+  counts as a failed renewal for a whole lease, the record is expired and the job stopped, with a fault naming the
+  hung renewal, whether or not the call ever returns. The expiry's own two writes are bounded by a lease too, so a
+  hung store cannot hold the stop back. Other records' renewals are unaffected.
+- **Fixed: the lease tests that failed only under a loaded suite.** The renewal-under-load tests ran a 0.9s lease and
+  the two lease-expiry tests a 0.3s one, margins a stalled scheduler spent; the first now run 1.8s (every wait doubled
+  with it) and the second 0.9s, each asserting what it did.
 
 ### Text a model reads stays under the item it belongs to
 

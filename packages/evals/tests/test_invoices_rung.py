@@ -15,7 +15,12 @@ from pathlib import Path
 import pytest
 
 from threetears.evals import Result
-from threetears.evals.analysis import AnalysisContextBundle, report_markdown
+from threetears.evals.analysis import (
+    AnalysisContextBundle,
+    campaign_report_html,
+    campaign_report_markdown,
+    report_markdown,
+)
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
 from threetears.evals.schema import ClientRequestSettings
@@ -125,6 +130,24 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     assert again.control == "v2" and again.run_ids == result.run_ids
 
 
+async def test_its_campaign_page_opens_on_the_guardrail_v2_is_not_shown_safe_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    offline_copy("3-invoices", tmp_path, monkeypatch)
+    module = load(Path("extract.py"), "extract", monkeypatch)
+    result = await module.invoices.run(store=":memory:")
+    lines = campaign_report_markdown(result.page).splitlines()
+    # A guardrail warns as loudly as a broken floor, above the title, and picks no arm.
+    assert lines[0] == "**Not yet shown safe on classify: v2 on no invented total.**"
+    assert lines[2] == "# invoices"
+    html = campaign_report_html(result.page)
+    assert '<p class="floor" role="alert"><strong>Not yet shown safe on classify: v2 on no invented total.' in html
+    assert "not adopted" not in "\n".join(lines)
+    # No margin was declared, so the page says so once and keeps no row of dashes to settle against one.
+    assert "No margin was declared on classify, so no arm is ever shown worse there." in lines
+    assert "To show no worse than the margin" not in "\n".join(lines)
+
+
 def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -136,7 +159,8 @@ def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(
     assert out.startswith("invoices: ") and "v1 (control): 90 result(s)" in out
     html = (copy / "report" / "report.html").read_text(encoding="utf-8")
     assert "<script" not in html
-    bundle = AnalysisContextBundle.from_json((copy / "report" / "bundle.json").read_text(encoding="utf-8"))
+    (written,) = (copy / "report").glob("bundle-*.json")
+    bundle = AnalysisContextBundle.from_json(written.read_text(encoding="utf-8"))
     assert bundle.fingerprint() in html
     assert (copy / "report" / "report.md").is_file()
     assert exited.value.code in (0, 4), "0 when the gate passed, 4 when it failed; never a crash"

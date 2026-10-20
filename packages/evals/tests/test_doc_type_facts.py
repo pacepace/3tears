@@ -30,7 +30,8 @@ from threetears.evals.schema.versioning import (
     REGENERABLE_SCHEMA_VERSION,
 )
 
-#: What people author, as decided at ``.26``: the eight types a core baseline reset never touches.
+#: What people author: the eight types decided at ``.26``, and the campaign, at durable v16 — the types a core baseline
+#: reset never touches.
 DURABLE = frozenset(
     {
         "eval_template",
@@ -41,6 +42,7 @@ DURABLE = frozenset(
         "case_set",
         "eval_test_case",
         "calibration_rating",
+        "eval_campaign",
     }
 )
 
@@ -139,7 +141,7 @@ def test_the_placements_the_registry_records() -> None:
         "judge_config_tombstone": ("input", "durable"),
         "case_set": ("input", "durable"),
         "eval_test_case": ("input", "durable"),
-        "eval_campaign": ("input", "kept"),
+        "eval_campaign": ("input", "durable"),
         "eval_run": ("record", "kept"),
         "eval_result": ("record", "kept"),
         "eval_trace": ("record", "kept"),

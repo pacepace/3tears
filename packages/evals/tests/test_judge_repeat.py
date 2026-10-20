@@ -344,7 +344,7 @@ async def _judged_run(
 
 async def _repeated(host: EvalHost, run_id: str, scope_id: str, **options: Any) -> JudgeRepeatReport:
     """Repeat in the foreground, as a script does: the work admitted, run to its end, its report read off its record."""
-    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    leases = JobLeases(host.storage)
     try:
         work = await judge_repeat_work(host, run_id, scope_id, **options)
         ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)

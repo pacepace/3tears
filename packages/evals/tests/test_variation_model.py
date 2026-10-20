@@ -71,6 +71,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
     ScriptedExtractionClient,
     ToyExtractorKind,
 )
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_DOCUMENTS, RUN_MODELS, toyhost_template
 from packages.evals.tests.factories import make_eval_result, make_eval_run
@@ -260,11 +261,14 @@ def _generating_host(
 
     generating = replace(
         host,
-        kinds={
-            TOY_EXTRACTOR_KIND: LaunchableKind(
-                launch=launch, resolve_subject=lambda _subject, _scope: None, plan_arm=plan_arm
-            )
-        },
+        eval_host=with_registry(
+            host.eval_host,
+            {
+                TOY_EXTRACTOR_KIND: LaunchableKind(
+                    launch=launch, resolve_subject=lambda _subject, _scope: None, plan_arm=plan_arm
+                )
+            },
+        ),
         launch_pricer=pricer,
     )
     return generating, storage, clients, handed
@@ -653,7 +657,9 @@ async def test_a_generating_arm_of_a_kind_that_plans_nothing_is_unpriceable():
 
     host, storage, clients, handed = off_loop(_generating_host, template, pricer=recording)
     (launchable,) = host.kinds.values()
-    unplanned = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, plan_arm=None)})
+    unplanned = replace(
+        host, eval_host=with_registry(host.eval_host, {TOY_EXTRACTOR_KIND: replace(launchable, plan_arm=None)})
+    )
 
     with pytest.raises(ValidationFailedError, match="plans no arm \\(LaunchableKind.plan_arm\\).*inherited"):
         await _launch(unplanned, template, n_variations=2)

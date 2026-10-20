@@ -1007,7 +1007,9 @@ def run_summary(
         delivery measured one, and the 95th percentile absent below 13 durations.
         ``measure_latency`` and ``cell_concurrency`` are the run's own record of whether its launch declared
         latency under test and how many of its cells executed at once (``measure_latency`` None on a run its host
-        assembled without a launch, which declared nothing); ``latency_disclosure`` is the line to render beside the
+        assembled without a launch, which declared nothing); ``arm_schedule`` is how its arm shared time and provider
+        capacity with its launch's other arms (``EvalRun.arm_schedule``, None where the run records none);
+        ``latency_disclosure`` is the line to render beside the
         latency keys when any of them was read under concurrency (the results' ``execution_mode``), null
         otherwise — the figures describe this run as it ran and are never compared with another run's.
         ``model_identity_disclosure`` is the sentence to render beside the ``model`` the rows name when some of
@@ -1108,6 +1110,8 @@ def run_summary(
         # line the latency columns are read under when any of them was read under concurrency.
         "measure_latency": run.measure_latency,
         "cell_concurrency": run.cell_concurrency,
+        # How its arm shared time with its launch's other arms (#841): co-loaded side by side, or not.
+        "arm_schedule": run.arm_schedule,
         "latency_disclosure": marked_latency_sentence(len(withheld_latency(results, profile.measures)), len(results)),
         # Which model answered, where the responses did not say: the rows are keyed by the id each call asked for.
         "model_identity_disclosure": model_identity_disclosure(unconfirmed_model_identities([run], results)),

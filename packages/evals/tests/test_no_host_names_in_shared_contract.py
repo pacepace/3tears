@@ -188,6 +188,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # analysis and insight models, the campaign declaration, the decision surface, the authored
     # document shape, and the analysis measures). `kernel/` is split, so each is listed.
     "kernel/campaign.py",
+    # The step a stored campaign is upgraded by, in the schema package with the version chain that registers it.
+    "schema/campaign_upgrade.py",
     "kernel/declaration.py",
     "kernel/surface.py",
     "kernel/authored.py",
@@ -215,6 +217,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/versioning.py",
     "analysis/bundle/assemble.py",
     "analysis/gen_prompt.py",
+    # What the writer of a campaign's one memo reads: every host's campaign is rendered through it alike.
+    "analysis/campaign_bundle.py",
     # The gen package's public root, its exports scanned. Declared module by module, like
     # `kernel/__init__.py`, because `gen/` was classified module by module while it held a
     # host-coupled module, and the list stays the record of each one's move.
@@ -228,6 +232,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "run/__init__.py",
     # Named, versioned case sets: engine vocabulary for which cases a launch targets.
     "run/case_sets.py",
+    # How a launch's arms take their cells: engine vocabulary, the same for every host.
+    "run/arm_schedule.py",
     "kernel/dsl.py",
     # The goal grammar, the static half the stored template validates through.
     "schema/goal_grammar.py",

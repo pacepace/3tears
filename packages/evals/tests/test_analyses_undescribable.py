@@ -28,7 +28,7 @@ async def _two_analyses() -> tuple[OpsFixture, EvalAnalysis, EvalAnalysis]:
     (described,) = off_loop(storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
     stored: dict[str, Any] = described.model_dump(mode="json")
     stored["id"] = "analysis-undescribable"
-    first = stored["variant_index"][0]
+    first = stored["aspects"][0]["variant_index"][0]
     first.update(levers={}, swept={}, folded=[], levels_unavailable=REASON)
     undescribable = EvalAnalysis.model_validate(stored)
     off_loop(storage.save_analysis, undescribable)
@@ -46,7 +46,7 @@ async def test_the_operation_names_the_analysis_with_an_undescribable_arm_and_no
     assert (line.campaign_id, line.undescribable_arms, line.arms) == (
         fixture.campaign.id,
         1,
-        len(undescribable.variant_index),
+        len(undescribable.aspects[0].variant_index),
     )
     assert line.reasons == [REASON]
 

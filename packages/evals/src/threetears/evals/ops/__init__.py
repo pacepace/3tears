@@ -52,6 +52,7 @@ from threetears.evals.ops.analysis import (
     BarProposals,
     CampaignChanges,
     CampaignDefinition,
+    CampaignCallLine,
     CampaignLine,
     CampaignListing,
     InsightDeleted,
@@ -73,6 +74,7 @@ from threetears.evals.ops.analysis import (
     bars_propose,
     campaign_archive,
     campaign_create,
+    campaign_record,
     campaign_runs_add,
     campaign_runs_remove,
     campaign_update,
@@ -83,7 +85,7 @@ from threetears.evals.ops.analysis import (
     report_read,
 )
 from threetears.evals.ops.cases import CaseRenamed, case_rename
-from threetears.evals.ops.host import AnalysisGeneration, OpsHost
+from threetears.evals.ops.host import ANALYSIS_PREPARATION_BUDGET_S, AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
     JUDGE_TEMPERATURE_JOB_PREFIX,
@@ -239,6 +241,7 @@ from threetears.evals.ops.runs import (
 from threetears.evals.analysis.summary import EvalSummary, dollars_text
 
 __all__ = [
+    "ANALYSIS_PREPARATION_BUDGET_S",
     "ACTION_JOB_PREFIX",
     "JUDGE_TEMPERATURE_JOB_PREFIX",
     "LAUNCH_JOB_PREFIX",
@@ -279,6 +282,7 @@ __all__ = [
     "BarProposals",
     "CampaignChanges",
     "CampaignDefinition",
+    "CampaignCallLine",
     "CampaignLine",
     "CampaignListing",
     "DetectableEffect",
@@ -360,6 +364,7 @@ __all__ = [
     "analysis_job_id",
     "campaign_archive",
     "campaign_create",
+    "campaign_record",
     "campaign_runs_add",
     "campaign_runs_remove",
     "campaign_update",

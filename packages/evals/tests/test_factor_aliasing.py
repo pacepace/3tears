@@ -20,9 +20,8 @@ from typing import Any
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
 from threetears.evals.analysis.bundle.schema import INTERACTION_ALIASING_UNCHECKED
 from threetears.evals.analysis.report import DisclosureBlock
-from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema.models import RoleUsage
-from packages.evals.tests.factories import memory_storage, minimal_declaration
+from packages.evals.tests.factories import memory_storage, minimal_declaration, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -43,7 +42,7 @@ def _bundle(batches: Sequence[dict[str, Any]]) -> AnalysisContextBundle:
         for result in toyhost_measurements(run, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8):
             storage.save_eval_result(result)
         runs.append(run)
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="aliasing",
         scope_id=TOYHOST_SCOPE,
         name="aliasing",
@@ -185,7 +184,7 @@ def _observed_bundle(calls: dict[int, dict[int, str]], *, declared: bool = False
                 result = result.model_copy(update={"usage": [*result.usage, usage]})
             storage.save_eval_result(result)
         runs.append(run)
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         id="observed",
         scope_id=TOYHOST_SCOPE,
         name="observed",
@@ -255,3 +254,126 @@ class TestALeverNoComparisonExercisedIsNoLevel:
         assert _OBSERVED not in {row.name for row in undeclared.coverage}
         assert [factor.factor for factor in undeclared.unexercised_factors] == [_OBSERVED]
         assert [line for line in _not_tested(undeclared) if line.startswith("rerank depth:")]
+
+
+class TestALeverOnlyOneArmObservedIsNotALevel:
+    """One fixture shape, read both ways: the arms differ only in ``chunk_tokens``, and role ``inner_agent`` is called
+    in several results. Where only one arm made the calls, the other has no value to differ from, so the lever aliases
+    with nothing; where both made them at different models, it is a level and aliases as it should."""
+
+    _CALLS = dict.fromkeys(range(3), "research-model-1")
+
+    def test_calls_in_several_results_of_one_arm_alias_with_nothing(self) -> None:
+        bundle = _observed_bundle({1: self._CALLS})
+
+        assert not [group for group in bundle.aliased_factors if _OBSERVED in group.factors]
+        assert bundle.factor_pairs is None or _OBSERVED not in bundle.factor_pairs.factors
+        assert _OBSERVED not in {row.name for row in bundle.coverage}
+        assert _OBSERVED not in {divergence.lever for divergence in bundle.scope_divergences}
+        (factor,) = bundle.unexercised_factors
+        assert (factor.factor, factor.role, factor.results) == (_OBSERVED, "inner_agent", 3)
+        assert len(factor.arms) == 1
+        (line,) = [line for line in _not_tested(bundle) if line.startswith("rerank depth:")]
+        assert line.startswith("rerank depth: 3 results made inner agent calls, all on ")
+        assert line.endswith(", and none on the other arm, so it was observed in one arm only and is not a level.")
+
+    def test_calls_in_both_arms_at_different_models_are_a_level_that_aliases(self) -> None:
+        bundle = _observed_bundle({0: self._CALLS, 1: dict.fromkeys(range(3), "research-model-2")})
+
+        assert bundle.unexercised_factors == []
+        (group,) = [group for group in bundle.aliased_factors if _OBSERVED in group.factors]
+        assert "chunk_tokens" in group.factors
+        assert _OBSERVED in {row.name for row in bundle.coverage}
+
+
+def _arms_bundle(
+    runs: Sequence[tuple[int, str | None, int]],
+    *,
+    declared: bool = False,
+    named: dict[int, dict[str, Any]] | None = None,
+) -> AnalysisContextBundle:
+    """Toy runs told apart by ``chunk_tokens`` (one arm per value), each ``(chunk_tokens, model, results)``: every one
+    of its first ``results`` results makes an ``inner_agent`` call on ``model`` (none when ``model`` is ``None``), and
+    its remaining results are not stored, so ``results=0`` is a run that delivered nothing. ``named`` adds launch
+    values to every run of an arm."""
+    profile = replace(toyhost_profile(tunable_retrieval=True), observed_model_levers={_OBSERVED: "inner_agent"})
+    storage, _ = memory_storage()
+    saved = []
+    for position, (tokens, model, count) in enumerate(runs):
+        values = {**LOW, "chunk_tokens": tokens, "reviewer_pool": "pool-a", **(named or {}).get(tokens, {})}
+        run = toyhost_batch(grader_version="grade-2.1.0", **values)
+        run = run.model_copy(update={"id": f"{run.id[:-4]}{position:04d}"})
+        storage.save_eval_run(run)
+        measured = toyhost_measurements(run, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8)
+        for result in measured[:count]:
+            if model is not None:
+                usage = RoleUsage(role="inner_agent", model=model, cost_usd=0.0, call_count=1)
+                result = result.model_copy(update={"usage": [*result.usage, usage]})
+            storage.save_eval_result(result)
+        saved.append(run)
+    campaign = make_campaign(
+        id="observed-arms",
+        scope_id=TOYHOST_SCOPE,
+        name="observed-arms",
+        subject_id=saved[0].subject_snapshot.subject_id,
+        subject_kind="extractor_config",
+        behavior="extract_invoice_fields",
+        run_ids=[run.id for run in saved],
+        created_by="test:fixture",
+        declared_design=minimal_declaration(axis_id=_OBSERVED) if declared else None,
+    )
+    storage.save_campaign(campaign)
+    return assemble_context_bundle(campaign, storage=storage, profile=profile)
+
+
+def _row(bundle: AnalysisContextBundle, name: str) -> Any:
+    (row,) = [row for row in bundle.coverage if row.name == name]
+    return row
+
+
+class TestAnUnobservedArmIsUnknownNotALevel:
+    def test_a_lever_that_changed_inside_one_arm_is_a_level_against_an_arm_that_never_ran_it(self) -> None:
+        bundle = _arms_bundle([(256, "m1", 3), (256, "m2", 3), (512, None, 3)])
+
+        assert bundle.unexercised_factors == []
+        assert not [line for line in _not_tested(bundle) if line.startswith("rerank depth:")]
+
+    def test_an_arm_with_no_results_does_not_make_a_single_arm_campaign_two(self) -> None:
+        bundle = _arms_bundle([(256, "m1", 3), (512, "m1", 0)])
+
+        assert bundle.unexercised_factors == []
+        assert not [line for line in _not_tested(bundle) if line.startswith("rerank depth:")]
+
+    def test_a_third_arm_that_never_ran_the_role_is_in_neither_the_alias_nor_the_row(self) -> None:
+        bundle = _arms_bundle([(256, "m1", 1), (512, "m2", 1), (768, None, 6)])
+
+        assert bundle.unexercised_factors == []
+        assert not [line for line in _not_tested(bundle) if line.startswith("rerank depth:")]
+        assert not [group for group in bundle.aliased_factors if _OBSERVED in group.factors]
+        row = _row(bundle, _OBSERVED)
+        assert row.levels == ["m1", "m2"]
+        assert row.n == 2 and row.status != "measured"
+        pairs = bundle.factor_pairs
+        assert pairs is not None
+        pivots = [p for p in pairs.pivots if _OBSERVED in (p.row_factor, p.column_factor)]
+        for pivot in pivots:
+            assert {cell.n_runs for cell in pivot.cells} <= {0, 1}
+            assert sum(cell.n_runs for cell in pivot.cells) == 2
+
+    def test_a_declared_axis_keeps_the_inherited_level_of_an_arm_that_never_ran_it(self) -> None:
+        bundle = _arms_bundle([(256, "m1", 3), (512, None, 3)], declared=True)
+
+        row = _row(bundle, _OBSERVED)
+        assert row.levels == ["m1", "—"]
+        assert row.status != "unswept"
+
+    def test_a_named_override_keeps_the_control_s_inherited_level(self) -> None:
+        bundle = _arms_bundle(
+            [(256, None, 3), (512, "m1", 3), (768, "m2", 3)],
+            named={
+                512: {"retrieval_overrides": {"rerank_depth": 12}, "retrieval_config": {"rerank_depth": 12}},
+                768: {"retrieval_overrides": {"rerank_depth": 15}, "retrieval_config": {"rerank_depth": 15}},
+            },
+        )
+
+        assert _row(bundle, _OBSERVED).levels == ["12", "15", "—"]

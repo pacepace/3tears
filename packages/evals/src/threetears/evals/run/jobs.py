@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar
 
 from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, StorageError
-from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
+from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, BudgetStop, EvalRun
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
@@ -222,6 +222,9 @@ class _GroupSlot:
     and runs its members one at a time, in the order they were added. It gives up the drift balance of
     arms measured side by side for latency read with nothing beside it; each run still shuffles its
     own cells.
+
+    **A group whose arms run one after another takes turns too** (``in_turn``, a launch's ``sequential``
+    schedule): its members run one at a time in the order added, in its one slot.
     """
 
     def __init__(
@@ -231,6 +234,7 @@ class _GroupSlot:
         *,
         weight: int = 1,
         exclusive_turn: asyncio.Lock | None = None,
+        in_turn: bool = False,
     ) -> None:
         """Bind the group to the manager's semaphore.
 
@@ -245,6 +249,8 @@ class _GroupSlot:
             such groups never each hold part of the semaphore waiting for the rest; given exactly
             when the group takes every slot, whose members then run one at a time.
         :ptype exclusive_turn: asyncio.Lock | None
+        :param in_turn: Run the members one at a time, in the order added, whether or not the group takes every slot.
+        :ptype in_turn: bool
         """
         self._semaphore = semaphore
         self._remaining = members
@@ -252,13 +258,14 @@ class _GroupSlot:
         self._exclusive_turn = exclusive_turn
         self._held = False
         self._acquiring = asyncio.Lock()
-        # Members of a group measuring latency run one at a time; the lock is FIFO, so in the order added.
-        self._member_turn = asyncio.Lock() if exclusive_turn is not None else None
+        # Members of a group measuring latency, or running its arms one after another, run one at a time; the lock
+        # is FIFO, so in the order added.
+        self._member_turn = asyncio.Lock() if exclusive_turn is not None or in_turn else None
 
     @asynccontextmanager
     async def hold(self) -> AsyncIterator[None]:
         """Enter the group's slot, acquiring it for the group if no member has yet — and, for a group
-        measuring latency, wait for this member's turn."""
+        whose members take turns, wait for this member's turn."""
         async with self._acquiring:
             if not self._held:
                 if self._exclusive_turn is None:
@@ -281,6 +288,16 @@ class _GroupSlot:
             self._held = False
             for _ in range(self._weight):
                 self._semaphore.release()
+
+
+def _tell_member_end(on_member_end: Callable[[str], None], run_id: str, _task: asyncio.Task[None] | None) -> None:
+    """Tell a group's caller one member's task is done; what the hook raises is logged, never the task's."""
+    try:
+        on_member_end(run_id)
+    # prawduct:ok-broad-except — a done callback: a raising hook would surface only on the loop's handler, unnamed
+    except Exception:
+        # NOSILENT: logged with the run; the hook is the launch's bookkeeping, and the run's record is already its own.
+        log.exception("eval.start_group run=%s: the member-end hook raised", run_id)
 
 
 class AdmissionTicket:
@@ -907,7 +924,12 @@ class EvalJobManager:
             log.warning("Task %s: its record written lost: %s", job_id, cause)
 
     async def start_group(
-        self, members: Sequence[tuple[EvalRun, WorkFn, float | None]], *, measure_latency: bool = False
+        self,
+        members: Sequence[tuple[EvalRun, WorkFn, float | None]],
+        *,
+        measure_latency: bool = False,
+        in_turn: bool = False,
+        on_member_end: Callable[[str], None] | None = None,
     ) -> list[str]:
         """Start several runs as one group: they share one concurrency slot and start together.
 
@@ -919,6 +941,12 @@ class EvalJobManager:
             slot, so no other run executes beside it, and its members run one at a time
             (:class:`_GroupSlot`). Latency-blind otherwise: one slot, members side by side.
         :ptype measure_latency: bool
+        :param in_turn: The members run one at a time, in the order given, in the group's one slot (a launch running
+            its arms one after another). Implied by ``measure_latency``.
+        :ptype in_turn: bool
+        :param on_member_end: Told each member's run id once its task is done, however it ended — before it started
+            included — so whatever its siblings wait on from it (an interleaved launch's turns) stops waiting.
+        :ptype on_member_end: Callable[[str], None] | None
         :return: The run ids, in the order given.
         :rtype: list[str]
         :raises ValueError: ``members`` is empty.
@@ -950,25 +978,38 @@ class EvalJobManager:
         slot = (
             _GroupSlot(self._semaphore, len(members), weight=self._max_concurrent, exclusive_turn=self._exclusive_turn)
             if measure_latency
-            else _GroupSlot(self._semaphore, len(members))
+            else _GroupSlot(self._semaphore, len(members), in_turn=in_turn)
         )
-        for run, work, job_timeout_s in members:
-            if self._leases is not None:
-                self._leases.hold(
-                    RUN_JOB,
-                    run.id,
-                    run.scope_id,
-                    cancel=functools.partial(self.cancel_job, run.id),
-                    stop=functools.partial(self._fence, run.id),
+        started: set[str] = set()
+        try:
+            for run, work, job_timeout_s in members:
+                if self._leases is not None:
+                    self._leases.hold(
+                        RUN_JOB,
+                        run.id,
+                        run.scope_id,
+                        cancel=functools.partial(self.cancel_job, run.id),
+                        stop=functools.partial(self._fence, run.id),
+                    )
+                task = asyncio.create_task(
+                    self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
+                    name=f"eval-{run.id[:8]}",
                 )
-            task = asyncio.create_task(
-                self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
-                name=f"eval-{run.id[:8]}",
-            )
-            # Released on the TASK's end, not in the coroutine's ``finally``: a task cancelled before
-            # its first step never runs its body, and its share of the slot would never come back.
-            task.add_done_callback(lambda _task: slot.leave())
-            self._tasks[run.id] = task
+                # Released on the TASK's end, not in the coroutine's ``finally``: a task cancelled before
+                # its first step never runs its body, and its share of the slot would never come back.
+                task.add_done_callback(lambda _task: slot.leave())
+                if on_member_end is not None:
+                    task.add_done_callback(functools.partial(_tell_member_end, on_member_end, run.id))
+                self._tasks[run.id] = task
+                started.add(run.id)
+        except BaseException:
+            # A member left without a task is never told ended by its task, so whatever its siblings wait on from it
+            # (an interleaved launch's turns) is told here, before the failure goes on.
+            if on_member_end is not None:
+                for run in runs:
+                    if run.id not in started:
+                        _tell_member_end(on_member_end, run.id, None)
+            raise
         return [run.id for run, _, _ in members]
 
     def _fence(self, run_id: str) -> None:
@@ -1113,7 +1154,9 @@ class EvalJobManager:
             # (an omitted override inherits the configured default), so filing it
             # as an error gave every capped run that bound a phantom in the count
             # operators scan for real faults.
-            await self._set_status(run_id, scope_id, "budget_stopped", budget_stop_reason=str(stop))
+            await self._set_status(
+                run_id, scope_id, "budget_stopped", budget_stop_reason=str(stop), budget_stops=list(stop.stops) or None
+            )
         except AccountExhaustedError as exhausted:
             # The provider account paying for the run refused a call — out of credit, or
             # the key refused. Delivered results are persisted, the refused cell's
@@ -1194,6 +1237,7 @@ class EvalJobManager:
         error: str | None = None,
         cancellation_reason: str | None = None,
         budget_stop_reason: str | None = None,
+        budget_stops: list[BudgetStop] | None = None,
     ) -> None:
         """Update an EvalRun's status in storage.
 
@@ -1298,6 +1342,8 @@ class EvalJobManager:
                 data["cancellation_reason"] = cancellation_reason
             if budget_stop_reason is not None:
                 data["budget_stop_reason"] = budget_stop_reason
+            if budget_stops is not None:
+                data["budget_stops"] = [stop.model_dump(mode="json") for stop in budget_stops]
             if record_empty_matrix and run.completeness is None:
                 data["completeness"] = summarize_completeness(run, []).to_dict()
             if status in TERMINAL_RUN_STATUSES:

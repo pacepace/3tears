@@ -41,6 +41,7 @@ from threetears.evals.schema import (
     SubjectSnapshot,
 )
 from threetears.evals.testing import CompletionGuard, JobsConformanceHost
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.off_loop import off_loop
 
 __all__ = ["CONFORMANCE_SCOPE", "ScriptedClients", "conformance_host"]
@@ -181,16 +182,18 @@ def conformance_host(
         max_out_of_run_cost_usd=1.0,
     )
     launching = LaunchHost(
-        eval_host=eval_host,
-        kinds={
-            JUDGED_CALLABLE_KIND: LaunchableKind(
-                launch=launch,
-                resolve_subject=lambda _subject, _scope: None,
-                unhonoured_launch_arguments=frozenset(
-                    {"simulator_model", "judge_config_ids", "n_variations", "cassette_mode"}
-                ),
-            )
-        },
+        eval_host=with_registry(
+            eval_host,
+            {
+                JUDGED_CALLABLE_KIND: LaunchableKind(
+                    launch=launch,
+                    resolve_subject=lambda _subject, _scope: None,
+                    unhonoured_launch_arguments=frozenset(
+                        {"simulator_model", "judge_config_ids", "n_variations", "cassette_mode"}
+                    ),
+                )
+            },
+        ),
         settings=lambda: settings,
         job_timeout_factory=default_job_timeout,
     )

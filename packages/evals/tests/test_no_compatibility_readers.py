@@ -90,7 +90,9 @@ _REQUIRED: list[Any] = [
     ),
     pytest.param(make_template, "candidate_kind", id="EvalTemplate.candidate_kind"),
     pytest.param(make_campaign, "created_by", id="EvalCampaign.created_by"),
-    pytest.param(make_analysis, "decision_surface", id="EvalAnalysis.decision_surface"),
+    pytest.param(make_analysis, "design_snapshot", id="EvalAnalysis.design_snapshot"),
+    pytest.param(make_analysis, "campaign_bundle", id="EvalAnalysis.campaign_bundle"),
+    pytest.param(lambda: make_analysis().aspects[0], "decision_surface", id="AspectAnalysis.decision_surface"),
     *(
         pytest.param(lambda: make_analysis().generation, field, id=f"GenerationProvenance.{field}")
         for field in (

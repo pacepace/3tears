@@ -1125,7 +1125,11 @@ def compute_cost_summary(
         # prod cost" the same way the single-result surfaces do.
         resolved_r = resolve_result_usage(r)
         prod = (
-            production_replicating_cost(resolved_r.usage, substituted_deliveries=resolved_r.substituted_deliveries)
+            production_replicating_cost(
+                resolved_r.usage,
+                substituted_deliveries=resolved_r.substituted_deliveries,
+                candidate_kind=r.candidate_kind,
+            )
             if delivered_a_turn(r)
             else None
         )

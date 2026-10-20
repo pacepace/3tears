@@ -274,7 +274,7 @@ async def compare_judge_temperatures(
     What the ``judge_temperature`` operation's job does, awaited here as a script awaits it; the record is also
     checked to hold what was read, so every comparison these tests make shows it was kept.
     """
-    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    leases = JobLeases(host.storage)
     try:
         work = await judge_temperature_work(host, run_id, scope_id, **options)
         ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
@@ -351,7 +351,7 @@ class TestEveryAnswerPaidForIsKept:
         judge = _StallingJudge()
         host, run_id = await _judged_run(judge)
         judge.stall_after = 3
-        leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+        leases = JobLeases(host.storage)
         work = await judge_temperature_work(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
         running = asyncio.create_task(
             run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
@@ -491,7 +491,7 @@ class TestAClientThatIgnoresTemperature:
         host, run_id = await _judged_run(judge)
         judge.sends = _UNREPORTED
 
-        leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+        leases = JobLeases(host.storage)
         try:
             work = await judge_temperature_work(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
             ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)

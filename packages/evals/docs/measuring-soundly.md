@@ -2,7 +2,7 @@
 
 **For** anyone about to spend on a campaign, choose its arms, k and a case count, pick a judge, or decide whether to
 believe a surprising result. **Answers:** which design answers which question and what it cannot answer; how to
-declare the design and its control; how cases and repeats trade off; which read gives the answer; and which
+declare a campaign, its question, arms, aspects and floors; how cases and repeats trade off; which read gives the answer; and which
 practices keep an eval's numbers honest, with what went wrong without them. Arm, lever, variant, k and campaign are as
 [Concepts](concepts.md) defines them.
 
@@ -53,7 +53,7 @@ control, never against each other. To test the leader against the rest, `await c
 chose that control after seeing the results, so treat what it shows as a lead to confirm in a fresh campaign. No
 table on the report ranks the combinations.
 
-## Declare the design and its control
+## Declare the campaign: its question, arms and aspects
 
 **On the quick path, an `Eval` over a mapping of arms declares it for you.** It sets one axis per factor, with the
 levels the arms ran, and the control from the mapping's first key. It sets `intended_repetitions` to `k`, and states the stimulus held
@@ -93,16 +93,18 @@ design = inspected.bundle.design
 print(design.shape, [arm.moved for arm in design.contrasts])  # one_factor_at_a_time [{'candidate': 'v2'}]
 ```
 
-**On your own host, declare it when you create the campaign.** Call `create_campaign` (the `campaign_create`
-action takes the same fields). Pass `declared_design`, and name the control by one of its runs with
-`control_from_run_id`. The engine resolves that run's variant key, so you never type a digest. A campaign you
-create without a design is one you say is exploratory (`exploratory=True`); creating one that says neither is
-refused, so no campaign is exploratory by accident. To change the control later, call `update_campaign` with
-`control_from_run_id` (the `campaign_update` action), or `set_campaign_control`. A design that names an axis your
-host cannot vary, or a bar looser than the registered one, is refused when the campaign is created. So create it
-before you launch, with no runs, then add each run with `add_runs_to_campaign` (the `campaign_runs_add` action)
-and name the control from one of them; a run can be
-named as the control before it has any results. This declares the runs above by hand:
+**On your own host, declare it when you create the campaign.** A campaign asks **one question** of its arms, and
+measures it on one or more **aspects**: an aspect is one template, the runs gathered on it, the margin a candidate
+may fall below the control by there, and the design those runs were gathered under. A decision that rests on two
+behaviours (routing and the replies, say) is one campaign of two aspects, not two campaigns. Call `create_campaign`
+(the `campaign_create` action takes the same fields) with the `question`, the `arms` (name the control by one of
+its runs with `from_run_ids`, so you never type a digest; a candidate nobody names is read off the runs) and the
+`aspects`, each with its runs, a `margin` and a `design`. A campaign you create without a design is one you say is
+exploratory (`exploratory=True`); creating one that says neither is refused, so no campaign is exploratory by
+accident. A design that names an axis your host cannot vary, or a bar looser than the registered one, is refused
+when the campaign is created. Create it before you launch, with no runs, then add each run to its aspect with
+`add_runs_to_campaign` (the `campaign_runs_add` action; a run goes to the aspect of the template it ran, or the one
+you name). This declares the runs above by hand:
 
 ```python
 from threetears.evals.analysis import create_campaign
@@ -114,42 +116,57 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
     create_campaign,
     comparison.host.storage,
     {
-        "name": "triage v2", "subject_id": "triage", "behavior": "routing", "run_ids": list(runs.values()),
-        "declared_design": {
-            "axes": [{"axis_id": "candidate", "values": levels}],
-            "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
-            "intended_repetitions": 3,
-            "questions": [{"text": "Does v2 route more tickets right?", "merit_axes": ["quality"]}],
-        },
+        "name": "triage v2", "subject_id": "triage", "behavior": "routing",
+        "question": "Does v2 route more tickets right?",
+        "arms": [{"label": "v1", "role": "control", "from_run_ids": [runs["v1"]]}],
+        "aspects": [
+            {
+                "label": "routing", "run_ids": list(runs.values()), "margin": 5.0,
+                "design": {
+                    "axes": [{"axis_id": "candidate", "values": levels}],
+                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                    "intended_repetitions": 3,
+                    "merit_axes": ["quality"],
+                },
+            }
+        ],
     },
-    control_from_run_id=runs["v1"], scope_id="triage", created_by="you", profile=comparison.host.profile,
+    scope_id="triage", created_by="you", profile=comparison.host.profile,
 )
 ```
 
-| `declared_design` field | What it does | Needed for |
+| Field | What it does | Needed for |
 |---|---|---|
-| `axes` (required) | The levers and levels you meant to compare. Each declared axis gets a row in `bundle.coverage`, `unswept` if it held one level; compare the row's `levels` with yours. | every question |
-| `held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every question |
-| `control` | The reference variant, set from `control_from_run_id` (on create or update) or `set_campaign_control`. With none, the shape is `undesignated` and nothing is tested against a control. | A/B, single changes, grid |
-| `intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
-| `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). A question's `decision` is the rule that settles keep or switch, as typed clauses (`RateDrop`, `CostLower`), never words in its text ([declaring one](adopting-a-host.md#declaring-what-a-campaign-decides)). | a confirmatory answer; a decision |
-| `bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
-| `crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
+| `question` | The one thing the campaign asks of its arms, in your words: what would make a candidate the one to adopt. Empty, it asks nothing, and every reading is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory) though a design is declared. | a confirmatory answer |
+| `arms` | `{label, role, from_run_ids}` each, the control first. The server reads each arm's variant key from its runs and refuses runs of one arm that carry two keys, naming each. The arms decide the [kind](concepts.md#campaign-kind): one arm is a measurement, several with no control a choice (every pair read both ways), a control and candidates a change. | A/B, single changes, grid |
+| `aspects[].margin` | How far, in points of the pass rate, a candidate may fall below the control on this aspect before it is shown worse. A declared aspect states one when the campaign asks a question and names a control; with no control a margin is refused, and the remedy is an absolute bar. | a change |
+| `aspects[].design.axes` (required) | The levers and levels you meant to compare. Each declared axis gets a row in `bundle.coverage`, `unswept` if it held one level; compare the row's `levels` with yours. | every declared aspect |
+| `aspects[].design.held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every declared aspect |
+| `aspects[].design.merit_axes` | Which axes the question asks about on this aspect: they set the aspect's Holm family. Omitted, the question asks about every axis. | a scoped question |
+| `aspects[].design.intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
+| `aspects[].design.bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
+| `aspects[].design.crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
+| `floors` | Lines a candidate is warned for crossing, each `{aspect, clause}` on a declared aspect: `{kind: "rate_drop", max_points, reading?}` or `{kind: "cost_lower"}`, typed, never words. A floor reads a candidate against the control, so a campaign naming none is refused one. A broken floor opens the page; no floor decides anything ([declaring them](adopting-a-host.md#declaring-what-a-campaign-asks)). | a warning nobody can miss |
+
+**A question counts only if it was asked before the evidence.** Each aspect keeps the time its question was asked
+(`asked_at`), and a reading confirms only what was asked before that aspect's first run; a control named after the aspect's
+first result (`set_campaign_control`) makes it post hoc too. So the declaration is frozen once any aspect holds a run:
+`update_campaign` (the `campaign_update` action) refuses `question`, `aspects` and `floors` in any form from then
+on, and names a control only while none is. To amend a question after the runs, create a new campaign that adopts
+the aspects it keeps (`aspects_from`): each adopted aspect keeps its own `asked_at`, so its readings stay as
+confirmatory as they were, and whatever the new campaign adds (a margin, a floor, an arm, the question's new
+words) is dated now and marked on the page as declared after the runs.
 
 **Declare a design when you know the question; explore when you do not.** Either is a choice you state when the
-campaign is created: `declared_design`, or `exploratory=True`. Declare
+campaign is created: a `design` on an aspect, or `exploratory=True`. Declare
 one when the question is settled before the runs: you know which lever you are comparing, against which
-control, and what answer would change what you do. Only a declared question can confirm anything, so a
+control, and what answer would change what you do. Only a question asked in time can confirm anything, so a
 decision you will act on needs one. Leave it out when you are learning how to run evals, or testing an
 intuition you cannot yet put as a question. A campaign with no design is **exploratory**: its report and its
 bundle say so once, at the top, and its readings confirm nothing. Its analysis reads the design inferred from
 the runs, and never calls that design declared. Do not declare a design you do not have just to get past this:
 a made-up question makes leads read as answers, which is worse than declaring none. When an exploratory
-campaign finds something worth knowing, declare a design for the campaign that tests it. A question that settles
-while a campaign is still running is declared on that campaign with `update_campaign` (the `campaign_update`
-action), and the campaign is declared from then on: whether a campaign is exploratory is read off whether it
-declares a design, never stored beside it. Withdrawing a declaration is said the same way, with
-`declared_design` set to None and `exploratory=True`. A design that names
+campaign finds something worth knowing, declare the campaign that tests it, before its runs. A design that names
 an axis your host cannot vary is refused naming `declarable_axes()`, which lists the levers and open families
 your host accepts.
 
@@ -289,25 +306,41 @@ unchanged incumbent measured on as many cases a one-sided test at the interval's
 cases most verdicts are undecided, and that is the finding: the bank cannot tell.
 *Evidence:* seeded simulation (`tests/test_sim_bars_and_change.py`), σ = 1, one observation per case, no margin, 2026-10: the mean rule missed an unchanged incumbent 49–50% of the time at n = 3, 6 and 15. The three-way rule missed it 1.3%, 2.0% and 2.2% of the time and cleared it 21%, 19% and 21%; a candidate 1.6σ worse was cleared 1.6%, 0.05% and 0% of the time and missed 15%, 60% and 98%.
 
-### A switch reads the bounded interval
+### A floor is held only on the bounded interval
 
 **"No worse by more than the margin" is a claim of safety, so it reads an interval that holds its error rate on
-coarse values.** A decision rule's `switch` on a rate (`RateDrop(max_points=10)`: no pass rate drops by more than 10
-points) reads each rate's bounded interval (`bounded_interval` on the contrast, the bounded test's on the 0-1 range at
-the family's level), as a guardrail's `held` does. The t interval the Contrasts table prints overstates its confidence on a pass rate's few
-coarse per-case shares: a candidate that breaks one case in ten leaves most small samples agreeing with the control.
-The price is honest: on seven cases nothing short of a sweep settles a 10-point switch, and only keep can.
+coarse values.** A rate floor (`RateDrop(max_points=10)`: no pass rate drops by more than 10 points) reads `held`
+only where each rate's bounded interval (the bounded test's, on the 0-1 range, at the nominal 95% and uncorrected)
+keeps the drop within the margin, as a guardrail's `held` does. The t interval the Contrasts table prints overstates
+its confidence on a pass rate's few coarse per-case shares: a candidate that breaks one case in ten leaves most small
+samples agreeing with the control. The price is honest: on seven cases nothing short of a sweep shows a 10-point
+floor held, and an unclear floor's `To show the floors hold` table says how many cases would.
 *Evidence:* simulated at a true drop of exactly the 10-point margin, 3 repeats per case, 20,000 replicates per row,
-2026-10; how often the t interval read switch, against the one tail it states (`tests/test_simulated_switch.py`
+2026-10; how often the t interval read held, against the one tail it states (`tests/test_simulated_switch.py`
 checks the 12-case row at 1,000 replicates: about 14% on the t interval, none on the bounded):
 
-| Family size | Shape | Cases | Switch read on the t interval | Its tail |
-|---|---|---|---|---|
-| 1 | control passes 0.95; the candidate breaks 1 case in 10 | 7 | 12.1% | 2.5% |
-| 1 | the same | 12 | 13.9% | 2.5% |
-| 1 | every trial passes; the candidate drops 0.4 on 1 case in 4 | 12 to 30 | 7.8 to 11.9% | 2.5% |
-| 10 | control passes 0.95; the candidate breaks 1 case in 10 | 12 | 4.5% | 0.25% |
-| 10 | the same | 20 to 30 | 2.7 to 3.8% | 0.25% |
+| Shape | Cases | Held read on the t interval | Its tail |
+|---|---|---|---|
+| control passes 0.95; the candidate breaks 1 case in 10 | 7 | 12.1% | 2.5% |
+| the same | 12 | 13.9% | 2.5% |
+| every trial passes; the candidate drops 0.4 on 1 case in 4 | 12 to 30 | 7.8 to 11.9% | 2.5% |
+
+### One family per candidate
+
+**A campaign over several aspects tests each candidate once per aspect, so it corrects across them.** Each
+candidate's rows, one per aspect, are one family at α = 0.05, with gains (the change against zero) and drops (the
+change against the aspect's margin) corrected apart by Holm's step-down. Each direction's claim is one-sided, read off
+a two-sided bounded interval, so a candidate's gains and its drops are each shown wrongly at most 2.5% of the time.
+A choice's pairs have no direction, so every pair on every aspect is one family.
+
+- **A reading and its interval never disagree.** A row's interval is read at the level its step tested it at, so a
+  row is shown exactly where its interval clears.
+- **One aspect reads as a floor reads.** A family of one is read at 95%, the floor's level, on the floor's bounded
+  interval, so a one-aspect campaign's floor and its reading on the same margin are one computation.
+- **There is no correction across candidates.** Each candidate is its own decision; with several, one of them is
+  shown better or worse by chance more often than 5%, and the page says what its correction covers.
+- **Floors are not corrected.** A floor warns, and a warning that fires less often for every floor added is no
+  warning, so each reads at its nominal 95%.
 
 ## Order and time
 

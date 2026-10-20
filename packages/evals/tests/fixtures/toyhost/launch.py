@@ -19,7 +19,6 @@ the launch host's own, built over the host's storage, so a run's status and its 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
 
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import DEFAULT_JOB_LEASE_S
@@ -49,7 +48,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SUBJECT,
 )
 from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host, with_registry
 from packages.evals.tests.fixtures.toyhost.kind import (
     TOY_DOCUMENTS,
     TOY_EXTRACTOR_KIND,
@@ -246,12 +245,10 @@ def toyhost_launch_host(
             apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
         )
     }
-    # Admitting a template reads the same registry the launch does, for the fields each kind never acts on.
-    if eval_host.template_checks is not None:
-        eval_host = replace(eval_host, template_checks=replace(eval_host.template_checks, kinds=kinds))
+    # The registry is stated once, on the template checks: admitting a template and launching one both read it there.
+    eval_host = with_registry(eval_host, kinds)
     launch_host = LaunchHost(
         eval_host=eval_host,
-        kinds=kinds,
         # Every arm is priced by the engine before its launcher runs; the toy prices from its rate card.
         launch_pricer=price_toyhost_arm,
         settings=settings,

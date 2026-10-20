@@ -12,11 +12,18 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.kernel import EvalCampaign, Question
+from threetears.evals.kernel import CampaignArm
+from threetears.evals.kernel.metrics import MeritAxis
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema.models import RubricAxis, RubricScale
-from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_aspect_campaign,
+    make_eval_result,
+    make_eval_run,
+    minimal_aspect_design,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -25,6 +32,7 @@ __all__ = [
     "CAPABILITY",
     "CONTRAST",
     "CONTROL",
+    "QUALITY_AXES",
     "QUALITY_QUESTION",
     "two_arm_bundle",
 ]
@@ -34,8 +42,9 @@ CONTRAST = "contrast-model"
 CAPABILITY = "task.correct"
 BOUNDARY = "boundary.correct"
 
-#: A question asking whether the contrast does the job better: it names the quality axis.
-QUALITY_QUESTION = Question(id="q-better", text="does the contrast do the job better?", merit_axes=["quality"])
+#: A question asking whether the contrast does the job better, and the axis it names: quality.
+QUALITY_QUESTION = "does the contrast do the job better?"
+QUALITY_AXES: tuple[MeritAxis, ...] = ("quality",)
 
 #: Per dimension: its name, axis and each arm's per-case scores (control, contrast).
 Scored = tuple[str, RubricAxis | None, tuple[Sequence[int], Sequence[int]]]
@@ -45,7 +54,8 @@ def two_arm_bundle(
     dimensions: Sequence[Scored],
     *,
     scale: RubricScale = "pass_fail",
-    questions: Sequence[Question] = (QUALITY_QUESTION,),
+    question: str = QUALITY_QUESTION,
+    merit_axes: Sequence[MeritAxis] = QUALITY_AXES,
     control: bool = True,
     host_measures: tuple[Sequence[dict[str, float]], Sequence[dict[str, float]]] | None = None,
     profile: HostProfile | None = None,
@@ -57,8 +67,10 @@ def two_arm_bundle(
     :ptype dimensions: Sequence[Scored]
     :param scale: The scale every dimension is judged on.
     :ptype scale: RubricScale
-    :param questions: The campaign's live questions; empty declares none.
-    :ptype questions: Sequence[Question]
+    :param question: The campaign's question, asked before its runs; empty asks none.
+    :ptype question: str
+    :param merit_axes: The axes the question names; empty for an unscoped one. Read only with a question.
+    :ptype merit_axes: Sequence[MeritAxis]
     :param control: Whether the control arm is declared the control.
     :ptype control: bool
     :param host_measures: Each arm's per-case host measures, control first, when the test reads a measure.
@@ -91,18 +103,19 @@ def two_arm_bundle(
             )
             for case in range(n_cases)
         ]
-    declaration = minimal_declaration(control=fixture_variant_key(CONTROL) if control else None).model_copy(
-        update={"questions": list(questions)}
-    )
-    campaign = EvalCampaign(
+    campaign = make_aspect_campaign(
+        label="b",
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=list(merit_axes) if question else None),
+        question=question,
+        asked_at=min(run.created_at for run in runs) if question else None,
+        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(CONTROL))
+        if control
+        else None,
         scope_id=runs[0].scope_id,
         name="guardrails",
         subject_id=runs[0].subject_snapshot.subject_id,
         subject_kind="s",
-        behavior="b",
-        run_ids=[run.id for run in runs],
-        declared_design=declaration,
-        created_by="test:fixture",
     )
     return assemble_context_bundle(
         campaign, storage=ToyhostStorage(runs, results), profile=profile if profile is not None else toyhost_profile()

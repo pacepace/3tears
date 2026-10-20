@@ -103,12 +103,16 @@ as `k=v` pairs, read against another control with `result.against()`.
 
 What the recorded run said: nothing separated v2 from v1, and it exits 4, its last line saying why in the report's words
 (`exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
-screen reads
+screen opens on the guardrail's warning and reads v2 against v1 in one row
 
 ```text
-# invoices: does v2 do better than v1?
-v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
-**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
+**Not yet shown safe on classify: v2 on no invented total.**
+
+# invoices
+
+| Aspect | Arm | Cases | ▸ v1 | Arm passed | Change (pts) | Interval (pts) | Margin (pts) | Reading |
+|---|---|---|---|---|---|---|---|---|
+| classify | v2 | 30 | 73 of 90 | 88 of 90 | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
 ```
 
 with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: not
@@ -189,8 +193,12 @@ These are documented in the guides:
 
 - Judge reliability and evidence tiers:
   [Reading reports](../docs/reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
-- Declaring a campaign's design (axes, question, bar), and when exploring without one is the right call:
-  [Measuring soundly](../docs/measuring-soundly.md#start-from-the-question).
+- Declaring a campaign (one question, its arms, the aspects it is measured on and the floors that warn), and when
+  exploring without one is the right call:
+  [Measuring soundly](../docs/measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects).
+- A campaign over several aspects, its one page and the person's recorded call:
+  [Reading reports](../docs/reading-reports.md#the-campaigns-first-screen) and
+  [Recording the call](../docs/adopting-a-host.md#recording-the-call).
 - Budgets and spend caps: [Cost and budgets](../docs/cost-and-budgets.md).
 - Conversations with a simulated user, generating cases, storage, and writing your own host:
   [Adopting the engine](../docs/adopting-a-host.md).

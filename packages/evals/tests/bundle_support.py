@@ -14,9 +14,8 @@ from collections.abc import Sequence
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.schema import EvalResult
-from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.host import HostProfile
-from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.factories import make_eval_run, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 
 __all__ = ["one_batch_bundle"]
@@ -33,7 +32,7 @@ def one_batch_bundle(results: Sequence[EvalResult], *, profile: HostProfile) -> 
     :rtype: AnalysisContextBundle
     """
     run = make_eval_run(status="completed")
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="one batch",
         subject_id=run.subject_snapshot.subject_id,

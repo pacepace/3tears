@@ -64,7 +64,6 @@ from threetears.evals.kernel import (
     CellCassettes,
     CellSink,
     CellSpanWindow,
-    CostCapReached,
     EvalStorage,
     MetricDescriptor,
     VariantConfig,
@@ -95,6 +94,7 @@ from threetears.evals.kernel.host import (
     MeasureRegistry,
     Sweepable,
     SweepableRegistry,
+    TemplateChecks,
     WorldRegistry,
     default_cell_timeout,
 )
@@ -884,11 +884,8 @@ class CallableKind:
         :rtype: CandidateOutput
         """
         case = test_case.host_payload[_CASE_KEY]
-        try:
-            # Unpriceable, so held to the cap by asking (``CellSink.reserve`` with no ceiling holds nothing).
-            held = sink.reserve("candidate", None)
-        except CostCapReached:
-            return CandidateOutput()
+        # Unpriceable: the handle that lands its cost when the answer returns.
+        held = sink.reserve("candidate", None)
         if instance.tools is not None:
             instance.tools.bind_case(case)
         try:
@@ -1390,6 +1387,10 @@ class _WiredArm:
         return self.arm if self.arm is not None else self.model
 
 
+def _admit_nothing_to_check(_checked: object) -> None:
+    """A template check of a host with nothing to check: it admits."""
+
+
 def _launch_host(
     host: EvalHost,
     arms: Sequence[_WiredArm],
@@ -1494,8 +1495,13 @@ def _launch_host(
     }
     if judge is None:
         ignored.add("rubric")
-    launch_host = LaunchHost(
-        eval_host=host,
+    # The launch registry is the template checks' ``kinds``. A one-call run admits no template through the engine, so
+    # each check admits: a decision stated here rather than a default.
+    checks = TemplateChecks(
+        require_known_tools_allowed=_admit_nothing_to_check,
+        refuse_undeclared_world_seed=_admit_nothing_to_check,
+        refuse_undeliverable_template=_admit_nothing_to_check,
+        refuse_inadmissible_template_case=_admit_nothing_to_check,
         kinds={
             kind_name: LaunchableKind(
                 launch=launch,
@@ -1504,6 +1510,9 @@ def _launch_host(
                 ignored_template_fields=frozenset(ignored),
             )
         },
+    )
+    launch_host = LaunchHost(
+        eval_host=replace(host, template_checks=checks),
         settings=partial(_launch_settings, len(arms), max_cost_usd),
         job_timeout_factory=default_job_timeout,
         world_placements=place if declared is not None else None,

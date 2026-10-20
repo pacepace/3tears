@@ -21,20 +21,22 @@ comparison still reads `improved`, `regressed` or `not_separated`; its equivalen
 "declare value_range on this measure to test equivalence", and a report says so once per measure. Fix, on the
 host's side: declare the measure's range.
 
-### On a few cases only keep can settle a rate clause (accepted limit)
+### On a few cases a rate floor reads unclear (accepted limit)
 
-Decided with the fix that made a switch read the bounded interval (`.30`; no issue filed yet).
+Decided with the fix that made a rate clause read the bounded interval (`.30`; no issue filed yet), and kept when
+decision rules became floors (the campaign rewrite, durable v16).
 
-A declared rule's rate clause settles `switch` only on the bounded interval, for the overall pass rate and each
-check's alike, and that interval holds its error rate at every n
-([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases it is wide. Even when both
-arms pass every trial, it allows a drop of 46 points at 7 cases in a family of one, 63 in a family of ten, and 13
-at 30 cases: no valid interval shows a rare large drop is absent from a few agreeing cases. So at 7 cases a 10-point
-clause settles `switch` only on a sweep (the candidate passes every trial the control fails), and otherwise reads
-`unsettled`, saying how far the interval reaches. `keep` still settles on what the run observed at any count.
-Discodon's G2 re-ask at 7 cases should expect `unsettled` on its rate clause unless the candidate's pass rate drops
-past the margin. Fix, on the host's side: more cases, or a wider margin the decision can live with. The t interval
-would settle sooner, but at the margin it said `switch` up to 14% of the time against the 2.5% it states.
+A rate floor reads `held` and `broken` only on the bounded interval, for the overall pass rate and each check's
+alike, at the nominal 95%, and that interval holds its error rate at every n
+([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)). On a handful of cases it is wide. Even
+when both arms pass every trial, it allows a drop of 46 points at 7 cases and 13 at 30 cases: no valid interval shows
+a rare large drop is absent from a few agreeing cases. So at 7 cases a 10-point floor reads `held` only on a sweep
+(the candidate passes every trial the control fails), and `broken` only on a drop far past its margin; otherwise it
+reads `unclear`, saying how far the interval reaches, and its `To show the floors hold` row says how many cases
+would settle it. Discodon's G2 re-ask at 7 cases should expect `unclear` on its rate floor unless the candidate
+collapses. A floor only warns, so an unclear one blocks nothing; it is the reader who is left without the warning's
+answer. Fix, on the host's side: more cases, or a wider margin the decision can live with. The t interval would
+settle sooner, but at the margin it read `held` up to 14% of the time against the 2.5% it states.
 
 ### A guardrail is held only on a declared range (accepted limit)
 
@@ -70,12 +72,11 @@ this: 19 of 24 results were concurrent, and the only trace was a memo finding ci
 
 ### The analysis writer may propose a next step naming no reading
 
-No issue filed yet. A memo's next step, and a recommendation's revisit-when, are the writer's words held to the
+No issue filed yet. A memo's next step is the writer's words held to the
 page's style, and nothing holds them to a reading: G2's "revisit when at least 20 independent cases confirm whether
 the candidate meets the queue checks and yields lower cost" said nothing about latency, the reading its own finding
-had just said was withheld. The generator should refuse a next step or a revisit-when that names no reading the
-surface holds, as it refuses a finding whose evidence names a cell it does not hold. Not built: the next-step and
-revisit-when models carry no `evidence`, so there is nothing to resolve yet.
+had just said was withheld. The generator should refuse a next step that names no reading the
+surface holds, as it refuses a finding whose evidence names a cell it does not hold. Not built: the next-step model carries no `evidence`, so there is nothing to resolve yet.
 
 ## Judging
 

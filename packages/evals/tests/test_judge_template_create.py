@@ -16,7 +16,7 @@ from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standa
 from threetears.evals.kernel import JUDGE_KIND, JUDGE_KIND_CONTRACT, default_job_timeout
 from threetears.evals.ops import OpsHost, templates_list
 from threetears.evals.run import LaunchHost, launchable_judge_kind
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host, with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import ops_fixture
@@ -35,8 +35,7 @@ def _judging_host() -> OpsHost:
     )
     holder: list[LaunchHost] = []
     launch = LaunchHost(
-        eval_host=eval_host,
-        kinds={JUDGE_KIND: launchable_judge_kind(lambda: holder[0])},
+        eval_host=with_registry(eval_host, {JUDGE_KIND: launchable_judge_kind(lambda: holder[0])}),
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: {},

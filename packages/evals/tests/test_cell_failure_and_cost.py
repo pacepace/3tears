@@ -34,7 +34,6 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
     CandidateTelemetry,
     CellSink,
-    CostCapReached,
     CellSpanWindow,
     VariantConfig,
 )
@@ -60,13 +59,12 @@ from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.lenses.cost_estimate import compute_estimate_cost
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
-from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, grade_goal_checks
 from packages.evals.tests.job_support import InMemoryRunStore, settled
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from packages.evals.tests.scripted_table import ScriptedTable, actor
 from threetears.evals.schema.models import ConversationSpec, ConversationStopCause
 from threetears.evals.run import drive_conversation
@@ -783,7 +781,7 @@ async def test_an_uncapped_run_carries_on_through_unpriced_cells_and_counts_them
     assert cap.unpriced_results == 3
 
 
-# --- a conversation's simulator spend, against the run's cost cap mid-cell ---------------------------
+# --- a conversation's simulator spend, against the run's cost cap between cells ---------------------
 
 #: What each scripted simulator call costs here.
 _SIMULATOR_CALL_USD = 0.001
@@ -792,8 +790,8 @@ _SIMULATOR_CALL_USD = 0.001
 class _ConversingKind(ToyExtractorKind):
     """A toy extractor that holds a one-actor conversation first, its simulator calls priced at a tenth of a cent.
 
-    The conversation runs through the engine's own loop with the cell's own sink, so the run's cap is
-    asked exactly as it would be for a product's conversing kind; its spend lands on the simulator row.
+    The conversation runs through the engine's own loop with the cell's own sink, as a product's conversing kind
+    would run it; its spend lands on the simulator row, and the run's cap is read between cells.
     """
 
     def __init__(
@@ -843,41 +841,40 @@ def _no_goal_checks() -> EvalTemplate:
     return toyhost_template().model_copy(update={"goal_state_checks": []})
 
 
-async def test_a_conversation_stops_at_the_runs_cap_mid_cell_and_the_run_stops_after_it():
-    """Two and a half calls' worth of cap: the third call crosses it, so no fourth call — nor any answer — is bought."""
+async def test_a_conversation_runs_whole_past_the_runs_cap_and_the_run_stops_before_its_next_cell():
+    """Two and a half calls' worth of cap: the first cell crosses it and is not cut short; no second cell starts."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
     drive, go = off_loop(_drive, _conversing, n_cases=3, cap=cap, template=_no_goal_checks())
 
-    with pytest.raises(BudgetStoppedError, match="cost cap exceeded") as stopped:
+    with pytest.raises(BudgetStoppedError, match="stopped by its cost cap") as stopped:
         await go()
 
-    assert stopped.value.completed == 1, "no cell was launched after the one the cap cut short"
-    assert stopped.value.breach.accumulated_usd == pytest.approx(3 * _SIMULATOR_CALL_USD)
+    assert stopped.value.completed == 1, "no cell was launched after the one that reached the cap"
+    (stop,) = stopped.value.stops
+    assert stop.currency == "cost_usd"
+    assert stop.landed_at_stop == pytest.approx(5 * _SIMULATOR_CALL_USD)
+    assert stop.landed_final == pytest.approx(5 * _SIMULATOR_CALL_USD)
+    assert (stop.cells_in_flight, stop.cells_not_started) == (0, 2)
     (result,) = drive.results
-    assert result.stop_cause is ConversationStopCause.BUDGET_STOPPED
-    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE, "a conversation the cap cut short is not scored"
-    assert "cost cap was reached inside the cell" in (result.runner_error or "")
+    assert result.stop_cause is ConversationStopCause.MAX_TURNS, "the conversation ran to its own end"
+    assert classify_result(result) is ResultOutcome.OK, "a cell is measured whole or never begun"
+    assert result.runner_error is None
     (row,) = [row for row in result.usage if row.role == "simulator"]
-    assert row.call_count == 3
-    assert row.cost_usd == pytest.approx(3 * _SIMULATOR_CALL_USD)
+    assert row.call_count == 5
+    assert row.cost_usd == pytest.approx(5 * _SIMULATOR_CALL_USD)
 
 
-async def test_the_cap_reached_in_the_last_cell_still_ends_the_run_budget_stopped():
-    """With no next cell, no gate between cells would ever look: the stop is raised after the cut-short cell itself."""
+async def test_the_cap_reached_in_the_last_cell_ends_the_run_completed():
+    """No cell is left to keep from starting, so nothing is stopped: the run is whole, past its cap."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
-    drive, go = off_loop(_drive, _conversing, n_cases=1, cap=cap, template=_no_goal_checks())
+    drive = await _driven(_conversing, n_cases=1, cap=cap, template=_no_goal_checks())
 
-    with pytest.raises(BudgetStoppedError):
-        await go()
-    assert len(drive.results) == 1
+    (result,) = drive.results
+    assert classify_result(result) is ResultOutcome.OK
 
 
-async def test_the_cap_reached_before_the_first_answer_under_a_perturbation_schedule_still_ends_the_run_budget_stopped():
-    """A cell the cap stopped before turn 1 announced no turn, truthfully — the run stops ``budget_stopped``, not failed.
-
-    Half a call's worth of cap: the first utterance crosses it, so the candidate never answers and the kind never
-    reaches a turn to announce.
-    """
+async def test_a_cell_under_a_perturbation_schedule_reaches_its_first_turn_whatever_the_cap_holds():
+    """Half a call's worth of cap: the first utterance crosses it, and the candidate still answers and is perturbed."""
     template = _no_goal_checks()
     template = template.model_copy(
         update={"world_seed": template.world_seed.model_copy(update={"ambient_perturbation_turns": [1]})}
@@ -889,49 +886,14 @@ async def test_the_cap_reached_before_the_first_answer_under_a_perturbation_sche
 
     drive, go = off_loop(_drive, announcing, n_cases=2, cap=cap, template=template)
 
-    with pytest.raises(BudgetStoppedError, match="cost cap exceeded") as stopped:
+    with pytest.raises(BudgetStoppedError, match="stopped by its cost cap") as stopped:
         await go()
 
     assert stopped.value.completed == 1
     (result,) = drive.results
-    assert result.stop_cause is ConversationStopCause.BUDGET_STOPPED
-    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE
-    assert not any(event.kind == "ambient" for event in result.world_events or []), "no turn was reached"
-
-
-class _AsksTheCapFirstKind(ToyExtractorKind):
-    """A kind that holds no conversation and reserves its one paid turn at $1, stopping when the cap refuses it.
-
-    It reports no stop cause — it does not converse — so only the sink's breach says the cap stopped it.
-    """
-
-    async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
-        try:
-            held = sink.reserve("candidate", 1.0)
-        except CostCapReached:
-            return CandidateOutput()
-        held.release()
-        await instance.world_session.at_turn(1)
-        return await super().invoke(instance, test_case, sink)
-
-
-async def test_a_kind_the_cap_stopped_before_its_turn_reports_no_stop_cause_and_still_ends_the_run_budget_stopped():
-    template = _no_goal_checks()
-    template = template.model_copy(
-        update={"world_seed": template.world_seed.model_copy(update={"ambient_perturbation_turns": [1]})}
-    )
-    cap = EvalRunCostCap("toy-run", 0.5, enabled=True)
-
-    def asks_first(world: WorldRegistry) -> ToyExtractorKind:
-        return _AsksTheCapFirstKind(client=ScriptedExtractionClient(), world=world, goal_checks=())
-
-    drive, go = off_loop(_drive, asks_first, n_cases=1, cap=cap, template=template)
-
-    with pytest.raises(BudgetStoppedError):
-        await go()
-    (result,) = drive.results
-    assert result.stop_cause is None
-    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE
+    assert result.stop_cause is ConversationStopCause.MAX_TURNS
+    assert classify_result(result) is ResultOutcome.OK
+    assert [event.turn for event in result.world_events or [] if event.kind == "ambient"] == [1]
 
 
 async def test_an_announcing_conversation_under_a_schedule_is_perturbed_before_its_first_answer():
@@ -951,7 +913,7 @@ async def test_an_announcing_conversation_under_a_schedule_is_perturbed_before_i
     assert [event.turn for event in result.world_events or [] if event.kind == "ambient"] == [1]
 
 
-async def test_an_unpriced_simulator_call_stops_a_capped_conversation_at_once():
+async def test_an_unpriced_simulator_call_does_not_cut_a_capped_conversation_short_and_stops_the_run_after_it():
     kinds: list[_ConversingKind] = []
 
     def unpriced(world: WorldRegistry) -> ToyExtractorKind:
@@ -960,14 +922,16 @@ async def test_an_unpriced_simulator_call_stops_a_capped_conversation_at_once():
         return kind
 
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
-    drive, go = off_loop(_drive, unpriced, n_cases=1, cap=cap, template=_no_goal_checks())
+    drive, go = off_loop(_drive, unpriced, n_cases=2, cap=cap, template=_no_goal_checks())
 
-    with pytest.raises(BudgetStoppedError, match="could not be priced"):
+    with pytest.raises(BudgetStoppedError, match="could not be priced") as stopped:
         await go()
     (table,) = kinds[0].tables
-    assert table.utterance_calls == ["a"], "the first unpriced call is the last one made under an enforcing cap"
+    assert table.utterance_calls == ["a"] * 5, "the conversation ran to its turn budget"
     (result,) = drive.results
-    assert result.stop_cause is ConversationStopCause.BUDGET_STOPPED
+    assert result.stop_cause is ConversationStopCause.MAX_TURNS
+    (stop,) = stopped.value.stops
+    assert (stop.unpriced_results, stop.cells_not_started) == (1, 1)
 
 
 async def test_an_uncapped_conversation_runs_to_its_turn_budget():
@@ -1038,7 +1002,7 @@ def test_the_analysis_bundle_counts_unpriced_results_and_never_reads_their_rows_
         )
         for i in range(2)
     ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="c",
         subject_id=run.subject_snapshot.subject_id,
@@ -1076,7 +1040,7 @@ def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_co
         )
         for i in range(3)
     ]
-    campaign = EvalCampaign(
+    campaign = make_campaign(
         scope_id=run.scope_id,
         name="c",
         subject_id=run.subject_snapshot.subject_id,
@@ -1099,3 +1063,56 @@ def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_co
     (board,) = bundle.scoreboard
     assert board.reply_cost_usd == pytest.approx(0.02), "what the model costs a reply, the judge's spend apart"
     assert board.test_cost_usd == pytest.approx(0.21), "what running the test cost, every role"
+
+
+def test_a_judge_kind_campaign_states_each_arms_cost_per_reply_from_the_judge_under_tests_spend():
+    """#828: a judge campaign's subject is the judge, metered under the judge role with no candidate row, so its
+    spend is what the arm costs a reply. The scoreboard read it as apparatus and printed a dash on every arm while
+    the bundle handed the writer the same spend as ``cost_usd``; it now prints each arm's cost per 1,000 replies."""
+    from threetears.evals.analysis.report import TableBlock, build_code_only_report
+    from threetears.evals.kernel.judge_cases import JUDGE_KIND, JUDGE_KIND_ROLE
+    from threetears.evals.schema.models import RoleUsage as Row
+
+    spend = {"judge-small": 0.00017, "judge-large": 0.00067}
+    runs = {
+        model: make_eval_run(status="completed", candidate_kind=JUDGE_KIND, candidate_model=model) for model in spend
+    }
+    results = {
+        run.id: [
+            make_eval_result(
+                eval_run_id=run.id,
+                test_case_id=f"tc-{i}",
+                model=model,
+                candidate_kind=JUDGE_KIND,
+                rubric_scores=[],
+                cost_usd=spend[model],
+                usage=[Row(role=JUDGE_KIND_ROLE, model=model, cost_usd=spend[model], price_source="p")],
+            )
+            for i in range(5)
+        ]
+        for model, run in runs.items()
+    }
+    (one, *_) = runs.values()
+    campaign = make_campaign(
+        scope_id=one.scope_id,
+        name="c",
+        subject_id=one.subject_snapshot.subject_id,
+        subject_kind="s",
+        behavior="b",
+        run_ids=[run.id for run in runs.values()],
+        created_by="test:fixture",
+    )
+
+    bundle = assemble_context_bundle(
+        campaign, storage=ToyhostStorage(list(runs.values()), results), profile=toyhost_profile()
+    )
+
+    by_model = {board.variant_key: board.reply_cost_usd for board in bundle.scoreboard}
+    assert by_model == {results[run.id][0].variant_key: pytest.approx(spend[model]) for model, run in runs.items()}, (
+        "each arm's cost per reply is the judge under test's spend, as the bundle's cost_usd states it"
+    )
+    report = build_code_only_report(bundle, assembled_at="2026-10-17T00:00:00+00:00")
+    (scoreboard,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "scoreboard"]
+    (cost,) = [column for column in scoreboard.columns if column.key == "cost"]
+    assert cost.header == "Cost per 1,000 replies"
+    assert sorted(row["cost"] for row in scoreboard.values()) == [pytest.approx(0.17), pytest.approx(0.67)]

@@ -43,7 +43,6 @@ threetears.evals.gen.propose_draft
 threetears.evals.kernel.ACCURACY_MEASURE
 threetears.evals.kernel.ActionSeam
 threetears.evals.kernel.AdmittedCall
-threetears.evals.kernel.CampaignDesign
 threetears.evals.kernel.CandidateOutput
 threetears.evals.kernel.CandidatePreparationFailed
 threetears.evals.kernel.CandidateTelemetry
@@ -82,7 +81,6 @@ threetears.evals.kernel.OutOfRunBudget
 threetears.evals.kernel.PlannedCall
 threetears.evals.kernel.PromptDrift
 threetears.evals.kernel.ProviderRefusedError
-threetears.evals.kernel.Question
 threetears.evals.kernel.Recordable
 threetears.evals.kernel.ReplayedDelivery
 threetears.evals.kernel.RoleUsageLedger
@@ -304,6 +302,8 @@ threetears.evals.schema.VariationAxis
 threetears.evals.schema.VariationCounts
 threetears.evals.schema.WorldPlacement
 threetears.evals.schema.WorldSeed
+threetears.evals.schema.bind_cell_identity
+threetears.evals.schema.current_cell_identity
 threetears.evals.schema.nested_schemas
 threetears.evals.schema.utc_now_iso
 threetears.evals.storage.CoreReset

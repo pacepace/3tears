@@ -22,6 +22,7 @@ job from the record its work writes, and :func:`job_cancel` asks it to stop. Pin
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -49,8 +50,10 @@ from threetears.evals.ops import (
     run_job_id,
     run_launch,
 )
-from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, AnalysisContextBundle, judge_agreement
+from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, judge_agreement
 from threetears.evals.run import LAUNCH_CANCEL_REASON
+from threetears.evals.analysis.summary import budget_stop_line
+from threetears.evals.schema.models import BudgetStop
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -177,6 +180,27 @@ async def test_a_run_its_wall_clock_budget_stopped_reads_stopped_and_says_why() 
     assert not [error for error in summary.errors if "wall-clock" in error], "a stop is not among the faults"
 
 
+async def test_a_run_its_ceiling_stopped_reads_the_stop_from_its_records_on_every_surface() -> None:
+    """The job status and the summary word a ceiling stop alike, from the typed records, not the stored reason."""
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None
+    stop = BudgetStop(
+        currency="metered_calls", ceiling=3, landed_at_stop=3, landed_final=4, cells_in_flight=1, cells_not_started=2
+    )
+    update = {
+        "status": "budget_stopped",
+        "budget_stop_reason": "stopped by its metered-call ceiling: 3 of 3 at the stop",
+        "budget_stops": [stop],
+    }
+    off_loop(storage.save_eval_run, run.model_copy(update=update))
+
+    status = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
+    summary = off_loop(run_get, fixture.host.eval_host, run.id, TOYHOST_SCOPE)
+    assert status.detail == summary.stopped_text == budget_stop_line([stop])
+
+
 async def test_cancelling_a_run_that_has_ended_is_refused() -> None:
     fixture = off_loop(ops_fixture)
     with pytest.raises(ValidationFailedError, match="is completed — only pending/running runs can be cancelled"):
@@ -200,18 +224,22 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert line.id == status.analysis_id
     markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
-    # The page is that campaign's: titled by its name, with the question it declared quoted alone on the line under
-    # the title (first letter capitalized); a campaign that declares none is titled by its name and what it compares.
-    design = fixture.campaign.declared_design
-    assert design is not None
-    (question,) = design.questions
-    asked = " ".join(question.text.split())
-    assert markdown.body.startswith(f'# {fixture.campaign.name}\n"{asked[:1].upper()}{asked[1:]}"\n')
-    assert f"**{line.verdict}**" in markdown.body and line.findings >= 1
+    # The page is that campaign's: titled by its name, below only its loud lines (a missed bar, and the memo's why
+    # beside it), with the question it declared quoted alone on the line under the title; then the memo's
+    # recommendation.
+    assert fixture.campaign.question
+    asked = " ".join(fixture.campaign.question.split())
+    assert f'\n# {fixture.campaign.name}\n"{asked}"\n' in markdown.body
+    assert "**Recommended:**" in markdown.body and line.findings >= 1
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert "<script" not in html.body.lower()
     canonical = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
-    assert AnalysisContextBundle.from_json(canonical.body).campaign_id == fixture.campaign.id
+    document = json.loads(canonical.body)
+    assert (document["kind"], document["campaign_id"], document["analysis_id"]) == (
+        "campaign",
+        fixture.campaign.id,
+        line.id,
+    )
 
 
 async def test_a_held_generation_is_running_refuses_a_second_and_cancels_to_cancelled() -> None:
@@ -414,7 +442,7 @@ def test_a_campaign_is_created_archived_and_listed_as_typed_lines() -> None:
             name="widths",
             subject_id=TOYHOST_SUBJECT.subject_id,
             behavior="speed",
-            run_ids=fixture.campaign.run_ids,
+            aspects=[{"label": "speed", "run_ids": fixture.campaign.run_ids}],
             exploratory=True,
         ),
         TOYHOST_SCOPE,

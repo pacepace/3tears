@@ -21,16 +21,19 @@ sentence when questions are declared, or a per-row label when none are.
 
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis.generator import build_user_message
+from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
+
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
 from threetears.evals.analysis.stats import GUARDRAIL_HELD_NEEDS_RANGE, GUARDRAIL_OUTSIDE_RANGE
-from threetears.evals.kernel import Question
 from threetears.evals.schema import RubricScore
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
@@ -157,8 +160,8 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
         assert bundle.guardrails.withheld is not None and "not the same as held" in bundle.guardrails.withheld
 
     def test_the_writer_sees_the_guardrails_by_cell_alias(self):
-        message = build_user_message(two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST)))
-        assert '"guardrails"' in message and '"decision": "breached"' in message
+        message = _writer_message(two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST)))
+        assert '"guardrails"' in message and '"decision":"breached"' in message
 
 
 # --- a measure may be a guardrail too ------------------------------------------------------------------------
@@ -275,8 +278,9 @@ class TestTheCodeOnlyReportShowsTheGuardrails:
 
 class TestReadingsNoQuestionAskedAboutAreExploratory:
     def test_with_a_question_on_cost_the_judged_capability_dimension_is_exploratory(self):
-        cost = Question(id="q-cheaper", text="is it cheaper?", merit_axes=["cost"])
-        bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), questions=[cost])
+        bundle = two_arm_bundle(
+            _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
+        )
         scope = bundle.reading_scope
         assert scope.questions_declared and scope.disclosure is None
         assert scope.exploratory_dimensions == [CAPABILITY], "a guardrail is never exploratory"
@@ -286,7 +290,7 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         assert bundle.reading_scope.exploratory_dimensions == []
 
     def test_with_no_question_it_is_said_once_and_no_row_is_labelled(self):
-        bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), questions=())
+        bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="")
         scope = bundle.reading_scope
         assert not scope.questions_declared
         assert scope.exploratory_measures == [] and scope.exploratory_dimensions == []
@@ -302,8 +306,9 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         assert said[0].text.startswith("Exploratory: ")
 
     def test_the_code_only_report_names_the_exploratory_readings_where_questions_are_declared(self):
-        cost = Question(id="q-cheaper", text="is it cheaper?", merit_axes=["cost"])
-        bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), questions=[cost])
+        bundle = two_arm_bundle(
+            _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
+        )
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
         # One sentence, then the readings listed once each in a table beside it.
@@ -311,3 +316,8 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         named = [str(row["reading"]) for row in listed.values()]
         assert said.section == listed.section == "not_tested" and f"{CAPABILITY} (judged)" in named
         assert not any(BOUNDARY in name for name in named) and BOUNDARY not in said.text
+
+
+def _writer_message(bundle: Any) -> str:
+    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
+    return build_campaign_user_message(campaign_bundle(bundle))

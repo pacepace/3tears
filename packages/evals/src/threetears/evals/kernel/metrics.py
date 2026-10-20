@@ -148,6 +148,8 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "DELIVERED_AXES",
     "MEASURING_SPEND_MEASURES",
     "measure_title",
+    "SUBJECT_SPEND_READER_NAMES",
+    "subject_spend_descriptor",
     "reader_name_defects",
     "reads_turns",
     "summary_population",
@@ -280,8 +282,44 @@ _BLENDED_SPEND = "cost_usd"
 #: the cost axis's measure (see ``docs/cost-and-budgets.md``).
 MEASURING_SPEND_MEASURES: frozenset[str] = frozenset({_BLENDED_SPEND, "program_cost"})
 
+#: What a judge-kind campaign calls the spend measures :data:`MEASURING_SPEND_MEASURES` and the totals over them name.
+#: There the judge under test is the subject and the only role billed, so these dollars are the arm's own
+#: production spend, the same dollars ``production_replicating_cost`` reads, and "measuring spend" would put a
+#: second label on one figure (#830).
+SUBJECT_SPEND_READER_NAMES: dict[str, str] = {
+    _BLENDED_SPEND: "Spend, all roles",
+    "program_cost": "Program spend",
+    "total_cost_usd": "Total spend",
+    "mean_cost_usd": "Mean spend per result",
+}
 
-def measure_title(name: str, reader_name: str | None = None) -> str:
+
+def subject_spend_descriptor(descriptor: MetricDescriptor) -> MetricDescriptor:
+    """A spend measure's descriptor as a judge-kind campaign reads it: the subject's own spend, not measuring spend.
+
+    :param descriptor: A measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :return: The descriptor under its :data:`SUBJECT_SPEND_READER_NAMES` name where it has one; ``descriptor`` itself
+        for any other measure.
+    :rtype: MetricDescriptor
+    """
+    renamed = SUBJECT_SPEND_READER_NAMES.get(descriptor.name)
+    if renamed is None:
+        return descriptor
+    return descriptor.model_copy(
+        update={
+            "reader_name": renamed,
+            "subject_spend": True,
+            "description": (
+                f"{descriptor.description} In a judge campaign the judge under test is the subject and the only role "
+                "billed, so this is the arm's own spend, the dollars production_replicating_cost reads, and not spend "
+                "on measuring it."
+            ),
+        }
+    )
+
+
+def measure_title(name: str, reader_name: str | None = None, *, subject_spend: bool = False) -> str:
     """A measure as a chart or column heads it: by its reader-facing name, and a measuring-spend measure says it is one.
 
     The reader-facing name (:attr:`MetricDescriptor.reader_name`) when the measure has one, and the key only when
@@ -293,12 +331,16 @@ def measure_title(name: str, reader_name: str | None = None) -> str:
     :ptype name: str
     :param reader_name: Its reader-facing name, when it has one.
     :ptype reader_name: str | None
+    :param subject_spend: Whether the campaign reads the measure as the subject's own spend
+        (:attr:`MetricDescriptor.subject_spend`), which is not measuring spend.
+    :ptype subject_spend: bool
     :return: The reader-facing name, else the key, with ``, measuring spend`` after it for a
-        :data:`MEASURING_SPEND_MEASURES` member whose title does not already say so.
+        :data:`MEASURING_SPEND_MEASURES` member whose title does not already say so and which is not the subject's own
+        spend.
     :rtype: str
     """
     title = reader_name or name
-    if name in MEASURING_SPEND_MEASURES and "measuring spend" not in title.casefold():
+    if name in MEASURING_SPEND_MEASURES and "measuring spend" not in title.casefold() and not subject_spend:
         return f"{title}, measuring spend"
     return title
 
@@ -490,6 +532,15 @@ class MetricDescriptor(EvalBaseModel):
             "directionless numeric measure reaches the analysis surfaces only when it says this: one that does "
             "not is a raw count, and a raw count stays out. Requires `higher_is_better` to be None, since a "
             "direction is exactly what would let a ranking read the diagnostic as a merit."
+        ),
+    )
+
+    subject_spend: bool = Field(
+        default=False,
+        description=(
+            "True where a spend measure is read in a campaign whose every result is a judge-kind one: the judge under "
+            "test is the subject and the only role billed, so these dollars are the arm's own spend and not spend on "
+            "measuring it. A surface then does not title the measure measuring spend."
         ),
     )
 
@@ -896,9 +947,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
         merit_axis="cost",
         higher_is_better=False,
         unit="usd",
-        formula="sum of cost_usd over the candidate, inner_agent and external roles",
+        formula=(
+            "sum of cost_usd over the candidate, inner_agent and external roles; for a judge-kind result, "
+            "over the judge role"
+        ),
         description=(
-            "Observed dollars belonging to the production roles — measurement-only roles excluded. This is "
+            "Observed dollars belonging to the production roles — measurement-only roles excluded. In a judge "
+            "campaign the judge under test is the subject, metered under the judge role alone, so there that "
+            "role is the production role. This is "
             "the spent subset, NOT the counterfactual 'what running this candidate for real would cost': the "
             "two coincide only when the run substituted nothing, and a swept model understates while a "
             "memory-stripped candidate that does background work where production would recall overstates. "
@@ -3015,7 +3071,7 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
 
 
 def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
-    """Every measure a decision rule may read as a pass rate, oriented: its name -> whether its higher end passes.
+    """Every measure a floor may read as a pass rate, oriented: its name -> whether its higher end passes.
 
     A check (:attr:`MetricDescriptor.is_check`): a boolean with a better end, or a pass/fail measure graded 0 or 1 (a
     scorer returning a bool, a field grader). A rate on it counts the observations on its better end as passes, so a

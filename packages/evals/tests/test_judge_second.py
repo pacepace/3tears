@@ -35,7 +35,7 @@ import pytest
 
 from threetears.evals.analysis import inter_judge_agreement, judge_drift
 from threetears.evals.analysis.agreement import KAPPA_UNDEFINED_ONE_SCORE
-from threetears.evals.kernel import EvalCampaign, JobLeases
+from threetears.evals.kernel import JobLeases
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.errors import ValidationFailedError
@@ -68,7 +68,7 @@ from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.kernel import EvalStorage
-from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.factories import make_eval_run, make_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
 
@@ -236,7 +236,7 @@ def _results(host: EvalHost, run_id: str) -> list[EvalResult]:
 async def _asked(host: EvalHost, run_id: str, scope_id: str, **options: Any) -> SecondJudgeReport:
     """A second judge's pass awaited in the foreground, as a script runs it: admitted, run to its end, its report
     read off the pass's own record."""
-    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    leases = JobLeases(host.storage)
     try:
         work = await second_judge_work(host, run_id, scope_id, **options)
         ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
@@ -417,7 +417,7 @@ class TestDriftAcrossAJudgeChange:
         storage = EvalStorage(InMemoryDocumentStore())
         host, before_id = await _judged_run(judges, cases=6, storage=storage)
         _, after_id = await _judged_run(judges, cases=6, storage=storage, judge_model=_SECOND)
-        campaign = EvalCampaign(
+        campaign = make_campaign(
             scope_id=_SCOPE,
             name="a judge swap",
             subject_id="subject-1",

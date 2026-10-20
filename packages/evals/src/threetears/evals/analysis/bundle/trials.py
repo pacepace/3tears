@@ -265,7 +265,9 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
         if delivered_a_turn(result)
         and (
             cost := production_replicating_cost(
-                result.usage, substituted_deliveries=count_substituted_deliveries(result)
+                result.usage,
+                substituted_deliveries=count_substituted_deliveries(result),
+                candidate_kind=result.candidate_kind,
             )
         )
         is not None

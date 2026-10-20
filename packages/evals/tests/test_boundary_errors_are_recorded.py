@@ -311,7 +311,7 @@ class _RenewalRefusingStore(InMemoryDocumentStore):
 
 async def _held_run(store: _RenewalRefusingStore) -> tuple[EvalStorage, JobLeases, EvalRun, asyncio.Event]:
     storage = EvalStorage(store)
-    leases = JobLeases(storage, lease_s=0.3)
+    leases = JobLeases(storage, lease_s=0.9)
     run = make_eval_run(status="running")
     run.lease = off_loop(leases.grant)
     off_loop(storage.save_eval_run, run)
@@ -334,7 +334,7 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_told_why_on_its_re
     assert record.error_details == [], "a lease fault is the job's, kept in faults as on every job record"
     [entry] = record.faults
     assert entry.startswith("job lease: its holder, process ")
-    assert "could not renew it for 0.3s, its whole lease, and stopped the job" in entry
+    assert "could not renew it for 0.9s, its whole lease, and stopped the job" in entry
     assert "— the last renewal failed: StorageError: " in entry and "the store refused the renewal" in entry
 
 
@@ -389,8 +389,10 @@ _HELD_KINDS: dict[str, tuple[LeasedJobKind[Any], Callable[[str], EvalDocumentMod
 async def _expired(
     store: _RenewalRefusingStore, storage: EvalStorage, kind: LeasedJobKind[Any], record: EvalDocumentModel
 ) -> str:
-    """Hold ``record`` under a 0.3s lease whose every renewal the store refuses, until its holder stops it; its fault."""
-    leases = JobLeases(storage, lease_s=0.3)
+    """Hold ``record`` under a 0.9s lease whose every renewal the store refuses, until its holder stops it; its fault.
+
+    0.9s, not 0.3s: a loaded suite stalled past the 0.3s lease before the store began refusing."""
+    leases = JobLeases(storage, lease_s=0.9)
     held = record.model_copy(update={"lease": off_loop(leases.grant)})
     off_loop(storage.save_job_record, held.to_dict(), if_match=None, create_only=True)
     stopped = asyncio.Event()
@@ -421,7 +423,7 @@ async def test_a_job_whose_renewals_fail_keeps_the_renewal_error_in_its_faults_a
     lost, wrote = off_loop(settle_job_record, storage, kind, record.id, record.scope_id)
 
     assert fault.startswith("job lease: its holder, process ")
-    assert "could not renew it for 0.3s, its whole lease, and stopped the job" in fault
+    assert "could not renew it for 0.9s, its whole lease, and stopped the job" in fault
     assert "— the last renewal failed: StorageError: " in fault and "the store refused the renewal" in fault
     assert wrote and lost is not None and lost.lost is not None
     assert ending(lost) == f"lost: {lost.lost.cause}", "the loss wrote the record's ending"

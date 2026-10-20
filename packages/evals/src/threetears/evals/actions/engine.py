@@ -40,6 +40,7 @@ from threetears.evals.ops import (
     BarProposals,
     CampaignChanges,
     CampaignDefinition,
+    CampaignCallLine,
     CampaignLine,
     CampaignListing,
     LaunchEstimate,
@@ -89,6 +90,7 @@ from threetears.evals.ops import (
     bars_propose,
     campaign_archive,
     campaign_create,
+    campaign_record,
     campaign_runs_add,
     campaign_runs_remove,
     campaign_update,
@@ -142,6 +144,8 @@ from threetears.evals.ops import (
     runs_bisected_text,
     runs_compared_text,
 )
+from threetears.evals.kernel.declaration import Margin, OverriddenBar
+from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
@@ -190,10 +194,7 @@ Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the s
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
 RunIds = Annotated[
     list[str],
-    Field(
-        description="The runs, by id, all in the caller's scope: those a campaign is created with, or those added to "
-        "or taken out of it."
-    ),
+    Field(description="Runs, by id, as runs_list names them; every one in the caller's scope."),
 ]
 GeneratorModel = Annotated[
     str | None,
@@ -378,8 +379,9 @@ class SweepLaunchParams(SweepSettings):
 
     arms: list[dict[str, Any]] = Field(
         min_length=1,
-        description="The arms, launched in this order: each {model, label?, overlays?, apparatus_settings?, "
-        "judge_model?, simulator_model?} — its own model and what it sets differently from its siblings.",
+        description="The arms, in the order they launch and take their turns: each {model, label?, overlays?, "
+        "apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its "
+        "siblings.",
     )
 
 
@@ -406,18 +408,22 @@ class CampaignsListParams(EvalBaseModel):
 
 
 class CampaignCreateParams(EvalBaseModel):
-    """``campaign_create`` — the operation's own definition, declared design and control run included."""
+    """``campaign_create`` — the operation's own definition: question, arms, aspects, floors and adoption."""
 
     name: Name
     subject_id: SubjectId
     behavior: Behavior
     description: Description = ""
-    run_ids: RunIds = Field(default_factory=list)
-    template_id: Annotated[
-        str | None, Field(min_length=1, description=LaunchArguments.model_fields["template_id"].description)
-    ] = None
-    declared_design: Annotated[dict[str, Any] | None, CampaignDefinition.model_fields["declared_design"]] = None
-    control_from_run_id: Annotated[str | None, CampaignDefinition.model_fields["control_from_run_id"]] = None
+    question: Annotated[str, CampaignDefinition.model_fields["question"]] = ""
+    campaign_arms: Annotated[list[dict[str, Any]], CampaignDefinition.model_fields["arms"]] = Field(
+        default_factory=list
+    )
+    aspects: Annotated[list[dict[str, Any]], CampaignDefinition.model_fields["aspects"]] = Field(default_factory=list)
+    floors: Annotated[list[dict[str, Any]], CampaignDefinition.model_fields["floors"]] = Field(default_factory=list)
+    margins: Annotated[dict[str, Margin], CampaignDefinition.model_fields["margins"]] = Field(default_factory=dict)
+    aspects_from: Annotated[list[str | dict[str, str]], CampaignDefinition.model_fields["aspects_from"]] = Field(
+        default_factory=list
+    )
     exploratory: Annotated[bool, CampaignDefinition.model_fields["exploratory"]] = False
 
 
@@ -431,7 +437,9 @@ class CampaignUpdateParams(EvalBaseModel):
     description: Annotated[
         str | None, Field(description=CampaignCreateParams.model_fields["description"].description)
     ] = None
-    declared_design: Annotated[dict[str, Any] | None, CampaignChanges.model_fields["declared_design"]] = None
+    question: Annotated[str | None, CampaignChanges.model_fields["question"]] = None
+    aspects: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["aspects"]] = None
+    floors: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["floors"]] = None
     exploratory: Annotated[bool, CampaignChanges.model_fields["exploratory"]] = False
     control_from_run_id: Annotated[str | None, CampaignChanges.model_fields["control_from_run_id"]] = None
 
@@ -441,6 +449,39 @@ class CampaignRunsParams(EvalBaseModel):
 
     campaign_id: CampaignId
     run_ids: RunIds
+    aspect: Annotated[str | None, Field(min_length=1, description=MEMBERSHIP_ASPECT_DESCRIPTION)] = None
+
+
+class CampaignRecordParams(EvalBaseModel):
+    """``campaign_record``."""
+
+    campaign_id: CampaignId
+    arm: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="The decided arm, by the label the campaign's page shows it under or by its variant key.",
+        ),
+    ]
+    call_reason: Annotated[str, Field(description="Why the call was made, in the decider's words.")] = ""
+    floors_overridden: Annotated[
+        list[str],
+        Field(description="The key of each broken floor of the decided arm the call overrides, as the page names it."),
+    ] = []
+    bars_overridden: Annotated[
+        list[str],
+        Field(
+            description=(
+                "Each absolute bar the decided arm missed that the call overrides, as `<aspect>/<measure>` (an aspect "
+                "label holds no slash), the aspect and measure the page's bars table names it by."
+            )
+        ),
+    ] = []
+    # The analysis whose memo the call was made over; omitted for a call on code's readings alone. One name, one
+    # meaning across the tool: described as every other action's analysis_id is.
+    analysis_id: Annotated[
+        str | None, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")
+    ] = None
 
 
 class JudgeConfigsListParams(EvalBaseModel):
@@ -508,12 +549,12 @@ class CasesRenameParams(EvalBaseModel):
     """``cases_rename``."""
 
     test_case_id: str = Field(
-        min_length=1, description="The case to rename, by its id, as judge_cases_list or results_list names it."
+        min_length=1, description="A test case's id, as judge_cases_list or results_list names it."
     )
     case_name: str = Field(
         min_length=1,
         description=(
-            "Its new name, as the report should call it: one token such as double-charge, not a bare number or a "
+            "A case's name, as the report should call it: one token such as double-charge, not a bare number or a "
             "generated id, and used by no other case of its template or of a case set listing it."
         ),
     )
@@ -690,7 +731,8 @@ SecondJudgeTemperature = Annotated[
     ),
 ]
 ResultIds = Annotated[
-    list[str] | None, Field(description="The run's results to draw from; omitted for every result of the run.")
+    list[str] | None,
+    Field(description="A run's result ids, as results_list names them; omitted for every result of the run."),
 ]
 
 
@@ -904,7 +946,10 @@ async def _campaigns_list(host: OpsHost, caller: Caller, params: CampaignsListPa
 
 async def _campaign_create(host: OpsHost, caller: Caller, params: CampaignCreateParams) -> CampaignLine:
     eval_host = host.eval_host
-    definition = CampaignDefinition.model_validate(params.model_dump())
+    # `campaign_arms` on the tool, since a sweep's `arms` are launch specs: one name, one meaning across a tool.
+    fields = params.model_dump()
+    fields["arms"] = fields.pop("campaign_arms")
+    definition = CampaignDefinition.model_validate(fields)
     return await run_blocking(
         eval_host.blocking_executor,
         campaign_create,
@@ -933,7 +978,12 @@ async def _campaign_update(host: OpsHost, caller: Caller, params: CampaignUpdate
 async def _campaign_runs_add(host: OpsHost, caller: Caller, params: CampaignRunsParams) -> CampaignLine:
     eval_host = host.eval_host
     return await run_blocking(
-        eval_host.blocking_executor, campaign_runs_add, eval_host, params.campaign_id, params.run_ids, caller.scope_id
+        eval_host.blocking_executor,
+        partial(campaign_runs_add, aspect=params.aspect),
+        eval_host,
+        params.campaign_id,
+        params.run_ids,
+        caller.scope_id,
     )
 
 
@@ -941,10 +991,38 @@ async def _campaign_runs_remove(host: OpsHost, caller: Caller, params: CampaignR
     eval_host = host.eval_host
     return await run_blocking(
         eval_host.blocking_executor,
-        campaign_runs_remove,
+        partial(campaign_runs_remove, aspect=params.aspect),
         eval_host,
         params.campaign_id,
         params.run_ids,
+        caller.scope_id,
+    )
+
+
+async def _campaign_record(host: OpsHost, caller: Caller, params: CampaignRecordParams) -> CampaignCallLine:
+    eval_host = host.eval_host
+    bars = []
+    for named in params.bars_overridden:
+        aspect, slash, measure = named.partition("/")
+        if not (aspect and slash and measure):
+            raise ValidationFailedError(
+                f"bars_overridden names {named!r}, which is not `<aspect>/<measure>`",
+                remedy="name each overridden bar by its aspect's label and its measure, joined by one slash",
+            )
+        bars.append(OverriddenBar(aspect=aspect, measure=measure))
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            campaign_record,
+            arm=params.arm,
+            called_by=caller.identity,
+            reason=params.call_reason,
+            floors_overridden=params.floors_overridden,
+            bars_overridden=bars,
+            analysis_id=params.analysis_id,
+        ),
+        eval_host,
+        params.campaign_id,
         caller.scope_id,
     )
 
@@ -1391,7 +1469,7 @@ async def _analysis_generate_path(stage: ConformanceStage) -> Mapping[str, Any]:
                 name="jobs conformance campaign",
                 subject_id=stage.sample.subject_id,
                 behavior="conformance",
-                run_ids=[run_id],
+                aspects=[{"label": "conformance", "run_ids": [run_id]}],
                 exploratory=True,
             ),
             stage.caller.scope_id,
@@ -1493,7 +1571,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="sweep_launch",
-            summary="Launch arms that differ beyond the model, one after another, into one campaign, as one job.",
+            summary="Launch arms that differ beyond the model into one campaign, as one job.",
             workflow=RUN,
             permission="spend",
             params=SweepLaunchParams,
@@ -1512,12 +1590,14 @@ def engine_actions() -> tuple[Action, ...]:
             },
             long_running=True,
             detail=(
-                "Every arm is refused up front if its launch would be. Arms run one at a time unless "
-                "max_concurrent_arms is raised, each run joining the campaign as it is created. job_poll on the "
-                "sweep's job counts the arms launched and finished; one job_cancel stops the arm in flight and "
-                "launches none after. An arm refused at its launch, or whose run ends failed, ends the sweep "
-                "failed. The judge and simulator are the sweep's unless an arm names its own: where the sweep "
-                "names none, the first arm's resolved ones hold for the rest."
+                "Every arm is refused up front if its launch would be. arm_schedule says how the arms share time: "
+                "interleaved (the default) prepares every arm and starts them as one launch whose cases are taken in "
+                "turn, case by case; sequential launches one arm after another; concurrent launches every arm at once, "
+                "each at its own width. Each run joins the campaign as it is created. job_poll on the sweep's job "
+                "counts the arms launched and finished; one job_cancel stops the arms in flight and launches none "
+                "after. An arm refused at its launch, or whose run ends failed, ends the sweep failed; launched in "
+                "order, no arm is launched after it. The judge and simulator are the sweep's unless an arm names its "
+                "own: where the sweep names none, the role's default is resolved once for every arm."
             ),
         ),
         Action(
@@ -1578,7 +1658,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "written by variation_model, whose calls run before the runs start, are priced against the host's "
                 "out-of-run cap and are outside every run's cost cap. job_poll on the launch's job names its runs "
                 "once they start (run_ids) and counts them finished; the job ends when every run has, and one "
-                "job_cancel stops them all."
+                "job_cancel stops them all. Several models are interleaved by default (arm_schedule): every arm runs "
+                "at once, their cases taken in turn under one width, so a provider's bad minute lands on every arm "
+                "alike; each run records the schedule it ran under."
             ),
         ),
         Action(
@@ -1678,7 +1760,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="campaign_create",
-            summary="Create a campaign over runs in the scope, for an analysis to read.",
+            summary="Create a campaign: one question asked of its arms, measured on one or more aspects.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignCreateParams,
@@ -1689,75 +1771,67 @@ def engine_actions() -> tuple[Action, ...]:
                 "name": "model bake-off",
                 "subject_id": "subject-1",
                 "behavior": "accuracy",
-                "run_ids": [run_id],
-                "declared_design": {
-                    "axes": [
-                        {
-                            "axis_id": "model",
-                            "values": [
-                                {"content": "model-a", "display": "model-a"},
-                                {"content": "model-b", "display": "model-b"},
+                "question": "Is model-b as accurate as model-a?",
+                "aspects": [
+                    {
+                        "label": "accuracy",
+                        "margin": 5,
+                        "run_ids": [run_id],
+                        "design": {
+                            "axes": [
+                                {
+                                    "axis_id": "model",
+                                    "values": [
+                                        {"content": "model-a", "display": "model-a"},
+                                        {"content": "model-b", "display": "model-b"},
+                                    ],
+                                }
                             ],
-                        }
-                    ],
-                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
-                },
-                "control_from_run_id": run_id,
+                            "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                        },
+                    }
+                ],
+                "campaign_arms": [{"label": "model-a", "role": "control", "from_run_ids": [run_id]}],
             },
             detail=(
-                "declared_design states what the campaign sets out to learn — its axes and what it held fixed, and "
-                "optionally its questions, bars and merit priority — and is refused, naming why, when this host "
-                "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_from_run_id "
-                "names the run whose variant every other cell is read against. A campaign with no settled question "
-                "says exploratory: true instead of declaring a design — exactly one of the two, never neither, never "
-                "both — and its report and analysis say once that its readings confirm nothing, its design inferred "
-                "from the runs. campaign_update declares one later. template_id names the template whose rubric "
-                "dimensions and goal-state checks a bar may name; omitted, it is the one template every run named ran."
+                "A campaign asks one question of its arms and measures it on its aspects: each a template and the "
+                "runs gathered on it, with the design those runs answer and a margin — how far a candidate may fall "
+                "below the control there before it is shown worse. A design is refused, naming why, when this host "
+                "cannot honour it: an axis it does not declare, a bar looser than the registered one. Each arm is "
+                "read from its runs, which must all carry one variant key, or the create is refused naming the keys. "
+                "Floors warn when a candidate crosses a line on an aspect; they never block. aspects_from adopts "
+                "other campaigns' aspects whole, each keeping when its design was declared; what is added at "
+                "adoption is dated now. A campaign with no settled question says exploratory: true instead of "
+                "declaring any design — exactly one of the two, never neither, never both — and its report and "
+                "analysis say once that its readings confirm nothing."
             ),
         ),
         Action(
             name="campaign_update",
-            summary="Rename or redescribe a campaign, or declare, amend or withdraw its design before its first run.",
+            summary="Rename or redescribe a campaign, or declare, amend or withdraw its declaration before its first run.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignUpdateParams,
             result=CampaignLine,
             handler=_campaign_update,
             render=render.render_model,
-            example={
-                "campaign_id": campaign_id,
-                "declared_design": {
-                    "axes": [
-                        {
-                            "axis_id": "model",
-                            "values": [
-                                {"content": "model-a", "display": "model-a"},
-                                {"content": "model-b", "display": "model-b"},
-                            ],
-                        }
-                    ],
-                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
-                },
-            },
+            example={"campaign_id": campaign_id, "question": "Is model-b as accurate as model-a, and cheaper?"},
             detail=(
-                "Changes only what it is sent: name, description, declared_design. A declared_design is validated and "
-                "gated as campaign_create's is and replaces the stored one, its questions reconciled with the stored "
-                "ones by id, so a question is retired rather than dropped; declaring one on an exploratory campaign "
-                "makes it declared, since exploratory is read off whether a design is declared. declared_design: null "
-                "withdraws the declaration and is refused unless exploratory: true is sent with it; exploratory: true "
-                "beside a design is refused. control_from_run_id names one of the campaign's runs whose variant "
-                "becomes the control, resolved for you, in the same write as any design sent beside it; null clears "
-                "the control. It needs a declaration — sent here, or already stored — and a design sent here keeps no "
-                "control it does not type or name. Once the campaign holds a run its design is frozen: "
-                "declared_design is refused in any form, and so is re-pointing or clearing the control, which may "
-                "be named once while none is declared; name and description stay editable, and an amended design "
-                "is a new campaign (campaign_create). Runs join and leave through campaign_runs_add and "
-                "campaign_runs_remove."
+                "Changes only what it is sent: name, description, question, aspects (replacing them whole, holding "
+                "no runs) and floors. A declaration it writes is validated and gated as campaign_create's is, and "
+                "dated now. Aspects none of which declares a design withdraw the declaration, only beside "
+                "exploratory: true, which clears the question, floors and arms too; exploratory: true beside a "
+                "design is refused. control_from_run_id names one of the campaign's runs whose variant becomes the "
+                "control arm, resolved for you; null clears it. Once any aspect holds a run the declaration is "
+                "frozen: question, aspects and floors are refused in any form, and so is re-pointing or clearing a "
+                "control, which may be named once while none is; name and description stay editable, and an "
+                "amended declaration is a new campaign (campaign_create, adopting the aspects it keeps). Runs join "
+                "and leave through campaign_runs_add and campaign_runs_remove."
             ),
         ),
         Action(
             name="campaign_runs_add",
-            summary="Put runs in a campaign — runs launched after it was created, or measured on their own first.",
+            summary="Put runs in a campaign's aspect — runs launched after it was created, or measured on their own first.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignRunsParams,
@@ -1766,8 +1840,10 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id, "run_ids": [run_id]},
             detail=(
-                "A run the campaign already holds is not added twice. A run outside the caller's scope is refused, "
-                "and then none is added. Once a run is in, campaign_update can name it the control."
+                "Each run joins the aspect named, or the one aspect gathered on the template it ran; a run no aspect "
+                "or several aspects could take is refused, naming them, and then none is added. A run already in "
+                "that aspect is not added twice; one in another aspect, or outside the caller's scope, is refused. "
+                "Once a run is in, campaign_update can name it the control."
             ),
         ),
         Action(
@@ -1781,9 +1857,33 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id, "run_ids": [run_id]},
             detail=(
-                "Membership only: nothing is deleted. A run the campaign does not hold is refused, and then none is "
-                "removed. The control is a variant, not a run, so it stays declared; where no remaining run carries "
-                "it, the report says the control is unobserved."
+                "Membership only: nothing is deleted. Each run leaves the aspect holding it. A run the campaign (or "
+                "the named aspect) does not hold is refused, and then none is removed. An arm is a variant, not a "
+                "run, so it stays named; where no remaining run carries it, the report says the arm is unobserved."
+            ),
+        ),
+        Action(
+            name="campaign_record",
+            summary="Record a person's call on a campaign: the arm decided, why, and each warning it overrides.",
+            workflow=ANALYSE,
+            permission="write",
+            params=CampaignRecordParams,
+            result=CampaignCallLine,
+            handler=_campaign_record,
+            render=render.render_model,
+            example={"campaign_id": campaign_id, "arm": "v2", "call_reason": "Tone matters more this quarter."},
+            detail=(
+                "Code reports, the writer recommends, a person decides: this records the decision, beside code's "
+                "readings, never in place of them. The arm is matched by its variant key, which is what is recorded. "
+                "It is read against the readings of the page it will appear on, never the memo's words: with "
+                "analysis_id, that analysis's (it must be the one the campaign's page reports), else the evidence as "
+                "it stands. An arm with a broken floor is recorded only when floors_overridden names each such "
+                "floor's key, and an arm that missed an absolute bar only when bars_overridden names each such bar; "
+                "naming one the arm did not break or miss is refused. A measurement (one arm) has nothing to decide, "
+                "so it is refused. In a choice, an arm shown behind another is never refused: the page warns of each "
+                "such pair beside the call. A new call replaces the earlier one; the campaign's page states the call, "
+                "who made it and when, every warning it overrides, and how many runs joined since. call_reason is "
+                "recorded as the call's reason."
             ),
         ),
         Action(

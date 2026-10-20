@@ -15,6 +15,7 @@ import pytest
 
 from threetears.evals.analysis import (
     TableBlock,
+    analysis_bundle,
     assemble_context_bundle,
     build_code_only_report,
     render_memo_as_written,
@@ -24,17 +25,18 @@ from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.declaration import SweptAxis
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
+from threetears.evals.kernel.text_block import one_line
 from threetears.evals.schema.values import IntervalScale, SweepableValue
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_AXIS,
     TOYHOST_NARROW,
-    TOYHOST_QUESTION_ID,
     TOYHOST_WIDE,
     toyhost_campaign,
 )
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.report_support import toy_report
+from packages.evals.tests.aspect_support import with_aspect
 
 
 @pytest.fixture
@@ -80,10 +82,11 @@ def test_a_descriptor_stored_before_the_field_reads_with_none_and_is_headed_by_i
 async def test_the_memo_prints_a_declared_question_in_its_words_never_its_id(toy) -> None:
     _, analysis, _ = toy
     memo = render_memo_as_written(analysis)
-    asked = analysis.design_snapshot.question_words(TOYHOST_QUESTION_ID)
-    assert asked != TOYHOST_QUESTION_ID
-    assert f"- {asked} — answered:" in memo
-    assert TOYHOST_QUESTION_ID not in memo
+    # The memo answers the campaign's question with its recommendation and prints the question's words above it.
+    question = analysis.design_snapshot.question
+    assert question and question != analysis_bundle(analysis).aspect
+    assert f"Question: {one_line(question)}" in memo
+    assert f"Question: {analysis_bundle(analysis).aspect}" not in memo
 
 
 async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_reader_names(toy) -> None:
@@ -106,8 +109,6 @@ async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_rea
 def _named_design(names: list[tuple[int, str]]) -> Any:
     """The toy design, its swept levels declared under ``names`` — the same content, so the same hashes."""
     campaign, storage = toyhost_campaign()
-    design = campaign.declared_design
-    assert design is not None
     axis = SweptAxis(
         axis_id=TOYHOST_AXIS,
         values=[
@@ -115,7 +116,7 @@ def _named_design(names: list[tuple[int, str]]) -> Any:
             for level, name in names
         ],
     )
-    return campaign.model_copy(update={"declared_design": design.model_copy(update={"axes": [axis]})}), storage
+    return with_aspect(campaign, design={"axes": [axis]}), storage
 
 
 def test_a_declared_level_name_labels_the_arm_on_every_surface_and_moves_no_key() -> None:

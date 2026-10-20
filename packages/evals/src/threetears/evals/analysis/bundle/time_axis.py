@@ -18,7 +18,7 @@ from threetears.evals.analysis.cells import (
 )
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.reporting import ScoreRecord
-from threetears.evals.kernel.declaration import CampaignDesign
+from threetears.evals.kernel.declaration import AspectDesign
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.surface import (
@@ -43,7 +43,7 @@ def _time_axis(
     observations: list[Observation],
     classes: dict[str, ApparatusClass],
     records: list[ScoreRecord],
-    design: CampaignDesign | None,
+    design: AspectDesign | None,
     *,
     tiers: list[JudgeEvidenceTier],
     short_runs: dict[str, str],
@@ -73,7 +73,7 @@ def _time_axis(
     :param records: The score projection, for judged dimensions.
     :ptype records: list[ScoreRecord]
     :param design: The campaign's declaration, for the bar a judged dimension carries.
-    :ptype design: CampaignDesign | None
+    :ptype design: AspectDesign | None
     :param tiers: The judges' evidence tiers, which every judged reading carries — the campaign's own, since a
         judge's reliability is measured over the whole campaign, not one position of it.
     :ptype tiers: list[JudgeEvidenceTier]

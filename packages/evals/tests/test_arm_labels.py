@@ -29,7 +29,15 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from threetears.evals.analysis import Report, build_report, campaign_report, report_html, report_markdown
+from threetears.evals.analysis import (
+    Report,
+    assemble_context_bundle,
+    build_code_only_report,
+    build_report,
+    report_html,
+    report_markdown,
+)
+from threetears.evals.analysis.campaigns import campaign_arms, set_campaign_control
 from threetears.evals.analysis.arms import (
     ELISION,
     LABEL_LEVEL_CHARS,
@@ -43,15 +51,14 @@ from threetears.evals.analysis.arms import (
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.report import TableBlock
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import AuthoredAnalysis
-from threetears.evals.kernel import EvalCampaign
+from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from threetears.evals.kernel.host import HostProfile, KindContract
 from threetears.evals.schema import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.models import EvalRun
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design, toyhost_campaign_of_one_aspect
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
@@ -63,7 +70,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.factories import make_analysis
+from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.report_support import toy_campaign_host
 
 #: Three rigs, by their apparatus class ids.
@@ -250,6 +257,13 @@ def _profile_with_a_second_kind() -> HostProfile:
     )
 
 
+def _aspect_page(host: Any, campaign: Any) -> Report:
+    """The campaign's one aspect's code-only page, naming each arm by its variant, as the aspect page's builder does
+    when no campaign labels are passed to it: the names these tests pin."""
+    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    return build_code_only_report(bundle, assembled_at="2026-10-18T00:00:00+00:00", campaign_name=campaign.name)
+
+
 def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
     """The code-only report of a toy-host campaign over ``batches``, measured alike."""
     host = toyhost_host(profile=profile)
@@ -259,7 +273,7 @@ def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
             batch, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8, layout_fidelity=3
         ):
             host.storage.save_eval_result(result)
-    campaign = EvalCampaign(
+    campaign = toyhost_campaign_of_one_aspect(
         id="7b0e2c55-5d0f-4c8e-9a3c-1f2e3d4c5b6a",
         scope_id=TOYHOST_SCOPE,
         name="arm labels",
@@ -268,11 +282,11 @@ def _code_only_report(batches: list[EvalRun], profile: HostProfile) -> Report:
         behavior="extract_invoice_fields",
         template_id="",
         run_ids=[batch.id for batch in batches],
-        declared_design=toyhost_design(),
+        design=toyhost_aspect_design(),
         created_by="test:fixture",
     )
     host.storage.save_campaign(campaign)
-    return campaign_report(host, campaign.id, campaign.scope_id)
+    return _aspect_page(host, campaign)
 
 
 def _batch(*, reviewer_pool: str = "pool-a", instructions: str | None = None) -> EvalRun:
@@ -337,7 +351,7 @@ class TestARigOnlyCampaignIsNamedByItsModel:
 def one_lever() -> Report:
     """The toy campaign: two arms that differ on chunk width alone."""
     host, campaign = toy_campaign_host()
-    return campaign_report(host, campaign.id, campaign.scope_id)
+    return _aspect_page(host, campaign)
 
 
 @pytest.fixture(scope="module")
@@ -412,10 +426,18 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
     """An analysis whose recommendation and finding evidence name every cell in ``cells``, over ``index``."""
     refs = [cell_ref(variant, rig) for variant, rig in cells]
     rows = [
-        {"cell_ref": ref, "measure_id": "total_ms", "reading": "measure", "value": 41250.0, "n": 6, "dispersion": "sem"}
+        {
+            "aspect": "conversation",
+            "cell_ref": ref,
+            "measure_id": "total_ms",
+            "reading": "measure",
+            "value": 41250.0,
+            "n": 6,
+            "dispersion": "sem",
+        }
         for ref in refs
     ]
-    document = AuthoredAnalysis.model_validate(
+    document = AuthoredCampaignAnalysis.model_validate(
         {
             "findings": [
                 {
@@ -430,17 +452,18 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
                     "durable": "",
                 }
             ],
-            "decisions": [
+            "recommendation": [
                 {
-                    "proposal": "Keep the current assistant prompt.",
-                    "disposition": "deferred",
-                    "cells": refs,
+                    "arm": "control",
+                    "reasons": ["Keep the current assistant prompt."],
                     "confidence": "high",
                     "rests_on": [0],
-                    "revisit_when": "a second assistant is measured",
+                    "floors_overridden": [],
+                    "behind_on": [],
+                    "bars_missed": [],
                 }
             ],
-            "questions": [],
+            "aspect_summaries": [],
             "next": [],
         }
     )
@@ -452,8 +475,7 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
     )
     return make_analysis(
         document=document,
-        decision_surface=surface,
-        variant_index=index,
+        aspects=[analysed_aspect(decision_surface=surface, variant_index=index)],
         resolutions=[FindingResolution.model_validate({"evidence": rows})],
     )
 
@@ -481,21 +503,18 @@ def named(request: pytest.FixtureRequest) -> tuple[Report, list[str]]:
 
 
 class TestAnAnalysisReportNamesArmsByTheRule:
-    def test_the_recommendation_names_each_arm_and_nothing_else(self, named: tuple[Report, list[str]]) -> None:
-        report, names = named
+    def test_the_recommendation_names_its_one_arm_by_its_label(self, named: tuple[Report, list[str]]) -> None:
+        report, _ = named
         (facts,) = [
             block for block in report.blocks if isinstance(block, TableBlock) and block.name == "recommendation_facts"
         ]
         # The facts are one row, a column per fact, so each header links its term.
-        assert [column.header for column in facts.columns] == ["Confidence", "Arms"]
+        assert [column.header for column in facts.columns] == ["Arm", "Confidence"]
         (row,) = facts.values()
-        assert row["arms"] == "; ".join(names)
-        assert "**Deferred:** Keep the current assistant prompt." in report_markdown(report).splitlines()
-        assert f"| high | {'; '.join(names)} |" in report_markdown(report)
-        # A cell of words long enough is classed prose, so the page wraps it at a measure; the words are unchanged.
-        cell = html.escape("; ".join(names))
-        page = report_html(report)
-        assert f"<td>{cell}</td>" in page or f'<td class="prose">{cell}</td>' in page
+        assert row["arm"] == "control"
+        assert "**Recommend control:** Keep the current assistant prompt." in report_markdown(report).splitlines()
+        assert "| control | high |" in report_markdown(report)
+        assert "<td>control</td>" in report_html(report)
 
     def test_the_evidence_names_the_cells_alike(self, named: tuple[Report, list[str]]) -> None:
         report, names = named
@@ -506,3 +525,24 @@ class TestAnAnalysisReportNamesArmsByTheRule:
         for output in (report_markdown(report), report_html(report)):
             assert _LEVER_DUMP_MARK not in output
             assert "(not a " not in output
+
+
+# --- a campaign's derived arms are labelled as the page names them -------------------------------------------------
+
+
+def test_a_derived_arm_is_labelled_by_the_page_s_word_and_a_taken_one_gets_a_number() -> None:
+    """The toy campaign names no arm, so both chunk widths are derived: each labelled ``1024tok``, never
+    ``chunk_tokens=1024tok``. Naming the 256-token control ``1024tok`` takes that word, so the derived arm reads
+    ``1024tok (2)``."""
+    host, campaign = toy_campaign_host()
+    derived = campaign_arms(host.storage, campaign, profile=host.profile)
+    assert sorted(arm.label for arm in derived) == ["1024tok", "256tok"]
+    assert all(arm.role == "candidate" for arm in derived)
+
+    named = set_campaign_control(
+        host.storage, campaign.id, campaign.scope_id, campaign.run_ids[0], set_by="t", profile=host.profile
+    )
+    assert named.control is not None
+    held = named.model_copy(update={"arms": [named.control.model_copy(update={"label": "1024tok"})]})
+    labels = [arm.label for arm in campaign_arms(host.storage, held, profile=host.profile)]
+    assert labels[0] == "1024tok" and labels[1:] == ["1024tok (2)"]

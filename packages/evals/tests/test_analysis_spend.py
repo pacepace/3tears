@@ -24,6 +24,8 @@ Pinned here:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
 import logging
 import threading
 from typing import Any
@@ -32,9 +34,11 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import service as service_module
-from threetears.evals.ops import analysis as ops_analysis
+from threetears.evals.analysis.service import APPROX_INPUT_TOKENS_BASIS, CHARS_PER_TOKEN
 from threetears.evals.schema import JobLease, JobRefusal
 from threetears.evals.ops import (
+    ANALYSIS_PREPARATION_BUDGET_S,
+    AnalysisGeneration,
     analysis_estimate,
     analysis_generate,
     format_number,
@@ -112,7 +116,8 @@ async def test_a_start_returns_its_job_without_assembling_the_bundle(monkeypatch
     assert (running.state, running.done) == ("running", False)
     release.set()
     assert (await settled(fixture.host, job.job_id)).state == "completed"
-    assert assembling == [fixture.campaign.id]
+    # The job assembled it; the fixtured writer assembles it again to write its memo over it.
+    assert assembling and set(assembling) == {fixture.campaign.id}
 
 
 async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_lens_and_action() -> None:
@@ -138,6 +143,30 @@ async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_len
     )
     assert not outcome.is_error, outcome.text
     assert "purpose analysis:" in outcome.text and f"campaign {fixture.campaign.id}" in outcome.text
+
+
+async def test_the_logged_input_size_is_a_ballpark_over_the_exact_first_request_sent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The size a generation discloses before its first call counts what it actually sends (#827): the system prompt,
+    user message and response schema, at two characters a token, and the line says so.
+
+    The old figure was ``chars/4`` over a differently rendered bundle, half or less of what a JSON-heavy call bills.
+    """
+    fixture = off_loop(ops_fixture)
+    with caplog.at_level(logging.INFO, logger="threetears.evals"):
+        (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+        assert (await settled(fixture.host, job.job_id)).state == "completed"
+
+    (writer,) = [each for each in fixture.writers if each.calls]
+    sent, response_format = writer.calls[0], writer.response_formats[0]
+    assert sent["user"].startswith("CAMPAIGN BUNDLE (JSON):") and response_format is not None
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("eval.generate_analysis campaign=")]
+    logged = int(line.split("approx_input_tokens=")[1].split(" ", 1)[0])
+
+    sent_chars = len(sent["system"]) + len(sent["user"]) + len(json.dumps(response_format))
+    assert logged == sent_chars // CHARS_PER_TOKEN
+    assert f"({APPROX_INPUT_TOKENS_BASIS})" in line
 
 
 async def test_with_enforcement_off_a_generation_is_still_ledgered_under_no_cap() -> None:
@@ -272,7 +301,10 @@ async def test_a_preparation_that_never_finishes_ends_the_attempt_failed_and_rel
 ) -> None:
     fixture = off_loop(ops_fixture)
     release = threading.Event()
-    monkeypatch.setattr(ops_analysis, "ANALYSIS_PREPARATION_BUDGET_S", budget_s)
+    assert fixture.host.generation is not None
+    host = dataclasses.replace(
+        fixture.host, generation=dataclasses.replace(fixture.host.generation, preparation_budget_s=budget_s)
+    )
     if hangs_in == "assembly":
         assemble = service_module.assemble_context_bundle
 
@@ -288,8 +320,8 @@ async def test_a_preparation_that_never_finishes_ends_the_attempt_failed_and_rel
 
         monkeypatch.setattr(service_module, "refresh_prices", never_priced)
 
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    status = await settled(fixture.host, job.job_id)
+    (job,) = (await analysis_generate(host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    status = await settled(host, job.job_id)
     release.set()
 
     assert status.state == "failed"
@@ -298,6 +330,20 @@ async def test_a_preparation_that_never_finishes_ends_the_attempt_failed_and_rel
     assert [writer.closed for writer in fixture.writers] == ([] if hangs_in == "assembly" else [1])
     await fixture.host.launch.job_manager.wait_for([job.job_id.rpartition(":")[2]])
     assert fixture.host.launch.job_manager.active_task_ids(generation_key(fixture.campaign.id, TOYHOST_SCOPE)) == []
+
+
+async def test_a_generation_without_a_preparation_budget_runs_under_the_default() -> None:
+    fixture = off_loop(ops_fixture)
+    assert fixture.host.generation is not None
+    assert fixture.host.generation.preparation_budget_s == ANALYSIS_PREPARATION_BUDGET_S == 900.0
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    assert (await settled(fixture.host, job.job_id)).state == "completed"
+
+
+@pytest.mark.parametrize("budget_s", [0.0, -1.0, float("inf"), float("nan")])
+def test_a_preparation_budget_that_is_not_positive_and_finite_is_refused(budget_s: float) -> None:
+    with pytest.raises(ValueError, match="preparation_budget_s must be positive and finite"):
+        AnalysisGeneration(max_output_tokens=10, budget_s=1.0, preparation_budget_s=budget_s)
 
 
 async def test_an_ended_attempt_keeps_the_start_its_call_recorded(monkeypatch: pytest.MonkeyPatch) -> None:

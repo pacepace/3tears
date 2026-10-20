@@ -45,6 +45,7 @@ from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgedArtifact, 
 from threetears.evals.schema.models import TRANSCRIPT_DIM_ID
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
@@ -140,7 +141,9 @@ class _JudgeCampaign:
 
         holder: list[LaunchHost] = []
         self.host: LaunchHost = dataclasses.replace(
-            toy, kinds={JUDGE_KIND: launchable_judge_kind(lambda: holder[0])}, launch_pricer=priced
+            toy,
+            eval_host=with_registry(toy.eval_host, {JUDGE_KIND: launchable_judge_kind(lambda: holder[0])}),
+            launch_pricer=priced,
         )
         holder.append(self.host)
         storage = self.host.eval_host.storage
