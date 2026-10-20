@@ -105,6 +105,13 @@ and `after_model` hook adds its node per round, `before_agent`/`after_agent` onc
 the list); samhla replaces its fixed `recursion_limit` of 80; metallm maps `max_tool_calls_per_turn`,
 `tool_loop_budget_*_pct` and `runaway_zero_progress_rounds` onto the constructor.
 
+### langgraph: a tool-bound model's reply streams
+
+**Fixed:** `StreamingResponse.run_graph` dropped every token of a chat model that streams content blocks
+(langchain-anthropic with tools bound streams `[{"type": "text", "text": ...}]`), so the reader saw nothing
+and `stream_end` carried empty content while the reply was saved. Text blocks now stream; `tool_use`,
+`input_json_delta` and `thinking` blocks stay out. scriob drops its `_ReplyTextGraph` chunk-normalising wrapper.
+
 ### 3tears-evals: a campaign is a campaign of aspects, asking one question
 
 - **One decision is one campaign.** A campaign asks one question of its arms (the control first, then candidates)

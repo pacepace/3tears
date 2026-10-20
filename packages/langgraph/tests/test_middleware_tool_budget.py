@@ -790,3 +790,93 @@ def test_the_sync_seam_runs_the_same_plan() -> None:
     )
     assert [c["told"] for c in model.calls] == [False] * 3 + [True]
     assert state["messages"][-1].content == "here is what I found"
+
+
+# --- the driver: which failures it survives, and what it logs of them ---------------------------------
+
+
+async def test_a_failing_main_call_surfaces_its_own_exception() -> None:
+    def script(index: int, told: bool, messages: list[BaseMessage]) -> AIMessage:
+        raise RuntimeError("provider went away")
+
+    with pytest.raises(RuntimeError, match="provider went away"):
+        await _turn(_scripted(script), ToolLoopBudgetMiddleware())
+
+
+async def test_a_failing_forced_call_surfaces_its_own_exception() -> None:
+    def script(index: int, told: bool, messages: list[BaseMessage]) -> AIMessage:
+        if told:
+            raise RuntimeError("provider went away while answering")
+        return _call(index)
+
+    with pytest.raises(RuntimeError, match="provider went away while answering"):
+        await _turn(_scripted(script), ToolLoopBudgetMiddleware(max_tool_calls=2))
+
+
+class _RefusesTheStandIn(AgentMiddleware):
+    """An inner middleware that fails the fallback's stand-in model call, and passes every other call."""
+
+    async def awrap_model_call(self, request: ModelRequest, handler: Any) -> Any:
+        # the agent's own model is the scripted one; the fallback runs on the budget's stand-in
+        if not isinstance(request.model, _ScriptedModel):
+            raise _ProviderError("SECRET-PROMPT-TEXT echoed by the stand-in's failure")
+        return await handler(request)
+
+
+class _ProviderError(Exception):
+    """A provider's error: it types its HTTP status, and its message may echo the prompt."""
+
+    status_code = 429
+
+
+def _rendered(record: logging.LogRecord) -> str:
+    """Everything a log handler would write for ``record``: message, traceback and extra fields."""
+    return logging.Formatter().format(record) + repr(record.__dict__.get("extra_data"))
+
+
+async def test_a_failing_stand_in_still_answers_with_the_fallback_text(caplog: pytest.LogCaptureFixture) -> None:
+    model = _scripted(lambda index, told, messages: AIMessage(content="") if told else _call(index))
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        messages = await _turn(model, ToolLoopBudgetMiddleware(max_tool_calls=1), extra=[_RefusesTheStandIn()])
+
+    assert messages[-1].content == DEFAULT_TOOL_BUDGET_FALLBACK_TEXT
+    [failed] = [r for r in caplog.records if r.getMessage().startswith("tool-loop budget fallback call failed")]
+    assert failed.__dict__["extra_data"]["call"] == "fallback"
+    assert "SECRET-PROMPT-TEXT" not in _rendered(failed)
+
+
+async def test_a_failed_retry_logs_its_counts_class_and_status_and_none_of_the_providers_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def script(index: int, told: bool, messages: list[BaseMessage]) -> AIMessage:
+        if not told:
+            return _call(index)
+        if index == 2:
+            return AIMessage(content="")
+        raise _ProviderError("the request was: SECRET-PROMPT-TEXT Say hello.")
+
+    with caplog.at_level(logging.WARNING):
+        messages = await _turn(_scripted(script), ToolLoopBudgetMiddleware(max_tool_calls=2))
+
+    assert messages[-1].content == DEFAULT_TOOL_BUDGET_FALLBACK_TEXT
+    [failed] = [r for r in caplog.records if r.getMessage().startswith("tool-loop budget retry failed")]
+    data = failed.__dict__["extra_data"]
+    assert data["call"] == "retry"
+    assert (data["tool_calls"], data["max_tool_calls"]) == (2, 2)
+    assert (data["error_type"], data["status_code"]) == ("_ProviderError", 429)
+    for record in caplog.records:
+        assert "SECRET-PROMPT-TEXT" not in _rendered(record)
+
+
+async def test_an_interrupt_during_the_retry_is_never_swallowed_on_the_async_seam() -> None:
+    calls: list[ModelRequest] = []
+
+    async def handler(request: ModelRequest) -> ModelResponse:
+        calls.append(request)
+        if len(calls) == 1:
+            return ModelResponse(result=[AIMessage(content="")])
+        raise GraphInterrupt(())
+
+    with pytest.raises(GraphInterrupt):
+        await ToolLoopBudgetMiddleware().awrap_model_call(_request(), handler)
+    assert len(calls) == 2

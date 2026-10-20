@@ -1214,7 +1214,22 @@ def _extract_token(event: dict[str, Any]) -> str:
     else:
         chunk = raw_data
     content = getattr(chunk, "content", None) if chunk is not None else None
-    return content if isinstance(content, str) else ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # a provider with tools bound streams content blocks (langchain-anthropic:
+        # ``[{"type": "text", "text": ...}]``); only text blocks are reply text --
+        # tool_use, input_json_delta and thinking blocks never reach the reader.
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
 
 
 async def detect_interrupt(compiled_graph: Any, config: dict[str, Any]) -> Any:

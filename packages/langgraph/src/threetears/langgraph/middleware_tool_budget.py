@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from typing import Annotated, Any, Literal, NotRequired, cast
 
@@ -277,10 +277,128 @@ class _MayFail:
 
     :ivar request: the request to run
     :ivar what: the contained failure's log message
+    :ivar extra: the failure's structured log fields: which call, and the turn's counts
     """
 
     request: ModelRequest
     what: str
+    extra: Mapping[str, object] = field(default_factory=dict)
+
+
+class _ModelCallFailedError(Exception):
+    """What the log records in place of a failed retry or stand-in call's own exception.
+
+    A provider's error message and traceback can echo the prompt, so neither is logged: this
+    carries only the original exception's class name (and its HTTP status, when the provider
+    types one), has no traceback and no cause, and is what :func:`threetears.observe.contain`
+    logs and counts.
+    """
+
+
+def _redacted(exc: Exception) -> _ModelCallFailedError:
+    """A stand-in for ``exc`` that names its class and status and carries none of its text.
+
+    :param exc: the provider call's exception
+    :ptype exc: Exception
+    :return: the stand-in, never raised
+    :rtype: _ModelCallFailedError
+    """
+    status = _status_code(exc)
+    named = type(exc).__name__ if status is None else f"{type(exc).__name__} (status {status})"
+    return _ModelCallFailedError(named)
+
+
+def _status_code(exc: Exception) -> int | None:
+    """The HTTP status a provider's exception types as ``status_code``, if it does.
+
+    :param exc: the exception
+    :ptype exc: Exception
+    :return: the status, or ``None``
+    :rtype: int | None
+    """
+    status = getattr(exc, "status_code", None)
+    return status if isinstance(status, int) and not isinstance(status, bool) else None
+
+
+class _Driver:
+    """Runs one plan: hands each call's response back to it, and absorbs the failures it survives.
+
+    :meth:`ToolLoopBudgetMiddleware.wrap_model_call` and :meth:`~ToolLoopBudgetMiddleware.awrap_model_call`
+    differ only in whether they await the handler; everything else about driving the plan is here.
+    """
+
+    def __init__(self, plan: Generator[_Step, ModelResponse | None, ExtendedModelResponse]) -> None:
+        self._plan = plan
+        self._spent: list[ModelResponse] = []
+        self.result: ExtendedModelResponse | None = None
+        self._step: _Step | None = None
+        self._advance(lambda: next(plan))
+
+    def _advance(self, move: Callable[[], _Step]) -> None:
+        """Move the plan to its next call, or take its result when it ends.
+
+        :param move: resumes the plan and returns its next call
+        :ptype move: Callable[[], _Step]
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            self._step = move()
+        except StopIteration as done:
+            self._step = None
+            self.result = _metered(cast("ExtendedModelResponse", done.value), self._spent)
+
+    @property
+    def pending(self) -> ModelRequest | None:
+        """The request to run next, or ``None`` once the plan has its result.
+
+        :return: the request
+        :rtype: ModelRequest | None
+        """
+        step = self._step
+        return step.request if isinstance(step, _MayFail) else step
+
+    def took(self, response: ModelResponse) -> None:
+        """Hand the pending call's response to the plan.
+
+        :param response: the response
+        :ptype response: ModelResponse
+        :return: nothing
+        :rtype: None
+        """
+        self._spent.append(response)
+        self._advance(lambda: self._plan.send(response))
+
+    def survives(self, exc: Exception) -> bool:
+        """Whether the plan survives the pending call raising ``exc``: a retry or stand-in, and not a graph signal.
+
+        :param exc: what the call raised
+        :ptype exc: Exception
+        :return: whether :meth:`absorb` may take it; otherwise the caller re-raises it unchanged
+        :rtype: bool
+        """
+        return isinstance(self._step, _MayFail) and not isinstance(exc, GraphBubbleUp)
+
+    def absorb(self, exc: Exception) -> None:
+        """Record a failure the plan survives -- its class, status and the turn's counts, never its
+        text -- and answer the plan with ``None``.
+
+        :param exc: what the call raised
+        :ptype exc: Exception
+        :return: nothing
+        :rtype: None
+        :raises TypeError: the pending call is not one the plan survives
+        """
+        step = self._step
+        if not isinstance(step, _MayFail):
+            raise TypeError("only a call the plan survives is absorbed") from exc
+        fields: dict[str, object] = {**step.extra, "error_type": type(exc).__name__}
+        status = _status_code(exc)
+        if status is not None:
+            fields["status_code"] = status
+        # Never the exception itself: a provider's message and traceback can echo the prompt.
+        contain(_redacted(exc), log=log, what=step.what, extra=fields)
+        self._advance(lambda: self._plan.send(None))
 
 
 #: What the plan asks its driver to run: a call whose failure ends the step, or one it survives.
@@ -299,6 +417,20 @@ def _answered(response: ModelResponse | None) -> ModelResponse:
     if response is None:
         raise TypeError("the plan's driver answered a call that may not fail with None")
     return response
+
+
+def _finished(drive: _Driver) -> ExtendedModelResponse:
+    """The result of a plan its driver has run to the end.
+
+    :param drive: the driver
+    :ptype drive: _Driver
+    :return: the step's result
+    :rtype: ExtendedModelResponse
+    :raises TypeError: the plan ended without a result
+    """
+    if drive.result is None:
+        raise TypeError("the tool budget's plan ended without a result")
+    return drive.result
 
 
 def _response_messages(response: ModelResponse) -> list[BaseMessage]:
@@ -920,8 +1052,11 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         if reasoning:
             retry = _RETRY_REASONING_PREFIX.format(reasoning=reasoning) + retry
         # A failed retry is contained by the driver and comes back as ``None``: the fallback answers.
+        counts = {"tool_calls": tool_calls, "max_tool_calls": self.max_tool_calls}
         retried = yield _MayFail(
-            self._answer_only(request, retry), "tool-loop budget retry failed; answering with the fallback"
+            self._answer_only(request, retry),
+            "tool-loop budget retry failed; answering with the fallback",
+            {"call": "retry", **counts},
         )
         if retried is not None and _structured(retried):
             return retried
@@ -933,7 +1068,11 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
             extra={"extra_data": {"tool_calls": tool_calls, "max_tool_calls": self.max_tool_calls}},
         )
         stand_in = request.override(model=_FallbackChatModel(text=self.fallback_text), tool_choice=None)
-        said = yield _MayFail(stand_in, "tool-loop budget fallback call failed; answering without streaming")
+        said = yield _MayFail(
+            stand_in,
+            "tool-loop budget fallback call failed; answering without streaming",
+            {"call": "fallback", **counts},
+        )
         if said is None:
             # The chain refused even the stand-in; the reply still lands in the history, unstreamed.
             return _with_answer(response, AIMessage(content=self.fallback_text, name=empty.name))
@@ -953,26 +1092,17 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         :return: the model step's response, with the turn's record as its command
         :rtype: ExtendedModelResponse
         """
-        plan = self._plan(request)
-        spent: list[ModelResponse] = []
-        try:
-            step = next(plan)
-            while True:
-                if isinstance(step, _MayFail):
-                    try:
-                        outcome: ModelResponse | None = handler(step.request)
-                    except GraphBubbleUp:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - a retry or stand-in that fails gives way to the fallback
-                        contain(exc, log=log, what=step.what)
-                        outcome = None
-                else:
-                    outcome = handler(step)
-                if outcome is not None:
-                    spent.append(outcome)
-                step = plan.send(outcome)
-        except StopIteration as done:
-            return _metered(cast("ExtendedModelResponse", done.value), spent)
+        drive = _Driver(self._plan(request))
+        while (to_run := drive.pending) is not None:
+            try:
+                response = handler(to_run)
+            except Exception as exc:
+                if not drive.survives(exc):
+                    raise
+                drive.absorb(exc)
+            else:
+                drive.took(response)
+        return _finished(drive)
 
     async def awrap_model_call(
         self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
@@ -986,23 +1116,14 @@ class ToolLoopBudgetMiddleware(AgentMiddleware):
         :return: the model step's response, with the turn's record as its command
         :rtype: ExtendedModelResponse
         """
-        plan = self._plan(request)
-        spent: list[ModelResponse] = []
-        try:
-            step = next(plan)
-            while True:
-                if isinstance(step, _MayFail):
-                    try:
-                        outcome: ModelResponse | None = await handler(step.request)
-                    except GraphBubbleUp:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - a retry or stand-in that fails gives way to the fallback
-                        contain(exc, log=log, what=step.what)
-                        outcome = None
-                else:
-                    outcome = await handler(step)
-                if outcome is not None:
-                    spent.append(outcome)
-                step = plan.send(outcome)
-        except StopIteration as done:
-            return _metered(cast("ExtendedModelResponse", done.value), spent)
+        drive = _Driver(self._plan(request))
+        while (to_run := drive.pending) is not None:
+            try:
+                response = await handler(to_run)
+            except Exception as exc:
+                if not drive.survives(exc):
+                    raise
+                drive.absorb(exc)
+            else:
+                drive.took(response)
+        return _finished(drive)
