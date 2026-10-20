@@ -101,6 +101,12 @@ version history:
   media, media_content and memory_chunks where no row lacks one, and
   ``memories.date_updated`` (a NULL takes the row's ``date_created``).
 
+the three embedding columns (v001 ``memories``, v006 ``media_content``,
+v007 ``memory_chunks``) are created at the width :func:`register` is given
+(``embedding_dim``, default 1024); see
+:mod:`threetears.agent.memory.embedding_width` for verifying and changing
+the width of a schema that already exists.
+
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
 exists today (the constraint would force a cross-package teardown
@@ -108,6 +114,9 @@ order; ordering on apply is enough).
 """
 
 from __future__ import annotations
+
+from collections.abc import Awaitable
+from typing import Protocol
 
 from threetears.agent.memory.migrations.v001_create_memories_table import (
     create_memories_table,
@@ -202,16 +211,61 @@ from threetears.agent.memory.migrations.v030_recompute_memory_chunks_search_vect
 from threetears.agent.memory.migrations.v031_declared_not_null_columns import (
     declared_not_null_columns,
 )
+from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, check_embedding_dim
 from threetears.core.data.migrations import (
+    MigrationFunc,
     MigrationRunner,
     MigrationScope,
     PackageMigrations,
 )
+from threetears.core.data.store import DataStore
 
 PACKAGE_NAME = "agent_memory"
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+class _CreatesEmbeddingColumn(Protocol):
+    """a migration body that creates an embedding column of a given width."""
+
+    __name__: str
+
+    def __call__(self, store: DataStore, *, embedding_dim: int) -> Awaitable[None]:
+        """run the migration with its embedding column ``embedding_dim`` wide.
+
+        :param store: DataStore bound to the per-agent schema
+        :ptype store: DataStore
+        :param embedding_dim: the embedding column's width
+        :ptype embedding_dim: int
+        :return: awaitable completing the migration
+        :rtype: Awaitable[None]
+        """
+        ...
+
+
+def _at_width(migration: _CreatesEmbeddingColumn, embedding_dim: int) -> MigrationFunc:
+    """``migration`` bound to ``embedding_dim``, as the runner calls a migration.
+
+    :param migration: a migration body that creates an embedding column
+    :ptype migration: _CreatesEmbeddingColumn
+    :param embedding_dim: the configured width
+    :ptype embedding_dim: int
+    :return: the body taking only the store
+    :rtype: MigrationFunc
+    """
+
+    async def migrate(store: DataStore) -> None:
+        """run the bound migration.
+
+        :param store: DataStore bound to the per-agent schema
+        :ptype store: DataStore
+        :return: nothing
+        :rtype: None
+        """
+        await migration(store, embedding_dim=embedding_dim)
+
+    return migrate
+
+
+def register(runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> PackageMigrations:
     """
     register agent-memory migrations with the given runner.
 
@@ -220,23 +274,39 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     always exists before memory tables are created. attaches every
     migration in version order and calls ``runner.register``.
 
+    ``embedding_dim`` is the width of the ``memories``, ``media_content``
+    and ``memory_chunks`` embedding columns, the deployment's embedding
+    provider's. v001, v006 and v007 create them at that width; each is
+    registered under its function's own name, so a schema migrated at any
+    width keeps the ledger it has. the width takes effect only where those
+    migrations have not run: an existing schema keeps the width it was
+    built with, checked by :func:`~threetears.agent.memory.embedding_width.
+    verify_embedding_width` and changed only by :func:`~threetears.agent.
+    memory.embedding_width.resize_embedding_width`. PostgreSQL indexes at
+    most 2,000 dimensions and YugabyteDB 16,000; a width above the
+    database's is refused when v001 runs, before any statement.
+
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param embedding_dim: the embedding columns' width; default 1024
+    :ptype embedding_dim: int
     :return: populated package registration
     :rtype: PackageMigrations
+    :raises ValueError: when ``embedding_dim`` is below 1 or above 16,000
     """
+    check_embedding_dim(embedding_dim)
     pkg = PackageMigrations(
         name=PACKAGE_NAME,
         scope=MigrationScope.AGENT,
         depends_on=("conversations",),
     )
-    pkg.version(1)(create_memories_table)
+    pkg.step(1, name=create_memories_table.__name__)(_at_width(create_memories_table, embedding_dim))
     pkg.version(2)(create_conversation_memory_refs)
     pkg.version(3)(reconcile_memory_columns)
     pkg.version(4)(add_lifecycle_columns)
     pkg.version(5)(add_memory_fts)
-    pkg.version(6)(create_media_tables)
-    pkg.version(7)(create_memory_chunks)
+    pkg.step(6, name=create_media_tables.__name__)(_at_width(create_media_tables, embedding_dim))
+    pkg.step(7, name=create_memory_chunks.__name__)(_at_width(create_memory_chunks, embedding_dim))
     pkg.version(8)(restore_memories_agent_customer_not_null)
     pkg.version(9)(media_composite_fk)
     pkg.version(10)(media_content_composite_fk)

@@ -127,6 +127,10 @@ async def _seed_memory(
     return memory_id
 
 
+#: The embedding a seeded chunk carries unless a test says otherwise.
+_EMBEDDED = [0.1] * 1024
+
+
 async def _seed_chunk(
     chunks: MemoryChunkCollection,
     *,
@@ -139,8 +143,12 @@ async def _seed_chunk(
     message_id_end: uuid.UUID | None = None,
     chunk_index: int = 0,
     token_count: int = 1,
+    embedding: list[float] | None = _EMBEDDED,
 ) -> uuid.UUID:
-    """Insert one chunk parented to ``memory_id``; returns its chunk_id."""
+    """Insert one chunk parented to ``memory_id``; returns its chunk_id.
+
+    ``embedding=None`` stores a chunk not yet embedded (a NULL column), as a failed or pending embed leaves it.
+    """
     import uuid_utils
 
     # Use uuid7 so chunk_id is byte-ordered with creation time; cursor
@@ -160,7 +168,7 @@ async def _seed_chunk(
             "heading_context": None,
             "page_number": None,
             "token_count": token_count,
-            "embedding": [0.1] * 1024,
+            "embedding": embedding,
             "message_id_start": message_id_start,
             "message_id_end": message_id_end,
             "date_created": now,
@@ -777,5 +785,62 @@ class TestHybridSearchWithinMemory:
                 chunk_signal_weights={"semantic": 0.7, "keyword": 0.3},
             )
             assert result == []
+        finally:
+            await pool.close()
+
+    async def test_a_chunk_not_yet_embedded_is_skipped_not_fatal(
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """A chunk with no embedding has no similarity: the vector arm must leave it out.
+
+        Every other vector query here guards ``embedding IS NOT NULL``; this one did not, so one
+        un-embedded chunk in a memory made its whole search fail (``float(None)`` on its NULL distance).
+        """
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        try:
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
+            agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            mem = await _seed_memory(
+                memories,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                conversation_id=uuid.uuid4(),
+            )
+            await _seed_chunk(
+                chunks,
+                memory_id=mem,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                content="harbor embedded",
+            )
+            await _seed_chunk(
+                chunks,
+                memory_id=mem,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                content="lighthouse pending",
+                chunk_index=1,
+                embedding=None,
+            )
+
+            result = await chunks.hybrid_search_within_memory(
+                memory_id=mem,
+                user_id=user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                embedding=_EMBEDDED,
+                user_text="nothing that matches",
+                candidate_k=10,
+                similarity_threshold=0.0,
+                chunk_signal_weights={"semantic": 0.7, "keyword": 0.3},
+            )
+
+            assert [row["content"] for row in result] == ["harbor embedded"]
         finally:
             await pool.close()

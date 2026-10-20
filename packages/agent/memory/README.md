@@ -166,7 +166,7 @@ config = MemoryConfig(
 
 Requires PostgreSQL with the `pgvector` extension. The package's own migration runner (`threetears.agent.memory.migrations.register`) produces the full schema per agent schema. Registered versions:
 
-- **v001** -- `memories` (PK `memory_id`, pgvector `embedding`, scoping ids, content, summary, lifecycle timestamps).
+- **v001** -- `memories` (PK `memory_id`, pgvector `embedding` at the configured width, scoping ids, content, summary, lifecycle timestamps).
 - **v002** -- `conversation_memory_refs` (ledger of per-conversation surfaced items).
 - **v003** -- column reconciliation: renames PK and discriminator to match the package code (`id` to `memory_id`, `memory_type` to `type_memory`), drops columns the code does not read (`embedding_model`, `importance`, `metadata`, `date_accessed`), loosens `agent_id`/`customer_id` to NULL.
 - **v004** -- lifecycle + conversation-link columns on `memories` (`conversation_id`, `message_id_source`, `is_deleted`, `media_id`, `date_deleted`, `summary`) with indexes.
@@ -175,6 +175,26 @@ Requires PostgreSQL with the `pgvector` extension. The package's own migration r
 - **v007** -- `memory_chunks` (document-style chunks with heading / page metadata + embedding + FTS).
 
 Every FTS column is trigger-maintained from `content` + `summary` (weighted A/B); callers do not have to populate `search_vector` manually. Integration tests under `tests/integration/` exercise the full chain + every public API surface against `pgvector/pgvector:pg16` via testcontainers.
+
+### Embedding width
+
+`memories.embedding`, `media_content.embedding` and `memory_chunks.embedding` are plain pgvector `vector(N)` columns, and N is a deployment setting: the width your embedding provider produces. It defaults to **1024** (Voyage AI's voyage-4), so a host that configures nothing is unaffected. Configure it in three places, with the same value:
+
+```python
+from threetears.agent.memory.collections import MemoriesCollection, memories_table
+from threetears.agent.memory.migrations import register
+
+register(runner, embedding_dim=1536)                       # v001 / v006 / v007 create the columns at 1536
+memories = MemoriesCollection(registry, config, authorizer, embedding_dim=1536)
+memories_table(metadata, embedding_dim=1536)                # likewise media_content_table, memory_chunks_table
+```
+
+agent-intention takes the same `embedding_dim`, and should be given the same width, so one provider serves both.
+
+- **Ceilings.** The column is only useful with its HNSW index. PostgreSQL's pgvector HNSW takes a `vector` of at most **2,000** dimensions; YugabyteDB's `ybhnsw` takes up to **16,000** (and has no `halfvec` operator class, so the column stays `vector` everywhere). `register` refuses a width below 1 or above 16,000; the v001 migration refuses a width above 2,000 on PostgreSQL before any statement runs.
+- **Writes are checked.** A save whose embedding is not the collection's width is refused with a `ValueError` naming both widths, before any cache tier takes the row or any SQL runs.
+- **An existing schema keeps its width.** Migrations run once, so changing `embedding_dim` later does not change a schema. At start-up, `await verify_embedding_width(store, embedding_dim)` (from `threetears.agent.memory.embedding_width`, also exported from the package root) reads each column's declared width from the catalogue and raises `EmbeddingWidthMismatch` naming the table, the stored width and the configured one.
+- **Changing the width is an operator action.** `await resize_embedding_width(store, embedding_dim)` drops each column's HNSW index, alters the column to `vector(N)` with `USING NULL`, recreates every index under its own name and options, and returns how many embeddings it cleared. Every memory, media content and chunk keeps its content and **loses its embedding**: re-embed every row with the new model afterwards. Nothing runs it automatically. **Run it with writes to these tables stopped:** on YugabyteDB the column change is a table rewrite, and writes made while it runs may be lost ("Concurrent DMLs may not be reflected in the new table", yugabyte-db issue 19860). A `DataStore` runs it on one connection holding the database-wide DDL lock; if it stops part way, running it again recreates any of the package's own indexes that is missing; an index you added yourself is logged, with its full definition, before it is dropped, so it can be recreated by hand.
 
 ## RBAC Enforcement
 

@@ -10,6 +10,7 @@ exactly one table in v001 (``memories``) plus its supporting indexes.
 
 from __future__ import annotations
 
+from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, require_indexable_embedding_dim
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -28,7 +29,16 @@ log = get_logger(__name__)
 # the index keeps the operator-class lookup explicit.
 _CREATE_VECTOR_EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public"
 
-_CREATE_MEMORIES_SQL = """
+
+def _create_memories_sql(embedding_dim: int) -> str:
+    """the ``memories`` DDL, its embedding column ``embedding_dim`` wide.
+
+    :param embedding_dim: the configured embedding width
+    :ptype embedding_dim: int
+    :return: the ``CREATE TABLE`` statement
+    :rtype: str
+    """
+    sql = f"""
 CREATE TABLE IF NOT EXISTS memories (
     id UUID PRIMARY KEY,
     agent_id UUID NOT NULL,
@@ -42,9 +52,11 @@ CREATE TABLE IF NOT EXISTS memories (
     date_created TIMESTAMP NOT NULL,
     date_updated TIMESTAMP NOT NULL,
     date_accessed TIMESTAMP,
-    embedding public.vector(1024)
+    embedding public.vector({embedding_dim})
 )
 """
+    return sql
+
 
 _CREATE_MEM_AGENT_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mem_agent ON memories (agent_id)"
 
@@ -57,16 +69,21 @@ _CREATE_MEM_EMBEDDING_IDX_SQL = (
 )
 
 
-async def create_memories_table(store: DataStore) -> None:
+async def create_memories_table(store: DataStore, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
     """
     create the memories table plus pgvector extension and indexes.
 
     :param store: DataStore bound to per-agent schema via search_path
     :ptype store: DataStore
+    :param embedding_dim: the embedding column's width; a width the database cannot index is
+        refused before any statement runs
+    :ptype embedding_dim: int
+    :raises ValueError: when the database cannot index ``embedding_dim``
     """
+    await require_indexable_embedding_dim(store, embedding_dim)
     log.info("creating memory package tables")
     await store.execute(_CREATE_VECTOR_EXTENSION_SQL)
-    await store.execute(_CREATE_MEMORIES_SQL)
+    await store.execute(_create_memories_sql(embedding_dim))
     await store.execute(_CREATE_MEM_AGENT_IDX_SQL)
     await store.execute(_CREATE_MEM_CUSTOMER_IDX_SQL)
     await store.execute(_CREATE_MEM_USER_IDX_SQL)
