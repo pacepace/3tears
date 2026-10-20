@@ -58,7 +58,9 @@ them; cancelled while it waited, `gather` could raise a child's own message-less
 canceller's, which anyio (Starlette serves sockets inside it) does not recognise as its own, so it escaped the app
 (Starlette's TestClient raised `concurrent.futures.CancelledError` leaving a socket block, about one exit in three).
 The cleanup now waits until both tasks have stopped, keeping any cancellation that arrives meanwhile, and raises
-that one, the canceller's, after they have; every task's outcome is read.
+that one, the canceller's, after they have; every task's outcome is read. Whether they have stopped is read
+from the tasks themselves: anyio re-delivers a scope's cancellation on every loop iteration, ahead of the
+callbacks by which `asyncio.wait` learns its tasks are done, so a cleanup trusting `wait`'s result spun forever.
 
 ### models: a pooled Claude CLI start no longer spawns `claude -v` on the event loop
 

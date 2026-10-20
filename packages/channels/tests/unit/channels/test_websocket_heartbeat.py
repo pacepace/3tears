@@ -751,3 +751,36 @@ class TestCancelledWhileCleaningUp:
         with pytest.raises(asyncio.CancelledError) as raised:
             await asyncio.wait_for(task, _STEP_TIMEOUT)
         assert raised.value.args == ("the server is shutting down",)
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_redelivered_every_iteration_still_ends_once_both_have_stopped(self) -> None:
+        """anyio re-delivers a scope's cancellation on every loop iteration until the task ends. Each delivery
+        lands before ``asyncio.wait`` can see its tasks are done (its completion callbacks are scheduled behind
+        it), so a cleanup that trusts only what ``wait`` returns waits forever, spinning: one run of scriob's
+        cross-tenant join test spun this way for six hours."""
+        ticker = _SlowToStopTicker()
+        peer = _PeerSocket()
+        task = asyncio.create_task(_handler(ticker).handle_connection(peer))
+        await ticker.armed()
+        loop = asyncio.get_running_loop()
+
+        scope_cancelled = [True]
+
+        def redeliver() -> None:
+            if scope_cancelled[0] and not task.done():
+                task.cancel("the scope is cancelled")
+                loop.call_soon(redeliver)
+
+        peer.hang_up()
+        await asyncio.wait_for(ticker.cancelled.wait(), _STEP_TIMEOUT)
+        redeliver()
+        ticker.let_stop.set()
+
+        try:
+            await asyncio.wait({task}, timeout=_STEP_TIMEOUT)
+        finally:
+            scope_cancelled[0] = False  # a cleanup that spins is failed by the timeout, not left spinning
+        assert task.done(), "the cleanup was still waiting for tasks that had stopped"
+        with pytest.raises(asyncio.CancelledError) as raised:
+            task.result()
+        assert raised.value.args == ("the scope is cancelled",)

@@ -440,19 +440,22 @@ async def _stop_both(tasks: tuple[asyncio.Task[None], ...]) -> None:
     a cancellation it recognises as its own, so the swapped one escaped the app. A bare ``wait`` is wrong the
     other way: a cancel lands at once, and the connection's teardown then runs while a child is still
     stopping. So: wait in a loop until all have stopped, keep the cancellation that arrived (anyio re-delivers
-    it while the task is waiting), and raise that one, the canceller's, once they have.
+    it while the task is waiting), and raise that one, the canceller's, once they have. Whether they have is
+    read from the tasks, never from what ``wait`` returns: anyio re-delivers on every loop iteration, ahead of
+    the callbacks by which ``wait`` learns its tasks are done, so under a cancelled scope ``wait`` never returns.
 
     :param tasks: the tasks just cancelled
     :ptype tasks: tuple[asyncio.Task[None], ...]
     :raises asyncio.CancelledError: the cancellation that arrived while waiting, once every task has stopped
     """
-    pending: set[asyncio.Task[None]] = set(tasks)
+    pending = [task for task in tasks if not task.done()]
     arrived: asyncio.CancelledError | None = None
     while pending:
         try:
-            _done, pending = await asyncio.wait(pending)
+            await asyncio.wait(pending)
         except asyncio.CancelledError as exc:
             arrived = exc  # re-raised once the tasks have stopped
+        pending = [task for task in pending if not task.done()]
     if arrived is not None:
         raise arrived
 
