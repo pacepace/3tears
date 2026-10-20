@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -17,7 +18,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
+from nats.errors import ConnectionClosedError as NatsConnectionClosedError
+from nats.errors import NoRespondersError
+from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError, NoStreamResponseError
 
 from threetears.nats import KvError, NatsKvBucket
 from threetears.nats.errors import PublishTimeoutError
@@ -333,16 +337,22 @@ async def test_delete_idempotent_on_missing_key() -> None:
 
 @pytest.mark.asyncio
 async def test_get_wraps_transport_failure() -> None:
-    bucket, kv = _make_bucket()
-    kv.fail_next = RuntimeError("transport down")
+    # the connection fails on the first handle and on the one the self-heal re-opens
+    kv, healed_kv = _FakeKv(), _FakeKv()
+    kv.fail_next = NatsConnectionClosedError()
+    healed_kv.fail_next = NatsConnectionClosedError()
+    bucket = _make_self_healing_bucket(kv, healed_kv)
     with pytest.raises(KvError):
         await bucket.get(key="k")
 
 
 @pytest.mark.asyncio
 async def test_put_wraps_transport_failure() -> None:
-    bucket, kv = _make_bucket()
-    kv.fail_next = RuntimeError("transport down")
+    # the connection fails on the first handle and on the one the self-heal re-opens
+    kv, healed_kv = _FakeKv(), _FakeKv()
+    kv.fail_next = NatsConnectionClosedError()
+    healed_kv.fail_next = NatsConnectionClosedError()
+    bucket = _make_self_healing_bucket(kv, healed_kv)
     with pytest.raises(KvError):
         await bucket.put(key="k", value=b"v")
 
@@ -356,7 +366,7 @@ async def test_create_self_heals_after_stream_vanishes() -> None:
     retries against the recreated bucket.
     """
     broken_kv = _FakeKv()
-    broken_kv.fail_next = RuntimeError("nats: no response from stream")
+    broken_kv.fail_next = NoStreamResponseError()
     healed_kv = _FakeKv()
     bucket = _make_self_healing_bucket(broken_kv, healed_kv)
 
@@ -369,7 +379,7 @@ async def test_create_self_heals_after_stream_vanishes() -> None:
 @pytest.mark.asyncio
 async def test_put_self_heals_after_stream_vanishes() -> None:
     broken_kv = _FakeKv()
-    broken_kv.fail_next = RuntimeError("nats: no response from stream")
+    broken_kv.fail_next = NoStreamResponseError()
     healed_kv = _FakeKv()
     bucket = _make_self_healing_bucket(broken_kv, healed_kv)
 
@@ -398,13 +408,54 @@ async def test_miss_does_not_trigger_reopen() -> None:
 async def test_persistent_failure_after_reopen_surfaces_kverror() -> None:
     """If the op still fails AFTER a re-open (NATS genuinely down), surface KvError."""
     broken_kv = _FakeKv()
-    broken_kv.fail_next = RuntimeError("down")
+    broken_kv.fail_next = NatsConnectionClosedError()
     healed_kv = _FakeKv()
-    healed_kv.fail_next = RuntimeError("still down")  # the retry fails too
+    healed_kv.fail_next = NatsConnectionClosedError()  # the retry fails too
     bucket = _make_self_healing_bucket(broken_kv, healed_kv)
 
     with pytest.raises(KvError):
         await bucket.put(key="k", value=b"v")
+
+
+class TestABugIsNotATransportFailure:
+    """only what a nats-py call raises is a transport failure; a bug is neither self-healed nor a KvError.
+
+    The L2 accessors catch ``KvError`` and degrade, so a bug wrapped as one would read as an outage
+    and turn a cache tier off quietly, and the self-heal would spend a re-open on it first.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_bug_raised_by_the_operation_propagates_without_a_reopen(self) -> None:
+        broken_kv, healed_kv = _FakeKv(), _FakeKv()
+        broken_kv.fail_next = TypeError("a bug in the call")
+        bucket = _make_self_healing_bucket(broken_kv, healed_kv)
+
+        with pytest.raises(TypeError, match="a bug in the call"):
+            await bucket.put(key="k", value=b"v")
+        # no re-open: the next write still lands on the handle the bucket was opened with
+        await bucket.put(key="after", value=b"v")
+        assert "after" in broken_kv.store and healed_kv.store == {}
+
+    @pytest.mark.asyncio
+    async def test_a_socket_error_from_the_flush_is_a_transport_failure(self) -> None:
+        # nats-py flushes inline when its flusher task is gone, and the socket's error leaves as itself
+        broken_kv, healed_kv = _FakeKv(), _FakeKv()
+        broken_kv.fail_next = ConnectionResetError("broker dropped the socket")
+        bucket = _make_self_healing_bucket(broken_kv, healed_kv)
+
+        assert await bucket.put(key="k", value=b"v") > 0
+        assert "k" in healed_kv.store
+
+    @pytest.mark.asyncio
+    async def test_a_reply_that_is_not_json_is_a_transport_failure(self) -> None:
+        # what nats-py's json.loads raises for a JetStream API reply that something else answered
+        broken_kv, healed_kv = _FakeKv(), _FakeKv()
+        broken_kv.fail_next = json.JSONDecodeError("Expecting value", "<html>", 0)
+        healed_kv.fail_next = json.JSONDecodeError("Expecting value", "<html>", 0)
+        bucket = _make_self_healing_bucket(broken_kv, healed_kv)
+
+        with pytest.raises(KvError):
+            await bucket.put(key="k", value=b"v")
 
 
 # parity-exempt: minimal JetStream stand-in exposing stream_info for the date_created read, plus the add_stream/key_value pair a self-heal re-open declares and binds through; the full JetStreamContext surface is unrelated to it
@@ -471,12 +522,20 @@ class TestDateCreated:
 
     @pytest.mark.asyncio
     async def test_a_failing_stream_info_raises_kverror_after_one_reopen(self) -> None:
-        js = _StreamInfoJetStream(error=RuntimeError("nats: no response from stream"))
+        js = _StreamInfoJetStream(error=NatsTimeoutError())
         bucket = _bucket_over(js)
         with pytest.raises(KvError, match="stream info failed"):
             await bucket.date_created()
         assert js.reopened == ["3tears-tests"]  # the self-heal re-opened the bucket exactly once
         assert len(js.asked) == 2  # and retried once before surfacing
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_stream_info_read_propagates_without_a_reopen(self) -> None:
+        js = _StreamInfoJetStream(error=AttributeError("a bug in the call"))
+        with pytest.raises(AttributeError, match="a bug in the call"):
+            await _bucket_over(js).date_created()
+        assert js.reopened == []
+        assert len(js.asked) == 1
 
 
 @pytest.mark.asyncio
@@ -657,7 +716,7 @@ class TestOpeningAnUngrantedBucket:
         js = MagicMock()
 
         async def _refused(*_args: object, **_kwargs: object) -> None:
-            raise TimeoutError("nats: timeout")
+            raise NatsTimeoutError()
 
         # A refusal is never ANSWERED -- the server drops the request and the call
         # dies on its own deadline. Both halves of the opener look like this, which
@@ -698,7 +757,7 @@ class TestOpeningAnUngrantedBucket:
         js = MagicMock()
 
         async def _refused(*_args: object, **_kwargs: object) -> None:
-            raise TimeoutError("nats: timeout")
+            raise NatsTimeoutError()
 
         js.key_value = _refused
         client = MagicMock()
@@ -927,7 +986,7 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
         async def _refused(*_args: object, **_kwargs: object) -> None:
             nonlocal calls
             calls += 1
-            raise TimeoutError("nats: timeout")
+            raise NatsTimeoutError()
 
         js = MagicMock()
         js.key_value = _refused
@@ -949,7 +1008,7 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
         stale = _FakeKv()
 
         async def _stream_gone(key: str) -> Any:
-            raise RuntimeError("nats: no response from stream")
+            raise NoRespondersError()
 
         stale.get = _stream_gone  # type: ignore[method-assign]
         healed = _FakeKv()

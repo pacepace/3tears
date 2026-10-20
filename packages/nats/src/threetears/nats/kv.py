@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
@@ -47,6 +48,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_checkable
 
 from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
+from nats.errors import Error as NatsError
 from nats.errors import NotJSMessageError
 from nats.js.api import (
     AckPolicy,
@@ -379,6 +381,25 @@ def _msg_ttl_seconds(ttl: timedelta | None) -> float | None:
 #: and downgraded to a per-operation warning, and the process would run on against the bucket.
 _OPEN_REFUSALS: Final[tuple[type[NatsClientError], ...]] = (KvConfigMismatch, StreamSubjectsOverlapError)
 
+#: What a nats-py call that reaches the broker raises when the CALL failed, as opposed to the code
+#: around it. Every nats-py exception -- a refusal, a deadline, a closed connection -- derives from
+#: ``nats.errors.Error``. Two failures leave nats-py as something else: a socket error from the
+#: inline flush a publish or request falls back to when the flusher task is gone, as an ``OSError``;
+#: and a JetStream API reply that is not JSON (an API prefix or account import answered by something
+#: other than JetStream), as the ``JSONDecodeError`` of nats-py's own ``json.loads``. No try body
+#: that catches these does file I/O or decodes JSON of ours, so neither hides a bug. Anything else
+#: raised there is a bug of ours, and propagates rather than reading as an outage.
+_NATS_CALL_FAILURES: Final[tuple[type[Exception], ...]] = (NatsError, OSError, json.JSONDecodeError)
+
+#: A nats-py call run under :func:`~threetears.nats._publish.run_bounded` (or
+#: :func:`~threetears.nats._publish.publish_bounded`) fails as one of those, or as the deadline it blew.
+_BOUNDED_CALL_FAILURES: Final[tuple[type[Exception], ...]] = (*_NATS_CALL_FAILURES, PublishTimeoutError)
+
+#: What one operation's self-heal (:meth:`NatsKvBucket._run_with_reopen`) fails with: a bounded call,
+#: or the re-open's own ``KvError`` (``KvBucketNotFoundError`` among them), which
+#: :meth:`NatsKvBucket._run_op` wraps like any other -- :func:`_kv_error` keeps an absent bucket's type.
+_OPERATION_FAILURES: Final[tuple[type[Exception], ...]] = (*_BOUNDED_CALL_FAILURES, KvError)
+
 
 def _kv_error(message: str, *, bucket: str, cause: BaseException) -> KvError:
     """the typed error a failed KV call surfaces as: an absent bucket gets its own type.
@@ -643,7 +664,7 @@ async def open_kv_stream(
     created = False
     try:
         await js.add_stream(config)
-    except Exception as exc:  # noqa: BLE001 -- classified below, never swallowed
+    except _NATS_CALL_FAILURES as exc:  # classified below, never swallowed
         _raise_if_subjects_overlap(exc, full_name=full_name, config=config)
         if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
             # name-in-use is the expected answer for an existing bucket and is reconciled below; anything
@@ -682,7 +703,7 @@ async def open_kv_stream(
     kv: KeyValue
     try:
         kv = await js.key_value(full_name)
-    except Exception as bind_exc:
+    except _NATS_CALL_FAILURES as bind_exc:
         if is_bucket_not_found(bind_exc):
             # the server ANSWERED the bind: the bucket is absent, so the create before it is the call
             # that decides the remedy -- unanswered, it is the shape a principal refused STREAM.CREATE
@@ -745,7 +766,7 @@ async def _bind_when_declared(*, js: Any, full_name: str, timings: KvTimings) ->
             deadline_seconds=timings.bind_wait_for_declarer_seconds,
             on_retry=_absent_again,
         )
-    except Exception as exc:
+    except _NATS_CALL_FAILURES as exc:
         if is_bucket_not_found(exc):
             raise KvBucketNotFoundError(
                 f"bind KV bucket failed: bucket={full_name} does not exist, and its declarer did not "
@@ -993,7 +1014,7 @@ async def _recreate_owned_kv_stream(
     recreated = {field: value for field, value in differences.items() if field in _OWNED_RECREATE_KV_STREAM_FIELDS}
     try:
         await js.delete_stream(config.name)
-    except Exception as exc:
+    except _NATS_CALL_FAILURES as exc:
         if not is_bucket_not_found(exc):
             raise _kv_error(
                 f"recreating KV bucket {full_name!r} failed: deleting its stream was refused: {exc}. it is "
@@ -1010,7 +1031,7 @@ async def _recreate_owned_kv_stream(
     result = config
     try:
         await js.add_stream(config)
-    except Exception as exc:
+    except _NATS_CALL_FAILURES as exc:
         _raise_if_subjects_overlap(exc, full_name=full_name, config=config)
         if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
             raise _kv_error(
@@ -1112,7 +1133,7 @@ async def _reconcile_in_place(
         update = dataclasses.replace(live, **changes)
         try:
             await js.update_stream(update)
-        except Exception as exc:
+        except _NATS_CALL_FAILURES as exc:
             raise _kv_error(
                 f"reconciling KV bucket {full_name!r} failed: {exc}. it is live with "
                 f"{_render_differences(reconcilable)} and this principal could not update it. "
@@ -1288,7 +1309,7 @@ async def _live_stream_config(*, js: Any, full_name: str, stream: str | None) ->
     """
     try:
         info = await js.stream_info(stream)
-    except Exception as exc:
+    except _NATS_CALL_FAILURES as exc:
         if is_bucket_not_found(exc):
             # answered: the stream is gone, which no grant would fix.
             raise KvBucketNotFoundError(
@@ -1798,7 +1819,7 @@ class NatsKvBucket:
             # PublishTimeoutError, not this line.
             self._log_timeout_remedy()
             raise
-        except Exception as exc:  # noqa: BLE001 - transport failure: self-heal once, then let it surface
+        except _NATS_CALL_FAILURES as exc:  # transport failure: self-heal once, then let it surface
             contain(
                 exc, log=log, what="KV operation failed on a transport error; reopening the bucket and retrying once"
             )
@@ -1835,7 +1856,7 @@ class NatsKvBucket:
         except _OPEN_REFUSALS:
             # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
             raise
-        except Exception as exc:
+        except _OPERATION_FAILURES as exc:
             raise _kv_error(f"{failure}: {exc}", bucket=self._full_name, cause=exc) from exc
 
     def _log_timeout_remedy(self) -> None:
@@ -2426,7 +2447,7 @@ class NatsKvBucket:
             # like every other operation: a handle whose connection was replaced (a credential
             # renewal, a move off a lame-duck server) is bound again on the current one first.
             await self._follow_connection()
-        except Exception as exc:
+        except _BOUNDED_CALL_FAILURES as exc:
             if not is_bucket_not_found(exc):
                 raise _kv_error(
                     f"listing keys of {self._full_name} failed binding it on the current connection: {exc}",
@@ -2649,7 +2670,7 @@ class _KeyWatchConsumer:
                 pending=int(getattr(info, "num_pending", 0) or 0),
             )
         # NOSILENT: logged naming the grant to check; the caller pauses and creates another
-        except Exception as exc:  # noqa: BLE001 -- a failed create is retried, never raised
+        except _BOUNDED_CALL_FAILURES as exc:  # a failed create is retried, never raised
             contain(
                 exc,
                 log=log,
