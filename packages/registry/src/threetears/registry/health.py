@@ -27,6 +27,8 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from threetears.agent.tools.server import HeartbeatMessage
 from threetears.nats import Subjects
 from threetears.nats.errors import KvError
@@ -274,7 +276,7 @@ class HeartbeatSubscriber:
         """
         try:
             heartbeat = HeartbeatMessage.model_validate_json(msg.data)
-        except Exception as exc:
+        except ValidationError as exc:
             contain(
                 exc,
                 log=log,

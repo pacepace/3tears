@@ -203,6 +203,21 @@ class TestALearnThatFailsDoesNotBreakRegistration:
         await server.publish_registration(await_reply=True)
         assert server.owned_namespaces is None
 
+    async def test_a_bug_while_reading_the_reply_propagates_rather_than_reading_as_no_answer(self) -> None:
+        """only a request the bus could not complete costs the answer; a TypeError is a bug.
+
+        It used to be contained as "could not read the registration reply", blaming the registry.
+
+        :return: none
+        :rtype: None
+        """
+        nc = AsyncMock()
+        nc.request = AsyncMock(side_effect=TypeError("a bug in the request"))
+        server = _server(nc)
+        with pytest.raises(TypeError, match="a bug in the request"):
+            await server.publish_registration(await_reply=True)
+        assert server.owned_namespaces is None
+
     async def test_a_refused_registration_leaves_the_pod_unidentified(self) -> None:
         """a reply that says the registration failed carries no identity to keep.
 

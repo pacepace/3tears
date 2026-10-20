@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, tzinfo
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
 from uuid_utils import uuid7
@@ -32,6 +32,9 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
 from threetears.observe.text_block import under
+from threetears.core.backends import RowcountUnreadableError
+from threetears.core.coordination.tables import STORAGE_FAILURES
+from threetears.core.exceptions import ConcurrentModificationError, GenerationUnavailableError
 from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_query
 from threetears.langgraph.events import FrameworkEvent, dispatch_event
@@ -90,6 +93,21 @@ _CONTENT_PREVIEW_LEN = 120
 # statuses ``intention_mark_surfaced`` may move a want to. ``open`` is
 # excluded -- the verb walks a want forward, never back to the start.
 _MARK_SURFACED_STATUSES = tuple(s for s in INTENTION_STATUS_VALUES if s != IntentionStatus.OPEN.value)
+
+#: what a want's save means by "the store failed": storage unreachable, plus the three refusals a
+#: fenced save of an existing row can meet on the way -- a concurrent write advancing
+#: ``date_updated`` between the read and the save (``ConcurrentModificationError``), a committed
+#: write whose table generation could not be advanced (``GenerationUnavailableError``, retry), and a
+#: write whose row count the store did not report (``RowcountUnreadableError``, a ``ValueError``,
+#: named alone so no other ``ValueError`` reads as an outage). The tool answers each with an error
+#: string; anything else is a bug and propagates. ``ConcurrentModificationError`` is not in
+#: :data:`STORAGE_FAILURES` because a coordination primitive reads it as its own signal.
+_SAVE_FAILURES: Final[tuple[type[Exception], ...]] = (
+    *STORAGE_FAILURES,
+    ConcurrentModificationError,
+    GenerationUnavailableError,
+    RowcountUnreadableError,
+)
 
 
 def _tool_error(tool_name: str, action: str, error: str) -> str:
@@ -275,7 +293,7 @@ async def load_intention_log_tool(
                 top_k=3,
                 threshold=0.0,
             )
-        except Exception as exc:
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="intention_log: dedup lookup failed, storing the want unchecked")
             # the reply names the exception class only: a store's message can carry SQL or a URL
             unchecked = f" (not checked against your open wants, which could not be read: {type(exc).__name__})"
@@ -303,12 +321,12 @@ async def load_intention_log_tool(
                         agent_id=agent_id,
                         access_bump=near_dup_bump,
                     )
-                except Exception as exc:
+                except _SAVE_FAILURES as exc:
                     # preserve the tool's soft-fail-to-string contract: a CAS
                     # conflict (a concurrent re-log advancing date_updated
                     # between this get and save) or a transient L3 error must
-                    # not raise out of the tool. The create + mark_surfaced
-                    # paths catch the same way.
+                    # not raise out of the tool. mark_surfaced catches the
+                    # same set.
                     contain(
                         exc,
                         log=log,
@@ -476,7 +494,7 @@ async def load_intention_list_tool(
             else:
                 every = await intentions_collection.find_by_user(user_id, agent_id=agent_id)
                 wants = every if wanted == "all" else [w for w in every if w.status == wanted]
-        except Exception as exc:
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="intention_list query failed")
             return _tool_error("intention_list", "query", type(exc).__name__)
 
@@ -677,7 +695,7 @@ async def load_intention_mark_surfaced_tool(
         entity.last_surfaced_at = now
         try:
             await intentions_collection.save_entity(entity)
-        except Exception as exc:
+        except _SAVE_FAILURES as exc:
             contain(exc, log=log, what="intention_mark_surfaced store failed")
             return _tool_error("intention_mark_surfaced", "store", type(exc).__name__)
 

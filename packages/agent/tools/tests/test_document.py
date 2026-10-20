@@ -272,6 +272,23 @@ class TestParseText:
         result = await parse_document(md, "text/markdown")
         assert result.text == "**bold** and *italic*"
 
+    @pytest.mark.parametrize("mime_type", ["text/plain", "text/markdown", "application/x-tex"])
+    async def test_a_bug_in_a_text_parser_propagates_rather_than_reading_as_a_corrupt_document(
+        self, mime_type: str, monkeypatch: pytest.MonkeyPatch
+    ):
+        """these parsers decode with a fallback that cannot fail, so anything they raise is a bug.
+
+        It used to be wrapped as a parse failure, which the tool answered as an unreadable document.
+        """
+        from threetears.agent.tools import document as document_module
+
+        def _broken(**kwargs: Any) -> None:
+            raise TypeError("a bug in the parser")
+
+        monkeypatch.setattr(document_module, "DocumentSection", _broken)
+        with pytest.raises(TypeError, match="a bug in the parser"):
+            await parse_document(b"# Heading\n\nbody\n", mime_type)
+
 
 class TestParseCsv:
     async def test_basic_table(self):
@@ -328,6 +345,29 @@ class TestParseCsv:
         data = "Employer,City\ncafé résumé,Oakland\n".encode("latin-1")
         result = await parse_document(data, "text/csv")
         assert "café résumé" in result.text
+
+    async def test_a_field_past_the_csv_limit_is_a_parse_failure(self):
+        """the one thing the csv module refuses in decoded text: a field longer than its limit."""
+        import csv
+
+        data = b"A\n" + b"x" * (csv.field_size_limit() + 1) + b"\n"
+        with pytest.raises(DocumentParseError) as caught:
+            await parse_document(data, "text/csv", "huge.csv")
+        assert caught.value.reason == "parse_failed"
+        assert isinstance(caught.value.__cause__, csv.Error)
+
+    async def test_a_bug_in_the_csv_read_propagates_rather_than_reading_as_a_corrupt_document(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """it used to be wrapped as a parse failure, which the tool answered as an unreadable document."""
+        from threetears.agent.tools import document as document_module
+
+        def _broken(*args: Any, **kwargs: Any) -> None:
+            raise TypeError("a bug in the read")
+
+        monkeypatch.setattr(document_module.csv, "reader", _broken)
+        with pytest.raises(TypeError, match="a bug in the read"):
+            await parse_document(b"A,B\n1,2\n", "text/csv")
 
     async def test_no_filename_still_parses(self):
         # Google Sheets' CSV export URL has no .csv extension -- content-type
@@ -456,6 +496,41 @@ class TestParseDocumentTool:
         result = await tool.ainvoke({"content_base64": "!!!invalid!!!", "filename": "test.txt"})
         assert "[TOOL ERROR]" in result
         assert "decode" in result
+
+    async def test_base64_with_non_ascii_characters_is_a_decode_error(self):
+        tool = self._create()
+        result = await tool.ainvoke({"content_base64": "ünïcode", "filename": "test.txt"})
+        assert result.startswith("[TOOL ERROR]")
+        assert "Invalid base64 (ValueError)" in result
+
+    async def test_a_bug_in_the_decode_propagates_rather_than_reading_as_bad_base64(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """it used to be contained and answered as invalid base64, blaming the model."""
+        from threetears.agent.tools import document as document_module
+
+        def _broken(data: object) -> bytes:
+            raise TypeError("a bug in the decode")
+
+        monkeypatch.setattr(document_module.base64, "b64decode", _broken)
+        tool = self._create()
+        with pytest.raises(TypeError, match="a bug in the decode"):
+            await tool.ainvoke({"content_base64": "aGVsbG8=", "filename": "test.txt"})
+
+    async def test_a_bug_while_parsing_propagates_rather_than_reading_as_a_corrupt_document(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """only a DocumentParseError is a document that could not be read; a TypeError is a bug."""
+        from threetears.agent.tools import document as document_module
+
+        async def _broken(*args: Any, **kwargs: Any) -> DocumentResult:
+            raise TypeError("a bug in the parse")
+
+        monkeypatch.setattr(document_module, "parse_document", _broken)
+        tool = self._create()
+        content = base64.b64encode(b"hello").decode()
+        with pytest.raises(TypeError, match="a bug in the parse"):
+            await tool.ainvoke({"content_base64": content, "filename": "test.txt"})
 
     async def test_unknown_format(self):
         tool = self._create()

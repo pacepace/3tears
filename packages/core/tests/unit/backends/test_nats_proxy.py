@@ -10,6 +10,7 @@ from uuid import UUID
 
 import pytest
 from threetears.nats import Subject
+from threetears.nats.errors import RequestError, RequestTimeoutError
 
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend, check_reply_row_count
 from threetears.core.backends.protocol import RowcountUnreadableError, parse_rowcount
@@ -813,7 +814,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_nats_timeout_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request_raw = AsyncMock(side_effect=TimeoutError("request timed out"))
+        mock_nc.request_raw = AsyncMock(side_effect=RequestTimeoutError("request timed out"))
         proxy = _make_proxy(mock_nc)
 
         with pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
@@ -822,11 +823,30 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_nats_connection_error_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request_raw = AsyncMock(side_effect=ConnectionError("no route to host"))
+        mock_nc.request_raw = AsyncMock(side_effect=RequestError("NATS connection closed during request"))
         proxy = _make_proxy(mock_nc)
 
         with pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
             await proxy.execute("INSERT INTO foo (a) VALUES ($1)", "val")
+
+    @pytest.mark.asyncio
+    async def test_a_reply_that_is_not_json_raises_data_layer_unavailable(self) -> None:
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(return_value=b"<html>bad gateway</html>")
+        proxy = _make_proxy(mock_nc)
+
+        with pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
+            await proxy.fetch("SELECT * FROM foo")
+
+    @pytest.mark.asyncio
+    async def test_a_bug_under_the_request_is_not_reported_as_an_outage(self) -> None:
+        """only the client's request failures and an undecodable reply mean the data layer is down."""
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(side_effect=AttributeError("'NoneType' object has no attribute 'request'"))
+        proxy = _make_proxy(mock_nc)
+
+        with pytest.raises(AttributeError):
+            await proxy.fetch("SELECT * FROM foo")
 
 
 # ------------------------------------------------------------------

@@ -41,9 +41,11 @@ design notes
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
+from nats.errors import Error as NatsError
 from nats.js.api import (
     AckPolicy,
     ConsumerConfig,
@@ -57,7 +59,7 @@ from threetears.observe import contain, get_logger
 
 from threetears.nats._publish import publish_bounded, run_bounded
 from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
-from threetears.nats.errors import OpLogError, OpLogSequenceConflict
+from threetears.nats.errors import OpLogError, OpLogSequenceConflict, PublishTimeoutError
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.subjects import Subjects
 
@@ -89,6 +91,20 @@ _REPLICAS_UNSUPPORTED_ERR_CODE: Final[int] = 10074
 #: Falls back to 1 against a non-clustered broker (see
 #: :data:`_REPLICAS_UNSUPPORTED_ERR_CODE`).
 _NUM_REPLICAS: Final[int] = 3
+
+#: What a nats-py call that reaches the broker raises when the CALL failed, as opposed to the code
+#: around it. Every nats-py exception -- a refusal, a deadline, a closed connection -- derives from
+#: ``nats.errors.Error``. Two failures leave nats-py as something else: a socket error from the
+#: inline flush a publish or request falls back to when the flusher task is gone, as an ``OSError``;
+#: and a JetStream API reply that is not JSON (an API prefix or account import answered by something
+#: other than JetStream), as the ``JSONDecodeError`` of nats-py's own ``json.loads``. No try body
+#: that catches these does file I/O or decodes JSON of ours, so neither hides a bug. Anything else
+#: raised there is a bug of ours, and propagates rather than reading as an outage.
+_NATS_CALL_FAILURES: Final[tuple[type[Exception], ...]] = (NatsError, OSError, json.JSONDecodeError)
+
+#: A nats-py call run under :func:`~threetears.nats._publish.run_bounded` (or
+#: :func:`~threetears.nats._publish.publish_bounded`) fails as one of those, or as the deadline it blew.
+_BOUNDED_CALL_FAILURES: Final[tuple[type[Exception], ...]] = (*_NATS_CALL_FAILURES, PublishTimeoutError)
 
 #: Dedup window in seconds — generous (>= minutes) per write-path.md
 #: Constants; the expected-last-sequence CAS is the unbounded backstop.
@@ -243,7 +259,7 @@ class OpLog:
             # Creation genuinely failed; the stream may already exist -- bind to confirm.
             try:
                 await js.stream_info(stream)
-            except Exception as bind_exc:
+            except _NATS_CALL_FAILURES as bind_exc:
                 raise OpLogError(f"open op-log failed: stream={stream}: bind={bind_exc!r}") from bind_exc
             log.debug(
                 "JetStream op-log stream bound (already existed)",
@@ -292,12 +308,12 @@ class OpLog:
             )
             try:
                 await js.add_stream(config=config_for(1))
-            except Exception as retry_exc:
+            except _NATS_CALL_FAILURES as retry_exc:
                 raise OpLogError(
                     f"create op-log stream failed (single-replica fallback): stream={stream}: {retry_exc!r}"
                 ) from retry_exc
             return 1
-        except Exception as exc:
+        except _NATS_CALL_FAILURES as exc:
             raise OpLogError(f"create op-log stream failed: stream={stream}: {exc!r}") from exc
         return _NUM_REPLICAS
 
@@ -376,7 +392,7 @@ class OpLog:
                 f"op-log append rejected by expected-last-sequence CAS: stream={self._stream} "
                 f"op_id={op_id} expected_last_seq={expected_last_seq}: {exc.description}"
             ) from exc
-        except Exception as exc:
+        except _BOUNDED_CALL_FAILURES as exc:
             raise OpLogError(f"op-log append failed: stream={self._stream} op_id={op_id}: {exc!r}") from exc
 
         return AppendResult(seq=int(ack.seq), deduplicated=bool(ack.duplicate))
@@ -398,7 +414,7 @@ class OpLog:
         js = self._client.jetstream_context()
         try:
             info = await js.stream_info(self._stream)
-        except Exception as exc:
+        except _NATS_CALL_FAILURES as exc:
             raise OpLogError(f"op-log op_id scan failed (stream_info): stream={self._stream}: {exc!r}") from exc
         # the scan covers what the stream still holds: a retry within the dedup window is near the
         # head, and a trimmed start is not a gap in that question
@@ -436,7 +452,7 @@ class OpLog:
                 timeout=DEFAULT_JETSTREAM_PUBLISH_TIMEOUT.total_seconds(),
                 what=f"op-log stream_info on {self._stream}",
             )
-        except Exception as exc:  # noqa: BLE001 -- transport boundary; re-raised as the typed OpLogError
+        except _BOUNDED_CALL_FAILURES as exc:  # re-raised as the typed OpLogError
             raise OpLogError(f"op-log last_seq failed (stream_info): stream={self._stream}: {exc!r}") from exc
         return int(info.state.last_seq)
 
@@ -477,7 +493,7 @@ class OpLog:
         js = self._client.jetstream_context()
         try:
             info = await js.stream_info(self._stream)
-        except Exception as exc:
+        except _NATS_CALL_FAILURES as exc:
             raise OpLogError(f"op-log replay failed (stream_info): stream={self._stream}: {exc!r}") from exc
         last_seq = int(info.state.last_seq)
         if from_seq > last_seq:
@@ -506,7 +522,7 @@ class OpLog:
             await js.add_consumer(self._stream, config=config)
             # sender-posture: own-consumer -- an op counts only with the replay consumer's own ack reply
             psub = await js.pull_subscribe_bind(consumer=consumer, stream=self._stream)
-        except Exception as exc:
+        except _NATS_CALL_FAILURES as exc:
             raise OpLogError(f"op-log replay failed (subscribe): stream={self._stream}: {exc!r}") from exc
 
         try:
@@ -537,7 +553,8 @@ class OpLog:
                     ) from exc
                 except APIError as exc:
                     raise OpLogError(f"op-log replay failed (fetch): stream={self._stream}: {exc!r}") from exc
-                except Exception as exc:  # noqa: BLE001 - any non-timeout fetch failure surfaces loudly, never as a clean tail
+                # any non-timeout fetch failure surfaces loudly, never as a clean tail
+                except _NATS_CALL_FAILURES as exc:
                     raise OpLogError(f"op-log replay failed (fetch): stream={self._stream}: {exc!r}") from exc
                 timeouts = 0
                 for msg in msgs:

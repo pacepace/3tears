@@ -19,6 +19,9 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from threetears.core.coordination.token_bucket import TokenBucketConflict
+from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.nats.errors import KvError
 from packages.scrape.tests.scrape_tool_support import derived_target_id
 from packages.scrape.tests.egress_fakes import FakeEgress
 from packages.scrape.tests.pacer_fakes import FakeDelayPacer
@@ -212,6 +215,14 @@ async def test_a_robots_file_that_will_not_parse_refuses() -> None:
     with patch("threetears.scrape.robots.RobotFileParser.parse", side_effect=ValueError("bad grammar")):
         decision = await RobotsGate(fetch=_fetcher(_ROBOTS_DELAY)).check("https://example.gov/x")
     _assert_unreachable(decision)
+
+
+async def test_a_bug_while_parsing_the_robots_file_propagates_rather_than_reading_as_unparseable() -> None:
+    with (
+        patch("threetears.scrape.robots.RobotFileParser.parse", side_effect=TypeError("a bug, not the file")),
+        pytest.raises(TypeError, match="a bug, not the file"),
+    ):
+        await RobotsGate(fetch=_fetcher(_ROBOTS_DELAY)).check("https://example.gov/x")
 
 
 async def test_an_unreachable_file_does_not_override_a_copy_read_earlier() -> None:
@@ -795,18 +806,12 @@ async def test_a_fetch_of_an_unblocked_target_writes_nothing() -> None:
     clear.assert_not_awaited()
 
 
-async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
-    """The clear-down sits outside every try in `execute`, so it has to hold its own.
+async def _a_queued_target_s_tool() -> tuple[Any, Any, str, dict[str, str]]:
+    """A tool whose target IS in the human queue and whose robots file now allows it.
 
-    A housekeeping write must never turn a page the caller already paid for into a failed
-    ToolResult -- the same posture `circuit.py` takes for its identical call.
-
-    Driven through `execute` on a target that IS in the human queue, so the clear-down is
-    genuinely reached; the extraction is a seeded recipe and the classifier is stubbed, so
-    nothing else on the path can fail and be mistaken for this.
+    The extraction is a seeded recipe and the classifier is stubbed by the caller, so the
+    clear-down is genuinely reached and nothing else on the path can fail and be mistaken for it.
     """
-    from unittest.mock import AsyncMock
-
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
@@ -843,7 +848,23 @@ async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
         block_private_hosts=False,
     )
 
-    clear = AsyncMock(side_effect=RuntimeError("health store is gone"))
+    return tool, driver, url, schema
+
+
+async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
+    """The clear-down sits outside every try in `execute`, so it has to hold its own.
+
+    A housekeeping write must never turn a page the caller already paid for into a failed
+    ToolResult -- the same posture `circuit.py` takes for its identical call.
+
+    Driven through `execute` on a target that IS in the human queue, so the clear-down is
+    genuinely reached; the extraction is a seeded recipe and the classifier is stubbed, so
+    nothing else on the path can fail and be mistaken for this.
+    """
+    from unittest.mock import AsyncMock
+
+    tool, driver, url, schema = await _a_queued_target_s_tool()
+    clear = AsyncMock(side_effect=DataLayerUnavailableError("health store is gone"))
     with (
         patch("threetears.scrape.eval_loop.classify_failed_page", return_value=None),
         patch("threetears.scrape.tool.clear_robots_block", new=clear),
@@ -859,6 +880,18 @@ async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
     assert "health store is gone" not in (result.error or ""), (
         "a housekeeping failure was reported as the result of a good fetch"
     )
+
+
+async def test_a_bug_in_the_clear_down_propagates_rather_than_reading_as_an_outage() -> None:
+    """Only a storage failure is housekeeping that may be dropped; our own bug is not."""
+    tool, _driver, url, schema = await _a_queued_target_s_tool()
+
+    with (
+        patch("threetears.scrape.eval_loop.classify_failed_page", return_value=None),
+        patch("threetears.scrape.tool.clear_robots_block", side_effect=TypeError("a bug, not the store")),
+        pytest.raises(TypeError, match="a bug, not the store"),
+    ):
+        await tool.execute(url=url, field_schema=schema)
 
 
 # ---------------------------------------------------------------------------
@@ -916,7 +949,7 @@ async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
 
     class _BrokenPacer(FakeDelayPacer):
         async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
-            raise RuntimeError("kv unavailable")
+            raise KvError("kv unavailable")
 
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_BrokenPacer())
     gate.note_fetched("https://example.gov/a", now=1000.0)
@@ -927,6 +960,34 @@ async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
     assert fleet == 0.0, "an outage yields no fleet wait rather than raising"
     assert consumed is False, "nothing was taken, so nothing is owed back"
     assert decision.wait_seconds == pytest.approx(6.0), "and must not stop the politeness either"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [TokenBucketConflict("exhausted CAS retries"), ValueError("stored bucket state has no numeric tokens: None")],
+    ids=["cas-exhausted", "undecodable-bucket"],
+)
+async def test_every_documented_pacer_failure_falls_back_to_this_pod_s_own_clock(failure: BaseException) -> None:
+    class _FailingPacer(FakeDelayPacer):
+        async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
+            raise failure
+
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_FailingPacer())
+    await gate.check("https://example.gov/b", now=1004.0)
+
+    assert await gate.claim_fleet_turn("https://example.gov/b") == (0.0, False)
+
+
+async def test_a_bug_in_the_pacer_propagates_rather_than_reading_as_an_outage() -> None:
+    class _BuggyPacer(FakeDelayPacer):
+        async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
+            raise AttributeError("a bug, not the KV")
+
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_BuggyPacer())
+    await gate.check("https://example.gov/b", now=1004.0)
+
+    with pytest.raises(AttributeError, match="a bug, not the KV"):
+        await gate.claim_fleet_turn("https://example.gov/b")
 
 
 # ---------------------------------------------------------------------------
@@ -1090,13 +1151,40 @@ async def test_a_health_store_failure_does_not_escape_the_escalation() -> None:
         block_private_hosts=False,
     )
 
-    with _patch("threetears.scrape.tool.record_robots_block", side_effect=RuntimeError("store down")):
+    with _patch("threetears.scrape.tool.record_robots_block", side_effect=DataLayerUnavailableError("store down")):
         result = await tool.execute(url="https://example.gov/private/x", field_schema={"a": "str"})
 
     assert result.success is False
     assert "needs a human" in (result.error or ""), (
         "a store outage swallowed the escalation instead of costing only the queue entry"
     )
+
+
+async def test_a_bug_recording_the_robots_block_propagates_rather_than_reading_as_an_outage() -> None:
+    from unittest.mock import patch as _patch
+
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.health import ScrapeTargetHealthCollection
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"nodriver": _RecordingDriver()},
+        api_key="k",
+        health_collection=ScrapeTargetHealthCollection(reg, cfg, nats_client=None),
+        robots=RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW)),
+        block_private_hosts=False,
+    )
+
+    with (
+        _patch("threetears.scrape.tool.record_robots_block", side_effect=TypeError("a bug, not the store")),
+        pytest.raises(TypeError, match="a bug, not the store"),
+    ):
+        await tool.execute(url="https://example.gov/private/x", field_schema={"a": "str"})
 
 
 async def test_a_circuit_probe_is_not_exempt_from_the_crawl_delay() -> None:

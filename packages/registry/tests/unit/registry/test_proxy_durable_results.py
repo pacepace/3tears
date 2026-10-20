@@ -16,9 +16,11 @@ name the call's VERIFIED agent id.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -28,6 +30,7 @@ from threetears.agent.tools.server import CallAccepted, CallRequest
 from threetears.nats import (
     RESULT_ACK_TIMEOUT_SECONDS,
     IncomingMessage,
+    PublishError,
     RequestError,
     RequestTimeoutError,
     Subject,
@@ -35,6 +38,8 @@ from threetears.nats import (
     set_default_namespace,
 )
 from threetears.registry.auth import INSUFFICIENT_CREDITS, DenyAllLimitGuard, LimitDecision
+from threetears.nats.errors import PublishTimeoutError
+from threetears.registry import proxy as proxy_module
 from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallAccepted, ProxyCallResponse
 
@@ -507,3 +512,49 @@ class TestDeliveringToTheAgent:
 
         assert len(nats.published) == 1
         assert json.loads(nats.published[0][1])["error_code"] == "TOOL_UNAVAILABLE"
+
+
+class _NatsWhoseDeliveryFails(_Nats):
+    """a bus whose durable publish raises each scripted failure in turn, then delivers."""
+
+    def __init__(self, *failures: BaseException) -> None:
+        super().__init__(delivered=_pod_answer())
+        self._failures = list(failures)
+
+    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+        if self._failures:
+            raise self._failures.pop(0)
+        await super().jetstream_publish(subject=subject, payload=payload)
+
+
+class TestADeliveryFailure:
+    """the tool already ran, so a publish the broker refused is retried; a bug in the publish is not."""
+
+    def _long_request(self) -> Any:
+        subject = Subjects.tools_reply(DEFAULT_AGENT_ID, "call-1").path
+        return make_authed_request().model_copy(update={"result_subject": subject})
+
+    @pytest.mark.asyncio
+    async def test_a_refused_publish_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(proxy_module.asyncio, "sleep", AsyncMock())
+        catalog = await _registered_catalog(_LONG)
+        nats = _NatsWhoseDeliveryFails(PublishError("broker unreachable"), PublishTimeoutError("no ack"))
+        await _dispatch(make_proxy(catalog, namespace=_NS), nats, self._long_request())
+
+        assert len(nats.published) == 1
+        assert json.loads(nats.published[0][1])["content"] == "68KB of results"
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_publish_propagates_rather_than_being_retried(self) -> None:
+        """it used to be retried and then logged as a lost answer, as though the broker were down."""
+        catalog = await _registered_catalog(_LONG)
+        nats = _NatsWhoseDeliveryFails(TypeError("a bug in the publish"))
+        proxy = make_proxy(catalog, namespace=_NS)
+        await proxy.start(nats)
+        before = asyncio.all_tasks()
+        await proxy.handle_call(_msg(self._long_request()))
+        (dispatch,) = asyncio.all_tasks() - before
+
+        with pytest.raises(TypeError, match="a bug in the publish"):
+            await dispatch
+        assert nats.published == []

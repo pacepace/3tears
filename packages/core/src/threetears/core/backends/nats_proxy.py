@@ -53,8 +53,9 @@ from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredenti
 # whole point of the `[client]` extra, and `test_l1_surface_imports_without_the_client`
 # holds it. A plain `from threetears.nats import NatsClient` triggers the package's
 # lazy loader and raises at import time on an L1-only install. `subjects` pulls in
-# no client, so it is safe eagerly; the annotation needs no runtime object because
-# this module has `from __future__ import annotations`.
+# no client, so it is safe eagerly, as is `errors`; the annotation needs no runtime
+# object because this module has `from __future__ import annotations`.
+from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import contain, get_logger
 
@@ -1089,7 +1090,7 @@ class NatsProxyL3Backend:
                 timeout=timedelta(seconds=nats_timeout),
             )
             result: dict[str, Any] = json.loads(reply)
-        except Exception as exc:
+        except (RequestError, ValueError) as exc:
             raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
 
         return result

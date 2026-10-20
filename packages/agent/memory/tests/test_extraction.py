@@ -34,7 +34,7 @@ from threetears.agent.memory.types import MemoryConfig
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.nats.errors import KvError
+from threetears.nats.errors import KvConfigMismatch, KvError
 
 
 _TEST_AID = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -313,6 +313,27 @@ class _TtlRefusingBucket:
             raise KvError(f"KV create failed: bucket={self.name} key={key}: {exc}") from exc
 
 
+class _ReleaseFailingBucket:
+    """a bucket that takes a claim and then fails to give it back."""
+
+    name = "ns-ratelimits"
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def get(self, *, key: str) -> bytes | None:
+        del key
+        return None
+
+    async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
+        del key, value, ttl
+        return 1
+
+    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+        del key, revision
+        raise self.error
+
+
 class _SingleBucketClient:
     """a NATS client double answering every ``kv_bucket`` with one bucket."""
 
@@ -352,7 +373,7 @@ _CHECK_SITE = "threetears.agent.memory.extraction:MemoryExtractor.check_rate_lim
 _CLAIM_SITE = "threetears.agent.memory.extraction:MemoryExtractor._claim"
 
 
-def _contained(site: str, exc_type: str = "RuntimeError") -> float:
+def _contained(site: str, exc_type: str = "KvError") -> float:
     """how many failures ``site`` has contained, so far, of ``exc_type``."""
     return REGISTRY.get_sample_value("contained_errors_total", {"site": site, "exc_type": exc_type}) or 0.0
 
@@ -423,7 +444,7 @@ class TestRateLimit:
     ) -> None:
         """the cooldown is a cost throttle: an unreadable one costs a model call, never the memories."""
         nats = MagicMock()
-        nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
+        nats.kv_bucket = AsyncMock(side_effect=KvError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
         before = _contained(_CHECK_SITE)
         with caplog.at_level(logging.ERROR, logger="threetears.agent.memory.extraction"):
@@ -440,7 +461,7 @@ class TestRateLimit:
     ) -> None:
         """losing a window of memories to a KV outage is the failure the flip exists to remove."""
         nats = MagicMock()
-        nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
+        nats.kv_bucket = AsyncMock(side_effect=KvError("nats down"))
         factory = _worthy_factory()
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=factory)
         read_before, claim_before = _contained(_CHECK_SITE), _contained(_CLAIM_SITE)
@@ -456,11 +477,39 @@ class TestRateLimit:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = MagicMock()
-        nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
+        nats.kv_bucket = AsyncMock(side_effect=KvError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
         before = _contained(_CLAIM_SITE)
         assert await ext.claim_rate_limit(uuid.uuid7()) == (True, 0)
         assert _contained(_CLAIM_SITE) == before + 1
+
+    async def test_a_claim_on_a_bucket_whose_config_mismatches_lets_the_turn_through_and_is_counted(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """a NATS failure that is not a KV operation failure is still the store failing, not a bug."""
+        nats = MagicMock()
+        nats.kv_bucket = AsyncMock(side_effect=KvConfigMismatch("ratelimits: allow_msg_ttl differs"))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
+        before = _contained(_CLAIM_SITE, "KvConfigMismatch")
+        assert await ext.claim_rate_limit(uuid.uuid7()) == (True, 0)
+        assert _contained(_CLAIM_SITE, "KvConfigMismatch") == before + 1
+
+    @pytest.mark.parametrize("stage", ["check", "claim"])
+    async def test_a_bug_under_the_cooldown_is_raised_not_extracted_through(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        stage: str,
+    ) -> None:
+        """only a NATS failure lets the turn through; an error in our own code reaches the caller."""
+        nats = MagicMock()
+        nats.kv_bucket = AsyncMock(side_effect=AttributeError("'NoneType' object has no attribute 'get'"))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
+        with pytest.raises(AttributeError):
+            if stage == "check":
+                await ext.check_rate_limit(uuid.uuid7())
+            else:
+                await ext.claim_rate_limit(uuid.uuid7())
 
     async def test_a_claim_the_bucket_times_out_lets_the_turn_through_and_is_counted(
         self,
@@ -1830,6 +1879,28 @@ class TestATurnThatStoresNothingGivesTheCooldownBack:
         assert bucket.keys() == (), "a cancelled turn kept the cooldown"
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=_worthy_factory())
         assert (await _extract_turn(ext, conversation_id)).outcome is ExtractionOutcome.STORED
+
+    async def test_a_release_nats_refuses_is_contained_and_the_turn_still_fails(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        site = "threetears.agent.memory.extraction:MemoryExtractor._release_claim"
+        failing = StubChatModelFactory(worthiness_content=json.dumps({"worthy": True}), error_on={"extraction"})
+        bucket = _ReleaseFailingBucket(KvError("KV delete failed: nats: timeout"))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=_SingleBucketClient(bucket), factory=failing)
+        before = _contained(site)
+        assert (await _extract_turn(ext, uuid.uuid7())).outcome is ExtractionOutcome.FAILED
+        assert _contained(site) == before + 1
+
+    async def test_a_bug_in_the_release_is_raised(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        failing = StubChatModelFactory(worthiness_content=json.dumps({"worthy": True}), error_on={"extraction"})
+        bucket = _ReleaseFailingBucket(TypeError("delete() got an unexpected keyword argument 'revision'"))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=_SingleBucketClient(bucket), factory=failing)
+        with pytest.raises(TypeError):
+            await _extract_turn(ext, uuid.uuid7())
 
     async def test_a_stored_turn_keeps_the_cooldown(
         self,

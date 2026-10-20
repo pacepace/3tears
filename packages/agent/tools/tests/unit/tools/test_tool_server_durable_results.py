@@ -31,7 +31,7 @@ import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import CallAccepted, CallResponse, ToolServer
-from threetears.nats import IncomingMessage, Subject, Subjects, set_default_namespace
+from threetears.nats import IncomingMessage, PublishError, Subject, Subjects, set_default_namespace
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from packages.agent.tools.tests.unit.tools.pod_auth import jwks_provider as _pod_jwks_provider
@@ -58,11 +58,12 @@ class _FakeNats:
     #: tool server's size guard off, as on a client that has not connected
     max_payload: int | None = None
 
-    def __init__(self, *, jetstream_failures: int = 0) -> None:
+    def __init__(self, *, jetstream_failures: int = 0, failure: BaseException | None = None) -> None:
         self.replies: list[tuple[str, Any]] = []
         self.delivered: list[tuple[str, bytes]] = []
         self.audits: list[tuple[str, bytes]] = []
         self._jetstream_failures = jetstream_failures
+        self._failure = failure if failure is not None else PublishError("broker unreachable")
 
     async def publish(self, *, subject: Subject, message: Any, reply_to: Subject | None = None) -> None:
         del reply_to, subject, message
@@ -73,7 +74,7 @@ class _FakeNats:
             return
         if self._jetstream_failures > 0:
             self._jetstream_failures -= 1
-            raise RuntimeError("broker unreachable")
+            raise self._failure
         self.delivered.append((subject.path, payload))
 
     async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
@@ -424,6 +425,16 @@ class TestADeliveryFailureIsRetriedRatherThanDiscarded:
 
         assert len(nats.delivered) == 1
         assert loop.time() - started >= 0.1
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_publish_propagates_rather_than_being_retried(self) -> None:
+        """it used to be retried and then reported as a lost answer, as though the broker were down."""
+        nats = _FakeNats(jetstream_failures=1, failure=TypeError("a bug in the publish"))
+        server = _server(nats)
+
+        with pytest.raises(TypeError, match="a bug in the publish"):
+            await server.handle_call(_long_call(result_subject=_delivery_subject()))
+        assert not nats.delivered
 
     def test_a_negative_pause_is_refused_at_construction(self) -> None:
         with pytest.raises(ValueError, match="result_delivery_retry_seconds"):

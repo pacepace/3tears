@@ -18,6 +18,8 @@ direct-drive tests set the runnable-config contextvar so the middleware's
 
 from __future__ import annotations
 
+import json
+
 import asyncio
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -33,6 +35,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
+from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.knowledge import ConceptEffective, ConceptSnapshot, EntryEffective, EntrySnapshot, Scope
 
 from threetears.agent.knowledge.integration import (
@@ -198,7 +201,7 @@ class _StubEntryCollection:
         customer_scope: Any,
     ) -> list[EntrySnapshot]:
         if self._raises:
-            raise RuntimeError("entry backend boom")
+            raise DataLayerUnavailableError("entry backend boom")
         return list(self._snapshots)
 
     async def fetch_embeddings(self, ids: Any, *, customer_scope: Any) -> dict[Any, Any]:
@@ -228,7 +231,7 @@ class _StubConceptCollection:
         customer_scope: Any,
     ) -> list[ConceptSnapshot]:
         if self._raises:
-            raise RuntimeError("concept backend boom")
+            raise DataLayerUnavailableError("concept backend boom")
         return list(self._snapshots)
 
     async def fetch_embeddings(self, ids: Any, *, customer_scope: Any) -> dict[Any, Any]:
@@ -920,6 +923,53 @@ class TestSilentDegradationSignals:
             "(ConnectionError) (candidates=3); ranking quality is degraded for this turn"
         ]
         assert any("vector fetch failed" in w and "l3 timeout" in w for w in _all_warnings(caplog))
+
+    def test_a_stored_vector_it_cannot_parse_ranks_nothing_by_similarity(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a stored vector text that is not JSON fails its decode, a ``ValueError``: stable order."""
+        entries = [_entry_snapshot() for _ in range(2)]
+
+        class _CorruptVectors(_StubEntryCollection):
+            async def fetch_embeddings(self, ids: Any, *, customer_scope: Any) -> dict[Any, Any]:
+                return {ids[0]: json.loads("[1.0, 0.")}
+
+        integration = KnowledgeIntegration(
+            entry_collection=_CorruptVectors(entries), embedding_model=_FixedEmbedder([1.0, 0.0])
+        )
+        with caplog.at_level("WARNING"):
+            req, _out = _drive(
+                KnowledgeInjectionMiddleware(token_budget=10_000),
+                _request(SystemMessage(content="base")),
+                _configurable(integration),
+            )
+        assert any("the situational vector fetch failed (JSONDecodeError)" in w for w in _all_warnings(caplog))
+        assert SITUATIONAL_PROCEDURES in _system_text(req), "the situational tail still renders, in stable order"
+
+    @pytest.mark.expect_contained(TypeError, why="the bug is driven past the fetch to the invariants-only fallback")
+    def test_a_bug_in_the_vector_fetch_is_not_read_as_a_failed_fetch(self, caplog: pytest.LogCaptureFixture) -> None:
+        """a ``TypeError`` leaves the fetch's handler and reaches the invariants-only fallback, named."""
+        invariant = _entry_snapshot(title="Always", body="exclude test accounts", always_inject=True)
+        situational = _entry_snapshot(title="Sometimes", body="use the weekly view")
+
+        class _BuggyVectors(_StubEntryCollection):
+            async def fetch_embeddings(self, ids: Any, *, customer_scope: Any) -> dict[Any, Any]:
+                raise TypeError("bug")
+
+        integration = KnowledgeIntegration(
+            entry_collection=_BuggyVectors([invariant, situational]), embedding_model=_FixedEmbedder([1.0, 0.0])
+        )
+        with caplog.at_level("WARNING"):
+            req, _out = _drive(
+                KnowledgeInjectionMiddleware(token_budget=10_000),
+                _request(SystemMessage(content="base")),
+                _configurable(integration),
+            )
+        assert not [w for w in _all_warnings(caplog) if "vector fetch failed" in w]
+        records = [r for r in caplog.records if "past its invariants" in r.getMessage()]
+        assert [getattr(r, "extra_data", {}).get("exc_type") for r in records] == ["TypeError"]
+        text = _system_text(req)
+        assert "exclude test accounts" in text and "use the weekly view" not in text
 
     def test_partial_embedding_coverage_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
         # one stored vector still ranks; only a TOTAL absence is the fallback.

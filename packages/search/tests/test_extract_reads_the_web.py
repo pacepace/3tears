@@ -474,6 +474,54 @@ async def test_a_page_with_no_text_whose_frames_could_not_be_parsed_says_both(
     assert "PLANTED-e4d0" not in str(result.facets)
 
 
+@pytest.mark.expect_contained(
+    AssertionError, why="the stdlib HTML parser signals a declaration it cannot read with AssertionError"
+)
+async def test_a_declaration_the_html_parser_asserts_on_reads_as_frames_not_looked_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stdlib parser reports a declaration it cannot make sense of as ``AssertionError``."""
+    from html.parser import HTMLParser
+
+    def _assert(self: HTMLParser, data: str) -> None:
+        raise AssertionError("unexpected '[' char in declaration")
+
+    monkeypatch.setattr(HTMLParser, "feed", _assert)
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=b"<html><body></body></html>")})
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
+
+    assert result.facets[EXTRACTION_REASON_FACET] == (
+        "the page has no readable text, and its frames could not be looked for (the HTML parser raised AssertionError)"
+    )
+
+
+async def test_a_frame_address_that_will_not_split_reads_as_frames_not_looked_for() -> None:
+    menu = b'<html><body><iframe src="http://[::1/article"></iframe></body></html>'
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=menu)})
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
+
+    assert result.facets[EXTRACTION_REASON_FACET] == (
+        "the page has no readable text, and its frames could not be looked for (the HTML parser raised ValueError)"
+    )
+    assert transport.fetched == [_ROBOTS, _PAGE]
+
+
+async def test_a_bug_in_the_frame_scan_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the parser's and ``urljoin``'s own failures read as "could not be looked for"."""
+    from html.parser import HTMLParser
+
+    def _bug(self: HTMLParser, data: str) -> None:
+        raise TypeError("a bug in the frame scan")
+
+    monkeypatch.setattr(HTMLParser, "feed", _bug)
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=b"<html><body></body></html>")})
+
+    with pytest.raises(TypeError, match="a bug in the frame scan"):
+        await extract(_candidate(), transport=transport, thin_page_chars=1000)
+
+
 async def test_frames_are_not_followed_unless_the_caller_asks() -> None:
     transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=_MENU_WITH_FRAME)})
 

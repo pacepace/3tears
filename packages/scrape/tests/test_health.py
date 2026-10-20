@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.models import LlmPurpose
 
@@ -412,7 +413,7 @@ async def test_a_health_write_failure_never_fails_the_scrape(
     await _seed_working_recipe(recipes, "warn_oh", {"row_selector": "table tr", "field_selectors": {"employer": "td"}})
 
     async def _boom(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("l3 is having a day")
+        raise ConcurrentModificationError("scrape_target_health", "warn_oh", None)
 
     with patch("threetears.scrape.eval_loop.record_validated_fetch", side_effect=_boom):
         result = await run_eval_loop_multi_row(
@@ -428,6 +429,30 @@ async def test_a_health_write_failure_never_fails_the_scrape(
 
     assert result.validation_status == "validated"
     assert "fingerprint stamp failed" in caplog.text
+
+
+async def test_a_bug_stamping_the_fingerprint_propagates_rather_than_reading_as_an_outage(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """Only a storage failure is bookkeeping that may be dropped; our own bug is not."""
+    await _seed_working_recipe(recipes, "warn_oh", {"row_selector": "table tr", "field_selectors": {"employer": "td"}})
+
+    with (
+        patch("threetears.scrape.eval_loop.record_validated_fetch", side_effect=AttributeError("a bug, not the store")),
+        pytest.raises(AttributeError, match="a bug, not the store"),
+    ):
+        await run_eval_loop_multi_row(
+            "warn_oh",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="unused-no-llm-call-on-the-reuse-path",
+            health_collection=health,
+        )
 
 
 async def test_the_vision_strategies_also_stamp(

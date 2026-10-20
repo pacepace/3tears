@@ -194,7 +194,10 @@ class ImagePrepTool(TearsTool):
 
         try:
             raw_bytes = base64.b64decode(image_data_base64)
-        except Exception as exc:
+        except (ValueError, TypeError) as exc:
+            # ValueError is bad base64 (binascii.Error) or a str with non-ASCII characters. TypeError
+            # is a value that is neither str nor bytes: TearsTool.run does not type-check kwargs, so
+            # a model that sends a number or an object here has sent bad input, not hit a bug.
             contain(exc, log=_log, what="failed to decode base64 image data")
             result = ToolResult(
                 success=False,

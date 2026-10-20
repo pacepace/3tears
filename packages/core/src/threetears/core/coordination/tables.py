@@ -98,7 +98,7 @@ log = get_logger(__name__)
 #: ``KvError`` is L2; ``DataLayerUnavailableError`` is the framework's L3-down signal;
 #: ``PostgresError`` covers a direct asyncpg pool; the builtins cover a socket, a DNS failure and
 #: a timeout wherever the backend does not wrap them.
-STORAGE_FAILURES: Final[tuple[type[BaseException], ...]] = (
+STORAGE_FAILURES: Final[tuple[type[Exception], ...]] = (
     KvError,
     DataLayerUnavailableError,
     PostgresError,

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
 from threetears.knowledge import (
@@ -46,6 +46,7 @@ from threetears.knowledge import (
     merge_concept_views,
     merge_entry_views,
 )
+from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.nats import Subjects
 from threetears.observe import contain, get_logger
 
@@ -60,6 +61,17 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: what a knowledge read means by "could not be read": the store failing, or a row or argument the
+#: read cannot use. The ``ValueError`` is the second kind -- a proxied id that is not a UUID
+#: (``collections._as_uuid``), a ``user_id``-without-``customer_id`` row ``derive_scope`` refuses, a
+#: shadow chain the merge refuses as a cycle (``OriginCycleError``), an unknown ``scope_context``.
+#: Anything else (``AttributeError``, ``TypeError``, ...) is a bug in this code and propagates
+#: rather than reading as an outage.
+_READ_FAILURES: Final[tuple[type[Exception], ...]] = (
+    *STORAGE_FAILURES,
+    ValueError,
+)
 
 
 class GovernedKnowledgeUnavailableError(RuntimeError):
@@ -352,7 +364,8 @@ class KnowledgeIntegration:
                 continue
             try:
                 drafts.extend(await collection.list_own_drafts(user_id, customer_scope=customer_scope))
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- one backend's fault must not hide the other side's drafts; it is raised below, after both are read
+            # one side's fault must not hide the other side's drafts; it is raised below, after both are read
+            except _READ_FAILURES as exc:
                 contain(exc, log=log, what=f"{side} drafts list failed: {type(exc).__name__}: {exc}")
                 unread.append(side)
                 causes.append(type(exc).__name__)
@@ -423,7 +436,7 @@ async def retrieve_entries(
     # NOSILENT: re-raised as GovernedKnowledgeUnavailableError -- same reason as
     # concepts. An invariant entry is a hard rule for every turn, and a fetch we
     # never completed cannot prove one was absent.
-    except Exception as exc:
+    except _READ_FAILURES as exc:
         log.warning(
             "entry retrieval failed (FAIL-CLOSED, the turn does not proceed ungoverned): %s: %s",
             type(exc).__name__,
@@ -504,7 +517,7 @@ async def retrieve_concepts(
     # NOSILENT: re-raised as GovernedKnowledgeUnavailableError -- a retrieval
     # fault cannot be scored as "no concepts applied", because an always-inject
     # rule may have been among the rows we could not fetch.
-    except Exception as exc:
+    except _READ_FAILURES as exc:
         log.warning(
             "concept retrieval failed (FAIL-CLOSED, the turn does not proceed ungoverned): %s: %s",
             type(exc).__name__,

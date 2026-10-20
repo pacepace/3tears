@@ -503,3 +503,42 @@ class TestStoredForm:
         )
         with pytest.raises(ValueError, match="naive datetime in 'last_refill'"):
             await naive.claim("k")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            b"not json",
+            b"\xff\xfe",
+            b"[1, 2]",
+            b'{"last_refill": "2026-09-29T12:00:00+00:00"}',
+            b'{"tokens": null, "last_refill": "2026-09-29T12:00:00+00:00"}',
+            b'{"tokens": true, "last_refill": "2026-09-29T12:00:00+00:00"}',
+            b'{"tokens": 1.0}',
+            b'{"tokens": 1.0, "last_refill": 5}',
+            b'{"tokens": 1.0, "last_refill": "yesterday"}',
+            b'{"tokens": 1.0, "last_refill": "2026-09-29T12:00:00"}',
+        ],
+        ids=[
+            "not-json",
+            "not-utf8",
+            "not-an-object",
+            "no-tokens",
+            "null-tokens",
+            "bool-tokens",
+            "no-last-refill",
+            "numeric-last-refill",
+            "unparseable-last-refill",
+            "naive-last-refill",
+        ],
+    )
+    async def test_a_stored_value_that_does_not_decode_raises_value_error(
+        self, client: FakeNatsClient, clock: _DrivenClock, stored: bytes
+    ) -> None:
+        # ValueError is what `claim` documents for a bad stored value, so a caller degrading on a
+        # bucket that cannot answer catches one type; a KeyError or TypeError from the payload's
+        # shape would read as a bug in the caller instead
+        await (await client.kv_bucket(name="b")).put(key="k", value=stored)
+
+        with pytest.raises(ValueError, match="stored bucket state|Expecting|Invalid isoformat|codec"):
+            await _bucket(client, clock, refill_rate=1.0, capacity=5.0).claim("k")
