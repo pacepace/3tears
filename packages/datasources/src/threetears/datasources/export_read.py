@@ -130,7 +130,8 @@ def export_select(
         # the set filters' columns, checked by the same grammar as the key's
         RelationFingerprintRequest(relation=relation, key_columns=list(sets))
     statement = f"SELECT {', '.join(checked.key_columns)} FROM {checked.relation}"  # noqa: S608 - identifiers checked
-    conditions = [f"{column} = {sql_string_literal(value)}" for column, value in checked.where.items()]
+    # the values as given (text), the columns as the model checked them
+    conditions = [f"{column} = {sql_string_literal(value)}" for column, value in dict(where or {}).items()]
     for column, values in sets.items():
         members = ", ".join(sql_string_literal(value) for value in values)
         conditions.append(f"{column} IN ({members})" if values else "1 = 0")

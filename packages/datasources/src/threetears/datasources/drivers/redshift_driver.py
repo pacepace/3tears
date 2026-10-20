@@ -166,6 +166,7 @@ if TYPE_CHECKING:
     RedshiftConnection = Any
     RedshiftCursor = Any
 
+from threetears.core.sql_fragments import FilterValue
 from threetears.core.fingerprint import fingerprint_sql, relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
@@ -2473,7 +2474,7 @@ class RedshiftDriver(Driver):
     @traced
     @observed(driver_type="redshift")
     async def relation_fingerprint(
-        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+        self, relation: str, key: list[str], where: Mapping[str, FilterValue] | None = None
     ) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
@@ -2498,7 +2499,7 @@ class RedshiftDriver(Driver):
         :param key: the columns the digest covers, TRUSTED identifiers
         :ptype key: list[str]
         :param where: equality filters, column -> value, naming the rows to fingerprint
-        :ptype where: Mapping[str, str] | None
+        :ptype where: Mapping[str, FilterValue] | None
         :return: the relation's current row count and key digest
         :rtype: RelationFingerprint
         :raises ValueError: when ``key`` is empty
@@ -2515,8 +2516,8 @@ class RedshiftDriver(Driver):
         relation: str,
         key: list[str],
         group_by: str,
-        where: Mapping[str, str] | None = None,
-        where_in: Mapping[str, Sequence[str]] | None = None,
+        where: Mapping[str, FilterValue] | None = None,
+        where_in: Mapping[str, Sequence[FilterValue]] | None = None,
     ) -> dict[str | None, RelationFingerprint]:
         """count and fingerprint every value of ``group_by`` in ``relation``, in one statement.
 
@@ -2530,9 +2531,9 @@ class RedshiftDriver(Driver):
         :param group_by: the grouping column, a TRUSTED identifier
         :ptype group_by: str
         :param where: equality filters
-        :ptype where: Mapping[str, str] | None
+        :ptype where: Mapping[str, FilterValue] | None
         :param where_in: set filters
-        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
         :return: each group's value as text (``None`` for NULL) -> its fingerprint
         :rtype: dict[str | None, RelationFingerprint]
         :raises ValueError: when ``key`` is empty
@@ -2546,7 +2547,7 @@ class RedshiftDriver(Driver):
         }
 
     async def _fingerprint_rows(
-        self, relation: str, key: list[str], filters: str, values: list[str], *, group_by: str | None
+        self, relation: str, key: list[str], filters: str, values: list[FilterValue], *, group_by: str | None
     ) -> list[tuple[Any, ...]]:
         """the rows of one fingerprint statement, whole or grouped: the one Redshift body both answer from.
 
@@ -2561,7 +2562,7 @@ class RedshiftDriver(Driver):
         :param filters: the `` WHERE`` fragment, ``$n`` placeholders
         :ptype filters: str
         :param values: its bound values, in order
-        :ptype values: list[str]
+        :ptype values: list[FilterValue]
         :param group_by: the grouping column, a TRUSTED identifier; the whole relation when None
         :ptype group_by: str | None
         :return: ``(row_count, digest)`` once when whole; ``(g, row_count, digest)`` per group

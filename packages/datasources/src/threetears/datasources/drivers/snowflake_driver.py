@@ -135,6 +135,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from threetears.core.sql_fragments import FilterValue
 from threetears.datasources.config import SnowflakeConnectionConfig
 from threetears.datasources.drivers.base import ColumnRow, Driver, RelationFingerprint, TableRow, Transaction
 from threetears.observe import get_logger
@@ -250,7 +251,7 @@ class SnowflakeDriver(Driver):
         raise NotImplementedError(f"SnowflakeDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def relation_fingerprint(
-        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+        self, relation: str, key: list[str], where: Mapping[str, FilterValue] | None = None
     ) -> RelationFingerprint:
         """count and fingerprint a relation over its key -- NOT YET IMPLEMENTED.
 

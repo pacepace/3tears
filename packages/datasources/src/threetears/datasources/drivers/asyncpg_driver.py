@@ -155,6 +155,7 @@ from typing import Any, Final
 
 import asyncpg
 
+from threetears.core.sql_fragments import FilterValue
 from threetears.core.fingerprint import postgres_fingerprint_sql
 from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.utils.pg_pool_kwargs import (
@@ -1354,7 +1355,7 @@ class AsyncpgDriver(Driver):
     @traced
     @observed(driver_type="asyncpg")
     async def relation_fingerprint(
-        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+        self, relation: str, key: list[str], where: Mapping[str, FilterValue] | None = None
     ) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
@@ -1391,8 +1392,8 @@ class AsyncpgDriver(Driver):
         relation: str,
         key: list[str],
         group_by: str,
-        where: Mapping[str, str] | None = None,
-        where_in: Mapping[str, Sequence[str]] | None = None,
+        where: Mapping[str, FilterValue] | None = None,
+        where_in: Mapping[str, Sequence[FilterValue]] | None = None,
     ) -> dict[str | None, RelationFingerprint]:
         """count and fingerprint every value of ``group_by`` in ``relation``, in one statement.
 
@@ -1405,9 +1406,9 @@ class AsyncpgDriver(Driver):
         :param group_by: the grouping column, a TRUSTED identifier
         :ptype group_by: str
         :param where: equality filters
-        :ptype where: Mapping[str, str] | None
+        :ptype where: Mapping[str, FilterValue] | None
         :param where_in: set filters
-        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :ptype where_in: Mapping[str, Sequence[FilterValue]] | None
         :return: each group's value as text (``None`` for NULL) -> its fingerprint
         :rtype: dict[str | None, RelationFingerprint]
         :raises ValueError: when ``key`` is empty
