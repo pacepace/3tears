@@ -67,12 +67,13 @@ def _backend() -> DuckDBBackend:
 
 
 class _Pointers:
-    """a pointer bucket in memory: CAS by revision, and a prefix watch that delivers every change."""
+    """a pointer bucket in memory: CAS by revision, and a prefix watch that delivers every change to every watcher."""
 
     def __init__(self) -> None:
         self.entries: dict[str, tuple[bytes, int]] = {}
         self._revision = 0
-        self._queue: asyncio.Queue[KvKeyUpdate | None | Exception] = asyncio.Queue()
+        # one queue per watch, so replicas sharing the bucket each see every change
+        self._queues: list[asyncio.Queue[KvKeyUpdate | None | Exception]] = []
         self.update_fails: Exception | None = None
         # the per-key TTL each key was last written with
         self.ttls: dict[str, timedelta | None] = {}
@@ -81,7 +82,12 @@ class _Pointers:
 
     def end_watch(self) -> None:
         """end the pointer watch, as a lost connection does, while the bucket's reads and writes still answer."""
-        self._queue.put_nowait(ConnectionError("the watch's consumer is gone"))
+        self.broadcast(ConnectionError("the watch's consumer is gone"))
+
+    def broadcast(self, update: KvKeyUpdate | Exception) -> None:
+        """deliver one update, or the end of the watch, to every watcher."""
+        for queue in self._queues:
+            queue.put_nowait(update)
 
     def put_now(self, key: str, value: bytes) -> int:
         """write a key outright, as another replica's publish would."""
@@ -90,7 +96,7 @@ class _Pointers:
     def _put(self, key: str, value: bytes) -> int:
         self._revision += 1
         self.entries[key] = (value, self._revision)
-        self._queue.put_nowait(KvKeyUpdate(key=key, value=value, revision=self._revision))
+        self.broadcast(KvKeyUpdate(key=key, value=value, revision=self._revision))
         return self._revision
 
     async def get(self, *, key: str) -> bytes | None:
@@ -127,7 +133,7 @@ class _Pointers:
             return False
         del self.entries[key]
         self._revision += 1
-        self._queue.put_nowait(KvKeyUpdate(key=key, value=None, revision=self._revision))
+        self.broadcast(KvKeyUpdate(key=key, value=None, revision=self._revision))
         return True
 
     async def list_keys(self, *, prefix: str = "") -> list[str]:
@@ -135,11 +141,13 @@ class _Pointers:
         return [key for key in self.entries if key.startswith(prefix)]
 
     async def watch_prefix(self, *, prefix: str, heartbeat: timedelta) -> AsyncIterator[KvKeyUpdate | None]:
+        queue: asyncio.Queue[KvKeyUpdate | None | Exception] = asyncio.Queue()
+        self._queues.append(queue)  # before the replay: nothing written in between is missed
         for key, (value, revision) in list(self.entries.items()):
             yield KvKeyUpdate(key=key, value=value, revision=revision)
         yield None
         while True:
-            update = await self._queue.get()
+            update = await queue.get()
             if isinstance(update, Exception):
                 raise update
             if update is not None and update.key.startswith(prefix):
@@ -203,7 +211,9 @@ class _L3:
 
 def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
     pointers, store = options.pop("pointers", None) or _Pointers(), options.pop("store", None) or _Store()
-    l3 = _L3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
+    l3 = options.pop("l3", None) or _L3(
+        [{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}]
+    )
 
     l3.epochs = {"TX": 1, "DE": 1}
 
@@ -217,7 +227,7 @@ def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
 
     snapshot = ScopedSnapshot(
         name="enr",
-        tables=_TABLES,
+        tables=options.pop("tables", _TABLES),
         backend=options.pop("backend", None) or _backend(),
         store=store,  # type: ignore[arg-type]
         pointers=pointers,  # type: ignore[arg-type]
@@ -2086,3 +2096,281 @@ async def test_a_full_store_sweep_keeps_every_piece_a_pointer_serves_and_takes_o
     assert set(served) <= set(store.objects), "the sweep took a base or a piece a pointer serves"
     assert folded in store.retired, "a piece no pointer names outlived the sweep"
     await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# append-only tables: a write publishes the rows it added; a replica appends them
+# ----------------------------------------------------------------------
+
+_APPEND = (SnapshotTable(name="results", scope_column="state", key=("county",), append_only=True),)
+
+
+class _HeldWatch(_Pointers):
+    """a pointer bucket whose watch can lose or reorder what it delivers, while KV itself stays right."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.holding = False
+        self.held: list[KvKeyUpdate] = []
+
+    def _put(self, key: str, value: bytes) -> int:
+        if not self.holding:
+            return super()._put(key, value)
+        self._revision += 1
+        self.entries[key] = (value, self._revision)
+        self.held.append(KvKeyUpdate(key=key, value=value, revision=self._revision))
+        return self._revision
+
+    def deliver(self, updates: list[KvKeyUpdate]) -> None:
+        """deliver these held updates, in this order; the rest are lost."""
+        self.holding, self.held = False, []
+        for update in updates:
+            self.broadcast(update)
+
+    def held_pointers(self, scope: str = "TX") -> list[KvKeyUpdate]:
+        return [u for u in self.held if u.key == f"enr.s.{scope}"]
+
+
+async def _append_pair(
+    pointers: _Pointers | None = None, **options: Any
+) -> tuple[ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _L3]:
+    """a writer and a second replica over the same buckets, both ready on the first rebuild's TX c1 and DE c2.
+
+    The store returned is the second replica's own view of the objects, so its reads are counted
+    apart from the writer's (which applies its own pointers from its watch too).
+    """
+    writer, pointers, store, l3 = _snapshot(tables=_APPEND, pointers=pointers, **options)
+    await _started(writer, pointers)
+    view = _Store()
+    view.objects = store.objects
+    replica, _, _, _ = _snapshot(tables=_APPEND, pointers=pointers, store=view)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    return writer, replica, pointers, view, l3
+
+
+async def _append_staged(writer: ScopedSnapshot, epoch: int, rows: list[dict[str, Any]], carry_at: int) -> None:
+    staged = await writer.stage("TX", epoch, {"results": rows})
+    moved, skipped = await writer.publish_staged([staged], carry_at={"TX": carry_at})
+    assert (moved, skipped) == (["TX"], [])
+
+
+async def test_a_staged_append_moves_the_pointer_and_a_second_replica_appends_exactly_the_new_rows() -> None:
+    writer, replica, pointers, store, _ = await _append_pair()
+    base = json.loads(pointers.entries["enr.s.TX"][0])["tables"]["results"]["object"]
+    gets = store.gets
+
+    await _append_staged(writer, 2, [_county("c3", 3), _county("c4", 4)], carry_at=1)
+
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="the second replica applied epoch 2")
+    assert _tx_counties(replica) == [("c1", 1), ("c3", 3), ("c4", 4)]
+    assert store.gets - gets == 1, "the replica fetched more than the one piece the write added"
+    assert replica.status().rows == {"results": 4}
+    assert replica.status().last_change is not None and replica.status().last_change.rows == 3
+    written = json.loads(pointers.entries["enr.s.TX"][0])
+    entry = written["tables"]["results"]
+    assert entry["object"] == base and base.startswith("enr/"), "the base moved, or left the old replicas' prefix"
+    assert [p["object"].split("/")[0] for p in entry["pieces"]] == ["enr.p"]
+    assert entry["pieces"][0]["rows"] == 2 and entry["pieces"][0]["epoch"] == 2
+    # a replica that predates pieces compares this with its own digest, and so never loads the scope
+    assert written["schema"]["results"] != writer.backend.schema_digest("results")
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_publish_of_added_rows_appends_them_here_and_on_every_replica() -> None:
+    writer, replica, pointers, store, _ = await _append_pair()
+    gets = store.gets
+
+    await writer.publish("TX", 2, {"results": [_county("c3", 3)]})
+    await writer.publish("TX", 3, {"results": [_county("c4", 4)]})
+
+    assert _tx_counties(writer) == [("c1", 1), ("c3", 3), ("c4", 4)]
+    await _until(lambda: replica.applied_epoch("TX") == 3, what="the second replica applied epoch 3")
+    assert _tx_counties(replica) == [("c1", 1), ("c3", 3), ("c4", 4)]
+    assert store.gets - gets <= 2, "the replica fetched more than the two pieces"
+    assert len(json.loads(pointers.entries["enr.s.TX"][0])["tables"]["results"]["pieces"]) == 2
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_cold_replica_after_appends_loads_the_base_and_every_piece() -> None:
+    writer, replica, pointers, store, l3 = await _append_pair()
+    await replica.stop()
+    await _append_staged(writer, 2, [_county("c3", 3)], carry_at=1)
+    await _append_staged(writer, 3, [_county("c4", 4)], carry_at=2)
+
+    cold, _, _, cold_l3 = _snapshot(tables=_APPEND, pointers=pointers, store=store)
+    await cold.start()
+    await cold.wait_ready(timeout=5)
+
+    assert cold.status().source is SnapshotSource.L2
+    assert _tx_counties(cold) == [("c1", 1), ("c3", 3), ("c4", 4)]
+    await writer.stop()
+    await cold.stop()
+
+
+async def test_a_replica_that_lost_pointer_events_fetches_every_piece_after_what_it_holds() -> None:
+    writer, replica, pointers, store, _ = await _append_pair(pointers=_HeldWatch())
+    assert isinstance(pointers, _HeldWatch)
+    pointers.holding = True
+    await _append_staged(writer, 2, [_county("c3", 3)], carry_at=1)
+    await _append_staged(writer, 3, [_county("c4", 4)], carry_at=2)
+    gets = store.gets
+
+    pointers.deliver(pointers.held_pointers()[-1:])  # epoch 2's event is lost
+
+    await _until(lambda: replica.applied_epoch("TX") == 3, what="the replica applied epoch 3")
+    assert _tx_counties(replica) == [("c1", 1), ("c3", 3), ("c4", 4)]
+    assert store.gets - gets == 2, "the replica did not fetch exactly the two pieces after what it held"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_pointer_events_delivered_out_of_order_converge_on_the_latest() -> None:
+    writer, replica, pointers, _, _ = await _append_pair(pointers=_HeldWatch())
+    assert isinstance(pointers, _HeldWatch)
+    pointers.holding = True
+    await _append_staged(writer, 2, [_county("c3", 3)], carry_at=1)
+    await _append_staged(writer, 3, [_county("c4", 4)], carry_at=2)
+
+    pointers.deliver(list(reversed(pointers.held_pointers())))
+
+    await _until(lambda: replica.applied_epoch("TX") == 3, what="the replica applied epoch 3")
+    await asyncio.sleep(0.2)  # the older event has been seen too, and changed nothing
+    assert replica.applied_epoch("TX") == 3
+    assert _tx_counties(replica) == [("c1", 1), ("c3", 3), ("c4", 4)]
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_rebuild_resets_an_append_only_table_to_one_base_and_retires_its_pieces() -> None:
+    store = _BoundedStore(10**9)
+
+    async def retire(names: list[str]) -> None:
+        for name in names:
+            store.retired.append(name)
+            store.objects.pop(name, None)
+
+    writer, replica, pointers, _, l3 = await _append_pair(store=store, retire=retire)
+    await _append_staged(writer, 2, [_county("c3", 3)], carry_at=1)
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="epoch 2 applied")
+    pieces = [p["object"] for p in json.loads(pointers.entries["enr.s.TX"][0])["tables"]["results"]["pieces"]]
+    l3.rows = [*l3.rows, _county("c3", 3), _county("c5", 5)]
+    l3.epochs["TX"] = 4  # a write committed in L3 and died before it published
+
+    assert await writer.catch_up_from_l3() == ["TX"]
+
+    written = json.loads(pointers.entries["enr.s.TX"][0])
+    assert set(written["tables"]["results"]) == {"object", "rows", "compacted_at"}, "a rebuild left pieces"
+    assert written["schema"]["results"] == writer.backend.schema_digest("results")
+    assert set(pieces) <= set(store.retired), "the pieces the rebuild superseded were kept"
+    await _until(lambda: replica.applied_epoch("TX") == 4, what="the rebuilt base applied")
+    assert _tx_counties(replica) == [("c1", 1), ("c3", 3), ("c5", 5)]
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_staged_piece_off_the_epoch_its_writer_saw_moves_nothing_and_is_left_for_the_catch_up() -> None:
+    writer, replica, pointers, _, _ = await _append_pair()
+    standing = pointers.entries["enr.s.TX"][0]
+    staged = await writer.stage("TX", 3, {"results": [_county("c3", 3)]})
+
+    moved, skipped = await writer.publish_staged([staged], carry_at={"TX": 2})  # the pointer is at 1
+
+    assert (moved, skipped) == ([], ["TX"])
+    assert pointers.entries["enr.s.TX"][0] == standing
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_publish_on_a_chain_this_replica_does_not_hold_moves_nothing() -> None:
+    writer, replica, pointers, store, _ = await _append_pair()
+    pointers.put_now("enr.rebuild", b"another replica")  # nothing here may rebuild TX meanwhile
+    foreign = json.loads(pointers.entries["enr.s.TX"][0])
+    foreign["epoch"], foreign["schema"]["results"] = 2, "the other version's columns"
+    pointers.put_now("enr.s.TX", json.dumps(foreign).encode())
+    standing = pointers.entries["enr.s.TX"][0]
+
+    await writer.publish("TX", 3, {"results": [_county("c3", 3)]})
+
+    assert pointers.entries["enr.s.TX"][0] == standing, "a piece was appended to a chain the writer does not hold"
+    assert not [name for name in store.objects if name.startswith("enr.p/")]
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_piece_holding_a_row_already_held_is_refused_and_the_scope_rebuilt_from_l3() -> None:
+    writer, replica, _, _, l3 = await _append_pair()
+    l3.epochs["TX"] = 2
+
+    # a writer that broke the promise: c1 is held already
+    await _append_staged(writer, 2, [_county("c1", 9)], carry_at=1)
+
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="TX rebuilt from L3 after its piece was refused")
+    assert _tx_counties(replica) == [("c1", 1)], "the refused piece's row reached the L1"
+    assert replica.status().phase is SnapshotPhase.READY
+    await writer.stop()
+    await replica.stop()
+
+
+_TOTALS = TableSchema(
+    name="totals",
+    primary_key=("state",),
+    columns=[Column("state", STRING_TYPE), Column("total", BIGINT_TYPE, nullable=True)],
+    on_conflict="update",
+)
+
+
+def _two_table_backend() -> DuckDBBackend:
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    _TOTALS.to_sqlalchemy_table(metadata)
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    return backend
+
+
+class _TwoTableL3(_L3):
+    """L3 holding the append-only results and a whole-chunk totals table."""
+
+    def __init__(self) -> None:
+        super().__init__([_county("c1", 1), _county("c2", 2, state="DE")])
+        self.totals = [{"state": "TX", "total": 1}, {"state": "DE", "total": 2}]
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if '"totals"' not in sql:
+            return await super().fetch(sql, *args)
+        self.statements += 1
+        if "DISTINCT" in sql:
+            return [{"scope": t["state"]} for t in self.totals]
+        return [t for t in self.totals if not args or t["state"] == args[0]]
+
+
+async def test_a_table_not_declared_append_only_keeps_one_whole_chunk_beside_an_appended_one() -> None:
+    tables = (*_APPEND, SnapshotTable(name="totals", scope_column="state", key=("state",)))
+    pointers, store = _Pointers(), _Store()
+    replicas = []
+    for _ in range(2):
+        snapshot, _, _, _ = _snapshot(
+            tables=tables, pointers=pointers, store=store, backend=_two_table_backend(), l3=_TwoTableL3()
+        )
+        replicas.append(snapshot)
+    writer, replica = replicas
+    await _started(writer, pointers)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+
+    await writer.publish("TX", 2, {"results": [_county("c3", 3)], "totals": [{"state": "TX", "total": 4}]})
+
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="the second replica applied epoch 2")
+    entry = json.loads(pointers.entries["enr.s.TX"][0])
+    assert set(entry["tables"]["totals"]) == {"object", "rows"}, "the whole-chunk table took pieces"
+    assert entry["tables"]["totals"]["object"].startswith("enr/TX/2/totals.")
+    assert entry["schema"]["totals"] == writer.backend.schema_digest("totals")
+    assert len(entry["tables"]["results"]["pieces"]) == 1
+    with replica.read() as cursor:
+        assert cursor.execute("SELECT state, total FROM totals ORDER BY state").fetchall() == [("DE", 2), ("TX", 4)]
+    assert _tx_counties(replica) == [("c1", 1), ("c3", 3)]
+    await writer.stop()
+    await replica.stop()
