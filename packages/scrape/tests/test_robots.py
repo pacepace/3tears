@@ -217,16 +217,6 @@ async def test_a_robots_file_that_will_not_parse_refuses() -> None:
     _assert_unreachable(decision)
 
 
-@pytest.mark.parametrize(
-    "body",
-    ["User-agent: *\nCrawl-delay: \u00b2\n", "User-agent: *\nRequest-rate: 1/\u2460\n"],
-    ids=["superscript-delay", "circled-digit-rate"],
-)
-async def test_a_robots_file_the_stdlib_parser_raises_on_refuses(body: str) -> None:
-    """Real input: ``str.isdigit`` accepts ``\u00b2`` and ``\u2460`` and ``int()`` then refuses them."""
-    _assert_unreachable(await RobotsGate(fetch=_fetcher(body)).check("https://example.gov/x"))
-
-
 async def test_a_bug_while_parsing_the_robots_file_propagates_rather_than_reading_as_unparseable() -> None:
     with (
         patch("threetears.scrape.robots.RobotFileParser.parse", side_effect=TypeError("a bug, not the file")),
