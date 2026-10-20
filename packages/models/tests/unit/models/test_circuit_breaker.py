@@ -276,9 +276,13 @@ class TestCircuitBreakerHalfOpenProbe:
         """the first request probes; concurrent requests are fast-failed."""
         cb = self._half_open_breaker()
         assert cb.state == CircuitState.HALF_OPEN
-        # a second concurrent request while the probe is in flight is rejected
-        with pytest.raises(CircuitOpenError):
-            cb.check()
+        # a second concurrent request while the probe is in flight is rejected. "Concurrent"
+        # is the same moment the probe was admitted: a probe out longer than the recovery
+        # timeout is taken as lost and replaced (test_a_probe_is_never_stranded.py).
+        with patch("threetears.models.circuit_breaker.time") as mock_time:
+            mock_time.monotonic.return_value = 1000.0 + 11.0
+            with pytest.raises(CircuitOpenError):
+                cb.check()
 
     def test_probe_success_closes_and_readmits(self) -> None:
         """a successful probe closes the circuit and clears the probe gate."""

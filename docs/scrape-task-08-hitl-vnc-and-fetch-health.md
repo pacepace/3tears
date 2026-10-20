@@ -381,12 +381,12 @@ deployment injects a bounded lookup; a short-lived one has nothing to do.
 
 The two circuits run on very different clocks -- seconds against minutes to hours -- so the
 durable one routinely suppresses a fetch the in-process one has already admitted a probe for.
-That probe then never resolves, and `CircuitBreakerLike` has no way to say "never mind", so
-the suppressed path reports the failure it effectively had. Only where a probe was genuinely
-admitted, though: telling a CLOSED breaker about a fetch that was never attempted trips it on
-failures it never saw, after which the wrong circuit answers `check` and the caller is told to
-retry in seconds when the truth is hours -- turning the suppression into a fixed-cadence poll,
-which is the opposite of the whole section.
+That probe then never resolves, so the suppressed path hands it back with the breaker's
+`release_probe` (part of `ProbeObservableBreaker`), which records no outcome. It does not report
+a failure: telling a breaker about a fetch that was never attempted trips it on failures it
+never saw, after which the wrong circuit answers `check` and the caller is told to retry in
+seconds when the truth is hours -- turning the suppression into a fixed-cadence poll, which is
+the opposite of the whole section.
 
 Re-probing a blocked target is scheduled through `3tears-scheduled-jobs` (`relative_delay`),
 not a bespoke sleep-and-retry. That arrives as the optional `3tears-scrape[reprobe]` extra

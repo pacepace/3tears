@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, patch
 import textwrap
 
 import pytest
-from packages.scrape.tests.scrape_tool_support import derived_target_id
+from packages.scrape.tests.scrape_tool_support import derived_target_id, holds_no_probe
 from packages.scrape.tests.egress_fakes import FakeEgress
 from packages.scrape.tests.pacer_fakes import FakeDelayPacer
 from pydantic import SecretStr
@@ -794,9 +794,9 @@ class TestScrapeToolFetchCircuit:
         A permitted decision can promote the in-process breaker to HALF_OPEN and mark its
         probe in flight; only an outcome clears that flag. The eval loop raising -- an L3
         write failing inside ``save_entity``, say -- means no outcome is ever reported, so
-        the flag is held for the life of the process. Every later ``check`` then fast-fails
-        on the in-process branch before the durable row is read and answers "retry in about
-        0s", so the tool tells its caller to hammer a target it will never actually fetch.
+        the flag is held until the breaker's probe timeout takes the probe as lost. Every later
+        ``check`` meanwhile fast-fails on the in-process branch before the durable row is read,
+        so the tool refuses a target it is not actually fetching.
 
         Uses the real ``CircuitBreaker`` because the in-flight flag IS the behaviour under
         test, and drives it through ``tool.execute`` because the gap being closed is the
@@ -826,9 +826,7 @@ class TestScrapeToolFetchCircuit:
 
         # The breaker promoted itself on the way in and its probe was abandoned; the tool is
         # the only thing that knows the probe is dead, so the tool has to say so.
-        assert breaker.state is not CircuitState.HALF_OPEN, (
-            "the in-process breaker was left holding a probe no outcome will ever clear"
-        )
+        assert holds_no_probe(breaker), "the in-process breaker was left holding a probe no outcome will ever clear"
 
         decision = await circuit.check(target_id)
         assert decision.permitted, (
@@ -848,11 +846,10 @@ class TestScrapeToolFetchCircuit:
         for something it did not do, across every pod and past the process that was
         cancelled.
 
-        The in-process breaker does take a failure, because ``CircuitBreakerLike`` has no
-        "never mind" and reporting one is the only way to clear an admitted probe. That is
-        the cheap half to be wrong about: seconds-scale recovery, process-local, and it dies
-        with the process being cancelled. The health row is the expensive half, and is what
-        this asserts stays untouched.
+        The in-process breaker's probe is handed back without an outcome
+        (``release_probe``): the cancellation is no evidence about the target, so neither
+        circuit counts it. The health row is the expensive half to be wrong about, and is
+        what this asserts stays untouched.
         """
         recipe_collection, extraction_collection = _collections()
         health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
@@ -869,7 +866,7 @@ class TestScrapeToolFetchCircuit:
         with pytest.raises(asyncio.CancelledError):
             await tool.execute(url=url, field_schema=schema)
 
-        assert breaker.state is not CircuitState.HALF_OPEN, (
+        assert holds_no_probe(breaker), (
             "a cancelled fetch left the in-process breaker holding a probe no outcome clears"
         )
         row = await health_collection.get(target_id)
@@ -907,7 +904,7 @@ class TestScrapeToolFetchCircuit:
         ):
             await tool.execute(url=url, field_schema=schema)
 
-        assert breaker.state is not CircuitState.HALF_OPEN, (
+        assert holds_no_probe(breaker), (
             "a cancellation inside the failure report escaped the guard and left the in-process breaker holding a probe"
         )
 
@@ -921,9 +918,9 @@ class TestScrapeToolFetchCircuit:
 
         `TargetCircuit.check` can return permitted having already promoted the breaker to
         HALF_OPEN with its probe in flight, and only an outcome or an explicit release clears
-        it. Stranded, `release_probe`'s own docstring says the target is fast-failed with
-        `retry_after_seconds=0.0` for the life of the process -- and a signature mismatch
-        recurs identically on every poll, so nothing later clears it either.
+        it. Stranded, the target is refused until the breaker's probe timeout takes the probe
+        as lost -- and a signature mismatch recurs identically on every poll, so it strands
+        again at once.
 
         The asymmetry is what gave it away: that same block already gave the robots fleet turn
         back and left the probe behind.
@@ -968,7 +965,7 @@ class TestScrapeToolFetchCircuit:
 
         assert result.success is False
         assert "does not accept session_state" in (result.error or "")
-        assert breaker.state is not CircuitState.HALF_OPEN, (
+        assert holds_no_probe(breaker), (
             "a refusal issued before the driver call returned without raising, so the single "
             "guard never ran and the in-process breaker is still holding a probe that nothing "
             "will ever report an outcome for"
@@ -987,9 +984,9 @@ class TestScrapeToolFetchCircuit:
         The circuit admits a probe, then the crawl delay is waited before the render. That
         sleep sat outside every guard: the render's own handler starts after it. So a poll
         cancelled while being polite propagates with the probe still held, and
-        ``release_probe``'s docstring says the target is then fast-failed with
-        ``retry_after_seconds=0.0`` for the life of the process -- a target that is behaving
-        perfectly, punished for the one thing it asked us to do.
+        the target is then fast-failed until the breaker's probe timeout takes the probe as
+        lost -- a target that is behaving perfectly, punished for the one thing it asked us
+        to do.
 
         Unlike the three before it this is not a narrow window. The tool advertises a deadline
         of ``default_timeout + 60`` while an honoured ``Crawl-delay`` is capped at 300s, so an
@@ -1016,9 +1013,9 @@ class TestScrapeToolFetchCircuit:
         ):
             await tool.execute(url=url, field_schema=schema)
 
-        assert breaker.state is not CircuitState.HALF_OPEN, (
+        assert holds_no_probe(breaker), (
             "a cancellation during the crawl delay left the in-process breaker holding a "
-            "probe, so this target fast-fails with retry_after=0 for the life of the process"
+            "probe, so this target is refused until the breaker's probe timeout"
         )
         assert len(driver.render_calls) == 0, "the fetch never happened, so nothing was observed"
         row = await health_collection.get(target_id)

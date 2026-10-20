@@ -16,7 +16,7 @@ from typing import Annotated, Any, NotRequired, cast
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware, ModelRequest, ModelResponse
 from langchain.agents.middleware.types import AgentState, ExtendedModelResponse
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
@@ -258,23 +258,234 @@ async def test_a_model_that_keeps_calling_tools_when_told_to_answer_still_ends_w
     assert _no_orphaned_tool_results(messages)
 
 
-async def test_a_round_that_would_pass_the_cap_is_discarded_and_the_answer_forced() -> None:
-    """Three parallel calls a round under a cap of ten: 3, 6, 9, then a round of 3 would make 12."""
+async def test_a_round_that_would_pass_the_cap_runs_up_to_it_and_the_answer_is_forced() -> None:
+    """Three parallel calls a round under a cap of ten: 3, 6, 9, then a round of 3 runs its first."""
 
     def script(index: int, told: bool, messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content="answered") if told else _call(index, n=3)
 
-    usage = {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
-    model = _scripted(script, usage=usage)
+    model = _scripted(script)
     messages = await _turn(model, ToolLoopBudgetMiddleware(max_tool_calls=10))
-    assert len(_tool_results(messages)) == 9
-    last = messages[-1]
-    assert last.content == "answered"
-    # the fourth call's three tool calls were discarded; the fifth call is the forced pass
+    assert len(_tool_results(messages)) == 10
+    rounds = [m for m in messages if isinstance(m, AIMessage) and m.tool_calls]
+    assert [c["id"] for c in rounds[-1].tool_calls] == ["c3-0"]
+    assert messages[-1].content == "answered"
     assert [c["told"] for c in model.calls] == [False, False, False, False, True]
-    # the step's answer is billed for the discarded call too
-    assert isinstance(last, AIMessage) and last.usage_metadata is not None
-    assert last.usage_metadata["total_tokens"] == 24
+    assert "2 of the tool calls you last asked for were not run" in str(_last_seen(model.calls[-1]).content)
+
+
+def _every_call_answered_in_order(messages: Sequence[BaseMessage]) -> bool:
+    """What Anthropic and OpenAI require of a request: each AIMessage's tool calls are answered by
+    exactly one ToolMessage each, among the ToolMessages that follow it before the next AI or user
+    message, and no ToolMessage answers a call that is not there."""
+    open_ids: list[str] = []
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            if message.tool_call_id not in open_ids:
+                return False
+            open_ids.remove(message.tool_call_id)
+            continue
+        if open_ids:
+            return False
+        if isinstance(message, AIMessage):
+            open_ids = [c["id"] for c in message.tool_calls]
+    return not open_ids
+
+
+def _wide(index: int, told: bool, messages: list[BaseMessage]) -> AIMessage:
+    """scriob's shape: three calls, then sixteen in one round, then the answer when told."""
+    if told:
+        return AIMessage(content="here is what I read")
+    return _call(index, n=3 if index == 0 else 16)
+
+
+async def test_a_wide_round_past_the_cap_runs_what_the_cap_allows_and_drops_the_rest(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """scriob, 0.73.0, Claude Sonnet 4.6: three calls, then sixteen reads in one round under a cap
+    of sixteen. The first thirteen run; the last three are removed from the round and never
+    dispatched; the forced answer is told three were not run."""
+    model = _scripted(_wide)
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        messages = await _turn(model, ToolLoopBudgetMiddleware(max_tool_calls=16))
+    # the turn's record counts the calls that ran
+    [forced] = [r for r in caplog.records if r.getMessage() == "tool-loop budget forced an answer"]
+    assert forced.__dict__["extra_data"]["tool_calls"] == 16
+    rounds = [m for m in messages if isinstance(m, AIMessage) and m.tool_calls]
+    assert [len(r.tool_calls) for r in rounds] == [3, 13]
+    assert [c["id"] for c in rounds[1].tool_calls] == [f"c1-{k}" for k in range(13)]
+    assert len(_tool_results(messages)) == 16
+    assert all(str(r.content).startswith("the note about") for r in _tool_results(messages))
+    assert [c["told"] for c in model.calls] == [False, False, True]
+    assert "3 of the tool calls you last asked for were not run" in str(_last_seen(model.calls[-1]).content)
+    assert messages[-1].content == "here is what I read"
+    assert _every_call_answered_in_order(messages)
+    # the forced pass was sent a transcript a provider accepts
+    assert _every_call_answered_in_order(model.calls[-1]["messages"][:-1])
+
+
+async def test_a_round_that_exactly_fits_runs_whole(caplog: pytest.LogCaptureFixture) -> None:
+    def script(index: int, told: bool, messages: list[BaseMessage]) -> AIMessage:
+        if told:
+            return AIMessage(content="done")
+        return _call(index, n=3 if index == 0 else 13)
+
+    model = _scripted(script)
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        messages = await _turn(model, ToolLoopBudgetMiddleware(max_tool_calls=16))
+    assert len(_tool_results(messages)) == 16
+    assert not any("ran part of a round" in r.getMessage() for r in caplog.records)
+    assert "were not run" not in str(_last_seen(model.calls[-1]).content)
+    assert messages[-1].content == "done"
+
+
+def test_a_round_with_no_allowance_left_runs_nothing_and_is_answered_in_the_same_step() -> None:
+    """A record already at the cap with no round judged yet -- the force tier normally answers
+    before the model is asked, so only a record like this reaches here: nothing of the round may
+    run, so the step itself is the forced answer."""
+    seen: list[ModelRequest] = []
+
+    def handler(request: ModelRequest) -> ModelResponse:
+        seen.append(request)
+        return ModelResponse(result=[_call(0, n=4) if len(seen) == 1 else AIMessage(content="answer")])
+
+    state = {"messages": [HumanMessage(content="hi")], "tool_loop_budget": {"tool_calls": 16, "rounds": 0}}
+    result = ToolLoopBudgetMiddleware(max_tool_calls=16).wrap_model_call(_request(state), handler)
+    [answer] = result.model_response.result
+    assert isinstance(answer, AIMessage) and answer.content == "answer" and answer.tool_calls == []
+    assert "4 of the tool calls you last asked for were not run" in str(seen[1].messages[-1].content)
+
+
+def test_a_cut_call_with_no_id_leaves_no_trace() -> None:
+    """A call past the cap is removed, not answered, so one without an id never needs one."""
+    answer = AIMessage(
+        content=[
+            {"type": "text", "text": "reading"},
+            {"type": "tool_use", "id": "a", "name": "read_note", "input": {"topic": "x"}},
+            {"type": "tool_use", "id": None, "name": "read_note", "input": {"topic": "y"}},
+        ],
+        tool_calls=[
+            {"name": "read_note", "args": {"topic": "x"}, "id": "a"},
+            {"name": "read_note", "args": {"topic": "y"}, "id": None},
+        ],
+    )
+    state = {"messages": [HumanMessage(content="hi")], "tool_loop_budget": {"tool_calls": 15, "rounds": 1}}
+    result = ToolLoopBudgetMiddleware(max_tool_calls=16).wrap_model_call(
+        _request(state), lambda _r: ModelResponse(result=[answer])
+    )
+    [cut] = result.model_response.result
+    assert isinstance(cut, AIMessage)
+    assert [c["id"] for c in cut.tool_calls] == ["a"]
+    assert [b.get("id") for b in cut.content if isinstance(b, dict) and b.get("type") == "tool_use"] == ["a"]
+    assert "None" not in repr(cut)
+
+
+def test_a_cut_call_in_openais_responses_shape_is_removed_by_its_call_id() -> None:
+    """OpenAI's Responses API ``function_call`` keeps the call id in ``call_id`` and its own item id in
+    ``id``: matching ``id`` alone would leave every cut call on the message with no output, a 400."""
+    answer = AIMessage(
+        content=[
+            {"type": "function_call", "id": "fc_1", "call_id": "call_a", "name": "read_note", "arguments": "{}"},
+            {"type": "function_call", "id": "fc_2", "call_id": "call_b", "name": "read_note", "arguments": "{}"},
+        ],
+        tool_calls=[
+            {"name": "read_note", "args": {}, "id": "call_a"},
+            {"name": "read_note", "args": {}, "id": "call_b"},
+        ],
+    )
+    state = {"messages": [HumanMessage(content="hi")], "tool_loop_budget": {"tool_calls": 15, "rounds": 1}}
+    result = ToolLoopBudgetMiddleware(max_tool_calls=16).wrap_model_call(
+        _request(state), lambda _r: ModelResponse(result=[answer])
+    )
+    [cut] = result.model_response.result
+    assert isinstance(cut, AIMessage)
+    assert [c["id"] for c in cut.tool_calls] == ["call_a"]
+    assert [b["call_id"] for b in cut.content if isinstance(b, dict) and b.get("type") == "function_call"] == ["call_a"]
+
+
+async def test_a_split_round_logs_its_counts_and_no_prompt_text(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        await _turn(_scripted(_wide), ToolLoopBudgetMiddleware(max_tool_calls=16))
+    [split] = [
+        r for r in caplog.records if r.getMessage() == "tool-loop budget ran part of a round that would pass the cap"
+    ]
+    assert split.__dict__["extra_data"] == {"tool_calls": 3, "calls_run": 13, "calls_refused": 3, "max_tool_calls": 16}
+    assert "Say hello" not in _rendered(split)
+
+
+async def test_refused_text_is_the_consumers_and_names_the_counts() -> None:
+    model = _scripted(_wide)
+    await _turn(model, ToolLoopBudgetMiddleware(max_tool_calls=16, refused_text="spent {refused}/{max_tool_calls}"))
+    assert str(_last_seen(model.calls[-1]).content).endswith("\n\nspent 3/16")
+
+
+async def test_a_split_round_under_human_review_asks_only_about_the_calls_that_run() -> None:
+    """HumanInTheLoopMiddleware's after_model reviews every call left on the round: a cut call is
+    gone, so a person is never asked about a call that will not run, and no call gets two
+    results whatever they decide."""
+    model = _scripted(
+        lambda index, told, messages: AIMessage(content="done") if told else _call(index, n=2 if index == 0 else 4)
+    )
+    budget = ToolLoopBudgetMiddleware(max_tool_calls=4)
+    review = HumanInTheLoopMiddleware(interrupt_on={"read_note": True})
+    middleware: list[AgentMiddleware] = [budget, review]
+    agent = create_agent(model=model, tools=[read_note], middleware=middleware, checkpointer=InMemorySaver())
+    config: Any = {"configurable": {"thread_id": "t"}, "recursion_limit": recursion_limit_for(middleware=middleware)}
+
+    state = await agent.ainvoke({"messages": [HumanMessage(content="go")]}, config)
+    asked = [len(i.value["action_requests"]) for i in state["__interrupt__"]]
+    assert asked == [2]
+    state = await agent.ainvoke(Command(resume={"decisions": [{"type": "approve"}] * 2}), config)
+    asked = [len(i.value["action_requests"]) for i in state["__interrupt__"]]
+    assert asked == [2], "the split round's cut calls were put to a person"
+    state = await agent.ainvoke(
+        Command(resume={"decisions": [{"type": "approve"}, {"type": "reject", "message": "no"}]}), config
+    )
+    messages = state["messages"]
+    assert messages[-1].content == "done"
+    ids = [m.tool_call_id for m in _tool_results(messages)]
+    assert len(ids) == len(set(ids)) == 4, "a call ended with more or fewer than one result"
+    assert _every_call_answered_in_order(messages)
+
+
+async def test_a_steps_answer_carries_the_usage_of_every_call_it_made() -> None:
+    """A forced pass that comes back empty, then a retry that answers: the step made two calls,
+    and its answer is billed for both, with the retry's response metadata."""
+
+    def script(index: int, told: bool, messages: list[BaseMessage]) -> AIMessage:
+        if not told:
+            return _call(index)
+        return AIMessage(content="" if index == 1 else "answered")
+
+    usage = {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
+    messages = await _turn(_scripted(script, usage=usage), ToolLoopBudgetMiddleware(max_tool_calls=1))
+    last = messages[-1]
+    assert isinstance(last, AIMessage) and last.content == "answered"
+    assert last.usage_metadata is not None and last.usage_metadata["total_tokens"] == 24
+    assert last.response_metadata["call"] == 2
+
+
+async def test_the_fallback_reaches_the_stream_and_the_history_after_a_split_round() -> None:
+    model = _scripted(lambda index, told, messages: AIMessage(content="") if told else _call(index, n=3))
+    budget = ToolLoopBudgetMiddleware(max_tool_calls=4)
+    agent = create_agent(model=model, tools=[read_note], middleware=[budget])
+    streamed: list[str] = []
+    final: dict[str, Any] = {}
+    async for event in agent.astream_events(
+        {"messages": [HumanMessage(content="Say hello.")]},
+        {"recursion_limit": recursion_limit_for(middleware=[budget], margin=0)},
+        version="v2",
+    ):
+        if event["event"] == "on_chat_model_stream":
+            streamed.append(str(event["data"]["chunk"].content))
+        elif event["event"] == "on_chain_end" and isinstance(event["data"].get("output"), dict):
+            final.update(event["data"]["output"])
+    assert "".join(streamed) == DEFAULT_TOOL_BUDGET_FALLBACK_TEXT
+    messages = final["messages"]
+    assert messages[-1].content == DEFAULT_TOOL_BUDGET_FALLBACK_TEXT
+    rounds = [m for m in messages if isinstance(m, AIMessage) and m.tool_calls]
+    assert [len(r.tool_calls) for r in rounds] == [3, 1]
+    assert _every_call_answered_in_order(messages)
 
 
 async def test_a_model_that_answers_on_its_own_is_untouched() -> None:
@@ -631,18 +842,18 @@ class _Marker(AgentMiddleware):
         return ExtendedModelResponse(model_response=response, command=Command(update={"marks": [f"m{self.count}"]}))
 
 
-async def test_an_inner_middlewares_command_survives_a_discarded_round_and_the_fallback() -> None:
-    """Each model step keeps the command of its last inner call: the forced pass's chain, not the
-    discarded round; the fallback, not the empty answers before it."""
+async def test_an_inner_middlewares_command_survives_a_split_round_and_the_fallback() -> None:
+    """Each model step keeps the command of its last inner call: the split round's own, and the
+    fallback's, not the empty answers before it."""
 
     def script(index: int, told: bool, messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content="") if told else _call(index, n=2)
 
     marker = _Marker()
     state = await _run(_scripted(script), ToolLoopBudgetMiddleware(max_tool_calls=3), extra=[marker])
-    # step 1: m1 (two calls). step 2: m2 discarded (would make 4), m3 forced empty, m4 retry empty,
-    # m5 the fallback stand-in.
-    assert state["marks"] == ["m1", "m5"]
+    # step 1: m1 (two calls). step 2: m2 split (one runs, one refused). step 3: m3 forced empty,
+    # m4 retry empty, m5 the fallback stand-in.
+    assert state["marks"] == ["m1", "m2", "m5"]
     assert state["messages"][-1].content == DEFAULT_TOOL_BUDGET_FALLBACK_TEXT
 
 
