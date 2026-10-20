@@ -38,7 +38,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, tzinfo
-from typing import Any, Final, Literal, cast
+from typing import Any, Final, Literal
 from uuid import UUID
 
 from asyncpg import UniqueViolationError
@@ -141,10 +141,6 @@ _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 #: The partial unique index that keeps one person's aliases distinct.
 _ALIAS_INDEX = "ix_memories_user_alias"
 
-#: What a read here may fail on and still be answered: :data:`STORAGE_FAILURES` itself, typed as
-#: the ``Exception`` subclasses every member is, so a handler can hand what it caught to ``contain``.
-_STORAGE_FAILURES: Final = cast(tuple[type[Exception], ...], STORAGE_FAILURES)
-
 #: What a write here may fail on and still be answered as "not stored": storage being
 #: unreachable, another writer winning the row's compare-and-swap, or a write whose table
 #: generation could not be read or advanced. Anything else is a bug and propagates.
@@ -154,22 +150,22 @@ _STORAGE_FAILURES: Final = cast(tuple[type[Exception], ...], STORAGE_FAILURES)
 #: exception as its own signal, so widening the shared tuple would break it. A memory tool losing
 #: the race on one memory is an ordinary reply: nothing was changed, and the agent can read the
 #: memory again.
-_WRITE_FAILURES: Final[tuple[type[Exception], ...]] = (
-    *_STORAGE_FAILURES,
+_WRITE_FAILURES: Final[tuple[type[BaseException], ...]] = (
+    *STORAGE_FAILURES,
     ConcurrentModificationError,
     GenerationUnavailableError,
 )
 
 #: A side search's failures: storage, or a stored file's metadata that is not JSON.
-_SIDE_SEARCH_FAILURES: Final[tuple[type[Exception], ...]] = (*_STORAGE_FAILURES, json.JSONDecodeError)
+_SIDE_SEARCH_FAILURES: Final[tuple[type[BaseException], ...]] = (*STORAGE_FAILURES, json.JSONDecodeError)
 
 #: A write that links the new memory to the ones it corrects: also a link that would close a
 #: cycle in the provenance graph.
-_LINKED_WRITE_FAILURES: Final[tuple[type[Exception], ...]] = (*_WRITE_FAILURES, ConsolidationCycleError)
+_LINKED_WRITE_FAILURES: Final[tuple[type[BaseException], ...]] = (*_WRITE_FAILURES, ConsolidationCycleError)
 
 #: A write that may replace a memory: also ``ValueError``, which ``supersede`` raises when the
 #: memory it was asked to replace turned permanent after it was read.
-_REPLACE_FAILURES: Final[tuple[type[Exception], ...]] = (*_LINKED_WRITE_FAILURES, ValueError)
+_REPLACE_FAILURES: Final[tuple[type[BaseException], ...]] = (*_LINKED_WRITE_FAILURES, ValueError)
 
 # Type alias for the optional ledger callback
 LedgerCallback = Callable[[str, str, str], Awaitable[None]]
@@ -719,7 +715,7 @@ async def _search_by_ids(
                 agent_id=agent_id,
             ),
         )
-    except _STORAGE_FAILURES as exc:
+    except STORAGE_FAILURES as exc:
         contain(exc, log=log, what="memory_search id lookup failed")
         return _tool_error("memory_search", "id_lookup", str(exc))
 
@@ -892,7 +888,7 @@ async def load_memory_search_tool(
                     agent_id=agent_id,
                     alias=alias,
                 )
-            except _STORAGE_FAILURES as exc:
+            except STORAGE_FAILURES as exc:
                 contain(exc, log=log, what="memory_search alias lookup failed")
                 return _tool_error("memory_search", "alias", str(exc))
             if row is None:
@@ -976,7 +972,7 @@ async def load_memory_search_tool(
                     date_after=date_after_dt,
                     date_before=date_before_dt,
                 )
-            except _STORAGE_FAILURES as exc:
+            except STORAGE_FAILURES as exc:
                 contain(exc, log=log, what="memory_search query failed")
                 return _tool_error("memory_search", "query", str(exc))
 
@@ -998,7 +994,7 @@ async def load_memory_search_tool(
                     if mid not in seen_ids:
                         seen_ids.add(mid)
                         memories.append({**row, "similarity": None})
-            except _STORAGE_FAILURES as exc:
+            except STORAGE_FAILURES as exc:
                 degraded.append("memory full-text search")
                 contain(
                     exc,
@@ -1334,7 +1330,7 @@ async def load_memory_recall_tool(
                     agent_id=agent_id,
                     alias=alias,
                 )
-            except _STORAGE_FAILURES as exc:
+            except STORAGE_FAILURES as exc:
                 contain(exc, log=log, what="memory_recall alias lookup failed")
                 return _tool_error("memory_recall", "alias", str(exc))
             if row is None:
@@ -1357,7 +1353,7 @@ async def load_memory_recall_tool(
         if salience_bump > 0 and marks.current:
             try:
                 await memories_collection.bump_salience([mem_uuid], agent_id=agent_id, access_bump=salience_bump)
-            except _STORAGE_FAILURES as exc:  # reinforcement is bookkeeping; the read it follows must still answer
+            except STORAGE_FAILURES as exc:  # reinforcement is bookkeeping; the read it follows must still answer
                 contain(exc, log=log, what="memory_recall: salience bump failed", extra={"error": str(exc)})
 
         # ── chunks (mode dispatch) ──────────────────────────────
@@ -1460,7 +1456,7 @@ async def load_memory_recall_tool(
             total = await memory_chunk_collection.count_by_memory_id(
                 mem_uuid, user_id=user_id, agent_id=agent_id, customer_id=customer_id
             )
-        except _STORAGE_FAILURES as exc:
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="memory_recall chunk fetch failed")
             return _tool_error("memory_recall", f"fetch chunks ({mode_name})", str(exc))
 
@@ -1482,7 +1478,7 @@ async def load_memory_recall_tool(
         if consolidations_collection is not None:
             try:
                 sources = await consolidations_collection.find_sources(agent_id, mem_uuid)
-            except _STORAGE_FAILURES as exc:  # the header's last fact is optional; the memory is still read
+            except STORAGE_FAILURES as exc:  # the header's last fact is optional; the memory is still read
                 contain(exc, log=log, what="memory_recall: reading what a memory replaced failed", level="error")
                 sources = []
             if sources:
@@ -1640,7 +1636,7 @@ def load_memory_list_tool(
                 limit=page,
                 offset=skip,
             )
-        except _STORAGE_FAILURES as exc:
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="memory_list query failed")
             return _tool_error("memory_list", "query", str(exc))
         what = {
@@ -2031,7 +2027,7 @@ async def load_memory_add_tool(
                 owner_agent_id=agent_id,
                 customer_id=customer_id,
             )
-        except _STORAGE_FAILURES as exc:
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="memory_add namespace lookup failed")
             return _tool_error(
                 "memory_add",
@@ -3082,7 +3078,7 @@ async def load_chunk_search_tool(
                 similarity_threshold=similarity_threshold,
                 chunk_signal_weights=weights,
             )
-        except _STORAGE_FAILURES as exc:
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="chunk_search failed")
             return _tool_error("chunk_search", "search", str(exc))
 
@@ -3096,7 +3092,7 @@ async def load_chunk_search_tool(
             placed = await memory_chunk_collection.search_by_ids(
                 [UUID(str(r["chunk_id"])) for r in results], user_id, agent_id=agent_id
             )
-        except _STORAGE_FAILURES as exc:  # the date and place are extra facts; the hits are still shown
+        except STORAGE_FAILURES as exc:  # the date and place are extra facts; the hits are still shown
             contain(exc, log=log, what="chunk_search: reading the hits' dates failed", level="error")
             placed = []
         row_of = {str(r["chunk_id"]): r for r in placed}
