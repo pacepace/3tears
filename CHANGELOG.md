@@ -345,6 +345,79 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
   ceiling that is not positive and finite: either would stop the run before it began. New:
   `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
   `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
+## v0.72.0 -- 2026-10-20
+
+### agent-memory, agent-intention, core: the embedding width is a deployment setting
+
+**Added (agent-memory, agent-intention):** `embedding_dim: int = 1024` on `migrations.register(runner, *,
+embedding_dim=...)`, on the collections that store embeddings (`MemoriesCollection`, `MediaContentCollection`,
+`MemoryChunkCollection`, `IntentionsCollection`) and on their table factories (`memories_table`,
+`media_content_table`, `memory_chunks_table`, `intentions_table`). The columns stay plain pgvector `vector(N)`.
+The default is unchanged, so a host that configures nothing builds and writes exactly what it did; v001 / v006 /
+v007 (memory) and v001 (intention) keep their ledger names at any width, so migrated schemas verify as before.
+`register` refuses a width below 1 or above 16,000 (YugabyteDB's `ybhnsw` ceiling); the creating migration refuses a
+width above 2,000 on PostgreSQL (pgvector's HNSW ceiling) before any statement runs.
+
+**Added:** `verify_embedding_width(store, embedding_dim)` and `resize_embedding_width(store, embedding_dim)` in
+`threetears.agent.memory.embedding_width` and `threetears.agent.intention.embedding_width` (and both package roots),
+raising `EmbeddingWidthMismatch` (table, stored width, configured width). The resize is an explicit operator action:
+it drops each embedding column's indexes, alters the column `USING NULL`, recreates every index under its own name
+and options, and returns how many embeddings it cleared; every row must be re-embedded afterwards.
+
+**Added (core): `threetears.core.data.embedding_width`**, the shared mechanism (`check_embedding_dim`,
+`require_indexable_embedding_dim`, `schema_with_embedding_dim`, `embedding_columns`, `stored_embedding_dim`,
+`verify_embedding_columns`, `resize_embedding_columns`, `indexable_embedding_ceiling`, `EmbeddingColumn`,
+`EmbeddingWidthStore`, `EmbeddingWidthMismatch`, `DEFAULT_EMBEDDING_DIM`, `MAX_EMBEDDING_DIM`,
+`POSTGRES_MAX_INDEXED_EMBEDDING_DIM`). `SchemaBackedCollection.schema` may now be set per instance before
+`__init__` registers it; it is annotated as an instance attribute, so a subclass that declares
+`schema: ClassVar[TableSchema] = ...` now needs to drop the `ClassVar` (mypy reports an override). A resize runs
+with writes to the resized tables stopped (on YugabyteDB the column change is a table rewrite); YugabyteDB's index
+definitions omit their `WITH (...)` options, so the resize rebuilds them from `pg_class.reloptions`. An index the
+collection does not declare is logged with its full definition before it is dropped.
+
+**Changed (core):** `SchemaBackedCollection.save_entity` and `save_rows` refuse a row whose vector is not its
+column's declared width with a `ValueError` naming both widths, before any cache tier takes the row or any SQL runs.
+Such a row was already refused by PostgreSQL at the L3 write; it is now refused first. A test fake that stored a
+short vector through a declared `vector(1024)` column now has to declare the width it embeds at.
+
+### agent-memory: find and delete one owner's memories by tag
+
+**Added:** `MemoriesCollection.find_ids_by_tags(*, agent_id, customer_id, user_id, tags_any)` and
+`delete_by_tags(..., caller_user_id=None, caller_agent_id=None)`, for a host that files derived memories under a
+tag (a source document, a scene) and drops them when the source goes. Scoped to the full owner triple; an empty
+tag tuple finds and deletes nothing, never every row; each delete goes through `Collection.delete`, so a deleted
+memory leaves every cache tier. Given a caller, the delete evaluates `memory.write` first; without one it is an
+agent-internal path. One delete per memory, not atomic.
+
+**Fixed:** `MemoryChunkCollection.hybrid_search_within_memory`'s vector arm lacked the `embedding IS NOT NULL`
+guard every other vector query has, so one chunk not yet embedded made the whole search fail on `float(None)`.
+
+### channels: a cancelled WebSocket cleanup waits for its tasks and raises the canceller's cancellation
+
+**Fixed:** `WebSocketHandler`'s per-connection cleanup cancelled its message loop and heartbeat and `gather`-ed
+them; cancelled while it waited, `gather` could raise a child's own message-less `CancelledError` in place of the
+canceller's, which anyio (Starlette serves sockets inside it) does not recognise as its own, so it escaped the app
+(Starlette's TestClient raised `concurrent.futures.CancelledError` leaving a socket block, about one exit in three).
+The cleanup now waits until both tasks have stopped, keeping any cancellation that arrives meanwhile, and raises
+that one, the canceller's, after they have; every task's outcome is read. Whether they have stopped is read
+from the tasks themselves: anyio re-delivers a scope's cancellation on every loop iteration, ahead of the
+callbacks by which `asyncio.wait` learns its tasks are done, so a cleanup trusting `wait`'s result spun forever.
+
+### models: a pooled Claude CLI start no longer spawns `claude -v` on the event loop
+
+**Fixed:** `claude_agent_sdk` spawns `claude -v` before every CLI start unless
+`CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK` is set in the process environment, and that spawn runs on the event loop.
+In a large worker it froze the loop long enough to be killed (metallm, production, 2026-10-19: every
+faulthandler dump of a frozen worker was in that spawn under `PooledCliSession.start`). The check only warns
+about an old CLI, so `PooledCliSession.start` now sets the flag (process-wide, as the SDK reads it) before
+every start, the first included.
+
+### scheduled-jobs: `BackgroundDispatch.join` no longer spins forever
+
+**Fixed:** `gather` over tasks that are all finished completes without yielding (Python 3.12+), and a finished
+fire leaves the dispatch's bookkeeping only in a done-callback the loop runs on its next turn; `aclose`
+reaching `join` in that gap re-gathered the same finished task at full CPU, never returning. `join` now gives
+the loop a turn after each gather.
 
 ## v0.71.0 -- 2026-10-18
 
@@ -696,7 +769,7 @@ server's word, not a timeout (#802), and the iam tamper tests always change the 
   (a launch of 8 runs at width 4 lost all nine leases at 60s while its cells kept landing results); and a renewal that
   lost three conditional writes to the run's own progress writes waited a whole interval. `JobLeases` now does its
   store round-trips on a small pool of its own, renews every held lease at once, and tries a contended renewal
-  again within the interval after a short jittered wait.
+  again within the interval after a short jittered wait. `JobLeases(blocking_executor=)` is still accepted and ignored.
 - **Removed: `JobLeases(blocking_executor=)`.** It was accepted and ignored since the pool above; no release carried it, so
   nothing migrates. Lease round-trips never run on a host executor.
 - **Fixed: a store call that hangs never expired its own lease record.** A renewal whose store call never returned

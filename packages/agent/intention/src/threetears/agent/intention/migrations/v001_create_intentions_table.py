@@ -27,6 +27,7 @@ no-op.
 
 from __future__ import annotations
 
+from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, require_indexable_embedding_dim
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -63,7 +64,16 @@ END
 $$;
 """
 
-_CREATE_INTENTIONS_SQL = """
+
+def _create_intentions_sql(embedding_dim: int) -> str:
+    """the ``intentions`` DDL, its embedding column ``embedding_dim`` wide.
+
+    :param embedding_dim: the configured embedding width
+    :ptype embedding_dim: int
+    :return: the ``CREATE TABLE`` statement
+    :rtype: str
+    """
+    sql = f"""
 CREATE TABLE IF NOT EXISTS intentions (
     intention_id UUID NOT NULL,
     agent_id UUID NOT NULL,
@@ -71,7 +81,7 @@ CREATE TABLE IF NOT EXISTS intentions (
     user_id UUID,
     status intention_status NOT NULL DEFAULT 'open',
     content TEXT NOT NULL,
-    embedding public.vector(1024),
+    embedding public.vector({embedding_dim}),
     salience NUMERIC(5,4) NOT NULL DEFAULT 0.5,
     last_decayed_at TIMESTAMPTZ,
     last_surfaced_at TIMESTAMPTZ,
@@ -82,6 +92,8 @@ CREATE TABLE IF NOT EXISTS intentions (
     PRIMARY KEY (agent_id, intention_id)
 )
 """
+    return sql
+
 
 # the deliberation hot path: a user's open wants ranked by salience.
 # Partial on status='open' keeps the index small; salience DESC matches
@@ -103,18 +115,23 @@ _CREATE_EMBEDDING_IDX_SQL = (
 )
 
 
-async def create_intentions_table(store: DataStore) -> None:
+async def create_intentions_table(store: DataStore, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
     """create the intentions table plus its enum, extension, and indexes.
 
     :param store: DataStore bound to per-agent schema via search_path
     :ptype store: DataStore
+    :param embedding_dim: the embedding column's width; a width the database cannot index is
+        refused before any statement runs
+    :ptype embedding_dim: int
     :return: nothing
     :rtype: None
+    :raises ValueError: when the database cannot index ``embedding_dim``
     """
+    await require_indexable_embedding_dim(store, embedding_dim)
     log.info("creating agent-intention package tables (v001)")
     await store.execute(_CREATE_VECTOR_EXTENSION_SQL)
     await store.execute(_CREATE_INTENTION_STATUS_ENUM_SQL)
-    await store.execute(_CREATE_INTENTIONS_SQL)
+    await store.execute(_create_intentions_sql(embedding_dim))
     await store.execute(_CREATE_OPEN_RANKED_IDX_SQL)
     await store.execute(_CREATE_LAST_SURFACED_IDX_SQL)
     await store.execute(_CREATE_EMBEDDING_IDX_SQL)

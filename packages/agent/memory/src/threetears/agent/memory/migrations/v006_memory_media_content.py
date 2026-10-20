@@ -24,6 +24,7 @@ EXISTS`` + trigger CREATE OR REPLACE pattern.
 
 from __future__ import annotations
 
+from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, require_indexable_embedding_dim
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -51,7 +52,16 @@ _CREATE_MEDIA_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_media_user ON media
 
 _CREATE_MEDIA_AGENT_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_media_agent ON media (agent_id)"
 
-_CREATE_MEDIA_CONTENT_SQL = """
+
+def _create_media_content_sql(embedding_dim: int) -> str:
+    """the ``media_content`` DDL, its embedding column ``embedding_dim`` wide.
+
+    :param embedding_dim: the configured embedding width
+    :ptype embedding_dim: int
+    :return: the ``CREATE TABLE`` statement
+    :rtype: str
+    """
+    sql = f"""
 CREATE TABLE IF NOT EXISTS media_content (
     content_id UUID PRIMARY KEY,
     media_id UUID NOT NULL REFERENCES media(media_id) ON DELETE CASCADE,
@@ -61,11 +71,13 @@ CREATE TABLE IF NOT EXISTS media_content (
     content_type VARCHAR(64) NOT NULL,
     content TEXT NOT NULL,
     summary TEXT NULL,
-    embedding public.vector(1024) NULL,
+    embedding public.vector({embedding_dim}) NULL,
     search_vector TSVECTOR NULL,
     date_created TIMESTAMP NOT NULL
 )
 """
+    return sql
+
 
 _CREATE_MC_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mc_user ON media_content (user_id)"
 
@@ -100,18 +112,23 @@ FOR EACH ROW EXECUTE FUNCTION media_content_search_vector_update()
 """
 
 
-async def create_media_tables(store: DataStore) -> None:
+async def create_media_tables(store: DataStore, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
     """
     create media + media_content tables with indexes and FTS trigger.
 
     :param store: DataStore bound to per-agent schema via search_path
     :ptype store: DataStore
+    :param embedding_dim: the embedding column's width; a width the database cannot index is
+        refused before any statement runs
+    :ptype embedding_dim: int
+    :raises ValueError: when the database cannot index ``embedding_dim``
     """
+    await require_indexable_embedding_dim(store, embedding_dim)
     log.info("creating media + media_content tables (v006)")
     await store.execute(_CREATE_MEDIA_SQL)
     await store.execute(_CREATE_MEDIA_USER_IDX_SQL)
     await store.execute(_CREATE_MEDIA_AGENT_IDX_SQL)
-    await store.execute(_CREATE_MEDIA_CONTENT_SQL)
+    await store.execute(_create_media_content_sql(embedding_dim))
     await store.execute(_CREATE_MC_USER_IDX_SQL)
     await store.execute(_CREATE_MC_MEDIA_IDX_SQL)
     await store.execute(_CREATE_MC_EMBEDDING_IDX_SQL)
