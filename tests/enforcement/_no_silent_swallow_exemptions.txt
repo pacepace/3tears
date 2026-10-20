@@ -15,3 +15,5 @@ packages/evals/src/threetears/evals/kernel/offload.py:wait_through_cancellation#
 packages/evals/src/threetears/evals/run/runner.py:execute_run.run_and_record#0:CancelledError
 # rationale: holds a repeated cancellation while a git write-and-commit already under the repository's lock runs to its end, so the lock is never released over a half-written index; the outer handler re-raises the cancellation as soon as the commit has finished
 packages/core/src/threetears/core/backends/git/repo.py:GitRepo._uninterrupted#0:CancelledError
+# rationale: holds the canceller's cancellation while the socket's reader and writer tasks finish stopping, so the connection's teardown never runs under a live child, and re-raises that same cancellation once both have stopped
+packages/channels/src/threetears/channels/websocket.py:_stop_both#0:CancelledError
