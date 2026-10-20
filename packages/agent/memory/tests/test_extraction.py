@@ -100,6 +100,10 @@ class StubChatModelFactory:
         return self._models.get(purpose, StubChatModel("[]"))
 
 
+#: the width :class:`StubEmbeddingProvider` embeds at by default, and the width the collection is built with
+_STUB_EMBEDDING_DIM = 3
+
+
 class StubEmbeddingProvider:
     """Stub LangChain ``Embeddings`` returning a fixed vector."""
 
@@ -173,6 +177,7 @@ def _make_memories_collection(
         registry=registry,
         config=core_config,
         authorizer=authorizer,
+        embedding_dim=_STUB_EMBEDDING_DIM,
     )
 
 

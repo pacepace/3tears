@@ -321,6 +321,10 @@ class BackgroundDispatch:
         """
         while self._tasks or self._writes:
             await asyncio.gather(*list(self._tasks.values()), *list(self._writes), return_exceptions=True)
+            # A finished task leaves _tasks and _writes in a done-callback the loop runs on its next
+            # turn, and gather over finished tasks completes without yielding that turn: give it one,
+            # or this loop re-gathers the same finished task forever.
+            await asyncio.sleep(0)
         if self._unrecorded_count:
             count, unrecorded, cause = self._unrecorded_count, self._unrecorded, self._first_unrecorded_error
             self._unrecorded_count, self._unrecorded, self._first_unrecorded_error = 0, [], None

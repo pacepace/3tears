@@ -701,3 +701,86 @@ class TestCredentialExpiry:
 
         with pytest.raises(TypeError, match="exp"):
             await asyncio.wait_for(handler.handle_connection(peer), _STEP_TIMEOUT)
+
+
+class _SlowToStopTicker(_ManualTicker):
+    """a heartbeat wait that, once cancelled, takes a moment to stop -- held until the test lets it go."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled = asyncio.Event()
+        self.let_stop = asyncio.Event()
+
+    async def sleep(self, seconds: float) -> None:
+        """wait for a tick; once cancelled, signal it and hold until released, then end cancelled.
+
+        :param seconds: the interval the heartbeat asked to wait
+        :ptype seconds: float
+        :raises asyncio.CancelledError: once cancelled and released
+        """
+        try:
+            await super().sleep(seconds)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            await asyncio.shield(self.let_stop.wait())
+            raise
+
+
+class TestCancelledWhileCleaningUp:
+    """cancelled while its cleanup waits, the connection still waits for both tasks, then ends cancelled."""
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_during_cleanup_waits_for_the_heartbeat_and_surfaces_as_the_cancellers(self) -> None:
+        """the connection's own teardown (registry, rooms) must not run while a child is still stopping, and
+        the cancellation that comes out must be the canceller's, which is how a structured-concurrency runner
+        (anyio, under Starlette) recognises its own."""
+        ticker = _SlowToStopTicker()
+        peer = _PeerSocket()
+        task = asyncio.create_task(_handler(ticker).handle_connection(peer))
+        await ticker.armed()
+
+        peer.hang_up()  # the message loop ends; the cleanup cancels the heartbeat and waits for it
+        await asyncio.wait_for(ticker.cancelled.wait(), _STEP_TIMEOUT)
+        task.cancel("the server is shutting down")
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert not task.done(), "the connection ended while its heartbeat was still stopping"
+
+        ticker.let_stop.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await asyncio.wait_for(task, _STEP_TIMEOUT)
+        assert raised.value.args == ("the server is shutting down",)
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_redelivered_every_iteration_still_ends_once_both_have_stopped(self) -> None:
+        """anyio re-delivers a scope's cancellation on every loop iteration until the task ends. Each delivery
+        lands before ``asyncio.wait`` can see its tasks are done (its completion callbacks are scheduled behind
+        it), so a cleanup that trusts only what ``wait`` returns waits forever, spinning: one run of scriob's
+        cross-tenant join test spun this way for six hours."""
+        ticker = _SlowToStopTicker()
+        peer = _PeerSocket()
+        task = asyncio.create_task(_handler(ticker).handle_connection(peer))
+        await ticker.armed()
+        loop = asyncio.get_running_loop()
+
+        scope_cancelled = [True]
+
+        def redeliver() -> None:
+            if scope_cancelled[0] and not task.done():
+                task.cancel("the scope is cancelled")
+                loop.call_soon(redeliver)
+
+        peer.hang_up()
+        await asyncio.wait_for(ticker.cancelled.wait(), _STEP_TIMEOUT)
+        redeliver()
+        ticker.let_stop.set()
+
+        try:
+            await asyncio.wait({task}, timeout=_STEP_TIMEOUT)
+        finally:
+            scope_cancelled[0] = False  # a cleanup that spins is failed by the timeout, not left spinning
+        assert task.done(), "the cleanup was still waiting for tasks that had stopped"
+        with pytest.raises(asyncio.CancelledError) as raised:
+            task.result()
+        assert raised.value.args == ("the scope is cancelled",)

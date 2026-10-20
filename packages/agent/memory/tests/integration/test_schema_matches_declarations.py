@@ -12,6 +12,7 @@ Also pinned:
 - v028 moves a foreign key bound to a legacy unique constraint onto the
   declared one, drops a single-column ``media.memory_id`` key, and a second
   run changes nothing.
+- each declared ``vector`` column is built at the width it is declared with (1024 by default).
 - two agent schemas in one database each get their own unique constraints
   (v022's guards once found the first schema's constraint and skipped).
 - v029/v030: a chunk's heading outranks its summary in search, and rows
@@ -34,7 +35,7 @@ from threetears.agent.memory.migrations import align_indexes_with_declarations
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.collections.schema_backed import SchemaBackedCollection, TableSchema
+from threetears.core.collections.schema_backed import VECTOR_TYPE, SchemaBackedCollection, TableSchema
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 
@@ -152,6 +153,35 @@ async def _unique_constraint_names(conn: asyncpg.Connection, schema: str, table:
     return result
 
 
+async def _vector_column_types(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, str]:
+    """each ``vector`` column of ``schema.table`` and its declared type, width included.
+
+    :param conn: connection to the test database
+    :ptype conn: asyncpg.Connection
+    :param schema: schema holding the table
+    :ptype schema: str
+    :param table: table name
+    :ptype table: str
+    :return: ``{column: "vector(N)"}``
+    :rtype: dict[str, str]
+    """
+    rows = await conn.fetch(
+        """
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS column_type
+          FROM pg_catalog.pg_attribute a
+          JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+          JOIN pg_catalog.pg_namespace ns ON ns.oid = c.relnamespace
+          JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+         WHERE ns.nspname = $1 AND c.relname = $2 AND t.typname = 'vector'
+           AND a.attnum > 0 AND NOT a.attisdropped
+        """,
+        schema,
+        table,
+    )
+    result = {r["attname"]: r["column_type"] for r in rows}
+    return result
+
+
 async def _catalog_snapshot(conn: asyncpg.Connection, schema: str) -> list[tuple[str, str, str]]:
     """every index and constraint definition in ``schema``, for replay comparison.
 
@@ -215,7 +245,7 @@ async def _memory_foreign_keys_on_media(conn: asyncpg.Connection, schema: str) -
 
 
 async def _assert_matches_declarations(conn: asyncpg.Connection, schema: str) -> None:
-    """assert every declared table's indexes and unique constraints are exactly what ``schema`` holds.
+    """assert every declared table's indexes, unique constraints and vector widths are what ``schema`` holds.
 
     :param conn: connection to the test database
     :ptype conn: asyncpg.Connection
@@ -237,6 +267,8 @@ async def _assert_matches_declarations(conn: asyncpg.Connection, schema: str) ->
         built_nullable = {r["column_name"]: r["is_nullable"] == "YES" for r in rows}
         declared_nullable = {c.name: c.nullable for c in declared.columns if c.name in built_nullable}
         assert declared_nullable == {k: built_nullable[k] for k in declared_nullable}, declared.name
+        declared_widths = {c.name: f"vector({c.vector_dim})" for c in declared.columns if c.column_type == VECTOR_TYPE}
+        assert await _vector_column_types(conn, schema, declared.name) == declared_widths, declared.name
 
 
 @pytest.fixture
