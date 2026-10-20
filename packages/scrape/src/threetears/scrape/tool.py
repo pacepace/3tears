@@ -854,9 +854,9 @@ class ScrapeTool(TearsTool):
 
         # From here to the render, an admitted probe is already outstanding. `check` above may
         # have claimed this target's one in-process probe slot, and only an outcome or an
-        # explicit release ever returns it -- so a cancellation anywhere below strands it,
-        # after which `release_probe`'s own docstring says the target is fast-failed with
-        # `retry_after_seconds=0.0` for the life of the process.
+        # explicit release returns it promptly -- so a cancellation anywhere below strands it,
+        # and the target is refused on the in-process branch until the breaker's probe timeout
+        # takes the probe as lost.
         #
         # Not a theoretical window. This tool advertises a deadline of `default_timeout + 60`
         # while an honoured `Crawl-delay` is capped at 300s, so an executor cancelling inside
@@ -954,10 +954,9 @@ class ScrapeTool(TearsTool):
                     # outcome or an explicit release ever gives it back. This path reports no
                     # outcome -- deliberately, since a configuration error is not evidence about
                     # the target -- and returns normally, so the `except BaseException` guard
-                    # below never sees it. Without this the breaker holds a probe forever and
-                    # `release_probe`'s own docstring says the target is then fast-failed with
-                    # `retry_after_seconds=0.0` for the life of the process, on every poll,
-                    # because a signature mismatch recurs identically.
+                    # below never sees it. Without this the breaker holds the probe and the target
+                    # is refused on every poll until the probe timeout takes it as lost -- and
+                    # then strands it again, because a signature mismatch recurs identically.
                     #
                     # The asymmetry is what gave it away: this block already gave the fleet turn
                     # back and left the probe. Compensating one resource and not its neighbour
@@ -983,9 +982,8 @@ class ScrapeTool(TearsTool):
             #
             # Deliberately records no durable outcome: persisting one would back the target off
             # across every pod, and outlive the process that was cancelled, for something the
-            # target did not do. Releasing the in-process probe does cost that breaker a
-            # failure -- the protocol has no "never mind" -- but that is seconds-scale,
-            # process-local, and dies with the process anyway.
+            # target did not do. The in-process probe is handed back without an outcome
+            # either, for the same reason.
             self._release_probe(target_id)
             if fleet_wait_claimed and self._robots is not None:
                 # Give the origin's shared turn back too. Fire-and-forget rather than awaited:
@@ -1128,9 +1126,9 @@ class ScrapeTool(TearsTool):
                 # The circuit permitted this fetch, and a permitted decision may have promoted
                 # the in-process breaker to HALF_OPEN and marked its probe in flight. That flag
                 # is cleared only by an outcome, and raising past here means no outcome is ever
-                # reported -- so the breaker would hold the probe for the life of the process,
-                # fast-failing every later check of this target before the durable row is even
-                # read, and answering "retry in about 0s" forever. The durable side needs
+                # reported -- so the breaker would hold the probe until its probe timeout took it as
+                # lost, fast-failing every later check of this target before the durable row is
+                # even read. Handing it back here frees it at once. The durable side needs
                 # nothing: its promotion already stamped `blocked_until` as the probe's own
                 # reservation, which outlives the process that abandoned it.
                 #

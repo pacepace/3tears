@@ -8,8 +8,11 @@ against the provider's.
 
 Exposes both a thread-safe :class:`CircuitBreaker` and a LangChain
 ``BaseCallbackHandler`` factory (``CircuitBreaker.make_callback()``) that
-fires the breaker's success/failure transitions in response to the
-``on_llm_start`` / ``on_llm_end`` / ``on_llm_error`` hooks.
+drives the breakers from the ``on_llm_start`` / ``on_llm_end`` / ``on_llm_error``
+hooks. An error is sorted by what it says about the provider: an answer (a rate
+limit, or another error the provider returned), a failure with no answer behind it
+(the provider could not be reached or did not answer in time), or a cancellation,
+which counts against neither breaker and only hands back a probe it held.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from threetears.observe import get_logger
 
 __all__ = [
+    "DEFAULT_PROBE_TIMEOUT_SECONDS",
     "CircuitBreaker",
     "CircuitBreakerCallback",
     "CircuitBreakerRegistry",
@@ -37,6 +41,10 @@ __all__ = [
 ]
 
 logger = get_logger(__name__)
+
+#: How long a HALF_OPEN probe may stay out before it is taken as lost: past the deadlines a model
+#: call runs under (:class:`CircuitBreaker` says why).
+DEFAULT_PROBE_TIMEOUT_SECONDS = 300.0
 
 
 def _monotonic() -> float:
@@ -113,6 +121,16 @@ class CircuitBreaker:
     :ptype failure_threshold: int
     :param recovery_timeout_seconds: seconds to wait in OPEN before probing
     :ptype recovery_timeout_seconds: float
+    :param probe_timeout_seconds: how long a HALF_OPEN probe may stay out before it is taken
+        as lost and the next request becomes the probe. Its own setting, not the recovery
+        wait: a model call routinely runs past 30 s, and a provider that hangs holds one for
+        60-120 s before the client gives up (OpenRouter's whole-call deadline defaults to
+        120 s), so a lease as short as the recovery wait would send a fresh probe onto the
+        very provider that is hanging, every window. The default, 300 s, outlasts those
+        deadlines with room; a probe that is cancelled or fails before an answer is handed
+        back at once (:meth:`release_probe`), so the lease only bounds a probe whose caller
+        vanished without reporting
+    :ptype probe_timeout_seconds: float
     :param clock: monotonic seconds source for the recovery window and
         :attr:`last_activity`; ``None`` reads :func:`time.monotonic`
     :ptype clock: Callable[[], float] | None
@@ -133,15 +151,19 @@ class CircuitBreaker:
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 30.0,
         *,
+        probe_timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
         clock: Callable[[], float] | None = None,
         credential_scoped: bool = False,
         model_name: str | None = None,
     ) -> None:
+        if probe_timeout_seconds <= 0:
+            raise ValueError(f"probe_timeout_seconds must be positive, got {probe_timeout_seconds}")
         self._provider_name = provider_name
         self._credential_scoped = credential_scoped
         self._model_name = model_name
         self._failure_threshold = failure_threshold
         self._recovery_timeout_seconds = recovery_timeout_seconds
+        self._probe_timeout_seconds = probe_timeout_seconds
         self._clock = clock if clock is not None else _monotonic
         self._state = CircuitState.CLOSED
         self.failure_count = 0
@@ -149,11 +171,14 @@ class CircuitBreaker:
         self._last_activity = self._clock()
         # HALF_OPEN admits exactly ONE probe at a time: the request that trips
         # OPEN -> HALF_OPEN (or the first to arrive while HALF_OPEN) sets this;
-        # every other concurrent request is fast-failed until the probe resolves
-        # (record_success -> CLOSED / record_failure -> OPEN). without it,
-        # HALF_OPEN admits unbounded concurrent probes -> a thundering herd onto
-        # a provider that may still be dead.
+        # every other concurrent request is fast-failed until the probe reports an
+        # outcome, is released, or is lost. without it, HALF_OPEN admits unbounded
+        # concurrent probes -> a thundering herd onto a provider that may still be dead.
         self._probe_in_flight = False
+        # when the probe in flight was admitted. A probe whose caller never reports back
+        # would otherwise hold HALF_OPEN forever and refuse every later request; one older
+        # than probe_timeout_seconds is taken as lost and the next request becomes the probe.
+        self._probe_started_at = 0.0
         self._lock = threading.Lock()
 
     @classmethod
@@ -166,6 +191,7 @@ class CircuitBreaker:
         seconds_until_probe_permitted: float = 0.0,
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 30.0,
+        probe_timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
         clock: Callable[[], float] | None = None,
         credential_scoped: bool = False,
     ) -> CircuitBreaker:
@@ -180,8 +206,7 @@ class CircuitBreaker:
         copy of a state machine is a second copy that can disagree.
 
         ``restore`` is the seam for that: hydrate from the durable row, drive
-        the transition through :meth:`check` / :meth:`record_success` /
-        :meth:`record_failure`, then persist :attr:`state` and
+        the transition through :meth:`check` and the outcome calls, then persist :attr:`state` and
         :attr:`failure_count` back. the rules stay here; only the storage
         moves.
 
@@ -213,6 +238,9 @@ class CircuitBreaker:
         :ptype failure_threshold: int
         :param recovery_timeout_seconds: seconds to wait in OPEN before probing
         :ptype recovery_timeout_seconds: float
+        :param probe_timeout_seconds: how long a probe may stay out before it is taken as lost,
+            as for the constructor
+        :ptype probe_timeout_seconds: float
         :param clock: monotonic seconds source, as for the constructor
         :ptype clock: Callable[[], float] | None
         :param credential_scoped: whether the breaker guards one credential, as for the constructor
@@ -224,6 +252,7 @@ class CircuitBreaker:
             provider_name,
             failure_threshold=failure_threshold,
             recovery_timeout_seconds=recovery_timeout_seconds,
+            probe_timeout_seconds=probe_timeout_seconds,
             clock=clock,
             credential_scoped=credential_scoped,
         )
@@ -303,12 +332,24 @@ class CircuitBreaker:
 
             if self._state == CircuitState.HALF_OPEN:
                 # a probe is already testing the provider: fast-fail the rest so
-                # recovery is a single request, not a thundering herd.
-                if self._probe_in_flight:
+                # recovery is a single request, not a thundering herd -- unless it has
+                # been out longer than the probe timeout, which only a lost probe is.
+                probe_age = self._clock() - self._probe_started_at
+                if self._probe_in_flight and probe_age < self._probe_timeout_seconds:
                     raise CircuitOpenError(
-                        self._provider_name, 0.0, credential_scoped=self._credential_scoped, model_name=self._model_name
+                        self._provider_name,
+                        self._probe_timeout_seconds - probe_age,
+                        credential_scoped=self._credential_scoped,
+                        model_name=self._model_name,
+                    )
+                if self._probe_in_flight:
+                    logger.warning(
+                        "circuit breaker probe for %s never reported back; admitting a new probe",
+                        self._subject(),
+                        extra=self._log_extra(),
                     )
                 self._probe_in_flight = True
+                self._probe_started_at = self._clock()
                 return
 
             elapsed = self._clock() - self.last_failure_time
@@ -316,6 +357,7 @@ class CircuitBreaker:
                 # this request becomes the single recovery probe.
                 self._state = CircuitState.HALF_OPEN
                 self._probe_in_flight = True
+                self._probe_started_at = self._clock()
                 logger.warning(
                     "circuit breaker transitioning to HALF_OPEN for %s",
                     self._subject(),
@@ -337,19 +379,23 @@ class CircuitBreaker:
         with self._lock:
             self._last_activity = self._clock()
             if self._state == CircuitState.HALF_OPEN:
-                self._state = CircuitState.CLOSED
-                self.failure_count = 0
-                self._probe_in_flight = False
-                logger.warning(
-                    "circuit breaker transitioning to CLOSED for %s",
-                    self._subject(),
-                    extra=self._log_extra(),
-                )
+                self._close_after_probe_locked()
                 return
 
             if self._state == CircuitState.CLOSED:
                 self.failure_count = 0
                 return
+
+    def _close_after_probe_locked(self) -> None:
+        """HALF_OPEN to CLOSED; the caller holds ``self._lock``."""
+        self._state = CircuitState.CLOSED
+        self.failure_count = 0
+        self._probe_in_flight = False
+        logger.warning(
+            "circuit breaker transitioning to CLOSED for %s",
+            self._subject(),
+            extra=self._log_extra(),
+        )
 
     def record_failure(self) -> None:
         """records failed request and transitions state if threshold reached.
@@ -383,6 +429,33 @@ class CircuitBreaker:
                 )
                 return
 
+    def record_probe_answered(self) -> None:
+        """a probe's request was answered with an error this breaker does not count.
+
+        closes a HALF_OPEN breaker the way a success does: a rate-limit breaker whose probe
+        got another error has its answer (not limited), and a provider breaker whose probe got
+        a rate limit has its answer (the provider is up). in any other state it changes
+        nothing: a stray error of the other kind mid-streak is not a success.
+        """
+        with self._lock:
+            self._last_activity = self._clock()
+            if self._state == CircuitState.HALF_OPEN:
+                self._close_after_probe_locked()
+
+    def release_probe(self) -> None:
+        """ends this breaker's probe without a verdict on it.
+
+        for a probe whose request got no answer that says anything about this breaker -- it
+        never went out, it was cancelled, or (for a rate-limit breaker) it failed with no
+        answer behind it -- so it says
+        nothing about recovery: the breaker stays HALF_OPEN and the next request becomes the
+        probe. it counts no failure and changes no failure count. a no-op unless a probe is
+        in flight.
+        """
+        with self._lock:
+            if self._state == CircuitState.HALF_OPEN:
+                self._probe_in_flight = False
+
     def reset(self) -> None:
         """forces circuit breaker back to CLOSED state.
 
@@ -403,9 +476,9 @@ class CircuitBreaker:
         """builds a LangChain callback that drives this breaker, and the model's own for its rate limits.
 
         the callback short-circuits ``on_llm_start`` by calling :meth:`check`
-        on both, records a success on both in ``on_llm_end``, and records a
-        failure in ``on_llm_error``: a rate limit on ``rate_limit``, anything
-        else on this breaker.
+        on both, records a success on both in ``on_llm_end``, and in
+        ``on_llm_error`` reports the error to whichever breaker it is about and
+        ends the other's probe (:meth:`CircuitBreakerCallback.on_llm_error`).
 
         :param rate_limit: the model's own breaker (:meth:`CircuitBreakerRegistry.get` with
             ``model=``); ``None`` counts a rate limit against this breaker
@@ -421,8 +494,8 @@ class CircuitBreakerCallback(BaseCallbackHandler):
 
     fast-fails ``on_llm_start`` by raising :class:`CircuitOpenError` when
     the breaker is open. on success records via
-    :meth:`CircuitBreaker.record_success`; on error via
-    :meth:`CircuitBreaker.record_failure`.
+    :meth:`CircuitBreaker.record_success`; an error is sorted by what it says
+    about the provider (:meth:`on_llm_error`).
 
     ``raise_error = True`` is REQUIRED: langchain's callback manager
     (``langchain_core.callbacks.manager.handle_event``) catches every callback
@@ -450,7 +523,13 @@ class CircuitBreakerCallback(BaseCallbackHandler):
     def _check(self) -> None:
         self._breaker.check()
         if self._rate_limit is not None:
-            self._rate_limit.check()
+            try:
+                self._rate_limit.check()
+            except CircuitOpenError:
+                # the request never goes out, so a probe the provider breaker just admitted
+                # for it would wait for an outcome that never comes; hand the probe back.
+                self._breaker.release_probe()
+                raise
 
     def on_llm_start(
         self,
@@ -534,12 +613,27 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        """records a failure on the breaker.
+        """reports an error to the breaker it is about, and ends the other's probe.
 
-        :class:`CircuitOpenError` itself does not count as a provider
-        failure — it's the breaker fast-failing the request, not a real
-        upstream error. swallow it here so a tripped breaker doesn't
-        keep racking up its own failure count.
+        four outcomes, by what the error says about the provider:
+
+        - **the breaker refused the call** (:class:`CircuitOpenError`): nothing; the breaker
+          fast-failing is not an upstream error.
+        - **no answer, by the caller's choice**: a cancellation (``CancelledError``,
+          ``KeyboardInterrupt``, ``GeneratorExit``, any ``BaseException`` that is not an
+          ``Exception``) -- langchain's streaming paths report one here. counts against neither
+          breaker and hands back a probe either holds, so a cancelled probe neither re-opens a
+          provider nor closes a rate-limit breaker, and user cancellations in CLOSED never open one.
+        - **a rate limit**: the model's own breaker counts it; the provider answered, so its
+          probe has its verdict.
+        - **any other error**: the provider's breaker counts it, as it always has. one the
+          provider answered (it carries an HTTP status, or the provider reported it as data)
+          is also the route's verdict on its rate limit -- not limited -- and ends a
+          rate-limit probe. one with no answer behind it (a connection that failed, a call
+          that ran past its deadline, the caller's own code failing) says nothing about the
+          rate limit, so a rate-limit probe is handed back. a provider that cannot be reached
+          or never answers still counts against the provider: that is the outage the breaker
+          exists for.
 
         :param error: raised exception
         :ptype error: BaseException
@@ -550,15 +644,29 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         """
         _ = run_id
         _ = kwargs
-        from threetears.models.errors import is_rate_limit
+        from threetears.models.errors import is_provider_answer, is_rate_limit
 
         if isinstance(error, CircuitOpenError):
             return
-        if self._rate_limit is not None and isinstance(error, Exception) and is_rate_limit(error):
+        if not isinstance(error, Exception):
+            self._breaker.release_probe()
+            if self._rate_limit is not None:
+                self._rate_limit.release_probe()
+            return
+        if self._rate_limit is not None and is_rate_limit(error):
             # one model's route is limited: its own breaker, never the provider's other models
             self._rate_limit.record_failure()
+            # the provider answered, so a provider probe riding on this request has its verdict
+            self._breaker.record_probe_answered()
             return
         self._breaker.record_failure()
+        if self._rate_limit is not None:
+            if is_provider_answer(error):
+                # an answer that is not a rate limit is the route's verdict on its rate limit:
+                # not limited. it ends a rate-limit probe in flight, which no other path would.
+                self._rate_limit.record_probe_answered()
+            else:
+                self._rate_limit.release_probe()
 
 
 # how bad each state is, for reporting one state per provider: a provider with
@@ -604,6 +712,9 @@ class CircuitBreakerRegistry:
     :ptype failure_threshold: int
     :param recovery_timeout_seconds: seconds to wait in OPEN before probing
     :ptype recovery_timeout_seconds: float
+    :param probe_timeout_seconds: how long a probe may stay out before it is taken as lost,
+        for every breaker created (:class:`CircuitBreaker` says why it is its own setting)
+    :ptype probe_timeout_seconds: float
     :param credential_idle_seconds: how long a CLOSED credential breaker may
         sit unused before it is dropped
     :ptype credential_idle_seconds: float
@@ -622,6 +733,7 @@ class CircuitBreakerRegistry:
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 30.0,
         *,
+        probe_timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
         credential_idle_seconds: float = 3600.0,
         max_credential_breakers: int = 1024,
         clock: Callable[[], float] | None = None,
@@ -632,6 +744,7 @@ class CircuitBreakerRegistry:
             raise ValueError(f"max_credential_breakers must be at least 1, got {max_credential_breakers}")
         self._failure_threshold = failure_threshold
         self._recovery_timeout_seconds = recovery_timeout_seconds
+        self._probe_timeout_seconds = probe_timeout_seconds
         self._credential_idle_seconds = credential_idle_seconds
         self._max_credential_breakers = max_credential_breakers
         self._clock = clock if clock is not None else _monotonic
@@ -685,6 +798,7 @@ class CircuitBreakerRegistry:
                     provider_name=provider_name,
                     failure_threshold=self._failure_threshold,
                     recovery_timeout_seconds=self._recovery_timeout_seconds,
+                    probe_timeout_seconds=self._probe_timeout_seconds,
                     clock=self._clock,
                     credential_scoped=key[1] is not None,
                     model_name=model,

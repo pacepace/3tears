@@ -16,6 +16,7 @@ __all__ = [
     "ModelRefusalError",
     "friendly_api_error",
     "identify_provider",
+    "is_provider_answer",
     "is_provider_error",
     "is_rate_limit",
 ]
@@ -327,7 +328,7 @@ def friendly_api_error(exc: Exception) -> str:
         message = f"{provider} took too long to respond (request timed out). Please retry."
     elif _HAS_ANTHROPIC and isinstance(exc, APIConnectionError):
         message = f"Could not connect to {provider} (network issue). Check connectivity and retry."
-    elif isinstance(exc, ValueError) and "OpenRouter API" in str(exc):
+    elif _is_openrouter_stream_error(exc):
         message = "OpenRouter returned an error. Please retry in 1-2 minutes."
 
     return message
@@ -349,7 +350,33 @@ def is_rate_limit(exc: BaseException) -> bool:
     """
     if isinstance(exc, ModelRateLimitError) or getattr(exc, "status_code", None) == 429:
         return True
-    return isinstance(exc, ValueError) and "OpenRouter API" in str(exc) and "(code: 429)" in str(exc)
+    return _is_openrouter_stream_error(exc) and "(code: 429)" in str(exc)
+
+
+def is_provider_answer(exc: BaseException) -> bool:
+    """Whether a provider error is the provider's own answer, rather than it not being heard from.
+
+    An answer carries an HTTP status (an SDK's ``status_code``, httpx's ``response``) or is a
+    failure the provider reported as data (:class:`ModelProviderError`, OpenRouter's mid-stream
+    error). A connection that failed, or a call that ran past its deadline, carries none: the
+    provider said nothing, so the error says nothing about, for instance, one model's rate limit.
+
+    :param exc: what the call raised
+    :ptype exc: BaseException
+    :return: ``True`` when the provider answered
+    :rtype: bool
+    """
+    return (
+        isinstance(exc, ModelProviderError)
+        or isinstance(getattr(exc, "status_code", None), int)
+        or getattr(exc, "response", None) is not None
+        or _is_openrouter_stream_error(exc)
+    )
+
+
+def _is_openrouter_stream_error(exc: BaseException) -> bool:
+    """OpenRouter's mid-stream error, which its chat model raises as a ``ValueError`` naming the API."""
+    return isinstance(exc, ValueError) and "OpenRouter API" in str(exc)
 
 
 def is_provider_error(exc: BaseException) -> bool:
@@ -372,5 +399,5 @@ def is_provider_error(exc: BaseException) -> bool:
     return (
         package in _PROVIDER_PACKAGES
         or isinstance(exc, (ModelCallTimeout, ModelProviderError, CircuitOpenError))
-        or (isinstance(exc, ValueError) and "OpenRouter API" in str(exc))
+        or _is_openrouter_stream_error(exc)
     )

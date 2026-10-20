@@ -123,22 +123,23 @@ _COUNTER_FAILURES: Final[tuple[type[Exception], ...]] = (*STORAGE_FAILURES, Conc
 
 
 class ProbeObservableBreaker(CircuitBreakerLike, Protocol):
-    """A :class:`~threetears.core.http_client.CircuitBreakerLike` whose state can be read.
+    """A :class:`~threetears.core.http_client.CircuitBreakerLike` whose state can be read and
+    whose probe can be handed back.
 
     The three-call protocol has no way to say "never mind" about a probe it admitted: an
-    in-flight probe is cleared only by an outcome. So resolving a probe that will never
-    reach the target means first knowing whether one was admitted at all, and that is what
-    ``state`` is for -- reporting a failure to a breaker that admitted nothing invents one,
-    and the in-process recovery timeout is seconds where the durable window is minutes to
-    hours, so a handful of fabricated failures put the WRONG circuit in charge of the answer.
+    in-flight probe is cleared only by an outcome. A probe that will never reach the target is
+    not a failure of the target, so it is handed back with :meth:`release_probe`, which records
+    no outcome: reporting a failure instead would invent one, and the in-process recovery
+    timeout is seconds where the durable window is minutes to hours, so a handful of fabricated
+    failures put the WRONG circuit in charge of the answer. ``state`` says whether this call's
+    ``check()`` admitted a probe at all, so only a probe this call holds is handed back.
 
-    Declared rather than probed for. Reading ``state`` off a bare ``CircuitBreakerLike`` and
-    treating its absence as "no probe admitted" looks conservative and is not: a breaker that
-    satisfies the three calls, has an in-flight-probe concept, and does not expose ``state``
-    is never released, so it stays HALF_OPEN with its probe held, every later ``check()``
-    raises, no fetch happens, no outcome is recorded, and that target is wedged for the life
-    of the process -- with a type signature that disclosed none of it. Requiring the attribute
-    makes the constraint checkable at the seam instead of discoverable in production.
+    Declared rather than probed for. A breaker with an in-flight-probe concept that cannot be
+    asked about it, or told to release it, holds HALF_OPEN with its probe out, every later
+    ``check()`` raises, no fetch happens, no outcome is recorded, and that target is refused
+    until something else frees the probe -- with a type signature that disclosed none of it.
+    Requiring both makes the constraint checkable at the seam instead of discoverable in
+    production.
 
     ``threetears.models.circuit_breaker.CircuitBreaker`` satisfies this, so
     ``CircuitBreakerRegistry.get`` still fits the ``breaker_for`` parameter directly, subject
@@ -149,6 +150,10 @@ class ProbeObservableBreaker(CircuitBreakerLike, Protocol):
     @property
     def state(self) -> CircuitState:
         """The breaker's current state."""
+        ...
+
+    def release_probe(self) -> None:
+        """Hand back an admitted probe without an outcome; a no-op when none is in flight."""
         ...
 
 
@@ -468,11 +473,10 @@ class TargetCircuit:
         except CircuitOpenError as exc:
             # The in-process breaker was asked first and said yes, which for an OPEN breaker
             # means it just promoted itself to HALF_OPEN and marked ITS probe in flight. That
-            # probe is now never going to happen, and its in-flight flag is only cleared by an
-            # outcome being recorded -- so leaving it set strands that breaker fast-failing
-            # this target forever, outliving the durable window it was waiting on. Reporting
-            # the failure it effectively had clears the flag and restarts its own recovery
-            # timer, which is the honest description: the attempt did not reach the target.
+            # probe is now never going to happen, so it is handed back without an outcome: the
+            # attempt did not reach the target, which says nothing about it. Left held, the
+            # breaker would refuse this target on its own until its probe timeout replaced the
+            # lost probe, outliving the durable window it was waiting on.
             self._release_in_process_probe(breaker)
             log.info(
                 "scrape circuit: suppressing the fetch of target %s for another %.0fs",
@@ -720,10 +724,9 @@ class TargetCircuit:
         For a caller whose :meth:`check` said yes and which then raised before reaching
         :meth:`record_blocked`, :meth:`record_unreachable` or :meth:`record_reachable`.
         Without it, a permitted decision that promoted the in-process breaker to HALF_OPEN
-        leaves that breaker holding a probe no outcome will ever clear, and from then on
-        :meth:`check` fast-fails this target on the in-process branch -- before the durable
-        row is even read -- with ``retry_after_seconds`` of 0.0, telling the caller to retry
-        immediately, forever.
+        leaves that breaker holding a probe no outcome will ever clear, and :meth:`check`
+        fast-fails this target on the in-process branch -- before the durable row is even
+        read -- until the breaker's probe timeout takes the probe as lost.
 
         The durable circuit needs nothing here and is deliberately not touched: its HALF_OPEN
         promotion already stamped ``blocked_until`` as the probe's own reservation, so a
@@ -746,23 +749,21 @@ class TargetCircuit:
         return None if self._breaker_for is None else self._breaker_for(target_id)
 
     def _release_in_process_probe(self, breaker: ProbeObservableBreaker | None) -> None:
-        """Resolve a probe the in-process breaker admitted but that never reached the target.
+        """Hand back a probe the in-process breaker admitted but that never reached the target.
 
-        ``CircuitBreakerLike`` has three calls and no way to say "never mind"; an admitted
-        probe is cleared only by an outcome. Reporting a failure is the accurate one -- the
-        attempt did not reach the target -- and it restarts that breaker's own recovery timer
-        rather than leaving it fast-failing indefinitely.
+        :meth:`ProbeObservableBreaker.release_probe` records no outcome: the attempt did not
+        reach the target, so it is neither a failure nor a success, and no failure count
+        moves. A failure reported instead would be invented -- the in-process recovery timeout
+        is seconds where the durable window is minutes to hours, so a handful of suppressed
+        polls would trip a breaker that never saw a failed fetch, after which :meth:`check`
+        answers from the WRONG circuit and tells the caller to retry in seconds when the
+        truth is hours.
 
-        Only when a probe was actually admitted, which is the whole point: a CLOSED breaker
-        admitted nothing, so reporting a failure to it would be inventing one. That is not a
-        theoretical tidiness -- the in-process recovery timeout is seconds where the durable
-        window is minutes to hours, so an unconditional release lets a handful of suppressed
-        polls trip a breaker that never saw a failed fetch, after which :meth:`check` answers
-        from the WRONG circuit and tells the caller to retry in seconds when the truth is
-        hours.
+        Only when this call's ``check()`` admitted a probe: a CLOSED breaker holds nothing to
+        hand back.
         """
         if breaker is not None and _admitted_a_probe(breaker):
-            breaker.record_failure()
+            breaker.release_probe()
 
     async def _record_failure(
         self, target_id: str, *, now: datetime | None, blocked: bool, egress: str | None = None
