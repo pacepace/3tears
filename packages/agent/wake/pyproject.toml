@@ -49,6 +49,7 @@ dependencies = [
     # path + ``webhook_receive``'s render). Bounded payload + sandbox
     # mean the dep is opt-in for safety, not power-tool risk.
     "jinja2>=3",
+    "sqlalchemy",
 ]
 
 [project.optional-dependencies]

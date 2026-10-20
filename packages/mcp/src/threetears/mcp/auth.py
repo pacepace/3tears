@@ -16,6 +16,8 @@ bearer-token identity) plugs in without disturbing v1 wiring:
   task-02 epoch refresh). per-product impls can plug in a different
   evaluator (e.g. one backed by ``threetears.agent.acl.
   evaluate_decision``) without changing per-tool registrations.
+  :class:`LocalGrantAuthorizer` needs the ``grants`` extra; everything
+  else here imports without it.
 
 default-deny: no admit-by-default codepath. the framework refuses to
 dispatch a tool unless the configured :class:`Authorizer` returns
@@ -33,12 +35,16 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
-from threetears.epoch import EpochClient, EpochListener, catchup_tick
-from threetears.nats import Subjects
 from threetears.observe import PeriodicTask, get_logger
+
+if TYPE_CHECKING:
+    # LocalGrantAuthorizer's collaborators come from the ``grants`` extra. Nothing else in this
+    # module needs them, and a server with its own Authorizer must import this module without them.
+    from threetears.epoch import EpochClient, EpochListener
+    from threetears.nats import Subject
 
 __all__ = [
     "Authorizer",
@@ -359,6 +365,33 @@ tests can substitute a fake without spinning up Postgres + the full
 """
 
 
+def _require_grants_extra() -> None:
+    """refuse to build the grant store's authorizer where its extra is not installed.
+
+    :return: nothing
+    :rtype: None
+    :raises ImportError: when ``threetears.epoch`` or ``threetears.nats`` cannot be imported
+    """
+    try:
+        import threetears.epoch  # noqa: F401
+        import threetears.nats  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "LocalGrantAuthorizer is the MCP grant store, which needs the grants extra: install 3tears-mcp[grants]",
+        ) from exc
+
+
+def _rbac_epoch_subject() -> Subject:
+    """the rbac epoch subject, resolved when it is used so the caller's namespace applies.
+
+    :return: the subject
+    :rtype: Subject
+    """
+    from threetears.nats import Subjects
+
+    return Subjects.mcp_rbac_epoch()
+
+
 class LocalGrantAuthorizer:
     """framework default :class:`Authorizer` backed by ``mcp_tool_grants``.
 
@@ -433,7 +466,9 @@ class LocalGrantAuthorizer:
         :rtype: None
         :raises ValueError: when exactly one of epoch_client /
             epoch_listener is provided (must be both or neither)
+        :raises ImportError: when the ``grants`` extra is not installed
         """
+        _require_grants_extra()
         if (epoch_client is None) != (epoch_listener is None):
             raise ValueError(
                 "epoch_client and epoch_listener must be provided together; passing exactly one is a usage error",
@@ -481,14 +516,14 @@ class LocalGrantAuthorizer:
         # reload.
         primed_epoch: int | None = None
         if self._epoch_client is not None:
-            primed_epoch = await self._epoch_client.current(Subjects.mcp_rbac_epoch())
+            primed_epoch = await self._epoch_client.current(_rbac_epoch_subject())
         await self._reload_cache()
         epoch_mode = self._epoch_listener is not None
         if epoch_mode:
             assert self._epoch_listener is not None  # narrowed by epoch_mode
             # sender-posture: trigger-only -- a bump reloads the grant cache from L3
             await self._epoch_listener.subscribe(
-                Subjects.mcp_rbac_epoch(),
+                _rbac_epoch_subject(),
                 self._on_rbac_bump,
                 primed_epoch=primed_epoch,
                 on_reset=self._on_rbac_reset,
@@ -558,7 +593,7 @@ class LocalGrantAuthorizer:
             # per subject because two consumers on one subject are supported,
             # and a bare deregister would unregister every other authorizer
             # sharing this listener along with this one.
-            self._epoch_listener.deregister(Subjects.mcp_rbac_epoch(), self._on_rbac_bump)
+            self._epoch_listener.deregister(_rbac_epoch_subject(), self._on_rbac_bump)
         log.info("MCP authorizer catch-up loop stopped")
 
     async def _catchup_once(self) -> None:
@@ -579,9 +614,11 @@ class LocalGrantAuthorizer:
         """
         # only ever started under epoch_mode, so the listener is non-None here.
         assert self._epoch_listener is not None
+        from threetears.epoch import catchup_tick
+
         # the pass itself is the framework's: which subjects to poll, and whether one failing
         # subject abandons the rest, are not decisions this consumer should hold its own opinion about.
-        await catchup_tick(self._epoch_listener, [(Subjects.mcp_rbac_epoch(), self._on_rbac_bump)])
+        await catchup_tick(self._epoch_listener, [(_rbac_epoch_subject(), self._on_rbac_bump)])
 
     async def allows(self, identity: Identity, permission: str) -> bool:
         """return True iff ``identity`` holds ``permission``.

@@ -32,6 +32,7 @@ dependencies = [
     "ruamel.yaml>=0.18",
     "jsonpath-ng>=1.6",
     "watchfiles>=1.1.1",
+    "asyncpg>=0.30",
 ]
 
 [project.urls]

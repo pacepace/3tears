@@ -105,14 +105,17 @@ dev = [
     { name = "nats-py", specifier = ">=2.10" },
     { name = "nkeys", specifier = ">=0.2" },
     { name = "opentelemetry-api", specifier = ">=1.40,<2" },
-    { name = "opentelemetry-exporter-otlp", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.40,<2" },
     { name = "opentelemetry-instrumentation", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-sdk", specifier = ">=1.40,<2" },
+    { name = "pdf2image" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pint", specifier = ">=0.25.2" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pyarrow", specifier = ">=17" },
+    { name = "pytesseract" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-timeout", specifier = ">=2.3" },
@@ -136,23 +139,29 @@ source = { editable = "packages/core" }
 dependencies = [
     { name = "3tears-nats" },
     { name = "3tears-observe" },
-    { name = "aiosqlite" },
     { name = "asyncpg" },
-    { name = "cryptography" },
-    { name = "httpx" },
     { name = "pydantic" },
-    { name = "pyjwt", extra = ["crypto"] },
+    { name = "pydantic-core" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
-    { name = "uuid-utils" },
 ]
 
 [package.optional-dependencies]
 duckdb = [
     { name = "duckdb" },
 ]
+http = [
+    { name = "httpx" },
+]
 nats = [
     { name = "3tears-nats", extra = ["client"] },
+]
+pgvector = [
+    { name = "pgvector" },
+]
+security = [
+    { name = "cryptography" },
+    { name = "pyjwt", extra = ["crypto"] },
 ]
 snapshot = [
     { name = "duckdb" },
@@ -162,6 +171,7 @@ socks = [
     { name = "httpx", extra = ["socks"] },
 ]
 testing = [
+    { name = "boto3" },
     { name = "docker" },
     { name = "pytest" },
     { name = "testcontainers", extra = ["nats"] },
@@ -169,31 +179,36 @@ testing = [
 tracing = [
     { name = "opentelemetry-api" },
 ]
+uuid-utils = [
+    { name = "uuid-utils" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-nats", extras = ["client"], marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
-    { name = "aiosqlite" },
     { name = "asyncpg", specifier = ">=0.30" },
-    { name = "cryptography", specifier = ">=42" },
+    { name = "boto3", marker = "extra == 'testing'" },
+    { name = "cryptography", marker = "extra == 'security'", specifier = ">=42" },
     { name = "docker", marker = "extra == 'testing'", specifier = ">=7.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
     { name = "duckdb", marker = "extra == 'snapshot'", specifier = ">=1.0" },
-    { name = "httpx" },
+    { name = "httpx", marker = "extra == 'http'" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'socks'" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20,<2" },
+    { name = "pgvector", marker = "extra == 'pgvector'" },
     { name = "pyarrow", marker = "extra == 'snapshot'", specifier = ">=17" },
     { name = "pydantic" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
+    { name = "pydantic-core" },
+    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'security'", specifier = ">=2.8" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy" },
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
-    { name = "uuid-utils" },
+    { name = "uuid-utils", marker = "extra == 'uuid-utils'" },
 ]
-provides-extras = ["nats", "tracing", "socks", "duckdb", "snapshot", "testing"]
+provides-extras = ["security", "http", "nats", "tracing", "socks", "duckdb", "snapshot", "testing", "pgvector", "uuid-utils"]
 
 [[package]]
 name = "3tears-agent-acl"
@@ -203,6 +218,7 @@ dependencies = [
     { name = "3tears" },
     { name = "3tears-observe" },
     { name = "pydantic" },
+    { name = "sqlalchemy" },
 ]
 
 [package.optional-dependencies]
@@ -218,6 +234,7 @@ requires-dist = [
     { name = "3tears-nats", extras = ["client"], marker = "extra == 'follow'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "sqlalchemy" },
 ]
 provides-extras = ["follow"]
 
@@ -226,7 +243,7 @@ name = "3tears-agent-audit"
 version = "0.73.0"
 source = { editable = "packages/agent/audit" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["security"] },
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "pydantic" },
@@ -234,7 +251,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -251,6 +268,7 @@ dependencies = [
     { name = "3tears-observe" },
     { name = "langchain-core" },
     { name = "pydantic" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -262,6 +280,7 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "langchain-core" },
     { name = "pydantic" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -277,6 +296,7 @@ dependencies = [
     { name = "langchain-core" },
     { name = "pgvector" },
     { name = "pydantic" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -289,6 +309,7 @@ requires-dist = [
     { name = "langchain-core" },
     { name = "pgvector" },
     { name = "pydantic" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -303,7 +324,9 @@ dependencies = [
     { name = "3tears-langgraph" },
     { name = "3tears-nats" },
     { name = "3tears-observe" },
+    { name = "langchain" },
     { name = "langchain-core" },
+    { name = "langgraph" },
     { name = "pgvector" },
 ]
 
@@ -315,7 +338,9 @@ requires-dist = [
     { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "langchain", specifier = ">=1.0" },
     { name = "langchain-core" },
+    { name = "langgraph", specifier = ">=1.0" },
     { name = "pgvector" },
 ]
 
@@ -329,8 +354,12 @@ dependencies = [
     { name = "3tears-langgraph" },
     { name = "3tears-nats" },
     { name = "3tears-observe" },
+    { name = "langchain" },
     { name = "langchain-core" },
+    { name = "langgraph" },
     { name = "pgvector" },
+    { name = "pydantic" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -341,8 +370,12 @@ requires-dist = [
     { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "langchain", specifier = ">=1.0" },
     { name = "langchain-core" },
+    { name = "langgraph", specifier = ">=1.0" },
     { name = "pgvector" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -355,6 +388,7 @@ dependencies = [
     { name = "3tears-observe" },
     { name = "langchain-core" },
     { name = "pydantic" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -364,6 +398,7 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "langchain-core" },
     { name = "pydantic" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -372,7 +407,7 @@ name = "3tears-agent-tools"
 version = "0.73.0"
 source = { editable = "packages/agent/tools" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["http", "security"] },
     { name = "3tears-agent-audit" },
     { name = "3tears-agent-memory" },
     { name = "3tears-epoch" },
@@ -385,6 +420,8 @@ dependencies = [
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "prometheus-client" },
+    { name = "pydantic" },
+    { name = "sqlalchemy" },
 ]
 
 [package.optional-dependencies]
@@ -432,7 +469,7 @@ xlsx = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security", "http"], editable = "packages/core" },
     { name = "3tears-agent-audit", editable = "packages/agent/audit" },
     { name = "3tears-agent-memory", editable = "packages/agent/memory" },
     { name = "3tears-epoch", editable = "packages/epoch" },
@@ -456,6 +493,7 @@ requires-dist = [
     { name = "pint", marker = "extra == 'all'" },
     { name = "pint", marker = "extra == 'units'" },
     { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pymupdf", marker = "extra == 'all'" },
     { name = "pymupdf", marker = "extra == 'document'" },
     { name = "pymupdf", marker = "extra == 'pdf'" },
@@ -466,6 +504,7 @@ requires-dist = [
     { name = "python-docx", marker = "extra == 'docx'" },
     { name = "simpleeval", marker = "extra == 'all'" },
     { name = "simpleeval", marker = "extra == 'calculator'" },
+    { name = "sqlalchemy" },
 ]
 provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "vision", "ocr", "document", "all"]
 
@@ -482,6 +521,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "langchain-core" },
     { name = "pydantic" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -501,6 +541,7 @@ requires-dist = [
     { name = "langchain-core" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 provides-extras = ["prometheus"]
@@ -516,6 +557,7 @@ dependencies = [
     { name = "3tears-agent-tools" },
     { name = "3tears-nats" },
     { name = "3tears-observe" },
+    { name = "asyncpg" },
     { name = "jsonpath-ng" },
     { name = "pydantic" },
     { name = "ruamel-yaml" },
@@ -530,6 +572,7 @@ requires-dist = [
     { name = "3tears-agent-tools", editable = "packages/agent/tools" },
     { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "asyncpg", specifier = ">=0.30" },
     { name = "jsonpath-ng", specifier = ">=1.6" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
@@ -545,6 +588,7 @@ dependencies = [
     { name = "3tears-media-contracts" },
     { name = "3tears-object-store" },
     { name = "3tears-observe" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
@@ -553,6 +597,7 @@ requires-dist = [
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-object-store", editable = "packages/object-store" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "pydantic", specifier = ">=2.0" },
 ]
 
 [[package]]
@@ -564,6 +609,8 @@ dependencies = [
     { name = "3tears-agent-acl" },
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
+    { name = "pydantic" },
+    { name = "sqlalchemy" },
 ]
 
 [package.optional-dependencies]
@@ -593,8 +640,10 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'slack'", specifier = ">=3.9" },
     { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.7" },
     { name = "fastapi", marker = "extra == 'webhook'", specifier = ">=0.110" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = ">=1.28" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.41" },
+    { name = "sqlalchemy" },
     { name = "starlette", marker = "extra == 'websocket'", specifier = ">=0.36" },
 ]
 provides-extras = ["slack", "discord", "websocket", "webhook"]
@@ -608,6 +657,7 @@ dependencies = [
     { name = "3tears-agent-acl" },
     { name = "3tears-langgraph" },
     { name = "3tears-observe" },
+    { name = "langchain-core" },
 ]
 
 [package.metadata]
@@ -616,6 +666,7 @@ requires-dist = [
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "langchain-core" },
 ]
 
 [[package]]
@@ -623,7 +674,7 @@ name = "3tears-datasources"
 version = "0.73.0"
 source = { editable = "packages/datasources" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["security"] },
     { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "asyncpg" },
@@ -650,15 +701,19 @@ redshift = [
 snowflake = [
     { name = "snowflake-connector-python" },
 ]
+tracing = [
+    { name = "opentelemetry-api" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
+    { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20,<2" },
     { name = "pyarrow", marker = "extra == 'export'", specifier = ">=17" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -668,7 +723,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.18" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0" },
 ]
-provides-extras = ["redshift", "snowflake", "bigquery", "export", "dev"]
+provides-extras = ["redshift", "tracing", "snowflake", "bigquery", "export", "dev"]
 
 [[package]]
 name = "3tears-enforcement"
@@ -725,11 +780,13 @@ dependencies = [
 [package.optional-dependencies]
 fastmcp = [
     { name = "fastmcp" },
+    { name = "fastmcp-slim" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<4" },
+    { name = "fastmcp-slim", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
@@ -761,7 +818,7 @@ name = "3tears-iam"
 version = "0.73.0"
 source = { editable = "packages/iam" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["security"] },
     { name = "3tears-agent-acl" },
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
@@ -786,7 +843,7 @@ webauthn = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
@@ -817,6 +874,7 @@ dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint" },
+    { name = "pydantic" },
     { name = "uuid-utils" },
 ]
 
@@ -830,6 +888,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.0" },
     { name = "langgraph", specifier = ">=1.0" },
     { name = "langgraph-checkpoint", specifier = ">=4.0" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "uuid-utils" },
 ]
 
@@ -838,31 +897,36 @@ name = "3tears-mcp"
 version = "0.73.0"
 source = { editable = "packages/mcp" }
 dependencies = [
-    { name = "3tears" },
-    { name = "3tears-epoch" },
-    { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "httpx" },
     { name = "mcp" },
-    { name = "pydantic" },
     { name = "starlette" },
-    { name = "uuid-utils" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+grants = [
+    { name = "3tears" },
+    { name = "3tears-epoch" },
+    { name = "3tears-nats" },
+    { name = "sqlalchemy" },
+    { name = "uuid-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
-    { name = "3tears-epoch", editable = "packages/epoch" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears", marker = "extra == 'grants'", editable = "packages/core" },
+    { name = "3tears-epoch", marker = "extra == 'grants'", editable = "packages/epoch" },
+    { name = "3tears-nats", marker = "extra == 'grants'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.27" },
-    { name = "pydantic", specifier = ">=2" },
+    { name = "sqlalchemy", marker = "extra == 'grants'" },
     { name = "starlette", specifier = ">=0.40" },
-    { name = "uuid-utils" },
+    { name = "uuid-utils", marker = "extra == 'grants'" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
+provides-extras = ["grants"]
 
 [[package]]
 name = "3tears-media-contracts"
@@ -893,12 +957,16 @@ claude-cli = [
     { name = "3tears-langgraph" },
     { name = "claude-agent-sdk" },
     { name = "langchain-claude-code" },
+    { name = "mcp" },
 ]
 image = [
     { name = "httpx" },
 ]
 prometheus = [
     { name = "prometheus-client" },
+]
+tracing = [
+    { name = "opentelemetry-api" },
 ]
 voyageai = [
     { name = "langchain-voyageai" },
@@ -924,12 +992,14 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=1.1" },
     { name = "langchain-openrouter", specifier = ">=0.2.9" },
     { name = "langchain-voyageai", marker = "extra == 'voyageai'", specifier = ">=0.3" },
+    { name = "mcp", marker = "extra == 'claude-cli'" },
     { name = "openrouter", specifier = ">=0.9.2,<1.0" },
+    { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20,<2" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "uuid-utils" },
 ]
-provides-extras = ["claude-cli", "voyageai", "whisper", "image", "prometheus"]
+provides-extras = ["claude-cli", "tracing", "voyageai", "whisper", "image", "prometheus"]
 
 [[package]]
 name = "3tears-nats"
@@ -964,6 +1034,9 @@ dependencies = [
     { name = "3tears-media-contracts" },
     { name = "3tears-observe" },
     { name = "aioboto3" },
+    { name = "botocore" },
+    { name = "cryptography" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
@@ -972,6 +1045,9 @@ requires-dist = [
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "aioboto3", specifier = ">=13" },
+    { name = "botocore" },
+    { name = "cryptography", specifier = ">=42" },
+    { name = "pydantic", specifier = ">=2" },
 ]
 
 [[package]]
@@ -985,29 +1061,47 @@ asgi = [
 ]
 otel = [
     { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation" },
     { name = "opentelemetry-instrumentation-logging" },
     { name = "opentelemetry-sdk" },
+]
+otel-http = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-instrumentation-logging" },
+    { name = "opentelemetry-sdk" },
+]
+prometheus = [
+    { name = "prometheus-client" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
-    { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-api", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
     { name = "opentelemetry-instrumentation", marker = "extra == 'otel'", specifier = ">=0.61b0,<1" },
+    { name = "opentelemetry-instrumentation", marker = "extra == 'otel-http'", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-instrumentation-logging", marker = "extra == 'otel'", specifier = ">=0.61b0,<1" },
+    { name = "opentelemetry-instrumentation-logging", marker = "extra == 'otel-http'", specifier = ">=0.61b0,<1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.40,<2" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel-http'", specifier = ">=1.40,<2" },
+    { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
     { name = "uuid-utils", marker = "extra == 'asgi'" },
 ]
-provides-extras = ["otel", "asgi"]
+provides-extras = ["otel", "otel-http", "prometheus", "asgi"]
 
 [[package]]
 name = "3tears-registry"
 version = "0.73.0"
 source = { editable = "packages/registry" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["security"] },
     { name = "3tears-agent-acl" },
     { name = "3tears-agent-tools" },
     { name = "3tears-epoch" },
@@ -1015,11 +1109,13 @@ dependencies = [
     { name = "3tears-observe" },
     { name = "nats-py" },
     { name = "prometheus-client" },
+    { name = "pydantic" },
+    { name = "sqlalchemy" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-agent-tools", editable = "packages/agent/tools" },
     { name = "3tears-epoch", editable = "packages/epoch" },
@@ -1027,6 +1123,8 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "nats-py", specifier = ">=2.0" },
     { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "sqlalchemy" },
 ]
 
 [[package]]
@@ -1038,6 +1136,7 @@ dependencies = [
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "apscheduler" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 
@@ -1053,6 +1152,7 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "apscheduler", specifier = ">=3.10" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
+    { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
 provides-extras = ["prometheus"]
@@ -1062,7 +1162,7 @@ name = "3tears-scrape"
 version = "0.73.0"
 source = { editable = "packages/scrape" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears", extra = ["http", "security"] },
     { name = "3tears-agent-tools", extra = ["document", "fetch"] },
     { name = "3tears-models" },
     { name = "3tears-observe" },
@@ -1074,6 +1174,7 @@ dependencies = [
     { name = "playwright" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "soupsieve" },
     { name = "uuid-utils" },
 ]
 
@@ -1081,6 +1182,7 @@ dependencies = [
 hitl = [
     { name = "3tears-nats" },
     { name = "fastapi" },
+    { name = "starlette" },
 ]
 reprobe = [
     { name = "3tears-scheduled-jobs" },
@@ -1088,7 +1190,7 @@ reprobe = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears", extras = ["security", "http"], editable = "packages/core" },
     { name = "3tears-agent-tools", extras = ["document", "fetch"], editable = "packages/agent/tools" },
     { name = "3tears-models", editable = "packages/models" },
     { name = "3tears-nats", marker = "extra == 'hitl'", editable = "packages/nats" },
@@ -1103,6 +1205,8 @@ requires-dist = [
     { name = "playwright", specifier = "<1.61" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "soupsieve" },
+    { name = "starlette", marker = "extra == 'hitl'", specifier = ">=0.40" },
     { name = "uuid-utils" },
 ]
 provides-extras = ["reprobe", "hitl"]
@@ -1115,10 +1219,12 @@ dependencies = [
     { name = "3tears-media-contracts" },
     { name = "3tears-observe" },
     { name = "pydantic" },
+    { name = "pydantic-core" },
 ]
 
 [package.optional-dependencies]
 extract = [
+    { name = "charset-normalizer" },
     { name = "trafilatura" },
 ]
 standalone = [
@@ -1129,8 +1235,10 @@ standalone = [
 requires-dist = [
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "charset-normalizer", marker = "extra == 'extract'" },
     { name = "httpx", marker = "extra == 'standalone'", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic-core" },
     { name = "trafilatura", marker = "extra == 'extract'", specifier = ">=2.0.0" },
 ]
 provides-extras = ["standalone", "extract"]
@@ -1292,15 +1400,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl", hash = "sha256:053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e", size = 7490, upload-time = "2025-07-03T22:54:42.156Z" },
-]
-
-[[package]]
-name = "aiosqlite"
-version = "0.22.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
 ]
 
 [[package]]
@@ -3557,19 +3656,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ae/cc/e4c9584181f86494df0f6bdec1a4f3280c50db44704dc2a407e994fc87bb/opentelemetry_api-1.43.0.tar.gz", hash = "sha256:107d0d03857ea8fc7c5fcbbbd83f800c281f0d560553d61c1d675fccfd1761c1", size = 73476, upload-time = "2026-06-24T15:19:55.323Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/17/83/6dba32b85f31868400440dc7ad2ca1eab94cbbf3a7b0459ed39f8311a9e2/opentelemetry_api-1.43.0-py3-none-any.whl", hash = "sha256:20acf45e9b21851926835292e4045d290acade1edd2ff3de86d2f069687ba1fd", size = 61912, upload-time = "2026-06-24T15:19:35.434Z" },
-]
-
-[[package]]
-name = "opentelemetry-exporter-otlp"
-version = "1.43.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ee/47/b77366bcbe719373a8cac2b4e8ad01f8ff3c9f2c223374d77ece280aae6f/opentelemetry_exporter_otlp-1.43.0.tar.gz", hash = "sha256:65aded6c50ee7dd2b9948c9d0e59ddb4ed4eea6e8532fba95cbe6a4a64a566ba", size = 6086, upload-time = "2026-06-24T15:19:58.003Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/26/d28cc854d2eb779f91351216c51ed0d54886f89f2dd56db9d493ba9fd429/opentelemetry_exporter_otlp-1.43.0-py3-none-any.whl", hash = "sha256:70f3fe740a64596d4157588a2ee7e4fd37d2acc0c0f522a2882b8c29316cd0f0", size = 6726, upload-time = "2026-06-24T15:19:38.437Z" },
 ]
 
 [[package]]

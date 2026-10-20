@@ -26,7 +26,7 @@ classifiers = [
 # depends on 3tears core via a compatible-release range; the whole
 # monorepo bumps in lockstep so any 0.9.x core satisfies this.
 dependencies = [
-    "3tears>=0.73.0,<0.74.0",
+    "3tears[security]>=0.73.0,<0.74.0",
     # the query client publishes on the subject grammar and the typed request
     # form. no ``[client]`` extra: the grammar, the error types and the client
     # protocol import without nats-py, and every process that CALLS the client
@@ -60,6 +60,8 @@ dependencies = [
 # backed (postgres / yugabyte / agent_internal) drivers ship today
 # (snowflake / bigquery drivers are stubs).
 redshift = ["redshift-connector>=2.1"]
+# query spans from the drivers (drivers.base, asyncpg_driver, redshift_driver); without it they are off
+tracing = ["opentelemetry-api>=1.20,<2"]
 snowflake = ["snowflake-connector-python>=3.0"]
 bigquery = ["google-cloud-bigquery>=3.0"]
 # reading a warehouse export's parquet files (threetears.datasources.export_read)

@@ -489,7 +489,7 @@ importing core, only to installing it.
 And the install list is *partly* softer than it reads -- corrected 2026-08-04:
 
 - `aiosqlite` is unused anywhere in the monorepo (L1 uses stdlib `sqlite3`)
-  and can simply go;
+  and can simply go (removed 2026-10-18);
 - `collections/flush.py` -- the sole importer of `asyncpg` and one of three
   module-level `sqlalchemy` sites -- is **not** test-only as the first check
   claimed. `collections/__init__.py` and `collections/base.py` import it,

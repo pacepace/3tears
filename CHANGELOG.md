@@ -444,6 +444,82 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
   ceiling that is not positive and finite: either would stop the run before it began. New:
   `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
   `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
+
+### core: signing and HTTP are extras, so most of the family stops installing them
+
+**Changed (core):** `cryptography` and `pyjwt[crypto]` move to a new `3tears[security]` extra, and
+`httpx` to `3tears[http]`. The base keeps what the tiers need: `3tears-observe`, `3tears-nats`,
+sqlalchemy, asyncpg, pydantic and pyyaml. `threetears.core.security`, `threetears.core.backends`
+and `threetears.core.utils` now resolve their names lazily, like `threetears.core` itself.
+Importing the sandbox, a secret reference, `atomic_write` or the L1 cache therefore no longer loads
+the signed-token stack beside it. Before, `cache.sqlite` reached `backends.nats_proxy` through
+`backends/__init__.py`, which loaded asyncpg, cryptography and jwt. Reaching a name that needs an
+extra without it raises `ImportError` naming the extra.
+
+The family packages that use core's signing declare `3tears[security]`: agent-audit, agent-tools,
+datasources, iam, registry and scrape. agent-tools and scrape also declare `3tears[http]`. Each was
+found by importing every one of its modules with the extras refused to core, and by a static pass
+over deferred imports.
+
+**Breaking:** an app that uses `threetears.core.security`'s tokens, proofs, envelopes or sealing,
+`NatsProxyL3Backend`, or `threetears.core.http_client`, and depends on a bare `3tears`, must add the
+extra. This ships in a minor release.
+
+### every package declares what it imports, checked per package
+
+**Changed (packaging):** 3tears now runs its own declared-imports gate
+(`threetears.enforcement.imports_declared`) on each of its packages
+(`tests/enforcement/test_imports_declared.py`). Twenty-three packages imported something they never
+declared, mostly sqlalchemy and pydantic that `3tears` happened to install. Each now declares it.
+Module-level imports became hard dependencies, and their floors moved with them. Optional imports
+became extras:
+- `3tears[pgvector]`, `3tears[uuid-utils]`, and boto3 in `3tears[testing]`
+- `3tears-datasources[tracing]` and `3tears-models[tracing]`
+- `3tears-observe[prometheus]`
+- mcp in `3tears-models[claude-cli]`
+- fastmcp-slim in `3tears-evals[fastmcp]`
+- starlette in `3tears-scrape[hitl]`
+- charset-normalizer in `3tears-search[extract]`
+
+Nothing installs anything it did not before; the declarations only name what was arriving by
+accident.
+
+### core: two dependencies nothing needed are gone, and object-store declares what it imports
+
+**Changed (core):** `3tears` no longer depends on `aiosqlite`, which nothing in the family imported
+(L1 is stdlib `sqlite3`), or on `uuid-utils`, whose one hard use, the invalidation origin token in
+`collections.registry`, is now stdlib `uuid.uuid7` like the rest of core. The L1 caches still accept
+a `uuid_utils.UUID` value when that package is installed.
+
+**Fixed (object-store):** `3tears-object-store` imports `cryptography` and `pydantic` and now declares
+both. It had received them through `3tears`, so it would have broken the moment core stopped
+supplying them.
+
+### mcp: an MCP server no longer installs nats, sqlalchemy or the rest of the family
+
+**Changed (mcp):** `3tears-mcp`'s hard dependencies are now `mcp`, `3tears-observe`, httpx, starlette
+and uvicorn. The grant store -- `LocalGrantAuthorizer`, `threetears.mcp.rbac`,
+`threetears.mcp.migrations` -- moved to a new `grants` extra with `3tears`, `3tears-epoch`,
+`3tears-nats`, sqlalchemy and uuid-utils. Before, every server installed 44 packages (nats-py,
+asyncpg, sqlalchemy among them) and loaded core, epoch and nats on `import threetears.mcp`, though
+only the grant store uses them. A server with its own `Authorizer` now installs about what the `mcp`
+SDK does.
+
+**Breaking:** an app that uses the grant store must depend on `3tears-mcp[grants]`; without it,
+building a `LocalGrantAuthorizer` or reaching an rbac name raises `ImportError` naming the extra.
+An app that imported `threetears.core`, `threetears.epoch` or `threetears.nats` while depending
+only on `3tears-mcp` must now declare those itself. Every import path is unchanged. This ships in a
+minor release.
+
+### observe: traces can export over OTLP/HTTP, and the otel-http extra installs no gRPC
+
+**Added (observe):** `TelemetryConfig.protocol`, `"grpc"` (the default, unchanged) or
+`"http/protobuf"`, which posts spans to `<endpoint>/v1/traces`. A new `otel-http` extra carries the
+`otel` extra's OpenTelemetry packages with the HTTP exporter in place of the exporter metapackage,
+so it installs no grpcio: about 10 MB against the `otel` extra's 49. Log export was already
+OTLP/HTTP. The `otel` extra is unchanged. With `protocol="grpc"` and no gRPC exporter installed,
+`init_telemetry` raises `ImportError` naming the extra to install.
+
 ## v0.72.0 -- 2026-10-20
 
 ### agent-memory, agent-intention, core: the embedding width is a deployment setting

@@ -37,7 +37,8 @@ dependencies = [
 #   uv run --with "fastmcp==3.4.2" pytest packages/evals/tests/test_fastmcp_transport.py
 # Re-run that when the transport starts using a fastmcp API it did not, and raise the floor if it fails.
 # The cap is the major this is tested against.
-fastmcp = ["fastmcp>=3.4.2,<4"]
+# fastmcp-slim is named too: since 3.x the `fastmcp` module ships in it, and fastmcp is its wrapper
+fastmcp = ["fastmcp>=3.4.2,<4", "fastmcp-slim>=3.4.2,<4"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

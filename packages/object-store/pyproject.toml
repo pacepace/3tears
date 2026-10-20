@@ -30,6 +30,9 @@ dependencies = [
     "3tears-media-contracts>=0.73.0,<0.74.0",
     "3tears-observe>=0.73.0,<0.74.0",
     "aioboto3>=13",
+    "cryptography>=42",  # AES-256-GCM sealing and scrypt key derivation (object_store.encrypted)
+    "pydantic>=2",  # SecretStr for the sealing passphrase (object_store.encrypted)
+    "botocore",  # retry config and ClientError (object_store.s3); aioboto3 brings the release it needs
 ]
 
 [project.urls]
