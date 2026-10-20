@@ -36,10 +36,14 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from threetears.observe import contain, get_logger
+
 from .config import DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     import httpx
+
+log = get_logger(__name__)
 
 __all__ = [
     "DirectEgress",
@@ -250,6 +254,7 @@ class ProxyEgress:
                 response.raise_for_status()
                 return EgressHealth(reachable=True, observed_address=response.text.strip())
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this reports on an outage; raising out of it would make the diagnostic another thing that breaks when the thing it diagnoses does
+            contain(exc, log=log, what=f"egress health probe failed: {type(exc).__name__}: {exc}")
             return EgressHealth(reachable=False, reason=f"{type(exc).__name__}: {exc}")
 
 

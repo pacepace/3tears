@@ -28,7 +28,7 @@ from threetears.agent.tools.base_tool import (
 )
 from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.context import ToolContextManager
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import WorkspaceAccessDenied
@@ -94,7 +94,13 @@ class WorkspaceCurrentTool(TearsTool):
         """
         result: ToolResult
         try:
-            snapshot = await pin.get_pin(self._context_provider())
+            context = self._context_provider()
+        except RuntimeError as exc:
+            # the provider's documented refusal: no call scope, or one with no context manager. its
+            # text is ours and names what the call's config must carry, so the agent gets it whole.
+            return ToolResult(success=False, content="", error=f"current failed: {exc}")
+        try:
+            snapshot = await pin.get_pin(context)
             if snapshot is None:
                 payload: dict[str, Any] = {
                     "pin": None,
@@ -122,11 +128,12 @@ class WorkspaceCurrentTool(TearsTool):
                 error=f"current failed: {exc}",
             )
         except Exception as exc:
-            log.exception("workspace_current failed: %s", exc)
+            contain(exc, log=log, what=f"workspace_current failed: {exc}", level="error")
+            # the agent sees the failure's type; contain() has the message.
             result = ToolResult(
                 success=False,
                 content="",
-                error=f"current failed: {exc}",
+                error=f"current failed ({type(exc).__name__})",
             )
         return result
 

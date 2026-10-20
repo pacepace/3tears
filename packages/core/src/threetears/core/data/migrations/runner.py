@@ -48,7 +48,7 @@ from threetears.core.data.migrations.registry import MigrationFunc, PackageMigra
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.core.data.migrations.session import MigrationSession
 from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
-from threetears.observe import get_logger, traced
+from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "MigrationRunner",
@@ -643,11 +643,13 @@ class MigrationRunner:
             try:
                 await store.execute(_DELETE_VERSION_SQL, version_num, package_name)
             except Exception as revert_exc:
-                log.warning(
-                    "revert of _schema_migrations row failed: package=%s version=%d error=%s",
-                    package_name,
-                    version_num,
+                contain(
                     revert_exc,
+                    log=log,
+                    what=(
+                        f"revert of _schema_migrations row failed: package={package_name} "
+                        f"version={version_num} error={revert_exc}"
+                    ),
                 )
             msg = f"migration {package_name}:{version_num} ({description}) failed: {exc}"
             raise MigrationFailedError(msg) from exc

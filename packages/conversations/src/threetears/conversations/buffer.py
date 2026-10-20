@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from threetears.observe import get_logger
+from threetears.observe import cancel_and_wait, contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.conversations.collection import ConversationsCollection
@@ -208,12 +208,7 @@ class ConversationWriteBuffer:
             return
         self._stopped = True
         if self._timer_task is not None:
-            self._timer_task.cancel()
-            try:
-                await self._timer_task
-            # NOSILENT: cancellation is the expected end of the timer loop
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_wait(self._timer_task)
             self._timer_task = None
         await self.flush()
 
@@ -295,15 +290,14 @@ class ConversationWriteBuffer:
             try:
                 await self._apply_delta(delta)
             except Exception as exc:
-                log.warning(
-                    "conversation write buffer apply failed (soft-fail): %s",
+                contain(
                     exc,
+                    log=log,
+                    what=f"conversation write buffer apply failed (soft-fail): {exc}",
                     extra={
-                        "extra_data": {
-                            "agent_id": str(delta.agent_id),
-                            "conversation_id": str(delta.conversation_id),
-                            "increment": delta.increment,
-                        }
+                        "agent_id": str(delta.agent_id),
+                        "conversation_id": str(delta.conversation_id),
+                        "increment": delta.increment,
                     },
                 )
 
@@ -358,10 +352,11 @@ class ConversationWriteBuffer:
                 try:
                     await self.flush()
                 except Exception as exc:
-                    log.warning(
-                        "conversation write buffer timer flush failed (soft-fail): %s",
+                    contain(
                         exc,
+                        log=log,
+                        what=f"conversation write buffer timer flush failed (soft-fail): {exc}",
                     )
         # NOSILENT: cancellation ends the timer loop on pod shutdown
         except asyncio.CancelledError:
-            return
+            raise

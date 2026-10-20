@@ -25,7 +25,7 @@ from threetears.agent.tools.base_tool import (
 )
 from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
@@ -252,10 +252,7 @@ class FsWriteTool(TearsTool):
                     )
             # NOSILENT: audit failure must never taint a successful write
             except Exception as audit_exc:
-                log.exception(
-                    "fs_write audit publish swallow caught: %s",
-                    audit_exc,
-                )
+                contain(audit_exc, log=log, what=f"fs_write audit publish swallow caught: {audit_exc}", level="error")
             result = ToolResult(
                 success=True,
                 content=(f"wrote {len(content_bytes)} bytes; sha256={new_sha256}, version={new_version}"),
@@ -284,7 +281,7 @@ class FsWriteTool(TearsTool):
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
-            log.exception("fs_write failed: %s", exc)
+            contain(exc, log=log, what=f"fs_write failed: {exc}", level="error")
             result = ToolResult(
                 success=False,
                 content="",

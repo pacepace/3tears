@@ -13,9 +13,13 @@ same-conversation, so cycle detection walks the chain BFS-style up to
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any, Final
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from threetears.observe import get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "CONTEXT_FROM_MAX_DEPTH",
@@ -172,23 +176,40 @@ def _validate_one_shot_at(
 
 
 def _validate_cron(config: dict[str, Any]) -> str | None:
-    """Validate ``cron`` config: ``{expr}`` (5-field cron, APScheduler-parsed)."""
+    """Validate ``cron`` config: ``{expr, tz?}`` (5-field cron, APScheduler-parsed, in ``tz`` or UTC)."""
     if "expr" not in config:
         return "cron requires 'expr' (5-field cron expression)"
     expr = config["expr"]
     if not isinstance(expr, str) or not expr.strip():
         return f"cron 'expr' must be a non-empty string; got {expr!r}"
+    # the scheduler evaluates a cron in ZoneInfo(config.get("tz", "UTC"))
+    # (scheduled_jobs.reschedule), so a zone it cannot load is refused here
+    # rather than raising at tick time.
+    zone: tzinfo = UTC
+    if "tz" in config:
+        tz = config["tz"]
+        if not isinstance(tz, str):
+            return f"cron 'tz' must be an IANA zone name such as 'America/Los_Angeles'; got {type(tz).__name__}"
+        try:
+            zone = ZoneInfo(tz)
+        except ZoneInfoNotFoundError, ValueError:
+            return f"cron 'tz' {tz!r} is not a known IANA zone; use a name such as 'America/Los_Angeles' or 'UTC'"
     # APScheduler parses + validates; we surface its raise as a tool
     # error rather than letting it explode at tick time. Lazy import so
-    # the validator costs nothing for non-cron schedule types.
-    try:
-        from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
+    # the validator costs nothing for non-cron schedule types. The zone is
+    # passed, as the scheduler passes it: without one, from_crontab reads
+    # the host's local zone, and a host whose TZ it cannot load would raise
+    # for a valid expression. An invalid expression is a ValueError -- the
+    # only type from_crontab raises for one -- and anything else is not
+    # the expression's fault, so it propagates.
+    from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
 
-        CronTrigger.from_crontab(expr)
+    try:
+        CronTrigger.from_crontab(expr, timezone=zone)
     except ValueError as exc:
+        # apscheduler's message is about the agent's own expression, which is
+        # what lets it correct the expression, so it is returned as is.
         return f"cron 'expr' invalid: {exc}"
-    except Exception as exc:  # noqa: BLE001 - apscheduler raises varied types
-        return f"cron 'expr' parse failed: {exc}"
     return None
 
 

@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
+from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.core.entities.base import BaseEntity
+from threetears.core.exceptions import ConcurrentModificationError, GenerationUnavailableError
 
-from .collections import ScrapeCollection, _parse_dt
+from .collections import ScrapeCollection, _parse_dt_or_unrecorded, _parse_dt_strict
 from .extraction import html_to_text
 
 __all__ = [
@@ -52,6 +54,36 @@ __all__ = [
     "record_robots_block",
     "record_validated_fetch",
 ]
+
+#: what a read of the health store means by "the store did not answer", and so what a caller that
+#: degrades on an unreadable row may catch. The framework's shared storage set as it stands: an
+#: L2 refusal, the L3-down signal, a direct pool error, or a socket, DNS or timeout failure.
+#: Anything else -- an ``AttributeError`` in a row accessor, a wiring error -- is a bug and
+#: propagates rather than reading as an outage.
+#:
+#: Private to this package: every degrading caller of a health read imports it from here, so the
+#: set is decided once.
+_HEALTH_STORE_READ_FAILURES: Final[tuple[type[Exception], ...]] = STORAGE_FAILURES
+
+#: what a write through :func:`_merge_health` means by "the bookkeeping did not land": the read
+#: set, plus the two failures ``BaseCollection.save_entity`` documents for a write that reached
+#: the store and did not stick.
+#:
+#: ``ConcurrentModificationError`` is here and NOT in :data:`STORAGE_FAILURES` because losing the
+#: optimistic-lock fence to another pod writing the same target's row is an expected operating
+#: condition for a health write, not a signal. Several pods poll one target; each health write is
+#: a read-modify-write of one row, so two of them colliding is the normal shape of a fleet, and
+#: the next poll writes again. ``IdempotencyKeyStore`` reads the same exception as its own signal,
+#: which is why the shared tuple is not widened instead -- the reasoning
+#: ``windowed_counter._DEGRADABLE_FAILURES`` gives for the same choice.
+#:
+#: ``GenerationUnavailableError`` is a write that committed but could not advance the table's
+#: write generation; the row is stored, and the caller is told to retry, which the next poll does.
+_HEALTH_STORE_WRITE_FAILURES: Final[tuple[type[Exception], ...]] = (
+    *STORAGE_FAILURES,
+    ConcurrentModificationError,
+    GenerationUnavailableError,
+)
 
 
 def content_fingerprint(html: str) -> str:
@@ -103,7 +135,9 @@ class ScrapeTargetHealth(BaseEntity):
     @property
     def fingerprint_updated_at(self) -> datetime | None:
         """When :attr:`content_fingerprint` was last stamped."""
-        return _parse_dt(self._get_raw("fingerprint_updated_at"))
+        return _parse_dt_or_unrecorded(
+            self._get_raw("fingerprint_updated_at"), column="fingerprint_updated_at", row=self.target_id
+        )
 
     @property
     def consecutive_fetch_failures(self) -> int:
@@ -147,13 +181,19 @@ class ScrapeTargetHealth(BaseEntity):
         this window is not fetched, so it reaches neither candidate generation nor the page
         classifier -- the classifier's own verdict cache cannot bound it, because a real
         interstitial renders a per-request id into the very text the cache keys on.
+
+        Strict: a stored value that is not a timestamp raises rather than reading as
+        ``None``, which would lift the block; :class:`~threetears.scrape.circuit.TargetCircuit`
+        reads that as a window in force.
+
+        :raises StoredTimestampUnreadable: the stored value is not a timestamp
         """
-        return _parse_dt(self._get_raw("blocked_until"))
+        return _parse_dt_strict(self._get_raw("blocked_until"))
 
     @property
     def last_blocked_at(self) -> datetime | None:
         """When this target was last observed to be behind a wall."""
-        return _parse_dt(self._get_raw("last_blocked_at"))
+        return _parse_dt_or_unrecorded(self._get_raw("last_blocked_at"), column="last_blocked_at", row=self.target_id)
 
     @property
     def last_egress(self) -> str | None:
@@ -188,7 +228,9 @@ class ScrapeTargetHealth(BaseEntity):
         fetch failure: counting it as one would open the circuit, start a backoff and mark a
         working site unhealthy over a rule that says nothing about whether it works.
         """
-        return _parse_dt(self._get_raw("robots_blocked_at"))
+        return _parse_dt_or_unrecorded(
+            self._get_raw("robots_blocked_at"), column="robots_blocked_at", row=self.target_id
+        )
 
     @property
     def robots_blocked_reason(self) -> str | None:
@@ -270,9 +312,12 @@ class ScrapeTargetHealth(BaseEntity):
 
         Written together with :attr:`session_state_sealed`, always. A token with no expiry is a
         credential of unknown lifetime, so a missing one here is read as expired rather than as
-        eternal -- see :func:`threetears.scrape.session_state.usable_session_state`.
+        eternal -- see :func:`threetears.scrape.session_state.usable_session_state`. Strict for
+        the same reason: one that cannot be read raises, and that reader treats it as expired.
+
+        :raises StoredTimestampUnreadable: the stored value is not a timestamp
         """
-        return _parse_dt(self._get_raw("session_state_expires_at"))
+        return _parse_dt_strict(self._get_raw("session_state_expires_at"))
 
 
 class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):

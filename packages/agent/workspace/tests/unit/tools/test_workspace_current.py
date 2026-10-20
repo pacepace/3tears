@@ -239,6 +239,40 @@ async def test_execute_traps_discovery_errors_as_data(
     assert "current failed" in (result.error or "")
 
 
+@pytest.mark.asyncio
+async def test_an_unexpected_failure_reaches_the_agent_by_type_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the broad catch's message can name hosts; the agent sees the type, contain() the message."""
+    snapshot = PinnedWorkspace(
+        workspace_id=uuid4(),
+        workspace_name="any",
+        date_pinned=datetime.now(UTC),
+        pinned_by_actor_id=uuid4(),
+    )
+
+    async def _fake_get_pin(context: Any) -> PinnedWorkspace | None:
+        return snapshot
+
+    monkeypatch.setattr(workspace_current_module.pin, "get_pin", _fake_get_pin)
+
+    client = _FakeDiscoveryClient(
+        items=[],
+        raise_exc=ConnectionError("refused by hub-db.internal:5432"),
+    )
+    tool = WorkspaceCurrentTool(
+        context_provider=lambda: _FakeContext(),
+        discovery_client=client,  # type: ignore[arg-type]
+        agent_id=uuid4(),
+    )
+
+    async with enter_call_scope(_make_scope()):
+        result = await tool.execute()
+
+    assert result.success is False
+    assert result.error == "current failed (ConnectionError)"
+
+
 def test_mcp_name_is_exact_string() -> None:
     """mcp_name must equal ``threetears.workspace.current`` exactly."""
     tool = WorkspaceCurrentTool(

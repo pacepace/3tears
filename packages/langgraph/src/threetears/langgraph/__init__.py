@@ -41,11 +41,16 @@ from threetears.langgraph.caching import (
     should_bind_tools_fresh,
 )
 from threetears.langgraph.catalog import ObjectCataloger
-from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint import (
+    CheckpointCacheError,
+    CheckpointPurgeIncompleteError,
+    ThreeTierCheckpointSaver,
+)
 from threetears.langgraph.checkpoint_scope import (
     DEFAULT_CUSTOMER_CONFIG_KEY,
     CheckpointScope,
 )
+from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_documents, embed_query
 from threetears.langgraph.events import (
     FrameworkEvent,
     FrameworkEventRegistry,
@@ -146,6 +151,8 @@ __all__ = [
     "AsyncpgPoolAdapter",
     "ChatModelCapabilities",
     "CheckpointAnonymization",
+    "CheckpointCacheError",
+    "CheckpointPurgeIncompleteError",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
@@ -158,6 +165,7 @@ __all__ = [
     "DEFAULT_STRUCTURED_INLINE_MAX_CHARS",
     "DEFAULT_SUMMARIZATION_PROMPT",
     "DEFAULT_TOOL_BUDGET_FALLBACK_TEXT",
+    "EmbeddingUnavailableError",
     "FlushCallback",
     "FrameworkEvent",
     "FrameworkEventRegistry",
@@ -227,6 +235,8 @@ __all__ = [
     "compute_tool_key",
     "default_registry",
     "detect_capabilities",
+    "embed_documents",
+    "embed_query",
     "dispatch_event",
     "extract_cache_usage",
     "format_offload_handle",

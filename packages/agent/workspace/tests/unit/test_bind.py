@@ -22,6 +22,7 @@ the fs_write unit-test style already in the tree.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,9 +30,17 @@ from typing import Any
 from uuid import UUID, uuid4, uuid7
 
 import pytest
+from prometheus_client import REGISTRY
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
-from threetears.agent.workspace.materialize import WatchChanges, bind, recover, watch_disk_changes
+from threetears.agent.workspace.materialize import (
+    CaptureBackFailedError,
+    DiskRootChangedError,
+    WatchChanges,
+    bind,
+    recover,
+    watch_disk_changes,
+)
 from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
@@ -422,6 +431,232 @@ async def test_bind_body_deletes_file_emits_delete_journal(
     assert journal_rows[0][1][3] == 4  # prior+1
     assert journal_rows[0][1][6] == "delete"
     assert len(delete_head) == 1
+
+
+_ROOT_READS_EVERYTHING = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root reads a mode-000 directory, so it cannot be made unreadable"
+)
+
+
+def _deletes(harness: dict[str, Any]) -> list[tuple[str, tuple[Any, ...], bool]]:
+    """every head-row delete the bind issued."""
+    return [e for e in harness["pool"].conn.executions if "DELETE FROM workspace_files" in e[0]]
+
+
+def _skipped(phase: str) -> float:
+    """how many unreadable paths binds have skipped so far in ``phase``."""
+    return REGISTRY.get_sample_value("workspace_snapshot_unreadable_skipped_total", {"phase": phase}) or 0.0
+
+
+def _skip_warnings(caplog: pytest.LogCaptureFixture) -> list[Any]:
+    """the contained warnings naming a path a bind skipped."""
+    return [
+        r for r in caplog.records if r.getMessage().startswith("workspace bind could not read a path below its root")
+    ]
+
+
+class _RootOnAnotherDevice:
+    """``Path.stat`` that reports ``root`` on another device once :attr:`moved` is set -- a volume
+    unmounted mid-window leaves its empty mount point at the same path."""
+
+    def __init__(self, root: Path, *, after_calls: int | None = None) -> None:
+        self._root = root
+        self._real = Path.stat
+        self._after_calls = after_calls
+        self._root_calls = 0
+        self.moved = False
+
+    def __call__(self, path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        found = self._real(path, follow_symlinks=follow_symlinks)
+        if path != self._root:
+            return found
+        self._root_calls += 1
+        if self._after_calls is not None and self._root_calls > self._after_calls:
+            self.moved = True
+        if not self.moved:
+            return found
+        fields = list(found)
+        fields[2] = found.st_dev + 1
+        return os.stat_result(fields)
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> _RootOnAnotherDevice:
+        """put this in place of ``Path.stat`` for the rest of the test."""
+
+        def _stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            return self(path, follow_symlinks=follow_symlinks)
+
+        monkeypatch.setattr(Path, "stat", _stat)
+        return self
+
+
+@_ROOT_READS_EVERYTHING
+@pytest.mark.asyncio
+async def test_bind_exit_skips_a_directory_it_cannot_read_keeps_its_rows_and_captures_the_rest(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """an unreadable directory once read as its files deleted, then failed every bind; now only it is skipped."""
+    content = b"still here"
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[
+            _FakeFile("sub/kept.txt", content, _sha(content), 2),
+            _FakeFile("gone.txt", b"gone", _sha(b"gone"), 1),
+        ],
+    )
+    skipped_before = _skipped("capture_back")
+    unreadable = None
+    try:
+        with caplog.at_level("WARNING"):
+            async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
+                assert (disk_root / "sub" / "kept.txt").read_bytes() == content
+                (disk_root / "gone.txt").unlink()
+                (disk_root / "new.txt").write_bytes(b"new")
+                unreadable = disk_root / "sub"
+                unreadable.chmod(0)
+    finally:
+        if unreadable is not None:
+            unreadable.chmod(0o755)
+
+    executions = harness["pool"].conn.executions
+    assert [e[1][1] for e in _deletes(harness)] == ["gone.txt"]
+    assert _journal(executions, "sub/kept.txt") == []
+    assert [e[1][6] for e in _journal(executions, "new.txt")] == ["create"]
+    assert _skipped("capture_back") == skipped_before + 1
+    [warning] = _skip_warnings(caplog)
+    assert warning.levelname == "WARNING"
+    assert warning.extra_data["relative_path"] == "sub"
+    assert warning.extra_data["exc_type"] == "PermissionError"
+    assert harness["lease"].handles[0].released is True
+
+
+@_ROOT_READS_EVERYTHING
+@pytest.mark.asyncio
+async def test_bind_exit_refuses_a_root_it_cannot_list(tmp_path: Path) -> None:
+    """the root is never a subtree to skip: an unlistable root still refuses, and deletes nothing."""
+    content = b"still here"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    unlistable = None
+    try:
+        with pytest.raises(CaptureBackFailedError) as failed:
+            async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
+                unlistable = disk_root
+                disk_root.chmod(0)
+    finally:
+        if unlistable is not None:
+            unlistable.chmod(0o755)
+
+    assert failed.value.path == unlistable
+    assert isinstance(failed.value.__cause__, PermissionError)
+    assert "recover" in (CaptureBackFailedError.__doc__ or "")
+    assert _deletes(harness) == []
+
+
+@pytest.mark.asyncio
+async def test_bind_exit_refuses_a_root_that_is_gone(tmp_path: Path) -> None:
+    """a missing root read as an empty one, and capture-back deleted every row."""
+    import shutil
+
+    content = b"still here"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+
+    with pytest.raises(CaptureBackFailedError) as failed:
+        async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
+            shutil.rmtree(disk_root)
+
+    assert failed.value.path == disk_root
+    assert isinstance(failed.value.__cause__, FileNotFoundError)
+    assert _deletes(harness) == []
+
+
+@pytest.mark.asyncio
+async def test_bind_exit_refuses_a_root_now_on_another_device(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """an unmounted volume leaves an empty mount point at the root; capture-back refuses it rather than delete all."""
+    content = b"on the volume"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    disk_root = harness["bind_root"] / harness["workspace"].name
+    stat = _RootOnAnotherDevice(disk_root).install(monkeypatch)
+
+    with pytest.raises(CaptureBackFailedError) as failed:
+        async with await _call_bind(harness, watch_changes=ScriptedWatch()) as bound:
+            (bound / "a.txt").unlink()  # what the empty mount point shows
+            stat.moved = True
+
+    assert failed.value.path == disk_root
+    assert isinstance(failed.value.__cause__, DiskRootChangedError)
+    assert _deletes(harness) == []
+
+
+@pytest.mark.asyncio
+async def test_bind_exit_still_deletes_every_file_the_body_removed(tmp_path: Path) -> None:
+    """the guards refuse an unreadable or replaced root, never a body that deleted every file."""
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[_FakeFile("a.txt", b"a", _sha(b"a"), 1), _FakeFile("sub/b.txt", b"b", _sha(b"b"), 1)],
+    )
+    async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
+        (disk_root / "a.txt").unlink()
+        (disk_root / "sub" / "b.txt").unlink()
+
+    assert sorted(e[1][1] for e in _deletes(harness)) == ["a.txt", "sub/b.txt"]
+
+
+@_ROOT_READS_EVERYTHING
+@pytest.mark.asyncio
+async def test_a_disk_wins_seed_skips_a_directory_it_cannot_read_and_keeps_its_rows(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """the DISK_WINS seed deletes every L3 row missing from disk, but not one under a directory it could not read."""
+    content = b"still here"
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[
+            _FakeFile("sub/kept.txt", content, _sha(content), 2),
+            _FakeFile("gone.txt", b"gone", _sha(b"gone"), 1),
+        ],
+    )
+    disk_root = harness["bind_root"] / harness["workspace"].name
+    (disk_root / "sub").mkdir(parents=True)
+    (disk_root / "sub" / "kept.txt").write_bytes(content)
+    (disk_root / "sub").chmod(0)
+    seed_skipped, capture_skipped = _skipped("seed"), _skipped("capture_back")
+    entered = False
+    try:
+        with caplog.at_level("WARNING"):
+            async with await _call_bind(
+                harness, on_conflict=BindConflictPolicy.DISK_WINS, watch_changes=ScriptedWatch()
+            ):
+                entered = True
+                # the seed has run, and deleted only the row whose file is genuinely gone
+                assert [e[1][1] for e in _deletes(harness)] == ["gone.txt"]
+    finally:
+        (disk_root / "sub").chmod(0o755)
+
+    assert entered
+    assert [e[1][1] for e in _deletes(harness)] == ["gone.txt"]
+    assert _journal(harness["pool"].conn.executions, "sub/kept.txt") == []
+    # the kept row is not projected over the directory it could not read
+    assert (disk_root / "sub" / "kept.txt").read_bytes() == content
+    assert (_skipped("seed"), _skipped("capture_back")) == (seed_skipped + 1, capture_skipped + 1)
+    assert [w.extra_data["phase"] for w in _skip_warnings(caplog)] == ["seed", "capture_back"]
+
+
+@pytest.mark.asyncio
+async def test_a_disk_wins_seed_refuses_a_root_on_another_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """the device recorded when the window opens is checked again before the seed reads disk."""
+    content = b"on the volume"
+    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    disk_root = harness["bind_root"] / harness["workspace"].name
+    disk_root.mkdir(parents=True)
+    # the first stat of the root records its device; every later one finds it elsewhere
+    _RootOnAnotherDevice(disk_root, after_calls=1).install(monkeypatch)
+
+    with pytest.raises(DiskRootChangedError):
+        async with await _call_bind(harness, on_conflict=BindConflictPolicy.DISK_WINS, watch_changes=ScriptedWatch()):
+            pass
+
+    assert _deletes(harness) == []
 
 
 @pytest.mark.asyncio

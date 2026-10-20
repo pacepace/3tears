@@ -62,14 +62,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from threetears.core.coordination.coalesced_run import CoalescedRun
 from threetears.core.coordination.lease import LeaseLost
-from threetears.observe import get_logger
+from threetears.observe import cancel_and_wait, contain, get_logger
 
 from threetears.agent.tools.background_operation import (
     BackgroundOperation,
@@ -417,9 +416,11 @@ class CoalescedOperation(Generic[UnitT]):
             try:
                 await self._progress.over()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- a courtesy to the other replicas, which see the run until the lease is let go without it; whatever the bucket's client raises, the unit goes on; logged
-                log.warning(
-                    "could not tell the other replicas the unit's work is over; they see it until the lease is let go",
-                    extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+                contain(
+                    exc,
+                    log=log,
+                    what="could not tell the other replicas the unit's work is over; they see it until the lease is let go",
+                    extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
                 )
 
     async def stop(self, *, within: float | None = None) -> bool:
@@ -471,10 +472,7 @@ class CoalescedOperation(Generic[UnitT]):
         await self._operation.stop()
         for task in (self._retry, self._writing):
             if task is not None and not task.done():
-                task.cancel()
-                # NOSILENT: the cancellation requested on the line above, awaited so the task ends first
-                with suppress(asyncio.CancelledError):
-                    await task
+                await cancel_and_wait(task)
 
     async def _drain(self) -> Drained[UnitT]:
         """the operation's body: run the unit once per recorded request while this replica holds the lease.
@@ -539,9 +537,11 @@ class CoalescedOperation(Generic[UnitT]):
         try:
             left = await self._run.requested()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the run has ended; whatever the bucket's client raises, the request may still be recorded, so it is taken for recorded and looked for again; logged
-            log.warning(
-                "cannot tell whether the request is still recorded; it is taken for recorded",
-                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+            contain(
+                exc,
+                log=log,
+                what="cannot tell whether the request is still recorded; it is taken for recorded",
+                extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
             )
         return left
 
@@ -578,9 +578,11 @@ class CoalescedOperation(Generic[UnitT]):
         try:
             await self._progress.begin()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- sharing progress is a courtesy to the other replicas; whatever the bucket's client raises, this replica's unit goes on, its entries naming no holding; logged
-            log.warning(
-                "cannot read the lease the unit runs under; its progress names no holding of it",
-                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+            contain(
+                exc,
+                log=log,
+                what="cannot read the lease the unit runs under; its progress names no holding of it",
+                extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
             )
 
     async def _write_reported(self) -> bool:
@@ -596,9 +598,11 @@ class CoalescedOperation(Generic[UnitT]):
                 await self._progress.publish(reported)
                 written = True
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- sharing progress is a courtesy to the other replicas; whatever the bucket's client, the encoding or the pod's own rendering raises, this replica's unit goes on; logged
-            log.warning(
-                "the unit's progress could not be shared",
-                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+            contain(
+                exc,
+                log=log,
+                what="the unit's progress could not be shared",
+                extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
             )
         return written
 
@@ -640,10 +644,12 @@ class CoalescedOperation(Generic[UnitT]):
         try:
             await self._progress.clear()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- an entry that cannot be removed is no run's once the lease is let go, and names the holding it was written under so no later one takes it for its own; the unit's own ending must not be changed by it; logged
-            log.warning(
-                "the unit's progress could not be removed; it names the holding it was written under, "
+            contain(
+                exc,
+                log=log,
+                what="the unit's progress could not be removed; it names the holding it was written under, "
                 "so it is no later run's",
-                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+                extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
             )
 
     async def _look_again(self) -> None:
@@ -668,15 +674,15 @@ class CoalescedOperation(Generic[UnitT]):
                 held = asked and await self._lease.holder(self._key) is not None
                 settled = not held
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- a wait with no caller: whatever the bucket's client raises, the request may still be behind a dead holder, so it is logged and asked again
-                log.warning(
-                    "cannot tell whether the request is still recorded; asking again",
+                contain(
+                    exc,
+                    log=log,
+                    what="cannot tell whether the request is still recorded; asking again",
                     extra={
-                        "extra_data": {
-                            "operation": self._name,
-                            "lease": self._key,
-                            "error": f"{type(exc).__name__}: {exc}",
-                            "retry_seconds": self._lease_retry_seconds,
-                        }
+                        "operation": self._name,
+                        "lease": self._key,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "retry_seconds": self._lease_retry_seconds,
                     },
                 )
         if asked:
@@ -695,7 +701,9 @@ class CoalescedOperation(Generic[UnitT]):
             try:
                 self._ran_nothing()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the pod's own callback, called from a run and a wait with no caller; whatever it raises must not fail either; logged
-                log.warning(
-                    "the callback for a run that ran nothing failed",
-                    extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+                contain(
+                    exc,
+                    log=log,
+                    what="the callback for a run that ran nothing failed",
+                    extra={"operation": self._name, "error": f"{type(exc).__name__}: {exc}"},
                 )

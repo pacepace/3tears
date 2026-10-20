@@ -484,6 +484,10 @@ class TestAClientThatIgnoresTemperature:
         assert (row.pinned.cases, row.pinned.mean_variance) == (0, None)
         assert "NOT COMPARABLE" in comparison.render()
 
+    @pytest.mark.expect_contained(
+        TypeError,
+        why="the test drives a completion with no temperature into the comparison job: CompletionProtocolDefect, a TypeError, is the failure it asserts",
+    )
     async def test_a_client_that_reports_no_temperature_fails_the_comparison_naming_the_protocol(self):
         """Not two "unrecorded" settings read as a comparison, nor every call failed one by one: the host's completion
         type breaks the protocol, so the comparison's job fails at the first call, naming the check."""

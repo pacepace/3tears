@@ -139,6 +139,40 @@ class TestDiscoveryAvailable:
 # -- unavailable tool resolution tests --
 
 
+class TestDiscoveryMalformed:
+    """a request that does not parse is answered empty; a bug while parsing propagates."""
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_is_not_a_request_is_answered_empty(self) -> None:
+        """a malformed request still gets a reply, so the caller is not left to time out."""
+        handler = DiscoveryHandler(ToolCatalog(), namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        await handler.handle_discover(_make_nats_msg(data=b"not json"))
+
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
+        assert response_data["tools"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_bug_while_parsing_propagates_rather_than_reading_as_malformed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """it used to be contained and answered as an empty discovery, as though nothing were available."""
+        handler = DiscoveryHandler(ToolCatalog(), namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        def _broken(cls: type[DiscoverRequest], data: bytes) -> DiscoverRequest:
+            raise TypeError("a bug in the parse")
+
+        monkeypatch.setattr(DiscoverRequest, "model_validate_json", classmethod(_broken))
+        with pytest.raises(TypeError, match="a bug in the parse"):
+            await handler.handle_discover(_make_nats_msg(data=_make_discover_request().model_dump_json().encode()))
+        nc.publish_reply.assert_not_called()
+
+
 class TestDiscoveryUnavailable:
     """tests for discovery of unavailable or missing tools."""
 

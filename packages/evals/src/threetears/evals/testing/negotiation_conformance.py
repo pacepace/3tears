@@ -49,6 +49,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Final
 
 from threetears.evals.schema import REASONING_EFFORTS, CompletionClient, sent_settings_of
+from threetears.evals.schema.logs import contain, get_logger
+
+log = get_logger(__name__)
+
 
 __all__ = ["NegotiationConformanceFailure", "RouterTransport", "check_refusal_negotiation"]
 
@@ -359,6 +363,7 @@ async def _run(
         try:
             completion = await client.generate(system="You answer.", user="Answer.", response_format=_REPLY_FORMAT)
         except Exception as exc:  # the check's finding: raised by the caller, chained, as the mistake it is
+            contain(exc, log=log, what=f"the client's first call raised {type(exc).__name__}")
             completion, raised = None, exc
             router.mistake(
                 mistakes,
@@ -380,6 +385,7 @@ async def _run(
         try:
             await client.generate(system="You answer.", user="Answer.", response_format=_REPLY_FORMAT)
         except Exception as exc:  # the check's finding, as above
+            contain(exc, log=log, what=f"the client's next call raised {type(exc).__name__}")
             raised = raised if raised is not None else exc
             router.mistake(mistakes, f"the next call raised {type(exc).__name__} ({exc})")
         router.next_call(router.bodies[len(first) :], mistakes)

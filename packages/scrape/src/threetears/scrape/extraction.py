@@ -23,9 +23,9 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, NamedTuple
 
 from bs4 import BeautifulSoup, Comment
-from bs4.element import Tag
 from pydantic import BaseModel, create_model
 from pydantic import Field as PydanticField
+import soupsieve
 from soupsieve.util import SelectorSyntaxError
 from threetears.models import LlmPurpose
 from threetears.observe import get_logger
@@ -180,53 +180,41 @@ def _coerce_field_value(text: str, expected_type: type) -> Any:
     return result
 
 
-def _select_one_safe(node: BeautifulSoup | Tag, selector: str) -> Tag | None:
-    """``node.select_one(selector)``, treating an invalid CSS selector as "matched nothing."
+class _Css(NamedTuple):
+    """A selector compiled once: the pattern to match with, or why there is none."""
+
+    pattern: soupsieve.SoupSieve | None
+    refusal: str | None
+
+
+def _compile_css(selector: str) -> _Css:
+    """*selector* compiled for matching, or the reason it is not CSS the selector engine can run.
 
     Live-discovered (schema-discovery mode, real Maryland WARN page,
     2026-07-15): an LLM-proposed selector is not guaranteed to be valid CSS
     -- a jQuery-ism like ``td:eq(0)`` raises ``SelectorSyntaxError``
-    (soupsieve, bs4's own selector engine), an UNCAUGHT exception that
-    crashes the entire caller. This was a real, pre-existing gap in this
-    function (not new code) -- every candidate-generation path in
-    ``eval_loop.py`` calls this with LLM-proposed selectors and was equally
-    exposed. Fixed at the source rather than worked around only in the new
-    discovery code that surfaced it.
+    (soupsieve, bs4's own selector engine), which used to crash every
+    candidate-generation path in ``eval_loop.py``. The scoring paths ask this
+    first and record the refusal as the candidate's error, naming the selector
+    as invalid -- not as "matched nothing", which would tell the judge and the
+    log that the page lacks a field when it is the proposal that is broken.
 
-    :param node: the ``BeautifulSoup`` document or a ``Tag`` to search within
-    :ptype node: BeautifulSoup | Tag
+    Compiled once per selector, and the pattern is what every match uses: a row strategy
+    applies the same field selector to every row, and compiling it per row is the engine
+    parsing the same string hundreds of times.
+
     :param selector: a CSS selector, not guaranteed to be syntactically valid
     :ptype selector: str
-    :return: the first matching element, or ``None`` if nothing matched or the selector was invalid
-    :rtype: Tag | None
+    :return: the compiled pattern, or the refusal naming the selector and the error's type (its
+        message is the engine's, and does not travel in a candidate's errors)
+    :rtype: _Css
     """
     try:
-        return node.select_one(selector)
-    except SelectorSyntaxError:
-        # An unparseable selector and a selector that legitimately matched nothing both return
-        # None, so a malformed proposal reads as "this page does not have that field".
-        log.debug("invalid CSS selector treated as no match", extra={"extra_data": {"selector": selector[:200]}})
-        return None
-
-
-def _select_safe(node: BeautifulSoup | Tag, selector: str) -> list[Tag]:
-    """``node.select(selector)``, treating an invalid CSS selector as "matched nothing."
-
-    See :func:`_select_one_safe`'s docstring for why this exists.
-
-    :param node: the ``BeautifulSoup`` document or a ``Tag`` to search within
-    :ptype node: BeautifulSoup | Tag
-    :param selector: a CSS selector, not guaranteed to be syntactically valid
-    :ptype selector: str
-    :return: every matching element, or ``[]`` if nothing matched or the selector was invalid
-    :rtype: list[Tag]
-    """
-    try:
-        return node.select(selector)
-    except SelectorSyntaxError:
-        # Same conflation as _select_one_safe: invalid and matched-nothing are the same [].
-        log.debug("invalid CSS selector treated as no match", extra={"extra_data": {"selector": selector[:200]}})
-        return []
+        return _Css(pattern=soupsieve.compile(selector), refusal=None)
+    except SelectorSyntaxError as exc:
+        # NOSILENT: this compile IS the question "is this valid CSS?"; the refusal it
+        # returns is the answer, and every caller records it as the candidate's named error
+        return _Css(pattern=None, refusal=f"selector {selector!r} is not valid CSS ({type(exc).__name__})")
 
 
 @dataclass(frozen=True)
@@ -261,7 +249,11 @@ def validate_candidate(html: str, strategy: dict[str, str], schema: FieldSchema)
         if not selector:
             errors.append(f"{field_name}: no selector proposed")
             continue
-        element = _select_one_safe(soup, selector)
+        css = _compile_css(selector)
+        if css.pattern is None:
+            errors.append(f"{field_name}: {css.refusal}")
+            continue
+        element = css.pattern.select_one(soup)
         if element is None:
             errors.append(f"{field_name}: selector {selector!r} matched nothing")
             continue
@@ -341,7 +333,11 @@ def validate_row_candidate(html: str, strategy: dict[str, Any], schema: FieldSch
     field_selectors = strategy.get("field_selectors", {})
     errors: list[str] = [] if row_selector else ["no row_selector proposed"]
     records_out: list[dict[str, Any]] = []
-    row_elements = _select_safe(soup, row_selector) if row_selector else []
+    row_css = _compile_css(row_selector) if row_selector else None
+    if row_css is not None and row_css.pattern is None:
+        errors.append(f"row_selector: {row_css.refusal}")
+    row_elements = row_css.pattern.select(soup) if row_css is not None and row_css.pattern is not None else []
+    field_css = {name: _compile_css(selector) for name, selector in field_selectors.items() if selector}
     for row_index, row_element in enumerate(row_elements):
         row_extracted: dict[str, Any] = {}
         row_errors: list[str] = []
@@ -350,7 +346,11 @@ def validate_row_candidate(html: str, strategy: dict[str, Any], schema: FieldSch
             if not selector:
                 row_errors.append(f"row {row_index} {field_name}: no selector proposed")
                 continue
-            element = _select_one_safe(row_element, selector)
+            css = field_css[field_name]
+            if css.pattern is None:
+                row_errors.append(f"row {row_index} {field_name}: {css.refusal}")
+                continue
+            element = css.pattern.select_one(row_element)
             if element is None:
                 row_errors.append(f"row {row_index} {field_name}: selector {selector!r} matched nothing")
                 continue
@@ -397,7 +397,7 @@ def apply_row_recipe(html: str, strategy: dict[str, Any]) -> list[dict[str, str 
       with one blank optional cell must not vanish, so a missing or empty
       cell is ``None`` and the row stays.
     - **A bad selector raises.** :func:`validate_row_candidate` treats
-      invalid CSS as "matched nothing" (see :func:`_select_one_safe`) because
+      invalid CSS as a refused candidate (see :func:`_compile_css`) because
       it scores LLM-PROPOSED selectors never guaranteed to be valid. A recipe
       reaching this function already cleared that gate, so invalid CSS here
       means a corrupt or hand-edited recipe -- failing loud with the
@@ -433,18 +433,22 @@ def apply_row_recipe(html: str, strategy: dict[str, Any]) -> list[dict[str, str 
         row_elements = soup.select(row_selector)
     except SelectorSyntaxError as exc:
         raise ValueError(f"apply_row_recipe: invalid row_selector {row_selector!r}: {exc}") from exc
+    # each field selector compiled once, not once per row
+    field_patterns: dict[str, soupsieve.SoupSieve] = {}
+    for field_name, selector in field_selectors.items():
+        try:
+            field_patterns[field_name] = soupsieve.compile(selector)
+        except SelectorSyntaxError as exc:
+            raise ValueError(
+                f"apply_row_recipe: invalid field_selector {selector!r} for field {field_name!r}: {exc}"
+            ) from exc
 
     records: list[dict[str, str | None]] = []
     for row_element in row_elements:
         record: dict[str, str | None] = {}
         row_has_value = False
-        for field_name, selector in field_selectors.items():
-            try:
-                element = row_element.select_one(selector)
-            except SelectorSyntaxError as exc:
-                raise ValueError(
-                    f"apply_row_recipe: invalid field_selector {selector!r} for field {field_name!r}: {exc}"
-                ) from exc
+        for field_name, pattern in field_patterns.items():
+            element = pattern.select_one(row_element)
             text = _normalize_whitespace_text(element.get_text(" ", strip=True)) if element is not None else ""
             record[field_name] = text or None
             row_has_value = row_has_value or bool(text)
@@ -781,12 +785,18 @@ def _fields_matching_any_row(
     :rtype: list[_DiscoveredFieldProposal]
     """
     soup = BeautifulSoup(html, "html.parser")
-    rows = _select_safe(soup, row_selector)
+    # an invalid selector cannot extract anything, so it survives nothing; the survivors list is
+    # this function's whole report, and validate_row_candidate names the refusal afterwards.
+    row_pattern = _compile_css(row_selector).pattern
+    rows = row_pattern.select(soup) if row_pattern is not None else []
     survivors = []
     for proposal in fields:
         expected_type = _DISCOVERY_TYPE_NAMES[proposal.type_name]
+        pattern = _compile_css(proposal.selector).pattern
+        if pattern is None:
+            continue
         for row in rows:
-            element = _select_one_safe(row, proposal.selector)
+            element = pattern.select_one(row)
             if element is None:
                 continue
             text = _normalize_whitespace_text(element.get_text(" ", strip=True))

@@ -42,7 +42,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = ["AsyncSyncBridge"]
 
@@ -164,9 +164,11 @@ class AsyncSyncBridge:
                 # The cancellation still propagates, but the work it was meant to stop may not have
                 # stopped: a failed driver-side cancel can leave a statement running server-side
                 # while this side reports cancelled.
-                log.warning(
-                    "cancel callback failed; work may still be running",
-                    extra={"extra_data": {"bridge": self._name, "error": str(exc)}},
+                contain(
+                    exc,
+                    log=log,
+                    what="cancel callback failed; work may still be running",
+                    extra={"bridge": self._name, "error": str(exc)},
                 )
             raise
         return result

@@ -71,6 +71,9 @@ from pathlib import Path
 from threetears.enforcement.common.ast_helpers import dotted, note_unscanned, parse_python_path
 from threetears.enforcement.common.exemptions import rationale_defect
 from threetears.enforcement.common.violations import Violation
+from threetears.observe import contain, get_logger
+
+_log = get_logger(__name__)
 
 __all__ = [
     "fake_parity_violations",
@@ -396,6 +399,7 @@ def _import_marker_target(fqname: str) -> type | None:
         # The production protocol this fake claims parity with cannot be loaded, so the fake goes
         # unchecked. A renamed or moved protocol lands here and looks exactly like a fake that
         # passed -- which is the drift this gate exists to catch.
+        contain(exc, log=_log, what=f"parity target {fqname} could not be imported")
         note_unscanned(fqname, f"parity target could not be imported: {type(exc).__name__}: {exc}")
         return None
     candidate = getattr(module, attr, None)

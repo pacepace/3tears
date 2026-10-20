@@ -29,6 +29,7 @@ from typing import Any, ClassVar, Literal
 import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
+from threetears.core.backends.protocol import DurableStore
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import (
     NO_L2,
@@ -78,6 +79,15 @@ def _metadata() -> MetaData:
             Column("date_updated", DateTime(timezone=True)),
         )
     return metadata
+
+
+class _NoL3(DurableStore):
+    """a durable L3 with no ``transaction()``: it satisfies ``DurableStore``, so the registry does not wrap it as SQL.
+
+    this test is not about L3. a bare ``object()`` here was wrapped in ``SqlL3Backend``, whose ``transaction()``
+    calls ``.acquire()``; the flush took its atomic-batch path, failed, and fell back to per-entity writes through
+    a broad ``except``. this goes to the per-entity writes directly, which is what the test means.
+    """
 
 
 class _Row(BaseEntity):
@@ -180,7 +190,7 @@ class _Pod:
         l1.initialize(_metadata())
         self.bus = bus
         self.registry = CollectionRegistry()
-        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=object(), kv_key_scope=scope)  # type: ignore[arg-type]
+        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=_NoL3(), kv_key_scope=scope)  # type: ignore[arg-type]
         self.source = EpochGenerationSource(bus)
         self.registry.set_generation_source(self.source)
         self.reader = EpochGenerationReader(bus)

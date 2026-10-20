@@ -19,8 +19,14 @@ reporting a clean tail, a restore reporting success after feeding a partial arch
 read as ordinary results at every layer above them.
 
 A marker is for the case where the failure is the expected outcome and there is nothing to
-tell anyone: a probing loop trying each candidate encoding in turn, an awaited cancellation
-that was requested one line above. Everything else logs.
+tell anyone: a probing loop trying each candidate encoding in turn. Everything else logs.
+
+**Broad and cancellation handlers are held to more, and no marker excuses them.** An
+``except Exception`` re-raises or calls :func:`threetears.observe.contain`, which logs the
+traceback and counts the site on ``contained_errors_total``; an ``except CancelledError``
+re-raises, and stopping another task is :func:`threetears.observe.cancel_and_wait`. A log line
+was never enough there: the caller still carried on with an answer it could not tell from a
+real one. Every package is checked, a new one included.
 """
 
 from __future__ import annotations
@@ -34,7 +40,10 @@ from threetears.enforcement.no_silent_swallow import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_CONFIG = NoSilentSwallowConfig(repo_root=_REPO_ROOT)
+_CONFIG = NoSilentSwallowConfig(
+    repo_root=_REPO_ROOT,
+    exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_no_silent_swallow_exemptions.txt",
+)
 
 
 def test_no_handler_swallows_without_saying_why() -> None:

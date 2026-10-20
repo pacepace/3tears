@@ -68,7 +68,7 @@ _MAX_CAS_ATTEMPTS: Final = 30
 #:
 #: ``IdempotencyKeyStore`` deliberately reads the same exception as its own signal, so widening
 #: the shared tuple would break it.
-_DEGRADABLE_FAILURES: Final[tuple[type[BaseException], ...]] = (*STORAGE_FAILURES, ConcurrentModificationError)
+_DEGRADABLE_FAILURES: Final[tuple[type[Exception], ...]] = (*STORAGE_FAILURES, ConcurrentModificationError)
 
 
 @dataclass(frozen=True, slots=True)

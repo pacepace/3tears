@@ -204,11 +204,16 @@ def _digest(data: Iterable[bytes]) -> str:
     return f"{_DIGEST_PREFIX}{base64.urlsafe_b64encode(hasher.digest()).decode('ascii')}"
 
 
-def _parse_mtime(value: str | None) -> datetime | None:
-    """a recorded write time as an aware UTC datetime, or ``None`` when it does not parse.
+def _parse_mtime(value: str | None, name: str = "") -> datetime | None:
+    """a recorded write time as an aware UTC datetime, or ``None`` when none was recorded or it does not parse.
+
+    a time that was recorded but is not ISO-8601 is warned about, naming the object, so it does not
+    read the same as "never recorded".
 
     :param value: the recorded ISO time
     :ptype value: str | None
+    :param name: the object the time belongs to, for the warning
+    :ptype name: str
     :return: the time
     :rtype: datetime | None
     """
@@ -217,6 +222,12 @@ def _parse_mtime(value: str | None) -> datetime | None:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
+            log.warning(
+                "object %r has a recorded write time that does not parse: %r",
+                name,
+                value[:64],
+                extra={"extra_data": {"object": name, "field": "mtime"}},
+            )
             parsed = None
     if parsed is not None and parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
@@ -237,7 +248,7 @@ def _public_info(raw: _NatsObjectInfo) -> ObjectInfo:
         chunks=int(raw.chunks or 0),
         digest=raw.digest or "",
         nuid=raw.nuid or "",
-        mtime=_parse_mtime(raw.mtime),
+        mtime=_parse_mtime(raw.mtime, raw.name),
     )
 
 

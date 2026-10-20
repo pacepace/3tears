@@ -38,7 +38,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from email.message import EmailMessage as MimeMessage
 from typing import Final
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.channels.mail.message import EmailMessage, EmailSendError
 from threetears.channels.mail.settings import EmailSettingsResolver, ResolvedEmailSettings
@@ -244,8 +244,8 @@ class SmtpEmailTransport:
             return
         try:
             await self._on_failure(details)
-        except Exception:
-            log.exception("could not record the outbound-email failure")
+        except Exception as exc:
+            contain(exc, log=log, what="could not record the outbound-email failure", level="error")
 
     async def send(self, message: EmailMessage) -> None:
         """Deliver `message`, or raise :class:`EmailSendError`.

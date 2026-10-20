@@ -30,7 +30,14 @@ import pytest
 from threetears.core.coordination import LockHeld
 from threetears.nats.errors import KvError
 
-from threetears.scheduled_jobs.background import IN_FLIGHT_SKIP_OUTPUT_KEY, BackgroundDispatch, in_flight_lock_key
+from threetears.scheduled_jobs.background import (
+    FINALIZE_ATTEMPTS,
+    IN_FLIGHT_SKIP_OUTPUT_KEY,
+    UNRECORDED_FIRES_NAMED,
+    BackgroundDispatch,
+    FireNotRecordedError,
+    in_flight_lock_key,
+)
 from threetears.scheduled_jobs.config import DEFAULT_JOB_CONFIG
 from threetears.scheduled_jobs.events import EVENT_FIRE_WAITING_EXCLUSION_GROUP
 from threetears.scheduled_jobs.protocols import FireStore
@@ -54,10 +61,20 @@ def _trigger(kind: str = "demo", schedule_type: str = "interval", *, fired_ago: 
 class _FakeFireStore(FireStore):
     """Records the finalize calls a background fire makes; ``raise_on_finalize`` models a DB outage."""
 
-    def __init__(self, *, raise_on_finalize: bool = False) -> None:
+    def __init__(self, *, raise_on_finalize: bool = False, failures_before_success: int = 0) -> None:
         self.succeeded: list[dict[str, Any]] = []
         self.failed: list[dict[str, Any]] = []
+        self.attempts = 0
         self._raise_on_finalize = raise_on_finalize
+        self._failures_left = failures_before_success
+
+    def _arrive(self) -> None:
+        self.attempts += 1
+        if self._raise_on_finalize:
+            raise ConnectionError("database unreachable")
+        if self._failures_left > 0:
+            self._failures_left -= 1
+            raise ConnectionError("database blipped")
 
     async def create_dispatching(
         self,
@@ -79,8 +96,7 @@ class _FakeFireStore(FireStore):
         output: dict[str, Any] | None = None,
         latency_ms: int | None = None,
     ) -> None:
-        if self._raise_on_finalize:
-            raise ConnectionError("database unreachable")
+        self._arrive()
         self.succeeded.append({"fire_id": fire_id, "status": status, "output": output, "latency_ms": latency_ms})
 
     async def finalize_failed(
@@ -91,8 +107,7 @@ class _FakeFireStore(FireStore):
         error: str,
         latency_ms: int | None = None,
     ) -> None:
-        if self._raise_on_finalize:
-            raise ConnectionError("database unreachable")
+        self._arrive()
         self.failed.append({"fire_id": fire_id, "error": error, "latency_ms": latency_ms})
 
     async def reap_stale_dispatching(
@@ -106,10 +121,14 @@ class _FakeFireStore(FireStore):
 
 
 class _RecordingEmitter:
-    # parity-exempt: records only inc_fire and inc_failure, the two counters a background fire reports, a strict subset of ScheduledJobsMetricsEmitter
+    # parity-exempt: records only inc_fire, inc_failure and inc_fire_unrecorded, the counters a background fire reports, a strict subset of ScheduledJobsMetricsEmitter
     def __init__(self) -> None:
         self.fires: list[tuple[str, str]] = []
         self.failures: list[str] = []
+        self.unrecorded = 0
+
+    def inc_fire_unrecorded(self) -> None:
+        self.unrecorded += 1
 
     def inc_fire(self, *, status: str, schedule_type: str) -> None:
         self.fires.append((status, schedule_type))
@@ -143,6 +162,8 @@ class _CtxRaisingOnEnter:
 def _dispatch(fire_store: FireStore | None = None, **kwargs: Any) -> BackgroundDispatch:
     """A BackgroundDispatch over the platform config unless a test names its own."""
     kwargs.setdefault("config", DEFAULT_JOB_CONFIG)
+    # no pause between finalize retries unless a test is about the pause
+    kwargs.setdefault("finalize_retry_seconds", 0.0)
     return BackgroundDispatch(fire_store if fire_store is not None else _FakeFireStore(), **kwargs)
 
 
@@ -348,10 +369,104 @@ async def test_a_finalize_that_fails_is_logged_and_releases_the_kind(caplog: pyt
         return JobFireResult()
 
     await dispatch.wrap(_body)(_trigger(), uuid4())
-    with caplog.at_level("ERROR"):
+    with caplog.at_level("ERROR"), pytest.raises(FireNotRecordedError):
         await dispatch.join()
     assert dispatch.in_flight == {}
     assert any("finalize" in r.getMessage() for r in caplog.records)
+
+
+async def test_join_names_each_fire_whose_row_could_not_be_finalized_once() -> None:
+    """A lost write is not "recorded": join says which fires the reaper will fail, then forgets them."""
+    fires = _FakeFireStore(raise_on_finalize=True)
+    emitter = _RecordingEmitter()
+    dispatch = _dispatch(fires, emitter=emitter)
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="succeeded")
+
+    fire_id = uuid4()
+    await dispatch.wrap(_body)(_trigger("lost"), fire_id)
+    with pytest.raises(FireNotRecordedError, match="left to the reaper") as raised:
+        await dispatch.join()
+    assert raised.value.count == 1
+    assert raised.value.unrecorded == (("lost", fire_id),)
+    assert isinstance(raised.value.__cause__, ConnectionError)
+    assert fires.attempts == FINALIZE_ATTEMPTS, "the upsert is retried before the fire is given up"
+    assert emitter.unrecorded == 1
+    assert emitter.fires == [], "a fire whose row was lost is not counted as fired"
+
+    await dispatch.join()  # nothing new was lost, so nothing is said twice
+
+
+async def test_a_finalize_that_fails_and_then_lands_is_recorded() -> None:
+    fires = _FakeFireStore(failures_before_success=FINALIZE_ATTEMPTS - 1)
+    emitter = _RecordingEmitter()
+    dispatch = _dispatch(fires, emitter=emitter)
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="succeeded")
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await dispatch.join()
+    assert len(fires.succeeded) == 1
+    assert emitter.unrecorded == 0
+
+
+async def test_finalize_retries_back_off() -> None:
+    """two retries wait the pause, then twice it."""
+    fires = _FakeFireStore(failures_before_success=2)
+    dispatch = _dispatch(fires, finalize_retry_seconds=0.05)
+    loop = asyncio.get_running_loop()
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="succeeded")
+
+    started = loop.time()
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await dispatch.join()
+    assert loop.time() - started >= 0.15
+    assert len(fires.succeeded) == 1
+
+
+def test_a_negative_finalize_pause_is_refused() -> None:
+    with pytest.raises(ValueError, match="finalize_retry_seconds"):
+        _dispatch(finalize_retry_seconds=-1.0)
+
+
+async def test_unrecorded_fires_are_all_counted_and_only_the_first_few_named() -> None:
+    dispatch = _dispatch(_FakeFireStore(raise_on_finalize=True), max_concurrent=64)
+    lost = UNRECORDED_FIRES_NAMED + 5
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="succeeded")
+
+    wrapped = dispatch.wrap(_body)
+    for index in range(lost):
+        await wrapped(_trigger(f"kind-{index}"), uuid4())
+    with pytest.raises(FireNotRecordedError, match="and 5 more") as raised:
+        await dispatch.join()
+    assert raised.value.count == lost
+    assert len(raised.value.unrecorded) == UNRECORDED_FIRES_NAMED
+
+
+async def test_aclose_completes_and_says_once_which_fires_it_left_to_the_reaper(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dispatch = _dispatch(_FakeFireStore(raise_on_finalize=True))
+    release = asyncio.Event()
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        await release.wait()
+        return JobFireResult()
+
+    await dispatch.wrap(_body)(_trigger("first"), uuid4())
+    await dispatch.wrap(_body)(_trigger("second"), uuid4())
+    await asyncio.sleep(0)
+    with caplog.at_level("ERROR"):
+        await dispatch.aclose()
+    summaries = [r for r in caplog.records if "closed with fires left to the reaper" in r.getMessage()]
+    assert len(summaries) == 1
+    assert "2 background fire row(s)" in summaries[0].getMessage()
 
 
 # ---------------------------------------------------------------------------

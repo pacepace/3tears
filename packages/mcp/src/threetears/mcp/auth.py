@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
-from threetears.observe import PeriodicTask, get_logger
+from threetears.observe import PeriodicTask, contain, get_logger
 
 if TYPE_CHECKING:
     # LocalGrantAuthorizer's collaborators come from the ``grants`` extra. Nothing else in this
@@ -51,6 +51,7 @@ __all__ = [
     "BearerTokenIdentityProvider",
     "BearerTokenResolver",
     "EnvVarIdentityProvider",
+    "GrantCacheUnavailableError",
     "Identity",
     "IdentityProvider",
     "LocalGrantAuthorizer",
@@ -392,6 +393,17 @@ def _rbac_epoch_subject() -> Subject:
     return Subjects.mcp_rbac_epoch()
 
 
+class GrantCacheUnavailableError(RuntimeError):
+    """the grant cache is not known to match ``mcp_tool_grants``, so no grant in it is trusted.
+
+    raised by :meth:`LocalGrantAuthorizer.allows` for a non-admin identity while a reload is
+    owed: the last load failed, so a grant revoked since the previous good load may still be
+    in the cache. answering ``False`` instead would read as "you lack this permission", which
+    is not what happened; answering from the cache would keep a revoked grant allowed. the MCP
+    server turns it into an ``AUTHZ_ERROR`` result and logs it.
+    """
+
+
 class LocalGrantAuthorizer:
     """framework default :class:`Authorizer` backed by ``mcp_tool_grants``.
 
@@ -486,6 +498,17 @@ class LocalGrantAuthorizer:
         # is the grant; we don't store False entries because absence
         # means "no grant" by default-deny semantics.
         self._cache: set[tuple[UUID, str]] = set()
+        # set when a load fails, cleared when one lands. while set, `allows` refuses every
+        # non-admin check: the bump that triggered the failed load is already counted as seen,
+        # so the cache may hold grants revoked since the last good load.
+        self._reload_owed = False
+        # reloads overlap (a bump's, a reset's, the catch-up tick's), so each is numbered when it
+        # STARTS. a success clears the owed flag only when it started after the newest failure,
+        # and installs its cache only when nothing newer has landed: otherwise a slow load that
+        # began before a revocation could finish last and wipe out the failure that followed it.
+        self._reload_started = 0
+        self._applied_generation = 0
+        self._failed_generation = 0
         self._started = False
         self._catchup_task: PeriodicTask | None = None
 
@@ -519,6 +542,10 @@ class LocalGrantAuthorizer:
             primed_epoch = await self._epoch_client.current(_rbac_epoch_subject())
         await self._reload_cache()
         epoch_mode = self._epoch_listener is not None
+        if self._reload_owed and not epoch_mode:
+            # single-process mode has no bump and no catch-up tick, so nothing would ever retry
+            # the load: started, this authorizer would refuse every non-admin call for its life.
+            raise RuntimeError("MCP grant cache could not be loaded at start, and nothing would retry it")
         if epoch_mode:
             assert self._epoch_listener is not None  # narrowed by epoch_mode
             # sender-posture: trigger-only -- a bump reloads the grant cache from L3
@@ -616,6 +643,14 @@ class LocalGrantAuthorizer:
         assert self._epoch_listener is not None
         from threetears.epoch import catchup_tick
 
+        if self._reload_owed:
+            # the bump that asked for the failed load is already counted as seen, so the epoch
+            # pass below would find nothing stale; only this retry withdraws a revoked grant.
+            await self._reload_cache()
+            if self._reload_owed:
+                raise GrantCacheUnavailableError(
+                    "MCP grant cache reload is still failing; non-admin checks stay refused until it lands",
+                )
         # the pass itself is the framework's: which subjects to poll, and whether one failing
         # subject abandons the rest, are not decisions this consumer should hold its own opinion about.
         await catchup_tick(self._epoch_listener, [(_rbac_epoch_subject(), self._on_rbac_bump)])
@@ -636,9 +671,16 @@ class LocalGrantAuthorizer:
         :ptype permission: str
         :return: True when the grant exists; False otherwise
         :rtype: bool
+        :raises GrantCacheUnavailableError: the last grant load failed, so the cache cannot
+            be trusted to reflect revocations (admins are unaffected)
         """
         if identity.is_admin:
             return True
+        if self._reload_owed:
+            raise GrantCacheUnavailableError(
+                f"MCP grant cache is not current (the last load failed); refusing {permission!r} "
+                "rather than answering from grants that may have been revoked",
+            )
         if (identity.principal_id, permission) in self._cache:
             return True
         for group_id in identity.groups:
@@ -652,32 +694,58 @@ class LocalGrantAuthorizer:
     async def _reload_cache(self) -> None:
         """rebuild the in-memory grant cache from L3.
 
-        called on cold start and on every ``mcp.rbac`` epoch bump.
-        narrow exception scope: a load failure logs and leaves the
-        prior cache in place rather than emptying it (denying every
-        grant on a transient L3 hiccup would be a worse outcome
-        than serving stale grants for one tick).
+        called on cold start, on every ``mcp.rbac`` epoch bump, and by
+        the catch-up tick while a reload is owed. a failure -- the
+        loader raising, or a row that will not decode -- marks a reload
+        owed, and :meth:`allows` refuses non-admin checks until one
+        lands. serving the prior cache instead kept revoked grants
+        allowed, and the bump that asked for this load is already
+        counted as seen, so nothing else would have asked again.
+
+        overlapping reloads are ordered by when they STARTED (see
+        ``_reload_started`` in ``__init__``): a failure is owed only if no
+        reload that started later has landed, and a success clears what is
+        owed only if it started after the newest failure.
 
         :return: nothing
         :rtype: None
         """
+        self._reload_started += 1
+        generation = self._reload_started
         try:
             rows = await self._grant_loader()
-        except Exception:
-            log.warning(
-                "MCP grant cache reload failed; keeping prior cache",
-                exc_info=True,
-                extra={"extra_data": {"prior_grant_count": len(self._cache)}},
+            new_cache: set[tuple[UUID, str]] = set()
+            for row in rows:
+                principal_id = row["principal_id"]
+                permission = row["permission"]
+                if not isinstance(principal_id, UUID):
+                    principal_id = UUID(str(principal_id))
+                new_cache.add((principal_id, permission))
+        except Exception as exc:
+            superseded = generation < self._applied_generation
+            if not superseded:
+                self._failed_generation = max(self._failed_generation, generation)
+                self._reload_owed = True
+            contain(
+                exc,
+                log=log,
+                what=(
+                    "MCP grant cache reload failed; a reload that started later has already landed, so nothing is owed"
+                    if superseded
+                    else "MCP grant cache reload failed; refusing non-admin permission checks "
+                    "until a reload lands (retried on the next catch-up tick)"
+                ),
+                extra={"prior_grant_count": len(self._cache), "reload_generation": generation},
+                level="error",
             )
             return
-        new_cache: set[tuple[UUID, str]] = set()
-        for row in rows:
-            principal_id = row["principal_id"]
-            permission = row["permission"]
-            if not isinstance(principal_id, UUID):
-                principal_id = UUID(str(principal_id))
-            new_cache.add((principal_id, permission))
+        if generation < self._applied_generation:
+            # a reload that started later already landed; this one read older rows.
+            return
         self._cache = new_cache
+        self._applied_generation = generation
+        if generation > self._failed_generation:
+            self._reload_owed = False
         log.info(
             "MCP grant cache reloaded",
             extra={"extra_data": {"grant_count": len(self._cache)}},

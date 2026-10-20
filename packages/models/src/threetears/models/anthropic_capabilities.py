@@ -68,7 +68,7 @@ from threetears.models.capabilities import (
     register_published_capabilities,
 )
 from threetears.models.price_lookup import HttpClient
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "ANTHROPIC_MODELS_API_SOURCE",
@@ -281,24 +281,15 @@ async def _get_json(client: HttpClient, url: str) -> Any:
     return response.json()
 
 
-def _failed(url: str, exc: Exception, **context: str) -> PublishedCapabilityLoad:
-    """log a fetch failure and build the load that reports it.
+def _failed(exc: Exception) -> PublishedCapabilityLoad:
+    """build the load that reports a fetch failure; the caller has already contained it.
 
-    :param url: the URL that failed
-    :ptype url: str
     :param exc: the error
     :ptype exc: Exception
-    :param context: extra fields for the log record
-    :ptype context: str
     :return: a failed load; the registry is unchanged
     :rtype: PublishedCapabilityLoad
     """
-    failure = f"{type(exc).__name__}: {exc}"
-    log.warning(
-        "Anthropic Models API read failed; the static capability facts stand",
-        extra={"extra_data": {"url": url, "failure": failure[:512], **context}},
-    )
-    return PublishedCapabilityLoad(source=ANTHROPIC_MODELS_API_SOURCE, failure=failure)
+    return PublishedCapabilityLoad(source=ANTHROPIC_MODELS_API_SOURCE, failure=f"{type(exc).__name__}: {exc}")
 
 
 def _fresh(loaded_at: float | None, max_age_seconds: float) -> bool:
@@ -363,7 +354,13 @@ async def load_anthropic_capabilities(
     try:
         payload = await _get_json(client, url)
     except Exception as exc:  # the client is caller-supplied, so its error types are not ours to name
-        return _failed(url, exc, model_id=model_id)
+        contain(
+            exc,
+            log=log,
+            what="Anthropic Models API read failed; the static capability facts stand",
+            extra={"url": url, "failure": f"{type(exc).__name__}: {exc}"[:512], "model_id": model_id},
+        )
+        return _failed(exc)
 
     model = _node(payload, "<model object>")
     model_facts = anthropic_published_facts(model)
@@ -417,7 +414,13 @@ async def load_all_anthropic_capabilities(
         try:
             payload = await _get_json(client, url)
         except Exception as exc:  # the client is caller-supplied, so its error types are not ours to name
-            return _failed(url, exc)
+            contain(
+                exc,
+                log=log,
+                what="Anthropic Models API read failed; the static capability facts stand",
+                extra={"url": url, "failure": f"{type(exc).__name__}: {exc}"[:512]},
+            )
+            return _failed(exc)
         page = _node(payload, "<model list>")
         data = page.get("data")
         if not isinstance(data, list):

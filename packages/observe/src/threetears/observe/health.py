@@ -129,6 +129,7 @@ from typing import Awaitable, Callable, Union
 MetricsProvider = Callable[[], tuple[str, bytes]]
 HealthProbe = Union[Callable[[], bool], Callable[[], Awaitable[bool]]]
 
+from threetears.observe.containment import contain
 from threetears.observe.logging import get_logger
 
 __all__ = [
@@ -535,15 +536,11 @@ class HealthServer:
         except Exception as exc:
             ok = False
             detail = str(exc)
-            log.warning(
-                "health check raised",
-                extra={
-                    "extra_data": {
-                        "check": check.name,
-                        "tier": check.tier.value,
-                        "error": str(exc),
-                    },
-                },
+            contain(
+                exc,
+                log=log,
+                what="health check raised",
+                extra={"check": check.name, "tier": check.tier.value, "error": str(exc)},
             )
         return (ok, detail)
 
@@ -613,10 +610,7 @@ class HealthServer:
             self._write_response(writer, status, body, content_type)
             await writer.drain()
         except Exception as exc:
-            log.warning(
-                "health server request handler failed",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+            contain(exc, log=log, what="health server request handler failed", extra={"error": str(exc)})
             try:
                 self._write_response(
                     writer,
@@ -626,21 +620,14 @@ class HealthServer:
                 )
                 await writer.drain()
             except Exception as exc:  # noqa: BLE001 -- the failure above is already the diagnosis
-                # Could not even deliver the 500; the peer is almost certainly gone. Debug, not
-                # warning: the warning above already carries why the request failed.
-                log.debug(
-                    "could not send the health server's error response",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
+                # Could not even deliver the 500; the peer is almost certainly gone.
+                contain(exc, log=log, what="could not send the health server's error response")
         finally:
             writer.close()
             try:
                 await writer.wait_closed()
             except Exception as exc:  # noqa: BLE001 -- teardown of an already-answered connection
-                log.debug(
-                    "health server connection did not close cleanly",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
+                contain(exc, log=log, what="health server connection did not close cleanly")
 
     async def _evaluate_text(self, tier: HealthTier) -> tuple[int, str]:
         """plain-text response for ``tier``: ``(status, body)``.

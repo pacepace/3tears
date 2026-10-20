@@ -19,7 +19,7 @@ from threetears.core.collections.generation import (
 )
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.exceptions import InvalidL2ScopeError, L2ScopeNotConfiguredError
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
@@ -982,9 +982,12 @@ class CollectionRegistry:
                 # a type error rather than a teardown that quietly skipped it.
                 await collection.aclose()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- one table must not abandon the rest
-                log.error(
-                    "closing a collection failed; continuing with the rest of the teardown",
-                    extra={"extra_data": {"table": table, "error": f"{type(exc).__name__}: {exc}"}},
+                contain(
+                    exc,
+                    log=log,
+                    what="closing a collection failed; continuing with the rest of the teardown",
+                    extra={"table": table, "error": f"{type(exc).__name__}: {exc}"},
+                    level="error",
                 )
 
     @property

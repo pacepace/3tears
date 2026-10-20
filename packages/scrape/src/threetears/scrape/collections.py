@@ -41,7 +41,7 @@ from threetears.core.collections.base import (
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 from uuid_utils import uuid7
 
 from .driver import NavStep
@@ -58,6 +58,7 @@ __all__ = [
     "ScrapeRecipeCollection",
     "ScrapeTarget",
     "ScrapeTargetCollection",
+    "StoredTimestampUnreadable",
     "decode_field_schema",
     "decode_nav_steps",
     "encode_field_schema",
@@ -68,29 +69,88 @@ __all__ = [
 log = get_logger(__name__)
 
 
-def _parse_dt(raw: Any) -> datetime | None:
-    """Parse a possibly-ISO-string timestamp back into a ``datetime``.
+class StoredTimestampUnreadable(ValueError):
+    """a stored timestamp column holds something that is not a timestamp.
+
+    raised by :func:`_parse_dt_strict`, for the columns whose absence would lift a
+    safeguard: an unreadable ``blocked_until`` read as ``None`` is "no backoff in force",
+    and an unreadable session expiry read as ``None`` would have to be guessed at.
+
+    :param raw: the stored value
+    :ptype raw: object
+    """
+
+    def __init__(self, raw: object) -> None:
+        self.raw = raw
+        super().__init__(f"stored timestamp {raw!r} ({type(raw).__name__}) is not an ISO-8601 timestamp")
+
+
+def _parse_dt_strict(raw: Any) -> datetime | None:
+    """Parse a possibly-ISO-string timestamp back into a ``datetime``, refusing one that is not.
+
+    For a column whose absence lifts a safeguard (``blocked_until``, the session expiry): its
+    reader decides what an unreadable value means, and each of those fails closed.
 
     L2 (NATS KV) round-trips every value through JSON, which stringifies
     ``datetime`` on write (see :meth:`ScrapeCollection.serialize`) but does
     not parse it back on read -- so a value read through L2 arrives as a
     string even though the in-memory L3 fallback keeps it as a native
     ``datetime``.
+
+    ``None`` and the empty string are an absent timestamp. Anything else that is
+    not a timestamp is refused rather than read as absent.
+
+    :param raw: the stored value
+    :ptype raw: Any
+    :return: the timestamp, or ``None`` when none is stored
+    :rtype: datetime | None
+    :raises StoredTimestampUnreadable: the stored value is neither absent, a ``datetime``,
+        nor an ISO-8601 string
     """
-    if isinstance(raw, str) and raw:
-        try:
-            raw = datetime.fromisoformat(raw)
-        except ValueError:  # NOSILENT: malformed timestamp, caller treats as absent
-            raw = None
+    if raw is None or raw == "":
+        return None
     if isinstance(raw, datetime):
-        result = raw
-    else:
-        result = None
-    return result
+        return raw
+    if not isinstance(raw, str):
+        raise StoredTimestampUnreadable(raw)
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise StoredTimestampUnreadable(raw) from exc
+
+
+def _parse_dt_or_unrecorded(raw: Any, *, column: str, row: str) -> datetime | None:
+    """A stored timestamp, or ``None`` -- "not recorded" -- when it cannot be read, which is recorded.
+
+    For a column that records when something happened and lifts nothing by being absent
+    (``won_at``, ``last_validated_at``, ``retrieved_at``, ``fingerprint_updated_at``,
+    ``last_blocked_at``, ``robots_blocked_at``). Every writer of such a column writes it
+    whenever it finds it absent, so reading an unreadable value as "not recorded" has the
+    next write repair it; the unreadable value is logged and counted, never just dropped.
+
+    :param raw: the stored value
+    :ptype raw: Any
+    :param column: the column, for the record
+    :ptype column: str
+    :param row: the row's key, for the record
+    :ptype row: str
+    :return: the timestamp, or ``None`` when none is stored or the stored one cannot be read
+    :rtype: datetime | None
+    """
+    try:
+        return _parse_dt_strict(raw)
+    except StoredTimestampUnreadable as exc:
+        contain(
+            exc,
+            log=log,
+            what=f"stored {column} of {row} could not be read; read as not recorded, so the next write replaces it",
+            extra={"column": column, "row": row},
+        )
+        return None
 
 
 def _decode_json_field(raw: Any, default: Any) -> Any:
-    """Decode a JSONB-shaped field, handling the same string/native split as :func:`_parse_dt`."""
+    """Decode a JSONB-shaped field, handling the same string/native split as :func:`_parse_dt_strict`."""
     if raw is None:
         return default
     if isinstance(raw, str):
@@ -399,12 +459,14 @@ class ScrapeRecipe(BaseEntity):
     @property
     def won_at(self) -> datetime | None:
         """When this recipe was chosen by the eval loop."""
-        return _parse_dt(self._get_raw("won_at"))
+        return _parse_dt_or_unrecorded(self._get_raw("won_at"), column="won_at", row=self.target_id)
 
     @property
     def last_validated_at(self) -> datetime | None:
         """When this recipe last passed validation on a real fetch."""
-        return _parse_dt(self._get_raw("last_validated_at"))
+        return _parse_dt_or_unrecorded(
+            self._get_raw("last_validated_at"), column="last_validated_at", row=self.target_id
+        )
 
     @property
     def consecutive_validation_failures(self) -> int:
@@ -564,7 +626,7 @@ class ScrapeExtraction(BaseEntity):
     @property
     def retrieved_at(self) -> datetime | None:
         """When this fetch happened."""
-        return _parse_dt(self._get_raw("retrieved_at"))
+        return _parse_dt_or_unrecorded(self._get_raw("retrieved_at"), column="retrieved_at", row=self.id)
 
     @property
     def structured_fields(self) -> dict[str, Any]:

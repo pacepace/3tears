@@ -24,6 +24,8 @@ import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.windowed_counter import WindowState
+from threetears.core.coordination.token_bucket import TokenBucketConflict
+from threetears.core.exceptions import ConcurrentModificationError, DataLayerUnavailableError
 from threetears.models.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerRegistry,
@@ -31,6 +33,7 @@ from threetears.models.circuit_breaker import (
     CircuitState,
 )
 
+from threetears.nats.errors import KvError
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.health import ScrapeTargetHealthCollection, record_circuit_state
 
@@ -283,10 +286,24 @@ async def test_an_unreadable_health_store_still_lets_the_target_be_fetched(
     """A store outage must degrade to pre-circuit behaviour, not stop scraping everything."""
 
     async def exploding_get(_entity_id: object, **_kwargs: object) -> object:
-        raise RuntimeError("l3 pool is gone")
+        raise DataLayerUnavailableError("l3 pool is gone")
 
     health.get = exploding_get  # type: ignore[method-assign, assignment]
     assert (await TargetCircuit(health, policy=policy).check(_T, now=_NOW)).permitted
+
+
+@pytest.mark.asyncio
+async def test_a_bug_reading_health_propagates_rather_than_reading_as_an_outage(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """Only a storage failure reads as an unreadable store; our own bug is not an outage."""
+
+    async def buggy_get(_entity_id: object, **_kwargs: object) -> object:
+        raise AttributeError("a bug, not the store")
+
+    health.get = buggy_get  # type: ignore[method-assign, assignment]
+    with pytest.raises(AttributeError, match="a bug, not the store"):
+        await TargetCircuit(health, policy=policy).check(_T, now=_NOW)
 
 
 # ---------------------------------------------------------------------------
@@ -317,17 +334,22 @@ class _FakeBreaker:
 class _FakeFleetCounter:
     """Counts blocked observations the way a cross-pod windowed counter would."""
 
-    def __init__(self, *, start: int = 0, explode: bool = False, window_start: float = 0.0) -> None:
+    def __init__(
+        self, *, start: int = 0, explode: bool = False, raises: BaseException | None = None, window_start: float = 0.0
+    ) -> None:
         self._count = start
         self._explode = explode
+        self._raises = raises
         # A fixed epoch rather than a real clock: nothing here asserts on elapsed time, and a
         # moving value would make the state this returns unreproducible for no gain.
         self._window_start = window_start
 
     async def record_attempt(self, key: str) -> int:
         del key
+        if self._raises is not None:
+            raise self._raises
         if self._explode:
-            raise RuntimeError("counter KV is unreachable")
+            raise KvError("counter KV is unreachable")
         self._count += 1
         return self._count
 
@@ -357,17 +379,20 @@ class _FakeFleetCounter:
 class _FakeProbePacer:
     """A capacity-one bucket: the first claim wins, later ones are refused."""
 
-    def __init__(self, *, tokens: int = 1, explode: bool = False) -> None:
+    def __init__(self, *, tokens: int = 1, explode: bool = False, raises: BaseException | None = None) -> None:
         self.tokens = tokens
         self.claims = 0
         self.refunds = 0
         self._explode = explode
+        self._raises = raises
 
     async def claim(self, key: str = "default", **_kwargs: object) -> object:
         del key
         self.claims += 1
+        if self._raises is not None:
+            raise self._raises
         if self._explode:
-            raise RuntimeError("token bucket KV is unreachable")
+            raise KvError("token bucket KV is unreachable")
         if self.tokens > 0:
             self.tokens -= 1
             return _Claim(claimed=True, retry_after_seconds=0.0)
@@ -559,6 +584,65 @@ async def test_an_unreachable_fleet_counter_falls_back_to_the_rows_own_count(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TokenBucketConflict("exhausted CAS retries"),
+        ValueError("stored bucket state has no numeric tokens: None"),
+    ],
+    ids=["cas-exhausted", "undecodable-bucket"],
+)
+async def test_every_documented_pacer_failure_admits_the_probe_unpaced(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy, failure: BaseException
+) -> None:
+    pacer = _FakeProbePacer(raises=failure)
+    circuit = TargetCircuit(health, policy=policy, probe_pacer=pacer)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    decision = await circuit.check(_T, now=_NOW + timedelta(seconds=61))
+
+    assert pacer.claims == 1
+    assert decision.permitted and decision.is_probe
+
+
+@pytest.mark.asyncio
+async def test_a_bug_in_the_probe_pacer_propagates_rather_than_reading_as_an_outage(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    circuit = TargetCircuit(health, policy=policy, probe_pacer=_FakeProbePacer(raises=AttributeError("a bug")))
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    with pytest.raises(AttributeError, match="a bug"):
+        await circuit.check(_T, now=_NOW + timedelta(seconds=61))
+
+
+@pytest.mark.asyncio
+async def test_a_fleet_counter_that_lost_every_cas_round_falls_back_to_the_rows_own_count(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    lost = ConcurrentModificationError("coordination_counters", _T, None)
+    circuit = TargetCircuit(health, policy=policy, blocked_attempts=_FakeFleetCounter(raises=lost))
+
+    await circuit.record_blocked(_T, now=_NOW)
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.consecutive_fetch_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_a_bug_in_the_fleet_counter_propagates_rather_than_reading_as_an_outage(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    circuit = TargetCircuit(health, policy=policy, blocked_attempts=_FakeFleetCounter(raises=TypeError("a bug")))
+
+    with pytest.raises(TypeError, match="a bug"):
+        await circuit.record_blocked(_T, now=_NOW)
+
+
+@pytest.mark.asyncio
 async def test_a_health_store_that_cannot_be_written_does_not_fail_the_fetch(
     health: ScrapeTargetHealthCollection, policy: BackoffPolicy
 ) -> None:
@@ -569,13 +653,38 @@ async def test_a_health_store_that_cannot_be_written_does_not_fail_the_fetch(
     which trades the expensive thing for the cheap one.
     """
     circuit = TargetCircuit(health, policy=policy)
-    with patch("threetears.scrape.circuit.record_circuit_state", side_effect=RuntimeError("L3 pool is gone")):
+    with patch(
+        "threetears.scrape.circuit.record_circuit_state", side_effect=DataLayerUnavailableError("L3 pool is gone")
+    ):
         await circuit.record_blocked(_T, now=_NOW)
         await circuit.record_unreachable(_T, now=_NOW)
 
     # Nothing persisted, and nothing raised. The circuit degrades to its pre-existing
     # behaviour -- fetching -- which is the safe direction for an unwritable store.
     assert (await circuit.check(_T, now=_NOW)).permitted
+
+
+@pytest.mark.asyncio
+async def test_losing_the_health_rows_fence_to_another_pod_does_not_fail_the_fetch(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """Two pods writing one target's row is the normal shape of a fleet, not a fault."""
+    circuit = TargetCircuit(health, policy=policy)
+    lost = ConcurrentModificationError("scrape_target_health", _T, None)
+    with patch("threetears.scrape.circuit.record_circuit_state", side_effect=lost):
+        await circuit.record_blocked(_T, now=_NOW)
+
+
+@pytest.mark.asyncio
+async def test_a_bug_writing_the_circuit_propagates_rather_than_reading_as_an_outage(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    circuit = TargetCircuit(health, policy=policy)
+    with (
+        patch("threetears.scrape.circuit.record_circuit_state", side_effect=TypeError("a bug, not the store")),
+        pytest.raises(TypeError, match="a bug, not the store"),
+    ):
+        await circuit.record_blocked(_T, now=_NOW)
 
 
 @pytest.mark.asyncio
@@ -674,11 +783,25 @@ async def test_forgetting_a_target_does_not_raise_when_the_store_cannot_delete(
     circuit = TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler)
     await circuit.record_blocked(_T, now=_NOW)
 
-    with patch.object(type(health), "delete", side_effect=RuntimeError("L3 pool is gone")):
+    with patch.object(type(health), "delete", side_effect=DataLayerUnavailableError("L3 pool is gone")):
         await circuit.forget_target(_T)
 
     assert scheduler.cancelled == [_T], "the booking was not cancelled before the delete failed"
     assert await health.get(_T) is not None, "the row was somehow removed by a delete that raised"
+
+
+@pytest.mark.asyncio
+async def test_a_bug_deleting_the_health_row_propagates_rather_than_reading_as_an_outage(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    circuit = TargetCircuit(health, policy=policy)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    with (
+        patch.object(type(health), "delete", side_effect=AttributeError("a bug, not the store")),
+        pytest.raises(AttributeError, match="a bug, not the store"),
+    ):
+        await circuit.forget_target(_T)
 
 
 @pytest.mark.asyncio
@@ -1026,7 +1149,7 @@ async def test_an_unreadable_health_store_does_not_erase_an_open_circuit(
         nonlocal failed_once
         if not failed_once:
             failed_once = True
-            raise RuntimeError("health store read timed out")
+            raise TimeoutError("health store read timed out")
         return await original(entity_id, **kwargs)  # type: ignore[arg-type]
 
     health.get = flaky_get  # type: ignore[method-assign, assignment]
@@ -1064,6 +1187,33 @@ async def test_a_human_clearing_a_wall_lifts_the_suppression(
     assert decision.permitted, "a human cleared the wall and the next fetch was still suppressed"
     assert decision.state is CircuitState.CLOSED
     assert scheduler.cancelled == [_T], "a probe was still booked for a target that is already working"
+
+
+@pytest.mark.asyncio
+async def test_a_robots_block_that_cannot_be_cleared_does_not_fail_the_humans_fix(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    circuit = TargetCircuit(health, policy=policy)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    with patch(
+        "threetears.scrape.circuit.clear_robots_block", side_effect=DataLayerUnavailableError("L3 pool is gone")
+    ):
+        await circuit.record_human_cleared(_T)
+
+    assert (await circuit.check(_T, now=_NOW + timedelta(seconds=1))).permitted
+
+
+@pytest.mark.asyncio
+async def test_a_bug_clearing_the_robots_block_propagates_rather_than_reading_as_an_outage(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    circuit = TargetCircuit(health, policy=policy)
+    with (
+        patch("threetears.scrape.circuit.clear_robots_block", side_effect=TypeError("a bug, not the store")),
+        pytest.raises(TypeError, match="a bug, not the store"),
+    ):
+        await circuit.record_human_cleared(_T)
 
 
 @pytest.mark.asyncio
@@ -1259,3 +1409,78 @@ class TestABackoffPolicyThatCouldNotSuppressAnything:
         policy = BackoffPolicy(failure_threshold=2, base_delay_seconds=60.0, max_delay_seconds=480.0)
 
         assert policy.delay_for(2) == 60.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [CircuitState.OPEN, CircuitState.HALF_OPEN])
+async def test_an_unreadable_backoff_window_backs_off_rather_than_lifting_the_block(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy, state: CircuitState
+) -> None:
+    """A ``blocked_until`` that does not parse used to read as no window at all, so the very
+    next poll fetched a target the circuit was holding back. It is now a window in force,
+    rewritten from now, so the target recovers on the ordinary schedule after one window."""
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=state.value,
+        consecutive_fetch_failures=2,
+        blocked_until="not-a-timestamp",  # type: ignore[arg-type]
+    )
+    circuit = TargetCircuit(health, policy=policy)
+
+    decision = await circuit.check(_T, now=_NOW)
+
+    assert not decision.permitted
+    assert decision.state is state
+    assert decision.retry_after_seconds == pytest.approx(60.0)
+    assert "could not be read, so it is treated as in force" in decision.reason
+    row = await health.get(_T)
+    assert row is not None
+    assert row.blocked_until == _NOW + timedelta(seconds=60), "the unreadable window is rewritten from now"
+    assert row.circuit_state == state.value
+
+    later = await circuit.check(_T, now=_NOW + timedelta(seconds=61))
+    assert later.permitted and later.is_probe, "after one window the target is probed as usual"
+
+
+@pytest.mark.asyncio
+async def test_the_fresh_window_for_an_unreadable_one_books_its_reprobe(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """An event-driven deployment has nothing else that will revisit the row when the window ends."""
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=2,
+        blocked_until="not-a-timestamp",  # type: ignore[arg-type]
+    )
+    scheduler = _FakeReprobeScheduler()
+
+    await TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler).check(_T, now=_NOW)
+
+    assert scheduler.booked == [(_T, pytest.approx(60.0))]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_window_that_cannot_be_rewritten_says_it_will_keep_backing_off(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=2,
+        blocked_until="not-a-timestamp",  # type: ignore[arg-type]
+    )
+    circuit = TargetCircuit(health, policy=policy)
+
+    with patch(
+        "threetears.scrape.circuit.record_circuit_state", side_effect=DataLayerUnavailableError("L3 pool is gone")
+    ):
+        decision = await circuit.check(_T, now=_NOW)
+
+    assert not decision.permitted
+    assert "the fresh window could not be written, so every check backs off until the row is repaired" in (
+        decision.reason
+    )

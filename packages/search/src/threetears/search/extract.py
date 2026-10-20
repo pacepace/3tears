@@ -69,7 +69,7 @@ import codecs
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Final, Literal
@@ -84,11 +84,14 @@ from threetears.media.contracts import (
     EXTRACTION_STATUS_REFUSED,
     EXTRACTION_STATUS_UNCHANGED,
 )
+from threetears.observe import contain, get_logger
 from threetears.search.contracts.candidate import Candidate, ContentSlot
 from threetears.search.contracts.errors import LocalCapExceeded, SearchFailure, TimedOut
 from threetears.search.contracts.fidelity import FIDELITY_CONTENT
 from threetears.search.contracts.spend import Spend
 from threetears.search.contracts.transport import FetchTransport, HeavyFetcher, TransportResponse
+
+_logger = get_logger(__name__)
 
 __all__ = [
     "DEFAULT_FETCH_TIME_BUDGET_SECONDS",
@@ -557,13 +560,12 @@ def _page_facts(markup: str) -> tuple[str | None, datetime | None]:
     :ptype markup: str
     :return: the title and the date, each None when the page does not say
     :rtype: tuple[str | None, datetime | None]
+    :raises Exception: whatever trafilatura raised reading the page's header; the caller reads
+        the page without them and says so, since "the page does not say" is a different answer
     """
-    try:
-        from trafilatura.metadata import extract_metadata
+    from trafilatura.metadata import extract_metadata
 
-        found = extract_metadata(markup)
-    except Exception:  # noqa: BLE001 -- metadata is extra: a page whose header cannot be read is still read
-        return None, None
+    found = extract_metadata(markup)
     if found is None:
         return None, None
     title = (getattr(found, "title", None) or "").strip() or None
@@ -698,7 +700,19 @@ async def _read_carrier(
         )
     markup, charset = _decode(response.body, response.headers.get("content-type", ""))
     text = extractor(markup) or ""
-    title, published_at = _page_facts(markup) if text else (None, None)
+    title: str | None = None
+    published_at: datetime | None = None
+    notes: tuple[str, ...] = ()
+    if text:
+        try:
+            title, published_at = _page_facts(markup)
+        except Exception as exc:  # noqa: BLE001 -- metadata is extra: the page is still read, and says it was read without it
+            contain(exc, log=_logger, what="a page's metadata could not be read; the page is read without it")
+            # the exception's type, not its message: a message can quote the page, and this
+            # sentence reaches the reader
+            notes = (
+                f"The page's own title and date could not be read ({type(exc).__name__}); it was read without them.",
+            )
     method = _METHOD_HEAVY if heavy_fetcher is not None else _METHOD_TRAFILATURA
     if not text:
         return _Unread(
@@ -713,7 +727,7 @@ async def _read_carrier(
         title=title,
         published_at=published_at,
         charset=charset,
-        notes=(),
+        notes=notes,
         method=method,
     )
 
@@ -1060,6 +1074,12 @@ class _FramesAndPointers(HTMLParser):
             self.citation_pdf = self.citation_pdf or named["content"].strip()
 
 
+#: what :func:`_pointer_of` raises on markup or an address it cannot read: the stdlib HTML parser's
+#: ``AssertionError`` on a declaration it cannot make sense of, and ``urljoin``'s ``ValueError``.
+#: Anything else is a bug in the frame scan and propagates.
+_POINTER_UNREADABLE: Final[tuple[type[Exception], ...]] = (AssertionError, ValueError)
+
+
 def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     """Where a thin page says its article is, how many frames it holds, and whether it said so outright.
 
@@ -1074,13 +1094,14 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     :return: the absolute URL (None when the page points nowhere), the frame count, and
         whether the URL came from ``citation_pdf_url``
     :rtype: tuple[str | None, int, bool]
+    :raises AssertionError: from the stdlib HTML parser, which reports a declaration it cannot
+        make sense of that way; the caller says the frames could not be looked for, since
+        "points nowhere" is a different answer
+    :raises ValueError: from ``urljoin``, on an address that will not split (``http://[::1``)
     """
     parser = _FramesAndPointers()
-    try:
-        parser.feed(markup)
-        parser.close()
-    except Exception:  # noqa: BLE001 -- a page the parser chokes on points nowhere
-        return None, 0, False
+    parser.feed(markup)
+    parser.close()
     if parser.citation_pdf:
         return urljoin(base, parser.citation_pdf), len(parser.frames), True
     if parser.frames:
@@ -1174,7 +1195,15 @@ async def _follow_a_thin_page(
 
     markup, _ = _decode(response.body, response.headers.get("content-type", ""))
     page = response.final_url or page_url
-    pointed, frames, outright = _pointer_of(markup, page)
+    try:
+        pointed, frames, outright = _pointer_of(markup, page)
+    except _POINTER_UNREADABLE as exc:  # the page's own read stands, and says its frames were not looked for
+        contain(exc, log=_logger, what="a thin page's frames and pointers could not be parsed")
+        # the exception's type, not its message: a message can quote the page
+        unparsed = f"its frames could not be looked for (the HTML parser raised {type(exc).__name__})"
+        if isinstance(read, _Read):
+            return replace(read, notes=(*read.notes, f"The page is thin, and {unparsed}; this may be only its menu."))
+        return replace(read, reason=f"{read.reason}, and {unparsed}")
     if pointed is None:
         return read
     # The address comes from the page's own markup, so it is made a plain URL before a sentence

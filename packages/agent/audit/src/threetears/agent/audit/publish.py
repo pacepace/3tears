@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from threetears.nats import Subjects
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.agent.audit.envelope import AuditEvent
 
@@ -113,14 +113,9 @@ async def publish_audit(
     # (JetStream outage, no stream, broker timeout) log at WARN so the
     # producing call path is never blocked by audit health.
     except Exception as exc:
-        log.warning(
-            "audit publish failed",
-            extra={
-                "extra_data": {
-                    "subject": subject.path,
-                    "event_type": event.event_type,
-                    "namespace": namespace,
-                    "error": str(exc),
-                },
-            },
+        contain(
+            exc,
+            log=log,
+            what="audit publish failed",
+            extra={"subject": subject.path, "event_type": event.event_type, "namespace": namespace, "error": str(exc)},
         )

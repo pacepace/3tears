@@ -22,7 +22,6 @@ worked around.
 
 from __future__ import annotations
 
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,7 +29,7 @@ from fastapi import APIRouter, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
-from threetears.observe import get_logger
+from threetears.observe import contain, contained, get_logger
 
 from .operator import relay_stream, token_from_subprotocols
 
@@ -109,8 +108,8 @@ def build_router(
             # between "refused" and "the display is down" from the close code rather than from a
             # connection that opens and then dies.
             await websocket.accept(subprotocol="binary")
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an operator who navigated away between authorizing and accepting is ordinary, not a fault. Logged with its traceback below
-            log.info("operator: the client went away before the stream opened", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an operator who navigated away between authorizing and accepting is ordinary, not a fault. Logged with its traceback below
+            contain(exc, log=log, what="operator: the client went away before the stream opened")
             return
 
         try:
@@ -140,8 +139,8 @@ def build_router(
             # socket is finished either way; telling it so is a courtesy, not a step.
             # NOSILENT: the reason is already logged above with the session id; this close is a
             # courtesy to a peer that is probably gone, and cannot change the outcome either way.
-            with suppress(
-                Exception
+            with contained(
+                "operator: closing the websocket after an unreachable display failed", log=log
             ):  # prawduct:allow prawduct/broad-except -- see above; the diagnosis is already logged and this close cannot change the outcome
                 await websocket.close(code=1011, reason="the display is not available")
 

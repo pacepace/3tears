@@ -232,6 +232,19 @@ class _RecordingNatsClient:
 
     def __init__(self) -> None:
         self.published: list[tuple[Any, Any]] = []
+        self.audited: list[tuple[Any, bytes]] = []
+
+    async def jetstream_publish(
+        self,
+        *,
+        subject: Any,
+        payload: bytes,
+        timeout: Any = None,
+        headers: Any = None,
+    ) -> None:
+        """record the audit envelope the tool's audit hook publishes, apart from its create event."""
+        del timeout, headers
+        self.audited.append((subject, payload))
 
     async def publish(
         self,

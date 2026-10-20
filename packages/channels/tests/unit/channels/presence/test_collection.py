@@ -17,6 +17,10 @@ from threetears.channels.presence.collection import (
     RoomIndexCollection,
 )
 
+from threetears.channels.presence.room_state import RoomState
+from threetears.core.exceptions import L2WriteRefusedError
+from threetears.nats.errors import KvError
+
 from .conftest import InMemoryNatsBus, make_pod
 
 pytestmark = pytest.mark.asyncio
@@ -336,3 +340,56 @@ class TestPrimaryKeyShape:
         collection, _ = make_pod(bus)
         assert isinstance(collection.rooms, RoomIndexCollection)
         assert collection.rooms.primary_key_columns == ("room_id",)
+
+
+# ---------------------------------------------------------------------------
+# L2 is the store: a write it refused raises
+# ---------------------------------------------------------------------------
+
+
+def _connection_row() -> dict[str, object]:
+    return {
+        "connection_id": "conn-1",
+        "room_id": "cust:story:main:scene.md",
+        "user_id": "user-1",
+        "pod_id": "pod-a",
+        "customer_id": "cust",
+        "date_last_heartbeat": datetime.now(UTC),
+    }
+
+
+class TestAPresenceWriteL2RefusedRaises:
+    """presence has no L3: a write L2 refused is a member no other pod sees, so it must not read
+    as saved, and this pod's L1 must not keep serving it."""
+
+    async def test_a_save_l2_refused_raises_and_leaves_no_l1_row(self, bus: InMemoryNatsBus) -> None:
+        collection, _ = make_pod(bus)
+        (await bus.kv_bucket(name="collections")).become_unreachable(KvError("broker unreachable"))
+
+        entity = collection.connections.create(_connection_row())
+        with pytest.raises(L2WriteRefusedError, match="was not saved"):
+            await collection.connections.save_entity(entity)
+
+        assert collection.connections.get_row_sync("conn-1") is None
+        assert entity.to_dict()["connection_id"] == "conn-1", "the handle keeps the row it was saving"
+
+    async def test_a_delete_l2_refused_raises_and_the_row_is_still_there(self, bus: InMemoryNatsBus) -> None:
+        collection, _ = make_pod(bus)
+        await collection.connections.save_entity(collection.connections.create(_connection_row()))
+        bucket = await bus.kv_bucket(name="collections")
+        bucket.become_unreachable(KvError("broker unreachable"))
+
+        with pytest.raises(KvError, match="was not deleted"):
+            await collection.connections.delete("conn-1")
+
+        bucket.become_reachable()
+        peer, _ = make_pod(bus)
+        assert await peer.connections.get("conn-1") is not None
+
+    async def test_a_join_whose_presence_row_l2_refused_raises(self, bus: InMemoryNatsBus) -> None:
+        collection, _ = make_pod(bus)
+        state = RoomState(collection, pod_id="pod-a")
+        (await bus.kv_bucket(name="collections")).become_unreachable(KvError("broker unreachable"))
+
+        with pytest.raises(KvError, match="was not saved"):
+            await state.join("cust:story:main:scene.md", "conn-1", "user-1", "cust")

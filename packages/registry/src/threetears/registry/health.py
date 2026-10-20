@@ -27,9 +27,12 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from threetears.agent.tools.server import HeartbeatMessage
 from threetears.nats import Subjects
-from threetears.observe import PeriodicTask, get_logger
+from threetears.nats.errors import KvError
+from threetears.observe import PeriodicTask, contain, get_logger
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.entities import HeartbeatEntity
 from threetears.registry.heartbeat_collection import HeartbeatCollection
@@ -131,6 +134,12 @@ class HeartbeatSubscriber:
             failure_message="health check sweep failed",
         )
         self._known_pod_ids: set[str] = set()
+        # what THIS registry heard and counted, kept beside the collection so liveness is still
+        # judged while L2 (the collection's only store) is unreachable: quarantining a pod that
+        # stopped heartbeating is a safety property, and an outage must not suspend it. Keyed only
+        # by pods in _known_pod_ids, and dropped with a pod when the sweep forgets it.
+        self._heard_at: dict[str, datetime] = {}
+        self._local_misses: dict[str, int] = {}
 
     @property
     def has_active_check_task(self) -> bool:
@@ -254,6 +263,10 @@ class HeartbeatSubscriber:
         malformed payloads are logged and dropped; no persistent
         state is mutated.
 
+        the pod is tracked, and the moment heard, BEFORE the collection is touched: when L2 cannot
+        be read or written, the failure is recorded and the sweep judges the pod by this
+        registry's own record, so a pod first seen during an outage is still swept.
+
         :param msg: wrapper :class:`IncomingMessage` envelope OR raw
             NATS-shaped object exposing ``.data`` (for legacy test
             doubles)
@@ -263,16 +276,46 @@ class HeartbeatSubscriber:
         """
         try:
             heartbeat = HeartbeatMessage.model_validate_json(msg.data)
-        except Exception as exc:
-            log.warning(
-                "malformed heartbeat message",
-                extra={"extra_data": {"error": str(exc)}},
+        except ValidationError as exc:
+            contain(
+                exc,
+                log=log,
+                what="malformed heartbeat message",
+                extra={"error": str(exc)},
             )
             return
 
         now = datetime.now(UTC)
         pod_id = heartbeat.pod_id
         marked_tools = self._catalog.mark_pod_endpoints_available(pod_id)
+        self._known_pod_ids.add(pod_id)
+        self._heard_at[pod_id] = now
+        self._local_misses[pod_id] = 0
+        try:
+            await self._persist_heartbeat(pod_id, now, marked_tools, heartbeat.tools_count)
+        except KvError as exc:
+            contain(
+                exc,
+                log=log,
+                what="pod heartbeat not persisted to L2; liveness is judged by this registry's own record until it is",
+                extra={"pod_id": pod_id},
+            )
+
+    async def _persist_heartbeat(self, pod_id: str, now: datetime, marked_tools: list[str], tools_count: int) -> None:
+        """write one heard heartbeat to the collection, creating the pod's row on its first.
+
+        :param pod_id: the pod heard from
+        :ptype pod_id: str
+        :param now: when it was heard
+        :ptype now: datetime
+        :param marked_tools: the tools whose endpoints the catalog marked available for it
+        :ptype marked_tools: list[str]
+        :param tools_count: the tool count the heartbeat reported
+        :ptype tools_count: int
+        :return: nothing
+        :rtype: None
+        :raises KvError: when L2, the collection's store, could not be read or written
+        """
         existing = await self._collection.get(pod_id)
         entity: HeartbeatEntity
         if existing is None:
@@ -281,7 +324,7 @@ class HeartbeatSubscriber:
                     "pod_id": pod_id,
                     "date_last_heartbeat": now,
                     "tools": marked_tools,
-                    "tools_count": heartbeat.tools_count,
+                    "tools_count": tools_count,
                     "status": _STATUS_HEALTHY,
                     "consecutive_misses": 0,
                 }
@@ -290,11 +333,10 @@ class HeartbeatSubscriber:
             entity = existing
             entity.date_last_heartbeat = now
             entity.tools = marked_tools
-            entity.tools_count = heartbeat.tools_count
+            entity.tools_count = tools_count
             entity.status = _STATUS_HEALTHY
             entity.consecutive_misses = 0
         await self._collection.save_entity(entity)
-        self._known_pod_ids.add(pod_id)
 
     async def run_health_check(self) -> None:
         """execute one health-check sweep across known pods.
@@ -329,19 +371,51 @@ class HeartbeatSubscriber:
         now = datetime.now(UTC)
         to_remove: list[str] = []
         for pod_id in list(self._known_pod_ids):
-            entity = await self._collection.get(pod_id)
-            if entity is None:
-                # peer registry already evicted; drop from our set
-                to_remove.append(pod_id)
-                continue
-            last = entity.date_last_heartbeat
+            heard = self._heard_at.get(pod_id)
+            try:
+                entity = await self._collection.get(pod_id)
+            except KvError as exc:
+                contain(
+                    exc,
+                    log=log,
+                    what="pod heartbeat row unreadable; judging the pod by this registry's own record",
+                    extra={"pod_id": pod_id},
+                )
+                if heard is None:
+                    # tracked but never heard here: nothing to judge it by until L2 answers
+                    continue
+                entity = None
+                last = heard
+                misses = self._local_misses.get(pod_id, 0) + 1
+            else:
+                if entity is None:
+                    # peer registry already evicted (an outage raises above, so this is a real
+                    # absence); drop from our set
+                    to_remove.append(pod_id)
+                    continue
+                last = entity.date_last_heartbeat
+                misses = int(entity.consecutive_misses) + 1
+                if heard is not None and heard > last:
+                    # heard here, but the write of it did not land: this registry's record is newer
+                    last = heard
+                    misses = self._local_misses.get(pod_id, 0) + 1
             elapsed = (now - last).total_seconds()
             if elapsed <= self._timeout:
                 continue
-            entity.consecutive_misses = int(entity.consecutive_misses) + 1
-            entity.status = _STATUS_UNRESPONSIVE
-            await self._collection.save_entity(entity)
-            if entity.consecutive_misses < self._max_consecutive_misses:
+            self._local_misses[pod_id] = misses
+            if entity is not None:
+                entity.consecutive_misses = misses
+                entity.status = _STATUS_UNRESPONSIVE
+                try:
+                    await self._collection.save_entity(entity)
+                except KvError as exc:
+                    contain(
+                        exc,
+                        log=log,
+                        what="pod heartbeat miss not persisted to L2; the local decision stands",
+                        extra={"pod_id": pod_id, "consecutive_misses": misses},
+                    )
+            if misses < self._max_consecutive_misses:
                 quarantined = self._catalog.mark_pod_endpoints_unavailable(pod_id)
                 log.warning(
                     "pod heartbeat miss under eviction threshold; quarantining endpoints",
@@ -349,7 +423,7 @@ class HeartbeatSubscriber:
                         "extra_data": {
                             "pod_id": pod_id,
                             "elapsed_seconds": elapsed,
-                            "consecutive_misses": entity.consecutive_misses,
+                            "consecutive_misses": misses,
                             "max_consecutive_misses": self._max_consecutive_misses,
                             "quarantined_tools": quarantined,
                         }
@@ -362,7 +436,7 @@ class HeartbeatSubscriber:
                     "extra_data": {
                         "pod_id": pod_id,
                         "elapsed_seconds": elapsed,
-                        "consecutive_misses": entity.consecutive_misses,
+                        "consecutive_misses": misses,
                         "max_consecutive_misses": self._max_consecutive_misses,
                     }
                 },
@@ -379,5 +453,13 @@ class HeartbeatSubscriber:
             )
             to_remove.append(pod_id)
         for pod_id in to_remove:
+            try:
+                await self._collection.delete(pod_id)
+            except KvError as exc:
+                # the pod stays known, so the next sweep tries again rather than forgetting a row
+                # every peer still reads; the rest of the sweep goes on
+                contain(exc, log=log, what="evicted pod's heartbeat row not deleted from L2", extra={"pod_id": pod_id})
+                continue
             self._known_pod_ids.discard(pod_id)
-            await self._collection.delete(pod_id)
+            self._heard_at.pop(pod_id, None)
+            self._local_misses.pop(pod_id, None)

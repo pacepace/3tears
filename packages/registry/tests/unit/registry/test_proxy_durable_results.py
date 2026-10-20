@@ -16,9 +16,11 @@ name the call's VERIFIED agent id.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -28,12 +30,16 @@ from threetears.agent.tools.server import CallAccepted, CallRequest
 from threetears.nats import (
     RESULT_ACK_TIMEOUT_SECONDS,
     IncomingMessage,
+    PublishError,
     RequestError,
     RequestTimeoutError,
     Subject,
     Subjects,
     set_default_namespace,
 )
+from threetears.registry.auth import INSUFFICIENT_CREDITS, DenyAllLimitGuard, LimitDecision
+from threetears.nats.errors import PublishTimeoutError
+from threetears.registry import proxy as proxy_module
 from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallAccepted, ProxyCallResponse
 
@@ -49,6 +55,20 @@ _SHORT = 5.0
 @pytest.fixture(autouse=True)
 def _bind_namespace() -> None:
     set_default_namespace(_NS)
+
+
+class _UnreachableLimitGuard:
+    """# parity-with: threetears.registry.auth.LimitGuard"""
+
+    async def check(
+        self,
+        agent_id: str,
+        user_id: str | None,
+        customer_id: str | None,
+        tool_name: str,
+        tool_version: str,
+    ) -> LimitDecision:
+        raise RuntimeError("counter backend unreachable")
 
 
 class _Waiter:
@@ -454,6 +474,36 @@ class TestDeliveringToTheAgent:
         assert json.loads(nats.published[0][1])["error_code"] == "TOOL_UNAVAILABLE"
 
     @pytest.mark.asyncio
+    async def test_a_spend_denial_travels_the_delivery_route_too(self) -> None:
+        """it went to the inbox, so a call acknowledged for delivery waited out its timeout."""
+        catalog = await _registered_catalog(_LONG)
+        nats = _Nats(delivered=_pod_answer())
+        subject = Subjects.tools_reply(DEFAULT_AGENT_ID, "call-1").path
+        proxy = make_proxy(catalog, namespace=_NS, limit_guard=DenyAllLimitGuard())
+        await _dispatch(proxy, nats, self._long_request(result_subject=subject))
+
+        assert nats.request_raw_calls == [], "a spend-denied call reached the pod"
+        assert len(nats.published) == 1
+        published_subject, payload = nats.published[0]
+        assert published_subject == subject
+        assert json.loads(payload)["error_code"] == INSUFFICIENT_CREDITS
+        assert not [reply for reply in nats.replies if isinstance(reply, ProxyCallResponse)]
+
+    @pytest.mark.asyncio
+    async def test_a_limit_guard_outage_still_delivers_on_the_callers_subject(self) -> None:
+        """the outage serves the call (Fork-2), so its answer must reach the subject the caller waits on."""
+        catalog = await _registered_catalog(_LONG)
+        nats = _Nats(delivered=_pod_answer())
+        subject = Subjects.tools_reply(DEFAULT_AGENT_ID, "call-1").path
+        proxy = make_proxy(catalog, namespace=_NS, limit_guard=_UnreachableLimitGuard())
+        await _dispatch(proxy, nats, self._long_request(result_subject=subject))
+
+        assert len(nats.published) == 1
+        published_subject, payload = nats.published[0]
+        assert published_subject == subject
+        assert json.loads(payload)["content"] == "68KB of results"
+
+    @pytest.mark.asyncio
     async def test_an_unknown_tool_travels_the_delivery_route_too(self) -> None:
         catalog = ToolCatalog()
         nats = _Nats(delivered=_pod_answer())
@@ -462,3 +512,49 @@ class TestDeliveringToTheAgent:
 
         assert len(nats.published) == 1
         assert json.loads(nats.published[0][1])["error_code"] == "TOOL_UNAVAILABLE"
+
+
+class _NatsWhoseDeliveryFails(_Nats):
+    """a bus whose durable publish raises each scripted failure in turn, then delivers."""
+
+    def __init__(self, *failures: BaseException) -> None:
+        super().__init__(delivered=_pod_answer())
+        self._failures = list(failures)
+
+    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+        if self._failures:
+            raise self._failures.pop(0)
+        await super().jetstream_publish(subject=subject, payload=payload)
+
+
+class TestADeliveryFailure:
+    """the tool already ran, so a publish the broker refused is retried; a bug in the publish is not."""
+
+    def _long_request(self) -> Any:
+        subject = Subjects.tools_reply(DEFAULT_AGENT_ID, "call-1").path
+        return make_authed_request().model_copy(update={"result_subject": subject})
+
+    @pytest.mark.asyncio
+    async def test_a_refused_publish_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(proxy_module.asyncio, "sleep", AsyncMock())
+        catalog = await _registered_catalog(_LONG)
+        nats = _NatsWhoseDeliveryFails(PublishError("broker unreachable"), PublishTimeoutError("no ack"))
+        await _dispatch(make_proxy(catalog, namespace=_NS), nats, self._long_request())
+
+        assert len(nats.published) == 1
+        assert json.loads(nats.published[0][1])["content"] == "68KB of results"
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_publish_propagates_rather_than_being_retried(self) -> None:
+        """it used to be retried and then logged as a lost answer, as though the broker were down."""
+        catalog = await _registered_catalog(_LONG)
+        nats = _NatsWhoseDeliveryFails(TypeError("a bug in the publish"))
+        proxy = make_proxy(catalog, namespace=_NS)
+        await proxy.start(nats)
+        before = asyncio.all_tasks()
+        await proxy.handle_call(_msg(self._long_request()))
+        (dispatch,) = asyncio.all_tasks() - before
+
+        with pytest.raises(TypeError, match="a bug in the publish"):
+            await dispatch
+        assert nats.published == []

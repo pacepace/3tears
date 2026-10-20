@@ -67,13 +67,24 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Final, NamedTuple, Protocol
 
+from threetears.core.coordination.tables import STORAGE_FAILURES
+from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.http_client import CircuitBreakerLike
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError, CircuitState
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
-from .health import ScrapeTargetHealth, ScrapeTargetHealthCollection, clear_robots_block, record_circuit_state
+from .collections import StoredTimestampUnreadable
+from .health import (
+    _HEALTH_STORE_READ_FAILURES,
+    _HEALTH_STORE_WRITE_FAILURES,
+    ScrapeTargetHealth,
+    ScrapeTargetHealthCollection,
+    clear_robots_block,
+    record_circuit_state,
+)
+from .robots import _PACER_FAILURES
 
 if TYPE_CHECKING:
     # Type-only: both are constructed from a NATS client the caller already holds, and
@@ -104,6 +115,11 @@ _MAX_BACKOFF_DOUBLINGS = 32
 #: -- the failure mode is one wasted fetch, where the opposite is a target suppressed forever
 #: on a value nobody can explain.
 _KNOWN_CIRCUIT_STATES: dict[str, CircuitState] = {state.value: state for state in CircuitState}
+
+#: what the fleet blocked-attempt counter can fail with when ``fail_open`` is off: storage being
+#: unreachable, plus losing every compare-and-swap round -- the same pair a ``fail_open`` counter
+#: degrades on itself (``windowed_counter._DEGRADABLE_FAILURES``), for the same reason.
+_COUNTER_FAILURES: Final[tuple[type[Exception], ...]] = (*STORAGE_FAILURES, ConcurrentModificationError)
 
 
 class ProbeObservableBreaker(CircuitBreakerLike, Protocol):
@@ -389,6 +405,38 @@ class TargetCircuit:
 
         was = _stored_state(health.circuit_state)
 
+        # A window that cannot be read is in force, not absent: read as absent it would lift the
+        # block on the very target it is holding back. A fresh window from now is written over it,
+        # so the target backs off for one window and then recovers on the ordinary schedule,
+        # rather than staying blocked on a value nothing can read.
+        window = self._stored_window(health, moment)
+        if window.unreadable:
+            self._release_in_process_probe(breaker)
+            rewritten = await self._write(
+                target_id,
+                state=was,
+                failures=health.consecutive_fetch_failures,
+                blocked_until=window.until,
+            )
+            wait = _seconds_until(window.until, moment)
+            # Booked like any other window, so an event-driven deployment re-probes when it ends.
+            await self._book_reprobe(target_id, wait)
+            reason = (
+                "the stored backoff window for this target could not be read, so it is treated as in "
+                f"force: backing off for {wait:.0f}s"
+            )
+            if not rewritten:
+                # The unreadable value is still stored, so the next check reads it again and
+                # backs off again: say so, rather than promise a recovery that cannot come.
+                reason += "; the fresh window could not be written, so every check backs off until the row is repaired"
+            return FetchDecision(
+                permitted=False,
+                state=was,
+                retry_after_seconds=wait,
+                is_probe=False,
+                reason=reason,
+            )
+
         # A HALF_OPEN row means a probe was admitted and has not reported back. `CircuitBreaker`
         # bounds that with an in-flight flag, but `restore()` cannot carry one across a process
         # boundary, so its HALF_OPEN branch consults no timer and would admit a fresh probe on
@@ -403,7 +451,7 @@ class TargetCircuit:
         # the doubling curve. Deferring to the bucket would swap a decay for a floor, and a
         # constant re-probe cadence is the thing this whole module exists to remove.
         if was is CircuitState.HALF_OPEN:
-            outstanding = _seconds_until(health.blocked_until, moment)
+            outstanding = _seconds_until(window.until, moment)
             if outstanding > 0.0:
                 self._release_in_process_probe(breaker)
                 return FetchDecision(
@@ -583,7 +631,7 @@ class TargetCircuit:
             target_id,
             state=restored.state,
             failures=restored.failure_count,
-            blocked_until=None if closed else health.blocked_until,
+            blocked_until=None if closed else self._stored_window(health, moment).until,
             egress=egress,
         )
         if closed:
@@ -784,7 +832,7 @@ class TargetCircuit:
         can read, query and reason about.
         """
         failures = failure_count if failure_count is not None else (health.consecutive_fetch_failures if health else 0)
-        blocked_until = health.blocked_until if health is not None else None
+        blocked_until = self._stored_window(health, now).until if health is not None else None
         remaining = (blocked_until - now).total_seconds() if blocked_until is not None else 0.0
         return CircuitBreaker.restore(
             target_id,
@@ -813,11 +861,13 @@ class TargetCircuit:
             )
         try:
             claim = await self._probe_pacer.claim(target_id)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- pacing is a cross-pod refinement; a KV outage must not strand every walled target permanently unprobed, so it degrades to the row-only behaviour. Logged with its traceback below
-            log.exception(
-                "scrape circuit: probe pacer unavailable for target %s; admitting the probe unpaced",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except _PACER_FAILURES as exc:  # pacing is a cross-pod refinement; a KV outage must not strand every walled target permanently unprobed, so it degrades to the row-only behaviour. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: probe pacer unavailable for target {target_id}; admitting the probe unpaced",
+                extra={"target_id": target_id},
+                level="error",
             )
             return FetchDecision(
                 permitted=True,
@@ -862,11 +912,13 @@ class TargetCircuit:
             return 0
         try:
             return max(0, await self._blocked_attempts.record_attempt(target_id) - 1)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the fleet count only ever raises the failure count; losing it degrades to the per-row count, never to a missed block. Logged with its traceback below
-            log.exception(
-                "scrape circuit: fleet blocked-attempt count unavailable for target %s; using the row's own count",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except _COUNTER_FAILURES as exc:  # the fleet count only ever raises the failure count; losing it degrades to the per-row count, never to a missed block. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: fleet blocked-attempt count unavailable for target {target_id}; using the row's own count",
+                extra={"target_id": target_id},
+                level="error",
             )
             return 0
 
@@ -895,11 +947,13 @@ class TargetCircuit:
             return
         try:
             await self._reprobe_scheduler.schedule_reprobe(target_id=target_id, delay_seconds=delay_seconds)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a scheduler outage must not fail a fetch whose result we already hold; blocked_until still stands, so a poller loses nothing and an event-driven caller loses this wake-up, which the docstring states and log.exception makes detectable
-            log.exception(
-                "scrape circuit: could not book the re-probe for target %s; its backoff window still stands",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a scheduler outage must not fail a fetch whose result we already hold; blocked_until still stands, so a poller loses nothing and an event-driven caller loses this wake-up, which the docstring states and log.exception makes detectable
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not book the re-probe for target {target_id}; its backoff window still stands",
+                extra={"target_id": target_id},
+                level="error",
             )
 
     async def _cancel_reprobe(self, target_id: str) -> None:
@@ -908,11 +962,13 @@ class TargetCircuit:
             return
         try:
             await self._reprobe_scheduler.cancel_reprobe(target_id=target_id)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a failed cancel costs one spurious wake-up against a target that has recovered, which is a wasted poll and not a wrong answer; failing the fetch that just succeeded would be worse. Logged with its traceback below
-            log.exception(
-                "scrape circuit: could not cancel the outstanding re-probe of target %s; it may fire once more",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a failed cancel costs one spurious wake-up against a target that has recovered, which is a wasted poll and not a wrong answer; failing the fetch that just succeeded would be worse. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not cancel the outstanding re-probe of target {target_id}; it may fire once more",
+                extra={"target_id": target_id},
+                level="error",
             )
 
     async def forget_target(self, target_id: str) -> None:
@@ -941,12 +997,43 @@ class TargetCircuit:
         await self._cancel_reprobe(target_id)
         try:
             await self._health.delete(target_id)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- retiring a target is housekeeping; a store outage must not raise into a caller that is tidying up, and the row is harmless until the next attempt. Logged with its traceback below
-            log.exception(
-                "scrape circuit: could not delete the health row for target %s",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except _HEALTH_STORE_WRITE_FAILURES as exc:  # retiring a target is housekeeping; a store outage must not raise into a caller that is tidying up, and the row is harmless until the next attempt. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not delete the health row for target {target_id}",
+                extra={"target_id": target_id},
+                level="error",
             )
+
+    def _stored_window(self, health: ScrapeTargetHealth, now: datetime) -> _Window:
+        """The row's ``blocked_until``; one that cannot be read is a fresh window from *now*.
+
+        Fail closed: an unreadable window is read as a backoff in force for this policy's delay
+        at the row's failure count, never as no window at all.
+
+        :param health: the durable row
+        :ptype health: ScrapeTargetHealth
+        :param now: the current time
+        :ptype now: datetime
+        :return: the window, and whether it stands in for one that could not be read
+        :rtype: _Window
+        """
+        try:
+            return _Window(until=health.blocked_until, unreadable=False)
+        except StoredTimestampUnreadable as exc:
+            contain(
+                exc,
+                log=log,
+                what=(
+                    f"scrape circuit: the stored backoff window of target {health.target_id} could not be read; "
+                    "treating it as in force"
+                ),
+                extra={"target_id": health.target_id},
+                level="error",
+            )
+            delay = self._policy.delay_for(health.consecutive_fetch_failures)
+            return _Window(until=now + timedelta(seconds=delay), unreadable=True)
 
     async def _read_health(self, target_id: str) -> _HealthRead:
         """Read the durable row, reporting an unreadable store as distinct from an absent row.
@@ -957,11 +1044,13 @@ class TargetCircuit:
         """
         try:
             return _HealthRead(row=await self._health.get(target_id), readable=True)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-circuit behaviour, not fail every poll. Logged with its traceback below
-            log.exception(
-                "scrape circuit: could not read health for target %s; treating its circuit as closed",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except _HEALTH_STORE_READ_FAILURES as exc:  # an unreadable health store must degrade this target to its pre-circuit behaviour, not fail every poll. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not read health for target {target_id}; treating its circuit as closed",
+                extra={"target_id": target_id},
+                level="error",
             )
             return _HealthRead(row=None, readable=False)
 
@@ -974,8 +1063,13 @@ class TargetCircuit:
         blocked_until: datetime | None,
         blocked_at: datetime | None = None,
         egress: str | None = None,
-    ) -> None:
-        """Persist the circuit, never letting the bookkeeping cost the caller its fetch."""
+    ) -> bool:
+        """Persist the circuit, never letting the bookkeeping cost the caller its fetch.
+
+        :return: whether the write landed; a caller whose answer depends on it says so
+        :rtype: bool
+        """
+        landed = True
         try:
             await record_circuit_state(
                 self._health,
@@ -989,12 +1083,23 @@ class TargetCircuit:
                 # what it used, which is the value worth recording.
                 egress=egress or self._egress_name,
             )
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- same posture as every other health write in this package: a bookkeeping failure must not turn a completed fetch into a failed one. Logged with its traceback below
-            log.exception(
-                "scrape circuit: could not persist the circuit state for target %s",
-                target_id,
-                extra={"extra_data": {"target_id": target_id}},
+        except _HEALTH_STORE_WRITE_FAILURES as exc:  # same posture as every other health write in this package: a bookkeeping failure must not turn a completed fetch into a failed one. Logged with its traceback below
+            contain(
+                exc,
+                log=log,
+                what=f"scrape circuit: could not persist the circuit state for target {target_id}",
+                extra={"target_id": target_id},
+                level="error",
             )
+            landed = False
+        return landed
+
+
+class _Window(NamedTuple):
+    """A row's backoff window, and whether it stands in for a stored one that could not be read."""
+
+    until: datetime | None
+    unreadable: bool
 
 
 class _HealthRead(NamedTuple):
@@ -1014,11 +1119,13 @@ async def _clear_robots_block_quietly(health: ScrapeTargetHealthCollection, targ
 
     try:
         await clear_robots_block(health, target_id=target_id)
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a human has already done the work; failing here would report their fix as an error and leave the circuit half-updated. The stale queue entry is visible and self-corrects on the next successful poll. Logged with its traceback below
-        log.exception(
-            "scrape circuit: could not clear the robots block for target %s; it may stay queued",
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
+    except _HEALTH_STORE_WRITE_FAILURES as exc:  # a human has already done the work; failing here would report their fix as an error and leave the circuit half-updated. The stale queue entry is visible and self-corrects on the next successful poll. Logged with its traceback below
+        contain(
+            exc,
+            log=log,
+            what=f"scrape circuit: could not clear the robots block for target {target_id}; it may stay queued",
+            extra={"target_id": target_id},
+            level="error",
         )
 
 

@@ -1281,6 +1281,42 @@ class TestToolServerProbe:
         ready = await server.wait_until_ready(timeout=0.05)
         assert ready is False
 
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_polls_through_a_failed_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a poll the bus could not answer, or whose reply did not decode, is tried again."""
+        from threetears.agent.tools.server import DiscoveryProbeResponse, DiscoveryProbeResultEntry
+        from threetears.nats import RequestError, RequestTimeoutError
+
+        monkeypatch.setenv("THREETEARS_TOOLSERVER_READY_POLL_INTERVAL", "0.001")
+        available = DiscoveryProbeResponse(
+            agent_id="flaky-pod",
+            tools=[
+                DiscoveryProbeResultEntry(
+                    name="test.stub", version="1.0", status="available", requester_copy_status="available"
+                ),
+            ],
+        )
+        nc = MagicMock()
+        nc.request = AsyncMock(
+            side_effect=[RequestTimeoutError("no reply"), RequestError("response decode failed"), available]
+        )
+        server = ToolServer(nats_client=nc, pod_id="flaky-pod")
+        server.register(StubTool())
+
+        assert await server.wait_until_ready(timeout=5.0) is True
+        assert nc.request.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_propagates_a_bug_rather_than_polling_through_it(self) -> None:
+        """it used to be contained on every poll, so a bug read as a registry that never answered."""
+        nc = MagicMock()
+        nc.request = AsyncMock(side_effect=TypeError("a bug in the poll"))
+        server = ToolServer(nats_client=nc, pod_id="buggy-pod")
+        server.register(StubTool())
+
+        with pytest.raises(TypeError, match="a bug in the poll"):
+            await server.wait_until_ready(timeout=5.0)
+
 
 # -- public-surface promotions for hub cross-class collaboration --
 

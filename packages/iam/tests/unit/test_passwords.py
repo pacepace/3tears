@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import unicodedata
 
 import bcrypt
@@ -59,17 +60,45 @@ def test_normalize_password_is_nfkc() -> None:
 @pytest.mark.parametrize(
     "stored",
     [
-        "",
         "not-a-hash",
         "$argon2id$truncated",
         "$2b$not-really-bcrypt",
         "$unknown$scheme$xyz",
     ],
 )
-def test_malformed_stored_hash_is_a_failure_not_an_exception(stored: str) -> None:
-    # A corrupt stored hash is an auth failure, not a 500 -- and never an exception-shaped
-    # side channel distinguishing it from an ordinary wrong password.
-    assert not verify_password(_GOOD, stored).matched
+def test_malformed_stored_hash_is_a_failure_not_an_exception(stored: str, caplog: pytest.LogCaptureFixture) -> None:
+    """A corrupt stored hash denies, never raises -- and is named, not read as a wrong password.
+
+    It used to come back exactly like a mistyped password, so an account whose credential was
+    corrupt simply never logged in again and nothing anywhere said why.
+    """
+    with caplog.at_level(logging.ERROR, logger="threetears.iam.passwords"):
+        result = verify_password(_GOOD, stored)
+    assert not result.matched
+    assert result.upgraded_hash is None
+    assert result.stored_hash_fault is not None
+    assert "could not be read" in result.stored_hash_fault or "neither" in result.stored_hash_fault
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert errors, "a corrupt credential reached no operator"
+    if stored:
+        assert all(stored not in record.getMessage() for record in errors), "the log quoted the stored hash"
+
+
+def test_an_empty_stored_hash_is_named_but_not_an_error(caplog: pytest.LogCaptureFixture) -> None:
+    """An SSO-only account has no password; trying one is denied and named, but nothing is broken."""
+    with caplog.at_level(logging.DEBUG, logger="threetears.iam.passwords"):
+        result = verify_password(_GOOD, "")
+    assert not result.matched
+    assert result.stored_hash_fault is not None
+    assert "no password is set" in result.stored_hash_fault
+    assert caplog.records, "the denial was not logged at all"
+    assert all(record.levelno < logging.ERROR for record in caplog.records)
+
+
+def test_a_wrong_password_against_a_readable_hash_names_no_fault() -> None:
+    legacy = bcrypt.hashpw(b"the-real-one", bcrypt.gensalt(rounds=4)).decode("utf-8")
+    assert verify_password("not-the-real-one", legacy).stored_hash_fault is None
+    assert verify_password("not-the-real-one", hash_password(_GOOD)).stored_hash_fault is None
 
 
 def test_bcrypt_hash_verifies_and_yields_an_argon2_upgrade() -> None:

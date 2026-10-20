@@ -95,7 +95,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement
@@ -999,12 +999,14 @@ class _Sweeper:
                 await self._retire(batch)
                 asked += len(batch)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- retirement is housekeeping; a failure leaves old chunks for the next retire and must not fail a publish that already succeeded
-                log.warning(
-                    "scoped snapshot %s: retiring %d chunks failed; they stay until the next retire: %s",
-                    self._name,
-                    len(batch),
+                contain(
                     exc,
-                    extra={"extra_data": {"objects": batch}},
+                    log=log,
+                    what=(
+                        f"scoped snapshot {self._name}: retiring {len(batch)} chunks failed; "
+                        f"they stay until the next retire: {exc}"
+                    ),
+                    extra={"objects": batch},
                 )
         return asked
 
@@ -1079,8 +1081,10 @@ class _Sweeper:
                     by_token.setdefault(token, []).append(name)
             pointers = {token: await self.pointer_now(self._layout.pointer_key_of_token(token)) for token in by_token}
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names; nothing is deleted on a judgement that could not be made
-            log.warning(
-                "scoped snapshot %s: reading the pointers and write claims for %s failed: %s", self._name, what, exc
+            contain(
+                exc,
+                log=log,
+                what=f"scoped snapshot {self._name}: reading the pointers and write claims for {what} failed: {exc}",
             )
             return retired
         stale = [
@@ -1110,7 +1114,7 @@ class _Sweeper:
             for prefix in prefixes:
                 names += [info.name for info in await self._store.list_objects(prefix=prefix)]
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names; nothing listed is nothing deleted
-            log.warning("scoped snapshot %s: listing chunks for %s failed: %s", self._name, what, exc)
+            contain(exc, log=log, what=f"scoped snapshot {self._name}: listing chunks for {what} failed: {exc}")
             names = []
         return names
 
@@ -1628,8 +1632,8 @@ class ScopedSnapshot:
         for listener in list(self._listeners):
             try:
                 listener()
-            except Exception:  # prawduct:allow prawduct/broad-except -- a listener's failure must not undo or stop an L1 change already committed; logged
-                log.exception("scoped snapshot %s: a change listener failed", self._name)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a listener's failure must not undo or stop an L1 change already committed; logged
+                contain(exc, log=log, what=f"scoped snapshot {self._name}: a change listener failed", level="error")
 
     @asynccontextmanager
     async def holding_rebuilds(self, *, attempts: int = 10) -> AsyncIterator[bool]:
@@ -1705,7 +1709,7 @@ class ScopedSnapshot:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the watch is the replica's only news of changes; whatever ends it is logged and stated in the status rather than lost with the task
-            log.exception("scoped snapshot %s: the pointer watch ended", self._name)
+            contain(exc, log=log, what=f"scoped snapshot {self._name}: the pointer watch ended", level="error")
             ended = f"the pointer watch ended ({type(exc).__name__}: {exc})"
         self._watch_ended = f"{ended}; changes are no longer applied"
         self._settle()
@@ -1781,7 +1785,7 @@ class ScopedSnapshot:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the worker outlives any one failed attempt; logged and stated in the status, tried again at the next recheck
-                log.exception("scoped snapshot %s: sync failed", self._name)
+                contain(exc, log=log, what=f"scoped snapshot {self._name}: sync failed", level="error")
                 self._failure = f"failed ({type(exc).__name__}: {exc}); trying again"
                 self._waiting.pop("sync", None)
                 self._settle()

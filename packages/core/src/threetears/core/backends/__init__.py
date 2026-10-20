@@ -12,17 +12,25 @@ from threetears.core._extras import import_extras_module
 # real imports for mypy and IDEs; ``_LAZY`` is the runtime equivalent.
 if TYPE_CHECKING:
     from threetears.core.backends.broker_generation import BrokerGenerationSource, GenerationReader
-    from threetears.core.backends.nats_proxy import NatsProxyL3Backend
-    from threetears.core.backends.protocol import DurableStore, L3Backend, L3Reader, parse_rowcount
+    from threetears.core.backends.nats_proxy import NatsProxyL3Backend, check_reply_row_count
+    from threetears.core.backends.protocol import (
+        DurableStore,
+        L3Backend,
+        L3Reader,
+        RowcountUnreadableError,
+        parse_rowcount,
+    )
     from threetears.core.backends.sql import SqlL3Backend, bound_request_connection
 
 _LAZY: dict[str, tuple[str, str]] = {
     "BrokerGenerationSource": ("threetears.core.backends.broker_generation", "BrokerGenerationSource"),
     "GenerationReader": ("threetears.core.backends.broker_generation", "GenerationReader"),
     "NatsProxyL3Backend": ("threetears.core.backends.nats_proxy", "NatsProxyL3Backend"),
+    "check_reply_row_count": ("threetears.core.backends.nats_proxy", "check_reply_row_count"),
     "DurableStore": ("threetears.core.backends.protocol", "DurableStore"),
     "L3Backend": ("threetears.core.backends.protocol", "L3Backend"),
     "L3Reader": ("threetears.core.backends.protocol", "L3Reader"),
+    "RowcountUnreadableError": ("threetears.core.backends.protocol", "RowcountUnreadableError"),
     "parse_rowcount": ("threetears.core.backends.protocol", "parse_rowcount"),
     "SqlL3Backend": ("threetears.core.backends.sql", "SqlL3Backend"),
     "bound_request_connection": ("threetears.core.backends.sql", "bound_request_connection"),
@@ -35,8 +43,10 @@ __all__ = [
     "L3Backend",
     "L3Reader",
     "NatsProxyL3Backend",
+    "RowcountUnreadableError",
     "SqlL3Backend",
     "bound_request_connection",
+    "check_reply_row_count",
     "parse_rowcount",
 ]
 

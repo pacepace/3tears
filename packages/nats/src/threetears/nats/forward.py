@@ -70,7 +70,7 @@ from typing import TYPE_CHECKING, Final
 
 from nats.errors import NoRespondersError as _NatsNoRespondersError, TimeoutError as _NatsTimeoutError
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.nats.errors import NatsClientError, RequestError
 from threetears.nats.subjects import Subject, Subjects
@@ -297,15 +297,15 @@ async def serve_owner(
             frame = _encode_ok(reply)
         except Exception as exc:  # noqa: BLE001 -- boundary: every handler failure is framed back to the caller, never swallowed
             frame = _encode_err(exc)
-            log.info(
-                "owner handler raised; framing error back to caller",
+            contain(
+                exc,
+                log=log,
+                what="owner handler raised; framing error back to caller",
                 extra={
-                    "extra_data": {
-                        "key": key,
-                        "subject": subject.path,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    }
+                    "key": key,
+                    "subject": subject.path,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
                 },
             )
         if msg.reply_subject is not None:
