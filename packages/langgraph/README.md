@@ -79,6 +79,7 @@ The package ships platform-level [`AgentMiddleware`](https://docs.langchain.com/
 - Two summarizers. Choose by whether the conversation's history must survive:
   - `SummarizationMiddleware` (`before_model`) — once the message COUNT passes `trigger_messages`, rewrites the checkpointed `messages` channel to `[summary, *last keep_messages]`. The older messages are gone from the checkpoint.
   - `RollingSummaryMiddleware` (`awrap_model_call`, async only) — NON-destructive. Give it `store` (built per turn) or `store_for(request)` (an agent compiled once). The checkpointer keeps every message, and only the model's input is trimmed, once the messages since the last fold pass a TOKEN budget. The rolling summary and a cursor (the last folded message's id) live behind a `SummaryStore`, whose save is a compare-and-swap. It folds at most once per turn, never stores a failed or empty summary over the prior one, never leaves an orphaned tool result at the head of the kept tail, and marks its summary call `NOSTREAM_TAG` plus `metadata["threetears.usage.purpose"] = "summarization"`. `threetears.conversations.ConversationSummaryStore` is the store over a conversations row, and `dispatch_conversation_summarized` is its `on_summarized`.
+- `ToolLoopBudgetMiddleware` (`wrap_model_call`) — bounds a turn's tool loop and always ends the turn with text. At most `max_tool_calls` (16) per turn; wrap-up nudges at the `warn`/`urgent` tiers (a share of the cap, or of the model's context window); at `force` a pass with no tools told to answer from what it has; an empty or reasoning-only answer retried once, then `fallback_text`; a runaway guard for rounds with no text whose calls all failed. Put it first in the list, and run with `{"recursion_limit": recursion_limit_for(max_tool_calls, middleware=<the same list>)}` so the budget, not LangGraph's recursion error, ends a loop.
 
 ```python
 from langchain.agents import create_agent
@@ -86,18 +87,19 @@ from langchain.agents import create_agent
 from threetears.langgraph import (
     ObjectCatalogMiddleware,
     PromptCachingMiddleware,
+    ToolLoopBudgetMiddleware,
     ToolResultOffloadMiddleware,
+    recursion_limit_for,
 )
 
-agent = create_agent(
-    model=chat_anthropic,
-    tools=tools,
-    middleware=[
-        PromptCachingMiddleware(),
-        ToolResultOffloadMiddleware(),
-        ObjectCatalogMiddleware(),
-    ],
-)
+middleware = [
+    ToolLoopBudgetMiddleware(),
+    PromptCachingMiddleware(),
+    ToolResultOffloadMiddleware(),
+    ObjectCatalogMiddleware(),
+]
+agent = create_agent(model=chat_anthropic, tools=tools, middleware=middleware)
+config = {"recursion_limit": recursion_limit_for(middleware=middleware)}
 # after a run, PromptCachingMiddleware has stamped:
 # message.usage_metadata["cache_usage"]
 # == {"cache_read_input_tokens": ..., "cache_creation_input_tokens": ..., "cached_tokens": ...}

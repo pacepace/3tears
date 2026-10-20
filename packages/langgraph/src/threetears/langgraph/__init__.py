@@ -79,6 +79,13 @@ from threetears.langgraph.middleware_rolling_summary import (
     SummaryStore,
 )
 from threetears.langgraph.middleware_summarize import SummarizationMiddleware
+from threetears.langgraph.middleware_tool_budget import (
+    DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    DEFAULT_TOOL_BUDGET_FALLBACK_TEXT,
+    ToolBudgetTier,
+    ToolLoopBudgetMiddleware,
+    recursion_limit_for,
+)
 from threetears.langgraph.offload import (
     DEFAULT_OFFLOAD_THRESHOLD_CHARS,
     NEVER_OFFLOAD_TOOLS,
@@ -145,9 +152,11 @@ __all__ = [
     "ContextMergeMiddleware",
     "ConversationContextProvider",
     "DEFAULT_CUSTOMER_CONFIG_KEY",
+    "DEFAULT_MAX_TOOL_CALLS_PER_TURN",
     "DEFAULT_OFFLOAD_THRESHOLD_CHARS",
     "DEFAULT_STRUCTURED_INLINE_MAX_CHARS",
     "DEFAULT_SUMMARIZATION_PROMPT",
+    "DEFAULT_TOOL_BUDGET_FALLBACK_TEXT",
     "FlushCallback",
     "FrameworkEvent",
     "FrameworkEventRegistry",
@@ -194,9 +203,11 @@ __all__ = [
     "ThreeTierCheckpointSaver",
     "ToolCallEndEvent",
     "ToolCallProgressEvent",
+    "ToolBudgetTier",
     "ToolCallStartEvent",
     "ToolCompletedEvent",
     "ToolDispatchedEvent",
+    "ToolLoopBudgetMiddleware",
     "ToolResultOffloadMiddleware",
     "ToolResultOffloader",
     "ToolStartedEvent",
@@ -221,6 +232,7 @@ __all__ = [
     "is_never_offload_tool",
     "merge_metadata",
     "parse_stream_event",
+    "recursion_limit_for",
     "should_bind_tools_fresh",
     "structure_for_stream",
     "summarize_args",

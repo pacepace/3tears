@@ -4,10 +4,14 @@ The framework-aligned successor to the hand-rolled ``AgentNodeHook`` /
 ``ToolNodeHook`` protocols. ``create_agent`` extends via
 :class:`langchain.agents.middleware.AgentMiddleware`; this module holds the
 **platform-level** middleware every 3tears consumer can reuse. Consumer-specific
-policy (tool side-effects, skill-rebind, loop governance) lives in each consumer
-as its own ``AgentMiddleware`` and is NOT here.
+policy (tool side-effects, skill-rebind) lives in each consumer as its own
+``AgentMiddleware`` and is NOT here. Tool-loop governance is platform:
+:class:`~threetears.langgraph.ToolLoopBudgetMiddleware` (``middleware_tool_budget``)
+bounds a turn's tool calls and always ends the turn with text, and
+:func:`~threetears.langgraph.recursion_limit_for` keeps the graph's recursion limit
+above what that budget allows.
 
-What lives here today:
+What lives in this module:
 
 - :class:`PromptCachingMiddleware` — Anthropic prompt-cache annotation
   (``cache_control``) + cache-usage normalization, re-expressed from the old

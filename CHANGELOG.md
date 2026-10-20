@@ -68,6 +68,32 @@ against Snowflake or BigQuery gets `FINGERPRINT_GROUPS_UNSUPPORTED` (no group-by
 needs no fingerprint and is unaffected. `not_null` is offered on `read_counted` only: a fingerprint ask ignores
 fields it does not know, so an older hub would drop a null filter silently.
 
+### langgraph: a platform tool-loop budget, so a looping model ends its turn with text
+
+**Added:** `ToolLoopBudgetMiddleware` for `create_agent`. A turn (everything after the last user message) may make
+`max_tool_calls` tool calls (default 16). Two pressures set a tier before every model call, the larger winning:
+tool calls against the cap (`warn` at `warn_pct`, `urgent` at `urgent_pct` of the cap, `force` at the cap) and the
+prompt against the model's context window (`warn`/`urgent`/`force` at 70/85/90 percent; the window is
+`context_window_tokens`, else the chat model's `profile["max_input_tokens"]`). At `warn` and `urgent` the model is
+shown a wrap-up nudge; at `force` it is called with no tools and told to answer from what it has, and a tool call
+it still returns is dropped. A round whose calls would pass the cap is discarded and the answer forced. A final
+answer with no visible text (empty or reasoning only) is retried once with no tools, a stricter instruction and
+the model's own reasoning; if that is empty too, the turn ends with `fallback_text`. `runaway_rounds` (3)
+consecutive rounds that wrote no text and whose every tool call failed force the answer early. Every threshold
+and text is a constructor argument. Stateless: the count is derived from the state's messages on each call, and
+nudges are request overrides, never written to state. Tier transitions, forced answers, retries and fallbacks
+are logged through `threetears.observe` with the turn's tool-call count and no prompt text.
+`recursion_limit_for(max_tool_calls, middleware=...)` (and `ToolLoopBudgetMiddleware.recursion_limit`) gives a
+`recursion_limit` above the longest turn the budget allows, counting the hook nodes the agent's middleware adds,
+so the budget, not LangGraph's recursion error, ends a loop. Also exported: `ToolBudgetTier`,
+`DEFAULT_MAX_TOOL_CALLS_PER_TURN`, `DEFAULT_TOOL_BUDGET_FALLBACK_TEXT`.
+
+**Adoption.** scriob, samhla and metallm replace their own loop governance with it: put
+`ToolLoopBudgetMiddleware()` first in the agent's `middleware` list and run with
+`{"recursion_limit": recursion_limit_for(..., middleware=<the same list>)}`. scriob drops its stopgap
+`ToolBudgetMiddleware`; samhla replaces its fixed `recursion_limit` of 80; metallm maps `max_tool_calls_per_turn`,
+`tool_loop_budget_*_pct` and `runaway_zero_progress_rounds` onto the constructor.
+
 ## v0.72.0 -- 2026-10-20
 
 ### agent-memory, agent-intention, core: the embedding width is a deployment setting
