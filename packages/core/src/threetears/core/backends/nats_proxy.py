@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 from uuid import UUID, uuid7
 
@@ -37,7 +37,7 @@ from threetears.core.backends.broker_generation import (
     forget_reply_generations,
     record_reply_generations,
 )
-from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, RowcountUnreadableError
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
@@ -271,6 +271,37 @@ def _parse_iso_datetime(raw: str) -> Any:
 #: the operation labels whose tag reports rows affected; a broker reply without a count for one of
 #: these is not a zero.
 _DML_VERBS: frozenset[str] = frozenset({"INSERT", "UPDATE", "DELETE", "UPSERT"})
+
+
+def check_reply_row_count(query: str, reply: Mapping[str, Any]) -> None:
+    """check that a broker's reply to ``query`` says how many rows a DML statement touched.
+
+    The reply contract for ``l3.query`` and ``l3.tx.execute``, for the broker to check before it
+    replies and in its tests: a successful reply to an ``insert``, ``update``, ``delete`` or ``upsert`` carries ``row_count``,
+    a non-negative integer. Without it the proxy can only answer the bare verb, and a fenced save
+    raises :class:`~threetears.core.backends.protocol.RowcountUnreadableError`. A failed reply, and
+    a reply to any other statement, is not checked. The statement is labelled as the proxy labels
+    it, so the broker needn't know the labels.
+
+    :param query: the SQL the reply answers
+    :ptype query: str
+    :param reply: the decoded reply body
+    :ptype reply: Mapping[str, Any]
+    :return: None
+    :rtype: None
+    :raises RowcountUnreadableError: a successful DML reply has no ``row_count``, or one that is not
+        a non-negative integer
+    """
+    if not reply.get("success", False):
+        return
+    operation = _detect_operation(query)
+    if operation.upper() not in _DML_VERBS:
+        return
+    row_count = reply.get("row_count")
+    if isinstance(row_count, bool) or not isinstance(row_count, int) or row_count < 0:
+        raise RowcountUnreadableError(
+            f"a successful {operation} reply must carry row_count as a non-negative integer; it carries {row_count!r}"
+        )
 
 
 def _format_execute_tag(operation: str, row_count: Any) -> str:
