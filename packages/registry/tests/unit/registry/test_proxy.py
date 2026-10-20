@@ -14,7 +14,7 @@ from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.server import CallAccepted
 from threetears.nats import RESULT_ACK_TIMEOUT_SECONDS, IncomingMessage, Subject, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.proxy import ProxyCallResponse
+from threetears.registry.proxy import ProxyCallRequest, ProxyCallResponse
 
 from .copy_entries import uniform_entry
 
@@ -794,6 +794,47 @@ class TestCallProxyRouting:
         call_args = nc.request_raw.call_args
         # wrapper request_raw is kw-only with typed Subject
         assert call_args.kwargs["subject"].path == "test.tools.internal.pod-second"
+
+
+# -- malformed request tests --
+
+
+class TestCallProxyMalformedRequest:
+    """a request that does not parse is answered malformed; a bug while parsing propagates."""
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_is_not_a_request_is_answered_malformed(self) -> None:
+        """the caller gets a typed answer rather than waiting out its timeout."""
+        proxy = _make_proxy(ToolCatalog(), namespace="test")
+        nc = AsyncMock()
+        await proxy.start(nc)
+
+        await proxy.handle_call(_make_nats_msg(data=b"not json"))
+        await proxy.stop()
+
+        nc.publish_reply.assert_awaited_once()
+        assert nc.publish_reply.call_args.kwargs["message"].error_code == "MALFORMED_REQUEST"
+
+    @pytest.mark.asyncio
+    async def test_a_bug_while_parsing_propagates_rather_than_reading_as_malformed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """it used to be contained and answered MALFORMED_REQUEST, blaming the caller."""
+        proxy = _make_proxy(ToolCatalog(), namespace="test")
+        nc = AsyncMock()
+        await proxy.start(nc)
+
+        def _broken(cls: type[ProxyCallRequest], data: bytes) -> ProxyCallRequest:
+            raise TypeError("a bug in the parse")
+
+        monkeypatch.setattr(ProxyCallRequest, "model_validate_json", classmethod(_broken))
+        before = asyncio.all_tasks()
+        await proxy.handle_call(_make_nats_msg(data=_make_call_request().model_dump_json().encode("utf-8")))
+        (dispatch,) = asyncio.all_tasks() - before
+
+        with pytest.raises(TypeError, match="a bug in the parse"):
+            await dispatch
+        nc.publish_reply.assert_not_awaited()
 
 
 # -- lifecycle tests --

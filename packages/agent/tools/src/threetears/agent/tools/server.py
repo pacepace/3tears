@@ -16,7 +16,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer, model_validator
+from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer, model_validator
 from threetears.core.wire import TolerantWireModel
 
 from threetears.agent.audit import AuditEvent, publish_audit
@@ -95,7 +95,7 @@ from threetears.nats import (
     result_subject_prefix_for_pod,
     set_default_namespace,
 )
-from threetears.nats.errors import NatsClientError
+from threetears.nats.errors import NatsClientError, PublishError, RequestError
 from threetears.observe import cancel_and_wait, clear_context, contain, get_logger, InflightRequestsGauge, traced
 from threetears.observe.resilience import retry_bounded
 
@@ -2211,11 +2211,12 @@ class ToolServer:
                 if own_available == expected_count:
                     ready = True
                     break
-            except Exception as exc:
+            except RequestError as exc:
                 # intentional: readiness polling must tolerate transient NATS
                 # hiccups and discovery schema drift without crashing the
-                # caller. log at debug so the symptom surfaces in diagnostics
-                # rather than a blanket silent swallow.
+                # caller; NatsClient.request raises RequestError for both (a
+                # reply that does not decode included). log at debug so the
+                # symptom surfaces in diagnostics rather than a blanket silent swallow.
                 contain(
                     exc,
                     log=log,
@@ -2489,7 +2490,7 @@ class ToolServer:
                 response_type=RegistrationResponse,
                 timeout=_IDENTITY_REPLY_TIMEOUT,
             )
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the answer and never the registration. Logged with its type and message
+        except RequestError as exc:  # see docstring; the manifest was published before the reply was awaited, so a failure here costs the answer and never the registration. Logged with its type and message
             contain(
                 exc,
                 log=log,
@@ -3336,7 +3337,7 @@ class ToolServer:
 
         try:
             request = CallRequest.model_validate_json(msg.data)
-        except Exception as exc:
+        except ValidationError as exc:
             error_response = CallResponse(
                 success=False,
                 content="",
@@ -3767,7 +3768,7 @@ class ToolServer:
             try:
                 await self._nc.jetstream_publish(subject=subject, payload=payload)
                 return
-            except Exception as exc:  # noqa: BLE001 — the work is already done; retry beats discarding it
+            except PublishError as exc:  # the work is already done; retry beats discarding it
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
                     # the answer is now lost. say so, with the subject and the size, rather than
                     # letting it surface as an unexplained timeout at the caller, and as a call the
