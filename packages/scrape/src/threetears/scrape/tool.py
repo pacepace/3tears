@@ -1126,9 +1126,9 @@ class ScrapeTool(TearsTool):
                 # The circuit permitted this fetch, and a permitted decision may have promoted
                 # the in-process breaker to HALF_OPEN and marked its probe in flight. That flag
                 # is cleared only by an outcome, and raising past here means no outcome is ever
-                # reported -- so the breaker would hold the probe for the life of the process,
-                # fast-failing every later check of this target before the durable row is even
-                # read, and answering "retry in about 0s" forever. The durable side needs
+                # reported -- so the breaker would hold the probe until its probe timeout took it as
+                # lost, fast-failing every later check of this target before the durable row is
+                # even read. Handing it back here frees it at once. The durable side needs
                 # nothing: its promotion already stamped `blocked_until` as the probe's own
                 # reservation, which outlives the process that abandoned it.
                 #

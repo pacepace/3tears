@@ -1043,9 +1043,9 @@ async def test_an_abandoned_probe_can_be_released_by_the_caller_that_abandoned_i
 
     ``check`` saying yes can promote the in-process breaker to HALF_OPEN and mark ITS probe
     in flight. If the caller then raises before reporting an outcome, nothing ever clears
-    that flag: every later ``check`` fast-fails on the in-process branch before the durable
-    row is read, with ``retry_after_seconds`` of 0.0 -- an infinite "retry immediately" into
-    a circuit that will never admit anything.
+    that flag until the breaker's probe timeout takes the probe as lost: every later ``check``
+    meanwhile fast-fails on the in-process branch before the durable row is read, refusing a
+    target nothing is fetching.
 
     Uses the real ``CircuitBreaker`` because the in-flight flag IS the behaviour under test.
     """

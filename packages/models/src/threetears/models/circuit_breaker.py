@@ -644,7 +644,7 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         """
         _ = run_id
         _ = kwargs
-        from threetears.models.errors import is_rate_limit
+        from threetears.models.errors import is_provider_answer, is_rate_limit
 
         if isinstance(error, CircuitOpenError):
             return
@@ -661,36 +661,12 @@ class CircuitBreakerCallback(BaseCallbackHandler):
             return
         self._breaker.record_failure()
         if self._rate_limit is not None:
-            if _provider_answered(error):
+            if is_provider_answer(error):
                 # an answer that is not a rate limit is the route's verdict on its rate limit:
                 # not limited. it ends a rate-limit probe in flight, which no other path would.
                 self._rate_limit.record_probe_answered()
             else:
                 self._rate_limit.release_probe()
-
-
-def _provider_answered(error: Exception) -> bool:
-    """whether a provider error is the provider's own answer, rather than it not being heard from.
-
-    an answer carries an HTTP status (an SDK's ``status_code``, a ``ModelProviderError``'s
-    ``status``, httpx's ``response``), or is a failure the provider reported as data
-    (:class:`~threetears.models.errors.ModelProviderError`, OpenRouter's mid-stream error).
-    a connection that failed or a call that ran past its deadline carries none.
-
-    :param error: a provider error
-    :ptype error: Exception
-    :return: ``True`` when the provider answered
-    :rtype: bool
-    """
-    from threetears.models.errors import ModelProviderError
-
-    if isinstance(error, ModelProviderError):
-        return True
-    if isinstance(getattr(error, "status_code", None), int):
-        return True
-    if getattr(error, "response", None) is not None:
-        return True
-    return isinstance(error, ValueError) and "OpenRouter API" in str(error)
 
 
 # how bad each state is, for reporting one state per provider: a provider with

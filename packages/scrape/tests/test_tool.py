@@ -794,9 +794,9 @@ class TestScrapeToolFetchCircuit:
         A permitted decision can promote the in-process breaker to HALF_OPEN and mark its
         probe in flight; only an outcome clears that flag. The eval loop raising -- an L3
         write failing inside ``save_entity``, say -- means no outcome is ever reported, so
-        the flag is held for the life of the process. Every later ``check`` then fast-fails
-        on the in-process branch before the durable row is read and answers "retry in about
-        0s", so the tool tells its caller to hammer a target it will never actually fetch.
+        the flag is held until the breaker's probe timeout takes the probe as lost. Every later
+        ``check`` meanwhile fast-fails on the in-process branch before the durable row is read,
+        so the tool refuses a target it is not actually fetching.
 
         Uses the real ``CircuitBreaker`` because the in-flight flag IS the behaviour under
         test, and drives it through ``tool.execute`` because the gap being closed is the
@@ -984,9 +984,9 @@ class TestScrapeToolFetchCircuit:
         The circuit admits a probe, then the crawl delay is waited before the render. That
         sleep sat outside every guard: the render's own handler starts after it. So a poll
         cancelled while being polite propagates with the probe still held, and
-        ``release_probe``'s docstring says the target is then fast-failed with
-        ``retry_after_seconds=0.0`` for the life of the process -- a target that is behaving
-        perfectly, punished for the one thing it asked us to do.
+        the target is then fast-failed until the breaker's probe timeout takes the probe as
+        lost -- a target that is behaving perfectly, punished for the one thing it asked us
+        to do.
 
         Unlike the three before it this is not a narrow window. The tool advertises a deadline
         of ``default_timeout + 60`` while an honoured ``Crawl-delay`` is capped at 300s, so an

@@ -312,3 +312,50 @@ class _SlowStream(GenericFakeChatModel):
             if first:
                 first = False
                 await asyncio.sleep(10)
+
+
+class TestWhatIsAProviderAnswer:
+    """``is_provider_answer`` decides whether an error ends a rate-limit probe or hands it back."""
+
+    @staticmethod
+    def _answered_shapes() -> list[Exception]:
+        from threetears.models.errors import ModelProviderError
+
+        with_response = type("HTTPStatusError", (Exception,), {"response": object()})()
+        return [
+            ModelProviderError("no endpoints", provider="OpenRouter"),
+            type("NotFound", (Exception,), {"status_code": 404})(),
+            with_response,
+            ValueError("OpenRouter API returned an error during streaming: down (code: 502)"),
+        ]
+
+    def test_each_answered_shape_is_an_answer(self) -> None:
+        from threetears.models.errors import is_provider_answer
+
+        assert [is_provider_answer(e) for e in self._answered_shapes()] == [True, True, True, True]
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ConnectionRefusedError("refused"),
+            TimeoutError("deadline"),
+            ValueError("a ValueError that is not OpenRouter's"),
+            type("Shaped", (Exception,), {"status_code": "429"})(),  # not an integer status
+        ],
+    )
+    def test_no_answer_is_not_an_answer(self, error: Exception) -> None:
+        from threetears.models.errors import is_provider_answer
+
+        assert is_provider_answer(error) is False
+
+    @pytest.mark.parametrize("index", [0, 1, 2, 3])
+    def test_each_answered_shape_ends_a_rate_limit_probe(self, index: int) -> None:
+        """Through the callback: an answer closes the HALF_OPEN rate-limit breaker, so the next
+        request runs; a no-answer would have handed the probe back and left it HALF_OPEN."""
+        clock = _Clock()
+        registry = _registry(clock)
+        callback = _callback(registry)
+        _open_the_rate_limit(callback, clock)
+        callback.on_chat_model_start({}, [[]])  # the rate-limit probe
+        callback.on_llm_error(self._answered_shapes()[index])
+        assert registry.model_status() == {}
