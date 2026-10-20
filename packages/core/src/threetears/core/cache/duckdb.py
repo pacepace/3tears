@@ -54,7 +54,9 @@ class PartitionReplacement:
     The scope is the rows whose ``column`` equals ``value`` (``IS NULL`` for ``None``). Give
     ``arrow`` (an Arrow table, as :meth:`DuckDBBackend.export_partition` writes one) or ``rows``
     (mappings, written as :meth:`DuckDBBackend.upsert_many` writes them, which needs the
-    ``primary_key``); neither, or an empty one, leaves the scope empty.
+    ``primary_key``); neither, or an empty one, leaves the scope empty. With ``append`` the scope
+    keeps what it holds and the rows are added after it, in the same transaction as every other
+    replacement: for a table rows are only ever added to.
 
     :ivar table: a table the backend created
     :ivar column: the scope column
@@ -62,6 +64,7 @@ class PartitionReplacement:
     :ivar rows: the scope's rows as mappings
     :ivar arrow: the scope's rows as an Arrow table
     :ivar primary_key: the table's key, for ``rows``
+    :ivar append: add the rows to what the scope holds rather than replace it
     """
 
     table: str
@@ -70,6 +73,7 @@ class PartitionReplacement:
     rows: Sequence[Mapping[str, Any]] | None = None
     arrow: Any = None
     primary_key: str | tuple[str, ...] = "id"
+    append: bool = False
 
 
 #: whether this process has said pyarrow is missing (once is enough)
@@ -490,6 +494,8 @@ class DuckDBBackend:
     def replace_partitions(self, replacements: Sequence[PartitionReplacement]) -> int:
         """make each named scope hold exactly what its replacement gives, all in ONE transaction.
 
+        A replacement marked ``append`` adds its rows to what the scope holds instead.
+
         A reader on another cursor (:meth:`read_snapshot`) sees every scope as it was until the
         commit and every one as it is after, never part of the change. A failure rolls back, so
         every table keeps what it held.
@@ -508,7 +514,8 @@ class DuckDBBackend:
             try:
                 for replacement, (condition, params) in zip(replacements, filters, strict=True):
                     table = quote_identifier(replacement.table)
-                    self._db.execute(f"DELETE FROM {table} WHERE {condition}", params)  # noqa: S608
+                    if not replacement.append:
+                        self._db.execute(f"DELETE FROM {table} WHERE {condition}", params)  # noqa: S608
                     if replacement.arrow is not None and replacement.arrow.num_rows:
                         self._db.register("_partition_chunk", replacement.arrow)
                         try:

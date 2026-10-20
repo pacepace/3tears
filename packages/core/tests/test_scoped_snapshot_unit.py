@@ -35,6 +35,7 @@ from threetears.core.collections import scoped_snapshot as scoped_snapshot_modul
 from threetears.core.collections.scoped_snapshot import (  # noqa: E402
     ScopedSnapshot,
     SnapshotPhase,
+    SnapshotSource,
     SnapshotTable,
     encode_chunk,
     open_tool_pod_snapshot,
@@ -1972,4 +1973,116 @@ async def test_a_lost_rebuild_claim_is_said_and_never_deleted_from_its_new_holde
 
     assert "the rebuild claim was lost" in caplog.text
     assert b"another-writer" in pointers.entries["enr.rebuild"][0], "the new holder's claim was deleted"
+    await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# pieces: a table's base chunk and the rows added after it
+# ----------------------------------------------------------------------
+
+
+def _results_chunk(rows: list[dict[str, Any]], scope: str = "TX") -> bytes:
+    """a scope's results rows as a chunk, typed by the L1's own columns."""
+    return encode_chunk(
+        _backend().export_rows("results", "state", scope, rows, primary_key=("county",), order_by=("county",))
+    )
+
+
+def _county(county: str, votes: int, state: str = "TX") -> dict[str, Any]:
+    return {"county": county, "state": state, "votes": votes}
+
+
+def _with_pieces(
+    pointers: _Pointers,
+    store: _Store,
+    *,
+    epoch: int,
+    pieces: list[tuple[int, list[dict[str, Any]]]],
+    mark: str = "+pieces",
+) -> dict[str, Any]:
+    """move TX's pointer to ``epoch``, its base kept and ``pieces`` (epoch, rows) after it, as a writer of pieces would."""
+    held = json.loads(pointers.entries["enr.s.TX"][0])
+    digest = held["schema"]["results"]
+    listed = []
+    for at, rows in pieces:
+        name = f"enr.p/TX/{at}/results.{digest}"
+        store.objects[name] = _results_chunk(rows)
+        listed.append({"object": name, "rows": len(rows), "epoch": at, "bytes": len(store.objects[name])})
+    held["epoch"] = epoch
+    held["tables"]["results"]["pieces"] = listed
+    held["schema"]["results"] = f"{digest}{mark}"
+    pointers.put_now("enr.s.TX", json.dumps(held).encode())
+    return held
+
+
+def _tx_counties(snapshot: ScopedSnapshot) -> list[tuple[str, int]]:
+    with snapshot.read() as cursor:
+        return cursor.execute("SELECT county, votes FROM results WHERE state = 'TX' ORDER BY county").fetchall()
+
+
+async def test_a_pointer_with_no_pieces_is_written_in_the_shape_a_replica_that_predates_pieces_reads() -> None:
+    snapshot, pointers, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+
+    written = json.loads(pointers.entries["enr.s.TX"][0])
+
+    assert set(written) == {"scope", "epoch", "tables", "schema", "at"}
+    assert set(written["tables"]["results"]) == {"object", "rows"}
+    assert written["schema"]["results"] == snapshot.backend.schema_digest("results")
+    await snapshot.stop()
+
+
+async def test_a_cold_replica_loads_a_tables_base_and_every_piece_after_it() -> None:
+    first, pointers, store, _ = _snapshot()
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    _with_pieces(pointers, store, epoch=3, pieces=[(2, [_county("c3", 3)]), (3, [_county("c4", 4), _county("c5", 5)])])
+
+    second, _, _, l3 = _snapshot(pointers=pointers, store=store)
+    statements = l3.statements
+    await second.start()
+    await second.wait_ready(timeout=5)
+
+    assert second.status().source is SnapshotSource.L2
+    assert l3.statements == statements, "a cold replica read L3 although NATS held base and pieces"
+    assert _tx_counties(second) == [("c1", 1), ("c3", 3), ("c4", 4), ("c5", 5)]
+    assert second.applied_epoch("TX") == 3
+    assert second.status().rows == {"results": 5}
+    await second.stop()
+
+
+async def test_a_pointer_marked_by_a_format_this_replica_does_not_know_is_served_from_l3_and_left_standing() -> None:
+    first, pointers, store, _ = _snapshot()
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    # a later format: as a replica that predates pieces sees a pointer with them, its columns are not ours
+    _with_pieces(pointers, store, epoch=1, pieces=[(1, [_county("c3", 3)])], mark="+pieces-v9")
+    standing = pointers.entries["enr.s.TX"][0]
+
+    second, _, _, _ = _snapshot(pointers=pointers, store=store)
+    await second.start()
+    await second.wait_ready(timeout=5)
+
+    assert second.status().source is SnapshotSource.L3
+    assert _tx_counties(second) == [("c1", 1)], "a pointer of another format was loaded"
+    assert pointers.entries["enr.s.TX"][0] == standing, "the other format's pointer was repointed at its epoch"
+    await second.stop()
+
+
+async def test_a_full_store_sweep_keeps_every_piece_a_pointer_serves_and_takes_one_it_no_longer_does() -> None:
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    held = _with_pieces(pointers, store, epoch=3, pieces=[(2, [_county("c3", 3)]), (3, [_county("c4", 4)])])
+    await _until(lambda: snapshot.applied_epoch("TX") == 3, what="TX's pieces applied")
+    folded = f"enr.p/TX/1/results.{snapshot.backend.schema_digest('results')}"
+    store.objects[folded] = _results_chunk([_county("c2", 2)])
+
+    await _fill_and_sweep(snapshot, store, l3)
+
+    served = [held["tables"]["results"]["object"], *(p["object"] for p in held["tables"]["results"]["pieces"])]
+    assert set(served) <= set(store.objects), "the sweep took a base or a piece a pointer serves"
+    assert folded in store.retired, "a piece no pointer names outlived the sweep"
     await snapshot.stop()

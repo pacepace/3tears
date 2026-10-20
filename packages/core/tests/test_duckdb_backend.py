@@ -525,6 +525,62 @@ class TestPartitions:
             {"race": "r2", "state": "TX", "votes": 20},
         ]
 
+    def test_an_append_adds_to_a_scope_in_the_same_transaction_as_a_replacement(self) -> None:
+        pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        source = _partitioned_backend()
+        source.upsert_many("results", [_result("r3", "c3", "TX", 30)], ("race", "county"))
+        piece = source.export_partition("results", "state", "TX", order_by=("race", "county"))
+
+        backend = _partitioned_backend()
+        backend.upsert_many(
+            "results",
+            [_result("r1", "c1", "TX", 1), _result("r2", "c2", "TX", 2), _result("r1", "c5", "CA", 5)],
+            ("race", "county"),
+        )
+        written = backend.replace_partitions(
+            [
+                PartitionReplacement(table="results", column="state", value="TX", arrow=piece, append=True),
+                PartitionReplacement(
+                    table="results",
+                    column="state",
+                    value="DE",
+                    rows=[_result("r4", "c4", "DE", 4)],
+                    primary_key=("race", "county"),
+                    append=True,
+                ),
+                PartitionReplacement(table="results", column="state", value="CA", rows=[]),
+            ]
+        )
+
+        assert written == 2
+        rows = backend.execute_query("SELECT race, state, votes FROM results ORDER BY state, race")
+        assert rows == [
+            {"race": "r4", "state": "DE", "votes": 4},
+            {"race": "r1", "state": "TX", "votes": 1},
+            {"race": "r2", "state": "TX", "votes": 2},
+            {"race": "r3", "state": "TX", "votes": 30},
+        ]
+
+    def test_an_append_of_a_row_already_held_changes_nothing(self) -> None:
+        pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _partitioned_backend()
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1)], ("race", "county"))
+        again = backend.export_partition("results", "state", "TX", order_by=("race", "county"))
+
+        # a row is only ever added to an append-only table: one already held is refused, not doubled
+        with pytest.raises(duckdb.ConstraintException):
+            backend.replace_partitions(
+                [
+                    PartitionReplacement(table="results", column="state", value="CA", rows=[]),
+                    PartitionReplacement(table="results", column="state", value="TX", arrow=again, append=True),
+                ]
+            )
+        assert backend.execute_query("SELECT race, votes FROM results") == [{"race": "r1", "votes": 1}]
+
     def test_a_failing_replacement_changes_nothing(self) -> None:
         pytest.importorskip("pyarrow")
         from threetears.core.cache.duckdb import PartitionReplacement

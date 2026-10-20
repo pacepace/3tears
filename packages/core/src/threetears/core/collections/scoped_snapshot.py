@@ -146,6 +146,14 @@ _HISTORY: Final = 20
 _BEHIND_REBUILD_AFTER: Final = 3
 
 
+#: what a pointer's schema entry carries after a table's column digest when the table has pieces. A
+#: replica that predates pieces compares the entry with its own digest before loading anything, so it
+#: takes the scope for another code version's and serves it from L3 rather than misread the pointer
+_PIECES_MARK: Final = "+pieces"
+
+#: what begins any mark on a schema entry; a column digest is hex, so it never holds one
+_MARK_SEPARATOR: Final = "+"
+
 #: the options :func:`open_tool_pod_snapshot` wires itself, refused when a caller gives them
 _POD_WIRED_OPTIONS: Final = frozenset({"store", "pointers", "ensure_buckets", "retire"})
 
@@ -282,8 +290,50 @@ class SnapshotStatus:
 
 
 @dataclass(frozen=True)
+class _Piece:
+    """one piece of an append-only table's scope: the rows one write added, in its own chunk.
+
+    :ivar name: the chunk's object name
+    :ivar rows: the rows it holds
+    :ivar epoch: the epoch it was written at
+    :ivar size: its bytes, for the compaction threshold
+    """
+
+    name: str
+    rows: int
+    epoch: int
+    size: int
+
+    def encode(self) -> dict[str, Any]:
+        """the piece as its pointer entry holds it.
+
+        :return: its fields
+        :rtype: dict[str, Any]
+        """
+        return {"object": self.name, "rows": self.rows, "epoch": self.epoch, "bytes": self.size}
+
+    @classmethod
+    def decode(cls, body: Mapping[str, Any]) -> _Piece:
+        """a piece from its pointer entry.
+
+        :param body: the entry
+        :ptype body: Mapping[str, Any]
+        :return: the piece
+        :rtype: _Piece
+        :raises KeyError: when a field is missing
+        """
+        return cls(name=str(body["object"]), rows=int(body["rows"]), epoch=int(body["epoch"]), size=int(body["bytes"]))
+
+
+@dataclass(frozen=True)
 class _Pointer:
-    """what a scope's pointer says: its epoch, and its chunk for each table."""
+    """what a scope's pointer says: its epoch, and for each table its base chunk and any pieces after it.
+
+    A table's rows in the scope are its base chunk (``objects``, ``rows``) followed by its pieces in
+    order (``pieces``, present only for a table that has some): the format ``docs/design-scoped-snapshot.md``
+    records. A pointer with no pieces is written exactly as a replica that predates pieces writes and
+    reads one.
+    """
 
     scope: str
     epoch: int
@@ -292,6 +342,38 @@ class _Pointer:
     schema: Mapping[str, str]
     #: when it was written (epoch seconds); None for a pointer written before it was recorded
     published_at: float | None = field(default=None, compare=False)
+    #: table -> its pieces after the base, in order; a table with none is not named
+    pieces: Mapping[str, tuple[_Piece, ...]] = field(default_factory=lambda: MappingProxyType({}))
+    #: table -> when an append-only table's base was last formed whole (epoch seconds), if recorded
+    compacted_at: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}), compare=False)
+
+    def chain(self, table: str) -> tuple[str | None, tuple[_Piece, ...]]:
+        """a table's base chunk and its pieces after it.
+
+        :param table: the table
+        :ptype table: str
+        :return: the base's name (``None`` when the pointer names none) and the pieces
+        :rtype: tuple[str | None, tuple[_Piece, ...]]
+        """
+        return self.objects.get(table), tuple(self.pieces.get(table, ()))
+
+    def total_rows(self, table: str) -> int:
+        """a table's rows in the scope: its base and every piece.
+
+        :param table: the table
+        :ptype table: str
+        :return: the rows
+        :rtype: int
+        """
+        return self.rows.get(table, 0) + sum(piece.rows for piece in self.pieces.get(table, ()))
+
+    def names(self) -> list[str]:
+        """every chunk the pointer serves: each table's base and its pieces.
+
+        :return: the names
+        :rtype: list[str]
+        """
+        return [*self.objects.values(), *(piece.name for pieces in self.pieces.values() for piece in pieces)]
 
     def encode(self) -> bytes:
         """the pointer as the KV entry's value.
@@ -299,12 +381,24 @@ class _Pointer:
         :return: its JSON
         :rtype: bytes
         """
+        tables: dict[str, dict[str, Any]] = {}
+        schema: dict[str, str] = {}
+        for t in self.objects:
+            entry: dict[str, Any] = {"object": self.objects[t], "rows": self.rows[t]}
+            pieces = self.pieces.get(t, ())
+            if pieces:
+                entry["pieces"] = [piece.encode() for piece in pieces]
+            if t in self.compacted_at:
+                entry["compacted_at"] = self.compacted_at[t]
+            tables[t] = entry
+        for t, digest in self.schema.items():
+            schema[t] = f"{digest}{_PIECES_MARK}" if self.pieces.get(t) else digest
         return json.dumps(
             {
                 "scope": self.scope,
                 "epoch": self.epoch,
-                "tables": {t: {"object": self.objects[t], "rows": self.rows[t]} for t in self.objects},
-                "schema": dict(self.schema),
+                "tables": tables,
+                "schema": schema,
                 "at": time.time() if self.published_at is None else self.published_at,
             },
             sort_keys=True,
@@ -314,22 +408,42 @@ class _Pointer:
     def decode(cls, raw: bytes) -> _Pointer:
         """a pointer from its KV entry's value.
 
+        A table's schema entry ends ``+pieces`` exactly when it lists pieces; the mark is taken off,
+        so the schema holds column digests alone. Any other mark is left on and what it lists is not
+        read, so the pointer reads as another code version's columns and nothing of it is loaded here.
+
         :param raw: the value
         :ptype raw: bytes
         :return: the pointer
         :rtype: _Pointer
         :raises KeyError: when a field is missing
-        :raises ValueError: when it is not JSON
+        :raises ValueError: when it is not JSON, or a table's pieces and its schema mark disagree
         """
         body = json.loads(raw)
         tables = body["tables"]
+        schema: dict[str, str] = {}
+        pieces: dict[str, tuple[_Piece, ...]] = {}
+        for t, entry in body["schema"].items():
+            digest = str(entry)
+            listed = tables.get(t, {}).get("pieces")
+            if digest.endswith(_PIECES_MARK):
+                if not listed:
+                    raise ValueError(f"table {t}: its schema entry {digest!r} is marked for pieces it does not list")
+                pieces[t] = tuple(_Piece.decode(piece) for piece in listed)
+                digest = digest.removesuffix(_PIECES_MARK)
+            elif listed and _MARK_SEPARATOR not in digest:
+                raise ValueError(f"table {t}: it lists pieces its schema entry {digest!r} is not marked for")
+            # any other mark is a later format's: left on, so the entry is no column digest of ours
+            schema[t] = digest
         return cls(
             scope=str(body["scope"]),
             epoch=int(body["epoch"]),
             objects={t: str(v["object"]) for t, v in tables.items()},
             rows={t: int(v["rows"]) for t, v in tables.items()},
-            schema={t: str(v) for t, v in body["schema"].items()},
+            schema=schema,
             published_at=float(body["at"]) if "at" in body else None,
+            pieces=pieces,
+            compacted_at={t: float(v["compacted_at"]) for t, v in tables.items() if "compacted_at" in v},
         )
 
     def supersedes(self, other: _Pointer | None) -> bool:
@@ -338,11 +452,13 @@ class _Pointer:
         :param other: the pointer held now, if any
         :ptype other: _Pointer | None
         :return: whether this one is newer, or the same epoch with other chunks (a rebuild under
-            other columns)
+            other columns, or a compaction)
         :rtype: bool
         """
         return (
-            other is None or self.epoch > other.epoch or (self.epoch == other.epoch and self.objects != other.objects)
+            other is None
+            or self.epoch > other.epoch
+            or (self.epoch == other.epoch and (self.objects != other.objects or self.pieces != other.pieces))
         )
 
 
@@ -389,6 +505,19 @@ def decode_chunk(data: bytes) -> Any:
     import pyarrow.ipc as ipc  # noqa: PLC0415 -- the snapshot extra
 
     return ipc.open_stream(data).read_all()
+
+
+def _concatenated(parts: Sequence[Any]) -> Any:
+    """Arrow tables of one schema as one, in order: a base and the pieces after it.
+
+    :param parts: the tables, at least one
+    :ptype parts: Sequence[pyarrow.Table]
+    :return: their rows, in order
+    :rtype: pyarrow.Table
+    """
+    import pyarrow as pa  # noqa: PLC0415 -- the snapshot extra
+
+    return parts[0] if len(parts) == 1 else pa.concat_tables(parts)
 
 
 class _Lost(Exception):
@@ -579,8 +708,12 @@ class _Layout:
     grammar lives, so a writer and the sweep that judges what it wrote can never disagree.
 
     Keys: ``{name}.index``, ``{name}.rebuild`` (the claim), ``{name}.s.{token}`` (a scope's
-    pointer) and ``{name}.w.{epoch}.{writer}`` (one write's claim on an epoch). Objects:
-    ``{name}/{token}/{epoch}/{table}.{column digest}``. ``token`` is :func:`scope_token` of the scope.
+    pointer) and ``{name}.w.{epoch}.{writer}`` (one write's claim on an epoch). Objects: a whole
+    chunk or base, ``{name}/{token}/{epoch}/{table}.{column digest}``; a piece of an append-only
+    table, ``{name}.p/{token}/{epoch}/{table}.{column digest}``. ``token`` is :func:`scope_token` of
+    the scope. Pieces sit under their own prefix because a replica that predates them sweeps every
+    object under ``{name}/`` its pointer's base does not name; a snapshot's name holds no ``.``, so
+    no other snapshot's prefix is ``{name}.p/``.
     """
 
     name: str
@@ -630,31 +763,51 @@ class _Layout:
 
     @property
     def objects_prefix(self) -> str:
-        """the prefix of every object the snapshot writes."""
+        """the prefix of every whole chunk and base the snapshot writes."""
         return f"{self.name}/"
 
+    @property
+    def pieces_prefix(self) -> str:
+        """the prefix of every piece the snapshot writes."""
+        return f"{self.name}.p/"
+
+    @property
+    def all_prefixes(self) -> tuple[str, str]:
+        """the prefixes of everything the snapshot writes: chunks and bases, then pieces."""
+        return self.objects_prefix, self.pieces_prefix
+
     def object_prefix(self, scope: str) -> str:
-        """the prefix of a scope's objects."""
+        """the prefix of a scope's chunks and bases."""
         return self.object_prefix_of_token(scope_token(scope))
 
     def object_prefix_of_token(self, token: str) -> str:
-        """the prefix of a scope's objects, by its token."""
+        """the prefix of a scope's chunks and bases, by its token."""
         return f"{self.name}/{token}/"
+
+    def scope_prefixes(self, scope: str) -> tuple[str, str]:
+        """the prefixes of everything written for a scope: its chunks and bases, then its pieces."""
+        token = scope_token(scope)
+        return self.object_prefix_of_token(token), f"{self.pieces_prefix}{token}/"
 
     def object_name(self, scope: str, epoch: int, table: str) -> str:
         """a chunk's name: it names the scope, the epoch, the table and the columns it holds."""
         return f"{self.object_prefix(scope)}{epoch}/{table}.{self.schema[table]}"
 
+    def piece_name(self, scope: str, epoch: int, table: str) -> str:
+        """a piece's name: as a chunk's, under the pieces' prefix."""
+        return f"{self.pieces_prefix}{scope_token(scope)}/{epoch}/{table}.{self.schema[table]}"
+
     def token_of(self, object_name: str) -> str | None:
         """the scope token an object of this snapshot is under; ``None`` for any other name."""
-        rest = object_name[len(self.objects_prefix) :] if object_name.startswith(self.objects_prefix) else ""
+        rest = next((object_name[len(p) :] for p in self.all_prefixes if object_name.startswith(p)), "")
         token = rest.split("/", 1)[0] if "/" in rest else ""
         return token or None
 
     def epoch_in_token(self, token: str, object_name: str) -> int | None:
-        """the epoch an object under ``token`` was written at; ``None`` when it is not a chunk of it."""
-        prefix = self.object_prefix_of_token(token)
-        head = object_name[len(prefix) :].split("/", 1)[0] if object_name.startswith(prefix) else ""
+        """the epoch an object under ``token`` was written at; ``None`` when it is not a chunk or piece of it."""
+        prefixes = (self.object_prefix_of_token(token), f"{self.pieces_prefix}{token}/")
+        rest = next((object_name[len(p) :] for p in prefixes if object_name.startswith(p)), "")
+        head = rest.split("/", 1)[0]
         return int(head) if head.isdigit() else None
 
     def epoch_of(self, scope: str, object_name: str) -> int | None:
@@ -807,7 +960,7 @@ class _Sweeper:
 
         Judged by state, never by age:
 
-        1. a chunk its scope's pointer names is being served: kept;
+        1. a chunk its scope's pointer names, as a base or a piece, is being served: kept;
         2. a chunk at an epoch a live write claims is being written, or waits for its pointer to move
            (a writer's stage, a publish or rebuild between its chunk and its pointer): kept;
         3. any other chunk serves nothing and nothing will point at it: deleted. That is a superseded
@@ -824,7 +977,7 @@ class _Sweeper:
         :return: whether it may be deleted
         :rtype: bool
         """
-        named = reference is not None and name in reference.objects.values()
+        named = reference is not None and name in reference.names()
         return not named and (epoch is None or epoch not in claimed)
 
     async def pointer_now(self, key: str) -> _Pointer | None:
@@ -892,17 +1045,19 @@ class _Sweeper:
             )
         return retired
 
-    async def _listed(self, prefix: str, what: str) -> list[str]:
-        """the names of the objects under ``prefix``; none (logged) when they cannot be listed.
+    async def _listed(self, prefixes: Sequence[str], what: str) -> list[str]:
+        """the names of the objects under each of ``prefixes``; none (logged) when they cannot be listed.
 
         :return: the names
         :rtype: list[str]
         """
         names: list[str] = []
         try:
-            names = [info.name for info in await self._store.list_objects(prefix=prefix)]
+            for prefix in prefixes:
+                names += [info.name for info in await self._store.list_objects(prefix=prefix)]
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names; nothing listed is nothing deleted
             log.warning("scoped snapshot %s: listing chunks for %s failed: %s", self._name, what, exc)
+            names = []
         return names
 
     async def retire_older(self, scope: str, epoch: int) -> int:
@@ -917,7 +1072,7 @@ class _Sweeper:
         """
         if self._retire is None:
             return 0
-        names = await self._listed(self._layout.object_prefix(scope), f"scope {scope!r}")
+        names = await self._listed(self._layout.scope_prefixes(scope), f"scope {scope!r}")
         older = [n for n in names if (e := self._layout.epoch_of(scope, n)) is not None and e < epoch]
         return await self._sweep(older, what=f"scope {scope!r} below epoch {epoch}")
 
@@ -943,7 +1098,7 @@ class _Sweeper:
         """
         if self._retire is None:
             return 0
-        names = await self._listed(self._layout.objects_prefix, f"epoch {epoch}")
+        names = await self._listed(self._layout.all_prefixes, f"epoch {epoch}")
         at = [
             n
             for n in names
@@ -960,7 +1115,7 @@ class _Sweeper:
         if self._retire is None:
             return 0
         return await self._sweep(
-            await self._listed(self._layout.objects_prefix, "the whole store"), what="the whole store"
+            await self._listed(self._layout.all_prefixes, "the whole store"), what="the whole store"
         )
 
 
@@ -1648,7 +1803,7 @@ class ScopedSnapshot:
         )
 
     async def _fetch(self, pointer: _Pointer) -> list[PartitionReplacement]:
-        """every table's chunk of one scope, decoded and checked.
+        """every table's rows of one scope, decoded and checked: its base chunk and every piece after it.
 
         :param pointer: the scope's pointer
         :ptype pointer: _Pointer
@@ -1656,8 +1811,6 @@ class ScopedSnapshot:
         :rtype: list[PartitionReplacement]
         :raises _Lost: when a chunk is gone or does not hold what its pointer says
         """
-        from threetears.nats import ObjectNotFoundError, ObjectStoreError  # noqa: PLC0415
-
         if not self._loadable(pointer):
             # every load passes here: no path can put another column set's chunks in this L1
             raise _Lost(f"scope {pointer.scope!r}'s pointer carries other columns than this replica's")
@@ -1666,21 +1819,39 @@ class ScopedSnapshot:
             name = pointer.objects.get(table.name)
             if name is None:
                 raise _Lost(f"scope {pointer.scope!r} names no chunk for {table.name}")
-            try:
-                data = await self._store.get(name)
-            except ObjectNotFoundError as exc:
-                raise _Lost(f"chunk {name} is gone") from exc
-            except ObjectStoreError as exc:
-                raise _Lost(f"chunk {name} could not be read: {exc}") from exc
-            arrow = await asyncio.to_thread(decode_chunk, data)
-            if arrow.num_rows != pointer.rows.get(table.name):
-                raise _Lost(
-                    f"chunk {name} holds {arrow.num_rows} rows where its pointer says {pointer.rows.get(table.name)}"
-                )
+            parts = [await self._read_chunk(name, pointer.rows.get(table.name))]
+            for piece in pointer.pieces.get(table.name, ()):
+                parts.append(await self._read_chunk(piece.name, piece.rows))
             replacements.append(
-                PartitionReplacement(table=table.name, column=table.scope_column, value=pointer.scope, arrow=arrow)
+                PartitionReplacement(
+                    table=table.name, column=table.scope_column, value=pointer.scope, arrow=_concatenated(parts)
+                )
             )
         return replacements
+
+    async def _read_chunk(self, name: str, rows: int | None) -> Any:
+        """one chunk's rows, checked against the count its pointer gives.
+
+        :param name: the chunk
+        :ptype name: str
+        :param rows: the rows its pointer says it holds
+        :ptype rows: int | None
+        :return: the rows
+        :rtype: pyarrow.Table
+        :raises _Lost: when it is gone, unreadable, or holds another count
+        """
+        from threetears.nats import ObjectNotFoundError, ObjectStoreError  # noqa: PLC0415
+
+        try:
+            data = await self._store.get(name)
+        except ObjectNotFoundError as exc:
+            raise _Lost(f"chunk {name} is gone") from exc
+        except ObjectStoreError as exc:
+            raise _Lost(f"chunk {name} could not be read: {exc}") from exc
+        arrow = await asyncio.to_thread(decode_chunk, data)
+        if arrow.num_rows != rows:
+            raise _Lost(f"chunk {name} holds {arrow.num_rows} rows where its pointer says {rows}")
+        return arrow
 
     async def _fetch_current(self, scope: str, pointer: _Pointer) -> tuple[_Pointer, list[PartitionReplacement]]:
         """a scope's chunks, reading its pointer again once when a chunk was retired under the read.
@@ -2254,7 +2425,7 @@ class ScopedSnapshot:
                         skipped.append(scope.scope)
                         continue
                     pointer, observed = completed
-                    if not await self._exist(pointer.objects.values()):
+                    if not await self._exist(pointer.names()):
                         # never a pointer onto a missing chunk: the scope is left to the catch-up, which
                         # republishes it from L3 (it stages it again)
                         log.error(
@@ -2351,8 +2522,19 @@ class ScopedSnapshot:
         """
         objects = dict(staged.objects)
         counts = dict(staged.rows)
+        # filled as tables are carried: the pointer holds these very dicts
+        pieces: dict[str, tuple[_Piece, ...]] = {}
+        compacted: dict[str, float] = {}
         missing = [t for t in self._tables if t.name not in objects]
-        pointer = _Pointer(scope=staged.scope, epoch=staged.epoch, objects=objects, rows=counts, schema=self._schema)
+        pointer = _Pointer(
+            scope=staged.scope,
+            epoch=staged.epoch,
+            objects=objects,
+            rows=counts,
+            schema=self._schema,
+            pieces=pieces,
+            compacted_at=compacted,
+        )
         result: tuple[_Pointer, int | None | object] | None = (pointer, _ANY_ENTRY)
         if missing:
             entry = await self._pointers_bucket.get_entry(key=self._layout.pointer_key(staged.scope))
@@ -2365,11 +2547,18 @@ class ScopedSnapshot:
                 and current.schema == self._schema
                 and all(t.name in current.objects for t in missing)
             ):
+                carried: list[str] = []
                 for table in missing:
+                    # a table is carried whole: its base, and its pieces after it
                     objects[table.name] = current.objects[table.name]
                     counts[table.name] = current.rows[table.name]
+                    if table.name in current.pieces:
+                        pieces[table.name] = current.pieces[table.name]
+                    if table.name in current.compacted_at:
+                        compacted[table.name] = current.compacted_at[table.name]
+                    carried += [objects[table.name], *(piece.name for piece in pieces.get(table.name, ()))]
                 # the carried chunks must still be there: a sweep judged by the same rule spares them
-                if not await self._exist(current.objects[t.name] for t in missing):
+                if not await self._exist(carried):
                     result = None
             elif (
                 current is None
