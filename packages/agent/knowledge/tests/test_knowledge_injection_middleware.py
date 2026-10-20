@@ -18,6 +18,8 @@ direct-drive tests set the runnable-config contextvar so the middleware's
 
 from __future__ import annotations
 
+import json
+
 import asyncio
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -36,7 +38,6 @@ from langchain_core.runnables.config import var_child_runnable_config
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.knowledge import ConceptEffective, ConceptSnapshot, EntryEffective, EntrySnapshot, Scope
 
-from threetears.agent.knowledge.collections import _parse_vector_text
 from threetears.agent.knowledge.integration import (
     GovernedKnowledgeUnavailableError,
     KnowledgeIntegration,
@@ -926,12 +927,12 @@ class TestSilentDegradationSignals:
     def test_a_stored_vector_it_cannot_parse_ranks_nothing_by_similarity(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """a vector text that is not JSON raises ``ValueError`` from the real parser: stable order."""
+        """a stored vector text that is not JSON fails its decode, a ``ValueError``: stable order."""
         entries = [_entry_snapshot() for _ in range(2)]
 
         class _CorruptVectors(_StubEntryCollection):
             async def fetch_embeddings(self, ids: Any, *, customer_scope: Any) -> dict[Any, Any]:
-                return {ids[0]: _parse_vector_text("[1.0, 0.")}
+                return {ids[0]: json.loads("[1.0, 0.")}
 
         integration = KnowledgeIntegration(
             entry_collection=_CorruptVectors(entries), embedding_model=_FixedEmbedder([1.0, 0.0])

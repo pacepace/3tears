@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 from threetears.core.backends.protocol import DurableStore
-from threetears.nats import Subject
+from threetears.nats import RequestTimeoutError, Subject
 
 from threetears.core.backends import BrokerGenerationSource
 from threetears.core.backends.broker_generation import (
@@ -75,7 +75,10 @@ class _NoL3(DurableStore):
 
 
 class _Broker:
-    """answers each request with the next scripted reply, and records what was asked."""
+    """answers each request with the next scripted reply, and records what was asked.
+
+    a request past the last scripted reply gets none: it times out, as ``NatsClient.request_raw`` reports it.
+    """
 
     def __init__(self, *replies: dict[str, Any]) -> None:
         self.replies = list(replies)
@@ -84,6 +87,8 @@ class _Broker:
     async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
         del payload, timeout
         self.subjects.append(str(subject))
+        if not self.replies:
+            raise RequestTimeoutError(f"no reply on {subject}")
         return json.dumps(self.replies.pop(0)).encode("utf-8")
 
     def proxy(self) -> NatsProxyL3Backend:
