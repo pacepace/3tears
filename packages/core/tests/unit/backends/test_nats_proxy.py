@@ -11,7 +11,7 @@ from uuid import UUID
 import pytest
 from threetears.nats import Subject
 
-from threetears.core.backends.nats_proxy import NatsProxyL3Backend
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend, check_reply_row_count
 from threetears.core.backends.protocol import RowcountUnreadableError, parse_rowcount
 from threetears.core.exceptions import DataLayerUnavailableError
 
@@ -1423,3 +1423,60 @@ class TestDeserializeRowDatetimes:
         row = {"date_created": ""}
         out = await _row_as_fetched(row)
         assert out["date_created"] == ""
+
+
+# ------------------------------------------------------------------
+# the reply contract a broker is held to
+# ------------------------------------------------------------------
+
+
+class TestTheReplyContract:
+    """``check_reply_row_count``: a successful DML reply says how many rows it touched."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "INSERT INTO foo (id) VALUES ($1)",
+            "INSERT INTO foo (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET id = $1",
+            "UPDATE foo SET bar = $1",
+            "DELETE FROM foo WHERE id = $1",
+            "WITH gone AS (SELECT 1) DELETE FROM foo",
+        ],
+    )
+    @pytest.mark.parametrize("row_count", [None, "3", 1.0, True, -1])
+    def test_a_dml_reply_without_an_integer_row_count_breaks_it(self, query: str, row_count: object) -> None:
+        """missing, null, a string, a float, a bool and a negative all leave the fence unable to read the count."""
+        reply: dict[str, object] = {"success": True, "rows": []}
+        if row_count is not None:
+            reply["row_count"] = row_count
+
+        with pytest.raises(RowcountUnreadableError):
+            check_reply_row_count(query, reply)
+
+    @pytest.mark.parametrize("row_count", [0, 1, 17])
+    def test_a_dml_reply_with_a_count_keeps_it(self, row_count: int) -> None:
+        """zero is a count: the fenced save that matched nothing lost its race."""
+        check_reply_row_count("UPDATE foo SET bar = $1", {"success": True, "row_count": row_count})
+
+    @pytest.mark.parametrize(
+        "query",
+        ["SELECT * FROM foo", "CREATE TABLE foo (id int)", "WITH moved AS (DELETE FROM foo RETURNING id) SELECT 1"],
+    )
+    def test_a_statement_that_counts_nothing_needs_no_count(self, query: str) -> None:
+        """a select, DDL, or a data-modifying CTE under a SELECT is labelled select and reports no count."""
+        check_reply_row_count(query, {"success": True, "rows": []})
+
+    def test_a_failed_reply_needs_no_count(self) -> None:
+        """a refusal carries an error, not a count; its own contract covers it."""
+        check_reply_row_count("DELETE FROM foo", {"success": False, "error_code": "QUERY_FAILED"})
+
+    @pytest.mark.asyncio
+    async def test_a_reply_that_keeps_it_reads_as_the_count_through_the_proxy(self) -> None:
+        """the contract and the proxy agree: a reply that passes is a tag parse_rowcount reads."""
+        reply = {"success": True, "rows": [], "row_count": 2, "duration_ms": 1}
+        check_reply_row_count("DELETE FROM foo WHERE id = $1", reply)
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(return_value=_make_reply(reply))
+        proxy = _make_proxy(mock_nc)
+
+        assert parse_rowcount(await proxy.execute("DELETE FROM foo WHERE id = $1", "x")) == 2
