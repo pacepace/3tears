@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever
+
+**Fixed:** a HALF_OPEN breaker admits one probe and refuses the rest until it reports, and four
+ways left a probe reporting nowhere, so the breaker answered every later call
+`CircuitOpenError ... retry in 0s` until a restart (metallm dev, 2026-10-20, on 0.72.0; the
+same code is in every release since the per-model rate-limit breaker):
+- a model's rate-limit probe answered with an error that is not a rate limit (OpenRouter's 404)
+  reached only the provider breaker. That answer now ends the rate-limit probe: the route is
+  not limited.
+- a provider probe answered with a rate limit reached only the model's breaker. That answer
+  now ends the provider probe: the provider is up.
+- a request the model's rate-limit breaker refused, after the provider breaker had admitted it
+  as its probe, never went out. The provider's probe is handed back, and its next request
+  probes.
+- a probe whose call was cancelled fires neither `on_llm_end` nor `on_llm_error`. A probe out
+  longer than `recovery_timeout_seconds` is now taken as lost, and the next request becomes
+  the probe; while the probe is younger, a refusal states the real time left, not `0s`.
+
+**Added (`CircuitBreaker`):** `record_probe_answered()` closes a HALF_OPEN breaker whose probe got
+an answer this breaker does not count, and changes nothing in any other state (a stray error of
+the other kind mid-streak is not a success); `release_probe()` ends a probe without a verdict.
+
 ## v0.73.0 -- 2026-10-20
 
 ### core: append-only tables in a scoped snapshot publish the rows a write added

@@ -154,6 +154,11 @@ class CircuitBreaker:
         # HALF_OPEN admits unbounded concurrent probes -> a thundering herd onto
         # a provider that may still be dead.
         self._probe_in_flight = False
+        # when the probe in flight was admitted. A probe whose caller never reports back (a
+        # cancelled call fires neither on_llm_end nor on_llm_error) would otherwise hold
+        # HALF_OPEN forever and refuse every later request; one older than the recovery
+        # timeout is taken as lost and the next request becomes the probe.
+        self._probe_started_at = 0.0
         self._lock = threading.Lock()
 
     @classmethod
@@ -303,12 +308,24 @@ class CircuitBreaker:
 
             if self._state == CircuitState.HALF_OPEN:
                 # a probe is already testing the provider: fast-fail the rest so
-                # recovery is a single request, not a thundering herd.
-                if self._probe_in_flight:
+                # recovery is a single request, not a thundering herd -- unless it has
+                # been out longer than the recovery timeout, which only a lost probe is.
+                probe_age = self._clock() - self._probe_started_at
+                if self._probe_in_flight and probe_age < self._recovery_timeout_seconds:
                     raise CircuitOpenError(
-                        self._provider_name, 0.0, credential_scoped=self._credential_scoped, model_name=self._model_name
+                        self._provider_name,
+                        self._recovery_timeout_seconds - probe_age,
+                        credential_scoped=self._credential_scoped,
+                        model_name=self._model_name,
+                    )
+                if self._probe_in_flight:
+                    logger.warning(
+                        "circuit breaker probe for %s never reported back; admitting a new probe",
+                        self._subject(),
+                        extra=self._log_extra(),
                     )
                 self._probe_in_flight = True
+                self._probe_started_at = self._clock()
                 return
 
             elapsed = self._clock() - self.last_failure_time
@@ -316,6 +333,7 @@ class CircuitBreaker:
                 # this request becomes the single recovery probe.
                 self._state = CircuitState.HALF_OPEN
                 self._probe_in_flight = True
+                self._probe_started_at = self._clock()
                 logger.warning(
                     "circuit breaker transitioning to HALF_OPEN for %s",
                     self._subject(),
@@ -337,19 +355,23 @@ class CircuitBreaker:
         with self._lock:
             self._last_activity = self._clock()
             if self._state == CircuitState.HALF_OPEN:
-                self._state = CircuitState.CLOSED
-                self.failure_count = 0
-                self._probe_in_flight = False
-                logger.warning(
-                    "circuit breaker transitioning to CLOSED for %s",
-                    self._subject(),
-                    extra=self._log_extra(),
-                )
+                self._close_after_probe_locked()
                 return
 
             if self._state == CircuitState.CLOSED:
                 self.failure_count = 0
                 return
+
+    def _close_after_probe_locked(self) -> None:
+        """HALF_OPEN to CLOSED; the caller holds ``self._lock``."""
+        self._state = CircuitState.CLOSED
+        self.failure_count = 0
+        self._probe_in_flight = False
+        logger.warning(
+            "circuit breaker transitioning to CLOSED for %s",
+            self._subject(),
+            extra=self._log_extra(),
+        )
 
     def record_failure(self) -> None:
         """records failed request and transitions state if threshold reached.
@@ -382,6 +404,30 @@ class CircuitBreaker:
                     extra=self._log_extra(),
                 )
                 return
+
+    def record_probe_answered(self) -> None:
+        """a probe's request was answered with an error this breaker does not count.
+
+        closes a HALF_OPEN breaker the way a success does: a rate-limit breaker whose probe
+        got another error has its answer (not limited), and a provider breaker whose probe got
+        a rate limit has its answer (the provider is up). in any other state it changes
+        nothing: a stray error of the other kind mid-streak is not a success.
+        """
+        with self._lock:
+            self._last_activity = self._clock()
+            if self._state == CircuitState.HALF_OPEN:
+                self._close_after_probe_locked()
+
+    def release_probe(self) -> None:
+        """ends this breaker's probe without a verdict on it.
+
+        for a probe whose request never reached the provider, so it says nothing about
+        recovery: the breaker stays HALF_OPEN and the next request becomes the probe.
+        a no-op unless a probe is in flight.
+        """
+        with self._lock:
+            if self._state == CircuitState.HALF_OPEN:
+                self._probe_in_flight = False
 
     def reset(self) -> None:
         """forces circuit breaker back to CLOSED state.
@@ -450,7 +496,13 @@ class CircuitBreakerCallback(BaseCallbackHandler):
     def _check(self) -> None:
         self._breaker.check()
         if self._rate_limit is not None:
-            self._rate_limit.check()
+            try:
+                self._rate_limit.check()
+            except CircuitOpenError:
+                # the request never goes out, so a probe the provider breaker just admitted
+                # for it would wait for an outcome that never comes; hand the probe back.
+                self._breaker.release_probe()
+                raise
 
     def on_llm_start(
         self,
@@ -557,8 +609,14 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         if self._rate_limit is not None and isinstance(error, Exception) and is_rate_limit(error):
             # one model's route is limited: its own breaker, never the provider's other models
             self._rate_limit.record_failure()
+            # the provider answered, so a provider probe riding on this request has its verdict
+            self._breaker.record_probe_answered()
             return
         self._breaker.record_failure()
+        if self._rate_limit is not None:
+            # an answer that is not a rate limit is the route's verdict on its rate limit: not
+            # limited. it ends a rate-limit probe in flight, which no other path would.
+            self._rate_limit.record_probe_answered()
 
 
 # how bad each state is, for reporting one state per provider: a provider with

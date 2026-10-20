@@ -58,6 +58,15 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.73.0"
+summary = """
+No public name of 3tears-evals has moved or been removed since 0.73.0, and no judge wording changed. The family moves
+to 0.74.0 for new public API in 3tears-models (the circuit breaker's probe fix).
+"""
+notes = []
+
+[[release]]
 version = "0.73.0"
 since = "v0.72.0"
 summary = """
