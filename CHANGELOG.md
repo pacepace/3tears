@@ -45,6 +45,15 @@ packages (bumped in lock-step).
   `report_read`'s JSON and `campaign_report` are the campaign page, not the evidence bundle
   (`inspect_campaign_bundle` or `assemble_campaign_bundle` reads that).
 
+### 3tears-evals: an analysis of several aspects is listed by its campaign's verdict
+
+- **`analyses_list` and `analysis_archive` read an analysis over several aspects** (#894). Each refused it, so one
+  such analysis made a campaign's whole listing refuse. `analysis_verdict` now lists it by the campaign's verdict:
+  what code read on each aspect, as the campaign's page says it beside that aspect's fold, in the campaign's order
+  (`billing: v2 shown worse; tone: v2 shown better`), over the readings frozen with the analysis. An analysis of
+  one aspect keeps its aspect page's verdict line. `build_report` and `analysis_bundle` still lay out one aspect and
+  refuse several; the campaign's page is read through `report_read` or `analysis_report`.
+
 ### 3tears-evals: a judge campaign's report no longer labels the subject's own spend measuring spend
 
 - **In a campaign whose every result is judge-kind (`candidate_kind`) the spend measures read as the arm's own spend** (#830). The judge under test is the

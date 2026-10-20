@@ -75,7 +75,15 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.errors import RefusedInput
 
-__all__ = ["BAR_WORDS", "CHOICE_NOTE", "NO_CALL", "NO_RECOMMENDATION", "READING_WORDS", "build_campaign_report"]
+__all__ = [
+    "BAR_WORDS",
+    "CHOICE_NOTE",
+    "NO_CALL",
+    "NO_RECOMMENDATION",
+    "READING_WORDS",
+    "build_campaign_report",
+    "campaign_verdict",
+]
 
 #: What each reading is called on the page.
 READING_WORDS: dict[str, str] = {"better": "shown better", "worse": "shown worse", "unclear": "unclear"}
@@ -823,6 +831,21 @@ def _shows(readings: CampaignReadings, aspect: str) -> str:
     if not rows:
         return "not compared"
     return ", ".join(f"{row.arm_label} {_reading_words(row)}" for row in rows)
+
+
+def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str]) -> str:
+    """The verdict line of a campaign of several aspects, as code writes it: what code read on each aspect, as the
+    campaign's page says it beside that aspect's fold, in the campaign's order — ``billing: v2 shown worse; tone: v2
+    shown better``. Never the writer's words.
+
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :param aspects: The campaign's aspects' labels, in its order.
+    :ptype aspects: Sequence[str]
+    :return: The verdict line.
+    :rtype: str
+    """
+    return "; ".join(f"{aspect}: {_shows(readings, aspect)}" for aspect in aspects)
 
 
 def _pair_words(pair: PairReading) -> str:

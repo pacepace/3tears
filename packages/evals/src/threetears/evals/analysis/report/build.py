@@ -50,6 +50,7 @@ from threetears.evals.analysis.bundle.schema import (
     refuse_a_bundle_before_aspects,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.kinds import campaign_kind
@@ -104,6 +105,7 @@ from threetears.evals.analysis.report.decision import (
     settles,
     settles_cost,
 )
+from threetears.evals.analysis.report.campaign_page import campaign_verdict
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
@@ -411,20 +413,48 @@ def _only_aspect(analysis: EvalAnalysis) -> AspectAnalysis:
             remedy=(
                 "read each aspect's evidence with threetears.evals.analysis.inspect_analysis_bundle (naming its "
                 "aspect) and the memo with threetears.evals.analysis.get_analysis; the campaign's page, which lays out "
-                "every aspect, is read through report_read once that serves a campaign of several aspects"
+                "every aspect, is read through report_read, or threetears.evals.analysis.analysis_report by its id"
             ),
         )
     return analysis.aspects[0]
 
 
+def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
+    """The campaign bundle a stored analysis was written over, put back together from its frame and frozen aspects.
+
+    :param analysis: The analysis, of one aspect or several.
+    :ptype analysis: EvalAnalysis
+    :return: The bundle, as frozen at generation.
+    :rtype: CampaignBundle
+    :raises RefusedInput: The analysis was written over a bundle of another shape.
+    """
+    what = f"analysis {analysis.id}"
+    remedy = "generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands"
+    bundles = []
+    for held in analysis.aspects:
+        refuse_a_bundle_before_aspects(held.bundle, what=what, remedy=remedy)
+        bundles.append(AnalysisContextBundle.from_dict(dict(held.bundle)))
+    return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
+
+
 def analysis_verdict(analysis: EvalAnalysis) -> str:
-    """The verdict line a stored analysis's report opens with, written by code over its frozen bundle.
+    """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never the
+    memo's words.
+
+    An analysis of one aspect is listed by the verdict line that aspect's page opens with, over its frozen bundle. An
+    analysis of several aspects is listed by its campaign's verdict, as the campaign's page reads it: what code read on
+    each aspect, in the campaign's order, over the readings frozen with it
+    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`).
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
     :return: The verdict line.
     :rtype: str
+    :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
+    if len(analysis.aspects) > 1:
+        readings = analysis_campaign_bundle(analysis).readings
+        return campaign_verdict(readings, [aspect.label for aspect in analysis.aspects])
     bundle = analysis_bundle(analysis)
     names = _arm_names(bundle)
     return verdict_line(bundle, _namer(names), case_name=_case_namer(bundle)).text
@@ -3884,6 +3914,7 @@ __all__ = [
     "contrast_rows",
     "report_cell_labels",
     "analysis_bundle",
+    "analysis_campaign_bundle",
     "analysis_verdict",
     "NO_STRATUM",
     "TOO_FEW_CASES",

@@ -58,13 +58,9 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     reporter_case_payload,
 )
-from threetears.evals.analysis.bundle.schema import (
-    AnalysisContextBundle,
-    BundleInspection,
-    refuse_a_bundle_before_aspects,
-)
+from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
-from threetears.evals.analysis.report.build import analysis_writer
+from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalCampaign
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
@@ -1557,25 +1553,11 @@ def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalC
     )
 
 
-def _analysed_bundle(analysis: EvalAnalysis) -> CampaignBundle:
-    """The campaign bundle a stored analysis was written over, put back together from its frame and frozen aspects.
-
-    :raises RefusedInput: The analysis was written over a bundle of another shape.
-    """
-    what = f"analysis {analysis.id}"
-    remedy = "generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands"
-    bundles = []
-    for held in analysis.aspects:
-        refuse_a_bundle_before_aspects(held.bundle, what=what, remedy=remedy)
-        bundles.append(AnalysisContextBundle.from_dict(dict(held.bundle)))
-    return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
-
-
 def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> CampaignReport:
     """A stored analysis laid out as its campaign's page, over everything frozen with it."""
     return _campaign_page(
         _as_analysed(analysis, campaign),
-        _analysed_bundle(analysis),
+        analysis_campaign_bundle(analysis),
         assembled_at=analysis.generation.bundle_assembled_at,
         analysis=analysis,
     )
@@ -1736,7 +1718,7 @@ def record_campaign_call(
     if analysis_id is None:
         bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
     else:
-        bundle = _analysed_bundle(_reported_analysis(host.storage, campaign_id, scope_id, analysis_id))
+        bundle = analysis_campaign_bundle(_reported_analysis(host.storage, campaign_id, scope_id, analysis_id))
     readings = bundle.readings
     if readings.kind == "measurement":
         raise ValidationFailedError(

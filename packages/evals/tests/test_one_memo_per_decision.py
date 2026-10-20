@@ -41,7 +41,7 @@ from threetears.evals.kernel import IDENTITY_VERSION, ConflictError, EvalCampaig
 from threetears.evals.kernel.declaration import BarOverride, Floor, OverriddenBar, RateDrop
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.ops import campaign_record
+from threetears.evals.ops import analyses_list, analysis_archive, campaign_record
 from threetears.evals.quick.contract import as_host
 from threetears.evals.run.curation import set_analysis_archived
 from threetears.evals.storage import InMemoryDocumentStore
@@ -467,6 +467,26 @@ async def test_a_measurement_has_nothing_to_decide_so_a_call_on_it_is_refused() 
     (run,) = held.runs.values()
     with pytest.raises(ValidationFailedError, match="measures one arm, so there is nothing to decide between"):
         off_loop(campaign_record, held.host, run.campaign_id, SCOPE, arm="control", called_by="brooks")
+
+
+async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its_campaign_s_verdict() -> None:
+    """An analysis over both aspects is listed, archived and restored, each line reading the campaign's verdict: what
+    code read on each aspect, as the campaign's page says it beside each fold, never one aspect's line (#894)."""
+    held, two = await _build_two()
+    analysis_id = await _generated(held, two)
+    page = off_loop(campaign_report, held.host, two.id, SCOPE)
+    assert page.analysis_id == analysis_id
+    verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
+    assert verdict.startswith("billing: ") and "shown worse; tone: " in verdict and verdict.endswith("shown better")
+
+    (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
+    assert (line.id, line.verdict, line.archived) == (analysis_id, verdict, False)
+    archived = off_loop(analysis_archive, held.host, analysis_id, SCOPE, archived=True, reason="shown false")
+    assert (archived.id, archived.verdict, archived.archived) == (analysis_id, verdict, True)
+    (listed,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
+    assert listed.archived
+    restored = off_loop(analysis_archive, held.host, analysis_id, SCOPE, archived=False)
+    assert (restored.verdict, restored.archived) == (verdict, False)
 
 
 # =============================================================================
