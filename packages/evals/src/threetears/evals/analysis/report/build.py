@@ -1176,7 +1176,8 @@ def _memo_blocks(
     names: dict[str, ArmName],
     style: MemoStyle,
 ) -> list[ReportBlock]:
-    """The memo: the writer's summary of the aspect, the findings, the recommendation and the next steps.
+    """The memo: the writer's summary across the campaign, its summary of the aspect, the findings, the recommendation
+    and the next steps.
 
     A finding is one sentence its writer wrote and a table code built from the readings the writer chose; everything
     else it carries sits in a closed ``Evidence`` fold. Every word the memo contributes passes ``style`` first
@@ -1192,6 +1193,9 @@ def _memo_blocks(
     arm = _ref_namer(held.decision_surface, {**names, **_arm_names(bundle, held.variant_index)})
     axes = _question_axes(bundle)
     blocks: list[ReportBlock] = []
+    if said := style.prose(document.summary, plans=True).strip():
+        # The writer's read across the campaign leads its memo here as it leads the campaign's page.
+        blocks.append(TextBlock(section="memo", role="summary", body=said))
     for summary in document.aspect_summaries:
         if summary.aspect != held.label:
             continue

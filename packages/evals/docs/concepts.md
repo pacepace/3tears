@@ -497,8 +497,8 @@ written: the bundle is the whole context. The CLI's `bundle` prints it inside a 
 `bundle.to_json()`.
 
 #### Analysis
-One memo a model wrote over a whole campaign (`EvalAnalysis`): its findings, at most one recommendation, a short
-summary of each aspect and next steps, with every number in its prose replaced by the value code read. It is
+One memo a model wrote over a whole campaign (`EvalAnalysis`): its summary across the aspects, its findings, at
+most one recommendation, a short summary of each aspect and next steps, with every number in its prose replaced by the value code read. It is
 written over the **campaign bundle** (`CampaignBundle`): the campaign's arms, floors and bars, and each aspect's
 readings, each aspect's part held to its own budget of characters, so adding an aspect never crowds out another.
 Each aspect's bundle is stored with it. Optional, and it costs money; the verdict and every count on the report are

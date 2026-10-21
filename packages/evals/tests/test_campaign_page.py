@@ -2,8 +2,9 @@
 
 The fixture is two real runs read as one campaign of two aspects: on billing the candidate regresses (it passes six of
 twenty cases to production's eighteen) and breaks the 10-point floor declared there; on tone it improves (nineteen to
-six). Both readings are on the first screen, the broken floor first of all; the writer's recommendation, when there is
-a memo, comes next, then code's table, then the person's call. Each aspect's own page sits in its fold.
+six). Both readings are on the first screen, the broken floor first of all; the writer's summary across the aspects
+and its recommendation, when there is a memo, come next, then code's table, then the person's call. Each aspect's own
+page sits in its fold.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TextBlock,
 )
-from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
+from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED, NO_RECOMMENDATION_WORDS
 from threetears.evals.analysis.style import lint_page
 from threetears.evals.kernel.authored import (
     AspectSummary,
@@ -162,12 +163,31 @@ def _memo() -> AuthoredCampaignAnalysis:
                 means="Worth keeping for a later candidate.",
             ),
         ],
+        summary=_SUMMARY,
         next=[
             NextStep(
                 title="Fix the billing prompt and run again.", why="It is the only loss.", leverage="high", lever=""
             )
         ],
     )
+
+
+#: The test memo's read across its aspects.
+_SUMMARY = "v2 wins on tone and loses billing, where refunds are lost, so production stays."
+
+
+def _opening(page: CampaignReport) -> list[tuple[str, str]]:
+    """What the page says after its warnings and its question, up to the first table: each text block by its role,
+    each line by its source and text."""
+    said: list[tuple[str, str]] = []
+    for block in page.blocks:
+        if isinstance(block, TableBlock):
+            break
+        if isinstance(block, TextBlock) and block.role != "override":
+            said.append(("text", block.role))
+        elif isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis"}:
+            said.append((block.source, block.text))
+    return said
 
 
 def _first_screen_markdown(page: CampaignReport) -> str:
@@ -198,12 +218,14 @@ async def test_both_aspects_readings_are_on_the_first_screen_and_the_broken_floo
     assert header.count('role="alert"') == 1
 
 
-async def test_the_first_screen_runs_in_order_floor_question_recommendation_table_call() -> None:
+async def test_the_first_screen_runs_in_order_floor_question_summary_recommendation_table_call() -> None:
+    """A change with a recommendation reads its summary, then the recommendation, then the aspect table."""
     page = await _page("billing", "tone", memo=_memo())
     first = _first_screen_markdown(page)
     order = [
         first.index("**Floor broken on billing"),
         first.index(f'"{QUESTION}"'),
+        first.index(_SUMMARY),
         first.index(f"**Recommended:** {CONTROL_LABEL} (high confidence)"),
         first.index("- The billing floor is broken"),
         first.index("**By aspect**"),
@@ -211,6 +233,23 @@ async def test_the_first_screen_runs_in_order_floor_question_recommendation_tabl
     ]
     assert order == sorted(order)
     assert page.basis == "analysis" and page.finding_count == 1
+    header = _header_html(page)
+    order = [
+        header.index('role="alert"'),
+        header.index("<h1>"),
+        header.index('data-role="summary"'),
+        header.index('data-role="recommendation"'),
+        header.index('data-table="aspects"'),
+    ]
+    assert order == sorted(order)
+    assert _opening(page) == [("text", "summary"), ("text", "recommendation"), ("text", "reason")]
+
+
+async def test_a_code_only_page_has_no_summary_and_says_no_recommendation_was_written_before_the_table() -> None:
+    page = await _page("billing", "tone")
+    first = _first_screen_markdown(page)
+    assert first.index(f'"{QUESTION}"') < first.index(NO_RECOMMENDATION) < first.index("**By aspect**")
+    assert _opening(page)[0] == ("memo", NO_RECOMMENDATION)
 
 
 async def test_with_no_memo_the_page_says_no_recommendation_was_written_and_holds_no_writer_s_words() -> None:
@@ -591,11 +630,58 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
     ]
     first = _first_screen_markdown(page)
     assert CHOICE_NOTE in first
-    # The pairs, then the writer's recommendation; no control-based table.
-    assert first.index("**By aspect, pair by pair**") < first.index("**Recommended:** beta (high confidence)")
+    # The writer's summary and recommendation, then the pairs; no control-based table.
+    assert first.index(_SUMMARY) < first.index("**Recommended:** beta (high confidence)")
+    assert first.index("**Recommended:** beta (high confidence)") < first.index("**By aspect, pair by pair**")
     assert "**By aspect**\n" not in first
     markdown = campaign_report_markdown(page)
     assert "alpha ahead of beta." in markdown and "alpha and beta not separated." in markdown
+
+
+def _recommending_nothing(summary: str) -> AuthoredCampaignAnalysis:
+    """The test memo recommending no arm, with ``summary`` read across its aspects."""
+    return _memo().model_copy(update={"recommendation": [], "aspect_summaries": [], "summary": summary})
+
+
+async def test_a_choice_with_no_clear_winner_opens_on_its_summary_then_says_so_then_the_pairs() -> None:
+    summary = "Neither arm pulls ahead on billing or refunds, so cost is the only thing left to choose on."
+    page = await _kind_page("billing", "refunds", memo=_recommending_nothing(summary))
+    assert page.readings.kind == "choice" and page.recommendation is None
+    assert _opening(page) == [("text", "summary"), ("memo", NO_RECOMMENDATION_WORDS["choice"])]
+    first = _first_screen_markdown(page)
+    assert first.index(summary) < first.index("No clear winner") < first.index("**By aspect, pair by pair**")
+    header = _header_html(page)
+    assert header.index("<h1>") < header.index('data-role="summary"') < header.index('data-table="pairs"')
+
+
+async def test_a_measurement_opens_after_its_warning_on_its_summary_then_its_measures() -> None:
+    summary = "Alpha passes most cases on solo and costs too much a reply to meet its bar."
+    page = await _kind_page("solo", memo=_recommending_nothing(summary))
+    assert page.readings.kind == "measurement"
+    assert _opening(page) == [("text", "summary")]
+    first = _first_screen_markdown(page)
+    assert first.startswith("**Bar missed on solo:")
+    assert first.index("# ") < first.index(summary) < first.index("**By aspect, measure by measure**")
+    header = _header_html(page)
+    assert header.index('role="alert"') < header.index("<h1>") < header.index('data-role="summary"')
+    assert header.index('data-role="summary"') < header.index('data-table="measures"')
+
+
+#: A summary sentence the style pass keeps.
+_KEPT = "Production stays, since billing is where refunds are lost."
+
+
+async def test_the_summary_is_held_to_the_style_pass_like_any_of_the_memo_s_words() -> None:
+    """A sentence restating a measured number is dropped from the summary as from a finding's body."""
+    page = await _page(
+        "billing",
+        "tone",
+        memo=_memo().model_copy(update={"summary": f"Production passed 54 of 60 billing trials. {_KEPT}"}),
+    )
+    (summary,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
+    assert summary.body == _KEPT
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert any("restated a measured number" in text for text in methods)
 
 
 async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:
@@ -684,7 +770,7 @@ async def test_a_choice_s_why_for_an_arm_shown_behind_sits_beside_the_pairs() ->
     first = _first_screen_markdown(page)
     pairs = first.index("**By aspect, pair by pair**")
     why = first.index("**The memo recommends beta over alpha, ahead on tone:** Tone matters less than cost here.")
-    assert pairs < why < first.index("**Recommended:** beta")
+    assert first.index("**Recommended:** beta") < pairs < why
 
 
 async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:
