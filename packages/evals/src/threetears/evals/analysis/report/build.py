@@ -1199,10 +1199,9 @@ def _memo_blocks(
     arm = _ref_namer(held.decision_surface, {**names, **_arm_names(bundle, held.variant_index)})
     axes = _question_axes(bundle)
     blocks: list[ReportBlock] = []
-    # The writer's read across the campaign leads its memo here as it leads the campaign's page, kept as written where
-    # the style pass would drop all of its one sentence.
-    said = style.prose(document.summary, plans=True).strip() or " ".join(document.summary.split())
-    blocks.append(TextBlock(section="memo", role="summary", body=said))
+    if said := style.summary(document.summary):
+        # The writer's read across the campaign leads its memo here as it leads the campaign's page.
+        blocks.append(TextBlock(section="memo", role="summary", body=said))
     for summary in document.aspect_summaries:
         if summary.aspect != held.label:
             continue

@@ -441,13 +441,11 @@ def _points(value: float) -> str:
 
 
 def _memo_summary_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
-    """The writer's read across every aspect, styled, the first thing the page says after code's warnings and the
-    question, for every kind; nothing with no memo. The summary is one sentence, so where the style pass would drop
-    all of it, it is kept as written, as a finding's title is: a page never opens without the read it was written for.
-    """
-    if memo is None:
+    """The writer's read across every aspect, held to the style pass (:meth:`_CampaignStyle.summary`), the first thing
+    the page says after code's warnings and the question, for every kind; nothing with no memo, or where the summary
+    proposed a sample size or cost no code computed."""
+    if memo is None or not (said := style.summary(memo.summary)):
         return []
-    said = style.prose(memo.summary, plans=True).strip() or " ".join(memo.summary.split())
     return [TextBlock(section="header", role="summary", body=said)]
 
 
@@ -1257,6 +1255,18 @@ class _CampaignStyle:
                 continue
             kept.append(part)
         return self.primary.prose(" ".join(kept)) if kept else ""
+
+    def summary(self, text: str) -> str:
+        """The memo's one sentence across the aspects, as :meth:`MemoStyle.summary` holds it, over every aspect: kept as
+        written where the pass would leave none of it, unless it proposed a sample or cost no aspect projects."""
+        primary = self.primary
+        proposed, dropped = len(primary.proposed), primary.dropped
+        if said := self.prose(text, plans=True).strip():
+            return said
+        if len(primary.proposed) > proposed:
+            return ""
+        primary.dropped = dropped
+        return self._named(" ".join(text.split()))
 
     def methods(self) -> list[ReportBlock]:
         """What the memo said that the page did not print as written, and what still breaks a rule: the methods."""

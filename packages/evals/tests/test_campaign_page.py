@@ -724,6 +724,19 @@ async def test_a_summary_the_style_pass_would_drop_whole_is_kept_as_written() ->
     (summary,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
     assert summary.body == restated
     assert _opening(page)[0] == ("text", "summary")
+    # The page prints it, so the methods never say it was left to the tables.
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert not any("restated a measured number" in text for text in methods)
+
+
+async def test_a_summary_proposing_a_sample_no_code_computed_is_dropped_and_listed() -> None:
+    """Kept as written never reaches a sample size or cost no projection states: that summary is dropped, as any such
+    sentence is, and the methods list it."""
+    proposing = "Run 200 more billing cases for about $40 to settle it."
+    page = await _page("billing", "tone", memo=_memo().model_copy(update={"summary": proposing}))
+    assert not [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert any("a sample size or cost no code computed" in text and "200 more" in text for text in methods)
 
 
 async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:

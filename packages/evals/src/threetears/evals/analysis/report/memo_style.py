@@ -349,6 +349,27 @@ class MemoStyle:
             kept.append(fixed)
         return " ".join(kept)
 
+    def summary(self, text: str) -> str:
+        """The memo's one sentence across its aspects, held to every rule as a sentence on what to run next is.
+
+        Where that pass would leave none of it, and none of it proposed a sample size or cost, it is kept as written (its
+        arms named) and nothing is recorded as dropped, as a finding's title is kept: the page opens on the read the memo
+        was written for, and the tables beside it say any number it restates. A summary proposing a sample or cost no
+        code computed is dropped and listed in the methods, as any such sentence is.
+
+        :param text: What the memo wrote.
+        :ptype text: str
+        :return: The summary to print; empty only where it proposed a sample or cost.
+        :rtype: str
+        """
+        proposed, dropped = len(self.proposed), self.dropped
+        if said := self.prose(text, plans=True).strip():
+            return said
+        if len(self.proposed) > proposed:
+            return ""
+        self.dropped = dropped
+        return self.names_arms(" ".join(text.split()))
+
     def offending(self) -> list[str]:
         """Each sentence still breaking a rule, once, with the rules it breaks."""
         by_text: dict[str, list[str]] = {}

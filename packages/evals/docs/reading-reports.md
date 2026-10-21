@@ -566,7 +566,8 @@ each naming in `trials` the trials it is drawn from; at most one recommendation 
 confidence, the findings it `rests_on`); one summary per aspect (what changed, how sure, what it means here), laid out
 at the top of that aspect's fold; and next steps. The summary is prose like a finding's body: a number in it is a
 figure reference code renders, an empty one is refused through the one repair round, and the page holds it to the
-style pass. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
+style pass. It is one sentence, so where the pass would leave none of it the page keeps it as written, as it keeps a
+finding's title; a summary proposing a sample size or cost no code computed is dropped and listed in Methods. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
 
 | Kind | The writer must | The writer may not |
 |---|---|---|
