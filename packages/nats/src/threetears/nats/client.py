@@ -1839,7 +1839,20 @@ class JetStreamResultWaiter:
                 # broker lost looking alive. the answer is still to come from the waiter's own consumer.
                 continue
             last_heard = time.monotonic()
-            await msg.ack()
+            try:
+                await msg.ack()
+            except (_NatsError, OSError) as exc:
+                # the ack is a core publish on the consumer's ack reply: nats-py refuses it on a closed,
+                # draining or backed-up connection, and the socket write under it can fail outright. The
+                # answer is already in hand and the consumer goes with this waiter, so an unsent ack
+                # costs one message the stream keeps until its retention ends. Failing the wait instead
+                # would discard the result of a call that already ran.
+                contain(
+                    exc,
+                    log=log,
+                    what="result waiter could not ack its answer; the answer stands",
+                    extra={"subject": self._subject.path},
+                )
             payload = bytes(msg.data)
         if payload is None:
             raise RequestTimeoutError(f"no result delivered on {self._subject.path} within {timeout.total_seconds()}s")

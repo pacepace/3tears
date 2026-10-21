@@ -368,6 +368,26 @@ class TestWhenTheOtherEndDoesNotPlayAlong:
         assert len(nats.request_raw_calls) == 1
 
 
+class TestWhenTheWaitFails:
+    """the waiter's own failures are answered; anything else it raises is a bug and propagates."""
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_wait_propagates_rather_than_reading_as_a_timeout(self) -> None:
+        catalog = await _registered_catalog(_LONG)
+        nats = _Nats(delivered=AttributeError("a bug in the wait"))
+        proxy = make_proxy(catalog, namespace=_NS)
+        await proxy.start(nats)
+        before = asyncio.all_tasks()
+        await proxy.handle_call(_msg(make_authed_request()))
+        (dispatch,) = asyncio.all_tasks() - before
+
+        with pytest.raises(AttributeError, match="a bug in the wait"):
+            await dispatch
+        await proxy.stop()
+        assert nats.replies == []
+        assert nats.waiters[0].closed is True
+
+
 class TestDeliveringToTheAgent:
     """The agent -> registry hop, where the responder is anonymous and the subject names the caller."""
 

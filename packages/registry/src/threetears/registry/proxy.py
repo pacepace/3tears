@@ -46,6 +46,7 @@ from threetears.nats import (
     NatsClientError,
     PublishError,
     RequestError,
+    RequestTimeoutError,
     Subject,
     Subjects,
     reply_subject_is_owned_by_agent,
@@ -1745,7 +1746,9 @@ class CallProxy:
                 return accept_error
             try:
                 delivered = await waiter.wait(timeout=timedelta(seconds=effective_timeout))
-            except Exception as exc:  # noqa: BLE001 — every failure becomes a typed response, never a hang
+            except RequestTimeoutError as exc:
+                # the deadline passing: the waiter rides out every transport failure itself, so anything
+                # else it raises is a bug and propagates
                 contain(
                     exc,
                     log=log,
