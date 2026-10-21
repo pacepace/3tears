@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, observe: a 5xx retry line says what the upstream answered
+
+**Fixed:** `TracedHttpClient` signalled a retryable 5xx with a message-less private exception, so
+every retry line and the exhaustion line from `retry_with_backoff` ended in an empty reason, and the
+exhaustion was an ERROR with a traceback naming only `_Retryable` (handmcp, 2026-10-21: three blank
+lines for a `PUT` answered HTTP 500). Each line now reads `HTTP 500 from PUT https://host/path`; the
+URL drops its query string and userinfo, and the body is left out. `UpstreamHttpError`'s message
+ends `(last answer: HTTP 500)`, or `(no answer: ConnectError)` when no response arrived; `status_code`
+and `body` are unchanged. A request with `idempotent=False` that stops on a 5xx or a failure after it
+left now logs a WARNING naming it, where it logged nothing. `retry_with_backoff` names a message-less
+failure by its type on every line, and takes `caller_raises=True` from a caller that raises its own
+error on `False`: the exhaustion is then a WARNING without a traceback. The default is unchanged
+(contained at ERROR with the traceback), because the registry's startup steps discard the result and
+that line is their only record.
+
 ### observe: `retry_bounded` waits as long as a failure asked
 
 **Added:** `asked_pause` reads how long a failure itself asked to wait (an HTTP `Retry-After`),

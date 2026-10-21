@@ -12,6 +12,7 @@ lands on a span attribute).
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import patch
 
 import httpx
@@ -848,3 +849,116 @@ class TestARequestThatMustNotRunTwice:
         async with _client(transport) as client:
             response = await client.post("/jobs", idempotent=False)
         assert response.status_code == 409 and calls[0] == 1
+
+
+_RETRY_LOGGER = "threetears.observe.resilience"
+_CLIENT_LOGGER = "threetears.core.http_client"
+
+
+def _always(status: int) -> httpx.MockTransport:
+    """a transport answering ``status`` with a JSON body on every call.
+
+    :param status: the HTTP status to answer
+    :ptype status: int
+    :return: the transport
+    :rtype: httpx.MockTransport
+    """
+    return httpx.MockTransport(lambda _request: httpx.Response(status, json={"error": "boom"}))
+
+
+def _records(caplog: pytest.LogCaptureFixture, logger: str) -> list[logging.LogRecord]:
+    """the records ``logger`` wrote, in order.
+
+    :param caplog: pytest's log capture
+    :ptype caplog: pytest.LogCaptureFixture
+    :param logger: the logger's name
+    :ptype logger: str
+    :return: its records
+    :rtype: list[logging.LogRecord]
+    """
+    return [record for record in caplog.records if record.name == logger]
+
+
+class TestA5xxIsNamedInEveryLineAndInTheError:
+    """an upstream answering 5xx: each retry line, the exhaustion line and the error say which status."""
+
+    async def test_each_retry_line_and_the_error_carry_the_status(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO)
+        async with _client(_always(500), max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("PUT", "/thing", params={"token": "s3cret"})
+        lines = _records(caplog, _RETRY_LOGGER)
+        retries = [record for record in lines if "retrying" in record.getMessage()]
+        assert len(retries) == 2
+        for record in retries:
+            assert "HTTP 500 from PUT https://api.example.test/thing" in record.getMessage()
+            assert "s3cret" not in record.getMessage()
+        assert "500" in str(exc_info.value)
+        assert "failed after 3 attempts (last answer: HTTP 500)" in str(exc_info.value)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.body == b'{"error":"boom"}'
+
+    async def test_the_exhaustion_is_a_warning_without_a_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
+        """the caller receives the error and decides how bad it is; a private signal's traceback says nothing."""
+        caplog.set_level(logging.INFO)
+        async with _client(_always(503), max_attempts=2) as client:
+            with pytest.raises(UpstreamHttpError):
+                await client.request("GET", "/down")
+        exhausted = [record for record in _records(caplog, _RETRY_LOGGER) if "failed after" in record.getMessage()]
+        assert len(exhausted) == 1
+        assert exhausted[0].levelno == logging.WARNING
+        assert not exhausted[0].exc_info
+        assert "HTTP 503 from GET https://api.example.test/down" in exhausted[0].getMessage()
+
+    async def test_a_transport_exhaustion_names_what_failed(self) -> None:
+        transport, _calls = _raising_transport(httpx.ConnectError("refused"))
+        async with _client(transport, max_attempts=2) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("GET", "/dead")
+        assert "failed after 2 attempts (no answer: ConnectError)" in str(exc_info.value)
+
+    async def test_a_request_that_must_not_run_twice_logs_the_status_it_stopped_on(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        async with _client(_always(500), max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.post("/jobs?key=s3cret", idempotent=False)
+        stopped = [record for record in _records(caplog, _CLIENT_LOGGER) if record.levelno == logging.WARNING]
+        assert len(stopped) == 1
+        assert "HTTP 500 from POST https://api.example.test/jobs" in stopped[0].getMessage()
+        assert "s3cret" not in stopped[0].getMessage()
+        assert "failed after 1 attempt (last answer: HTTP 500)" in str(exc_info.value)
+
+    async def test_a_request_that_must_not_run_twice_logs_the_transport_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        transport, _calls = _raising_transport(httpx.ReadTimeout("read timed out"))
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.post("/jobs", idempotent=False)
+        stopped = [record for record in _records(caplog, _CLIENT_LOGGER) if record.levelno == logging.WARNING]
+        assert len(stopped) == 1
+        assert "read timed out" in stopped[0].getMessage()
+        assert "(no answer: ReadTimeout)" in str(exc_info.value)
+
+    async def test_a_stream_names_the_status_in_each_line_and_the_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO)
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            async with _client(_always(502), max_attempts=3) as client:
+                async with client.stream("GET", "/big.zip", params={"sig": "s3cret"}):
+                    pass  # pragma: no cover -- establishment never succeeds
+        lines = _records(caplog, _RETRY_LOGGER)
+        retries = [record for record in lines if "retrying" in record.getMessage()]
+        assert len(retries) == 2
+        for record in retries:
+            assert "HTTP 502 from GET https://api.example.test/big.zip" in record.getMessage()
+            assert "s3cret" not in record.getMessage()
+        exhausted = [record for record in lines if "failed after" in record.getMessage()]
+        assert len(exhausted) == 1
+        assert exhausted[0].levelno == logging.WARNING
+        assert not exhausted[0].exc_info
+        assert "upstream stream to api.example.test failed after 3 attempts (last answer: HTTP 502)" in str(
+            exc_info.value
+        )

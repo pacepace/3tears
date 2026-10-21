@@ -29,12 +29,15 @@ async def retry_with_backoff(
     max_attempts: int | None = 30,
     initial_backoff: float = 2.0,
     max_backoff: float = 30.0,
+    *,
+    caller_raises: bool = False,
 ) -> bool:
     """retry async operation with exponential backoff.
 
     intended for service startup steps that depend on external
     infrastructure. logs warnings on retry and errors on final
-    failure. never raises.
+    failure. never raises. every line names the failure: its message,
+    or its type when the message is empty.
 
     two modes, selected by ``max_attempts``:
 
@@ -66,6 +69,11 @@ async def retry_with_backoff(
     :ptype initial_backoff: float
     :param max_backoff: maximum backoff seconds
     :ptype max_backoff: float
+    :param caller_raises: whether the caller turns a ``False`` into an error it raises. then the
+        exhaustion is logged at WARNING without a traceback, because the caller's error reaches
+        whoever decides how bad it is; by default (``False``) the exhaustion is contained at ERROR
+        with the traceback, the only record a caller that degrades on ``False`` leaves
+    :ptype caller_raises: bool
     :return: True if operation succeeded; False only when a finite
         ``max_attempts`` is exhausted (infinite mode never returns False)
     :rtype: bool
@@ -86,8 +94,14 @@ async def retry_with_backoff(
             result = True
             break
         except Exception as exc:
+            reason = str(exc) or type(exc).__name__
             if max_attempts is not None and attempt >= max_attempts:
-                contain(exc, log=_logger, what=f"{name} failed after {max_attempts} attempts: {exc}", level="error")
+                if caller_raises:
+                    _logger.warning("%s failed after %d attempts: %s", name, max_attempts, reason)
+                else:
+                    contain(
+                        exc, log=_logger, what=f"{name} failed after {max_attempts} attempts: {reason}", level="error"
+                    )
                 break
             if max_attempts is None:
                 _logger.warning(
@@ -96,7 +110,7 @@ async def retry_with_backoff(
                     name,
                     attempt,
                     backoff,
-                    exc,
+                    reason,
                 )
                 # equal jitter on the startup-critical path: sleep 50-100% of
                 # the current backoff so a fleet of pods does not stampede a
@@ -110,7 +124,7 @@ async def retry_with_backoff(
                     attempt,
                     max_attempts,
                     backoff,
-                    exc,
+                    reason,
                 )
                 sleep_for = backoff
             await asyncio.sleep(sleep_for)
