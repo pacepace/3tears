@@ -88,6 +88,7 @@ from threetears.models._claude_sdk_internals import (
     install_tool_server,
     remove_tool_server,
     send_control_request,
+    spawn_clis_without_fork,
 )
 from threetears.observe import BuildOnce, cancel_and_wait, contain, contained, gauge, get_logger
 
@@ -1027,6 +1028,9 @@ class PooledCliSession:
         # skips it, the first included.
         if not os.environ.get(_SKIP_VERSION_CHECK_ENV):
             os.environ[_SKIP_VERSION_CHECK_ENV] = "1"
+        # Under uvloop the SDK's spawn forks the whole worker with the interpreter lock held: no thread
+        # ran for 2-12 s and the worker was killed (_claude_cli_spawn). It starts the CLI by vfork instead.
+        spawn_clis_without_fork()
         client = sdk.ClaudeSDKClient(options=options)
         try:
             await client.connect()

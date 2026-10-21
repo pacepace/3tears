@@ -15,6 +15,16 @@ An attempt made sooner is only refused again. A failure asking for longer than
 once, so the bound still holds. metallm's composed turn uses it to ask a rate-limited model
 round again. Both parameters are optional; existing callers are unchanged.
 
+### models: starting a Claude CLI no longer forks the worker
+
+**Fixed:** under uvloop the SDK's `anyio.open_process` is libuv's `uv_spawn`, a full `fork()` of
+the worker made with the interpreter lock held, so no thread ran until the child exec'd. The stall
+grows with resident memory (one spawn, idle host: 23 ms at 0.5 GB, 95 ms at 2 GB); in metallm's
+~500 MB production workers it was 2-12 s, and uvicorn killed the worker at 5 s (2026-10-14..21: 134 of
+208 freeze reports in `PooledCliSession.start`). A pooled start and a call's own CLI now start the
+CLI with `subprocess.Popen` (vfork) in a worker thread and join its pipes to the loop: under 9 ms at any
+size. The `claude-cli` extra declares `anyio`, which it imports.
+
 ## v0.74.0 -- 2026-10-20
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever
