@@ -531,6 +531,10 @@ async def _build_governed_injection(
     # the invariants are known from here on, so a fault past this point does not fail
     # the turn: the invariants still inject, alone, under a notice that the rest could
     # not be applied. only an invariant that cannot be RENDERED still fails closed.
+    # the expected failures below (the embedder's, the vector fetch's, one situational
+    # item's render) are answered where they happen, so what reaches this handler is a
+    # bug or a failure no callee declares. it is contained: counted in production, and a
+    # programming error fails under pytest, but it does not cost the turn its hard rules.
     try:
         return await _rank_and_render(
             integration,
