@@ -272,29 +272,32 @@ class BearerTokenIdentityProvider:
         """resolve the calling identity from the current request's bearer token.
 
         re-resolves per call (v2 semantics): reads the token from the
-        injected source, then maps it via the injected resolver. a
-        resolver exception of any type is surfaced as ``RuntimeError``
-        to honour the :class:`IdentityProvider` Protocol contract;
-        :meth:`McpServer._dispatch` maps that to the existing
-        ``IDENTITY_UNAVAILABLE`` error result.
+        injected source, then maps it via the injected resolver. both
+        are injected, so neither has an error contract of its own: an
+        exception of any type from either is surfaced as
+        ``RuntimeError`` to honour the :class:`IdentityProvider`
+        Protocol contract, which is the one type
+        :meth:`McpServer._dispatch` maps to the ``IDENTITY_UNAVAILABLE``
+        error result.
 
         :return: resolved caller identity
         :rtype: Identity
-        :raises RuntimeError: when the bearer token is absent or the
-            resolver cannot resolve it to an identity
+        :raises RuntimeError: when the token source fails, the bearer
+            token is absent, or the resolver cannot resolve it to an
+            identity
         """
-        token = self._token_source()
-        if not token:
-            raise RuntimeError(
-                "bearer token absent from request context; caller identity cannot be resolved",
-            )
         try:
+            token = self._token_source()
+            if not token:
+                raise RuntimeError(
+                    "bearer token absent from request context; caller identity cannot be resolved",
+                )
             identity = await self._resolver(token)
         except RuntimeError:
             raise
         except Exception as exc:
             raise RuntimeError(
-                f"bearer token could not be resolved to an identity: {type(exc).__name__}: {exc}",
+                f"bearer token could not be read or resolved to an identity: {type(exc).__name__}: {exc}",
             ) from exc
         return identity
 

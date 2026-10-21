@@ -25,7 +25,7 @@ import mcp.types as mcp_types
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from threetears.mcp.auth import Identity, LocalGrantAuthorizer
+from threetears.mcp.auth import BearerTokenIdentityProvider, Identity, LocalGrantAuthorizer
 from threetears.mcp.server import McpServer
 from threetears.mcp.tool import McpTool, ToolRegistry
 
@@ -317,6 +317,47 @@ class TestDispatchErrorPaths:
         result = await _call_tool(server, "probe", {})
         assert result.isError is True
         assert _payload_from_result(result)["error"]["code"] == "IDENTITY_UNAVAILABLE"
+
+    @pytest.mark.asyncio
+    async def test_a_failing_bearer_token_source_returns_identity_unavailable(self) -> None:
+        """the bearer provider holds its injected token source to the Protocol's RuntimeError."""
+
+        def _unreadable() -> str | None:
+            raise LookupError("request context not set")
+
+        async def _resolver(token: str) -> Identity:
+            raise AssertionError(f"no token was read, so none can be resolved: {token!r}")
+
+        server = McpServer(
+            name="test",
+            identity_provider=BearerTokenIdentityProvider(resolver=_resolver, token_source=_unreadable),
+            authorizer=_authorizer(allows=True),
+            registry=_registry_with(_make_tool()),
+        )
+        result = await _call_tool(server, "probe", {})
+        assert result.isError is True
+        assert _payload_from_result(result)["error"]["code"] == "IDENTITY_UNAVAILABLE"
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_identity_provider_is_not_read_as_identity_unavailable(self) -> None:
+        """only the Protocol's RuntimeError means "no identity"; any other raise is a bug and propagates.
+
+        the dispatch does not answer it, so it reaches the MCP SDK's own catch-all, which returns the
+        bare exception text rather than this server's ``IDENTITY_UNAVAILABLE`` envelope.
+        """
+        provider = MagicMock()
+        provider.identify = AsyncMock(side_effect=AttributeError("a bug in the provider"))
+        handler = AsyncMock(return_value="must not run")
+        server = McpServer(
+            name="test",
+            identity_provider=provider,
+            authorizer=_authorizer(allows=True),
+            registry=_registry_with(_make_tool(handler=handler)),
+        )
+        result = await _call_tool(server, "probe", {})
+        assert result.isError is True
+        assert _content_text(result) == "a bug in the provider"
+        handler.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_authorizer_raise_denies_with_authz_error(self) -> None:
