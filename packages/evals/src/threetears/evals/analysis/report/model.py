@@ -860,7 +860,7 @@ class Report(EvalDocumentModel):
 
 #: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
 #: shape would misread the new one.
-CAMPAIGN_JSON_SHAPE = 1
+CAMPAIGN_JSON_SHAPE = 2
 
 
 class CampaignAspectFold(EvalDocumentModel):
@@ -932,6 +932,28 @@ class CampaignReport(EvalDocumentModel):
     recommendation: Recommendation | None = Field(
         default=None, description="The writer's recommendation, as the memo holds it; None with no memo."
     )
+    recommended_variant_key: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The variant key of the arm the recommendation names, as the analysis recorded it when it was saved "
+            "(`EvalAnalysis.recommended_variant_key`): what a reader matches a call's `variant_key` to, whatever "
+            "later relabels the arm. Set exactly when the page holds a recommendation."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _the_recommendation_is_keyed(self) -> Self:
+        """Refuse a recommendation without its arm's key, and a key with no recommendation to name.
+
+        :raises ValueError: One of ``recommendation`` and ``recommended_variant_key`` is set without the other.
+        """
+        if (self.recommendation is None) != (self.recommended_variant_key is None):
+            raise ValueError(
+                "recommended_variant_key is the key of the arm the recommendation names: set exactly when the page "
+                "holds a recommendation"
+            )
+        return self
 
     @model_validator(mode="after")
     def _the_basis_matches_what_the_page_holds(self) -> Self:
@@ -1032,8 +1054,8 @@ class CampaignReport(EvalDocumentModel):
 
     def json_document(self) -> dict[str, object]:
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
-        the writer's recommendation (its arm and how sure) where there is a memo, the call, and each aspect's bundle by
-        its fingerprint and shape.
+        the writer's recommendation (its arm's label and variant key, and how sure) where there is a memo, the call,
+        and each aspect's bundle by its fingerprint and shape.
 
         :return: A JSON-ready mapping.
         :rtype: dict[str, object]
@@ -1047,7 +1069,11 @@ class CampaignReport(EvalDocumentModel):
             "analysis_id": self.analysis_id,
             "recommendation": None
             if recommendation is None
-            else {"arm": recommendation.arm, "confidence": recommendation.confidence},
+            else {
+                "arm": recommendation.arm,
+                "variant_key": self.recommended_variant_key,
+                "confidence": recommendation.confidence,
+            },
             "readings": self.readings.to_dict(),
             "call": self.call.to_dict() if self.call is not None else None,
             "aspects": [

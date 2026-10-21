@@ -509,6 +509,23 @@ async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its
     assert (restored.verdict, restored.archived) == (expected, False)
 
 
+async def test_an_analysis_s_page_json_names_its_recommended_arm_by_the_key_the_analysis_recorded() -> None:
+    """A reader matching a call to the recommendation compares keys, never labels (#880): the page's JSON carries the
+    key the analysis stored beside its memo, which is the key a call on that arm records."""
+    held, two = await _build_two(floor=False, bar=False)
+    analysis_id = await _generated(held, two)
+    (analysis,) = off_loop(list_analyses, held.host.storage, two.id, SCOPE)
+    assert analysis.id == analysis_id and analysis.recommended_variant_key is not None
+    page = off_loop(campaign_report, held.host, two.id, SCOPE)
+    assert page.json_document()["recommendation"] == {
+        "arm": "production",
+        "variant_key": analysis.recommended_variant_key,
+        "confidence": "medium",
+    }
+    recorded = _record(held, two, arm="production", analysis_id=analysis_id)
+    assert recorded.call.variant_key == analysis.recommended_variant_key
+
+
 async def test_the_listing_names_what_was_frozen_with_the_analysis_not_the_campaign_as_it_stands() -> None:
     """The floor is withdrawn from the stored campaign after the analysis was written: the analysis's line still names
     it, worded over the floors frozen with it, as the analysis's page still opens on it."""

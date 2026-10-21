@@ -24,8 +24,8 @@ files = page.write("eval-report")  # report.html, report.md, campaign.json, bund
 `report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
 page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
 printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
-and confidence, the call, and each aspect's bundle by its fingerprint ([its shape](serving.md#the-campaign-json)).
-Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
+(by label and variant key) and confidence, the call, and each aspect's bundle by its fingerprint
+([its shape](serving.md#the-campaign-json)). Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
 `AnalysisContextBundle.from_json(...).fingerprint()` over the file returns the fingerprint the page names. A host that
 wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return
 `campaign.json`. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.

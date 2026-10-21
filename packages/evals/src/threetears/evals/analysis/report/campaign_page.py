@@ -109,6 +109,7 @@ def build_campaign_report(
     memo: AuthoredCampaignAnalysis | None,
     *,
     call: CampaignCall | None = None,
+    recommended_variant_key: str | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as its page: code's readings first, the writer's recommendation, the person's call, then one
     fold per aspect.
@@ -124,12 +125,22 @@ def build_campaign_report(
     :ptype memo: AuthoredCampaignAnalysis | None
     :param call: The person's call; None while none is recorded.
     :ptype call: CampaignCall | None
+    :param recommended_variant_key: The variant key of the arm the memo recommends, as the analysis recorded it
+        (``EvalAnalysis.recommended_variant_key``); required where the page holds a recommendation, which a
+        measurement's never does.
+    :ptype recommended_variant_key: str | None
     :return: The page, ``basis="analysis"`` with a memo, ``code_only`` without one.
     :rtype: CampaignReport
-    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, or the
-        readings are of another campaign.
+    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
+        are of another campaign, or the memo recommends an arm and no key is given for it.
     """
     reports = _checked_reports(campaign, readings, aspect_reports)
+    recommendation = memo.recommended() if memo is not None and readings.kind != "measurement" else None
+    if recommendation is not None and recommended_variant_key is None:
+        raise RefusedInput(
+            f"the memo recommends {recommendation.arm}, and the page is given no variant key for that arm",
+            remedy="pass the key the analysis recorded for its recommended arm (EvalAnalysis.recommended_variant_key)",
+        )
     style = _CampaignStyle.over(campaign, readings, reports)
     kind = readings.kind
     blocks: list[ReportBlock] = [
@@ -178,7 +189,8 @@ def build_campaign_report(
         aspects=folds,
         readings=readings,
         call=call,
-        recommendation=memo.recommended() if memo is not None and kind != "measurement" else None,
+        recommendation=recommendation,
+        recommended_variant_key=recommended_variant_key if recommendation is not None else None,
     )
 
 
