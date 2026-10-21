@@ -152,7 +152,7 @@ uv sync                    # install all packages in dev mode
 
 Extra args pass through: `./scripts/test.sh core -v -x`
 
-Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run.
+Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run. There, a package run skips its integration tests, which `test-integration.sh` covers, and `-x`, `--maxfail`, `-n` or `--lf` make testament run it locally instead.
 
 `test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 
