@@ -56,6 +56,7 @@ from threetears.evals.kernel.declaration import (
     resolve_control_arm,
 )
 from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.host.profile import HostProfile
@@ -185,7 +186,14 @@ class ArmDefinition(EvalBaseModel):
 class AspectDefinition(EvalBaseModel):
     """An aspect as a caller declares one: its label, its template, its margin, its design and its runs."""
 
-    label: str = Field(min_length=1, description="What a reader calls the aspect; unique within the campaign.")
+    label: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "What a reader calls the aspect; unique within the campaign. Omitted, the aspect is named after the "
+            "campaign's behavior (`aspect_label_for`: each `/` becomes `-`), which one aspect at most may be."
+        ),
+    )
     template_id: str | None = Field(
         default=None,
         min_length=1,
@@ -341,7 +349,10 @@ def create_campaign(
         dict.fromkeys(source.question for source in sources if source.question)
     )
     adopted = _adopted_aspects(sources, authored.margins, at=now)
-    own = [_declared_aspect(storage, scope_id, aspect, at=now) for aspect in authored.aspects]
+    own = [
+        _declared_aspect(storage, scope_id, aspect, label=label, at=now)
+        for label, aspect in _labelled(authored.aspects, authored.behavior)
+    ]
     if not adopted and not own:
         raise ValidationFailedError(
             "a campaign measures its question on at least one aspect, and this create names none and adopts none",
@@ -557,17 +568,35 @@ def _refuse_collisions(sources: Sequence[EvalCampaign], own: Sequence[Aspect]) -
             holder[run_id] = held_by
 
 
-def _declared_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, at: str) -> Aspect:
-    """An aspect a caller declares, its runs held to the scope and to one revision, its template resolved.
+def _labelled(defined: Sequence[AspectDefinition], behavior: str) -> list[tuple[str, AspectDefinition]]:
+    """Each aspect a caller declares, with its label: its own, or, where it names none, the campaign's behavior's
+    (:func:`~threetears.evals.schema.aspect_label.aspect_label_for`).
+
+    :raises ValidationFailedError: Two or more aspects name no label, which would name them alike.
+    """
+    if (unlabelled := sum(1 for aspect in defined if aspect.label is None)) > 1:
+        raise ValidationFailedError(
+            f"{unlabelled} aspects name no label, and an aspect with none is named after the campaign's behavior "
+            f"({aspect_label_for(behavior)!r}), which would name them alike",
+            remedy="label each aspect, or all but one, which is then named after the behavior",
+        )
+    return [(aspect.label if aspect.label is not None else aspect_label_for(behavior), aspect) for aspect in defined]
+
+
+def _declared_aspect(
+    storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, label: str, at: str
+) -> Aspect:
+    """An aspect a caller declares, as ``label``, its runs held to the scope and to one revision, its template
+    resolved.
 
     :raises ValidationFailedError: A run is outside the scope or of another revision of a template it holds.
     :raises NotFoundError: The template it names is not in the scope.
     """
     _refuse_runs_outside_scope(storage, defined.run_ids, scope_id)
-    _refuse_pooled_revisions(storage, defined.run_ids, scope_id, what=f"aspect {defined.label!r}")
+    _refuse_pooled_revisions(storage, defined.run_ids, scope_id, what=f"aspect {label!r}")
     declares = defined.design is not None
     return Aspect(
-        label=defined.label,
+        label=label,
         template_id=_aspect_template(storage, scope_id, defined.template_id, defined.run_ids),
         margin=defined.margin,
         design=defined.design,
@@ -1074,8 +1103,10 @@ def update_campaign(
     try:
         aspects = (
             [
-                _updated_aspect(storage, scope_id, AspectDefinition.model_validate(item), at=now)
-                for item in updates["aspects"]
+                _updated_aspect(storage, scope_id, aspect, label=label, at=now)
+                for label, aspect in _labelled(
+                    [AspectDefinition.model_validate(item) for item in updates["aspects"]], campaign.behavior
+                )
             ]
             if "aspects" in updates
             else list(campaign.aspects)
@@ -1174,18 +1205,18 @@ def update_campaign(
     return updated
 
 
-def _updated_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, at: str) -> Aspect:
-    """An aspect an update declares: no runs (they join through :func:`add_runs_to_campaign`), dated now.
+def _updated_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, label: str, at: str) -> Aspect:
+    """An aspect an update declares, as ``label``: no runs (they join through :func:`add_runs_to_campaign`), dated now.
 
     :raises ValidationFailedError: The aspect names runs, or declares a design and no margin.
     """
     if defined.run_ids:
         raise ValidationFailedError(
-            f"aspect {defined.label!r} names runs, and runs join an aspect through campaign_runs_add, whose rules an "
+            f"aspect {label!r} names runs, and runs join an aspect through campaign_runs_add, whose rules an "
             "update would skip",
             remedy="leave run_ids out of the update, then add the runs with campaign_runs_add naming the aspect",
         )
-    return _declared_aspect(storage, scope_id, defined, at=at)
+    return _declared_aspect(storage, scope_id, defined, label=label, at=at)
 
 
 def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> EvalCampaign:

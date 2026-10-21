@@ -96,6 +96,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.aspect_label_for": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.AsyncDelivery": {
       "kind": "model",
       "signature": "AsyncDelivery(tool: str, requested_by: str | None = None, status: AsyncDeliveryStatus, model: str | None = None, acknowledged_turn: int | None = None, delivered_turn: int | None = None, elapsed_ms: float | None = None, delivered_items: int | None = None, summary: str | None = None, error: str | None = None, substituted: bool, input_tokens: int | None = None, output_tokens: int | None = None, reasoning_tokens: int | None = None, llm_calls: int | None = None, cost_usd: float | None = None, price_source: str | None = None, external_spend: list[AsyncExternalSpend] = list())",
