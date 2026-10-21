@@ -306,6 +306,22 @@ class ProxyCallAccepted(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class _CallRoute:
+    """where one call's answer goes, as the dispatch learns it.
+
+    the inbox until the call is accepted for durable delivery, the delivery subject after, so a
+    fault the dispatch did not answer is answered where the agent is listening.
+
+    :ivar delivery_subject: the durable subject the call was accepted for, or ``None`` while the
+        agent still waits on its inbox
+    :ivar context: the call's envelope once the request parses, echoed on a fault answer
+    """
+
+    def __init__(self) -> None:
+        self.delivery_subject: Subject | None = None
+        self.context: CallContext | None = None
+
+
 class CallProxy:
     """proxies tool calls from callers -- agents, tool pods, the hub -- to tool pods.
 
@@ -532,7 +548,22 @@ class CallProxy:
         """
         task = asyncio.create_task(self._process_call(msg))
         self._active_tasks.add(task)
-        task.add_done_callback(self._active_tasks.discard)
+        task.add_done_callback(self._call_finished)
+
+    def _call_finished(self, task: "asyncio.Task[None]") -> None:
+        """forget a finished call task.
+
+        a fault that ended it was recorded by :meth:`_process_call`, with the call's identity, before
+        it propagated. nothing awaits a call task while the proxy runs, so the fault is retrieved here
+        rather than reported a second time, without that identity, as asyncio's "exception was never
+        retrieved".
+
+        :param task: the finished call task
+        :ptype task: asyncio.Task[None]
+        """
+        self._active_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
 
     async def _process_call(self, msg: IncomingMessage) -> None:
         """process tool call request concurrently.
@@ -549,40 +580,89 @@ class CallProxy:
         log line in this handler and its callees renders with those
         tags; cleared in ``finally`` to avoid bleeding identifiers
         across concurrently-handled calls on the same asyncio task.
+        a fault nothing inside answered is logged with those tags,
+        answered ``REGISTRY_INTERNAL_ERROR`` where the agent is
+        listening, and re-raised.
 
         :param msg: incoming NATS message containing call request
         :ptype msg: Any
         :raises RuntimeError: when invoked before ``start`` connects NATS
         """
-        if self._nc is None:
-            raise RuntimeError("_process_call invoked before NATS connected")
-        # bracket the whole dispatch in the in-flight gauge: increment on entry,
-        # decrement on exit even when dispatch raises (try/finally inside
-        # ``track``), so KEDA's prometheus scaler reads the true concurrent-call
-        # count and a failed call never strands the counter above baseline.
-        with self._inflight_gauge.track():
-            try:
-                request = ProxyCallRequest.model_validate_json(msg.data)
-            except ValidationError as exc:
-                contain(exc, log=log, what="malformed call request")
-                response = ProxyCallResponse(
-                    success=False,
-                    content="",
-                    error=f"malformed call request: {exc}",
-                    error_code="MALFORMED_REQUEST",
-                )
-                if msg.reply_subject is not None:
-                    await self._nc.publish_reply(
-                        reply_subject=msg.reply_subject,
-                        message=response,
-                    )
-                return
+        route = _CallRoute()
+        try:
+            if self._nc is None:
+                raise RuntimeError("_process_call invoked before NATS connected")
+            # bracket the whole dispatch in the in-flight gauge: increment on entry,
+            # decrement on exit even when dispatch raises (try/finally inside
+            # ``track``), so KEDA's prometheus scaler reads the true concurrent-call
+            # count and a failed call never strands the counter above baseline.
+            with self._inflight_gauge.track():
+                await self._parse_and_dispatch(msg, route)
+        except Exception as exc:
+            # every failure the dispatch expects is answered inside it, so what reaches here was not
+            # answered: a registry bug, or the transport failing as it answered. it is recorded here,
+            # while the call's log tags are still bound, the agent is answered rather than left to
+            # wait out its own deadline, and it propagates.
+            log.error("tool call failed inside the registry (%s)", type(exc).__name__, exc_info=exc)
+            await self._answer_fault(msg, route)
+            raise
+        finally:
+            clear_context()
 
-            bind_log_context(request.context)
-            try:
-                await self._dispatch_call(request, msg)
-            finally:
-                clear_context()
+    async def _parse_and_dispatch(self, msg: IncomingMessage, route: _CallRoute) -> None:
+        """parse the call, answer one that does not parse, and dispatch one that does.
+
+        :param msg: incoming NATS message containing call request
+        :ptype msg: IncomingMessage
+        :param route: where the call is answered, filled in as the dispatch learns it
+        :ptype route: _CallRoute
+        """
+        assert self._nc is not None
+        try:
+            request = ProxyCallRequest.model_validate_json(msg.data)
+        except ValidationError as exc:
+            contain(exc, log=log, what="malformed call request")
+            response = ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"malformed call request: {exc}",
+                error_code="MALFORMED_REQUEST",
+            )
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=response,
+                )
+            return
+
+        bind_log_context(request.context)
+        route.context = request.context
+        await self._dispatch_call(request, msg, route)
+
+    async def _answer_fault(self, msg: IncomingMessage, route: _CallRoute) -> None:
+        """tell the agent the registry failed its call, where the agent is listening.
+
+        the fault being answered propagates whatever happens here, so a failure to answer it is
+        recorded, not raised in its place.
+
+        :param msg: incoming NATS message containing call request
+        :ptype msg: IncomingMessage
+        :param route: where the call is answered
+        :ptype route: _CallRoute
+        """
+        if self._nc is None:
+            return
+        fault = ProxyCallResponse(
+            success=False,
+            content="",
+            error="the registry failed while handling this call; the tool may or may not have run",
+            error_code="REGISTRY_INTERNAL_ERROR",
+            context=route.context,
+        )
+        try:
+            await self._answer(msg, fault, route.delivery_subject)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the original fault still propagates; this records that the agent was not told
+            contain(exc, log=log, what="the registry could not answer a call it failed", level="error")
 
     def _load_jwks(self) -> dict[str, Any]:
         """fetch the current Hub JWKS via the injected provider, converting ANY provider
@@ -944,6 +1024,7 @@ class CallProxy:
         self,
         request: "ProxyCallRequest",
         msg: IncomingMessage,
+        route: _CallRoute,
     ) -> None:
         """body of :meth:`_process_call` after the logging-context bind.
 
@@ -967,6 +1048,9 @@ class CallProxy:
         :ptype request: ProxyCallRequest
         :param msg: incoming wrapper envelope (for reply subject)
         :ptype msg: IncomingMessage
+        :param route: set to the delivery subject once the call is accepted for durable delivery,
+            so the supervisor answers a fault where the agent is listening
+        :ptype route: _CallRoute
         :return: nothing; response is published to ``msg.reply_subject``
             by each branch below
         :rtype: None
@@ -1079,6 +1163,7 @@ class CallProxy:
                     reply_subject=msg.reply_subject,
                     message=ProxyCallAccepted(accepted=True, result_subject=delivery_subject.path),
                 )
+            route.delivery_subject = delivery_subject
 
         # pre-call spend gate (gu-task-06): AFTER pop / BEFORE the authorizer + catalog routing, so a
         # spend-denied call never consumes a catalog lookup. FAIL-OPEN (Fork-2, an owner decision,

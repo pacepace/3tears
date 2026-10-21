@@ -42,10 +42,10 @@ from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.utils.local_time import resolve_zone
 from threetears.agent.wake.tools.schedule_tools import (
     WakeRegistryClient,
-    _skill_label,
-    _no_change,
-    _tool_error,
-    _validate_name,
+    skill_label,
+    no_change,
+    tool_error,
+    validate_name,
 )
 from threetears.observe import contain, get_logger
 
@@ -506,28 +506,28 @@ def load_webhook_subscription_create_tool(
     ) -> str:
         """Create an inbound webhook subscription."""
         for err in (
-            _validate_name(name),
+            validate_name(name),
             _validate_template(task_prompt_template),
             _validate_source_pattern(allowed_source_pattern),
             _validate_rate_limit(rate_limit_per_minute),
         ):
             if err is not None:
-                return _tool_error("webhook_subscription_create", err)
+                return tool_error("webhook_subscription_create", err)
 
         target_conversation_id: UUID | None = conversation_id if wake_conversations is None else None
         if wake_conversation_id is not None:
             if wake_conversations is None:
-                return _tool_error(
+                return tool_error(
                     "webhook_subscription_create",
                     "subscriptions here live in this conversation; omit wake_conversation_id",
                 )
             parsed_target = parse_conversation_id(wake_conversation_id)
             if parsed_target is None:
-                return _tool_error(
+                return tool_error(
                     "webhook_subscription_create", f"invalid wake_conversation_id {wake_conversation_id!r}"
                 )
             if not await wake_conversations.is_wake_conversation(agent_id=agent_id, conversation_id=parsed_target):
-                return _tool_error(
+                return tool_error(
                     "webhook_subscription_create",
                     f"[conversation:{parsed_target}] is not one of your wake conversations",
                 )
@@ -537,7 +537,7 @@ def load_webhook_subscription_create_tool(
         if default_skill_id is not None and default_skill_id != "":
             parsed_skill = _parse_skill_id_arg(default_skill_id)
             if parsed_skill is None:
-                return _tool_error(
+                return tool_error(
                     "webhook_subscription_create",
                     f"invalid default_skill_id {default_skill_id!r}",
                 )
@@ -549,7 +549,7 @@ def load_webhook_subscription_create_tool(
                 tool_name="webhook_subscription_create",
             )
             if err is not None:
-                return _tool_error("webhook_subscription_create", err)
+                return tool_error("webhook_subscription_create", err)
             attached_skill = parsed_skill
 
         # The same subscription made twice is two addresses and two secrets for one job.
@@ -575,7 +575,7 @@ def load_webhook_subscription_create_tool(
             rate_limit_per_minute=rate_limit_per_minute,
         )
         if standing is not None:
-            return _no_change(
+            return no_change(
                 "webhook_subscription_create",
                 f"you already have this subscription, [webhook:{standing.subscription_id}] ({standing.status}): "
                 "the same name, template, skill, source pattern and limit. Nothing was made. Its address is "
@@ -590,13 +590,13 @@ def load_webhook_subscription_create_tool(
         try:
             ciphertext = encryption_service.encrypt(plaintext_secret.encode("utf-8"))
         except AttributeError:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_create",
                 "encryption_service does not support encrypt(); cannot create subscription",
             )
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_create encrypt failed", extra={"error": str(exc)})
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_create",
                 f"secret encryption failed ({type(exc).__name__})",
             )
@@ -636,11 +636,11 @@ def load_webhook_subscription_create_tool(
                 what="webhook_subscription_create persist failed",
                 extra={"subscription_id": str(new_id), "error": str(exc)},
             )
-            return _tool_error("webhook_subscription_create", f"persist failed ({type(exc).__name__})")
+            return tool_error("webhook_subscription_create", f"persist failed ({type(exc).__name__})")
 
         skill_name: str | None = None
         if attached_skill is not None:
-            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
+            skill_name = await skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
 
         log.info(
             "webhook_subscription_create persisted",
@@ -766,25 +766,25 @@ def load_webhook_subscription_update_tool(
     ) -> str:
         """Edit a webhook subscription in place. Pass only fields to change."""
         if rate_limit_per_minute is not None and clear_rate_limit_per_minute:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_update",
                 "rate_limit_per_minute and clear_rate_limit_per_minute=true cannot be combined; "
                 "pass exactly one (or neither).",
             )
         # Contradictory-input guards.
         if default_skill_id is not None and detach_default_skill:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_update",
                 "default_skill_id and detach_default_skill=true cannot be combined; "
                 "pass exactly one (or neither, to leave the attachment unchanged).",
             )
         if name is not None and clear_name:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_update",
                 "name and clear_name=true cannot be combined; pass exactly one (or neither).",
             )
         if allowed_source_pattern is not None and clear_allowed_source_pattern:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_update",
                 "allowed_source_pattern and clear_allowed_source_pattern=true "
                 "cannot be combined; pass exactly one (or neither).",
@@ -792,25 +792,25 @@ def load_webhook_subscription_update_tool(
 
         parsed = parse_subscription_id(subscription_id)
         if parsed is None:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_update",
                 f"invalid subscription_id {subscription_id!r}",
             )
 
         entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("webhook_subscription_update", "subscription not found")
+            return tool_error("webhook_subscription_update", "subscription not found")
         before = _subscription_snapshot(entity)
 
         validation_errors: list[str | None] = [
-            _validate_name(name) if name is not None else None,
+            validate_name(name) if name is not None else None,
             _validate_template(task_prompt_template),
             _validate_source_pattern(allowed_source_pattern),
             _validate_rate_limit(rate_limit_per_minute),
         ]
         for err in validation_errors:
             if err is not None:
-                return _tool_error("webhook_subscription_update", err)
+                return tool_error("webhook_subscription_update", err)
 
         # default_skill_id handling via explicit attach/detach booleans.
         if detach_default_skill:
@@ -819,14 +819,14 @@ def load_webhook_subscription_update_tool(
             stripped = default_skill_id.strip()
             # Tag-confusion guard: webhook/schedule tags are not skill ids.
             if stripped.startswith("[webhook:") or stripped.startswith("[schedule:"):
-                return _tool_error(
+                return tool_error(
                     "webhook_subscription_update",
                     f"default_skill_id received a non-skill tag {default_skill_id!r}; "
                     "use a [skill:<uuid>] or bare UUID from skill_list/skill_get.",
                 )
             parsed_skill = _parse_skill_id_arg(default_skill_id)
             if parsed_skill is None:
-                return _tool_error(
+                return tool_error(
                     "webhook_subscription_update",
                     f"invalid default_skill_id {default_skill_id!r}",
                 )
@@ -838,7 +838,7 @@ def load_webhook_subscription_update_tool(
                 tool_name="webhook_subscription_update",
             )
             if err is not None:
-                return _tool_error("webhook_subscription_update", err)
+                return tool_error("webhook_subscription_update", err)
             entity.default_skill_id = parsed_skill
 
         if clear_name:
@@ -858,7 +858,7 @@ def load_webhook_subscription_update_tool(
 
         changes = _subscription_changes(before, _subscription_snapshot(entity))
         if not changes:
-            return _no_change(
+            return no_change(
                 "webhook_subscription_update",
                 f"every value given is the one [webhook:{parsed}] already has. Nothing was saved.",
             )
@@ -874,7 +874,7 @@ def load_webhook_subscription_update_tool(
                 "webhook_subscription_update refused: subscription changed since it was read",
                 extra={"extra_data": {"subscription_id": str(parsed)}},
             )
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_update",
                 "the subscription changed after this edit read it (it fired, was paused, resumed or "
                 "rotated, or was edited elsewhere); nothing was saved. Read it again with "
@@ -882,11 +882,11 @@ def load_webhook_subscription_update_tool(
             )
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_update persist failed")
-            return _tool_error("webhook_subscription_update", f"persist failed ({type(exc).__name__})")
+            return tool_error("webhook_subscription_update", f"persist failed ({type(exc).__name__})")
 
         skill_name: str | None = None
         if entity.default_skill_id is not None:
-            skill_name = await _skill_label(
+            skill_name = await skill_label(
                 registry, user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
             )
         return f"{_format_subscription_line(entity, skill_name=skill_name, zone=zone)}\nChanged: " + "; ".join(changes)
@@ -931,7 +931,7 @@ def load_webhook_subscription_list_tool(
             visible = await subscriptions_collection.list_for_agent(agent_id)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_list list failed")
-            return _tool_error("webhook_subscription_list", f"list failed ({type(exc).__name__})")
+            return tool_error("webhook_subscription_list", f"list failed ({type(exc).__name__})")
 
         if not visible:
             return "You have no webhook subscriptions."
@@ -940,7 +940,7 @@ def load_webhook_subscription_list_tool(
         for entity in visible:
             skill_name: str | None = None
             if entity.default_skill_id is not None:
-                skill_name = await _skill_label(
+                skill_name = await skill_label(
                     registry, user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
                 )
             lines.append("- " + _format_subscription_line(entity, skill_name=skill_name, zone=zone))
@@ -1002,16 +1002,16 @@ def load_webhook_subscription_get_tool(
         """Read one webhook subscription's settings in full."""
         parsed = parse_subscription_id(subscription_id)
         if parsed is None:
-            return _tool_error("webhook_subscription_get", f"invalid subscription_id {subscription_id!r}")
+            return tool_error("webhook_subscription_get", f"invalid subscription_id {subscription_id!r}")
         entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_get",
                 "subscription not found; webhook_subscription_list shows the ones you have",
             )
         skill = "none"
         if entity.default_skill_id is not None:
-            skill_name = await _skill_label(
+            skill_name = await skill_label(
                 registry, user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
             )
             skill = f"{skill_name or 'unnamed'} [skill:{entity.default_skill_id}]"
@@ -1076,22 +1076,22 @@ def load_webhook_subscription_pause_tool(
         """Pause a webhook subscription. Inbound webhooks return 404 until resumed."""
         parsed = parse_subscription_id(subscription_id)
         if parsed is None:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_pause",
                 f"invalid subscription_id {subscription_id!r}",
             )
         entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("webhook_subscription_pause", "subscription not found")
+            return tool_error("webhook_subscription_pause", "subscription not found")
         if entity.status == "paused":
-            return _no_change(
+            return no_change(
                 "webhook_subscription_pause", f"[webhook:{parsed}] ({entity.name or 'untitled'}) is already paused."
             )
         try:
             await subscriptions_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_pause persist failed")
-            return _tool_error("webhook_subscription_pause", f"persist failed ({type(exc).__name__})")
+            return tool_error("webhook_subscription_pause", f"persist failed ({type(exc).__name__})")
         return (
             f"Paused [webhook:{parsed}] ({entity.name or 'untitled'}). It was active. Deliveries to it are "
             "refused, and kept as refused, until webhook_subscription_resume."
@@ -1115,22 +1115,22 @@ def load_webhook_subscription_resume_tool(
         """Resume a paused webhook subscription."""
         parsed = parse_subscription_id(subscription_id)
         if parsed is None:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_resume",
                 f"invalid subscription_id {subscription_id!r}",
             )
         entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("webhook_subscription_resume", "subscription not found")
+            return tool_error("webhook_subscription_resume", "subscription not found")
         if entity.status == "active":
-            return _no_change(
+            return no_change(
                 "webhook_subscription_resume", f"[webhook:{parsed}] ({entity.name or 'untitled'}) is already active."
             )
         try:
             await subscriptions_collection.resume(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_resume persist failed")
-            return _tool_error("webhook_subscription_resume", f"persist failed ({type(exc).__name__})")
+            return tool_error("webhook_subscription_resume", f"persist failed ({type(exc).__name__})")
         return (
             f"Resumed [webhook:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. "
             "It is active: deliveries to it are accepted again."
@@ -1152,18 +1152,18 @@ def load_webhook_subscription_delete_tool(
         """Delete a webhook subscription permanently. Fire history unbinds (SET NULL)."""
         parsed = parse_subscription_id(subscription_id)
         if parsed is None:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_delete",
                 f"invalid subscription_id {subscription_id!r}",
             )
         entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("webhook_subscription_delete", "subscription not found")
+            return tool_error("webhook_subscription_delete", "subscription not found")
         try:
             await subscriptions_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_delete persist failed")
-            return _tool_error("webhook_subscription_delete", f"persist failed ({type(exc).__name__})")
+            return tool_error("webhook_subscription_delete", f"persist failed ({type(exc).__name__})")
         return (
             f"Deleted [webhook:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. Its address and "
             "secret no longer work and it cannot be brought back. Its past fires are kept; its refused "
@@ -1208,13 +1208,13 @@ def load_webhook_subscription_rotate_secret_tool(
         """Rotate the HMAC secret. Returns the new plaintext ONCE."""
         parsed = parse_subscription_id(subscription_id)
         if parsed is None:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_rotate_secret",
                 f"invalid subscription_id {subscription_id!r}",
             )
         entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_rotate_secret",
                 "subscription not found",
             )
@@ -1223,7 +1223,7 @@ def load_webhook_subscription_rotate_secret_tool(
         try:
             ciphertext = encryption_service.encrypt(plaintext_secret.encode("utf-8"))
         except AttributeError:
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_rotate_secret",
                 "encryption_service does not support encrypt(); cannot rotate",
             )
@@ -1234,7 +1234,7 @@ def load_webhook_subscription_rotate_secret_tool(
                 what="webhook_subscription_rotate_secret encrypt failed",
                 extra={"subscription_id": str(parsed), "error": str(exc)},
             )
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_rotate_secret",
                 f"secret encryption failed ({type(exc).__name__})",
             )
@@ -1247,7 +1247,7 @@ def load_webhook_subscription_rotate_secret_tool(
             )
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="webhook_subscription_rotate_secret persist failed")
-            return _tool_error(
+            return tool_error(
                 "webhook_subscription_rotate_secret",
                 f"persist failed ({type(exc).__name__})",
             )
