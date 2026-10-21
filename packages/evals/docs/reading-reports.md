@@ -455,12 +455,15 @@ says so: its readings confirm nothing, and the design its comparisons read was i
 **A question asked after the runs is said, never demoted.** A question asked after an aspect's first member run was
 created may have been asked with its results in view, so the page says so; its readings read exactly as they would
 had it been asked first, because the operator is trusted to have set it in good faith, and the line lets a reader
-judge. Each aspect carries its own time (`Aspect.asked_at`), read against its earliest member run's `created_at`, and
-a control named after the aspect's first result (the earliest result the aspect reads) dates the question at the
-naming. Where the question came after, the bundle carries both times (`reading_scope.question_after_runs`:
-`question_at`, `first_run_at`; `question_at` is null when no time was recorded), and the campaign's page, each aspect's
-page and the analysis listing say it in one sentence under the question: "The question was set on 1 Jan 2099, after
-the runs began on 14 Oct 2026." The writer says it once in its summary. `question_declared` is true wherever a
+judge. Each aspect carries its own time (`Aspect.asked_at`), read against its earliest member run's `created_at`; a
+control named after the aspect's first result (the earliest result the aspect reads) is disclosed the same way.
+Where either came after, the bundle says what was late and when (`reading_scope.question_after_runs`: `late`,
+`question` or `control`; `at`, null when no time was recorded; `first_run_at`), the page JSON carries it beside each
+aspect, and the campaign's page, each aspect's page and the analysis listing say it in one sentence under the
+question: "The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named on
+…". Two times on one day carry their times of day. The writer says it once in its summary, with the page's dates.
+A margin or a floor declared no later than a late question is said by that line; one added later is still said as
+declared after its first result. A question with no date, and a control named late, hold nothing back. `question_declared` is true wherever a
 question is asked, whenever. An aspect adopted from another campaign (`aspects_from`) keeps its source's time, so
 adopting it never re-dates its question; a margin, floor or arm added at adoption carries its own time, and reads as
 declared after the runs where that is later than the aspect's first run. To keep a question from coming late, a

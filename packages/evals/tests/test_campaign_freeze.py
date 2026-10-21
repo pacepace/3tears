@@ -192,7 +192,7 @@ def test_a_question_asked_after_the_first_run_reads_as_asked_and_carries_both_ti
     assert bundle.question_declared is True and bundle.reading_scope.questions_declared is True
     assert bundle.design_frozen_at is not None
     assert bundle.reading_scope.question_after_runs == QuestionAfterRuns(
-        question_at=_LATER, first_run_at=bundle.design_frozen_at
+        late="question", at=_LATER, first_run_at=bundle.design_frozen_at
     )
     assert bundle.reading_scope.disclosure is None, "nothing calls its findings exploratory"
     assert all(family.aspect == bundle.aspect for family in bundle.multiple_comparisons.families), (
@@ -226,7 +226,7 @@ def test_a_question_with_no_recorded_time_is_flagged_with_none_for_its_time() ->
     assert bundle.question_declared is True
     assert bundle.design_frozen_at is not None
     assert bundle.reading_scope.question_after_runs == QuestionAfterRuns(
-        question_at=None, first_run_at=bundle.design_frozen_at
+        late="question", at=None, first_run_at=bundle.design_frozen_at
     )
 
 
@@ -263,7 +263,7 @@ def test_a_late_question_beside_an_early_one_dates_the_campaign_s_one_question_a
 
     assert bundle.question_declared is True
     assert bundle.reading_scope.question_after_runs is not None
-    assert bundle.reading_scope.question_after_runs.question_at == _LATER
+    assert bundle.reading_scope.question_after_runs.at == _LATER
 
 
 def test_a_design_with_no_question_says_so_as_before() -> None:

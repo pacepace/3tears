@@ -1906,12 +1906,20 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
 
 
 def _question_words(bundle: AnalysisContextBundle) -> str:
-    """What the methods call the aspect's design: a question declared before its runs, after them, or none."""
+    """What the methods call the aspect's design, as the line under the question words it: a question declared before
+    the runs; after them, or undated so possibly after them; its control named after them; or none."""
     if not bundle.question_declared:
         return "exploratory"
-    if bundle.reading_scope.question_after_runs is not None:
-        return "question declared after the runs"
-    return "question declared before the run"
+    late = bundle.reading_scope.question_after_runs
+    if late is None:
+        return "question declared before the runs"
+    if late.late == "control":
+        if late.at is None:
+            return "question declared before the runs, control named at a time that cannot be ordered"
+        return "question declared before the runs, control named after they began"
+    if late.at is None:
+        return "question undated, so possibly declared after the runs began"
+    return "question declared after the runs began"
 
 
 def _readings_table(name: str, title: str, rows: list[dict[str, CellValue]]) -> TableBlock:

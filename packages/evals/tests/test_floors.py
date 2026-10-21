@@ -343,7 +343,7 @@ async def test_a_question_asked_after_the_first_run_compares_its_pass_rate_as_on
     assert after.family_size == asked.family_size
     assert late.floor_contrasts == early.floor_contrasts, "the floors read the same values either way"
     flag = late.reading_scope.question_after_runs
-    assert flag is not None and flag.question_at == "2099-01-01T00:00:00+00:00"
+    assert flag is not None and (flag.late, flag.at) == ("question", "2099-01-01T00:00:00+00:00")
     assert early.reading_scope.question_after_runs is None
 
 

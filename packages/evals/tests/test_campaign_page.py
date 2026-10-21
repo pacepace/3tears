@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from collections.abc import Callable
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -30,6 +30,7 @@ from threetears.evals.analysis import (
     report_html,
     serialize_report,
 )
+from threetears.evals.analysis.bundle.schema import QuestionAfterRuns
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import (
@@ -52,7 +53,7 @@ from threetears.evals.kernel.authored import (
     Recommendation,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import BarOverride, CampaignCall, OverriddenBar, RateDrop
+from threetears.evals.kernel.declaration import BarOverride, CampaignCall, Floor, OverriddenBar, RateDrop
 from threetears.evals.kernel.errors import RefusedInput
 
 from packages.evals.tests.campaign_support import (
@@ -69,6 +70,9 @@ from packages.evals.tests.campaign_support import (
 )
 
 _MEASURED: dict[str, MeasuredAspect] = {}
+
+#: What a flag says was set after the runs.
+QuestionAfterRunsLate = Literal["question", "control"]
 
 #: When the late aspect's question was asked: long after its runs.
 _ASKED_LATE = "2099-01-01T00:00:00+00:00"
@@ -409,14 +413,118 @@ async def test_a_question_with_no_recorded_date_is_said_to_be_possibly_after_the
         late = bundle.reading_scope.question_after_runs
         if late is None:
             return bundle
-        scope = bundle.reading_scope.model_copy(
-            update={"question_after_runs": late.model_copy(update={"question_at": None})}
-        )
+        scope = bundle.reading_scope.model_copy(update={"question_after_runs": late.model_copy(update={"at": None})})
         return bundle.model_copy(update={"reading_scope": scope})
 
     page = await _page("billing", "late", bundle=undated)
     first = _first_screen_markdown(page)
     assert "The question carries no date, so it may have been set after the runs on late began on " in first
+
+
+#: When billing's question is flagged as set below: after its runs began, which these tests take as given.
+_SET = "2099-01-01T00:00:00+00:00"
+
+#: Later than :data:`_SET`: something declared after the late question.
+_LATER = "2099-06-01T00:00:00+00:00"
+
+
+def _flagged(
+    late: QuestionAfterRunsLate = "question", at: str | None = _SET, *, margin_at: str | None = _SET
+) -> Callable[[AnalysisContextBundle], AnalysisContextBundle]:
+    """Billing's bundle with what was set after its runs flagged at ``at``, its question worded then, and its margin
+    declared at ``margin_at``."""
+
+    def change(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        if bundle.aspect != "billing":
+            return bundle
+        assert bundle.declared is not None and bundle.design_frozen_at is not None
+        flag = QuestionAfterRuns(late=late, at=at, first_run_at=bundle.design_frozen_at)
+        scope = bundle.reading_scope.model_copy(update={"question_after_runs": flag})
+        declared = bundle.declared.model_copy(update={"question_declared_at": _SET, "margin_declared_at": margin_at})
+        return bundle.model_copy(update={"reading_scope": scope, "declared": declared})
+
+    return change
+
+
+async def _billing_floor_at(stamp: str | None) -> list[Floor]:
+    (floor,) = (await _aspect("billing")).campaign.floors
+    return [floor.model_copy(update={"declared_at": stamp})]
+
+
+async def test_a_margin_and_a_floor_added_after_a_question_set_late_are_still_said() -> None:
+    """The line under the question says what was declared with it; what came later is said as any late stamp is."""
+    later = await _page("billing", "tone", bundle=_flagged(margin_at=_LATER), floors=await _billing_floor_at(_LATER))
+    first = _first_screen_markdown(later)
+    assert "The question was set on 1 Jan 2099, after the runs on billing began on " in first
+    assert "The margin on billing was declared after its first result." in first
+    assert (
+        "The floor that no pass rate drops by more than 10 points on billing was declared after its first result."
+        in first
+    )
+    assert "worded after" not in first, "worded when it was set: the line under the question says it"
+
+    with_it = await _page("billing", "tone", bundle=_flagged(), floors=await _billing_floor_at(_SET))
+    assert "declared after its first result" not in _first_screen_markdown(with_it), "declared with the question"
+
+
+async def test_an_undated_question_or_a_late_control_holds_no_late_stamp_back() -> None:
+    """Neither orders the margin against the question: a question with no date orders nothing, and a control named
+    late dates only itself, so a margin later than the first result is said either way."""
+    for flag in (_flagged("question", None), _flagged("control", _SET)):
+        first = _first_screen_markdown(await _page("billing", "tone", bundle=flag))
+        assert "The margin on billing was declared after its first result." in first
+
+
+async def test_a_control_named_after_the_first_result_is_said_as_the_control_not_the_question() -> None:
+    first = _first_screen_markdown(await _page("billing", "tone", bundle=_flagged("control", _SET)))
+    assert "The control was named on 1 Jan 2099, after the runs on billing began on " in first
+    assert "The question was set" not in first
+    undated = _first_screen_markdown(await _page("billing", "tone", bundle=_flagged("control", None)))
+    assert (
+        "The control was named at a time that cannot be ordered, so it may have been named after the runs on" in undated
+    )
+
+
+def test_two_times_on_one_day_carry_their_times_of_day() -> None:
+    same = QuestionAfterRuns(late="question", at="2026-10-14T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
+    assert same.page_dates() == ("14 Oct 2026 at 15:00 UTC", "14 Oct 2026 at 09:30 UTC")
+    apart = QuestionAfterRuns(late="question", at="2026-10-20T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
+    assert apart.page_dates() == ("20 Oct 2026", "14 Oct 2026")
+    undated = QuestionAfterRuns(late="question", at=None, first_run_at="2026-10-14T09:30:00+00:00")
+    assert undated.page_dates() == (None, "14 Oct 2026")
+
+
+@pytest.mark.parametrize(
+    ("flag", "said"),
+    [
+        (None, "question declared before the runs"),
+        (("question", _SET), "question declared after the runs began"),
+        (("question", None), "question undated, so possibly declared after the runs began"),
+        (("control", _SET), "question declared before the runs, control named after they began"),
+        (("control", None), "question declared before the runs, control named at a time that cannot be ordered"),
+    ],
+)
+async def test_the_methods_name_the_design_as_the_line_under_the_question_does(
+    flag: tuple[QuestionAfterRunsLate, str | None] | None, said: str
+) -> None:
+    bundle = (await _aspect("billing")).bundle
+    if flag is not None:
+        bundle = _flagged(*flag)(bundle)
+    report = build_code_only_report(bundle, assembled_at=ASSEMBLED_AT)
+    (methods,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "methods"]
+    (design,) = [str(row["value"].value) for row in methods.rows if row["item"].value == "Design"]
+    assert design.startswith(said + ", frozen ")
+
+
+async def test_the_page_json_carries_each_aspect_s_flag_beside_its_readings() -> None:
+    page = await _page("billing", "tone", bundle=_flagged())
+    aspects = page.json_document()["aspects"]
+    assert isinstance(aspects, list)
+    billing = (await _aspect("billing")).bundle
+    assert [aspect["question_after_runs"] for aspect in aspects] == [
+        {"late": "question", "at": _SET, "first_run_at": billing.design_frozen_at},
+        None,
+    ]
 
 
 async def test_the_line_saying_when_the_question_was_set_shows_no_field_name() -> None:

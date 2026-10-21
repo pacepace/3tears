@@ -38,11 +38,11 @@ Every arm is named by its label, never by its role; every line is held to :mod:`
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.arms import arm_names, short_digest
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, QuestionAfterRuns
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import (
     AspectReading,
     BarStatus,
@@ -367,36 +367,41 @@ def campaign_warnings(floors: Sequence[Floor], readings: CampaignReadings) -> li
 
 
 def question_after_runs_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
-    """The lines a page and a listing say where the question was set after an aspect's runs began, with both dates:
-    disclosed, never a demotion (owner, 2026-10-21), so a reader can judge what the readings rest on.
+    """The lines a page and a listing say where the question was set after an aspect's runs began, or its control
+    named after its first result, with both dates: disclosed, never a demotion (owner, 2026-10-21), so a reader can
+    judge what the readings rest on.
 
-    One line per distinct pair of dates. A line names its aspects only where some of ``bundles`` do not share it; a
-    question that carries no date says it may have been set after the runs.
+    One line per distinct pair of dates and thing set late, each worded as what was late (the question set, the
+    control named). A line names its aspects only where some of ``bundles`` do not share it; a time that carries no
+    date says it may have come after the runs. Two dates on one day carry their times of day
+    (:meth:`~threetears.evals.analysis.bundle.schema.QuestionAfterRuns.page_dates`).
 
     :param bundles: Each aspect's evidence, in the campaign's order; one for an aspect's own page.
     :ptype bundles: Sequence[AnalysisContextBundle]
     :return: The lines; none where every question came before its aspect's runs, or none is asked.
     :rtype: list[str]
     """
-    groups: dict[tuple[str | None, str], list[str]] = {}
+    groups: dict[tuple[str, str | None, str], list[str]] = {}
     for bundle in bundles:
         late = bundle.reading_scope.question_after_runs
         if late is not None:
-            groups.setdefault(_after_runs_dates(late), []).append(bundle.aspect)
+            groups.setdefault((late.late, *late.page_dates()), []).append(bundle.aspect)
     lines: list[str] = []
-    for (asked, began), labels in groups.items():
+    for (what, at, began), labels in groups.items():
         runs = "the runs" if len(labels) == len(bundles) else f"the runs on {_listed(labels)}"
-        lines.append(
-            f"The question was set on {asked}, after {runs} began on {began}."
-            if asked is not None
-            else f"The question carries no date, so it may have been set after {runs} began on {began}."
-        )
+        lines.append(_after_runs_line(what, at, f"{runs} began on {began}"))
     return lines
 
 
-def _after_runs_dates(late: QuestionAfterRuns) -> tuple[str | None, str]:
-    """The question's date and the first run's, as the page dates them."""
-    return (None if late.question_at is None else _date(late.question_at), _date(late.first_run_at))
+def _after_runs_line(what: str, at: str | None, after: str) -> str:
+    """One line saying what was set after the runs, and when."""
+    if what == "control":
+        if at is None:
+            return f"The control was named at a time that cannot be ordered, so it may have been named after {after}."
+        return f"The control was named on {at}, after {after}."
+    if at is None:
+        return f"The question carries no date, so it may have been set after {after}."
+    return f"The question was set on {at}, after {after}."
 
 
 def _listed(labels: Sequence[str]) -> str:
@@ -702,8 +707,10 @@ def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: M
     """What was declared after the evidence: the question's wording, a margin or a floor added later than the aspect's
     first result (the bundle's ``first_result_at``) reads as declared after it. An aspect whose question was set after
     its runs (``reading_scope.question_after_runs``) is said once, under the question
-    (:func:`question_after_runs_lines`), and nothing declared with it is said again here; nor is anything of an
-    aspect the question does not ask about.
+    (:func:`question_after_runs_lines`), so nothing stamped no later than the question is said again here; whatever
+    was added later still is. A question that carries no date orders nothing, so every late stamp of its aspect is
+    said; a control named late dates only itself, so it holds nothing back either. Nothing is said of an aspect the
+    question does not ask about.
 
     Each kind of lateness is one line naming the aspects it holds on (``every aspect`` where it holds on all), so a
     campaign of seven adopted aspects says it once, not seven times; a floor is named with the aspects its clause is
@@ -717,18 +724,17 @@ def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: M
         bundle = reports[aspect.label].bundle
         first_result = bundle.first_result_at
         label = aspect.label
-        if bundle.reading_scope.question_after_runs is not None or (
-            _read_on(readings, label) and not bundle.question_declared
-        ):
-            # Everything declared with a question set late is late too: said once, of the question, under it.
+        if _read_on(readings, label) and not bundle.question_declared:
             continue
+        # Declared with a question set late, a stamp is said once, of the question, under it; added later, it is not.
+        late = _late_after_the_question(bundle, first_result)
         declared = bundle.declared
-        if declared is not None and _after(declared.question_declared_at, first_result, f"the question on {label}"):
+        if declared is not None and late(declared.question_declared_at, f"the question on {label}"):
             worded.append(label)
-        if declared is not None and _after(declared.margin_declared_at, first_result, f"the margin on {label}"):
+        if declared is not None and late(declared.margin_declared_at, f"the margin on {label}"):
             margins.append(label)
         for floor in campaign.floors:
-            if floor.aspect == label and _after(floor.declared_at, first_result, f"floor {floor.key}"):
+            if floor.aspect == label and late(floor.declared_at, f"floor {floor.key}"):
                 floors.setdefault(floor_statement(floor.clause, candidate="the arm"), []).append(label)
     lines: list[str] = []
     if worded:
@@ -749,6 +755,27 @@ def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: M
             else f"The floor that {said} on {_on(labels, campaign)} was declared after their first results."
         )
     return lines
+
+
+def _late_after_the_question(
+    bundle: AnalysisContextBundle, first_result: str | None
+) -> Callable[[str | None, str], bool]:
+    """Whether a stamp on ``bundle``'s aspect is later than its first result and not said already by the line under
+    the question, which says whatever was declared no later than a question set after the runs. A question with no
+    date orders nothing, and a control named late dates only itself, so neither holds a stamp back."""
+    flag = bundle.reading_scope.question_after_runs
+    question_at = flag.at if flag is not None and flag.late == "question" else None
+
+    def late(stamp: str | None, what: str) -> bool:
+        if not _after(stamp, first_result, what):
+            return False
+        return (
+            question_at is None
+            or stamp is None
+            or aware_instant(stamp, what) > aware_instant(question_at, "the question")
+        )
+
+    return late
 
 
 def _on(labels: Sequence[str], campaign: EvalCampaign) -> str:

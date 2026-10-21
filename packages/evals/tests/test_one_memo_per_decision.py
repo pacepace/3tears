@@ -558,16 +558,20 @@ async def test_a_campaign_asked_after_its_runs_reads_as_asked_and_says_so_on_its
     )
     first_runs = {aspect.aspect: aspect.design_frozen_at for aspect in prepared.bundle.aspects}
     assert all(first_runs.values())
+    (began,) = {_paged(stamp) for stamp in first_runs.values() if stamp is not None}
     for part in writer_view(prepared.bundle)["aspects"]:
         assert part["question"]["asked"] is True
-        assert part["question"]["after_runs"] == {
-            "question_at": ASKED_AFTER_RUNS,
-            "first_run_at": first_runs[part["aspect"]],
-        }
+        # Dated as the page dates them, so the memo and the page say one date.
+        assert part["question"]["after_runs"] == {"late": "question", "at": "1 Jan 2099", "runs_began": began}
     analysis_id = await _generated(held, two)
 
     page = off_loop(campaign_report, held.host, two.id, SCOPE)
-    (began,) = {_paged(stamp) for stamp in first_runs.values() if stamp is not None}
+    # The page JSON carries the flag beside each aspect's readings, raw, with what was late.
+    aspects = page.json_document()["aspects"]
+    assert isinstance(aspects, list)
+    assert [aspect["question_after_runs"] for aspect in aspects] == [
+        {"late": "question", "at": ASKED_AFTER_RUNS, "first_run_at": first_runs[label]} for label in ("billing", "tone")
+    ]
     said = f"The question was set on 1 Jan 2099, after the runs began on {began}."
     assert _timing(page) == [said], "both aspects share the dates, so it is said once, naming none"
     first = _first_screen(page)
@@ -583,9 +587,11 @@ async def test_a_campaign_asked_after_its_runs_reads_as_asked_and_says_so_on_its
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
     assert (line.id, line.verdict) == (analysis_id, f"{bar} {floor} {said} {verdict}")
 
-    assert _timing(off_loop(campaign_report, timely_store.host, timely.id, SCOPE)) == [], (
-        "asked in time: nothing to say"
-    )
+    timely_page = off_loop(campaign_report, timely_store.host, timely.id, SCOPE)
+    assert _timing(timely_page) == [], "asked in time: nothing to say"
+    timely_aspects = timely_page.json_document()["aspects"]
+    assert isinstance(timely_aspects, list)
+    assert [aspect["question_after_runs"] for aspect in timely_aspects] == [None, None]
 
 
 async def test_an_analysis_s_page_json_names_its_recommended_arm_by_the_key_the_analysis_recorded() -> None:

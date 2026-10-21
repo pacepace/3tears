@@ -11,7 +11,7 @@ imports none of them.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -1918,20 +1918,61 @@ class MultipleComparisons(EvalDocumentModel):
 
 
 class QuestionAfterRuns(EvalDocumentModel):
-    """That the aspect's question was set after its first run, and the two times: disclosed, never a demotion.
+    """That the aspect's question, or the control it is read against, was set after its runs began, and when:
+    disclosed, never a demotion.
 
-    A question set once results existed may have been set with them in view. Its readings read as any asked question's
-    do, since the operator is trusted to have set it in good faith; this says when each happened, so a reader can
-    judge.
+    A question set once results existed may have been set with them in view, and so may a control named once its
+    first result landed. Its readings read as any asked question's do, since the operator is trusted to have acted in
+    good faith; this says what was set late and when, so a reader can judge.
     """
 
-    question_at: str | None = Field(
+    late: Literal["question", "control"] = Field(
         description=(
-            "When the question was asked (the declaration's `asked_at`, ISO-8601), later than `first_run_at`. None "
-            "when no time is recorded, so it cannot be shown to come before the runs."
+            "What was set late: `question`, asked after the aspect's first run (or carrying no time), or `control`, "
+            "named after the aspect's first result while the question itself came before the runs."
+        )
+    )
+    at: str | None = Field(
+        description=(
+            "When it was set (ISO-8601): the question's `asked_at`, or the control's `named_at`. None when no time "
+            "that can be ordered is recorded, so it cannot be shown to come before the runs."
         )
     )
     first_run_at: str = Field(description="When the aspect's first member run was created (ISO-8601).")
+
+    def page_dates(self) -> tuple[str | None, str]:
+        """``at`` and ``first_run_at`` as a page and the writer word them: ``14 Oct 2026``, each with its time of day
+        (``14 Oct 2026 at 09:30 UTC``) where the two fall on one day, so the later never reads as the earlier's day.
+
+        :return: When it was set (None where ``at`` is), and when the runs began.
+        :rtype: tuple[str | None, str]
+        """
+        began = _page_instant(self.first_run_at)
+        set_at = None if self.at is None else _page_instant(self.at)
+        same_day = began is not None and set_at is not None and set_at.date() == began.date()
+        words = _page_time if same_day else _page_date
+        # A stamp that does not parse is printed as stored rather than dropped.
+        said = None if self.at is None else (words(set_at) if set_at is not None else self.at)
+        return said, words(began) if began is not None else self.first_run_at
+
+
+def _page_instant(stamp: str) -> datetime | None:
+    """``stamp`` as a UTC instant, or None where it does not parse as an ISO-8601 time with an offset."""
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    return instant.astimezone(UTC) if instant.tzinfo is not None else None
+
+
+def _page_date(instant: datetime) -> str:
+    """An instant as a page dates it: ``14 Oct 2026``."""
+    return f"{instant.day} {instant:%b %Y}"
+
+
+def _page_time(instant: datetime) -> str:
+    """An instant with its time of day: ``14 Oct 2026 at 09:30 UTC``."""
+    return f"{_page_date(instant)} at {instant:%H:%M} UTC"
 
 
 class ReadingScope(EvalDocumentModel):
@@ -1953,9 +1994,10 @@ class ReadingScope(EvalDocumentModel):
     question_after_runs: QuestionAfterRuns | None = Field(
         default=None,
         description=(
-            "Set when the question was asked after the aspect's first member run was created, or carries no time "
-            "while a run does: both times, which every page and listing reading this aspect says. It changes no "
-            "reading. None when the question came first, or none is asked."
+            "Set when the question was asked after the aspect's first member run was created (or carries no time "
+            "while a run does), or its control was named after the aspect's first result: what was late and both "
+            "times, which every page, listing and page JSON reading this aspect says. It changes no reading. None "
+            "when both came first, or no question is asked."
         ),
     )
     exploratory_measures: list[str] = Field(
@@ -2044,21 +2086,32 @@ def asks_a_question(declared: AspectDeclaration | None) -> bool:
     return declared is not None and bool(declared.question.strip()) and declared.design.merit_axes is not None
 
 
-def question_after_runs(declared: AspectDeclaration | None, first_run_at: str | None) -> QuestionAfterRuns | None:
-    """That the aspect's question was asked after its first run, with both times; None where it came first.
+def question_after_runs(
+    declared: AspectDeclaration | None,
+    first_run_at: str | None,
+    *,
+    dated: AspectDeclaration | None = None,
+) -> QuestionAfterRuns | None:
+    """That the aspect's question was asked after its first run, or its control named after its first result, with
+    the times; None where both came first.
 
     **Disclosed, never enforced** (owner, 2026-10-21): a question asked once results existed reads as one asked
     before them, since the operator is trusted to act in good faith, and this flag is what lets a reader judge. Read
     off the declaration's ``asked_at`` against the earliest member run's ``created_at``, so a design written by an
     older build, or edited after every run was removed and re-added, is still dated by when its question was asked.
 
-    :param declared: What the campaign declared, as the aspect reads it; None when the aspect declared no design.
+    :param declared: What the campaign declared, as the aspect reads it, its question dated as it was asked; None when
+        the aspect declared no design.
     :ptype declared: AspectDeclaration | None
     :param first_run_at: The earliest ``created_at`` among the aspect's member runs (ISO-8601), or None when no run's
         time is to hand, where nothing can have been asked after one.
     :ptype first_run_at: str | None
-    :return: The flag where a question is asked and ``first_run_at`` is known, and the question was asked after it or
-        carries no time; None otherwise.
+    :param dated: The same declaration with its question dated by its control where that was named after the first
+        result (``asked_at`` the control's ``named_at``, or None where that cannot be ordered); None or ``declared``
+        where the control dates nothing.
+    :ptype dated: AspectDeclaration | None
+    :return: ``late="question"`` where a question is asked, ``first_run_at`` is known and the question was asked
+        after it or carries no time; else ``late="control"`` where ``dated`` re-dated it; None otherwise.
     :rtype: QuestionAfterRuns | None
     :raises ValueError: ``first_run_at`` or ``asked_at`` is not an ISO-8601 time with an offset, so which came first
         cannot be said.
@@ -2066,9 +2119,11 @@ def question_after_runs(declared: AspectDeclaration | None, first_run_at: str | 
     if declared is None or not asks_a_question(declared) or first_run_at is None:
         return None
     asked = declared.asked_at
-    if asked is not None and _instant(asked, "the campaign's question") <= _instant(first_run_at, "the first run"):
-        return None
-    return QuestionAfterRuns(question_at=asked, first_run_at=first_run_at)
+    if asked is None or _instant(asked, "the campaign's question") > _instant(first_run_at, "the first run"):
+        return QuestionAfterRuns(late="question", at=asked, first_run_at=first_run_at)
+    if dated is not None and dated.asked_at != asked:
+        return QuestionAfterRuns(late="control", at=dated.asked_at, first_run_at=first_run_at)
+    return None
 
 
 def question_axes(declared: AspectDeclaration | None) -> list[MeritAxis] | None:

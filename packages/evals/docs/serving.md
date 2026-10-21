@@ -392,7 +392,7 @@ is dated now and reads as declared after the runs.
 | `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason |
 | `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |
 | `call` | the recorded call (`CampaignCall`), or null |
-| `aspects` | each aspect's `aspect`, `bundle_fingerprint` and `bundle_schema_version` |
+| `aspects` | each aspect's `aspect`, `bundle_fingerprint`, `bundle_schema_version` and `question_after_runs`: what was set after its runs (`late`: `question` or `control`), when (`at`, null with no orderable time) and when the runs began (`first_run_at`), or null. Its readings read as asked either way; this says when, for a reader to judge |
 
 Each aspect's bundle is not inlined: it is written beside the page as `bundle-<aspect>.json` (the label in lower case, hyphenated),
 and the fingerprint names it. Branch on the typed fields, never on a row's `reason`, which is words.

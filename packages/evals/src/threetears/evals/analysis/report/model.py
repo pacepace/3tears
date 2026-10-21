@@ -1,8 +1,8 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the question declared before the run quoted and the subhead under it, the arms line, the
-verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
+campaign's name —, the question declared quoted, when it was set where that was after the runs, and the subhead under
+it, the arms line, the verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
 cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
@@ -1061,7 +1061,8 @@ class CampaignReport(EvalDocumentModel):
     def json_document(self) -> dict[str, object]:
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
         the writer's recommendation (its arm's label and variant key, and how sure) where there is a memo, the call,
-        and each aspect's bundle by its fingerprint and shape.
+        and each aspect's bundle by its fingerprint and shape, with what of its question was set after its runs and
+        when (``question_after_runs``, null where nothing was), since its readings read as asked either way.
 
         :return: A JSON-ready mapping.
         :rtype: dict[str, object]
@@ -1087,8 +1088,10 @@ class CampaignReport(EvalDocumentModel):
                     "aspect": fold.aspect,
                     "bundle_fingerprint": fold.report.source.bundle_fingerprint,
                     "bundle_schema_version": fold.report.bundle.schema_version,
+                    "question_after_runs": None if late is None else late.to_dict(),
                 }
                 for fold in self.aspects
+                for late in [fold.report.bundle.reading_scope.question_after_runs]
             ],
         }
 

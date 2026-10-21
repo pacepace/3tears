@@ -462,6 +462,8 @@ def assemble_context_bundle(
     # evidence is the aspect's first result (`EvalResult.scored_at`), never a run's creation: a control named after
     # its arms were launched and before any result landed was named before anything could be seen.
     scored_at = [result.scored_at for run_results in every_result.values() for result in run_results]
+    # As declared, the question keeps its own time, which says whether it, or only its control, came late.
+    as_declared = declared
     declared = _dated_by_its_control(declared, scored_at)
     results_by_run: dict[str, list[EvalResult]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
@@ -850,7 +852,7 @@ def assemble_context_bundle(
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
     )
     bundle.reading_scope = _reading_scope(
-        declared, bundle.measure_catalog, bundle.judged_measures, first_run_at=first_run_at
+        declared, bundle.measure_catalog, bundle.judged_measures, as_declared=as_declared, first_run_at=first_run_at
     )
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then
     # on), and a question asked after that instant is disclosed as set after the runs: the same instant.

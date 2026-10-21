@@ -365,7 +365,7 @@ class TestWhatAFamilyCovers:
         assert late.question_declared and timely.question_declared
         flag = late.reading_scope.question_after_runs
         assert flag is not None and flag.first_run_at == late.design_frozen_at
-        assert flag.question_at is not None and flag.question_at > flag.first_run_at
+        assert flag.late == "question" and flag.at is not None and flag.at > flag.first_run_at
         assert timely.reading_scope.question_after_runs is None
 
     def test_a_chance_difference_in_a_campaign_with_no_question_does_not_separate(self) -> None:

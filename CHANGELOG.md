@@ -30,9 +30,11 @@ packages (bumped in lock-step).
 - **A question set after the runs is disclosed, not demoted (#901).** A campaign whose question was asked after an
   aspect's first run reads that aspect exactly as if the question had come first: its own comparison family, rows and
   pairs `confirmatory`, and a change may recommend a candidate on them. The bundle carries both times
-  (`reading_scope.question_after_runs`: `question_at`, `first_run_at`), and the campaign's page, each aspect's page
-  and `analyses_list` say it in one sentence under the question ("The question was set on 1 Jan 2099, after the runs
-  began on 14 Oct 2026."); the writer's summary says it once. Bundle shape 60.
+  (`reading_scope.question_after_runs`: `late`, `question` or `control`; `at`; `first_run_at`), the page JSON carries
+  it per aspect, and the campaign's page, each aspect's page and `analyses_list` say it in one sentence under the
+  question ("The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named
+  on …" for a control named after the first result); the writer's summary says it once, with the page's dates. A
+  margin or floor added after a late question is still said as declared after its first result. Bundle shape 60.
 
 **Breaking (pre-release line, no shims):** regenerable schema 12 -> 13, so stored analyses, insights and judge
 profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape

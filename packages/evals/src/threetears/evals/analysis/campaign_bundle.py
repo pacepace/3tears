@@ -50,6 +50,7 @@ from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
+    QuestionAfterRuns,
     evidence_digest,
     refuse_a_bundle_before_aspects,
 )
@@ -754,8 +755,9 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
         "aspect": label,
         "question": {
             "asked": aspect.question_declared,
-            # Said once in the memo, never a demotion: the readings read as an asked question's do.
-            "after_runs": payload["reading_scope"]["question_after_runs"],
+            # Said once in the memo, never a demotion: the readings read as an asked question's do. Dated as the page
+            # dates them, so the memo and the page say one date.
+            "after_runs": _after_runs(aspect.reading_scope.question_after_runs),
             "margin": declared.margin if declared is not None else None,
             "merit_axes": design.merit_axes if design is not None else None,
             "merit_priority": design.merit_priority if design is not None else [],
@@ -843,6 +845,14 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
     if confounds:
         view["confound_catalog"] = confounds
     return view
+
+
+def _after_runs(late: QuestionAfterRuns | None) -> dict[str, str | None] | None:
+    """What of an aspect's question was set after its runs, and when, as the page words the dates; None for nothing."""
+    if late is None:
+        return None
+    at, began = late.page_dates()
+    return {"late": late.late, "at": at, "runs_began": began}
 
 
 def _cells(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, Any]]:

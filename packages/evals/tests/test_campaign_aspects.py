@@ -500,7 +500,7 @@ def test_a_control_named_after_the_first_result_dates_the_question_after_the_run
     assert campaign.control is not None and campaign.control.named_at is not None
     assert bundle.question_declared is True
     assert bundle.reading_scope.question_after_runs == QuestionAfterRuns(
-        question_at=campaign.control.named_at, first_run_at=bundle.design_frozen_at
+        late="control", at=campaign.control.named_at, first_run_at=bundle.design_frozen_at
     )
     assert bundle.declared is not None and bundle.declared.asked_at == campaign.control.named_at
     assert campaign.aspects[0].asked_at != campaign.control.named_at, "the stored question keeps its own time"

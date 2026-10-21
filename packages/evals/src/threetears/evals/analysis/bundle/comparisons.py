@@ -895,6 +895,7 @@ def _reading_scope(
     catalog: dict[str, MetricDescriptor],
     judged_measures: list[JudgedMeasure],
     *,
+    as_declared: AspectDeclaration | None,
     first_run_at: str | None,
 ) -> ReadingScope:
     """Label the readings the aspect's question does not ask about exploratory — or, with none asked, say so once —
@@ -902,15 +903,16 @@ def _reading_scope(
 
     The same rule the family is scoped by (:func:`~threetears.evals.kernel.declaration.axis_in_question_scope` over
     :func:`~threetears.evals.analysis.bundle.schema.question_axes`), so a reading is exploratory exactly when the
-    family could not test it. A question asked after the first run labels nothing: it is disclosed with both times
-    (:func:`~threetears.evals.analysis.bundle.schema.question_after_runs`).
+    family could not test it. A question asked after the first run, or a control named after the first result,
+    labels nothing: it is disclosed with its time (:func:`~threetears.evals.analysis.bundle.schema.question_after_runs`),
+    read off ``as_declared``, the declaration before its control dated it, beside ``declared``, after.
     """
     axes = question_axes(declared)
     if axes is None:
         return ReadingScope(questions_declared=False, disclosure=exploratory_disclosure(declared))
     return ReadingScope(
         questions_declared=True,
-        question_after_runs=question_after_runs(declared, first_run_at),
+        question_after_runs=question_after_runs(as_declared, first_run_at, dated=declared),
         exploratory_measures=sorted(
             name
             for name, descriptor in catalog.items()
