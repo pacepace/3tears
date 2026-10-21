@@ -427,7 +427,7 @@ What a campaign can decide, read off its arms and never declared (`campaign_kind
 
 | Kind | Arms | Code reports, per aspect | The writer |
 |---|---|---|---|
-| measurement | one | each measure with its interval, and each bar met or missed | findings only; no recommendation |
+| measurement | one | each measure with its interval, and each bar met or missed | a summary and findings; no recommendation |
 | choice | two or more, no control | every pair's difference with its interval, and which arm is shown ahead | picks an arm, or says no clear winner |
 | change | a control and candidates | each candidate against the control: shown better, shown worse or unclear | recommends a switch or keeping the control |
 

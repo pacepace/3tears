@@ -226,9 +226,9 @@ def _checked_reports(
 # =============================================================================
 
 
-def _floor_of(campaign: EvalCampaign, key: str) -> Floor | None:
-    """The campaign's floor by its key."""
-    return next((floor for floor in campaign.floors if floor.key == key), None)
+def _floor_of(floors: Sequence[Floor], key: str) -> Floor | None:
+    """The floor by its key, among a campaign's floors."""
+    return next((floor for floor in floors if floor.key == key), None)
 
 
 def _floor_words(floor: Floor | None, status: FloorStatus) -> str:
@@ -371,10 +371,7 @@ def _floor_lines(floors: Sequence[Floor], readings: CampaignReadings) -> list[tu
     aspect's page words it; past :data:`_WARNINGS_APART` of them, one per candidate naming every floor it breaks."""
     broken = readings.broken_floors()
     if len(broken) <= _WARNINGS_APART:
-        return [
-            ([status], _warning(next((floor for floor in floors if floor.key == status.floor), None), status))
-            for status in broken
-        ]
+        return [([status], _warning(_floor_of(floors, status.floor), status)) for status in broken]
     by_arm: dict[str, list[FloorStatus]] = {}
     for status in broken:
         by_arm.setdefault(status.arm_label, []).append(status)
@@ -445,9 +442,12 @@ def _points(value: float) -> str:
 
 def _memo_summary_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
     """The writer's read across every aspect, styled, the first thing the page says after code's warnings and the
-    question, for every kind; nothing with no memo, or where the style pass left none of it."""
-    if memo is None or not (said := style.prose(memo.summary, plans=True).strip()):
+    question, for every kind; nothing with no memo. The summary is one sentence, so where the style pass would drop
+    all of it, it is kept as written, as a finding's title is: a page never opens without the read it was written for.
+    """
+    if memo is None:
         return []
+    said = style.prose(memo.summary, plans=True).strip() or " ".join(memo.summary.split())
     return [TextBlock(section="header", role="summary", body=said)]
 
 
@@ -797,7 +797,7 @@ def _call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: Campa
     for key in call.floors_overridden:
         broken = next((status for status in floors if status.floor == key and status.status == "broken"), None)
         if broken is not None:
-            lines.append(f"The call overrides a broken floor: {_floor_words(_floor_of(campaign, key), broken)}.")
+            lines.append(f"The call overrides a broken floor: {_floor_words(_floor_of(campaign.floors, key), broken)}.")
         else:
             lines.append(f"The call overrides the floor {code(key)} (no longer broken).")
     unanswered: dict[str, FloorStatus] = {}
@@ -805,7 +805,7 @@ def _call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: Campa
         if status.status == "broken" and status.floor not in call.floors_overridden:
             unanswered.setdefault(status.floor, status)
     for key, status in unanswered.items():
-        said = _floor_words(_floor_of(campaign, key), status)
+        said = _floor_words(_floor_of(campaign.floors, key), status)
         lines.append(f"The call does not name the broken floor as overridden: {said}.")
     missed = {(bar.aspect, bar.measure): bar for bar in readings.missed_bars() if bar.arm in keys}
     overridden = {(bar.aspect, bar.measure) for bar in call.bars_overridden}

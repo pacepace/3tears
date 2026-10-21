@@ -936,7 +936,8 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     the findings in the order the model wrote them, and what to run next — each list section omitted when the model
     wrote nothing for it. Findings are numbered ``F1`` onward, and every link the model made by position is printed
     that way, a finding's trials by their ids. The memo has no headline or chart: the report's warnings and readings
-    are code's, so the judge scores what the writer wrote, its summary among it. Arms are named by :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
+    are code's, so the judge scores what the writer wrote, its summary among it. Arms are named by
+    :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
     :func:`~threetears.evals.analysis.numbers.format_number`.
 
     The numbers code resolved from the model's own readings are printed beside them, because they are what the

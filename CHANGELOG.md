@@ -15,8 +15,9 @@ packages (bumped in lock-step).
   rule 11 (no new rule; 23,908 of 24,500 characters).
 - **The page reads summary, then recommendation, then the aspects (#864).** After the missed bars, broken floors and
   guardrails and the question: the writer's summary, the recommendation (now above a choice's pairs), then the aspect
-  table, pairs or measures, To settle, bars and the call, then the findings and one fold per aspect. The one-aspect
-  page and the reporter's memo text (`render_memo_as_written`) open with the summary too.
+  table, pairs or measures, To settle, bars and the call, then the findings and one fold per aspect. The summary leads
+  the one-aspect page's memo and the reporter's memo text (`render_memo_as_written`) too, and where the style pass
+  would drop all of its one sentence it is kept as written.
 - **The listing line says what the page opens with (#895).** `analyses_list` (`analysis_verdict`) leads each line with
   every bar an arm misses, then every floor a candidate breaks, in the page's own words over what was frozen with the
   analysis, then the verdict. An analysis with neither lists what it did before.

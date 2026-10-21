@@ -489,7 +489,7 @@ def _warnings(page: CampaignReport) -> list[str]:
 async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its_page_s_warnings_and_verdict() -> None:
     """An analysis over both aspects is listed, archived and restored, each line reading as its page opens: the bar
     tone misses and the floor billing breaks, in the page's own words, then the campaign's verdict: what code read on
-    each aspect, as the campaign's page says it beside each fold, never one aspect's line (#894, #895)."""
+    each aspect, as the campaign's page says it beside each fold, never one aspect's line."""
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     page = off_loop(campaign_report, held.host, two.id, SCOPE)
@@ -511,7 +511,7 @@ async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its
 
 
 async def test_an_analysis_s_page_json_names_its_recommended_arm_by_the_key_the_analysis_recorded() -> None:
-    """A reader matching a call to the recommendation compares keys, never labels (#880): the page's JSON carries the
+    """A reader matching a call to the recommendation compares keys, never labels: the page's JSON carries the
     key the analysis stored beside its memo, which is the key a call on that arm records."""
     held, two = await _build_two(floor=False, bar=False)
     analysis_id = await _generated(held, two)

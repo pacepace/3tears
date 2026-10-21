@@ -356,7 +356,9 @@ def create_campaign(
     if not adopted and not own:
         raise ValidationFailedError(
             "a campaign measures its question on at least one aspect, and this create names none and adopts none",
-            remedy="name one in aspects ({label, template_id?, margin, design?, run_ids}) or adopt one with aspects_from",
+            remedy=(
+                "name one in aspects ({label?, template_id?, margin, design?, run_ids}) or adopt one with aspects_from"
+            ),
         )
     _refuse_collisions(sources, own)
     aspects = [*adopted, *own]

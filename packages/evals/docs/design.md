@@ -418,10 +418,11 @@ current model — adopted" over a run whose judge had been cut off at its output
 trials, while the word "truncated" appeared nowhere a reader would look. Most of what a reader needs is countable, so
 the report's first screen — the basis, the verdict and each arm's census of passed, failed and lost trials, by cause
 — is written by code from the bundle, and the memo authors findings and recommendations only, each recommendation
-pinned to its findings and each finding to its trials. The null check moved onto finding titles: a title in one of a
-short list of null phrasings (`analysis/null_claims.py`) is refused when its finding cites no reading the bundle
-established alike. Only "does this title say the arms are alike" is read off the words; nothing is parsed, so a
-reworded null passes, and the judge measures the rest.
+pinned to its findings and each finding to its trials. (The campaign page later gave the writer one sentence on its
+first screen, the summary across the aspects, below every warning code raised; see below.) The null check moved onto
+finding titles: a title in one of a short list of null phrasings (`analysis/null_claims.py`) is refused when its
+finding cites no reading the bundle established alike. Only "does this title say the arms are alike" is read off the
+words; nothing is parsed, so a reworded null passes, and the judge measures the rest.
 
 **The memo's summary opens the campaign's page, after code's warnings** (2026-10, #864). The owner asked for a
 holistic summary first, then the recommendation, then the aspects. A measurement's memo and a no-clear-winner

@@ -455,12 +455,13 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     :rtype: str
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
-    readings = analysis_campaign_bundle(analysis).readings
+    campaign = analysis_campaign_bundle(analysis)
+    readings = campaign.readings
     warnings = campaign_warnings(analysis.design_snapshot.floors, readings)
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects])
     else:
-        bundle = analysis_bundle(analysis)
+        bundle = campaign.aspects[0]
         verdict = verdict_line(bundle, _namer(_arm_names(bundle)), case_name=_case_namer(bundle)).text
     return " ".join([*warnings, verdict])
 
@@ -1198,9 +1199,10 @@ def _memo_blocks(
     arm = _ref_namer(held.decision_surface, {**names, **_arm_names(bundle, held.variant_index)})
     axes = _question_axes(bundle)
     blocks: list[ReportBlock] = []
-    if said := style.prose(document.summary, plans=True).strip():
-        # The writer's read across the campaign leads its memo here as it leads the campaign's page.
-        blocks.append(TextBlock(section="memo", role="summary", body=said))
+    # The writer's read across the campaign leads its memo here as it leads the campaign's page, kept as written where
+    # the style pass would drop all of its one sentence.
+    said = style.prose(document.summary, plans=True).strip() or " ".join(document.summary.split())
+    blocks.append(TextBlock(section="memo", role="summary", body=said))
     for summary in document.aspect_summaries:
         if summary.aspect != held.label:
             continue

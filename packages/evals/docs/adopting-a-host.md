@@ -1349,7 +1349,8 @@ definition = {
 - **An aspect may leave its label out.** It is then named after the campaign's behavior, each `/` written `-`
   (`tools/search` is `tools-search`), since `/` separates a floor key's parts. A form sends no label rather than
   copying that rule. One aspect at most leaves it out: two would share a label, and the create (or update) is
-  refused, asking you to label each.
+  refused, asking you to label each. A floor names its aspect by label, so a write declaring a floor labels the
+  aspect it sits on; the label the server gave is on the returned `CampaignLine`'s `aspects` for a later write.
 - **A floor is a typed clause on one aspect**, never words: `{kind: "rate_drop", max_points, reading?}` (a
   `RateDrop`: no pass rate drops by more than `max_points`; with `reading`, one goal-state check by its verbatim
   text, a pass/fail judged dimension by its name, or a check measure by its key) or `{kind: "cost_lower"}` (a

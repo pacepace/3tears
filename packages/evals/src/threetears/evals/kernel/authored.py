@@ -3,8 +3,8 @@
 **The boundary.** This contract types what the document is MADE OF and the
 hooks code acts on, never what it says or how much it says:
 
-- **Typed here:** the unit kinds (the summary, finding, the one recommendation, an aspect's summary, next step); the order of
-  every list, which is the reading order; links between units by POSITION, so a recommendation that rests on
+- **Typed here:** the unit kinds (the summary, finding, the one recommendation, an aspect's summary, next step); the
+  order of every list, which is the reading order; links between units by POSITION, so a recommendation that rests on
   findings ``[0, 2]`` cites the first and third; the readings code turns into numbers (a cell and a
   measure or judged dimension); and a closed vocabulary code branches or renders on.
 - **Not the model's to say:** what a verdict stands on. The evidence tier is read off the readings a

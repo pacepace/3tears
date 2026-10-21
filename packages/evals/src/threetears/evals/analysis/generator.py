@@ -811,10 +811,10 @@ def _assemble_and_validate(
     :raises SoundnessRefusal: The output does not match the contract (an empty summary among it), a position, reading
         or trial points nowhere, the aspect summaries are not one per aspect, the recommendation is one the campaign's
         kind cannot make (a measurement's; none in a change; a choice's unseparated pick above ``low`` confidence),
-        rests on no finding, names no arm the campaign holds, recommends a candidate in an exploratory campaign or one no reading
-        separated from the control, leaves a warning on its arm unaddressed (a broken floor, another arm ahead, a
-        missed bar) or names one code never raised, or a finding's title states a null it established nowhere or
-        names an arm it cites nothing of (repaired once).
+        rests on no finding, names no arm the campaign holds, recommends a candidate in an exploratory campaign or one
+        no reading separated from the control, leaves a warning on its arm unaddressed (a broken floor, another arm
+        ahead, a missed bar) or names one code never raised, or a finding's title states a null it established nowhere
+        or names an arm it cites nothing of (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)

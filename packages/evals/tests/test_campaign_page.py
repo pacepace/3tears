@@ -716,6 +716,16 @@ async def test_the_summary_is_held_to_the_style_pass_like_any_of_the_memo_s_word
     assert any("restated a measured number" in text for text in methods)
 
 
+async def test_a_summary_the_style_pass_would_drop_whole_is_kept_as_written() -> None:
+    """The summary is one sentence, so a pass that would leave none of it keeps it as written, as a finding's title is:
+    the page still opens on the writer's read across the aspects."""
+    restated = "Production passed 54 of 60 billing trials, so it stays."
+    page = await _page("billing", "tone", memo=_memo().model_copy(update={"summary": restated}))
+    (summary,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
+    assert summary.body == restated
+    assert _opening(page)[0] == ("text", "summary")
+
+
 async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:
     page = await _kind_page("billing", "refunds")
     table = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "pairs")
