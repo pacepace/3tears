@@ -368,7 +368,19 @@ class MemoStyle:
         if len(self.proposed) > proposed:
             return ""
         self.dropped = dropped
-        return self.names_arms(" ".join(text.split()))
+        return self.kept(text)
+
+    def kept(self, text: str) -> str:
+        """``text`` printed as written, its arms named: every rule it still breaks is recorded, so the methods list it.
+
+        :param text: What the memo wrote.
+        :ptype text: str
+        :return: The text to print.
+        :rtype: str
+        """
+        kept = self.names_arms(" ".join(text.split()))
+        self.violations += lint_prose(kept, question=self.question)
+        return kept
 
     def offending(self) -> list[str]:
         """Each sentence still breaking a rule, once, with the rules it breaks."""

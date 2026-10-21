@@ -729,6 +729,22 @@ async def test_a_summary_the_style_pass_would_drop_whole_is_kept_as_written() ->
     assert not any("restated a measured number" in text for text in methods)
 
 
+async def test_a_title_the_style_pass_would_drop_whole_is_printed_listed_as_breaking_a_rule_and_not_counted_dropped() -> (
+    None
+):
+    """A finding keeps its headline as written where the pass would leave none of it, so the methods list the rule it
+    breaks and never say the tables said it instead."""
+    memo = _memo()
+    banned = "The verdict rests on billing."
+    finding = memo.findings[0].model_copy(update={"title": banned})
+    page = await _page("billing", "tone", memo=memo.model_copy(update={"findings": [finding]}))
+    (title,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_title"]
+    assert title.body == banned
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert not any("restated a measured number" in text for text in methods)
+    assert any("banned" in text and banned in text for text in methods)
+
+
 async def test_a_summary_proposing_a_sample_no_code_computed_is_dropped_and_listed() -> None:
     """Kept as written never reaches a sample size or cost no projection states: that summary is dropped, as any such
     sentence is, and the methods list it."""

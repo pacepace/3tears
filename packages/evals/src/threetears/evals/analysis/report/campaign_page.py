@@ -843,7 +843,7 @@ def _memo_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -
         return []
     blocks: list[ReportBlock] = []
     for position, finding in enumerate(memo.findings):
-        title = style.sentence(finding.title) or " ".join(finding.title.split())
+        title = style.title(finding.title)
         blocks.append(
             TextBlock(section="memo", role="finding_title", body=title, finding=position, anchor=f"F{position + 1}")
         )
@@ -1256,6 +1256,15 @@ class _CampaignStyle:
             kept.append(part)
         return self.primary.prose(" ".join(kept)) if kept else ""
 
+    def title(self, text: str) -> str:
+        """A finding's title held to every rule; where that would leave none of it, kept as written and not counted as
+        dropped, since the page prints it: a finding is never laid out without its headline."""
+        dropped = self.primary.dropped
+        if said := self.sentence(text):
+            return said
+        self.primary.dropped = dropped
+        return self.primary.kept(self._named(text))
+
     def summary(self, text: str) -> str:
         """The memo's one sentence across the aspects, as :meth:`MemoStyle.summary` holds it, over every aspect: kept as
         written where the pass would leave none of it, unless it proposed a sample or cost no aspect projects."""
@@ -1266,7 +1275,7 @@ class _CampaignStyle:
         if len(primary.proposed) > proposed:
             return ""
         primary.dropped = dropped
-        return self._named(" ".join(text.split()))
+        return primary.kept(self._named(text))
 
     def methods(self) -> list[ReportBlock]:
         """What the memo said that the page did not print as written, and what still breaks a rule: the methods."""
