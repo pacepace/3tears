@@ -753,12 +753,13 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
     view: dict[str, Any] = {
         "aspect": label,
         "question": {
-            "asked_in_time": aspect.question_declared,
-            "post_hoc": aspect.reading_scope.question_post_hoc,
+            "asked": aspect.question_declared,
+            # Said once in the memo, never a demotion: the readings read as an asked question's do.
+            "after_runs": payload["reading_scope"]["question_after_runs"],
             "margin": declared.margin if declared is not None else None,
             "merit_axes": design.merit_axes if design is not None else None,
             "merit_priority": design.merit_priority if design is not None else [],
-            "reading_scope": namer.walk(payload["reading_scope"], label),
+            "reading_scope": namer.walk(_without(payload["reading_scope"], "question_after_runs"), label),
         },
         "readings": [
             {

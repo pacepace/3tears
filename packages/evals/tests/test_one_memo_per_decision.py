@@ -18,6 +18,7 @@ import re
 import uuid
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from itertools import groupby
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from threetears.evals.analysis import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
+from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.kernel import IDENTITY_VERSION, ConflictError, EvalCampaign, ValidationFailedError
@@ -365,12 +367,17 @@ async def _two() -> tuple[Store, EvalCampaign]:
 
 
 async def _build_two(
-    labels: Sequence[str] = ("billing", "tone"), *, floor: bool = True, bar: bool = True
+    labels: Sequence[str] = ("billing", "tone"),
+    *,
+    floor: bool = True,
+    bar: bool = True,
+    asked_at: str = DECLARED_AT,
 ) -> tuple[Store, EvalCampaign]:
     """Billing regresses (production passes eighteen of twenty cases, the candidate six) under a 10-point floor; tone
     improves (six to nineteen) under the cost bar the candidate misses. Asked before every run.
 
-    ``labels`` keeps those aspects of the two; ``floor`` and ``bar`` declare billing's floor and tone's bar."""
+    ``labels`` keeps those aspects of the two; ``floor`` and ``bar`` declare billing's floor and tone's bar;
+    ``asked_at`` asks the question then instead, after the runs where it is later than them."""
     shapes = {"billing": (18, 6), "tone": (6, 19)}
     evals = [
         _eval(label, cases=20, production=shapes[label][0], candidate=shapes[label][1], repeats=3) for label in labels
@@ -394,7 +401,7 @@ async def _build_two(
                     "margin": 10.0,
                     "design": design,
                     "declared_at": DECLARED_AT,
-                    "asked_at": DECLARED_AT,
+                    "asked_at": asked_at,
                     "margin_declared_at": DECLARED_AT,
                 }
             )
@@ -508,6 +515,77 @@ async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its
     assert listed.archived
     restored = off_loop(analysis_archive, held.host, analysis_id, SCOPE, archived=False)
     assert (restored.verdict, restored.archived) == (expected, False)
+
+
+#: A question asked long after every run, as a campaign created over runs that already exist is.
+ASKED_AFTER_RUNS = "2099-01-01T00:00:00+00:00"
+
+
+def _paged(stamp: str) -> str:
+    """An ISO-8601 instant as the page dates it: ``1 Jan 2099``."""
+    moment = datetime.fromisoformat(stamp)
+    return f"{moment.day} {moment:%b %Y}"
+
+
+def _timing(page: CampaignReport) -> list[str]:
+    """The first screen's lines saying the question was set after the runs."""
+    return [
+        block.text
+        for block in page.blocks
+        if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "timing"
+    ]
+
+
+async def test_a_campaign_asked_after_its_runs_reads_as_asked_and_says_so_on_its_page_listing_and_memo_input() -> None:
+    """Owner ruling (2026-10-21): a campaign created after its runs is trusted, not demoted. Its rows read exactly as
+    the same campaign asked before its runs reads them, every one confirmatory, and every surface a reader meets the
+    readings on says once, in one plain sentence, when the question was set and when the runs began."""
+    timely_store, timely = await _build_two()
+    held, two = await _build_two(asked_at=ASKED_AFTER_RUNS)
+
+    def rows(store: Store, campaign: EvalCampaign) -> list[tuple[str, str, str, bool]]:
+        page = off_loop(campaign_report, store.host, campaign.id, SCOPE)
+        return [(row.aspect, row.arm, row.reading, row.confirmatory) for row in page.readings.readings]
+
+    assert rows(held, two) == rows(timely_store, timely) and len(rows(held, two)) == 2
+    assert all(confirmatory for *_, confirmatory in rows(held, two))
+
+    async def prompt() -> str:
+        return PROMPT
+
+    prepared = await prepare_analysis_generation(
+        held.host, two.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
+    )
+    first_runs = {aspect.aspect: aspect.design_frozen_at for aspect in prepared.bundle.aspects}
+    assert all(first_runs.values())
+    for part in writer_view(prepared.bundle)["aspects"]:
+        assert part["question"]["asked"] is True
+        assert part["question"]["after_runs"] == {
+            "question_at": ASKED_AFTER_RUNS,
+            "first_run_at": first_runs[part["aspect"]],
+        }
+    analysis_id = await _generated(held, two)
+
+    page = off_loop(campaign_report, held.host, two.id, SCOPE)
+    (began,) = {_paged(stamp) for stamp in first_runs.values() if stamp is not None}
+    said = f"The question was set on 1 Jan 2099, after the runs began on {began}."
+    assert _timing(page) == [said], "both aspects share the dates, so it is said once, naming none"
+    first = _first_screen(page)
+    assert first.index(QUESTION) < first.index(said), "under the question it dates"
+    assert "a lead" not in first
+    for fold in page.aspects:
+        assert said in [block.text for block in fold.report.blocks if isinstance(block, DisclosureBlock)]
+        assert said not in [block.text for block in fold.head if isinstance(block, DisclosureBlock)], (
+            "the campaign's first screen carries it once"
+        )
+    bar, floor = _warnings(page)
+    verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
+    (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
+    assert (line.id, line.verdict) == (analysis_id, f"{bar} {floor} {said} {verdict}")
+
+    assert _timing(off_loop(campaign_report, timely_store.host, timely.id, SCOPE)) == [], (
+        "asked in time: nothing to say"
+    )
 
 
 async def test_an_analysis_s_page_json_names_its_recommended_arm_by_the_key_the_analysis_recorded() -> None:
