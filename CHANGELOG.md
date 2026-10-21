@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the campaign page opens on a summary across its aspects; the listing, the page JSON and the aspect label follow the page
+
+- **The memo reads across its aspects (#864).** `AuthoredCampaignAnalysis.summary` is required of every kind: one
+  sentence across every aspect saying what the campaign found and what it means for its question, held to the same
+  figure references and style pass as the rest of the memo. An empty one is refused through the repair round, so a
+  measurement's memo and a choice with no clear winner now say what they found too. The writer prompt asks for it in
+  rule 11 (no new rule; 23,908 of 24,500 characters).
+- **The page reads summary, then recommendation, then the aspects (#864).** After the missed bars, broken floors and
+  guardrails and the question: the writer's summary, the recommendation (now above a choice's pairs), then the aspect
+  table, pairs or measures, To settle, bars and the call, then the findings and one fold per aspect. The one-aspect
+  page and the reporter's memo text (`render_memo_as_written`) open with the summary too.
+- **The listing line says what the page opens with (#895).** `analyses_list` (`analysis_verdict`) leads each line with
+  every bar an arm misses, then every floor a candidate breaks, in the page's own words over what was frozen with the
+  analysis, then the verdict. An analysis with neither lists what it did before.
+- **The page JSON keys its recommendation (#880).** `recommendation` is `{arm, variant_key, confidence}`, the key being
+  the one the analysis recorded, so a reader matches a recorded call by key and a relabelled arm no longer miscounts.
+  `CAMPAIGN_JSON_SHAPE` is 2.
+- **One rule names an aspect after its behavior (#879).** `aspect_label_for(behavior)` (`threetears.evals.schema`,
+  `/` written `-`) replaces three hand copies. An aspect in `campaign_create` or `campaign_update` may leave out its
+  `label` and is named by the rule; two unlabelled aspects in one write are refused.
+
+**Breaking (pre-release line, no shims):** regenerable schema 12 -> 13, so stored analyses, insights and judge
+profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed. See
+`packages/evals/MIGRATIONS.toml`.
+
 ## v0.74.0 -- 2026-10-20
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever
