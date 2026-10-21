@@ -408,6 +408,26 @@ async def _relog(failure: Exception) -> str:
     return result
 
 
+def _with_failing_creates(failure: Exception) -> type[_FakeIntentions]:
+    """a collection holding no want like the one logged, whose saves raise ``failure``."""
+
+    class _CreatesFail(_FakeIntentions):
+        async def save_entity(self, entity: IntentionEntity) -> None:
+            _ = entity
+            raise failure
+
+    return _CreatesFail
+
+
+#: what a new want's insert can meet that is not a bug: an outage, a generation that could not
+#: advance, a row count the store did not report
+_CREATE_REFUSALS: list[Exception] = [
+    DataLayerUnavailableError("broker down"),
+    GenerationUnavailableError("generation not advanced"),
+    RowcountUnreadableError("a successful insert reply must carry row_count"),
+]
+
+
 #: what a fenced save of a stored want can meet that is not a bug: an outage, a lost CAS race, a
 #: generation that could not advance, a row count the store did not report
 _SAVE_REFUSALS: list[Exception] = [
@@ -436,6 +456,23 @@ class TestOnlyAStoreFailureReadsAsOne:
     @pytest.mark.parametrize("failure", _SAVE_REFUSALS, ids=lambda e: type(e).__name__)
     async def test_a_refused_refresh_is_a_tool_error(self, failure: Exception) -> None:
         assert await _relog(failure) == f"[TOOL ERROR] intention_log: refresh failed — {type(failure).__name__}"
+
+    @pytest.mark.parametrize("failure", _CREATE_REFUSALS, ids=lambda e: type(e).__name__)
+    async def test_a_refused_create_is_a_tool_error(self, failure: Exception) -> None:
+        collection = _with_failing_creates(failure)()
+        assert await _log(_OkEmbedder(), collection, "want") == (
+            f"[TOOL ERROR] intention_log: store failed — {type(failure).__name__}"
+        )
+
+    async def test_a_create_bug_propagates(self) -> None:
+        with pytest.raises(TypeError, match="bug"):
+            await _log(_OkEmbedder(), _with_failing_creates(TypeError("bug"))(), "want")
+
+    async def test_an_insert_that_lands_no_row_propagates(self) -> None:
+        """the key is minted per call, so no race lands no row; a collection with no L3 store does."""
+        failure = RuntimeError("L3 insert failed for intentions entity x: 0 rows affected")
+        with pytest.raises(RuntimeError, match="0 rows affected"):
+            await _log(_OkEmbedder(), _with_failing_creates(failure)(), "want")
 
     async def test_a_refresh_bug_propagates(self) -> None:
         with pytest.raises(TypeError, match="bug"):

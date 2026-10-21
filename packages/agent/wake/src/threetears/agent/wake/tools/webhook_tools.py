@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 import secrets
 from datetime import UTC, datetime, tzinfo
+from collections.abc import Iterable
 from typing import Any, Final
 from uuid import UUID
 
@@ -326,7 +327,46 @@ async def standing_same_subscription(
     :return: the standing subscription, or ``None``
     :rtype: Any | None
     """
-    for held in await subscriptions_collection.list_for_agent(agent_id):
+    return _matching_subscription(
+        await subscriptions_collection.list_for_agent(agent_id),
+        name=name,
+        task_prompt_template=task_prompt_template,
+        default_skill_id=default_skill_id,
+        allowed_source_pattern=allowed_source_pattern,
+        rate_limit_per_minute=rate_limit_per_minute,
+    )
+
+
+def _matching_subscription(
+    held_subscriptions: Iterable[Any],
+    *,
+    name: str | None,
+    task_prompt_template: str,
+    default_skill_id: UUID | None,
+    allowed_source_pattern: str | None,
+    rate_limit_per_minute: int | None,
+) -> Any | None:
+    """The one of ``held_subscriptions`` that is this subscription in every part, or ``None``.
+
+    The comparison of :func:`standing_same_subscription`, apart from its read, so
+    a caller that absorbs a failed read does not absorb a fault in the comparison.
+
+    :param held_subscriptions: the agent's subscriptions
+    :ptype held_subscriptions: Iterable[Any]
+    :param name: the new subscription's name
+    :ptype name: str | None
+    :param task_prompt_template: its template
+    :ptype task_prompt_template: str
+    :param default_skill_id: its skill
+    :ptype default_skill_id: UUID | None
+    :param allowed_source_pattern: its source pattern
+    :ptype allowed_source_pattern: str | None
+    :param rate_limit_per_minute: its fires-per-minute limit
+    :ptype rate_limit_per_minute: int | None
+    :return: the standing subscription, or ``None``
+    :rtype: Any | None
+    """
+    for held in held_subscriptions:
         if (
             (held.name or None) == (name or None)
             and (held.task_prompt_template or "") == (task_prompt_template or "")
@@ -514,17 +554,10 @@ def load_webhook_subscription_create_tool(
 
         # The same subscription made twice is two addresses and two secrets for one job.
         # Asked before anything is made; a listing that cannot be read leaves the create
-        # to go ahead, as it did.
+        # to go ahead, as it did. Only the read is guarded: a fault in the comparison is
+        # ours and propagates.
         try:
-            standing = await standing_same_subscription(
-                subscriptions_collection,
-                agent_id,
-                name=name,
-                task_prompt_template=task_prompt_template,
-                default_skill_id=attached_skill,
-                allowed_source_pattern=allowed_source_pattern,
-                rate_limit_per_minute=rate_limit_per_minute,
-            )
+            held_subscriptions = await subscriptions_collection.list_for_agent(agent_id)
         except Exception as exc:  # noqa: BLE001 - the check must not cost the create
             contain(
                 exc,
@@ -532,7 +565,15 @@ def load_webhook_subscription_create_tool(
                 what="webhook_subscription_create could not read the agent's subscriptions; creating without the same-subscription check",
                 extra={"error": str(exc)},
             )
-            standing = None
+            held_subscriptions = []
+        standing = _matching_subscription(
+            held_subscriptions,
+            name=name,
+            task_prompt_template=task_prompt_template,
+            default_skill_id=attached_skill,
+            allowed_source_pattern=allowed_source_pattern,
+            rate_limit_per_minute=rate_limit_per_minute,
+        )
         if standing is not None:
             return _no_change(
                 "webhook_subscription_create",

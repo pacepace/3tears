@@ -37,7 +37,7 @@ Spec ref: ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, tzinfo
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -396,9 +396,65 @@ async def standing_same_wake(
     :return: the standing wake, or ``None``
     :rtype: Any | None
     """
-    if not (name or "").strip() and not (task_prompt or "").strip():
+    if not _wake_says_what_it_is(name, task_prompt):
         return None
-    for held in await schedules_collection.list_for_agent(agent_id):
+    return _matching_wake(
+        await schedules_collection.list_for_agent(agent_id),
+        name=name,
+        schedule_type=schedule_type,
+        schedule_config=schedule_config,
+        task_prompt=task_prompt,
+        skill_id=skill_id,
+        missed_fire_policy=missed_fire_policy,
+        context_from_schedule_id=context_from_schedule_id,
+        include_conversation_history=include_conversation_history,
+    )
+
+
+def _wake_says_what_it_is(name: str | None, task_prompt: str | None) -> bool:
+    """Whether a wake has a name or a text: one with neither is never taken for another."""
+    return bool((name or "").strip() or (task_prompt or "").strip())
+
+
+def _matching_wake(
+    held_wakes: Iterable[Any],
+    *,
+    name: str | None,
+    schedule_type: str,
+    schedule_config: dict[str, Any],
+    task_prompt: str | None,
+    skill_id: UUID | None,
+    missed_fire_policy: str,
+    context_from_schedule_id: UUID | None,
+    include_conversation_history: bool,
+) -> Any | None:
+    """The one of ``held_wakes`` that is this wake in every part, or ``None``.
+
+    The comparison of :func:`standing_same_wake`, apart from its read, so a
+    caller that absorbs a failed read does not absorb a fault in the comparison.
+
+    :param held_wakes: the agent's active and paused wakes
+    :ptype held_wakes: Iterable[Any]
+    :param name: the new wake's name
+    :ptype name: str | None
+    :param schedule_type: its schedule type
+    :ptype schedule_type: str
+    :param schedule_config: its schedule
+    :ptype schedule_config: dict[str, Any]
+    :param task_prompt: its text
+    :ptype task_prompt: str | None
+    :param skill_id: its skill
+    :ptype skill_id: UUID | None
+    :param missed_fire_policy: its missed-fire policy
+    :ptype missed_fire_policy: str
+    :param context_from_schedule_id: the wake whose context it reads
+    :ptype context_from_schedule_id: UUID | None
+    :param include_conversation_history: whether its fires read the conversation
+    :ptype include_conversation_history: bool
+    :return: the standing wake, or ``None``
+    :rtype: Any | None
+    """
+    for held in held_wakes:
         if (
             held.schedule_type == schedule_type
             and dict(held.schedule_config or {}) == dict(schedule_config)
@@ -793,11 +849,22 @@ def load_wake_schedule_create_tool(
                 )
 
         # The same wake made twice fires twice. Asked before anything is made; a
-        # listing that cannot be read leaves the create to go ahead, as it did.
-        try:
-            standing = await standing_same_wake(
-                schedules_collection,
-                agent_id,
+        # listing that cannot be read leaves the create to go ahead, as it did. Only
+        # the read is guarded: a fault in the comparison is ours and propagates.
+        standing = None
+        if _wake_says_what_it_is(name, task_prompt):
+            try:
+                held_wakes = await schedules_collection.list_for_agent(agent_id)
+            except Exception as exc:  # noqa: BLE001 - the check must not cost the create
+                contain(
+                    exc,
+                    log=log,
+                    what="wake_schedule_create could not read the agent's wakes; creating without the same-wake check",
+                    extra={"error": str(exc)},
+                )
+                held_wakes = []
+            standing = _matching_wake(
+                held_wakes,
                 name=name,
                 schedule_type=schedule_type,
                 schedule_config=schedule_config,
@@ -807,14 +874,6 @@ def load_wake_schedule_create_tool(
                 context_from_schedule_id=parsed_context_from,
                 include_conversation_history=include_conversation_history,
             )
-        except Exception as exc:  # noqa: BLE001 - the check must not cost the create
-            contain(
-                exc,
-                log=log,
-                what="wake_schedule_create could not read the agent's wakes; creating without the same-wake check",
-                extra={"error": str(exc)},
-            )
-            standing = None
         if standing is not None:
             return (
                 f"[NO CHANGE] wake_schedule_create: you already have this wake, [schedule:{standing.schedule_id}] "
@@ -1503,14 +1562,21 @@ def load_wake_fires_tool(
     """
     zone = resolve_zone(tz)
 
+    # Each history is read first and written out after: only the reads are guarded,
+    # so a read that failed says so and a fault in the writing-out is ours and propagates.
+
     async def _of_schedule(raw: str, limit: int) -> str:
         parsed = parse_schedule_id(raw)
         if parsed is None:
             return _tool_error("wake_fires", f"invalid schedule_id {raw!r}")
-        entity = await schedules_collection.find_for_agent(agent_id, parsed)
-        if entity is None:
-            return _tool_error("wake_fires", "schedule not found; wake_schedule_list shows the ones you have")
-        fires = await fires_collection.list_for_schedule(entity.conversation_id, parsed, limit=limit)
+        try:
+            entity = await schedules_collection.find_for_agent(agent_id, parsed)
+            if entity is None:
+                return _tool_error("wake_fires", "schedule not found; wake_schedule_list shows the ones you have")
+            fires = await fires_collection.list_for_schedule(entity.conversation_id, parsed, limit=limit)
+        except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
+            contain(exc, log=log, what="wake_fires history read failed")
+            return _tool_error("wake_fires", f"the history could not be read ({type(exc).__name__})")
         head = f"[schedule:{parsed}] {entity.name or 'untitled'}: {_state_said(entity, zone)}."
         if not fires:
             return f"{head}\nIt has not fired yet."
@@ -1526,13 +1592,17 @@ def load_wake_fires_tool(
         parsed = parse_subscription_id(raw)
         if parsed is None:
             return _tool_error("wake_fires", f"invalid subscription_id {raw!r}")
-        entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
-        if entity is None:
-            return _tool_error(
-                "wake_fires", "subscription not found; webhook_subscription_list shows the ones you have"
-            )
-        fires = await fires_collection.list_for_subscription(entity.conversation_id, parsed, limit=limit)
-        refusals = await subscriptions_collection.list_refusals(parsed, limit=limit)
+        try:
+            entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
+            if entity is None:
+                return _tool_error(
+                    "wake_fires", "subscription not found; webhook_subscription_list shows the ones you have"
+                )
+            fires = await fires_collection.list_for_subscription(entity.conversation_id, parsed, limit=limit)
+            refusals = await subscriptions_collection.list_refusals(parsed, limit=limit)
+        except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
+            contain(exc, log=log, what="wake_fires history read failed")
+            return _tool_error("wake_fires", f"the history could not be read ({type(exc).__name__})")
         lines = [
             f"[webhook:{parsed}] {entity.name or 'untitled'} ({entity.status}): last accepted delivery "
             f"{format_wake_time(entity.last_fired_at, zone, unset='never')}."
@@ -1562,13 +1632,9 @@ def load_wake_fires_tool(
         if bool(schedule_id) == bool(subscription_id):
             return _tool_error("wake_fires", "give a schedule_id or a subscription_id, one of the two")
         limit = max(1, min(int(limit), 50))
-        try:
-            if schedule_id:
-                return await _of_schedule(schedule_id, limit)
-            return await _of_subscription(subscription_id or "", limit)
-        except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
-            contain(exc, log=log, what="wake_fires history read failed")
-            return _tool_error("wake_fires", f"the history could not be read ({type(exc).__name__})")
+        if schedule_id:
+            return await _of_schedule(schedule_id, limit)
+        return await _of_subscription(subscription_id or "", limit)
 
     wake_fires.description = (
         "Read how a wake schedule's past fires went, newest first: when each ran, whether on schedule "
