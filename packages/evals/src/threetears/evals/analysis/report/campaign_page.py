@@ -1328,23 +1328,12 @@ class _CampaignStyle:
     def title(self, text: str) -> str:
         """A finding's title held to every rule; where that would leave none of it, kept as written and not counted as
         dropped, since the page prints it: a finding is never laid out without its headline."""
-        dropped = self.primary.dropped
-        if said := self.sentence(text):
-            return said
-        self.primary.dropped = dropped
-        return self.primary.kept(self._named(text))
+        return self.primary.or_as_written(lambda: self.sentence(text), self._named(text))
 
     def summary(self, text: str) -> str:
         """The memo's one sentence across the aspects, as :meth:`MemoStyle.summary` holds it, over every aspect: kept as
         written where the pass would leave none of it, unless it proposed a sample or cost no aspect projects."""
-        primary = self.primary
-        proposed, dropped = len(primary.proposed), primary.dropped
-        if said := self.prose(text, plans=True).strip():
-            return said
-        if len(primary.proposed) > proposed:
-            return ""
-        primary.dropped = dropped
-        return primary.kept(self._named(text))
+        return self.primary.or_as_written(lambda: self.prose(text, plans=True), self._named(text))
 
     def methods(self) -> list[ReportBlock]:
         """What the memo said that the page did not print as written, and what still breaks a rule: the methods."""

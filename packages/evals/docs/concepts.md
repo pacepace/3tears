@@ -411,7 +411,8 @@ One place a campaign's question is measured (`Aspect`): a template, the runs gat
 far, in points of the pass rate, a candidate may fall below the control there before it is shown worse) and its
 **design** (the axes it varies, what it held fixed, the merit axes its readings are tested on, its bars). Each
 aspect is read on its own, against the same control, and keeps its own pre-registration time (`asked_at`): a
-reading confirms only what was asked before that aspect's first run. A campaign adopting another's aspect
+question asked after that aspect's first run reads as one asked before it, and every page says when each happened
+(`reading_scope.question_after_runs`). A campaign adopting another's aspect
 (`aspects_from`) keeps that time; whatever it adds is dated when it is added. A campaign stored before aspects
 existed reads as one aspect labelled with its behavior.
 

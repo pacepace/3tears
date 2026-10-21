@@ -134,7 +134,7 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 | v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.07036 |
 ```
 
-A campaign that asked its question before the run opens on its name, then the question quoted on its own line,
+A campaign that asks a question opens on its name, then the question quoted on its own line,
 then the arms line and the verdict. Where a candidate broke a floor, the warning comes first, above the title. A
 declared triage campaign whose v2 broke its 5-point floor renders:
 
@@ -154,9 +154,9 @@ The first screen carries the minimum a reader needs to grasp the result; every c
 - **A broken floor**, where one is: the page's first line, bold, above the title (in HTML a
   `<p class="floor" role="alert">`), one per broken floor, naming the aspect, the arm, the margin and the interval.
   A floor warns and never decides: the verdict below it still says what the contrasts came to.
-- **Title**: a name — the campaign's (`triage v2`), with what it compares where no question was asked before the
-  run (`invoices: does v2 do better than v1?`). A declared question is never cut down to a title.
-- **The question**, where one was asked before the run: quoted alone on the line under the title. It is the
+- **Title**: a name — the campaign's (`triage v2`), with what it compares where no question was asked
+  (`invoices: does v2 do better than v1?`). A declared question is never cut down to a title.
+- **The question**, where one is asked: quoted alone on the line under the title. It is the
   contract the verdict reads, so it is never paraphrased, and it is quoted whole: declare it short.
 - **The arms line**: each arm named in full once (`deepseek-v4.1-flash (production, control)`), by the version its
   responses named where that is one model other than the one asked for (`deepseek-v4-flash-20261001`), then the
@@ -329,8 +329,8 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
   bought. Near 1, the cases' own differences cancelled and the paired test is far more sensitive than an
   unpaired one; near 0 pairing bought nothing; below 0 the paired test is less sensitive than an unpaired one
   would have been. Blank for an unpaired test, below three paired cases, and where an arm's values do not vary.
-- **Adjusted p** is Holm-corrected within the family: the aspect's, where the campaign's question was asked
-  before the aspect's first run (the readings on the aspect's merit axes, and the pass rate where the aspect
+- **Adjusted p** is Holm-corrected within the family: the aspect's, where the campaign asks it a question, whenever
+  that was asked (the readings on the aspect's merit axes, and the pass rate where the aspect
   declares a margin), or else one exploratory family over every reading on a merit axis. A measure
   on no axis is never tested. That keeps the rig's own readings out: the judge's time (`judge_ms`), the
   drain wait, and `cost_usd` and `program_cost`, which include what the judge spent. The candidate's spend
@@ -461,7 +461,8 @@ Where either came after, the bundle says what was late and when (`reading_scope.
 `question` or `control`; `at`, null when no time was recorded; `first_run_at`), the page JSON carries it beside each
 aspect, and the campaign's page, each aspect's page and the analysis listing say it in one sentence under the
 question: "The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named on
-…". Two times on one day carry their times of day. The writer says it once in its summary, with the page's dates.
+…". Each date is in its stamp's own offset, as every other date on the page is; where the later does not fall on
+a later day than the earlier, both carry their times of day and offsets. The writer says it once in its summary, with the page's dates.
 A margin or a floor declared no later than a late question is said by that line; one added later is still said as
 declared after its first result. A question with no date, and a control named late, hold nothing back. `question_declared` is true wherever a
 question is asked, whenever. An aspect adopted from another campaign (`aspects_from`) keeps its source's time, so

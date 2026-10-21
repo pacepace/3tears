@@ -17,6 +17,7 @@ from html.parser import HTMLParser
 from typing import Any, Literal
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -492,6 +493,28 @@ def test_two_times_on_one_day_carry_their_times_of_day() -> None:
     assert apart.page_dates() == ("20 Oct 2026", "14 Oct 2026")
     undated = QuestionAfterRuns(late="question", at=None, first_run_at="2026-10-14T09:30:00+00:00")
     assert undated.page_dates() == (None, "14 Oct 2026")
+
+
+def test_each_time_is_dated_in_its_own_offset_as_the_rest_of_the_page_dates_it() -> None:
+    """The Methods row dates the design's freeze in the stamp's own offset; the line under the question dates the same
+    instant the same way, so one page never prints one instant as two days. Where the later time falls on no later day
+    than the earlier in their own offsets, both carry their times of day and offsets, so it never reads as earlier."""
+    began = "2026-10-15T01:00:00+00:00"
+    apart = QuestionAfterRuns(late="question", at="2026-10-16T23:30:00-05:00", first_run_at=began)
+    assert apart.page_dates() == ("16 Oct 2026", "15 Oct 2026")
+    # 04:30 UTC on 15 Oct, after the runs; in its own offset, still 14 Oct.
+    crossed = QuestionAfterRuns(late="question", at="2026-10-14T23:30:00-05:00", first_run_at=began)
+    assert crossed.page_dates() == ("14 Oct 2026 at 23:30 UTC-05:00", "15 Oct 2026 at 01:00 UTC")
+
+
+@pytest.mark.parametrize("field", ["at", "first_run_at"])
+@pytest.mark.parametrize("stamp", ["sometime in October", "2026-10-14T09:30:00"])
+def test_a_flag_whose_time_cannot_be_ordered_is_refused_not_printed_raw(field: str, stamp: str) -> None:
+    times = {"at": "2026-10-20T15:00:00+00:00", "first_run_at": "2026-10-14T09:30:00+00:00", field: stamp}
+    with pytest.raises(ValidationError, match=field):
+        QuestionAfterRuns(late="question", **times)
+    flag = QuestionAfterRuns(late="question", at="2026-10-20T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
+    assert flag.page_dates() == ("20 Oct 2026", "14 Oct 2026"), "the same flag with ordered times is read"
 
 
 @pytest.mark.parametrize(

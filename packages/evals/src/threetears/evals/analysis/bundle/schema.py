@@ -11,11 +11,11 @@ imports none of them.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
 
 from threetears.evals.analysis.agreement import (
     JudgeAgreement,
@@ -1940,39 +1940,40 @@ class QuestionAfterRuns(EvalDocumentModel):
     )
     first_run_at: str = Field(description="When the aspect's first member run was created (ISO-8601).")
 
+    @field_validator("at", "first_run_at")
+    @classmethod
+    def _an_ordered_time(cls, stamp: str | None, info: ValidationInfo) -> str | None:
+        """Each time is one that can be ordered, an ISO-8601 time with an offset, as :func:`question_after_runs`
+        compared it: a stamp that cannot be dated is refused here rather than printed raw on a page."""
+        if stamp is not None:
+            _instant(stamp, f"the late-question flag's {info.field_name}")
+        return stamp
+
     def page_dates(self) -> tuple[str | None, str]:
-        """``at`` and ``first_run_at`` as a page and the writer word them: ``14 Oct 2026``, each with its time of day
-        (``14 Oct 2026 at 09:30 UTC``) where the two fall on one day, so the later never reads as the earlier's day.
+        """``at`` and ``first_run_at`` as a page and the writer word them: ``14 Oct 2026``, each in its own offset as
+        every other date on the page is, and each with its time of day (``14 Oct 2026 at 09:30 UTC``) where the
+        later does not fall on a later day than the earlier, so it never reads as on or before the runs' day.
 
         :return: When it was set (None where ``at`` is), and when the runs began.
         :rtype: tuple[str | None, str]
         """
-        began = _page_instant(self.first_run_at)
-        set_at = None if self.at is None else _page_instant(self.at)
-        same_day = began is not None and set_at is not None and set_at.date() == began.date()
-        words = _page_time if same_day else _page_date
-        # A stamp that does not parse is printed as stored rather than dropped.
-        said = None if self.at is None else (words(set_at) if set_at is not None else self.at)
-        return said, words(began) if began is not None else self.first_run_at
-
-
-def _page_instant(stamp: str) -> datetime | None:
-    """``stamp`` as a UTC instant, or None where it does not parse as an ISO-8601 time with an offset."""
-    try:
-        instant = datetime.fromisoformat(stamp)
-    except ValueError:
-        return None
-    return instant.astimezone(UTC) if instant.tzinfo is not None else None
+        began = _instant(self.first_run_at, "the first run")
+        set_at = None if self.at is None else _instant(self.at, "the late-question flag")
+        timed = set_at is not None and set_at.date() <= began.date()
+        words = _page_time if timed else _page_date
+        return None if set_at is None else words(set_at), words(began)
 
 
 def _page_date(instant: datetime) -> str:
-    """An instant as a page dates it: ``14 Oct 2026``."""
+    """An instant as a page dates it, in its own offset: ``14 Oct 2026``."""
     return f"{instant.day} {instant:%b %Y}"
 
 
 def _page_time(instant: datetime) -> str:
-    """An instant with its time of day: ``14 Oct 2026 at 09:30 UTC``."""
-    return f"{_page_date(instant)} at {instant:%H:%M} UTC"
+    """An instant with its time of day and offset: ``14 Oct 2026 at 09:30 UTC``, or ``at 09:30 UTC+02:00``."""
+    offset = instant.utcoffset()
+    zone = "UTC" if not offset else f"UTC{instant:%:z}"
+    return f"{_page_date(instant)} at {instant:%H:%M} {zone}"
 
 
 class ReadingScope(EvalDocumentModel):
