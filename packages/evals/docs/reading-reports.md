@@ -87,7 +87,7 @@ Each arm's gains and its drops are each shown wrongly at most 2.5% of the time.
 
 **The readings.** A change reads each candidate on each aspect as **shown better** (its gain's interval lies wholly
 above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin) or **unclear**, and an
-aspect declaring no margin is never shown worse. A reading the question did not ask before the first result is
+aspect declaring no margin is never shown worse. A reading on an aspect the question does not ask about is
 marked `a lead`: worth chasing, not yet shown. A choice reads each pair: one arm **ahead** where the whole interval
 lies on one side of zero, else `no separation`; ahead is a reading, not a pick. A measurement reads each measure with
 its interval, the pass rate as a count (`45 of 60`).
@@ -452,18 +452,19 @@ writer may adopt nothing. A campaign that declared no design at all is an explor
 says so: its readings confirm nothing, and the design its comparisons read was inferred from the runs, not declared
 ([when to declare one](measuring-soundly.md#start-from-the-question)). A guardrail is never exploratory.
 
-**A question counts only if it was asked before the evidence.** A question confirms nothing on an aspect when it was
-asked after the aspect's first member run was created, since it may have been asked of results that already
-existed. Each aspect carries its own time (`Aspect.asked_at`), read against its earliest member run's `created_at`
-(`asked_in_time`), and a control named after the aspect's first result (the earliest result the aspect reads)
-makes it post hoc too. Every reader that scopes a
-reading by the question (the comparison family, the reading scope, the verdict order, the disclosure) reads that one
-time, so they cannot disagree. A late question builds no family, `reading_scope.question_post_hoc` says so, and
-`question_declared` is true only when the question was asked in time. When it came late, the one disclosure says
-so. An aspect adopted from another campaign (`aspects_from`) keeps its source's time, so adopting it never re-dates
-its readings; a margin, floor or arm added at adoption carries its own time, and reads as declared after the runs
-where that is later than the aspect's first run. To keep a question from coming late, a campaign's declaration is
-frozen once any aspect holds a run: `campaign_update` refuses `question`, `aspects` and `floors` in any form, and
+**A question asked after the runs is said, never demoted.** A question asked after an aspect's first member run was
+created may have been asked with its results in view, so the page says so; its readings read exactly as they would
+had it been asked first, because the operator is trusted to have set it in good faith, and the line lets a reader
+judge. Each aspect carries its own time (`Aspect.asked_at`), read against its earliest member run's `created_at`, and
+a control named after the aspect's first result (the earliest result the aspect reads) dates the question at the
+naming. Where the question came after, the bundle carries both times (`reading_scope.question_after_runs`:
+`question_at`, `first_run_at`; `question_at` is null when no time was recorded), and the campaign's page, each aspect's
+page and the analysis listing say it in one sentence under the question: "The question was set on 1 Jan 2099, after
+the runs began on 14 Oct 2026." The writer says it once in its summary. `question_declared` is true wherever a
+question is asked, whenever. An aspect adopted from another campaign (`aspects_from`) keeps its source's time, so
+adopting it never re-dates its question; a margin, floor or arm added at adoption carries its own time, and reads as
+declared after the runs where that is later than the aspect's first run. To keep a question from coming late, a
+campaign's declaration is frozen once any aspect holds a run: `campaign_update` refuses `question`, `aspects` and `floors` in any form, and
 refuses re-pointing or clearing the control (which may be named once, from a run, while none is); the name and
 description stay editable, and an amended question is a new campaign that adopts the aspects it keeps.
 

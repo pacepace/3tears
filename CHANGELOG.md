@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: the campaign page opens on a summary across its aspects; the listing, the page JSON and the aspect label follow the page
+### evals: the campaign page opens on a summary across its aspects; the listing, the page JSON and the aspect label follow the page; a question set after the runs is disclosed, not demoted
 
 - **The memo reads across its aspects (#864).** `AuthoredCampaignAnalysis.summary` is required of every kind: one
   sentence across every aspect saying what the campaign found and what it means for its question, held to the same
@@ -27,10 +27,17 @@ packages (bumped in lock-step).
 - **One rule names an aspect after its behavior (#879).** `aspect_label_for(behavior)` (`threetears.evals.schema`,
   `/` written `-`) replaces three hand copies. An aspect in `campaign_create` or `campaign_update` may leave out its
   `label` and is named by the rule; two unlabelled aspects in one write are refused.
+- **A question set after the runs is disclosed, not demoted (#901).** A campaign whose question was asked after an
+  aspect's first run reads that aspect exactly as if the question had come first: its own comparison family, rows and
+  pairs `confirmatory`, and a change may recommend a candidate on them. The bundle carries both times
+  (`reading_scope.question_after_runs`: `question_at`, `first_run_at`), and the campaign's page, each aspect's page
+  and `analyses_list` say it in one sentence under the question ("The question was set on 1 Jan 2099, after the runs
+  began on 14 Oct 2026."); the writer's summary says it once. Bundle shape 60.
 
 **Breaking (pre-release line, no shims):** regenerable schema 12 -> 13, so stored analyses, insights and judge
-profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed. See
-`packages/evals/MIGRATIONS.toml`.
+profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
+59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
+replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
 
 ## v0.74.0 -- 2026-10-20
 

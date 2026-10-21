@@ -368,8 +368,8 @@ exploratory one takes none of them.
 2. `run_launch` the arms, then `campaign_runs_add` each run to its aspect (by its template, or the `aspect` you
    name; `campaign_runs_remove` takes one out, and its results stay);
 3. `campaign_update` with `control_from_run_id`, naming the member run whose variant is the control. Once a run has
-   joined, the control is named once and never re-pointed, and a control named after an aspect's first result makes
-   that aspect's comparisons post hoc.
+   joined, the control is named once and never re-pointed, and a control named after an aspect's first result dates
+   that aspect's question at the naming, which its pages disclose as set after the runs.
 
 To ask again after the runs, `campaign_create` with `aspects_from` adopts the aspects it keeps, each with the time
 its question was asked; what it adds (`margins` for an adopted aspect, a floor, an arm, the question's new words)

@@ -449,7 +449,8 @@ so any run of that configuration counts toward it. An `Eval` comparison sets it 
 key; elsewhere it is the campaign's first arm, with role `control` (`CampaignArm`), addressed from a run: an arm's
 `from_run_ids` at creation, or `set_campaign_control` (`control_from_run_id` on the `campaign_update` action)
 afterwards. The server records the run's variant key beside its lever map and identity version, as a run records
-its own; nobody types those. A control named after an aspect's first result makes that aspect's readings post hoc.
+its own; nobody types those. A control named after an aspect's first result dates that aspect's question at the
+naming, which its pages disclose as set after the runs.
 Every read resolves it through `resolve_control_arm` to the
 keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
 version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a
