@@ -40,7 +40,13 @@ from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.arms import arm_names, short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, FloorStatus, PairReading
+from threetears.evals.analysis.campaign_readings import (
+    AspectReading,
+    BarStatus,
+    CampaignReadings,
+    FloorStatus,
+    PairReading,
+)
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS
 from threetears.evals.analysis.report.decision import floor_statement, projected_cell
@@ -83,6 +89,7 @@ __all__ = [
     "READING_WORDS",
     "build_campaign_report",
     "campaign_verdict",
+    "campaign_warnings",
 ]
 
 #: What each reading is called on the page.
@@ -102,6 +109,7 @@ def build_campaign_report(
     memo: AuthoredCampaignAnalysis | None,
     *,
     call: CampaignCall | None = None,
+    recommended_variant_key: str | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as its page: code's readings first, the writer's recommendation, the person's call, then one
     fold per aspect.
@@ -117,12 +125,22 @@ def build_campaign_report(
     :ptype memo: AuthoredCampaignAnalysis | None
     :param call: The person's call; None while none is recorded.
     :ptype call: CampaignCall | None
+    :param recommended_variant_key: The variant key of the arm the memo recommends, as the analysis recorded it
+        (``EvalAnalysis.recommended_variant_key``); required where the page holds a recommendation, which a
+        measurement's never does.
+    :ptype recommended_variant_key: str | None
     :return: The page, ``basis="analysis"`` with a memo, ``code_only`` without one.
     :rtype: CampaignReport
-    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, or the
-        readings are of another campaign.
+    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
+        are of another campaign, or the memo recommends an arm and no key is given for it.
     """
     reports = _checked_reports(campaign, readings, aspect_reports)
+    recommendation = memo.recommended() if memo is not None and readings.kind != "measurement" else None
+    if recommendation is not None and recommended_variant_key is None:
+        raise RefusedInput(
+            f"the memo recommends {recommendation.arm}, and the page is given no variant key for that arm",
+            remedy="pass the key the analysis recorded for its recommended arm (EvalAnalysis.recommended_variant_key)",
+        )
     style = _CampaignStyle.over(campaign, readings, reports)
     kind = readings.kind
     blocks: list[ReportBlock] = [
@@ -171,7 +189,8 @@ def build_campaign_report(
         aspects=folds,
         readings=readings,
         call=call,
-        recommendation=memo.recommended() if memo is not None and kind != "measurement" else None,
+        recommendation=recommendation,
+        recommended_variant_key=recommended_variant_key if recommendation is not None else None,
     )
 
 
@@ -232,10 +251,8 @@ def _bar_warnings(
                     )
                 )
     blocks: list[ReportBlock] = []
-    for status in readings.missed_bars():
-        blocks.append(
-            DisclosureBlock(section="header", source="bar", text=f"Bar missed on {status.aspect}: {status.reason}.")
-        )
+    for status, text in _bar_lines(readings):
+        blocks.append(DisclosureBlock(section="header", source="bar", text=text))
         if recommendation is not None and status.arm_label == recommendation.arm:
             blocks += answers.pop((status.aspect, status.measure), [])
     return blocks
@@ -309,39 +326,63 @@ def _floor_warnings(
     the arm, the rate that broke it and the interval it broke on; each followed at once by the writer's why, where the
     memo recommends the arm over that floor. Past :data:`_WARNINGS_APART` of them, one line per candidate names every
     floor it breaks, so the warnings stay readable, its whys after it."""
-    broken = readings.broken_floors()
     recommended, overrides = _overrides(memo, style)
 
     def answered(status: FloorStatus) -> list[ReportBlock]:
         # The why answers the recommended arm's breaking of the floor, never another arm's breaking of the same one.
         return overrides.get(status.floor, []) if status.arm_label == recommended else []
 
+    blocks: list[ReportBlock] = []
+    for statuses, text in _floor_lines(campaign.floors, readings):
+        blocks.append(DisclosureBlock(section="header", source="floor", text=text))
+        blocks += [block for status in statuses for block in answered(status)]
+    return blocks
+
+
+def campaign_warnings(floors: Sequence[Floor], readings: CampaignReadings) -> list[str]:
+    """The loud lines a campaign's page opens with for its bars and floors, as code words them: every bar an arm
+    misses, then every floor a candidate breaks — never the writer's why beside them, nor the guardrail lines after.
+
+    The page's own warnings are these lines, so whatever repeats them (an analysis's listing line) says what its page
+    opens with, word for word.
+
+    :param floors: The floors the readings were read against, which word each broken one: the campaign's, or the
+        ones frozen with an analysis (``EvalAnalysis.design_snapshot.floors``).
+    :ptype floors: Sequence[Floor]
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :return: The lines, in the page's order; none where no bar is missed and no floor broken.
+    :rtype: list[str]
+    """
+    return [text for _, text in _bar_lines(readings)] + [text for _, text in _floor_lines(floors, readings)]
+
+
+def _bar_lines(readings: CampaignReadings) -> list[tuple[BarStatus, str]]:
+    """Each bar an arm misses, with the line the page warns of it in: ``Bar missed on tone: <reason>.``"""
+    return [(status, f"Bar missed on {status.aspect}: {status.reason}.") for status in readings.missed_bars()]
+
+
+def _floor_lines(floors: Sequence[Floor], readings: CampaignReadings) -> list[tuple[list[FloorStatus], str]]:
+    """Each line the page warns of broken floors in, with the statuses it says: one per broken floor, worded as an
+    aspect's page words it; past :data:`_WARNINGS_APART` of them, one per candidate naming every floor it breaks."""
+    broken = readings.broken_floors()
     if len(broken) <= _WARNINGS_APART:
-        blocks: list[ReportBlock] = []
-        for status in broken:
-            blocks.append(
-                DisclosureBlock(
-                    section="header", source="floor", text=_warning(_floor_of(campaign, status.floor), status)
-                )
-            )
-            blocks += answered(status)
-        return blocks
+        return [
+            ([status], _warning(next((floor for floor in floors if floor.key == status.floor), None), status))
+            for status in broken
+        ]
     by_arm: dict[str, list[FloorStatus]] = {}
     for status in broken:
         by_arm.setdefault(status.arm_label, []).append(status)
-    grouped: list[ReportBlock] = []
-    for arm, statuses in by_arm.items():
-        grouped.append(
-            DisclosureBlock(
-                section="header",
-                source="floor",
-                text=f"Floors broken for {arm}: "
-                + "; ".join(f"its {_which(status)} on {status.aspect}" for status in statuses)
-                + ".",
-            )
+    return [
+        (
+            statuses,
+            f"Floors broken for {arm}: "
+            + "; ".join(f"its {_which(status)} on {status.aspect}" for status in statuses)
+            + ".",
         )
-        grouped += [block for status in statuses for block in answered(status)]
-    return grouped
+        for arm, statuses in by_arm.items()
+    ]
 
 
 def _overrides(

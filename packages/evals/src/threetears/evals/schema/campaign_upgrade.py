@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
+from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.logs import get_logger
 
 
@@ -89,8 +90,7 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     template_id = upgraded.pop("template_id", None)
     run_ids = list(dict.fromkeys(upgraded.pop("run_ids", None) or []))
     design = upgraded.pop("declared_design", None)
-    # A label is the first part of a floor's key, which `/` separates, so a behavior holding one is spelled with `-`.
-    label = upgraded["behavior"].replace("/", "-")
+    label = aspect_label_for(upgraded["behavior"])
     aspect: dict[str, Any] = {
         "label": label,
         "template_id": template_id,

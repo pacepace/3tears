@@ -1345,6 +1345,10 @@ definition = {
 - **Each aspect holds its own runs.** A run joins one aspect of a campaign, by its template, or by the aspect
   `add_runs_to_campaign` (`campaign_runs_add`) names; a run another template ran, or one two aspects could take,
   is refused naming them.
+- **An aspect may leave its label out.** It is then named after the campaign's behavior, each `/` written `-`
+  (`tools/search` is `tools-search`), since `/` separates a floor key's parts; `aspect_label_for` (in
+  `threetears.evals.schema`) is that rule, so a form needs no copy of it. One aspect at most leaves it out: two
+  would share a label, and the create (or update) is refused, asking you to label each.
 - **A floor is a typed clause on one aspect**, never words: `{kind: "rate_drop", max_points, reading?}` (a
   `RateDrop`: no pass rate drops by more than `max_points`; with `reading`, one goal-state check by its verbatim
   text, a pass/fail judged dimension by its name, or a check measure by its key) or `{kind: "cost_lower"}` (a

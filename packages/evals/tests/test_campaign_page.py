@@ -51,6 +51,7 @@ from threetears.evals.kernel.authored import (
 )
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import BarOverride, CampaignCall, OverriddenBar, RateDrop
+from threetears.evals.kernel.errors import RefusedInput
 
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
@@ -120,7 +121,17 @@ async def _page(
         )
         for label, evidence in bundles.items()
     }
-    return build_campaign_report(campaign, read, reports, memo, call=call)
+    return build_campaign_report(
+        campaign, read, reports, memo, call=call, recommended_variant_key=_recorded_key(read, memo)
+    )
+
+
+def _recorded_key(read: CampaignReadings, memo: AuthoredCampaignAnalysis | None) -> str | None:
+    """The key an analysis records for the arm its memo recommends: the arm the readings label so."""
+    recommended = memo.recommended() if memo is not None else None
+    if recommended is None:
+        return None
+    return {label: key for key, label in read.arm_labels().items()}.get(recommended.arm)
 
 
 def _memo() -> AuthoredCampaignAnalysis:
@@ -387,9 +398,30 @@ async def test_json_is_the_readings_and_each_aspect_s_bundle_by_its_fingerprint(
     assert serialize_report(page, "html") == campaign_report_html(page)
 
 
-async def test_with_a_memo_the_json_carries_the_recommendation() -> None:
-    document = json.loads(serialize_report(await _page("billing", "tone", memo=_memo()), "json"))
-    assert document["recommendation"] == {"arm": CONTROL_LABEL, "confidence": "high"}
+async def test_with_a_memo_the_json_carries_the_recommendation_its_arm_named_by_label_and_by_key() -> None:
+    page = await _page("billing", "tone", memo=_memo())
+    document = json.loads(serialize_report(page, "json"))
+    control = page.readings.control
+    assert control is not None and page.recommended_variant_key == control
+    assert document["recommendation"] == {"arm": CONTROL_LABEL, "variant_key": control, "confidence": "high"}
+
+
+async def test_a_page_whose_memo_recommends_an_arm_is_refused_without_that_arm_s_key() -> None:
+    campaign, measured = await _campaign("billing", "tone")
+    bundles = {one.bundle.aspect: one.bundle for one in measured}
+    read = campaign_readings(campaign, bundles, arms=arms_of(measured[0]))
+    reports = {
+        label: build_code_only_report(
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+        )
+        for label, evidence in bundles.items()
+    }
+    with pytest.raises(RefusedInput, match="no variant key for that arm") as refused:
+        build_campaign_report(campaign, read, reports, _memo())
+    assert "EvalAnalysis.recommended_variant_key" in refused.value.remedy
+    # A key is the recommendation's: a page with none holds none.
+    page = build_campaign_report(campaign, read, reports, None, recommended_variant_key="a" * 64)
+    assert (page.recommendation, page.recommended_variant_key) == (None, None)
 
 
 async def test_a_fold_names_the_arms_as_the_campaign_s_table_does() -> None:
@@ -570,7 +602,7 @@ async def _kind_page(
         )
         for label, evidence in bundles.items()
     }
-    return build_campaign_report(campaign, read, reports, memo)
+    return build_campaign_report(campaign, read, reports, memo, recommended_variant_key=_recorded_key(read, memo))
 
 
 def _choice_memo(arm: str = "beta") -> AuthoredCampaignAnalysis:

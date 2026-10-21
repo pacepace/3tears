@@ -96,6 +96,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.aspect_label_for": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.AsyncDelivery": {
       "kind": "model",
       "signature": "AsyncDelivery(tool: str, requested_by: str | None = None, status: AsyncDeliveryStatus, model: str | None = None, acknowledged_turn: int | None = None, delivered_turn: int | None = None, elapsed_ms: float | None = None, delivered_items: int | None = None, summary: str | None = None, error: str | None = None, substituted: bool, input_tokens: int | None = None, output_tokens: int | None = None, reasoning_tokens: int | None = None, llm_calls: int | None = None, cost_usd: float | None = None, price_source: str | None = None, external_spend: list[AsyncExternalSpend] = list())",
@@ -4703,7 +4708,7 @@
     },
     "threetears.evals.analysis.CampaignReport": {
       "kind": "model",
-      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None)",
+      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None, recommended_variant_key: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.analysis.CampaignStore": {

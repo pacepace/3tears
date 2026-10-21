@@ -387,10 +387,10 @@ is dated now and reads as declared after the runs.
 
 | Key | Holds |
 |---|---|
-| `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 1) |
+| `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 2) |
 | `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
 | `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason |
-| `recommendation` | the writer's arm and confidence, or null |
+| `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |
 | `call` | the recorded call (`CampaignCall`), or null |
 | `aspects` | each aspect's `aspect`, `bundle_fingerprint` and `bundle_schema_version` |
 

@@ -25,6 +25,7 @@ from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.kernel import EvalCampaign
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG
 from threetears.evals.ops import CampaignLine, JudgeConfigListing
+from threetears.evals.schema import aspect_label_for
 from threetears.evals.schema.models import JudgeConfig
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design
@@ -293,3 +294,93 @@ async def test_a_host_that_cannot_run_judge_campaigns_sends_the_caller_to_its_op
     assert outcome.is_error, outcome.text
     remedy = outcome.text.split("remedy: ", 1)[1]
     assert "operator" in remedy and "run." not in remedy and "judge_second" in remedy, remedy
+
+
+# =============================================================================
+# An aspect may leave its label out: the server names it after the behavior
+# =============================================================================
+
+
+def test_an_aspect_named_after_a_behavior_writes_each_slash_as_a_hyphen() -> None:
+    assert aspect_label_for("tools/search") == "tools-search"
+    assert aspect_label_for("a/b/c") == "a-b-c"
+    assert aspect_label_for("support") == "support"
+
+
+async def test_an_aspect_created_with_no_label_is_named_after_the_campaign_s_behavior(evals: MountedTool) -> None:
+    """A form sends the runs and no label, and the server names the aspect by the one rule, so no client copies it."""
+    fixture = off_loop(ops_fixture)
+    created = await _call(
+        evals,
+        fixture,
+        "campaign_create",
+        name="unlabelled",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        behavior="toy/room",
+        aspects=[{"run_ids": [fixture.campaign.run_ids[0]]}],
+        exploratory=True,
+    )
+
+    assert not created.is_error, created.text
+    (aspect,) = _stored(fixture, str(created.structured["id"])).aspects
+    assert aspect.label == aspect_label_for("toy/room") == "toy-room"
+
+
+async def test_one_unlabelled_aspect_beside_labelled_ones_is_named_after_the_behavior(evals: MountedTool) -> None:
+    fixture = off_loop(ops_fixture)
+    first, second = fixture.campaign.run_ids[0], fixture.campaign.run_ids[1]
+    created = await _call(
+        evals,
+        fixture,
+        "campaign_create",
+        name="one unlabelled",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        behavior="toy/room",
+        aspects=[{"label": "named", "run_ids": [first]}, {"run_ids": [second]}],
+        exploratory=True,
+    )
+
+    assert not created.is_error, created.text
+    assert [aspect.label for aspect in _stored(fixture, str(created.structured["id"])).aspects] == [
+        "named",
+        "toy-room",
+    ]
+
+
+async def test_two_aspects_with_no_label_are_refused_asking_for_a_label_on_each(evals: MountedTool) -> None:
+    """Both would be named after the behavior, so neither is guessed at: the create is refused and nothing stored."""
+    fixture = off_loop(ops_fixture)
+    first, second = fixture.campaign.run_ids[0], fixture.campaign.run_ids[1]
+    before = off_loop(fixture.host.eval_host.storage.list_campaigns, TOYHOST_SCOPE)
+
+    refused = await _call(
+        evals,
+        fixture,
+        "campaign_create",
+        name="two unlabelled",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        behavior="toy/room",
+        aspects=[{"run_ids": [first]}, {"run_ids": [second]}],
+        exploratory=True,
+    )
+
+    assert refused.is_error, refused.text
+    assert "2 aspects name no label" in refused.text and "'toy-room'" in refused.text, refused.text
+    assert "label each aspect" in refused.text, refused.text
+    assert off_loop(fixture.host.eval_host.storage.list_campaigns, TOYHOST_SCOPE) == before
+
+
+async def test_an_update_declaring_an_aspect_with_no_label_names_it_after_the_behavior_by_the_same_rule(
+    evals: MountedTool,
+) -> None:
+    fixture = off_loop(ops_fixture)
+    campaign_id = await _create(evals, fixture, [])
+    behavior = _stored(fixture, campaign_id).behavior
+
+    declared = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, aspects=[{"design": _design()}])
+    twice = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, aspects=[{}, {}])
+
+    assert not declared.is_error, declared.text
+    (aspect,) = _stored(fixture, campaign_id).aspects
+    assert aspect.label == aspect_label_for(behavior) and aspect.design is not None
+    assert twice.is_error and "label each aspect" in twice.text, twice.text

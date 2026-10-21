@@ -105,7 +105,7 @@ from threetears.evals.analysis.report.decision import (
     settles,
     settles_cost,
 )
-from threetears.evals.analysis.report.campaign_page import campaign_verdict
+from threetears.evals.analysis.report.campaign_page import campaign_verdict, campaign_warnings
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
@@ -441,10 +441,13 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never the
     memo's words.
 
-    An analysis of one aspect is listed by the verdict line that aspect's page opens with, over its frozen bundle. An
-    analysis of several aspects is listed by its campaign's verdict, as the campaign's page reads it: what code read on
-    each aspect, in the campaign's order, over the readings frozen with it
-    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`).
+    It opens as the analysis's page opens: every bar an arm misses, then every floor a candidate breaks, each in the
+    page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings and
+    floors frozen with it, without the writer's why beside them. Then the verdict. An analysis of one aspect is listed
+    by the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed
+    by its campaign's verdict, as the campaign's page reads it: what code read on each aspect, in the campaign's order
+    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`). With no bar missed and no floor
+    broken, the line is the verdict alone.
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
@@ -452,12 +455,14 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     :rtype: str
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
+    readings = analysis_campaign_bundle(analysis).readings
+    warnings = campaign_warnings(analysis.design_snapshot.floors, readings)
     if len(analysis.aspects) > 1:
-        readings = analysis_campaign_bundle(analysis).readings
-        return campaign_verdict(readings, [aspect.label for aspect in analysis.aspects])
-    bundle = analysis_bundle(analysis)
-    names = _arm_names(bundle)
-    return verdict_line(bundle, _namer(names), case_name=_case_namer(bundle)).text
+        verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects])
+    else:
+        bundle = analysis_bundle(analysis)
+        verdict = verdict_line(bundle, _namer(_arm_names(bundle)), case_name=_case_namer(bundle)).text
+    return " ".join([*warnings, verdict])
 
 
 def _page(

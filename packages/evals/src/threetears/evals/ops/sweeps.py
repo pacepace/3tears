@@ -51,6 +51,7 @@ from typing import Annotated, Any
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.campaigns import add_runs_to_campaign
+from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
 from threetears.evals.kernel.errors import EvalServiceError, JobFenced, ValidationFailedError
@@ -278,7 +279,7 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
                 # One aspect, the sweep's template, which every arm's run joins as it is created.
                 aspects=[
                     {
-                        "label": arguments.campaign_behavior.replace("/", "-"),
+                        "label": aspect_label_for(arguments.campaign_behavior),
                         "template_id": arguments.template_id,
                     }
                 ],

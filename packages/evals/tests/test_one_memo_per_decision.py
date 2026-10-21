@@ -35,7 +35,7 @@ from threetears.evals.analysis import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.analysis.report import TableBlock, TextBlock
+from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.kernel import IDENTITY_VERSION, ConflictError, EvalCampaign, ValidationFailedError
 from threetears.evals.kernel.declaration import BarOverride, Floor, OverriddenBar, RateDrop
@@ -363,24 +363,29 @@ async def _two() -> tuple[Store, EvalCampaign]:
     return _TWO["two"]
 
 
-async def _build_two() -> tuple[Store, EvalCampaign]:
+async def _build_two(
+    labels: Sequence[str] = ("billing", "tone"), *, floor: bool = True, bar: bool = True
+) -> tuple[Store, EvalCampaign]:
     """Billing regresses (production passes eighteen of twenty cases, the candidate six) under a 10-point floor; tone
-    improves (six to nineteen) under the cost bar the candidate misses. Asked before every run."""
+    improves (six to nineteen) under the cost bar the candidate misses. Asked before every run.
+
+    ``labels`` keeps those aspects of the two; ``floor`` and ``bar`` declare billing's floor and tone's bar."""
+    shapes = {"billing": (18, 6), "tone": (6, 19)}
     evals = [
-        _eval("billing", cases=20, production=18, candidate=6, repeats=3),
-        _eval("tone", cases=20, production=6, candidate=19, repeats=3),
+        _eval(label, cases=20, production=shapes[label][0], candidate=shapes[label][1], repeats=3) for label in labels
     ]
     held = await _store(evals)
     quick = {
         label: off_loop(get_campaign, held.host.storage, held.runs[label].campaign_id, SCOPE) for label in held.runs
     }
-    control = quick["billing"].control
+    control = quick[labels[0]].control
     assert control is not None
     aspects = []
     for label, campaign in quick.items():
         (aspect,) = campaign.aspects
         assert aspect.design is not None
-        design = aspect.design.model_copy(update={"merit_axes": [], "bars": [COST_BAR] if label == "tone" else []})
+        bars = [COST_BAR] if label == "tone" and bar else []
+        design = aspect.design.model_copy(update={"merit_axes": [], "bars": bars})
         aspects.append(
             aspect.model_copy(
                 update={
@@ -393,7 +398,7 @@ async def _build_two() -> tuple[Store, EvalCampaign]:
                 }
             )
         )
-    two = quick["billing"].model_copy(
+    two = quick[labels[0]].model_copy(
         update={
             "id": str(uuid.uuid4()),
             "name": "support queue",
@@ -402,7 +407,9 @@ async def _build_two() -> tuple[Store, EvalCampaign]:
             "declared_at": DECLARED_AT,
             "arms": [control.model_copy(update={"label": "production", "named_at": DECLARED_AT})],
             "aspects": aspects,
-            "floors": [Floor(aspect="billing", clause=RateDrop(max_points=10))],
+            "floors": [Floor(aspect="billing", clause=RateDrop(max_points=10))]
+            if floor and "billing" in labels
+            else [],
         }
     )
     off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate(two.model_dump()))
@@ -469,24 +476,97 @@ async def test_a_measurement_has_nothing_to_decide_so_a_call_on_it_is_refused() 
         off_loop(campaign_record, held.host, run.campaign_id, SCOPE, arm="control", called_by="brooks")
 
 
-async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its_campaign_s_verdict() -> None:
-    """An analysis over both aspects is listed, archived and restored, each line reading the campaign's verdict: what
-    code read on each aspect, as the campaign's page says it beside each fold, never one aspect's line (#894)."""
+def _warnings(page: CampaignReport) -> list[str]:
+    """The bar and floor warnings the page opens with, in its order."""
+    return [
+        block.text
+        for block in page.blocks
+        if isinstance(block, DisclosureBlock) and block.section == "header" and block.source in ("bar", "floor")
+    ]
+
+
+async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its_page_s_warnings_and_verdict() -> None:
+    """An analysis over both aspects is listed, archived and restored, each line reading as its page opens: the bar
+    tone misses and the floor billing breaks, in the page's own words, then the campaign's verdict: what code read on
+    each aspect, as the campaign's page says it beside each fold, never one aspect's line (#894, #895)."""
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     page = off_loop(campaign_report, held.host, two.id, SCOPE)
     assert page.analysis_id == analysis_id
     verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
     assert verdict.startswith("billing: ") and "shown worse; tone: " in verdict and verdict.endswith("shown better")
+    bar, floor = _warnings(page)
+    assert bar.startswith("Bar missed on tone: ") and floor.startswith("Floor broken on billing: ")
+    expected = f"{bar} {floor} {verdict}"
 
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
-    assert (line.id, line.verdict, line.archived) == (analysis_id, verdict, False)
+    assert (line.id, line.verdict, line.archived) == (analysis_id, expected, False)
     archived = off_loop(analysis_archive, held.host, analysis_id, SCOPE, archived=True, reason="shown false")
-    assert (archived.id, archived.verdict, archived.archived) == (analysis_id, verdict, True)
+    assert (archived.id, archived.verdict, archived.archived) == (analysis_id, expected, True)
     (listed,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
     assert listed.archived
     restored = off_loop(analysis_archive, held.host, analysis_id, SCOPE, archived=False)
-    assert (restored.verdict, restored.archived) == (verdict, False)
+    assert (restored.verdict, restored.archived) == (expected, False)
+
+
+async def test_an_analysis_s_page_json_names_its_recommended_arm_by_the_key_the_analysis_recorded() -> None:
+    """A reader matching a call to the recommendation compares keys, never labels (#880): the page's JSON carries the
+    key the analysis stored beside its memo, which is the key a call on that arm records."""
+    held, two = await _build_two(floor=False, bar=False)
+    analysis_id = await _generated(held, two)
+    (analysis,) = off_loop(list_analyses, held.host.storage, two.id, SCOPE)
+    assert analysis.id == analysis_id and analysis.recommended_variant_key is not None
+    page = off_loop(campaign_report, held.host, two.id, SCOPE)
+    assert page.json_document()["recommendation"] == {
+        "arm": "production",
+        "variant_key": analysis.recommended_variant_key,
+        "confidence": "medium",
+    }
+    recorded = _record(held, two, arm="production", analysis_id=analysis_id)
+    assert recorded.call.variant_key == analysis.recommended_variant_key
+
+
+async def test_the_listing_names_what_was_frozen_with_the_analysis_not_the_campaign_as_it_stands() -> None:
+    """The floor is withdrawn from the stored campaign after the analysis was written: the analysis's line still names
+    it, worded over the floors frozen with it, as the analysis's page still opens on it."""
+    held, two = await _build_two()
+    analysis_id = await _generated(held, two)
+    off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate({**two.model_dump(), "floors": []}))
+    (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
+    assert line.id == analysis_id
+    (floor,) = [text for text in _warnings(off_loop(campaign_report, held.host, two.id, SCOPE)) if "Floor" in text]
+    assert floor.startswith("Floor broken on billing: candidate's pass rate falls past the 10-point margin")
+    assert floor in line.verdict
+
+
+async def test_an_analysis_with_no_missed_bar_and_no_broken_floor_is_listed_by_its_verdict_alone() -> None:
+    held, two = await _build_two(floor=False, bar=False)
+    await _generated(held, two)
+    page = off_loop(campaign_report, held.host, two.id, SCOPE)
+    assert _warnings(page) == []
+    (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
+    assert line.verdict == "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
+
+
+async def test_an_analysis_of_one_aspect_is_listed_by_its_page_s_broken_floor_then_the_aspect_s_verdict_line() -> None:
+    """One aspect's page is the campaign's page too, so its line leads with the floor that page opens on, then the
+    verdict line the aspect's page states; without the floor, the verdict line alone."""
+    held, one = await _build_two(("billing",))
+    analysis_id = await _generated(held, one)
+    page = off_loop(campaign_report, held.host, one.id, SCOPE)
+    (floor,) = _warnings(page)
+    assert floor.startswith("Floor broken on billing: ")
+    (fold,) = page.aspects
+    (verdict,) = [
+        block.text for block in fold.report.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"
+    ]
+    (line,) = off_loop(analyses_list, held.host, one.id, SCOPE).analyses
+    assert (line.id, line.verdict) == (analysis_id, f"{floor} {verdict}")
+
+    unfloored, plain = await _build_two(("billing",), floor=False)
+    await _generated(unfloored, plain)
+    (bare,) = off_loop(analyses_list, unfloored.host, plain.id, SCOPE).analyses
+    assert bare.verdict == verdict
 
 
 # =============================================================================

@@ -20,6 +20,7 @@ being exported from a public root. Code inside the package imports its own modul
 
 from __future__ import annotations
 
+from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.call_ledger import (
     PASS_ACTION,
@@ -367,6 +368,7 @@ __all__ = [
     "BudgetStop",
     "BudgetStopCurrency",
     "CaseSetRef",
+    "aspect_label_for",
     "case_set_doc_id",
     "DSLError",
     "DimName",
