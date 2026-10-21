@@ -170,6 +170,8 @@ async def retry_bounded(
     max_attempts: int | None = None,
     deadline_seconds: float | None = None,
     backs_off: Callable[[Exception], bool] | None = None,
+    asked_pause: Callable[[Exception], float | None] | None = None,
+    max_asked_pause: float | None = None,
     on_retry: Callable[[Exception, int, float], None] | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
     clock: Callable[[], float] | None = None,
@@ -184,6 +186,11 @@ async def retry_bounded(
     - one it accepts is retried after a pause that starts at ``first_delay`` and doubles up to
       ``max_delay``, unless ``backs_off`` says the attempt already waited for it (it paced itself),
       in which case it is retried at once and the pause does not advance;
+    - one that names its own wait (``asked_pause``, an HTTP ``Retry-After``) waits at least that
+      long, whatever the schedule or ``backs_off`` says: an attempt made sooner than the other side
+      asked is only refused again. one that asks for longer than ``max_asked_pause``, or for longer
+      than the deadline leaves, is raised at once, because waiting less is pointless and waiting
+      that long is past the bound;
     - once ``max_attempts`` attempts have run, or ``deadline_seconds`` have passed since the first,
       the LAST failure is raised unchanged, so the caller turns it into its own error and message.
 
@@ -205,6 +212,12 @@ async def retry_bounded(
     :ptype deadline_seconds: float | None
     :param backs_off: whether a retried failure takes a pause; ``None`` pauses after every one
     :ptype backs_off: Callable[[Exception], bool] | None
+    :param asked_pause: how long a failure itself asked to wait before the next attempt, in seconds,
+        or ``None`` when it did not say; ``None`` reads no failure's wait
+    :ptype asked_pause: Callable[[Exception], float | None] | None
+    :param max_asked_pause: the longest asked wait that is waited for (>= ``max_delay``); ``None``
+        is ``max_delay``, so no pause outlasts the schedule unless the caller says it may
+    :ptype max_asked_pause: float | None
     :param on_retry: told of each failure that will be retried, its attempt number (from 1) and
         the pause before the next attempt -- where the caller logs
     :ptype on_retry: Callable[[Exception, int, float], None] | None
@@ -215,13 +228,17 @@ async def retry_bounded(
     :ptype clock: Callable[[], float] | None
     :return: what the attempt that succeeded returned
     :rtype: _T
-    :raises ValueError: when neither bound is given, or the schedule cannot back off
+    :raises ValueError: when neither bound is given, the schedule cannot back off, or
+        ``max_asked_pause`` is shorter than ``max_delay``
     :raises Exception: a failure ``retry_on`` refused, or the last failure once the bound is spent
     """
     if max_attempts is None and deadline_seconds is None:
         raise ValueError("retry_bounded needs a bound: max_attempts, deadline_seconds, or both")
     if first_delay <= 0 or max_delay < first_delay:
         raise ValueError(f"retry_bounded needs 0 < first_delay <= max_delay, got {first_delay!r} and {max_delay!r}")
+    asked_ceiling = max_delay if max_asked_pause is None else max_asked_pause
+    if asked_ceiling < max_delay:
+        raise ValueError(f"retry_bounded needs max_asked_pause >= max_delay, got {max_asked_pause!r} and {max_delay!r}")
     now = clock or asyncio.get_running_loop().time
     deadline = None if deadline_seconds is None else now() + deadline_seconds
     delay = first_delay
@@ -239,10 +256,15 @@ async def retry_bounded(
             )
             if spent:
                 raise
+            asked = asked_pause(exc) if asked_pause is not None else None
+            if asked is not None and (asked > asked_ceiling or (remaining is not None and asked > remaining)):
+                raise
             pause = 0.0
             if backs_off is None or backs_off(exc):
                 pause = delay if remaining is None else min(delay, remaining)
                 delay = min(delay * 2, max_delay)
+            if asked is not None:
+                pause = max(pause, asked)
             if on_retry is not None:
                 on_retry(exc, attempts, pause)
             if pause > 0:

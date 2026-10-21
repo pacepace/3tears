@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### observe: `retry_bounded` waits as long as a failure asked
+
+**Added:** `asked_pause` reads how long a failure itself asked to wait (an HTTP `Retry-After`),
+and the pause before the next attempt is at least that, over the schedule and over `backs_off`.
+An attempt made sooner is only refused again. A failure asking for longer than
+`max_asked_pause` (default `max_delay`), or for longer than the deadline leaves, is raised at
+once, so the bound still holds. metallm's composed turn uses it to ask a rate-limited model
+round again. Both parameters are optional; existing callers are unchanged.
+
 ## v0.74.0 -- 2026-10-20
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever
