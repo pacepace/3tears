@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import signal
 import subprocess
 import sys
@@ -47,6 +48,17 @@ for line in sys.stdin:
         sys.stdout.write(json.dumps(reply) + "\\n")
         sys.stdout.flush()
 """
+
+
+#: A stand-in CLI that first starts a grandchild holding its stdin, stdout and stderr open, as a CLI's
+#: own tool processes do: killing the CLI then closes none of the pipes, so the loop cannot notice an
+#: end of file and drop them by itself.
+_STAND_IN_CLI_WITH_A_GRANDCHILD = f"""#!{sys.executable}
+import os, subprocess
+grandchild = subprocess.Popen(["sleep", "30"])
+with open(os.environ["GRANDCHILD_PID_FILE"], "w") as out:
+    out.write(str(grandchild.pid))
+""" + _STAND_IN_CLI.split("\n", 1)[1]
 
 
 @pytest.fixture
@@ -101,10 +113,10 @@ class _LoopStall:
             await self._task
 
 
-def _options(cli: Path) -> Any:
+def _options(cli: Path, **more: Any) -> Any:
     from claude_agent_sdk import ClaudeAgentOptions
 
-    return ClaudeAgentOptions(cli_path=str(cli))
+    return ClaudeAgentOptions(cli_path=str(cli), **more)
 
 
 def test_the_sdk_starts_its_cli_through_its_module_global_anyio() -> None:
@@ -115,7 +127,8 @@ def test_the_sdk_starts_its_cli_through_its_module_global_anyio() -> None:
     assert spec is not None and spec.origin is not None
     source = (Path(spec.origin).parent / "_internal" / "transport" / "subprocess_cli.py").read_text(encoding="utf-8")
     assert "\nimport anyio\n" in source
-    assert "self._process = await anyio.open_process(" in source
+    assert "self._process = await anyio.open_process(" in source  # the CLI
+    assert "version_process = await anyio.open_process(" in source  # its `claude -v` probe, when not skipped
 
 
 async def test_a_pooled_start_keeps_the_loop_running_while_the_spawn_blocks(
@@ -158,3 +171,97 @@ async def test_a_start_cancelled_while_spawning_kills_the_child_it_started(
         await asyncio.sleep(0.01)
     [child] = slow_spawn
     assert child.returncode == -signal.SIGKILL
+
+
+async def test_a_start_given_up_after_a_pipe_is_joined_leaves_no_fd_with_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelled while joining the child's stderr (its third pipe): stdin and stdout are already joined
+    to the loop. Neither fd may stay registered, and a new pipe given the same fd number must work."""
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    cli = tmp_path / "claude"
+    cli.write_text(_STAND_IN_CLI_WITH_A_GRANDCHILD, encoding="utf-8")
+    cli.chmod(0o755)
+    pid_file = tmp_path / "grandchild.pid"
+    loop = asyncio.get_running_loop()
+    joined: list[int] = []
+    real_read, real_write = loop.connect_read_pipe, loop.connect_write_pipe
+
+    async def write_pipe(factory: Any, pipe: Any) -> Any:
+        joined.append(pipe.fileno())
+        return await real_write(factory, pipe)
+
+    async def read_pipe(factory: Any, pipe: Any) -> Any:
+        if len(joined) == 2:  # stdin and stdout are joined: give the start up now
+            # once the grandchild holds the pipes, so that killing the CLI cannot close them
+            deadline = time.monotonic() + 5.0
+            while not pid_file.exists() and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert pid_file.exists(), "the stand-in CLI never started its grandchild"
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(1)
+        joined.append(pipe.fileno())
+        return await real_read(factory, pipe)
+
+    monkeypatch.setattr(loop, "connect_write_pipe", write_pipe)
+    monkeypatch.setattr(loop, "connect_read_pipe", read_pipe)
+    options = _options(cli, stderr=lambda _: None, env={"GRANDCHILD_PID_FILE": str(pid_file)})
+    starting = asyncio.create_task(PooledCliSession.start(options, key="k"))
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+    finally:
+        monkeypatch.undo()
+        deadline = time.monotonic() + 5.0
+        while not pid_file.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        if pid_file.exists():
+            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+    await asyncio.sleep(0.05)  # the transports' connection_lost callbacks
+
+    assert len(joined) == 2
+    for fd in joined:
+        assert not loop.remove_reader(fd), f"fd {fd} is still registered with the loop"
+        assert not loop.remove_writer(fd), f"fd {fd} is still registered with the loop"
+
+    # a pipe on a reused fd number joins and reads
+    spare: list[tuple[int, int]] = []
+    try:
+        while not any(read_fd in joined for read_fd, _ in spare) and len(spare) < 64:
+            spare.append(os.pipe())
+        read_fd, write_fd = next((r, w) for r, w in spare if r in joined)
+        reader = asyncio.StreamReader()
+        transport, _ = await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), os.fdopen(read_fd, "rb", buffering=0)
+        )
+        spare = [(r, w) for r, w in spare if r != read_fd]
+        os.write(write_fd, b"x")
+        assert await asyncio.wait_for(reader.read(1), timeout=2.0) == b"x"
+        transport.close()
+        os.close(write_fd)
+    finally:
+        for r, w in spare:
+            os.close(r)
+            os.close(w)
+
+
+def test_a_cli_whose_loop_closed_is_still_reaped_when_it_exits(
+    stand_in_cli: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pooled session can outlive the loop that started it (the pool abandons such sessions by
+    signal). Its CLI must still be collected when it exits, not left a zombie for the worker's life."""
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+
+    async def start() -> int | None:
+        return (await PooledCliSession.start(_options(stand_in_cli), key="k")).pid
+
+    pid = asyncio.run(start())  # the loop that started it is closed when this returns
+    assert pid is not None
+    os.kill(pid, signal.SIGKILL)
+    status = Path(f"/proc/{pid}/stat")
+    deadline = time.monotonic() + 5.0
+    while status.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not status.exists(), f"the CLI ({pid}) exited and was never reaped: {status.read_text()}"

@@ -23,7 +23,10 @@ grows with resident memory (one spawn, idle host: 23 ms at 0.5 GB, 95 ms at 2 GB
 ~500 MB production workers it was 2-12 s, and uvicorn killed the worker at 5 s (2026-10-14..21: 134 of
 208 freeze reports in `PooledCliSession.start`). A pooled start and a call's own CLI now start the
 CLI with `subprocess.Popen` (vfork) in a worker thread and join its pipes to the loop: under 9 ms at any
-size. The `claude-cli` extra declares `anyio`, which it imports.
+size. The child is reaped by a thread of its own, so a CLI that outlives the loop that started it is
+still collected. Setting `ClaudeAgentOptions.user` brings the stall back: with a uid to change,
+CPython's `_posixsubprocess` cannot vfork and makes a full `fork()`. The `claude-cli` extra declares
+`anyio`, which it imports.
 
 ## v0.74.0 -- 2026-10-20
 
