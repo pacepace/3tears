@@ -931,12 +931,12 @@ REPLAY_NOTES_HEADING = "# NOTES ON THIS EVIDENCE — not seen by the memo's auth
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
     """The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
 
-    Markdown, in the order a reader acts on it: the recommendation (its arm, reasons, confidence, the findings it
-    rests on and every broken floor it is made over), each aspect's summary, the findings in the order the model wrote
-    them, and what to run next — each list section omitted when the model wrote nothing for it. Findings are numbered
-    ``F1`` onward, and every link the model made by position is printed that way, a finding's trials by their ids.
-    The memo has no headline, summary or chart: the report's first screen is code's, so the judge scores what the
-    writer wrote. Arms are named by :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
+    Markdown, in the order the campaign's page lays it out: the summary across every aspect, the recommendation (its
+    arm, reasons, confidence, the findings it rests on and every broken floor it is made over), each aspect's summary,
+    the findings in the order the model wrote them, and what to run next — each list section omitted when the model
+    wrote nothing for it. Findings are numbered ``F1`` onward, and every link the model made by position is printed
+    that way, a finding's trials by their ids. The memo has no headline or chart: the report's warnings and readings
+    are code's, so the judge scores what the writer wrote, its summary among it. Arms are named by :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
     :func:`~threetears.evals.analysis.numbers.format_number`.
 
     The numbers code resolved from the model's own readings are printed beside them, because they are what the
@@ -952,13 +952,15 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
-    sections: list[list[str]] = []
-
+    # The question, then the read across it, as the campaign's page opens.
     question = analysis.design_snapshot.question
+    opening = ["## Summary", ""]
+    if question:
+        opening += [f"Question: {one_line(question)}", ""]
+    sections: list[list[str]] = [[*opening, document.summary.strip()]]
+
     recommended = document.recommended()
     recommendation = ["## Recommendation", ""]
-    if question:
-        recommendation += [f"Question: {one_line(question)}", ""]
     if recommended is None:
         recommendation.append("- None: the memo recommends no arm.")
     else:

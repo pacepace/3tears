@@ -229,6 +229,7 @@ def _memo(arm: str, labels: Sequence[str]) -> dict[str, Any]:
             }
             for label in labels
         ],
+        "summary": "No aspect showed the candidate better, so the control stays.",
         "next": [],
     }
 

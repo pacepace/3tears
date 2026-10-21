@@ -157,12 +157,13 @@ def memo(
     findings: Sequence[dict[str, Any]] = (),
     *,
     means: str = "",
+    summary: str = "Nothing in this campaign moves the recommendation.",
     arm: str | None = None,
     reasons: Sequence[str] = (),
     rests_on: Sequence[int] | None = None,
     next: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
-    """An authored memo over ``bundle``: ``findings``, one recommendation and one summary per aspect.
+    """An authored memo over ``bundle``: its summary, ``findings``, one recommendation and one summary per aspect.
 
     :param bundle: The campaign bundle, or one aspect's bundle read as a campaign of it.
     :ptype bundle: CampaignBundle | AnalysisContextBundle
@@ -170,6 +171,8 @@ def memo(
     :ptype findings: Sequence[dict[str, Any]]
     :param means: What each aspect's summary says it means for the question.
     :ptype means: str
+    :param summary: The memo's read across every aspect.
+    :ptype summary: str
     :param arm: The arm recommended, by label; the control (else the first arm) when None.
     :ptype arm: str | None
     :param reasons: The recommendation's reasons.
@@ -200,5 +203,6 @@ def memo(
         "aspect_summaries": [
             {"aspect": label, "what_changed": "", "how_sure": "", "means": means} for label in campaign.labels
         ],
+        "summary": summary,
         "next": list(next),
     }

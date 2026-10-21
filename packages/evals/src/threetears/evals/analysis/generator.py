@@ -352,8 +352,9 @@ async def generate_analysis(
 ) -> tuple[EvalAnalysis, list[EvalInsight]]:
     """Generate one campaign's analysis from its campaign bundle, in one LLM call or two.
 
-    One call per campaign, over every aspect: the writer recommends one arm, states the findings across the aspects,
-    summarises each aspect and says what to run next; code has already read each aspect and every floor.
+    One call per campaign, over every aspect: the writer reads across the aspects in one summary, recommends one arm,
+    states the findings across the aspects, summarises each aspect and says what to run next; code has already read
+    each aspect and every floor.
 
     A refusal of what a FINISHED call produced buys exactly ONE repair round-trip — a
     soundness rejection, an unparseable payload and a missing required field alike; only a
@@ -739,8 +740,8 @@ Emit the WHOLE analysis again with exactly that corrected. The refusal names wha
 alternative. Follow it literally.
 
 Keep everything the refusal does not name. Where your previous output was a complete \
-analysis, its other findings, its recommendation and its aspect summaries were not at \
-issue: reproduce them as they were rather than rewriting the report around the fix.
+analysis, its other findings, its recommendation, its summary and its aspect summaries were \
+not at issue: reproduce them as they were rather than rewriting the report around the fix.
 
 Do NOT satisfy the refusal by REMOVING what it complains about — not the offending finding, \
 and not an evidence row or list you are unsure how to key. That answers the refusal by \
@@ -807,10 +808,10 @@ def _assemble_and_validate(
     (:func:`_stray_arm_titles`).
 
     :raises GenerationError: The provider cut the call short (not repaired).
-    :raises SoundnessRefusal: The output does not match the contract, a position, reading or trial points nowhere,
-        the aspect summaries are not one per aspect, the recommendation is one the campaign's kind cannot make (a
-        measurement's; none in a change; a choice's unseparated pick above ``low`` confidence), rests on no finding,
-        names no arm the campaign holds, recommends a candidate in an exploratory campaign or one no reading
+    :raises SoundnessRefusal: The output does not match the contract (an empty summary among it), a position, reading
+        or trial points nowhere, the aspect summaries are not one per aspect, the recommendation is one the campaign's
+        kind cannot make (a measurement's; none in a change; a choice's unseparated pick above ``low`` confidence),
+        rests on no finding, names no arm the campaign holds, recommends a candidate in an exploratory campaign or one no reading
         separated from the control, leaves a warning on its arm unaddressed (a broken floor, another arm ahead, a
         missed bar) or names one code never raised, or a finding's title states a null it established nowhere or
         names an arm it cites nothing of (repaired once).

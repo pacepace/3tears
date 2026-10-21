@@ -790,13 +790,14 @@ for profile in dropped.judge_profiles:                # the one kind that does n
 `drop_derived` deletes nothing else: runs, results, cassettes and every durable document stay. Analyses come back by
 generating them again and insights with the analyses that mint them; a judge profile only by recording it again, and
 until then a campaign that took its judges' tier from it reads its own evidence's tier. The campaign rewrite (durable v16) is such a bump
-(regenerable v12: one memo per campaign). A cassette is not touched by that bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
+(regenerable v12: one memo per campaign), and so is the memo's summary across its aspects (regenerable v13). A
+cassette is not touched by either bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
 when the cassette itself changes, because re-capturing a corpus calls your third-party tools again. A cassette
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v15.5), durable documents (v16.0), regenerable documents
-(v12), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
+(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
 (`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked

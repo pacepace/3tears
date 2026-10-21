@@ -47,6 +47,7 @@ def _payload(**overrides: Any) -> dict[str, Any]:
         "aspect_summaries": [
             {"aspect": "lookup", "what_changed": "The tail halved.", "how_sure": "Sure.", "means": "Switch."}
         ],
+        "summary": "Three rounds halve the tail, so switch to fast.",
         "next": [],
     }
     base.update(overrides)
@@ -169,11 +170,31 @@ class TestTheCheckOnReturn:
         with pytest.raises(ValidationError):
             authored.validate_authored(_payload(next=None), KINDS)
 
-    @pytest.mark.parametrize("field", ["headline", "summary", "headline_rests_on", "summary_rests_on"])
-    def test_the_memo_authors_no_headline_or_summary(self, field: str):
-        """The report's first screen is code's: a payload carrying a headline or a summary is refused."""
+    @pytest.mark.parametrize("field", ["headline", "headline_rests_on", "summary_rests_on"])
+    def test_the_memo_authors_no_headline_and_pins_its_summary_to_nothing(self, field: str):
+        """The verdict and the readings are code's: a payload carrying a headline is refused, and so is a summary
+        pinned to findings, which reads across them rather than resting on some."""
         with pytest.raises(ValidationError, match=field):
             authored.validate_authored(_payload(**{field: "the old shape"}), KINDS)
+
+    def test_the_memo_reads_across_its_aspects_in_a_summary(self):
+        assert (
+            authored.validate_authored(_payload(), KINDS).summary == "Three rounds halve the tail, so switch to fast."
+        )
+        assert "summary" in _schema()["required"]
+        assert _schema()["properties"]["summary"]["type"] == "string"
+
+    def test_a_memo_with_no_summary_is_refused(self):
+        payload = _payload()
+        del payload["summary"]
+        with pytest.raises(ValidationError, match="summary"):
+            authored.validate_authored(payload, KINDS)
+
+    @pytest.mark.parametrize("written", ["", " \n\t "])
+    def test_an_empty_summary_is_refused_whatever_the_kind(self, written: str):
+        """A measurement's memo and a no-clear-winner choice's recommend nothing, and still say what was found."""
+        with pytest.raises(ValidationError, match="`summary` is empty"):
+            authored.validate_authored(_payload(summary=written, recommendation=[]), KINDS)
 
     def test_an_unregistered_caveat_kind_is_refused_and_a_registered_one_accepted(self):
         payload = _payload()
