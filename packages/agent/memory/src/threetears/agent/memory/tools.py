@@ -82,6 +82,7 @@ from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.core.exceptions import (
     ConcurrentModificationError,
     DataLayerUnavailableError,
+    GenerationNotCommittedError,
     GenerationUnavailableError,
 )
 from threetears.core.utils.local_time import parse_date_bound, render_local_time, resolve_zone
@@ -1739,11 +1740,17 @@ def _incomplete(exc: WriteIncompleteError, done: str, *, again: str) -> str:
     """
     cause = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
     why = f"{type(cause).__name__}: {cause}"
-    if exc.source_ids:
-        named = ", ".join(f"[memory:{source_id}]" for source_id in exc.source_ids)
-        tail = f"But it could not be linked to {named} ({why}), so that may still read as current beside it."
-    else:
+    named = ", ".join(f"[memory:{source_id}]" for source_id in exc.source_ids)
+    if not exc.source_ids:
         tail = f"It may not show in searches for a short while ({why})."
+    elif exc.unfinished == "mark":
+        tail = (
+            f"But {named} could not be marked as replaced by it ({why}), so that may still read as current beside it."
+        )
+    else:
+        tail = f"But it could not be linked to {named} ({why}), so that may still read as current beside it."
+        if exc.unfinished == "generation":
+            tail += " It may not show in searches for a short while."
     return f"{done} {tail} It is stored: do not {again}."
 
 
@@ -2562,7 +2569,16 @@ async def load_memory_update_tool(
         try:
             if old_alias is not None:
                 entity.alias = None
-                await memories_collection.save_entity(entity)
+                try:
+                    await memories_collection.save_entity(entity)
+                except GenerationNotCommittedError:
+                    raise
+                except GenerationUnavailableError as exc:
+                    # the name is off the old memory: the commit landed, and only the table's
+                    # generation did not advance, so the replacement goes ahead
+                    contain(
+                        exc, log=log, what="memory_update: the name came off the old memory; its generation did not"
+                    )
             try:
                 new_id = await supersede(
                     memories_collection,

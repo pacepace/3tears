@@ -26,6 +26,7 @@ from threetears.agent.memory.revisions import RETRACTED_TAG, WriteIncompleteErro
 from threetears.core.exceptions import (
     ConcurrentModificationError,
     DataLayerUnavailableError,
+    GenerationNotCommittedError,
     GenerationUnavailableError,
 )
 from threetears.nats.errors import KvError
@@ -69,6 +70,7 @@ class _FakeStore:
     def __init__(self, fail: dict[str, BaseException] | None = None, **answers: Any) -> None:
         self.fail = fail or {}
         self.answers = answers
+        self.saved: list[Any] = []
 
     async def _answer(self, name: str, default: Any) -> Any:
         if name in self.fail:
@@ -128,7 +130,7 @@ class _FakeStore:
         return await self._answer("get", SimpleNamespace(user_id=_USER, embedding=[0.1] * 8, alias=None, salience=0.5))
 
     async def save_entity(self, entity: Any) -> None:
-        _ = entity
+        self.saved.append(entity)
         await self._answer("save_entity", None)
 
     async def hybrid_search(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -583,8 +585,8 @@ class TestATakenAliasIsToldFromAnyOtherRefusal:
 # -- writes: memory_update, memory_forget, memory_restore -------------------------------------
 
 
-async def _update(authorizer: MemoryAuthorizerDependencies, **call: Any) -> str:
-    store = _FakeStore()
+async def _update(authorizer: MemoryAuthorizerDependencies, store: _FakeStore | None = None, **call: Any) -> str:
+    store = store or _FakeStore()
     (tool,) = await tools.load_memory_update_tool(
         _USER,
         DeterministicFakeEmbedding(size=8),
@@ -722,3 +724,82 @@ class TestAWriteThatLandedIsSaidToHaveLanded:
         result = await _update(permissive_memory_authorizer, content="lives in York")
         assert result.startswith(f"Updated: [memory:{landed.memory_id}] replaces [memory:{_TARGET}]."), result
         assert "do not update it again" in result, result
+
+    @pytest.mark.parametrize(
+        ("unfinished", "said"),
+        [("mark", "could not be marked as replaced by it"), ("edges", "could not be linked to")],
+    )
+    async def test_the_reply_names_the_step_that_was_not_done(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        monkeypatch: pytest.MonkeyPatch,
+        unfinished: str,
+        said: str,
+    ) -> None:
+        monkeypatch.setattr(tools, "supersede", _raising(_landed(unfinished)))
+        result = await _add(permissive_memory_authorizer, _FakeStore(find_similar_for_dedup=[_row()]))
+        assert said in result, result
+
+    async def test_a_correction_whose_link_beside_a_permanent_memory_failed_says_it_is_stored(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        permanent = uuid4()
+        new_id = uuid4()
+
+        # parity-exempt: _FakeStore answering a permanent memory for one id and a replaceable one for the other
+        class _OnePermanent(_FakeStore):
+            async def find_for_recall(self, **kwargs: Any) -> dict[str, Any] | None:
+                if kwargs["memory_id"] == permanent:
+                    return _row(memory_id=permanent, evergreen=True)
+                return _row()
+
+            def create(self, data: dict[str, Any]) -> SimpleNamespace:
+                return SimpleNamespace(**data)
+
+        async def _superseded(*args: Any, **kwargs: Any) -> UUID:
+            _ = args, kwargs
+            return new_id
+
+        monkeypatch.setattr(tools, "supersede", _superseded)
+        store = _OnePermanent(fail={"save_entity": KvError("kv down")})
+        result = await _add(permissive_memory_authorizer, store, corrects=[str(_TARGET), str(permanent)])
+        assert result.startswith(f"Stored as [memory:{new_id}]"), result
+        assert f"[memory:{permanent}]" in result and "do not store it again" in result, result
+
+    async def test_an_update_whose_replacement_landed_leaves_the_name_on_the_replacement(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # putting the name back on the old memory would collide with the replacement that holds it
+        monkeypatch.setattr(tools, "supersede", _raising(_landed()))
+        store = _FakeStore(find_for_recall=_row(alias="home"))
+        result = await _update(permissive_memory_authorizer, store, content="lives in York")
+        assert result.startswith("Updated: [memory:"), result
+        assert [getattr(e, "alias", None) for e in store.saved] == [None], store.saved
+
+    async def test_an_update_whose_name_came_off_under_a_stale_generation_goes_ahead(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        new_id = uuid4()
+
+        async def _superseded(*args: Any, **kwargs: Any) -> UUID:
+            _ = args, kwargs
+            return new_id
+
+        monkeypatch.setattr(tools, "supersede", _superseded)
+        store = _FakeStore(
+            fail={"save_entity": GenerationUnavailableError("generation store down")},
+            find_for_recall=_row(alias="home"),
+        )
+        result = await _update(permissive_memory_authorizer, store, content="lives in York")
+        assert result.startswith(f"Updated: [memory:{new_id}] replaces [memory:{_TARGET}]."), result
+
+    async def test_an_update_whose_name_did_not_come_off_changes_nothing(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tools, "supersede", _raising(AssertionError("nothing is replaced")))
+        store = _FakeStore(
+            fail={"save_entity": GenerationNotCommittedError("rolled back")},
+            find_for_recall=_row(alias="home"),
+        )
+        result = await _update(permissive_memory_authorizer, store, content="lives in York")
+        assert result.startswith("[TOOL ERROR] memory_update: store failed"), result
