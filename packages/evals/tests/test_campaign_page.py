@@ -511,7 +511,7 @@ def test_each_time_is_dated_in_its_own_offset_as_the_rest_of_the_page_dates_it()
 @pytest.mark.parametrize("stamp", ["sometime in October", "2026-10-14T09:30:00"])
 def test_a_flag_whose_time_cannot_be_ordered_is_refused_not_printed_raw(field: str, stamp: str) -> None:
     times = {"at": "2026-10-20T15:00:00+00:00", "first_run_at": "2026-10-14T09:30:00+00:00", field: stamp}
-    with pytest.raises(ValidationError, match=field):
+    with pytest.raises(ValidationError, match=rf"the late-question flag's {field} is stamped {re.escape(repr(stamp))}"):
         QuestionAfterRuns(late="question", **times)
     flag = QuestionAfterRuns(late="question", at="2026-10-20T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
     assert flag.page_dates() == ("20 Oct 2026", "14 Oct 2026"), "the same flag with ordered times is read"
