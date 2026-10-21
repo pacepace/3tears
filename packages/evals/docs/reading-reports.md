@@ -48,6 +48,11 @@ The warnings are bold, above the title (in HTML each a `<p role="alert">`), and 
 one the recommendation answers. A warning only warns: nothing on the page picks an arm, and the bars and floors decide
 nothing.
 
+`analyses_list` lists each stored analysis by the same warnings, word for word and without the writer's why, then
+its verdict: the aspect page's verdict line for one aspect, what code read on each aspect for several
+(`billing: candidate shown worse; tone: candidate shown better`). With no missed bar and no broken floor, the line is
+the verdict alone.
+
 A change of two aspects, one regressing past its floor and one improving, opens:
 
 ```markdown

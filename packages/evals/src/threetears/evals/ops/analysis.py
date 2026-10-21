@@ -231,7 +231,8 @@ class AnalysisLine(EvalBaseModel):
     verdict: str = Field(
         description=(
             "The report's verdict line over the evidence the analysis was written from, as code writes it — never a "
-            "headline the memo wrote."
+            "headline the memo wrote. It leads, as the report does, with every bar an arm misses and then every floor "
+            "a candidate breaks, each in the report's own words; with neither, it is the verdict alone."
         )
     )
     findings: int = Field(ge=0, description="How many findings the memo holds.")
