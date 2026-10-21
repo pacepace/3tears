@@ -222,8 +222,8 @@ class EvalCampaign(DurableDocumentModel):
     declared_at: str | None = Field(
         default=None,
         description=(
-            "When the question, its margins and its floors were declared in full (ISO-8601): a reading confirms only "
-            "what was asked before the evidence existed. An aspect's design carries its own time "
+            "When the question, its margins and its floors were declared in full (ISO-8601), which a page discloses "
+            "where it is later than the evidence. An aspect's design carries its own time "
             "(`aspects[].declared_at`). None when the campaign declares nothing."
         ),
     )

@@ -58,8 +58,8 @@ none of the finding's readings or trials is taken at; only "which arms does this
 by the names the bundle gives each arm (:mod:`threetears.evals.analysis.arm_mentions`).
 
 **The recommendation is pinned, and it answers to code's readings.** It names the findings it rests on and an arm
-the campaign holds; a finding names only trials the campaign holds. A candidate is recommended only where some aspect
-asked its question before its runs (:func:`_reject_exploratory_adoption`), where code's reading or a comparison
+the campaign holds; a finding names only trials the campaign holds. A candidate is recommended only where the campaign
+asks some aspect a question, whenever it was asked (:func:`_reject_exploratory_adoption`), where code's reading or a comparison
 separated it from the control in its favour and no guardrail breached (:func:`_reject_unseparated_adoption`), and
 **a broken floor is addressed**: a floor only warns, never blocks, but a recommendation of an arm that broke one names
 each such floor and why the breach is acceptable (:func:`_reject_unaddressed_warnings`), as a choice's pick names
@@ -1107,18 +1107,19 @@ def _recommended(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> 
 
 
 def _confirmatory(bundle: CampaignBundle) -> list[AnalysisContextBundle]:
-    """The aspects whose question was asked before their first result: the only ones whose evidence decides."""
+    """The aspects the campaign asks a question, whenever it was asked: the only ones whose evidence decides."""
     return [aspect for aspect in bundle.aspects if aspect.question_declared]
 
 
 def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
-    """Refuse a change's switch to a candidate when none of its aspects asked its question before its runs.
+    """Refuse a change's switch to a candidate when the campaign asks none of its aspects a question.
 
-    With no question asked before the evidence was read, every pattern in it is a lead, and switching on a lead is a
-    decision nothing was designed to make. Keeping the control is what such a campaign recommends: it changes
-    nothing, and the next steps say what campaign, declared before it runs, would settle the rest. The structural fact
-    is each aspect's ``question_declared``; nothing is read off prose. A switch in a campaign some of whose aspects
-    asked in time rests only on those aspects (:func:`_reject_unseparated_adoption`).
+    With no question asked, every pattern in the evidence is a lead, and switching on a lead is a decision nothing
+    was designed to make. Keeping the control is what such a campaign recommends: it changes nothing, and the next
+    steps say what declared question would settle the rest. The structural fact is each aspect's
+    ``question_declared``; nothing is read off prose. A question asked after the runs counts as asked: it is disclosed
+    (``reading_scope.question_after_runs``), never enforced. A switch in a campaign some of whose aspects are asked
+    rests only on those aspects (:func:`_reject_unseparated_adoption`).
 
     :raises SoundnessRefusal: Every aspect is exploratory and a change's recommendation names a candidate.
     """
@@ -1127,10 +1128,10 @@ def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     if arm is None or control is None or bundle.kind != "change" or arm.role == "control" or _confirmatory(bundle):
         return
     raise SoundnessRefusal(
-        f"the recommendation names {arm.label!r}, a candidate, and this campaign asked no question before its first "
-        "run on any aspect, so it is exploratory: nothing in it is a decision to switch on. "
+        f"the recommendation names {arm.label!r}, a candidate, and this campaign asks no question of any aspect, so "
+        "it is exploratory: nothing in it is a decision to switch on. "
         + f"Recommend the control, {control.label!r}, "
-        + "and say in `next` what campaign, declared before it runs, would settle the switch"
+        + "and say in `next` what declared question would settle the switch"
     )
 
 
@@ -1140,8 +1141,8 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     Recommending a candidate is a claim that it beat what it replaces, and the bundle says whether it did in two
     places: code's reading of each aspect (``better`` is the gain shown, Holm-adjusted), and each aspect's
     ``multiple_comparisons``. **Only confirmatory evidence counts**: a reading code marked ``confirmatory`` and a
-    comparison on an aspect whose question was asked before its first result. A pattern found on an aspect asked
-    after its runs is a lead, and licenses no switch however strong it looks. One such ``better`` reading or
+    comparison on an aspect the campaign asks a question, whenever it was asked. A pattern found on an aspect asked
+    nothing is a lead, and licenses no switch however strong it looks. One such ``better`` reading or
     ``improved`` comparison is enough: a trade-off is a legitimate recommendation. What is refused is a candidate with
     no confirmatory upside — every tested reading ``not_separated``, or separated only by ``regressed`` — or one no
     test could reach, which is refused saying so, since a reader cannot tell a recommendation resting on nothing from
@@ -1184,7 +1185,7 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     ]
     if any(comparison.verdict == "improved" for comparison in against):
         return
-    late = [
+    unasked = [
         aspect.aspect
         for aspect in bundle.aspects
         if not aspect.question_declared
@@ -1200,14 +1201,14 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     withheld = [aspect.multiple_comparisons.withheld for aspect in confirmatory]
     why = _no_separation(against, withheld=withheld[0] if withheld and all(withheld) else None)
     leads = (
-        f" It is shown better only on {', '.join(repr(label) for label in late)}, whose question was asked after its "
-        "runs: a lead there licenses no switch."
-        if late
+        f" It is shown better only on {', '.join(repr(label) for label in unasked)}, which the question does not ask "
+        "about: a lead there licenses no switch."
+        if unasked
         else ""
     )
     raise SoundnessRefusal(
-        f"the recommendation names {arm.label!r}, but on the aspects asked in time {why}, and code's reading shows it "
-        f"better on none of them.{leads} {remedy[:1].upper()}{remedy[1:]}"
+        f"the recommendation names {arm.label!r}, but on the aspects the question asks about {why}, and code's "
+        f"reading shows it better on none of them.{leads} {remedy[:1].upper()}{remedy[1:]}"
     )
 
 

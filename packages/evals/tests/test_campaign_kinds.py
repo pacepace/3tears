@@ -4,7 +4,7 @@ A **measurement** (one arm) has nothing to choose between, so its memo recommend
 refused. A **choice** (several arms, no control) picks an arm, or recommends none when no arm stood out (no clear
 winner); a pick rests on a finding and names every aspect code's pair readings show another arm ahead of it on
 (``behind_on``), and every absolute bar it missed (``bars_missed``). A **change** (a control and candidates) recommends
-a candidate or keeps the control, and only confirmatory evidence — an aspect asked before its runs — licenses a switch.
+a candidate or keeps the control, and only confirmatory evidence — an aspect the question asks about — licenses a switch.
 There is no "no control, so anything goes": that exemption is gone.
 
 Driven through :func:`~threetears.evals.analysis.generator.generate_analysis` over the toy host's campaign: its narrow
@@ -288,25 +288,25 @@ class TestAChangeAlwaysRecommends:
         analysis = await _generate(bundle, payload)
         assert analysis.document.recommendation[0].bars_missed[0].why == "Nothing on offer clears it."
 
-    async def test_a_switch_shown_better_only_on_an_aspect_asked_late_is_refused(self) -> None:
-        """Aspect A asked its question in time and B after its runs; the candidate is better only on B."""
-        timely = _without_gains(_aspect(control=True))
-        late = timely.model_copy(
+    async def test_a_switch_shown_better_only_on_an_aspect_the_question_does_not_ask_about_is_refused(self) -> None:
+        """The question asks about aspect A and not B; the candidate is better only on B, where it is a lead."""
+        asked = _without_gains(_aspect(control=True))
+        unasked = asked.model_copy(
             update={
-                "aspect": "late",
-                "reading_scope": timely.reading_scope.model_copy(update={"questions_declared": False}),
+                "aspect": "unasked",
+                "reading_scope": asked.reading_scope.model_copy(update={"questions_declared": False}),
                 "multiple_comparisons": _aspect(control=True).multiple_comparisons,
             }
         )
-        bare = campaign_bundle(timely, late)
-        bundle = campaign_bundle(timely, late, readings=[_late_better(bare)])
+        bare = campaign_bundle(asked, unasked)
+        bundle = campaign_bundle(asked, unasked, readings=[_unasked_better(bare)])
         payload = _recommending(bundle, TOYHOST_WIDE)
-        payload["aspect_summaries"].append({**payload["aspect_summaries"][0], "aspect": "late"})
+        payload["aspect_summaries"].append({**payload["aspect_summaries"][0], "aspect": "unasked"})
         with pytest.raises(SoundnessRefusal) as refused:
             await _generate(bundle, payload)
         message = str(refused.value)
-        assert "on the aspects asked in time" in message
-        assert "It is shown better only on 'late', whose question was asked after its runs" in message
+        assert "on the aspects the question asks about" in message
+        assert "It is shown better only on 'unasked', which the question does not ask about" in message
 
 
 def _without_gains(aspect: AnalysisContextBundle) -> AnalysisContextBundle:
@@ -326,9 +326,9 @@ def _without_gains(aspect: AnalysisContextBundle) -> AnalysisContextBundle:
     )
 
 
-def _late_better(bundle: CampaignBundle) -> AspectReading:
+def _unasked_better(bundle: CampaignBundle) -> AspectReading:
     return AspectReading(
-        aspect="late",
+        aspect="unasked",
         arm=_variant(bundle, TOYHOST_WIDE),
         arm_label=arm_at(bundle, TOYHOST_WIDE),
         change=20.0,

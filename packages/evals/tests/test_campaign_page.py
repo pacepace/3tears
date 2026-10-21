@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from collections.abc import Callable
 from html.parser import HTMLParser
 from typing import Any
@@ -69,6 +70,15 @@ from packages.evals.tests.campaign_support import (
 
 _MEASURED: dict[str, MeasuredAspect] = {}
 
+#: When the late aspect's question was asked: long after its runs.
+_ASKED_LATE = "2099-01-01T00:00:00+00:00"
+
+
+def _paged(stamp: str) -> str:
+    """An ISO-8601 instant as the page dates it: ``1 Jan 2099``."""
+    moment = datetime.fromisoformat(stamp)
+    return f"{moment.day} {moment:%b %Y}"
+
 
 async def _aspect(label: str) -> MeasuredAspect:
     """Each fixture aspect, measured once for the module: billing regresses past its floor, tone improves, and late
@@ -81,7 +91,7 @@ async def _aspect(label: str) -> MeasuredAspect:
         elif label == "tone":
             _MEASURED[label] = await measured_aspect("tone", production=6, candidate=19)
         else:
-            _MEASURED[label] = await measured_aspect(label, production=6, candidate=19, asked_at=None)
+            _MEASURED[label] = await measured_aspect(label, production=6, candidate=19, asked_at=_ASKED_LATE)
     return _MEASURED[label]
 
 
@@ -376,13 +386,47 @@ async def test_a_margin_late_on_some_aspects_is_one_line_naming_them() -> None:
     assert first.count("after its first result") == 1 and first.count("after the first result") == 1
 
 
-async def test_an_aspect_asked_after_its_runs_reads_as_a_lead() -> None:
+async def test_an_aspect_asked_after_its_runs_reads_as_asked_and_the_page_says_when_under_the_question() -> None:
+    """Owner ruling (2026-10-21): disclosed, not enforced. Its row reads as tone's, asked in time, does: no lead."""
     page = await _page("billing", "late")
     first = _first_screen_markdown(page)
-    assert "The question was asked after the first run on late, so its readings are leads." in first
-    assert "shown better, a lead" in first
+    late_bundle = page.aspects[1].report.bundle
+    assert late_bundle.design_frozen_at is not None
+    began = _paged(late_bundle.design_frozen_at)
+    said = f"The question was set on 1 Jan 2099, after the runs on late began on {began}."
+    assert said in first, "billing was asked in time, so the line names the aspect it holds on"
+    assert first.index(QUESTION) < first.index(said)
+    assert "a lead" not in first
     (late,) = page.readings.on_aspect("late")
-    assert not late.confirmatory
+    assert late.confirmatory and late.reading == "better"
+    (tone,) = (await _page("billing", "tone")).readings.on_aspect("tone")
+    assert (late.reading, late.change, late.gain_interval) == (tone.reading, tone.change, tone.gain_interval)
+    assert "was set on" not in _first_screen_markdown(await _page("billing", "tone")), "asked in time: nothing said"
+
+
+async def test_a_question_with_no_recorded_date_is_said_to_be_possibly_after_the_runs() -> None:
+    def undated(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        late = bundle.reading_scope.question_after_runs
+        if late is None:
+            return bundle
+        scope = bundle.reading_scope.model_copy(
+            update={"question_after_runs": late.model_copy(update={"question_at": None})}
+        )
+        return bundle.model_copy(update={"reading_scope": scope})
+
+    page = await _page("billing", "late", bundle=undated)
+    first = _first_screen_markdown(page)
+    assert "The question carries no date, so it may have been set after the runs on late began on " in first
+
+
+async def test_the_line_saying_when_the_question_was_set_shows_no_field_name() -> None:
+    page = await _page("billing", "late")
+    (said,) = [
+        block.text
+        for block in page.blocks
+        if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "timing"
+    ]
+    assert "_" not in said and "after_runs" not in campaign_report_html(page)
 
 
 class _Tags(HTMLParser):

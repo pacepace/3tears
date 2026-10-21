@@ -18,6 +18,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
 
 import random
@@ -91,6 +92,7 @@ def _bundle(
     contrast_cases: Sequence[int] | None = None,
     unpaired: int | None = None,
     apparatus: bool = False,
+    asked_after_runs: bool = False,
 ) -> AnalysisContextBundle:
     """A control and one contrast, scored on one judged dimension per entry of ``differences``, on each of ``rigs``.
 
@@ -146,14 +148,17 @@ def _bundle(
             for case in range(cases if unpaired is None or model == CONTROL else unpaired)
             if model == CONTROL or contrast_cases is None or case in contrast_cases
         ]
-    # Asked before the runs, as a campaign that confirms anything asks: a question asked after its first run builds
-    # no family (``asked_in_time``).
+    # Asked before the runs, so the bundle carries no flag that it was set after them (``question_after_runs``);
+    # ``asked_after_runs`` asks it a day after the last of them instead.
+    asked = max(run.created_at for run in runs) if asked_after_runs else min(run.created_at for run in runs)
+    if asked_after_runs:
+        asked = (datetime.fromisoformat(asked) + timedelta(days=1)).isoformat()
     campaign = make_aspect_campaign(
         label="b",
         run_ids=[run.id for run in runs],
         design=minimal_aspect_design(merit_axes=(merit_axes or ["quality"]) if questions else None),
         question="is the contrast better?" if questions else "",
-        asked_at=min(run.created_at for run in runs) if questions else None,
+        asked_at=asked if questions else None,
         control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(control))
         if control
         else None,
@@ -346,7 +351,22 @@ class TestWhatAFamilyCovers:
         family = _family(bundle)
         assert bundle.multiple_comparisons.withheld is None
         assert (family.aspect, family.merit_axes, family.family_size) == (None, [], 10)
-        assert family.disclosure.startswith("This campaign asked no question before its first run, so every comparison")
+        assert family.disclosure.startswith("This campaign asks no question of this aspect, so every comparison")
+
+    def test_a_question_asked_after_the_runs_builds_the_family_one_asked_before_them_builds(self) -> None:
+        """Disclosed, never enforced (owner, 2026-10-21): the same question over the same runs reads the same family,
+        corrected the same way, whenever it was asked; only the flag says it came after them."""
+        timely = _bundle([CLEAR, *[NOISE] * 9])
+        late = _bundle([CLEAR, *[NOISE] * 9], asked_after_runs=True)
+
+        family = _family(late)
+        assert (family.aspect, family.family_size) == ("b", 10)
+        assert late.multiple_comparisons == timely.multiple_comparisons
+        assert late.question_declared and timely.question_declared
+        flag = late.reading_scope.question_after_runs
+        assert flag is not None and flag.first_run_at == late.design_frozen_at
+        assert flag.question_at is not None and flag.question_at > flag.first_run_at
+        assert timely.reading_scope.question_after_runs is None
 
     def test_a_chance_difference_in_a_campaign_with_no_question_does_not_separate(self) -> None:
         """The Done-when case, with no question declared: raw p ≈ 0.026 separates alone and not among ten."""

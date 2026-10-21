@@ -106,7 +106,8 @@ TextRole = Literal[
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
 #: scoreboard that changes how the verdict is read, in normal weight: the case floor, an arm's label that its own row
-#: contradicts. ``basis``: the question declared before the run, quoted whole under the title. ``floor``: on the first
+#: contradicts. ``basis``: the question declared, quoted whole under the title. ``timing``: under it, that the question
+#: was set after the runs, with when each happened, or that it carries no date. ``floor``: on the first
 #: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
 #: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
 #: verdict line. ``design``, ``charts`` and
@@ -126,6 +127,7 @@ DisclosureSource = Literal[
     "call",
     "caveat",
     "basis",
+    "timing",
     "floor",
     "verdict",
     "design",
@@ -890,11 +892,12 @@ class CampaignAspectFold(EvalDocumentModel):
     @property
     def head(self) -> list[ReportBlock]:
         """The aspect page's first screen as the fold lays it out: its arms line, scoreboard and caveats, without its
-        question and broken floors, which the campaign's first screen carries once, or its verdict line, which reads
-        the aspect alone and could contradict, or pick an arm against, the campaign's table. An aspect of one arm keeps
-        its verdict line: it counts that arm's cases passed and missed, and has no other arm to pick against."""
+        question, when it was set and its broken floors, which the campaign's first screen carries once, or its verdict
+        line, which reads the aspect alone and could contradict, or pick an arm against, the campaign's table. An aspect
+        of one arm keeps its verdict line: it counts that arm's cases passed and missed, and has no other arm to pick
+        against."""
         one_arm = len(self.report.bundle.scoreboard) == 1
-        dropped = {"floor", "basis"} if one_arm else {"floor", "basis", "verdict"}
+        dropped = {"floor", "basis", "timing"} if one_arm else {"floor", "basis", "timing", "verdict"}
         return [
             block
             for block in self.report.blocks

@@ -1569,8 +1569,8 @@ class VerdictOrder(EvalDocumentModel):
     question: QuestionScope | None = Field(
         default=None,
         description=(
-            "The bars on the axes the aspect's question names, where it was asked before the first run and names at "
-            "least one. None for an unscoped question, or none asked in time."
+            "The bars on the axes the aspect's question names, where it asks one naming at least one. None for an "
+            "unscoped question, or none asked."
         ),
     )
 
@@ -1819,8 +1819,8 @@ class ComparisonFamily(EvalDocumentModel):
     aspect: str | None = Field(
         min_length=1,
         description=(
-            "The aspect whose question, asked before the first run, this family serves. None for the exploratory "
-            "family an aspect that asked nothing in time gets: every comparison it holds, on every reading on a merit "
+            "The aspect whose question this family serves. None for the exploratory family an aspect asked no "
+            "question gets: every comparison it holds, on every reading on a merit "
             "axis, corrected as one — so a chance difference is no more a finding for an aspect that asked nothing "
             "than for one that asked."
         ),
@@ -1904,7 +1904,7 @@ class MultipleComparisons(EvalDocumentModel):
     families: list[ComparisonFamily] = Field(
         default_factory=list,
         description=(
-            "The aspect's one family: its question's, where one was asked before the first run, else one exploratory "
+            "The aspect's one family: its question's, where one is asked, else one exploratory "
             "family over every reading (`aspect` None). Empty only with `withheld` set."
         ),
     )
@@ -1915,6 +1915,23 @@ class MultipleComparisons(EvalDocumentModel):
             "arms is tested and none may be claimed. None when families exist."
         ),
     )
+
+
+class QuestionAfterRuns(EvalDocumentModel):
+    """That the aspect's question was set after its first run, and the two times: disclosed, never a demotion.
+
+    A question set once results existed may have been set with them in view. Its readings read as any asked question's
+    do, since the operator is trusted to have set it in good faith; this says when each happened, so a reader can
+    judge.
+    """
+
+    question_at: str | None = Field(
+        description=(
+            "When the question was asked (the declaration's `asked_at`, ISO-8601), later than `first_run_at`. None "
+            "when no time is recorded, so it cannot be shown to come before the runs."
+        )
+    )
+    first_run_at: str = Field(description="When the aspect's first member run was created (ISO-8601).")
 
 
 class ReadingScope(EvalDocumentModel):
@@ -1929,23 +1946,23 @@ class ReadingScope(EvalDocumentModel):
     questions_declared: bool = Field(
         default=False,
         description=(
-            "Whether the campaign asked its question before the aspect's first run (`asked_in_time`): only such a "
-            "question makes a reading confirmatory. A question asked after the first run sets `question_post_hoc`."
+            "Whether the campaign asks this aspect a question (`asks_a_question`), whenever it was asked: only an "
+            "asked question makes a reading confirmatory. One asked after the first run sets `question_after_runs`."
         ),
     )
-    question_post_hoc: bool = Field(
-        default=False,
+    question_after_runs: QuestionAfterRuns | None = Field(
+        default=None,
         description=(
-            "Whether the campaign asked its question only after the aspect's first member run was created: read as "
-            "exploratory, since a question asked once results existed may have been asked of them. No family is "
-            "built for it and its axes confirm nothing; the disclosure says so."
+            "Set when the question was asked after the aspect's first member run was created, or carries no time "
+            "while a run does: both times, which every page and listing reading this aspect says. It changes no "
+            "reading. None when the question came first, or none is asked."
         ),
     )
     exploratory_measures: list[str] = Field(
         default_factory=list,
         description=(
             "Measures in `measure_catalog` on no axis the aspect's question names, sorted — exploratory: reportable "
-            "as leads, never as a confirmed answer. Empty when no question was asked in time (see `disclosure`). A "
+            "as leads, never as a confirmed answer. Empty when no question is asked (see `disclosure`). A "
             "guardrail is never listed: it is held because it was declared one."
         ),
     )
@@ -1953,17 +1970,15 @@ class ReadingScope(EvalDocumentModel):
         default_factory=list,
         description=(
             "Capability judged dimensions the aspect's question does not cover (its axes leave out `quality`), "
-            "sorted. Empty when no question was asked in time."
+            "sorted. Empty when no question is asked."
         ),
     )
     disclosure: str | None = Field(
         default=None,
         description=(
-            "Set when the campaign asked no question before the aspect's first run: the one sentence saying every "
-            "finding is exploratory — saying the question came after it, when that is why, and, when the aspect "
-            "declared no design at all (`declared` null), that it is exploratory and its design was inferred from "
-            "the runs. None when the question was asked before the first run, where the two lists above carry the "
-            "label."
+            "Set when the campaign asks this aspect no question: the one sentence saying every finding is "
+            "exploratory, and, when the aspect declared no design at all (`declared` null), that its design was "
+            "inferred from the runs. None when a question is asked, where the two lists above carry the label."
         ),
     )
 
@@ -1987,13 +2002,6 @@ NO_DESIGN_EXPLORATORY = (
 NO_AXIS_EXPLORATORY = (
     "This campaign's question names no axis this aspect measures, so every finding this aspect supports is "
     "exploratory: nothing here was asked about, and a pattern found in it is a lead, not an answer."
-)
-
-#: The sentence an aspect gets when its campaign's question was asked only after its first run.
-POST_HOC_EXPLORATORY = (
-    "This campaign's question was declared after its first run, so every finding it supports is exploratory: a "
-    "question asked once results existed may have been asked of them, and a pattern found here is a lead for a "
-    "campaign that declares its question before it launches, not an answer."
 )
 
 
@@ -2036,47 +2044,42 @@ def asks_a_question(declared: AspectDeclaration | None) -> bool:
     return declared is not None and bool(declared.question.strip()) and declared.design.merit_axes is not None
 
 
-def asked_in_time(declared: AspectDeclaration | None, first_run_at: str | None) -> bool:
-    """Whether the aspect's question was asked no later than its first run: the one question a reading may confirm.
+def question_after_runs(declared: AspectDeclaration | None, first_run_at: str | None) -> QuestionAfterRuns | None:
+    """That the aspect's question was asked after its first run, with both times; None where it came first.
 
-    **A question asked after the evidence existed may have been asked of it**, so it confirms nothing: a reading it
-    names is a lead, as if no question had named it. Read off the declaration's ``asked_at`` against the earliest
-    member run's ``created_at``, so a design written by an older build, or edited after every run was removed and
-    re-added, is still read by when its question was asked. Every reader that scopes a reading by the question (the
-    comparison family, the reading scope, the verdict order, the exploratory disclosure, the page) reads this, so
-    none can count a question another treats as post hoc.
+    **Disclosed, never enforced** (owner, 2026-10-21): a question asked once results existed reads as one asked
+    before them, since the operator is trusted to act in good faith, and this flag is what lets a reader judge. Read
+    off the declaration's ``asked_at`` against the earliest member run's ``created_at``, so a design written by an
+    older build, or edited after every run was removed and re-added, is still dated by when its question was asked.
 
     :param declared: What the campaign declared, as the aspect reads it; None when the aspect declared no design.
     :ptype declared: AspectDeclaration | None
     :param first_run_at: The earliest ``created_at`` among the aspect's member runs (ISO-8601), or None when no run's
         time is to hand, where nothing can have been asked after one.
     :ptype first_run_at: str | None
-    :return: True when a question is asked and was asked at or before ``first_run_at``; a question with no recorded
-        time is asked in time only where no run's time is to hand either.
-    :rtype: bool
+    :return: The flag where a question is asked and ``first_run_at`` is known, and the question was asked after it or
+        carries no time; None otherwise.
+    :rtype: QuestionAfterRuns | None
     :raises ValueError: ``first_run_at`` or ``asked_at`` is not an ISO-8601 time with an offset, so which came first
         cannot be said.
     """
-    if declared is None or not asks_a_question(declared):
-        return False
-    if first_run_at is None:
-        return True
-    if declared.asked_at is None:
-        return False
-    return _instant(declared.asked_at, "the campaign's question") <= _instant(first_run_at, "the first run")
+    if declared is None or not asks_a_question(declared) or first_run_at is None:
+        return None
+    asked = declared.asked_at
+    if asked is not None and _instant(asked, "the campaign's question") <= _instant(first_run_at, "the first run"):
+        return None
+    return QuestionAfterRuns(question_at=asked, first_run_at=first_run_at)
 
 
-def question_axes(declared: AspectDeclaration | None, first_run_at: str | None) -> list[MeritAxis] | None:
-    """The merit axes the aspect's question asks about, where it was asked in time; None where it is exploratory.
+def question_axes(declared: AspectDeclaration | None) -> list[MeritAxis] | None:
+    """The merit axes the aspect's question asks about, whenever it was asked; None where it is exploratory.
 
     :param declared: What the campaign declared, as the aspect reads it.
     :ptype declared: AspectDeclaration | None
-    :param first_run_at: The earliest member run's ``created_at``, as :func:`asked_in_time` reads it.
-    :ptype first_run_at: str | None
-    :return: The axes, ``[]`` for an unscoped question (every axis); None when no question was asked in time.
+    :return: The axes, ``[]`` for an unscoped question (every axis); None when no question is asked.
     :rtype: list[MeritAxis] | None
     """
-    if declared is None or not asked_in_time(declared, first_run_at):
+    if declared is None or not asks_a_question(declared):
         return None
     return list(declared.design.merit_axes or [])
 
@@ -2092,30 +2095,24 @@ def _instant(stamp: str, what: str) -> datetime:
     return instant
 
 
-def exploratory_disclosure(declared: AspectDeclaration | None, first_run_at: str | None = None) -> str | None:
-    """The one sentence saying a whole aspect is exploratory, or None when a question asked in time confirms it.
+def exploratory_disclosure(declared: AspectDeclaration | None) -> str | None:
+    """The one sentence saying a whole aspect is exploratory, or None when an asked question confirms it.
 
     One derivation for the bundle's ``reading_scope`` and the report built from a stored analysis, so the two
     cannot word it differently. An aspect with no design (``declared is None``) is exploratory by definition — that
     is derived here, never stored as a flag of its own — and says so as such; one whose campaign asks no question
-    gets the no-question line; one whose campaign asks a question naming no axis of this aspect (its ``merit_axes``
-    None) the no-axis line; and one whose question was asked after its first run (:func:`asked_in_time`) the post-hoc
-    line.
+    gets the no-question line; and one whose campaign asks a question naming no axis of this aspect (its
+    ``merit_axes`` None) the no-axis line. When a question was asked is no part of it (:func:`question_after_runs`).
 
     :param declared: What the campaign declared, as the aspect reads it, or None when it declared no design.
     :ptype declared: AspectDeclaration | None
-    :param first_run_at: When the aspect's first member run was created, or None where no run's time is to hand,
-        where a question reads as asked before.
-    :ptype first_run_at: str | None
-    :return: The disclosure, or None when the question was asked before the first run.
+    :return: The disclosure, or None when a question is asked.
     :rtype: str | None
     """
     if declared is None:
         return NO_DESIGN_EXPLORATORY
-    if asked_in_time(declared, first_run_at):
-        return None
     if asks_a_question(declared):
-        return POST_HOC_EXPLORATORY
+        return None
     return NO_AXIS_EXPLORATORY if declared.question.strip() else NO_QUESTION_EXPLORATORY
 
 
@@ -2371,8 +2368,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     # margin, the reading scope says whether the question came after the first run (`question_post_hoc`), the verdict
     # order scopes the one question (`verdict_order.question`), and `floor_contrasts` carries the overall pass rate's
     # and the cost per reply's per-case values whatever the family compares, which the floors read.
+    # 60: a question asked after the aspect's first run is read as one asked before it (owner, 2026-10-21: disclosed,
+    # not enforced), so it builds its family, scopes the reading scope and the verdict order, and confirms its
+    # readings over unchanged runs; `reading_scope.question_post_hoc` is replaced by `reading_scope.question_after_runs`
+    # (both times), which every page and listing says.
     schema_version: int = Field(
-        default=59, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=60, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2780,8 +2781,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         default=None,
         description=(
             "When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs "
-            "included, after which a design edit is refused and a question asked confirms nothing "
-            "(`reading_scope.question_post_hoc`). None when the campaign holds no run yet."
+            "included, after which a design edit is refused and a question asked is disclosed as set after the runs "
+            "(`reading_scope.question_after_runs`). None when the campaign holds no run yet."
         ),
     )
     first_result_at: str | None = Field(
@@ -2805,8 +2806,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=ReadingScope,
         description=(
             "Which readings no declared question asked about: exploratory, reportable as leads and never as "
-            "confirmed answers. Where no question is declared, or no design, or every question was declared after "
-            "the first run, one sentence says every finding is exploratory."
+            "confirmed answers. Where no question is declared, or no design, one sentence says every finding is "
+            "exploratory. Whether the question was asked after the first run (`question_after_runs`)."
         ),
     )
     exclusions: list[ArmExclusions] = Field(
@@ -3168,13 +3169,13 @@ class AnalysisContextBundle(EvalDocumentModel):
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
-            "Whether the campaign asked its question before the aspect's first run (`reading_scope.questions_declared`): "
+            "Whether the campaign asks this aspect a question, whenever it was asked (`reading_scope.questions_declared`): "
             "the one condition under which any of its readings is confirmatory."
         )
     )
     @property
     def question_declared(self) -> bool:
-        """Whether a question was declared before the evidence existed, as the reading scope derived it."""
+        """Whether the campaign asks this aspect a question, as the reading scope derived it."""
         return self.reading_scope.questions_declared
 
     def fingerprint(self) -> str:
@@ -3471,11 +3472,11 @@ __all__ = [
     "DesignArm",
     "exploratory_disclosure",
     "ASPECT_BUNDLE_SHAPE",
-    "asked_in_time",
     "refuse_a_bundle_before_aspects",
     "asks_a_question",
+    "question_after_runs",
     "question_axes",
-    "POST_HOC_EXPLORATORY",
+    "QuestionAfterRuns",
     "FactorPairCell",
     "FactorPairPivot",
     "FactorPairScan",

@@ -213,8 +213,8 @@ class AspectReading(EvalDocumentModel):
     confirmatory: bool = Field(
         default=False,
         description=(
-            "Whether the reading confirms anything: the campaign's question was asked on this aspect before its first "
-            "run (`asked_in_time`). False reads it as a lead, which the page says."
+            "Whether the reading confirms anything: the campaign asks this aspect a question (the bundle's "
+            "`question_declared`), whenever it was asked. False reads it as a lead, which the page says."
         ),
     )
 
@@ -290,7 +290,7 @@ class PairReading(EvalDocumentModel):
     )
     reason: str = Field(default="", description="Why, in one plain sentence naming the arms.")
     confirmatory: bool = Field(
-        default=False, description="Whether the question was asked on this aspect before its first run."
+        default=False, description="Whether the campaign asks this aspect a question, whenever it was asked."
     )
     first_cases: int = Field(ge=0, description="The first arm's usable cases.")
     second_cases: int = Field(ge=0, description="The second arm's usable cases.")
@@ -716,8 +716,9 @@ def campaign_readings(
     is never shown worse and tests no drop. An unclear row with a margin carries the cases that would show the
     candidate within it (:func:`~threetears.evals.analysis.report.decision.project_rate`, at the row's drop level).
     Per floor and candidate, :func:`~threetears.evals.analysis.report.decision.evaluate_floor`, at the nominal level
-    with no correction. A row is confirmatory only where the campaign's question was asked on that aspect before its
-    first run (the bundle's ``question_declared``).
+    with no correction. A row is confirmatory where the campaign asks that aspect a question (the bundle's
+    ``question_declared``), whenever it was asked: one asked after the aspect's first run reads as one asked before
+    it, and the bundle discloses it (``reading_scope.question_after_runs``).
 
     A candidate that did not run on an aspect, or an aspect its control did not run on, has no row there. Each row's
     change and intervals are read on one rig's per-case shares, named where both arms ran under several.

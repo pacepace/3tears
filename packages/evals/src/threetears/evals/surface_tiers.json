@@ -1147,6 +1147,7 @@
 "threetears.evals.analysis.prompt_content_version": "stable",
 "threetears.evals.analysis.propose_bars": "provisional",
 "threetears.evals.analysis.ProviderUnits": "provisional",
+"threetears.evals.analysis.QuestionAfterRuns": "provisional",
 "threetears.evals.analysis.QuestionScope": "provisional",
 "threetears.evals.analysis.read_judge_temperatures": "stable",
 "threetears.evals.analysis.READ_TIER_ROW_BUDGET": "host-contract",

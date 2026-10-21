@@ -6,8 +6,9 @@ holds depends on the campaign's kind (:func:`~threetears.evals.analysis.campaign
 kind it opens, above the title, with **every bar an arm misses**, then **every broken floor**, then **every guardrail
 an arm is not shown safe on**, one loud line each, a bar or a floor followed by the writer's why where the memo
 recommends that arm over it: each only warns, and this is where it warns. Then **the question**, quoted whole as the
-campaign asks it. Then **the writer's summary**, its read across every aspect, for every kind that has a memo; a
-code-only page has none. Then **the writer's recommendation** for a change or a choice: the arm and how sure, then
+campaign asks it, and, where it was set after an aspect's runs began, one line saying when each happened: disclosed,
+never a demotion, since its readings read as any asked question's. Then **the writer's summary**, its read across
+every aspect, for every kind that has a memo; a code-only page has none. Then **the writer's recommendation** for a change or a choice: the arm and how sure, then
 each reason; where the memo recommends nothing, one line by the campaign's kind (no clear winner); with no memo, one
 line saying no recommendation was written. A measurement recommends nothing, so it has no such line. Then, for
 **a change**:
@@ -15,8 +16,8 @@ line saying no recommendation was written. A measurement recommends nothing, so 
 1. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
    interval it was read on, the aspect's margin, and what the row shows (shown better, shown worse or unclear). Under
    it, the lines that change how a row reads: the level each interval was read at, an aspect with no margin (never
-   shown worse), an aspect whose question came after its first run (its readings are leads), a margin or a floor
-   declared after the runs, the test setup a row was read under where the arms ran under several.
+   shown worse), a margin or a floor declared after the runs, the test setup a row was read under where the arms ran
+   under several.
 2. **What would settle each unclear row** on an aspect with a margin: the cases that would show the arm within it,
    if the arms do not differ and if they differ as observed.
 
@@ -30,7 +31,7 @@ recorded yet; a call adopting an arm past a broken floor says which floor it ove
 Then the memo's findings and next steps, and one closed fold per aspect: the writer's summary of the aspect (what
 changed, how sure, what it means) when there is one, then the aspect's own page as
 :func:`~threetears.evals.analysis.report.build.build_code_only_report` built it, which the serializers lay out in the
-fold without its title, its question, its broken floors or its verdict line.
+fold without its title, its question, when that was set, its broken floors or its verdict line.
 
 Every arm is named by its label, never by its role; every line is held to :mod:`~threetears.evals.analysis.style`.
 """
@@ -41,7 +42,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.arms import arm_names, short_digest
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, QuestionAfterRuns
 from threetears.evals.analysis.campaign_readings import (
     AspectReading,
     BarStatus,
@@ -154,6 +155,10 @@ def build_campaign_report(
         blocks.append(
             DisclosureBlock(section="header", source="basis", text=f'"{" ".join(campaign.question.split())}"')
         )
+    bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
+    blocks += [
+        DisclosureBlock(section="header", source="timing", text=line) for line in question_after_runs_lines(bundles)
+    ]
     # The writer's read across every aspect, then what it recommends, then the aspects code read them on.
     blocks += _memo_summary_blocks(memo, style)
     if kind != "measurement":
@@ -359,6 +364,44 @@ def campaign_warnings(floors: Sequence[Floor], readings: CampaignReadings) -> li
     :rtype: list[str]
     """
     return [text for _, text in _bar_lines(readings)] + [text for _, text in _floor_lines(floors, readings)]
+
+
+def question_after_runs_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
+    """The lines a page and a listing say where the question was set after an aspect's runs began, with both dates:
+    disclosed, never a demotion (owner, 2026-10-21), so a reader can judge what the readings rest on.
+
+    One line per distinct pair of dates. A line names its aspects only where some of ``bundles`` do not share it; a
+    question that carries no date says it may have been set after the runs.
+
+    :param bundles: Each aspect's evidence, in the campaign's order; one for an aspect's own page.
+    :ptype bundles: Sequence[AnalysisContextBundle]
+    :return: The lines; none where every question came before its aspect's runs, or none is asked.
+    :rtype: list[str]
+    """
+    groups: dict[tuple[str | None, str], list[str]] = {}
+    for bundle in bundles:
+        late = bundle.reading_scope.question_after_runs
+        if late is not None:
+            groups.setdefault(_after_runs_dates(late), []).append(bundle.aspect)
+    lines: list[str] = []
+    for (asked, began), labels in groups.items():
+        runs = "the runs" if len(labels) == len(bundles) else f"the runs on {_listed(labels)}"
+        lines.append(
+            f"The question was set on {asked}, after {runs} began on {began}."
+            if asked is not None
+            else f"The question carries no date, so it may have been set after {runs} began on {began}."
+        )
+    return lines
+
+
+def _after_runs_dates(late: QuestionAfterRuns) -> tuple[str | None, str]:
+    """The question's date and the first run's, as the page dates them."""
+    return (None if late.question_at is None else _date(late.question_at), _date(late.first_run_at))
+
+
+def _listed(labels: Sequence[str]) -> str:
+    """Aspects as a sentence lists them: ``billing``, ``billing and tone``, ``billing, tone and refunds``."""
+    return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
 def _bar_lines(readings: CampaignReadings) -> list[tuple[BarStatus, str]]:
@@ -656,16 +699,17 @@ def _after(stamp: str | None, first_result: str | None, what: str) -> bool:
 
 
 def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]) -> list[str]:
-    """What was declared after the evidence: a question asked after an aspect's first run makes its readings leads
-    (the bundle's ``question_declared``, the rule every reading reads); the question's wording, a margin or a floor
-    added later than the aspect's first result (the bundle's ``first_result_at``) reads as declared after it.
+    """What was declared after the evidence: the question's wording, a margin or a floor added later than the aspect's
+    first result (the bundle's ``first_result_at``) reads as declared after it. An aspect whose question was set after
+    its runs (``reading_scope.question_after_runs``) is said once, under the question
+    (:func:`question_after_runs_lines`), and nothing declared with it is said again here; nor is anything of an
+    aspect the question does not ask about.
 
     Each kind of lateness is one line naming the aspects it holds on (``every aspect`` where it holds on all), so a
     campaign of seven adopted aspects says it once, not seven times; a floor is named with the aspects its clause is
     late on."""
     if not campaign.question.strip():
         return ["No question was declared, so every reading is a lead."]
-    asked: list[str] = []
     worded: list[str] = []
     margins: list[str] = []
     floors: dict[str, list[str]] = {}
@@ -673,9 +717,10 @@ def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: M
         bundle = reports[aspect.label].bundle
         first_result = bundle.first_result_at
         label = aspect.label
-        if _read_on(readings, label) and not bundle.question_declared:
-            # Everything declared with a question asked late is late too: said once, of the question.
-            asked.append(label)
+        if bundle.reading_scope.question_after_runs is not None or (
+            _read_on(readings, label) and not bundle.question_declared
+        ):
+            # Everything declared with a question set late is late too: said once, of the question, under it.
             continue
         declared = bundle.declared
         if declared is not None and _after(declared.question_declared_at, first_result, f"the question on {label}"):
@@ -686,9 +731,6 @@ def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: M
             if floor.aspect == label and _after(floor.declared_at, first_result, f"floor {floor.key}"):
                 floors.setdefault(floor_statement(floor.clause, candidate="the arm"), []).append(label)
     lines: list[str] = []
-    if asked:
-        its = "its readings are" if len(asked) == 1 else "their readings are"
-        lines.append(f"The question was asked after the first run on {_on(asked, campaign)}, so {its} leads.")
     if worded:
         its = "its readings keep" if len(worded) == 1 else "their readings keep"
         lines.append(
@@ -714,7 +756,7 @@ def _on(labels: Sequence[str], campaign: EvalCampaign) -> str:
     aspect`` where they are all of a campaign's several."""
     if len(labels) > 1 and len(labels) == len(campaign.aspects):
         return "every aspect"
-    return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+    return _listed(labels)
 
 
 def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:

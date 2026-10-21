@@ -33,10 +33,10 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import (
     NO_AXIS_EXPLORATORY,
     NO_QUESTION_EXPLORATORY,
-    asked_in_time,
     asks_a_question,
     evidence_digest,
     exploratory_disclosure,
+    question_axes,
 )
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.reporter_kind import ReporterCase, rebuild_bundle
@@ -330,17 +330,21 @@ async def test_an_aspect_with_no_margin_compares_no_pass_rate_yet_its_floors_and
     assert rate is not None and rate.samples is not None and rate.interval is not None
 
 
-async def test_a_question_asked_after_the_first_run_never_grows_the_exploratory_family() -> None:
-    """The pass rate is a hypothesis only of a question asked in time: in the exploratory family it would move every
-    other reading's adjusted p over unchanged runs."""
+async def test_a_question_asked_after_the_first_run_compares_its_pass_rate_as_one_asked_in_time() -> None:
+    """Disclosed, never enforced (owner, 2026-10-21): the pass rate is a hypothesis of the question whenever it was
+    asked, so a question asked after the runs reads the same family, the pass rate in it once, and says when."""
     late, _, _ = await _shape(5, asked_at="2099-01-01T00:00:00+00:00")
     early, _, _ = await _shape(5)
-    (exploratory,) = late.multiple_comparisons.families
+    (after,) = late.multiple_comparisons.families
     (asked,) = early.multiple_comparisons.families
-    assert exploratory.aspect is None and asked.aspect == early.aspect
-    assert not [comparison for comparison in exploratory.comparisons if comparison.reading == "trial"]
+    assert after.aspect == late.aspect and asked.aspect == early.aspect
+    assert [comparison.reading for comparison in after.comparisons].count("trial") == 1
     assert [comparison.reading for comparison in asked.comparisons].count("trial") == 1
+    assert after.family_size == asked.family_size
     assert late.floor_contrasts == early.floor_contrasts, "the floors read the same values either way"
+    flag = late.reading_scope.question_after_runs
+    assert flag is not None and flag.question_at == "2099-01-01T00:00:00+00:00"
+    assert early.reading_scope.question_after_runs is None
 
 
 async def test_the_aspect_pass_rate_is_read_at_the_level_it_is_asked_for() -> None:
@@ -388,7 +392,7 @@ async def test_a_question_naming_no_axis_of_this_aspect_is_not_asked_of_it_and_s
     unasked = bundle.declared.model_copy(
         update={"design": bundle.declared.design.model_copy(update={"merit_axes": None})}
     )
-    assert not asks_a_question(unasked) and not asked_in_time(unasked, None)
+    assert not asks_a_question(unasked) and question_axes(unasked) is None
     assert exploratory_disclosure(unasked) == NO_AXIS_EXPLORATORY
     assert "names no axis this aspect measures" in NO_AXIS_EXPLORATORY
     assert exploratory_disclosure(unasked.model_copy(update={"question": ""})) == NO_QUESTION_EXPLORATORY

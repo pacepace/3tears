@@ -27,6 +27,7 @@ from threetears.evals.analysis import (
     AnalysisContextBundle,
     aspect_view,
     DisclosureBlock,
+    QuestionScope,
     assemble_context_bundle,
     build_code_only_report,
 )
@@ -149,15 +150,19 @@ class TestVerdictOrder:
     def test_an_unscoped_question_is_absent(self) -> None:
         assert _bundle(question="anything else?", merit_axes=[]).verdict_order.question is None
 
-    def test_a_question_asked_after_the_first_run_scopes_nothing(self) -> None:
+    def test_a_question_asked_after_the_first_run_scopes_the_bars_as_one_asked_before_it(self) -> None:
+        """Disclosed, never enforced (owner, 2026-10-21): when the question was asked changes no scope."""
         campaign, storage = toyhost_campaign()
-        late = redeclared(
-            campaign,
-            question="is it accurate?",
-            asked_at="2099-01-01T00:00:00+00:00",
-            design={"merit_axes": ["quality"]},
-        )
-        assert assemble_context_bundle(late, storage=storage, profile=toyhost_profile()).verdict_order.question is None
+
+        def scope(asked_at: str) -> QuestionScope | None:
+            asked = redeclared(
+                campaign, question="is it accurate?", asked_at=asked_at, design={"merit_axes": ["quality"]}
+            )
+            return assemble_context_bundle(asked, storage=storage, profile=toyhost_profile()).verdict_order.question
+
+        late, early = scope("2099-01-01T00:00:00+00:00"), scope("2000-01-01T00:00:00+00:00")
+        assert late is not None and late.merit_axes == ["quality"]
+        assert late == early
 
 
 class TestTheDeclaredPriorityReachesTheReport:

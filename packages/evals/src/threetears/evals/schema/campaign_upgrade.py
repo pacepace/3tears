@@ -67,9 +67,9 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
       same reading of the same kind are one floor: the tighter ``max_points`` of two rate drops, since dropping the
       tighter would loosen what its author asked to be warned of, and one cost floor.
     - **When it was declared**: the latest live question's ``asked_at``, since the campaign's question is asked in full
-      only once its last part was, and a reading confirms only what was asked before the evidence existed. Never the
-      design's ``declared_at``, which every later write of the design re-stamps (naming the control after runs joined,
-      among them), so reading it would turn a pre-registered question post hoc. The design's time stands only when no
+      only once its last part was, and a page says when a question came after the evidence. Never the design's
+      ``declared_at``, which every later write of the design re-stamps (naming the control after runs joined, among
+      them), so reading it would date a pre-registered question after its runs. The design's time stands only when no
       question is live. ``declared_by`` is the design's. None and empty with no design. **The call** is None: no v15
       campaign recorded one.
 
@@ -80,8 +80,8 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
     **Total: every stored v15 campaign upgrades.** A step that refused a stored document would make it unreadable, so
     what v15 never validated is read rather than refused: a run named twice is held once, in first-named order; a
     live question whose ``asked_at`` is missing or is not an ISO-8601 time with an offset leaves the campaign's
-    question undated (``declared_at`` None), read as asked after the evidence, since which part was asked last cannot
-    be said; a question with no ``id`` or ``text`` is read as having none.
+    question undated (``declared_at`` None), disclosed as possibly set after the evidence, since which part was asked
+    last cannot be said; a question with no ``id`` or ``text`` is read as having none.
 
     The aspect's ``asked_at`` is the campaign's ``declared_at``: the one question the aspect is asked, dated as the
     campaign's was.

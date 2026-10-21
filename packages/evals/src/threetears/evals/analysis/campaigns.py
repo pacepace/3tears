@@ -1642,8 +1642,9 @@ def _with_control(
     """``arms`` with the control addressed from a member run first, named now, or with no control.
 
     When it is named is recorded on the arm (``named_at``): a control named after an aspect's first result was
-    chosen once the evidence existed, so that aspect's comparisons read as post hoc (its bundle dates the aspect's
-    question no earlier than the naming); one named after the arms launched and before a result landed was not.
+    chosen once the evidence existed, so its bundle dates the aspect's question no earlier than the naming, which
+    the aspect's pages disclose as set after the runs; one named after the arms launched and before a result landed
+    was not.
 
     :raises ValidationFailedError: The run is not a member of the campaign.
     """
