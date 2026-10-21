@@ -39,6 +39,13 @@ from uuid import UUID
 
 from uuid_utils import uuid7
 
+from threetears.core.coordination.tables import STORAGE_FAILURES
+from threetears.core.exceptions import (
+    ConcurrentModificationError,
+    DataLayerUnavailableError,
+    GenerationNotCommittedError,
+    GenerationUnavailableError,
+)
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -51,6 +58,7 @@ __all__ = [
     "RETRACTED_TAG",
     "SAME_EVENT_RATIONALE",
     "MemoryMarks",
+    "WriteIncompleteError",
     "Written",
     "correct_beside",
     "is_permanent",
@@ -72,6 +80,55 @@ RETRACTED_SALIENCE_PREFIX = "retracted_salience:"
 _BECAUSE = RETRACTED_BECAUSE_PREFIX
 #: Why a memory was replaced by :func:`write_once`, kept on the edge.
 SAME_EVENT_RATIONALE = "the same event, written again in the same turn or the next"
+
+#: What a step after the new memory's commit may fail on: the commit stands, so the write is incomplete.
+_AFTER_COMMIT_FAILURES: tuple[type[Exception], ...] = (
+    *STORAGE_FAILURES,
+    ConcurrentModificationError,
+    GenerationUnavailableError,
+)
+
+
+class WriteIncompleteError(DataLayerUnavailableError):
+    """The new memory was written, and a step after its commit was not.
+
+    ``unfinished`` names the step: ``"generation"``, the table generation the commit should
+    have advanced, so a search may miss the memory for a while; ``"edges"``, the links from
+    the memories it replaces or corrects; ``"mark"``, the mark that makes what it replaces
+    stop reading as current. A caller must not write the memory again: it is stored.
+
+    A :class:`~threetears.core.exceptions.DataLayerUnavailableError`, so a handler written for
+    a storage outage still catches it; ``__cause__`` carries the failure.
+
+    :ivar memory_id: the memory that was written
+    :ivar unfinished: the step that was not done
+    :ivar source_ids: the memories it replaces or corrects, which may still read as current
+        beside it; empty for a memory written on its own
+    """
+
+    def __init__(
+        self,
+        memory_id: UUID,
+        unfinished: Literal["generation", "edges", "mark"],
+        cause: Exception,
+        source_ids: Sequence[UUID] = (),
+    ) -> None:
+        super().__init__(f"memory {memory_id} was written, but its {unfinished} step failed: {cause}")
+        self.memory_id = memory_id
+        self.unfinished: Literal["generation", "edges", "mark"] = unfinished
+        self.source_ids: tuple[UUID, ...] = tuple(source_ids)
+
+
+async def _save_new(
+    memories: MemoriesCollection, entity: MemoryEntity, memory_id: UUID, source_ids: Sequence[UUID] = ()
+) -> None:
+    """Save a new memory, saying when it committed and its generation did not advance."""
+    try:
+        await memories.save_entity(entity)
+    except GenerationNotCommittedError:
+        raise
+    except GenerationUnavailableError as exc:
+        raise WriteIncompleteError(memory_id, "generation", exc, source_ids) from exc
 
 
 def is_permanent(memory: MemoryEntity | dict[str, Any] | None) -> bool:
@@ -172,20 +229,23 @@ async def _write_linked(
     entity = memories.create(
         {**fields, "memory_id": new_id, "agent_id": agent_id, "date_created": now, "date_updated": now}
     )
-    await memories.save_entity(entity)
+    await _save_new(memories, entity, new_id, source_ids)
     # the edges after the new memory commits, so their keys have a target
-    for source_id in source_ids:
-        edge = consolidations.create(
-            {
-                "agent_id": agent_id,
-                "consolidated_memory_id": new_id,
-                "source_memory_id": source_id,
-                "rationale": rationale,
-                "date_created": now,
-                "date_updated": now,
-            }
-        )
-        await consolidations.save_entity(edge)
+    try:
+        for source_id in source_ids:
+            edge = consolidations.create(
+                {
+                    "agent_id": agent_id,
+                    "consolidated_memory_id": new_id,
+                    "source_memory_id": source_id,
+                    "rationale": rationale,
+                    "date_created": now,
+                    "date_updated": now,
+                }
+            )
+            await consolidations.save_entity(edge)
+    except _AFTER_COMMIT_FAILURES as exc:
+        raise WriteIncompleteError(new_id, "edges", exc, source_ids) from exc
     return new_id
 
 
@@ -221,6 +281,7 @@ async def supersede(
     :return: the new memory's id
     :rtype: UUID
     :raises ValueError: when asked to replace a permanent memory without ``allow_permanent``
+    :raises WriteIncompleteError: when the new memory was written and a step after it failed
     """
     if not allow_permanent:
         for source_id in source_ids:
@@ -229,7 +290,10 @@ async def supersede(
     new_id = await _write_linked(
         memories, consolidations, agent_id=agent_id, source_ids=source_ids, fields=fields, rationale=rationale
     )
-    await memories.mark_superseded(agent_id, source_memory_ids=source_ids, gist_id=new_id)
+    try:
+        await memories.mark_superseded(agent_id, source_memory_ids=source_ids, gist_id=new_id)
+    except _AFTER_COMMIT_FAILURES as exc:
+        raise WriteIncompleteError(new_id, "mark", exc, source_ids) from exc
     return new_id
 
 
@@ -306,6 +370,7 @@ async def write_once(
     :ptype when_replaceable: Literal["replace", "hold"]
     :return: what was written, replaced, held and left standing
     :rtype: Written
+    :raises WriteIncompleteError: when the new memory was written and a step after it failed
     """
     same: list[dict[str, Any]] = []
     if threshold is not None and near_message_ids and consolidations is not None and fields.get("embedding"):
@@ -338,7 +403,7 @@ async def write_once(
     entity = memories.create(
         {**fields, "memory_id": new_id, "agent_id": agent_id, "date_created": now, "date_updated": now}
     )
-    await memories.save_entity(entity)
+    await _save_new(memories, entity, new_id)
     return Written(memory_id=new_id, standing=standing)
 
 
@@ -370,6 +435,7 @@ async def correct_beside(
     :ptype rationale: str | None
     :return: the new memory's id
     :rtype: UUID
+    :raises WriteIncompleteError: when the new memory was written and its edges were not
     """
     return await _write_linked(
         memories, consolidations, agent_id=agent_id, source_ids=source_ids, fields=fields, rationale=rationale

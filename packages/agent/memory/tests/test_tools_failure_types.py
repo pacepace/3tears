@@ -22,7 +22,7 @@ from langchain_core.embeddings import DeterministicFakeEmbedding
 from threetears.agent.memory import tools
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import ConsolidationCycleError
-from threetears.agent.memory.revisions import RETRACTED_TAG, Written
+from threetears.agent.memory.revisions import RETRACTED_TAG, WriteIncompleteError, Written
 from threetears.core.exceptions import (
     ConcurrentModificationError,
     DataLayerUnavailableError,
@@ -453,17 +453,54 @@ class TestMemoryAddWhenTheWriteFails:
         [*_WRITE_OUTAGES, ValueError("memory is permanent and is never superseded")],
         ids=[*_WRITE_OUTAGE_IDS, "ValueError"],
     )
-    async def test_a_failed_near_duplicate_replace_falls_through_to_a_plain_write(
+    async def test_a_failed_near_duplicate_replace_is_the_store_error_and_writes_no_second_copy(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
         monkeypatch: pytest.MonkeyPatch,
         failure: Exception,
     ) -> None:
+        # the replace may have committed the new memory before it failed, so a plain
+        # write after it would store the same fields twice
+        plain_writes: list[object] = []
+
+        async def _write_once(*args: Any, **kwargs: Any) -> Written:
+            plain_writes.append((args, kwargs))
+            return await _wrote(*args, **kwargs)
+
         monkeypatch.setattr(tools, "supersede", _raising(failure))
-        monkeypatch.setattr(tools, "write_once", _wrote)
+        monkeypatch.setattr(tools, "write_once", _write_once)
         store = _FakeStore(find_similar_for_dedup=[_row()])
         result = await _add(permissive_memory_authorizer, store)
+        assert result.startswith("[TOOL ERROR] memory_add: store failed"), result
+        assert plain_writes == []
+
+    @pytest.mark.parametrize(
+        "outage",
+        [DataLayerUnavailableError("broker down"), KvError("kv down")],
+        ids=["DataLayerUnavailableError", "KvError"],
+    )
+    @pytest.mark.parametrize("read", ["find_similar_for_dedup", "find_for_recall"])
+    async def test_a_near_duplicate_search_that_cannot_reach_storage_still_stores(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        monkeypatch: pytest.MonkeyPatch,
+        outage: Exception,
+        read: str,
+    ) -> None:
+        monkeypatch.setattr(tools, "supersede", _raising(AssertionError("a failed search replaces nothing")))
+        monkeypatch.setattr(tools, "write_once", _wrote)
+        store = _FakeStore(fail={read: outage}, find_similar_for_dedup=[_row()])
+        result = await _add(permissive_memory_authorizer, store)
         assert result.startswith("Stored as [memory:") and "replaces" not in result, result
+
+    @pytest.mark.parametrize("bug", _BUGS, ids=_bug_ids())
+    async def test_a_bug_in_the_near_duplicate_search_propagates(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        bug: Exception,
+    ) -> None:
+        with pytest.raises(type(bug)):
+            await _add(permissive_memory_authorizer, _FakeStore(fail={"find_similar_for_dedup": bug}))
 
     @pytest.mark.parametrize("bug", _BUGS, ids=_bug_ids())
     async def test_a_bug_in_the_near_duplicate_replace_propagates(
@@ -629,3 +666,59 @@ class TestARevisionThatCannotBeWrittenChangesNothing:
         monkeypatch.setattr(tools, revision, _raising(bug))
         with pytest.raises(type(bug)):
             await call(permissive_memory_authorizer)
+
+
+def _landed(unfinished: str = "mark", source_ids: tuple[UUID, ...] = (_TARGET,)) -> WriteIncompleteError:
+    cause = DataLayerUnavailableError("broker down")
+    landed = WriteIncompleteError(uuid4(), unfinished, cause, source_ids)  # type: ignore[arg-type]
+    landed.__cause__ = cause
+    return landed
+
+
+class TestAWriteThatLandedIsSaidToHaveLanded:
+    """a memory written before a later step failed is stored: saying "store failed" would have it written twice."""
+
+    async def test_a_near_duplicate_replace_says_the_memory_is_stored_and_what_still_reads_as_current(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        landed = _landed()
+        plain_writes: list[object] = []
+
+        async def _write_once(*args: Any, **kwargs: Any) -> Written:
+            plain_writes.append((args, kwargs))
+            return await _wrote(*args, **kwargs)
+
+        monkeypatch.setattr(tools, "supersede", _raising(landed))
+        monkeypatch.setattr(tools, "write_once", _write_once)
+        result = await _add(permissive_memory_authorizer, _FakeStore(find_similar_for_dedup=[_row()]))
+        assert result.startswith(f"Stored as [memory:{landed.memory_id}]"), result
+        assert f"[memory:{_TARGET}]" in result and "still read as current" in result, result
+        assert "do not store it again" in result, result
+        assert plain_writes == []
+
+    async def test_a_correction_says_the_memory_is_stored(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        landed = _landed("edges")
+        monkeypatch.setattr(tools, "supersede", _raising(landed))
+        result = await _add(permissive_memory_authorizer, _FakeStore(), corrects=[str(_TARGET)])
+        assert result.startswith(f"Stored as [memory:{landed.memory_id}]"), result
+        assert "do not store it again" in result, result
+
+    async def test_a_plain_write_whose_generation_did_not_advance_says_it_is_stored(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        landed = _landed("generation", ())
+        monkeypatch.setattr(tools, "write_once", _raising(landed))
+        result = await _add(permissive_memory_authorizer, _FakeStore())
+        assert result.startswith(f"Stored as [memory:{landed.memory_id}]"), result
+        assert "may not show in searches" in result, result
+
+    async def test_an_update_says_the_replacement_is_written_and_keeps_its_name(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        landed = _landed()
+        monkeypatch.setattr(tools, "supersede", _raising(landed))
+        result = await _update(permissive_memory_authorizer, content="lives in York")
+        assert result.startswith(f"Updated: [memory:{landed.memory_id}] replaces [memory:{_TARGET}]."), result
+        assert "do not update it again" in result, result
