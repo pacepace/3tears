@@ -13,7 +13,8 @@ Every campaign is read through one **page**, and every door into it returns the 
 glance, and then holds one fold per aspect, each that aspect's own page. Each door builds it with the one builder over
 the campaign's evidence, so none adds, drops or reorders anything. Most of what a reader needs is countable — who
 ran, what got lost and why, which case failed, what the judge said — so code writes all of it; a model's analysis,
-when one was written, adds only findings and a recommendation, each pinned to the evidence it rests on.
+when one was written, adds only a summary across the aspects, findings and a recommendation, each finding and the
+recommendation pinned to the evidence it rests on.
 
 ```python
 page = result.page                                           # the quick path
@@ -39,21 +40,24 @@ first screen. Top to bottom:
 |---|---|---|---|
 | 1 | each missed bar, then each broken floor | each missed bar | each missed bar |
 | 2 | title and question | title and question | title and question |
-| 3 | the writer's recommendation | **By aspect, pair by pair** | **By aspect, measure by measure** |
-| 4 | **By aspect**: each candidate against the control | the writer's recommendation | **Bars** |
-| 5 | **Bars**, then **To show no worse than the margin** | **Bars** | |
-| 6 | the call | the call | |
+| 3 | the writer's summary | the writer's summary | the writer's summary |
+| 4 | the writer's recommendation | the writer's recommendation, or no clear winner | **By aspect, measure by measure** |
+| 5 | **By aspect**: each candidate against the control, then **To show no worse than the margin** | **By aspect, pair by pair** | **Bars** |
+| 6 | **Bars**, then the call | **Bars**, then the call | |
 
 The warnings are bold, above the title (in HTML each a `<p role="alert">`), and the writer's why sits beside each
 one the recommendation answers. A warning only warns: nothing on the page picks an arm, and the bars and floors decide
-nothing.
+nothing. The summary is the memo's one sentence across every aspect, written for every kind, so a measurement and a
+choice with no clear winner open on what they found too. A page with no memo has no summary, and says where the
+recommendation goes that none was written (a measurement, which recommends nothing, says nothing there).
 
 `analyses_list` lists each stored analysis by the same warnings, word for word and without the writer's why, then
 its verdict: the aspect page's verdict line for one aspect, what code read on each aspect for several
 (`billing: candidate shown worse; tone: candidate shown better`). With no missed bar and no broken floor, the line is
 the verdict alone.
 
-A change of two aspects, one regressing past its floor and one improving, opens:
+A change of two aspects, one regressing past its floor and one improving, with a memo recommending production,
+opens:
 
 ```markdown
 **Bar missed on tone: candidate misses the bar on Measuring spend, all roles: its whole interval is on the bad side of the bar.**
@@ -63,7 +67,11 @@ A change of two aspects, one regressing past its floor and one improving, opens:
 # support queue
 "Does the candidate answer support requests as well as production?"
 
-No recommendation was written: no analysis has been generated over this campaign.
+The candidate answers in the house tone far more often but fails billing, so it is not yet the better arm.
+
+**Recommended:** production (high confidence)
+
+- Billing is where refunds are lost, and the candidate breaks its floor there.
 
 **By aspect**
 
@@ -221,8 +229,8 @@ Glossary start folded, and a nav link opens the one it lands on.
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Findings are
   evidence: one that names no reading is not a finding, so it is not laid out here but noted in one line under Not
   tested (`The analysis also noted: …`). The memo's words are held to the page's style (below).
-  A campaign's recommendation is on its first screen, not in a fold; the writer's summary of the aspect opens
-  the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
+  A campaign's summary and recommendation are on its first screen, not in a fold; the writer's summary of the aspect
+  opens the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
 - **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
   Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
   ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
@@ -263,8 +271,8 @@ identifier passes on its way to a reader. A memo's sentence breaking a rule code
 restating a measured number becomes the table's own row); one saying the evidence cannot confirm a difference a
 floor read broken or held becomes code's counts on that reading, the size of the difference left to more cases, and
 is disclosed in Methods. No floor rewrites a memo's recommendation: a floor only warns, and the page's first line is
-the warning. Where the memo says what to run next (a next step and its `Why`, an aspect summary's
-meaning), it states no sample size or cost of its own: a sentence proposing more cases at a count the `To
+the warning. Where the memo says what to run next (a next step and its `Why`, the summary, a reason, an aspect
+summary's meaning), it states no sample size or cost of its own: a sentence proposing more cases at a count the `To
 show the floors hold` table does not state, or naming a cost it does not price, becomes code's sentence on the cases
 showing the floors hold needs once and is dropped after
 (a next step it replaces keeps none of the writer's facts, and one with nothing projected goes); each is listed in
@@ -550,12 +558,15 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
-**One memo per campaign: findings, one recommendation, a summary per aspect.** The writer authors no headline, no
-chart and no count: the first screen is code's. It reads the campaign bundle (each aspect's readings, trials, their
-states, causes, failed checks and the judge's reasons) and writes findings, each naming in `trials` the trials it is
-drawn from; at most one recommendation (`Recommendation`: an arm, reasons, confidence, the findings it `rests_on`);
-one summary per aspect (what changed, how sure, what it means here), laid out at the top of that aspect's fold; and
-next steps. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
+**One memo per campaign: a summary, findings, one recommendation, a summary per aspect.** The writer authors no
+headline, no chart and no count: the warnings and readings are code's. It reads the campaign bundle (each aspect's
+readings, trials, their states, causes, failed checks and the judge's reasons) and writes one `summary`, its read
+across every aspect in a sentence, required of every kind and laid out after the warnings and the question; findings,
+each naming in `trials` the trials it is drawn from; at most one recommendation (`Recommendation`: an arm, reasons,
+confidence, the findings it `rests_on`); one summary per aspect (what changed, how sure, what it means here), laid out
+at the top of that aspect's fold; and next steps. The summary is prose like a finding's body: a number in it is a
+figure reference code renders, an empty one is refused through the one repair round, and the page holds it to the
+style pass. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
 
 | Kind | The writer must | The writer may not |
 |---|---|---|

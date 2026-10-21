@@ -130,6 +130,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             )
         ],
         aspect_summaries=overrides.pop("aspect_summaries", [_summary()]),
+        summary=overrides.pop("summary", "Alpha-2 is much faster at equal quality, so it is the planner to run."),
         next=overrides.pop(
             "next",
             [NextStep(title="Confirm finalists at k=5.", why="k=1 is noise-dominated.", leverage="high", lever="")],

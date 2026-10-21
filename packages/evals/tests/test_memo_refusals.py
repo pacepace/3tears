@@ -23,11 +23,22 @@ from packages.evals.tests.aspect_support import with_control
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, arm_at, cell_at, memo_payload
+from packages.evals.tests.toyhost_memo import (
+    MODEL,
+    PROMPT,
+    PROMPT_ID,
+    FixturedClient,
+    alias_at,
+    arm_at,
+    cell_at,
+    memo_payload,
+)
 from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle, assemble_context_bundle, generate_analysis
 from threetears.evals.analysis.campaign_readings import AspectReading
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
+from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.schema.models import utc_now_iso
 
@@ -224,6 +235,42 @@ class TestEachAspectIsSummarisedOnce:
         payload = memo_payload(bundle)
         payload["aspect_summaries"].append(payload["aspect_summaries"][0])
         with pytest.raises(SoundnessRefusal, match="are summarised more than once"):
+            await _generate(bundle, payload)
+
+
+class TestTheSummaryReadsAcrossEveryAspect:
+    """Every kind's memo carries one summary across its aspects, held to the reference rules a finding's prose is."""
+
+    @pytest.mark.parametrize("written", ["", "   \n "])
+    async def test_an_empty_summary_is_refused_naming_it(self, written: str) -> None:
+        bundle = _bundle()
+        payload = memo_payload(bundle)
+        payload["summary"] = written
+        with pytest.raises(SoundnessRefusal, match=r"`summary` is empty"):
+            await _generate(bundle, payload)
+
+    async def test_a_memo_with_no_summary_is_refused_as_off_the_contract(self) -> None:
+        bundle = _bundle()
+        payload = memo_payload(bundle)
+        del payload["summary"]
+        with pytest.raises(SoundnessRefusal, match=r"does not match the analysis contract(.|\n)*summary"):
+            await _generate(bundle, payload)
+
+    async def test_a_figure_reference_in_the_summary_renders_as_code_s_number(self) -> None:
+        bundle = _bundle()
+        payload = memo_payload(bundle)
+        narrow = alias_at(bundle, TOYHOST_NARROW)
+        payload["summary"] = f"Over {{{{{narrow}|total_ms|measure|n}}}} documents the narrow width is faster."
+        analysis = await _generate(bundle, payload)
+        (aspect,) = analysis.aspects
+        resolved = resolve_reading(aspect.decision_surface, cell_at(bundle, TOYHOST_NARROW), "total_ms", "measure")
+        assert analysis.document.summary == f"Over {format_number(resolved.n)} documents the narrow width is faster."
+
+    async def test_a_reference_in_the_summary_naming_nothing_is_refused_where_it_sits(self) -> None:
+        bundle = _bundle()
+        payload = memo_payload(bundle)
+        payload["summary"] = "The narrow width is faster by {{c99|total_ms|measure|mean}}."
+        with pytest.raises(SoundnessRefusal, match=r"summary: "):
             await _generate(bundle, payload)
 
 

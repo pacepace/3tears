@@ -193,6 +193,7 @@ class TestACaveatSaysWhichClassOfQualificationItIs:
                 }
             ],
             "aspect_summaries": [],
+            "summary": "Nothing here moves the control.",
             "next": [],
         }
 

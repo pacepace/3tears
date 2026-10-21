@@ -423,6 +423,12 @@ short list of null phrasings (`analysis/null_claims.py`) is refused when its fin
 established alike. Only "does this title say the arms are alike" is read off the words; nothing is parsed, so a
 reworded null passes, and the judge measures the rest.
 
+**The memo's summary opens the campaign's page, after code's warnings** (2026-10, #864). The owner asked for a
+holistic summary first, then the recommendation, then the aspects. A measurement's memo and a no-clear-winner
+choice's held no prose reading across the aspects at all, so every kind's memo carries one `summary`, held to the
+reference and style rules a finding's body is, and the page reads warnings, question, summary, recommendation, then
+code's readings by aspect. The verdict, the readings and every number stay code's.
+
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
 
 *Evidence:* analysis writer, 2026-09, a prompt-latitude A/B (5 cases, k=3) and a 4-condition form × input study (4 cases, k=2): effects of −0.27 and −0.8 against within-cell SD 0.33–0.68 in the first (variant not adopted), and every gap in the second (≤ 0.33) inside the judge's re-score noise (62% exact, 0.46 mean absolute difference); single campaign each.

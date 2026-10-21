@@ -3,7 +3,7 @@
 **The boundary.** This contract types what the document is MADE OF and the
 hooks code acts on, never what it says or how much it says:
 
-- **Typed here:** the unit kinds (finding, the one recommendation, an aspect's summary, next step); the order of
+- **Typed here:** the unit kinds (the summary, finding, the one recommendation, an aspect's summary, next step); the order of
   every list, which is the reading order; links between units by POSITION, so a recommendation that rests on
   findings ``[0, 2]`` cites the first and third; the readings code turns into numbers (a cell and a
   measure or judged dimension); and a closed vocabulary code branches or renders on.
@@ -12,11 +12,11 @@ hooks code acts on, never what it says or how much it says:
   tier field, and a payload that supplies one is refused as an unknown key.
 - **The model's judgment:** what a finding is about and how many there are; every title, body,
   proposal, answer and rationale, in prose with markdown allowed.
-- **Not the model's at all:** the headline, a summary, a chart, an arm's standing, and any count, rate, cost or n.
-  The report's first screen — its verdict line and scoreboard — is written by code from the evidence bundle, so the
-  writer authors findings, one recommendation, a short summary per aspect and next steps only, the recommendation
-  pinned to the findings it rests on and each finding to the trials it is drawn from (``trials``, by the campaign
-  bundle's trial ids). Code reports, the writer recommends, a person decides.
+- **Not the model's at all:** the headline, a chart, an arm's standing, and any count, rate, cost or n.
+  The report's warnings, readings and scoreboard are written by code from the evidence bundle, so the writer authors
+  one short summary across every aspect, findings, one recommendation, a short summary per aspect and next steps
+  only, the recommendation pinned to the findings it rests on and each finding to the trials it is drawn from
+  (``trials``, by the campaign bundle's trial ids). Code reports, the writer recommends, a person decides.
 
 **Sized to what every writer accepts.** A strict schema derived from the stored analysis models was
 refused by every Anthropic writer as a grammar too large, and the limit counts free-text and list
@@ -34,7 +34,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from threetears.evals.schema.prose import ModelProse
 
@@ -172,10 +172,17 @@ class AspectSummary(_Authored):
 
 
 class AuthoredCampaignAnalysis(_Authored):
-    """A memo over a campaign of aspects: findings across them, at most one recommendation, a summary per aspect.
+    """A memo over a campaign of aspects: a summary across them, findings, at most one recommendation, a summary per
+    aspect.
 
     The recommendation is a list of at most one, because the contract holds no nullable slot: empty is a measurement's
     memo, which recommends nothing, and a choice's that found no clear winner. :meth:`recommended` reads it.
+
+    ``summary`` is the one part every kind writes: the writer's read across every aspect, which the campaign's page
+    opens on after code's warnings, before the recommendation, so a memo that recommends nothing still says what the
+    campaign found. It is written after the aspect summaries, the order a writer reaches a read across them in; the
+    page's order is the page's. It is prose like a finding's body, held to the same rules: a number in it is a figure
+    reference code renders, and the page holds each sentence to the style pass.
     """
 
     findings: list[Finding] = Field(description="The findings, across every aspect, in reading order.")
@@ -186,7 +193,24 @@ class AuthoredCampaignAnalysis(_Authored):
         ),
     )
     aspect_summaries: list[AspectSummary] = Field(description="One per aspect, in the campaign's order.")
+    summary: ModelProse = Field(
+        description=(
+            "Your read across every aspect, in one sentence: what the campaign found and what it means for its "
+            "question, whatever it recommends."
+        ),
+    )
     next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
+
+    @field_validator("summary")
+    @classmethod
+    def _summary_is_written(cls, summary: str) -> str:
+        """Refuse a summary of nothing but whitespace: every kind's memo says what the campaign found.
+
+        :raises ValueError: The summary holds no word.
+        """
+        if not summary.strip():
+            raise ValueError("`summary` is empty: write the memo's read across every aspect, whatever it recommends")
+        return summary
 
     def recommended(self) -> Recommendation | None:
         """The memo's one recommendation, or None where it makes none.

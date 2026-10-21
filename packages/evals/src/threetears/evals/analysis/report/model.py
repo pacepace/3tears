@@ -84,8 +84,10 @@ SECTION_TITLES: dict[str, str] = {
 #: The sections the first screen is made of.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
 
-#: What a text block's author wrote it as.
+#: What a text block's author wrote it as. ``summary`` is the memo's read across every aspect, which a campaign's page
+#: opens on after its warnings.
 TextRole = Literal[
+    "summary",
     "answer",
     "recommendation",
     "reason",
@@ -902,11 +904,12 @@ class CampaignAspectFold(EvalDocumentModel):
 
 
 class CampaignReport(EvalDocumentModel):
-    """A campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then one
-    fold per aspect.
+    """A campaign's page: the writer's summary and recommendation, what code read across its aspects, the person's
+    call, then one fold per aspect.
 
-    **The first screen, in order** (:attr:`blocks`, every one in the ``header`` section): every broken floor, one loud
-    line each, above the title; the question; the writer's recommendation, or a line saying none was written; code's
+    **The first screen, in order** (:attr:`blocks`, in the ``header`` and ``scoreboard`` sections): every missed bar,
+    broken floor and guardrail an arm is not shown safe on, one loud line each, above the title; the question; the
+    writer's summary across every aspect; the writer's recommendation, or a line saying none was written; code's
     table of every aspect × candidate (its change against the control, the interval it was read on, the margin and
     what it shows); the cases that would settle each unclear row; the person's call, or that none is recorded, and
     any broken floor it overrides. :attr:`blocks` may also hold the memo's findings and next steps (``memo``), which

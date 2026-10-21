@@ -209,6 +209,7 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
         )
     finally:
         await llm.aclose()
+    print(f"Summary: {analysis.document.summary}")  # the writer's read across every aspect, which the page opens on
     for finding in analysis.document.findings:
         print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code
     recommended = analysis.document.recommended()  # checked: recommending a candidate needs a separated reading

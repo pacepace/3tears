@@ -1,26 +1,28 @@
-"""Build a campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then
-one fold per aspect.
+"""Build a campaign's page: the writer's summary across its aspects, the recommendation, what code read on each
+aspect, the person's call, then one fold per aspect.
 
 Code reports, the writer recommends, a person decides, and the page keeps the three apart. What the first screen
 holds depends on the campaign's kind (:func:`~threetears.evals.analysis.campaign_readings.campaign_kind`). For every
 kind it opens, above the title, with **every bar an arm misses**, then **every broken floor**, then **every guardrail
 an arm is not shown safe on**, one loud line each, a bar or a floor followed by the writer's why where the memo
 recommends that arm over it: each only warns, and this is where it warns. Then **the question**, quoted whole as the
-campaign asks it. Then, for **a change**:
+campaign asks it. Then **the writer's summary**, its read across every aspect, for every kind that has a memo; a
+code-only page has none. Then **the writer's recommendation** for a change or a choice: the arm and how sure, then
+each reason; where the memo recommends nothing, one line by the campaign's kind (no clear winner); with no memo, one
+line saying no recommendation was written. A measurement recommends nothing, so it has no such line. Then, for
+**a change**:
 
-1. **The writer's recommendation**, the arm and how sure, then each reason; with no memo, one line saying no
-   recommendation was written.
-2. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
+1. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
    interval it was read on, the aspect's margin, and what the row shows (shown better, shown worse or unclear). Under
    it, the lines that change how a row reads: the level each interval was read at, an aspect with no margin (never
    shown worse), an aspect whose question came after its first run (its readings are leads), a margin or a floor
    declared after the runs, the test setup a row was read under where the arms ran under several.
-3. **What would settle each unclear row** on an aspect with a margin: the cases that would show the arm within it,
+2. **What would settle each unclear row** on an aspect with a margin: the cases that would show the arm within it,
    if the arms do not differ and if they differ as observed.
 
 For **a choice**: the table of every pair of arms on every aspect and the arm shown ahead, the writer's why for each
-aspect its pick is shown behind on, the frontier's reading of which arm clears a bar cheapest, then the writer's
-recommendation. For **a measurement**: each aspect's measures for its one arm, and no recommendation.
+aspect its pick is shown behind on, then the frontier's reading of which arm clears a bar cheapest. For **a
+measurement**: each aspect's measures for its one arm.
 
 Every kind then shows its bars table and the person's call (a measurement only once one is recorded), or that none is
 recorded yet; a call adopting an arm past a broken floor says which floor it overrides.
@@ -111,8 +113,8 @@ def build_campaign_report(
     call: CampaignCall | None = None,
     recommended_variant_key: str | None = None,
 ) -> CampaignReport:
-    """Lay a campaign out as its page: code's readings first, the writer's recommendation, the person's call, then one
-    fold per aspect.
+    """Lay a campaign out as its page: code's warnings first, the writer's summary and recommendation, code's readings
+    on each aspect, the person's call, the findings, then one fold per aspect.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -152,15 +154,17 @@ def build_campaign_report(
         blocks.append(
             DisclosureBlock(section="header", source="basis", text=f'"{" ".join(campaign.question.split())}"')
         )
-    if kind == "change":
+    # The writer's read across every aspect, then what it recommends, then the aspects code read them on.
+    blocks += _memo_summary_blocks(memo, style)
+    if kind != "measurement":
         blocks += _recommendation_blocks(memo, style, kind)
+    if kind == "change":
         blocks += _table_blocks(campaign, readings, reports)
         blocks += _settle_blocks(readings)
     elif kind == "choice":
         blocks += _pair_blocks(campaign, readings, reports)
         blocks += _behind_on(memo, style)
         blocks += _frontier_blocks(campaign, readings, reports)
-        blocks += _recommendation_blocks(memo, style, kind)
     else:
         blocks += _measure_blocks(campaign, readings, reports)
     blocks += _bar_blocks(readings, reports)
@@ -437,6 +441,14 @@ def _warning(floor: Floor | None, status: FloorStatus) -> str:
 def _points(value: float) -> str:
     """A change in points to one decimal, a whole number whole."""
     return format_number(round(value, 1))
+
+
+def _memo_summary_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
+    """The writer's read across every aspect, styled, the first thing the page says after code's warnings and the
+    question, for every kind; nothing with no memo, or where the style pass left none of it."""
+    if memo is None or not (said := style.prose(memo.summary, plans=True).strip()):
+        return []
+    return [TextBlock(section="header", role="summary", body=said)]
 
 
 def _recommendation_blocks(
