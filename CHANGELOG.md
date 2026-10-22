@@ -6,41 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: the campaign page opens on a summary across its aspects; the listing, the page JSON and the aspect label follow the page; a question set after the runs is disclosed, not demoted
-
-- **The memo reads across its aspects (#864).** `AuthoredCampaignAnalysis.summary` is required of every kind: one
-  sentence across every aspect saying what the campaign found and what it means for its question, held to the same
-  figure references and style pass as the rest of the memo. An empty one is refused through the repair round, so a
-  measurement's memo and a choice with no clear winner now say what they found too. The writer prompt asks for it in
-  rule 11 (no new rule; 23,908 of 24,500 characters).
-- **The page reads summary, then recommendation, then the aspects (#864).** After the missed bars, broken floors and
-  guardrails and the question: the writer's summary, the recommendation (now above a choice's pairs), then the aspect
-  table, pairs or measures, To settle, bars and the call, then the findings and one fold per aspect. The summary leads
-  the one-aspect page's memo and the reporter's memo text (`render_memo_as_written`) too, and where the style pass
-  would drop all of its one sentence it is kept as written.
-- **The listing line says what the page opens with (#895).** `analyses_list` (`analysis_verdict`) leads each line with
-  every bar an arm misses, then every floor a candidate breaks, in the page's own words over what was frozen with the
-  analysis, then the verdict. An analysis with neither lists what it did before.
-- **The page JSON keys its recommendation (#880).** `recommendation` is `{arm, variant_key, confidence}`, the key being
-  the one the analysis recorded, so a reader matches a recorded call by key and a relabelled arm no longer miscounts.
-  `CAMPAIGN_JSON_SHAPE` is 2.
-- **One rule names an aspect after its behavior (#879).** `aspect_label_for(behavior)` (`threetears.evals.schema`,
-  `/` written `-`) replaces three hand copies. An aspect in `campaign_create` or `campaign_update` may leave out its
-  `label` and is named by the rule; two unlabelled aspects in one write are refused.
-- **A question set after the runs is disclosed, not demoted (#901).** A campaign whose question was asked after an
-  aspect's first run reads that aspect exactly as if the question had come first: its own comparison family, rows and
-  pairs `confirmatory`, and a change may recommend a candidate on them. The bundle carries both times
-  (`reading_scope.question_after_runs`: `late`, `question` or `control`; `at`; `first_run_at`), the page JSON carries
-  it per aspect, and the campaign's page, each aspect's page and `analyses_list` say it in one sentence under the
-  question ("The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named
-  on …" for a control named after the first result); the writer's summary says it once, with the page's dates. A
-  margin or floor added after a late question is still said as declared after its first result. Bundle shape 60.
-
-**Breaking (pre-release line, no shims):** regenerable schema 12 -> 13, so stored analyses, insights and judge
-profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
-59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
-replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
-
 ### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
 
 - **A call the provider rationed is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
@@ -78,6 +43,116 @@ replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
 moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
 `threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
 and host; durable schema 16.1. See `packages/evals/MIGRATIONS.toml`.
+
+## v0.75.0 -- 2026-10-21
+
+### backup: a restore no longer fails on an extension the restoring role does not own
+
+**Fixed:** every restore of a database holding an extension a superuser installed (pgvector)
+failed when run as the application role, which is how restores run: `ysqlsh exit 3: ... must be
+owner of extension vector` on Yugabyte, and the same from `pg_restore` on Postgres. So restore
+verification never passed, and a disaster-recovery restore would stop part-way. Both dump tools
+write `COMMENT ON EXTENSION` after each extension, and only the extension's owner may run it. A
+restore now drops top-level `COMMENT ON EXTENSION` statements before loading (row data inside
+`COPY` blocks is never touched). Nothing is lost: `CREATE EXTENSION` sets the same comment from
+the extension's control file.
+
+**Changed:** a Postgres restore now runs `pg_restore --file=-` to turn the custom-format archive
+into SQL, and loads that through `psql --set ON_ERROR_STOP=1`, instead of `pg_restore --dbname`.
+`PostgresDriver.restore_argv` is therefore `psql`; a failing statement still stops the restore.
+
+**Added:** `threetears.backup.process.pipe_through`, which feeds a child's stdin and streams its
+stdout at once, with the same kill, timeout, stderr and short-feed guarantees as `feed_stdin`
+and `stream_stdout`. Also `DbDumpDriver.archive_to_sql_argv`, which a driver whose archive is
+not plain SQL overrides.
+
+### agent-memory: a failed memory replace never writes twice
+
+**Fixed:** when `memory_add` replaced a near-duplicate and a step after the new memory's commit
+failed, the tool answered "store failed". The agent retried, and the retry left two current
+memories (with an alias, "Alias already used"). Only the near-duplicate search may now fall
+through to a plain write, since nothing is written yet; once the replace starts, a failure is
+answered and never followed by a second write. A failure after the commit no longer stops the
+rest either: a lagging generation or a lost edge still lets the replaced memory be marked
+superseded, so it never stays current beside its replacement, and the worst unfinished step is
+the one reported.
+
+**Added:** `WriteIncompleteError` in `threetears.agent.memory.revisions`, raised when the new
+memory committed and a later step did not. Its `unfinished` is `generation`, `edges` or `mark`. It
+subclasses `DataLayerUnavailableError`, so existing storage handlers catch it as before.
+`memory_add` and `memory_update` now say the memory is stored, which step was not done and which
+memory may still read as current, and tell the agent not to store it again.
+
+**Fixed:** `memory_update` no longer moves a name back onto the old memory once the replacement
+holds it. A name cleared under a stale generation now goes ahead instead of reporting "nothing
+was changed".
+
+### Swallowed exceptions: eleven broad handlers guard only the call they mean (#893)
+
+**Changed:** a bug in an MCP identity provider, the registry's result wait, a langgraph
+anonymize rule, a scheduled-jobs fire body, or a host `KeyPurger` now propagates instead of
+being reported as an outage. A host `KeyPurger` that raises outside
+`(CollectionKeysRequestError, ValidationError)` makes `VersionedAnswers.retire_older_than` raise,
+after every retired version is cleared. A scheduled-jobs fire body that faults no longer runs
+twice. The fault is recorded on the row.
+
+**Fixed:** a JetStream result whose ack cannot be sent is returned, not failed. The tool already ran.
+
+### registry: a call the registry fails is answered `REGISTRY_INTERNAL_ERROR`
+
+**Added:** error code `REGISTRY_INTERNAL_ERROR`. A fault inside the registry while it handles a
+call, from parsing the request on, used to leave the agent with no reply until its own deadline.
+It is now logged at ERROR (with the call's log tags once the request parses), answered on the
+subject the agent is listening on (the inbox, or the delivery subject once the call was
+accepted), and propagates. The answer does not say whether the tool ran. A host maps it like any other registry failure.
+
+### agent-knowledge: invariants injected alone still reach the provenance footer
+
+**Fixed:** when ranking the situational knowledge faulted and the invariants were injected alone,
+the turn's metadata carried only the block: no `knowledge_injected_*` counts and no shadow
+disclosures, so the provenance footer and the anonymizer missed what was injected. The fallback
+now records the same ledgers as a full render.
+
+### agent-wake: the reply helpers webhook tools share are public
+
+**Added:** `tool_error`, `no_change`, `validate_name` and `skill_label` in
+`threetears.agent.wake.tools.schedule_tools`, renamed from their private forms because
+`webhook_tools` uses them too.
+
+### evals: the campaign page opens on a summary across its aspects; the listing, the page JSON and the aspect label follow the page; a question set after the runs is disclosed, not demoted
+
+- **The memo reads across its aspects (#864).** `AuthoredCampaignAnalysis.summary` is required of every kind: one
+  sentence across every aspect saying what the campaign found and what it means for its question, held to the same
+  figure references and style pass as the rest of the memo. An empty one is refused through the repair round, so a
+  measurement's memo and a choice with no clear winner now say what they found too. The writer prompt asks for it in
+  rule 11 (no new rule; 23,908 of 24,500 characters).
+- **The page reads summary, then recommendation, then the aspects (#864).** After the missed bars, broken floors and
+  guardrails and the question: the writer's summary, the recommendation (now above a choice's pairs), then the aspect
+  table, pairs or measures, To settle, bars and the call, then the findings and one fold per aspect. The summary leads
+  the one-aspect page's memo and the reporter's memo text (`render_memo_as_written`) too, and where the style pass
+  would drop all of its one sentence it is kept as written.
+- **The listing line says what the page opens with (#895).** `analyses_list` (`analysis_verdict`) leads each line with
+  every bar an arm misses, then every floor a candidate breaks, in the page's own words over what was frozen with the
+  analysis, then the verdict. An analysis with neither lists what it did before.
+- **The page JSON keys its recommendation (#880).** `recommendation` is `{arm, variant_key, confidence}`, the key being
+  the one the analysis recorded, so a reader matches a recorded call by key and a relabelled arm no longer miscounts.
+  `CAMPAIGN_JSON_SHAPE` is 2.
+- **One rule names an aspect after its behavior (#879).** `aspect_label_for(behavior)` (`threetears.evals.schema`,
+  `/` written `-`) replaces three hand copies. An aspect in `campaign_create` or `campaign_update` may leave out its
+  `label` and is named by the rule; two unlabelled aspects in one write are refused.
+- **A question set after the runs is disclosed, not demoted (#901).** A campaign whose question was asked after an
+  aspect's first run reads that aspect exactly as if the question had come first: its own comparison family, rows and
+  pairs `confirmatory`, and a change may recommend a candidate on them. The bundle carries both times
+  (`reading_scope.question_after_runs`: `late`, `question` or `control`; `at`; `first_run_at`), the page JSON carries
+  it per aspect, and the campaign's page, each aspect's page and `analyses_list` say it in one sentence under the
+  question ("The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named
+  on …" for a control named after the first result); the writer's summary says it once, with the page's dates. A
+  margin or floor added after a late question is still said as declared after its first result. Bundle shape 60.
+
+**Breaking (pre-release line, no shims):** regenerable schema 12 -> 13, so stored analyses, insights and judge
+profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
+59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
+replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
 
 ## v0.74.0 -- 2026-10-20
 

@@ -11,14 +11,16 @@ import asyncio
 import gzip
 from collections.abc import Awaitable, Callable
 from typing import Any
+from uuid import uuid7
 
 import pytest
+from pydantic import SecretStr
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.versioned_answers import AnswerNotComputable, VersionedAnswers
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
-from threetears.nats.collection_key_requests import CollectionKeysRequestUnavailableError
+from threetears.nats.collection_key_requests import CollectionKeysPurgeRequest, CollectionKeysRequestUnavailableError
 from threetears.nats.errors import KvError
 
 _SCOPE = "tool_pod-answersunit"
@@ -380,6 +382,61 @@ class TestRetiredKeysArePurged:
         said = [r for r in caplog.records if "could not be purged" in r.getMessage()]
         assert len(said) == 1
 
+    async def test_a_key_the_purge_request_refuses_keeps_the_markers(self, caplog: pytest.LogCaptureFixture) -> None:
+        async def out_of_bounds(keys: list[str]) -> int:
+            # the request a pod sends refuses a key outside its grammar before anything is asked
+            CollectionKeysPurgeRequest(identity_token=SecretStr("token"), correlation_id=uuid7(), keys=["*"])
+            return 0
+
+        nats = FakeNatsClient()
+        answers = _with_purger(nats, out_of_bounds)
+        await answers.answer("v1", "a", _Computer("old"), order=1)
+        assert await answers.retire_older_than(2) == 1
+        assert _entry_keys(await _bucket(nats), "v1") == []
+        assert [r for r in caplog.records if "could not be purged" in r.getMessage()] != []
+
+    async def test_a_purger_failing_outside_its_contract_reaches_the_retirement_once_it_is_done(self) -> None:
+        async def defective(keys: list[str]) -> int:
+            raise TypeError("a purger bug, not a purge that did not happen")
+
+        nats = FakeNatsClient()
+        answers = _with_purger(nats, defective)
+        for order in (1, 2, 3):
+            await answers.answer(f"v{order}", "a", _Computer("x"), order=order)
+        with pytest.raises(TypeError, match="a purger bug"):
+            await answers.retire_older_than(3)
+        bucket = await _bucket(nats)
+        assert (_entry_keys(bucket, "v1"), _entry_keys(bucket, "v2"), len(_entry_keys(bucket, "v3"))) == ([], [], 1)
+
+    async def test_keys_deleted_before_a_later_version_fails_are_still_purged(self) -> None:
+        purged: list[str] = []
+
+        async def recording(keys: list[str]) -> int:
+            purged.extend(keys)
+            return len(keys)
+
+        nats = FakeNatsClient()
+        answers = _with_purger(nats, recording)
+        for order in (1, 2, 3):
+            await answers.answer(f"v{order}", "a", _Computer("x"), order=order)
+        bucket = await _bucket(nats)
+
+        def v2_unreadable(original: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+            async def read(*args: Any, **kwargs: Any) -> Any:
+                if f"{_TABLE}_index.v2." in str(kwargs.get("key")):
+                    raise KvError("broker unreachable")
+                return await original(*args, **kwargs)
+
+            return read
+
+        bucket.get_latest = v2_unreadable(bucket.get_latest)  # type: ignore[method-assign]
+        bucket.get_entry = v2_unreadable(bucket.get_entry)  # type: ignore[method-assign]
+        with pytest.raises(KvError):
+            await answers.retire_older_than(3)
+        # v1 is forgotten once cleared, so no later retirement would ever purge its keys
+        assert f"{_TABLE}.v1_{answers.key_of('v1', 'a')[1]}" in purged
+        assert not any("v2" in key for key in purged)
+
 
 def _with_purger(nats: FakeNatsClient, purger: Callable[[list[str]], Awaitable[int]]) -> VersionedAnswers:
     registry = CollectionRegistry()
@@ -486,6 +543,25 @@ class TestAPurgeNeverFailsAReadNorWedgesARetirement:
         bucket = await _bucket(nats)
         assert await _eventually(lambda: _entry_keys(bucket, "v1") == [] and _entry_keys(bucket, "v2") == [])
         assert len(_entry_keys(bucket, "v3")) == 1
+
+    @pytest.mark.expect_contained(TypeError, why="a take-back purge has no caller, so its purger's bug is recorded")
+    async def test_a_take_back_purge_failing_outside_its_contract_is_recorded(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def defective(keys: list[str]) -> int:
+            raise TypeError("a purger bug, not a purge that did not happen")
+
+        nats = FakeNatsClient()
+        writer, retirer = _with_purger(nats, defective), _replica(nats)
+        hold = asyncio.Event()
+        compute = _Computer("late", hold=hold)
+        computing = asyncio.create_task(writer.answer("v1", "a", compute, order=1))
+        await compute.started.wait()
+        await retirer.retire_older_than(2)
+        hold.set()
+        assert _text(await computing) == "late"
+        assert await _eventually(lambda: any("background work failed" in r.getMessage() for r in caplog.records))
+        assert not any("could not be purged" in r.getMessage() for r in caplog.records)
 
     async def test_the_take_back_purge_does_not_hold_the_read(self) -> None:
         never = asyncio.Event()

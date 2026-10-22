@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from langchain_core.tools import BaseTool
 from uuid_utils import uuid7
 
 from threetears.agent.wake.entities import WakeScheduleEntity, WebhookSubscriptionEntity
@@ -2095,3 +2096,106 @@ async def test_a_failed_list_names_the_exception_type_and_keeps_its_message_out(
     for out in (one, two):
         assert "list failed (ConnectionError)" in out, out
         assert "hunter2" not in out
+
+
+# ---------------------------------------------------------------------------
+# The same-wake and same-subscription checks guard only their read
+# ---------------------------------------------------------------------------
+
+
+def _schedule_create(coll: _FakeScheduleCollection, actor: tuple[UUID, UUID, UUID]) -> BaseTool:
+    conv_id, user_id, agent_id = actor
+    return load_wake_schedule_create_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )[0]
+
+
+def _webhook_create(coll: _FakeSubscriptionsCollection, actor: tuple[UUID, UUID, UUID]) -> BaseTool:
+    conv_id, user_id, agent_id = actor
+    return load_webhook_subscription_create_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        encryption_service=_FakeEncryption(),
+        registry=_FakeRegistry(),
+    )[0]
+
+
+_A_WAKE = {"schedule_type": "interval", "schedule_config": {"seconds": 600}, "name": "every-10"}
+_A_SUBSCRIPTION = {"task_prompt_template": "event: {{event.type}}", "name": "github-push"}
+
+
+async def _listing_down(*_a: Any, **_k: Any) -> Any:
+    raise ConnectionError("l3 timeout")
+
+
+async def _listing_of_a_row_with_nothing_on_it(*_a: Any, **_k: Any) -> Any:
+    # read fine; the comparison reads fields this row does not carry
+    return [object()]
+
+
+@pytest.mark.asyncio
+async def test_schedule_create_goes_ahead_when_its_wakes_cannot_be_read(actor: tuple[UUID, UUID, UUID]) -> None:
+    coll = _FakeScheduleCollection()
+    coll.list_for_agent = _listing_down  # type: ignore[method-assign]
+    result = await _schedule_create(coll, actor).ainvoke(_A_WAKE)
+    assert result.startswith("[schedule:"), result
+    assert len(coll.rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_create_still_finds_the_same_wake(actor: tuple[UUID, UUID, UUID]) -> None:
+    coll = _FakeScheduleCollection()
+    tool = _schedule_create(coll, actor)
+    await tool.ainvoke(_A_WAKE)
+    again = await tool.ainvoke(_A_WAKE)
+    assert again.startswith("[NO CHANGE] wake_schedule_create: you already have this wake"), again
+    assert len(coll.rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_create_a_fault_in_the_same_wake_comparison_propagates(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    coll = _FakeScheduleCollection()
+    coll.list_for_agent = _listing_of_a_row_with_nothing_on_it  # type: ignore[method-assign]
+    with pytest.raises(AttributeError, match="schedule_type"):
+        await _schedule_create(coll, actor).ainvoke(_A_WAKE)
+    assert coll.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_webhook_create_goes_ahead_when_its_subscriptions_cannot_be_read(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    coll = _FakeSubscriptionsCollection()
+    coll.list_for_agent = _listing_down  # type: ignore[method-assign]
+    result = await _webhook_create(coll, actor).ainvoke(_A_SUBSCRIPTION)
+    assert "[webhook:" in result, result
+    assert len(coll.rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_create_still_finds_the_same_subscription(actor: tuple[UUID, UUID, UUID]) -> None:
+    coll = _FakeSubscriptionsCollection()
+    tool = _webhook_create(coll, actor)
+    await tool.ainvoke(_A_SUBSCRIPTION)
+    again = await tool.ainvoke(_A_SUBSCRIPTION)
+    assert again.startswith("[NO CHANGE] webhook_subscription_create: you already have this subscription"), again
+    assert len(coll.rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_create_a_fault_in_the_same_subscription_comparison_propagates(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    coll = _FakeSubscriptionsCollection()
+    coll.list_for_agent = _listing_of_a_row_with_nothing_on_it  # type: ignore[method-assign]
+    with pytest.raises(AttributeError, match="name"):
+        await _webhook_create(coll, actor).ainvoke(_A_SUBSCRIPTION)
+    assert coll.rows == {}

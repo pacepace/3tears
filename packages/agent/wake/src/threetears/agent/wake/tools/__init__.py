@@ -11,8 +11,8 @@ factory functions return LangChain ``BaseTool`` instances bound to a
 Collections + a consumer-supplied :class:`WakeRegistryClient` Protocol
 implementation. The LLM never sees identity fields in the input schema.
 
-Per-type config validators (``_validate_schedule_config``,
-``_validate_context_from_chain``) are importable module-level symbols
+Per-type config validators (``validate_schedule_config``,
+``validate_context_from_chain``) are importable module-level symbols
 so the product's REST surface can reuse the exact same validation the
 tool layer enforces (Requirement TOOL-11 in
 ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``).

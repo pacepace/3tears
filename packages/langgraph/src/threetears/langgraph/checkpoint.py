@@ -57,7 +57,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, Final, cast
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
@@ -170,6 +170,52 @@ _DEFAULT_ANONYMIZE_BATCH = 200
 
 #: below every ``checkpoint_writes.idx``, control channels' negative ones included.
 _MIN_WRITE_IDX = -(2**31)
+
+
+#: what an unreadable blob's report says, for a serializer that cannot decode or re-encode it
+_UNREADABLE_BLOB: Final = (
+    "a stored checkpoint blob cannot be anonymized and is left as it is; the erasure is incomplete "
+    "for this row until it is repaired or removed"
+)
+
+
+def _reported_unreadable(
+    exc: Exception, where: UnreadableCheckpointBlob, unreadable: list[UnreadableCheckpointBlob]
+) -> UnreadableCheckpointBlob:
+    """add a blob the serializer could not decode or re-encode to the run's report.
+
+    :param exc: what the serializer raised
+    :ptype exc: Exception
+    :param where: the blob's location
+    :ptype where: UnreadableCheckpointBlob
+    :param unreadable: the run's report, appended to
+    :ptype unreadable: list[UnreadableCheckpointBlob]
+    :return: the row as reported, its ``error_type`` filled in
+    :rtype: UnreadableCheckpointBlob
+    """
+    reported = replace(where, error_type=type(exc).__name__)
+    unreadable.append(reported)
+    return reported
+
+
+def _unreadable_fields(reported: UnreadableCheckpointBlob) -> dict[str, Any]:
+    """the log fields that name an unreadable blob's row.
+
+    :param reported: the blob as reported
+    :ptype reported: UnreadableCheckpointBlob
+    :return: its location and error type, as log ``extra``
+    :rtype: dict[str, Any]
+    """
+    return {
+        "thread_id": reported.thread_id,
+        "table": reported.table,
+        "column": reported.column,
+        "checkpoint_ns": reported.checkpoint_ns,
+        "checkpoint_id": reported.checkpoint_id,
+        "task_id": reported.task_id,
+        "idx": reported.idx,
+        "error_type": reported.error_type,
+    }
 
 
 class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
@@ -1836,15 +1882,15 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         **Failures.** Two kinds, handled differently because rerunning cures only one:
 
-        - a blob that cannot be decoded (or whose re-encoding would change its
-          serialization type) fails the same way on every run. It is logged at ERROR
+        - a blob the serializer cannot decode or re-encode (or whose re-encoding would
+          change its serialization type) fails the same way on every run. It is logged at ERROR
           naming the thread, table, column and row keys, reported in the result's
           ``unreadable``, and SKIPPED -- every other row and thread is still rewritten.
           Failing the run on it would stop the erasure at that row forever, leaving every
           row after it holding the person's data; reporting it leaves exactly that one
           row for an operator, named. The erasure is complete only when ``unreadable`` is
           empty.
-        - anything else (the executor, a cache eviction) is logged at ERROR naming the
+        - anything else (the executor, a cache eviction, a fault in the rule itself) is logged at ERROR naming the
           thread and the stage it failed in -- and the row, for a failed write -- and
           re-raised with that context noted on the exception. A run that fails part-way
           this way is completed by running it again.
@@ -1966,42 +2012,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             unclassified_metadata_keys=unclassified_keys,
         )
 
-    def _rewritten_blob(
-        self,
-        type_tag: str,
-        blob: bytes,
-        unclassified: set[str],
-        *,
-        is_metadata: bool,
-    ) -> bytes | None:
-        """the anonymized re-encoding of one stored blob, or None when nothing identifying is in it.
-
-        :param type_tag: the stored serde type tag
-        :ptype type_tag: str
-        :param blob: the stored bytes
-        :ptype blob: bytes
-        :param unclassified: the run's unclassified metadata keys, added to from this blob
-        :ptype unclassified: set[str]
-        :param is_metadata: whether the blob is a write to the metadata channel, so its whole
-            value is turn metadata
-        :ptype is_metadata: bool
-        :return: the new bytes, or None when the decoded value is unchanged
-        :rtype: bytes | None
-        :raises ValueError: when the re-encoding would change the serde type
-        """
-        decoded = self.serde.loads_typed((type_tag, blob))
-        unclassified |= unclassified_metadata_keys(decoded, is_metadata=is_metadata)
-        rewritten = anonymize_checkpoint_value(decoded)
-        if rewritten is decoded:
-            return None
-        new_type, new_blob = self.serde.dumps_typed(rewritten)
-        if new_type != type_tag:
-            raise ValueError(
-                f"anonymizing a checkpoint blob would change its serde type from {type_tag!r} to "
-                f"{new_type!r}; the stored format must be preserved"
-            )
-        return new_blob
-
     def _rewritten_or_reported(
         self,
         type_tag: str,
@@ -2012,7 +2022,15 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         *,
         is_metadata: bool = False,
     ) -> bytes | None:
-        """:meth:`_rewritten_blob`, with a blob the rule cannot be applied to reported instead of raised.
+        """the anonymized re-encoding of one stored blob, with a blob the rule cannot be applied to reported.
+
+        only the serializer is guarded. ``self.serde`` is langgraph's substitution point and
+        its protocol names no errors: the default raises ``ValueError``, ``TypeError`` or
+        ``NotImplementedError`` on bytes it cannot handle, and revives stored types through
+        langchain and pydantic constructors that raise what they raise. a failure there is one
+        row that fails the same way on every run, so it is reported and the run goes on. the
+        rule itself runs outside that guard: a bug in it is not an unreadable row, and it
+        propagates.
 
         :param type_tag: the stored serde type tag
         :ptype type_tag: str
@@ -2024,34 +2042,39 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype unreadable: list[UnreadableCheckpointBlob]
         :param unclassified: the run's unclassified metadata keys, added to from this blob
         :ptype unclassified: set[str]
-        :param is_metadata: whether the blob is a write to the metadata channel
+        :param is_metadata: whether the blob is a write to the metadata channel, so its whole
+            value is turn metadata
         :ptype is_metadata: bool
-        :return: the new bytes, or None when unchanged or unreadable
+        :return: the new bytes, or None when unchanged or reported
         :rtype: bytes | None
         """
         try:
-            return self._rewritten_blob(type_tag, blob, unclassified, is_metadata=is_metadata)
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a serializer raises what it raises on bytes it cannot read; every failure here is one row reported, never silent
-            reported = replace(where, error_type=type(exc).__name__)
+            decoded = self.serde.loads_typed((type_tag, blob))
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the serde protocol has no error contract; every failure here is one row reported, never silent
+            reported = _reported_unreadable(exc, where, unreadable)
+            contain(exc, log=log, what=_UNREADABLE_BLOB, extra=_unreadable_fields(reported), level="error")
+            return None
+        unclassified |= unclassified_metadata_keys(decoded, is_metadata=is_metadata)
+        rewritten = anonymize_checkpoint_value(decoded)
+        if rewritten is decoded:
+            return None
+        try:
+            new_type, new_blob = self.serde.dumps_typed(rewritten)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the serde protocol has no error contract; every failure here is one row reported, never silent
+            reported = _reported_unreadable(exc, where, unreadable)
+            contain(exc, log=log, what=_UNREADABLE_BLOB, extra=_unreadable_fields(reported), level="error")
+            return None
+        if new_type != type_tag:
+            # rewriting it would leave a row the graph reads with the wrong decoder
+            reported = replace(where, error_type=ValueError.__name__)
             unreadable.append(reported)
-            contain(
-                exc,
-                log=log,
-                what="a stored checkpoint blob cannot be anonymized and is left as it is; the erasure is incomplete "
-                "for this row until it is repaired or removed",
-                extra={
-                    "thread_id": reported.thread_id,
-                    "table": reported.table,
-                    "column": reported.column,
-                    "checkpoint_ns": reported.checkpoint_ns,
-                    "checkpoint_id": reported.checkpoint_id,
-                    "task_id": reported.task_id,
-                    "idx": reported.idx,
-                    "error_type": reported.error_type,
-                },
-                level="error",
+            log.error(
+                "anonymizing a stored checkpoint blob would change its serde type, so it is left as it is; the "
+                "erasure is incomplete for this row until it is repaired or removed",
+                extra={**_unreadable_fields(reported), "stored_type": type_tag, "rewritten_type": new_type},
             )
             return None
+        return new_blob
 
     async def _anonymize_checkpoint_rows(
         self,

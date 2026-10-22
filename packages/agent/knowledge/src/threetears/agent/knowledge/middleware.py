@@ -531,6 +531,10 @@ async def _build_governed_injection(
     # the invariants are known from here on, so a fault past this point does not fail
     # the turn: the invariants still inject, alone, under a notice that the rest could
     # not be applied. only an invariant that cannot be RENDERED still fails closed.
+    # the expected failures below (the embedder's, the vector fetch's, one situational
+    # item's render) are answered where they happen, so what reaches this handler is a
+    # bug or a failure no callee declares. it is contained: counted in production, and a
+    # programming error fails under pytest, but it does not cost the turn its hard rules.
     try:
         return await _rank_and_render(
             integration,
@@ -579,7 +583,9 @@ def _invariants_only_injection(
         situational_entries=[],
     )
     block = f"{invariants}\n\n{_SITUATIONAL_UNAVAILABLE_NOTICE}" if invariants else _SITUATIONAL_UNAVAILABLE_NOTICE
-    return block, {"governed_knowledge_block": block}
+    # the invariants reached the turn, so the footer counts them and the anonymizer sees
+    # their shadows exactly as it would on a full render
+    return block, _injection_metadata(block, injected_concepts=concept_inv, injected_entries=entry_inv)
 
 
 async def _rank_and_render(
@@ -684,9 +690,31 @@ async def _rank_and_render(
     if not block:
         return "", {}
 
-    injected_entries = entry_inv + kept_entry_sit
-    injected_concepts = concept_inv + kept_concept_sit
-    metadata: dict[str, Any] = {
+    return block, _injection_metadata(
+        block,
+        injected_concepts=concept_inv + kept_concept_sit,
+        injected_entries=entry_inv + kept_entry_sit,
+    )
+
+
+def _injection_metadata(
+    block: str,
+    *,
+    injected_concepts: list[ConceptEffective],
+    injected_entries: list[EntryEffective],
+) -> dict[str, Any]:
+    """The rendered block and the ledgers that say what reached the turn.
+
+    :param block: the rendered governed block
+    :ptype block: str
+    :param injected_concepts: every concept the block carries
+    :ptype injected_concepts: list[ConceptEffective]
+    :param injected_entries: every entry the block carries
+    :ptype injected_entries: list[EntryEffective]
+    :return: the ``metadata`` update the middleware persists
+    :rtype: dict[str, Any]
+    """
+    return {
         # stash the rendered block so a downstream node can read the governed-rule
         # TEXT after the model node folds the injected prompt away and the
         # adversarial review (which runs AFTER the agent) message-scans nothing;
@@ -699,7 +727,6 @@ async def _rank_and_render(
         "knowledge_injected_concepts": [{"scope": c.concept.scope.value} for c in injected_concepts],
         "knowledge_injected_entries": [{"scope": e.entry.scope.value} for e in injected_entries],
     }
-    return block, metadata
 
 
 def _resolve_situational_budget(*, configured: int | None, pool_size: int) -> int:

@@ -152,6 +152,8 @@ uv sync                    # install all packages in dev mode
 
 Extra args pass through: `./scripts/test.sh core -v -x`
 
+Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run. There, a package run skips its integration tests, which `test-integration.sh` covers, and `-x`, `--maxfail`, `-n` or `--lf` make testament run it locally instead. `test.sh` itself stays local for a run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`) or one that passes `-m`, since on the pool those would skip or lose their marker.
+
 `test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 
 - **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`, and account for every skip.** CI runs a partial integration set: its `integration` job covers core, nats, epoch, scheduled-jobs and agent/acl against Postgres and NATS. Everything else (the sidecar, S3/minio, SearXNG, Redshift and the remaining packages) never runs in CI, so nothing but you runs it, and a skip reads exactly like a pass. When reporting, give the pass count AND each remaining skip with its reason.

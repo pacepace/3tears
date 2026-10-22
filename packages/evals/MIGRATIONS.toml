@@ -58,7 +58,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.75.0"
 since = "v0.74.0"
 summary = """
 The campaign page opens on the writer's summary across its aspects, then the recommendation, then the aspects; the

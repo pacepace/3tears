@@ -17,6 +17,7 @@ No database anywhere: the collections fall back to an in-memory L3.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -425,19 +426,19 @@ class _Claim:
 
 # parity-with: threetears.scrape.circuit.ReprobeScheduler
 class _FakeReprobeScheduler:
-    def __init__(self, *, explode: bool = False) -> None:
+    def __init__(self, *, explode: bool = False, raises: BaseException | None = None) -> None:
         self.booked: list[tuple[str, float]] = []
         self.cancelled: list[str] = []
-        self._explode = explode
+        self._raises = raises if raises is not None else RuntimeError("scheduler store is down") if explode else None
 
     async def schedule_reprobe(self, *, target_id: str, delay_seconds: float) -> None:
-        if self._explode:
-            raise RuntimeError("scheduler store is down")
+        if self._raises is not None:
+            raise self._raises
         self.booked.append((target_id, delay_seconds))
 
     async def cancel_reprobe(self, *, target_id: str) -> None:
-        if self._explode:
-            raise RuntimeError("scheduler store is down")
+        if self._raises is not None:
+            raise self._raises
         self.cancelled.append(target_id)
         self.booked = [b for b in self.booked if b[0] != target_id]
 
@@ -892,6 +893,44 @@ async def test_a_failed_booking_does_not_lose_the_backoff(
     assert row is not None
     assert row.circuit_state == CircuitState.OPEN.value
     assert row.blocked_until == _NOW + timedelta(seconds=60)
+
+
+class _HostQueueRefused(Exception):
+    """what a host's own scheduler raises: no framework storage type, and no reason it should be one."""
+
+
+@pytest.mark.asyncio
+async def test_a_host_scheduler_failing_with_its_own_type_is_recorded_not_raised(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``ReprobeScheduler`` is host-supplied with no error contract, so the circuit cannot name its failures.
+
+    Narrowing the catch to the storage set would turn a host queue's refusal into a failed fetch of
+    a target the circuit already has an answer for.
+    """
+    scheduler = _FakeReprobeScheduler(raises=_HostQueueRefused("queue refused the booking"))
+    circuit = TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.circuit_state == CircuitState.OPEN.value
+    said = [r for r in caplog.records if "could not book the re-probe" in r.getMessage()]
+    assert said and said[0].exc_info is not None and said[0].exc_info[0] is _HostQueueRefused
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_inside_the_scheduler_is_not_absorbed(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The boundary contains failures, never the caller's own cancellation."""
+    circuit = TargetCircuit(
+        health, policy=policy, reprobe_scheduler=_FakeReprobeScheduler(raises=asyncio.CancelledError())
+    )
+    await circuit.record_blocked(_T, now=_NOW)
+    with pytest.raises(asyncio.CancelledError):
+        await circuit.record_blocked(_T, now=_NOW)
 
 
 @pytest.mark.asyncio
