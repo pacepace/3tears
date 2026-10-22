@@ -58,30 +58,24 @@ An intra-family API addition ships in a MINOR bump
      no section of its own) and records no names.
 2. PR into `develop`.
 3. PR `develop` into `main`, with no version bump on that second PR.
-4. **A release that touches `packages/models`:** run the live Claude CLI batch (structured output
-   and the session pool) on a clean checkout of the `main` commit you are about to tag, and tag only on a pass. It
-   needs the Agent SDK the workspace's dev group installs, and a subscription token from
-   `claude setup-token`:
+4. **The live Claude CLI batch runs in the release workflow.** `release.yml`'s `live-claude-cli` job
+   runs `./scripts/test-live-claude-cli.sh` on the tagged commit, and `build` waits for it, so a
+   failing batch publishes nothing. Nothing is run by hand. It makes a batch of real structured calls
+   through the real CLI, six at a time, that passes only if every one answers in its schema, and runs
+   the session pool's live proofs: a reused pooled CLI shows the next call nothing of the last, and
+   one pooled CLI switches between system prompts. Every other test of the subscription route fakes
+   the CLI's messages, which is how 0.55.0 shipped with a third of one consumer's structured calls
+   failing: no faked sequence contained the real model's first, rejected attempt.
 
-   ```bash
-   CLAUDE_CODE_OAUTH_TOKEN=<token> ./scripts/test-live-claude-cli.sh
-   ```
+   It needs the repository secret `CLAUDE_CODE_OAUTH_TOKEN`, a subscription token from
+   `claude setup-token` (a logged-in `claude` does not stand in for it: 3tears runs the CLI in an
+   isolated configuration directory). The Agent SDK bundles its own CLI, so the runner needs only the
+   dev install. A missing or expired token fails the job, not skips it; renew the secret with
+   `gh secret set CLAUDE_CODE_OAUTH_TOKEN`. The evidence line (commit, clean tree, version, exit,
+   pytest's summary) is on the run's summary page.
 
-   It makes a batch of real structured calls through the real CLI, six at a time, that passes
-   only if every one answers in its schema, and runs the session pool's live proofs: a reused
-   pooled CLI shows the next call nothing of the last, and one pooled CLI switches between system
-   prompts, each checked to have run on the pool. Every other test of the subscription route fakes the CLI's
-   messages, which is how 0.55.0 shipped with a third of one consumer's structured calls failing:
-   no faked sequence contained the real model's first, rejected attempt. A logged-in `claude` on
-   the host does not stand in for the token -- 3tears runs the CLI in an isolated configuration
-   directory where a stored login is never read. The script turns the test on itself, so it
-   fails rather than skips when the token or the SDK is missing.
-
-   The script prints one line and writes it to `build/release-evidence/live-claude-cli.txt`:
-   the commit, whether the tree was clean, the version, the exit status and pytest's summary.
-   **Paste that line into the `develop`-into-`main` PR's description** before tagging. Tag only
-   when its `commit=` is the commit being tagged, `tree=clean`, and `exit=0`. A release PR with
-   no such line has not run the batch.
+   To run it before tagging, for instance to check a fix: `CLAUDE_CODE_OAUTH_TOKEN=<token>
+   ./scripts/test-live-claude-cli.sh` on a clean checkout of the commit.
 5. Tag from `main`.
 
 Do not cut a release tag on a plain develop-to-main sync that is not meant to ship.

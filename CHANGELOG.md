@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### release: the live Claude CLI batch runs in the release workflow
+
+**Changed:** `release.yml` gains a `live-claude-cli` job: `./scripts/test-live-claude-cli.sh` on the
+tagged commit, with the repository secret `CLAUDE_CODE_OAUTH_TOKEN`, and `build` waits for it, so a
+failing batch publishes nothing. Releasing no longer needs the batch run by hand or its evidence line
+pasted into the release PR; the line is on the run's summary page. The release's own `check` job runs
+the unit suite as the five sessions CI runs (`scripts/ci-unit-tests.sh`).
+
 ## v0.75.0 -- 2026-10-21
 
 ### agent-memory: a host can restrict every memory read with its own predicate over the row's tags
