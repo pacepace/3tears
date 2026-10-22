@@ -743,10 +743,11 @@ def result_rate_person(
     person's by naming one. Checked before the result is read, so a refused caller learns nothing of it. The rating is
     stored under the name the host returns, so two spellings the host knows as one person are one rater.
 
-    The person's earlier rating of the same dimension of the same result, given directly or relayed from another
-    source, is replaced: one person holds one opinion of one thing, the later by when they gave it. So the relay
-    carries when the person rated (``rated_at``), and the result says what it replaced (``replaced``,
-    ``replaced_source``), as a log line does.
+    One person holds one rating of one dimension of one result, and the one they gave last stands. So the relay
+    carries when the person rated (``rated_at``): it replaces their stored rating (given directly, or relayed from
+    another source) when that was given at the same time or earlier, and says what it replaced (``replaced``,
+    ``replaced_source``), as a log line does; when the stored rating was given later, the relay is refused (409,
+    naming that rating's time and source) and nothing is written.
 
     A host check that raises is a defect in the host, not a refusal: it propagates, and nothing is written.
 
@@ -768,17 +769,20 @@ def result_rate_person(
     :ptype source: str
     :param collected_by: The calling identity that relays it, as the host resolved it.
     :ptype collected_by: str
-    :param rated_at: When the person gave the rating, ISO-8601 with an offset and not in the future; ``None`` for
-        now, the relay's own time.
+    :param rated_at: When the person gave the rating, ISO-8601 with an offset, between the result's ``scored_at``
+        and now; ``None`` for now, the relay's own time.
     :ptype rated_at: str | None
     :return: What was written, and what it replaced.
     :rtype: ResultRated
     :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
         for this person. Nothing is written.
-    :raises TypeError: The host's check returned something other than a name or ``None``: a defect in the host.
+    :raises ConflictError: The person's stored rating of the same thing was given later than ``rated_at``; it stands,
+        and nothing is written.
+    :raises TypeError: The host's check returned something other than a non-blank name or ``None``: a defect in the
+        host.
     :raises NotFoundError: No such result in the scope.
     :raises ValidationFailedError: The judge scored no such dimension, the score is off its scale, a name is blank, or
-        ``rated_at`` is not an ISO-8601 time with an offset at or before now.
+        ``rated_at`` is not an ISO-8601 time with an offset between the result's ``scored_at`` and now.
     :raises StorageError: The write failed.
     """
     attests = host.attests_person
@@ -800,10 +804,10 @@ def result_rate_person(
             ),
         )
     canonical = attests(scope_id=scope_id, caller=collected_by, person=person)
-    if canonical is not None and not isinstance(canonical, str):
+    if canonical is not None and (not isinstance(canonical, str) or not canonical.strip()):
         raise TypeError(
-            f"host {host.profile.host_id!r}'s attests_person returned {type(canonical).__name__}; it returns the "
-            "person's name as the host knows them, or None to refuse"
+            f"host {host.profile.host_id!r}'s attests_person returned {canonical!r}; it returns the person's name as "
+            "the host knows them, or None to refuse"
         )
     if canonical is None:
         log.warning(
@@ -840,7 +844,11 @@ def result_rate_person(
 def _prior(
     host: EvalHost, scope_id: str, result_id: str, rubric_dim: str, rater: str, rater_kind: str
 ) -> CalibrationRating | None:
-    """The rating a write by this rater, of this kind, on this dimension of this result would replace, if any."""
+    """The rating a write by this rater, of this kind, on this dimension of this result would replace, if any.
+
+    Read before the write, not with it: two concurrent writes of one rating can both report what each saw, so
+    ``replaced`` says what this write found, and the store keeps the right rating either way.
+    """
     return next(
         (
             rating

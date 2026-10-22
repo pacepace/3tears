@@ -1693,7 +1693,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `purpose_filter` | `'variation'` \| `'proposer'` \| `'analysis'` \| `'judge'` \| `'second_judge'` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft), analysis (an analysis generation), judge (a judge's repeat or temperature comparison) or second_judge (a second judge's pass). |
 | `question` (on `campaign_create`) | `string` | The one question the campaign asks of its arms, in the operator's words: what would make a candidate the one to adopt. A decision rule is never written here; its clauses are floors. Empty asks none. |
 | `question` (on `campaign_update`) | `string` or `null` | The one question the campaign asks of its arms, in the operator's words: what would make a candidate the one to adopt. A decision rule is never written here; its clauses are floors. Empty asks none. |
-| `rated_at` | `string` or `null` | When the person gave the rating, ISO-8601 with an offset; omitted is now. Their later rating of the same thing is the one that stands. |
+| `rated_at` | `string` or `null` | When the person gave the rating, ISO-8601 with an offset, after the result was scored; omitted is now. It replaces their stored rating of the same thing given at the same time or earlier; one they gave later stands, and this call is refused (conflict, 409). |
 | `rating_reason` | `string` | Why that score, in the rater's own words. |
 | `rating_source` | `string` | Where the person gave the rating, e.g. a blind read's id. |
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |

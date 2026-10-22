@@ -12,8 +12,9 @@ own check (``EvalHost.attests_person``) vouches for that caller and that person.
 - a host that declines, or that supplies no check, refuses the call (``refused``, 403), logs a warning, and nothing
   is written, before the result is even read; a check that raises, or answers other than a name, propagates as the
   host's defect, and nothing is written;
-- a relay replaces the person's earlier rating, direct or relayed, and says what it replaced; it dates the rating
-  when the person gave it;
+- a relay replaces the person's rating given at or before its own time, direct or relayed, and says what it
+  replaced; one they gave later stands, and the relay is refused as a conflict; it dates the rating when the person
+  gave it, between the result's scoring and now;
 - an agent's rating through ``result_rate`` is unchanged, and carries no relay record;
 - the document holds a relay record whole, on a person's rating only, and reads one stored before the field as none.
 
@@ -21,10 +22,10 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 - ``result_rate_person``: ignoring the host's answer; recording when the host supplies no check; recording as an
   ``agent``, with or without the relay record; storing the caller's spelling of the person; reading a raising check
-  as a refusal; accepting an answer that is not a name; logging no warning on a refusal; reporting no replacement,
+  as a refusal; accepting an answer that is not a name, or a blank one; logging no warning on a refusal; reporting no replacement,
   or not its source; logging no replacement.
 - ``rate_result``: not storing ``source`` and ``collected_by``; not copying the score's label key; ignoring
-  ``rated_at``; accepting a future one.
+  ``rated_at``; accepting a future one, or one before the result was scored; replacing a rating given later.
 - ``CalibrationRating``: removing the relay-record check.
 - the action: recording a fixed identity as ``collected_by`` rather than the call's caller.
 - ``result_rate``: recording the agent as a ``person``.
@@ -33,6 +34,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -42,7 +44,7 @@ from pydantic import ValidationError
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis import judge_agreement
 from threetears.evals.ops import OpsHost, result_rate_person
-from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel import ConflictError, ValidationFailedError
 from threetears.evals.run import judge_case_labels, rate_result
 from threetears.evals.schema import CalibrationRating, EvalResult, JudgeEvidence, RubricDim, RubricScore, label_key_of
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, memory_storage
@@ -242,15 +244,16 @@ async def test_a_host_check_that_raises_propagates_and_nothing_is_written() -> N
     assert not off_loop(fixture.host.eval_host.storage.query_calibration_ratings, TOYHOST_SCOPE)
 
 
-async def test_a_host_check_that_answers_yes_rather_than_a_name_is_a_defect_and_nothing_is_written() -> None:
+@pytest.mark.parametrize("answer", [True, "", "   "], ids=["yes", "empty", "blank"])
+async def test_a_host_check_that_answers_other_than_a_name_is_a_defect_and_nothing_is_written(answer: Any) -> None:
+    """A bare yes, or a blank name, is the host's defect, raised before the result is read, never the caller's."""
     fixture = off_loop(ops_fixture)
-    judged = _judged(fixture)
 
-    def yes(*, scope_id: str, caller: str, person: str) -> Any:
-        return True
+    def answers(*, scope_id: str, caller: str, person: str) -> Any:
+        return answer
 
-    with pytest.raises(TypeError, match="returned bool"):
-        await _evals().call(_relay(judged.id), host=_host(fixture, yes), caller=CALLER)
+    with pytest.raises(TypeError, match=f"attests_person returned {answer!r}"):
+        await _evals().call(_relay("no-such-result"), host=_host(fixture, answers), caller=CALLER)
     assert not off_loop(fixture.host.eval_host.storage.query_calibration_ratings, TOYHOST_SCOPE)
 
 
@@ -319,10 +322,70 @@ async def test_a_relay_dates_the_rating_when_the_person_gave_it() -> None:
     assert outcome.structured is not None and outcome.structured["rated_at"] == rating.rated_at
 
 
+def _between(judged: EvalResult) -> tuple[str, str, str]:
+    """Three instants in order between when ``judged`` was scored and now, as a relay would date them."""
+    start = datetime.fromisoformat(judged.scored_at)
+    step = (datetime.now(UTC) - start) / 4
+    return (start + step).isoformat(), (start + step * 2).isoformat(), (start + step * 3).isoformat()
+
+
+async def test_a_relay_of_an_older_rating_never_replaces_the_persons_newer_one() -> None:
+    """Rated directly at T2, the person's blind read from T1 is refused and theirs stands; one from T3 replaces it."""
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    judged = _judged(fixture)
+    t1, t2, t3 = _between(judged)
+    host = _host(fixture, _attests())
+    tool = _evals()
+    direct = off_loop(
+        rate_result,
+        storage,
+        result_id=judged.id,
+        scope_id=TOYHOST_SCOPE,
+        rubric_dim=TOYHOST_JUDGED_DIMENSION,
+        rater=PERSON,
+        rater_kind="person",
+        score=3,
+        reason="rated it myself",
+        rated_at=t2,
+    )
+
+    older = await tool.call(_relay(judged.id, score=1, rated_at=t1), host=host, caller=CALLER)
+
+    assert older.refusal is not None and (older.refusal.kind, older.refusal.status) == ("conflict", 409)
+    assert direct.rated_at in older.text and "none: recorded directly" in older.text
+    (kept,) = off_loop(storage.query_calibration_ratings, TOYHOST_SCOPE, result_id=judged.id)
+    assert kept == direct, "the newer rating stands, unchanged"
+    with pytest.raises(ConflictError, match="so it stands"):
+        off_loop(
+            rate_result,
+            storage,
+            result_id=judged.id,
+            scope_id=TOYHOST_SCOPE,
+            rubric_dim=TOYHOST_JUDGED_DIMENSION,
+            rater=PERSON,
+            rater_kind="person",
+            score=1,
+            reason="an older reading, recorded in the host's own code",
+            rated_at=t1,
+        )
+
+    newer = await tool.call(_relay(judged.id, score=5, rated_at=t3), host=host, caller=CALLER)
+
+    assert newer.structured is not None and (newer.structured["replaced"], newer.structured["score"]) == (True, 5)
+    (stood,) = off_loop(storage.query_calibration_ratings, TOYHOST_SCOPE, result_id=judged.id)
+    assert (stood.score, stood.source, stood.rated_at) == (5, SOURCE, datetime.fromisoformat(t3).isoformat())
+
+
 @pytest.mark.parametrize(
     ("rated_at", "says"),
-    [("2026-10-17T10:30:00", "with an offset"), ("2999-01-01T00:00:00+00:00", "later than now"), ("17 Oct", "offset")],
-    ids=["no-offset", "future", "not-iso"],
+    [
+        ("2026-10-17T10:30:00", "with an offset"),
+        ("2999-01-01T00:00:00+00:00", "later than now"),
+        ("17 Oct", "offset"),
+        ("1970-01-01T00:00:00+00:00", "earlier than the result was scored"),
+    ],
+    ids=["no-offset", "future", "not-iso", "before-the-result"],
 )
 async def test_a_relay_time_that_is_not_a_past_dated_instant_is_refused(rated_at: str, says: str) -> None:
     fixture = off_loop(ops_fixture)
