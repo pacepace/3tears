@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### backup: a Yugabyte restore no longer fails on an extension it does not own
+
+**Fixed:** every restore of a Yugabyte database holding an extension (pgvector) failed with
+`ysqlsh exit 3: ... must be owner of extension vector`, so restore verification never passed and a
+disaster-recovery restore would stop part-way. `ysql_dump` writes `COMMENT ON EXTENSION` after
+each extension, and only the extension's owner may run it; a restore runs as the application
+role, which deliberately does not own extensions. A plain-SQL restore now drops top-level
+`COMMENT ON EXTENSION` statements before `ysqlsh` runs (row data inside `COPY` blocks is never
+touched). Nothing is lost: `CREATE EXTENSION` sets the same comment from the extension's control
+file. The Postgres driver's custom-format archive is unchanged.
+
 ## v0.74.0 -- 2026-10-20
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever

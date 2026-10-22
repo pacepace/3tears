@@ -112,6 +112,14 @@ class DbDumpDriver(ABC):
             :meth:`YugabyteDriver.restore_pg_options` for why an unbounded one is a problem.
         :ptype copy_rows_per_transaction: int | None
         """
+        if not self.compressed:
+            # A plain-SQL dump (the only kind left uncompressed) carries `COMMENT ON EXTENSION`
+            # after every extension, and only the extension's OWNER may run it. A restore runs as
+            # the application role, which deliberately does not own extensions (a superuser
+            # installs them), so under ON_ERROR_STOP that one statement fails the whole restore
+            # with "must be owner of extension". Nothing is lost by dropping it: CREATE EXTENSION
+            # sets the same comment from the extension's control file.
+            source = _skip_extension_comments(source)
         options = self.restore_pg_options(copy_rows_per_transaction=copy_rows_per_transaction)
         if options:
             # `feed_stdin` passes a mapping straight to the child as its WHOLE environment, so
@@ -218,6 +226,60 @@ class YugabyteDriver(DbDumpDriver):
 
     def restore_sql_argv(self, dsn: str) -> list[str]:
         return ["ysqlsh", "--dbname", dsn, "--quiet", "--set", "ON_ERROR_STOP=1"]
+
+
+_EXTENSION_COMMENT = b"COMMENT ON EXTENSION "
+_COPY_END = b"\\."
+
+
+async def _skip_extension_comments(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Yield ``source`` line by line, minus each top-level ``COMMENT ON EXTENSION`` statement.
+
+    Lines inside a ``COPY ... FROM stdin;`` block are row data, never statements, so they pass
+    through untouched even when one happens to start with the same words. A statement that
+    spans lines (a comment literal holding a newline) is dropped through the line that ends it
+    with ``;``. Lines may arrive split across chunks; a final line without a newline is kept.
+
+    :param source: the decompressed plain-SQL dump stream
+    :ptype source: AsyncIterator[bytes]
+    :return: the filtered stream, re-chunked at line boundaries
+    :rtype: AsyncIterator[bytes]
+    """
+    pending = bytearray()
+    in_copy = False
+    skipping = False
+
+    def keep(line: bytes) -> bool:
+        nonlocal in_copy, skipping
+        result = True
+        if in_copy:
+            in_copy = line != _COPY_END
+        elif skipping:
+            skipping = not line.rstrip().endswith(b";")
+            result = False
+        elif line.startswith(_EXTENSION_COMMENT):
+            skipping = not line.rstrip().endswith(b";")
+            result = False
+        elif line.startswith(b"COPY ") and line.rstrip().endswith(b"FROM stdin;"):
+            in_copy = True
+        return result
+
+    async for chunk in source:
+        out = bytearray()
+        start = 0
+        while (newline := chunk.find(b"\n", start)) != -1:
+            pending += chunk[start:newline]
+            line = bytes(pending)
+            pending.clear()
+            if keep(line):
+                out += line
+                out += b"\n"
+            start = newline + 1
+        pending += chunk[start:]
+        if out:
+            yield bytes(out)
+    if pending and keep(bytes(pending)):
+        yield bytes(pending)
 
 
 def driver_by_name(name: str) -> DbDumpDriver:

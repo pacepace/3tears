@@ -226,3 +226,93 @@ class TestTheRestoreEnvironmentIsComposedNotReplaced:
             await YugabyteDriver().restore("postgresql://u@h/db", _empty_stream())
 
         assert captured["env"] is None
+
+
+def _stream(*chunks: bytes) -> AsyncIterator[bytes]:
+    """a dump stream that yields ``chunks`` exactly as given (so a line can straddle two)."""
+
+    async def _gen() -> AsyncIterator[bytes]:
+        for chunk in chunks:
+            yield chunk
+
+    return _gen()
+
+
+async def _fed_to_ysqlsh(*chunks: bytes) -> bytes:
+    """what a Yugabyte restore of ``chunks`` actually writes to the restore tool's stdin."""
+    fed = bytearray()
+
+    async def fake_feed_stdin(argv: list[str], source: AsyncIterator[bytes], **kwargs: Any) -> None:
+        async for chunk in source:
+            fed.extend(chunk)
+
+    with patch.object(drivers_module, "feed_stdin", fake_feed_stdin):
+        await YugabyteDriver().restore("postgresql://u@h/db", _stream(*chunks))
+    return bytes(fed)
+
+
+_DUMP_WITH_EXTENSION = (
+    b"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;\n"
+    b"\n"
+    b"COMMENT ON EXTENSION vector IS 'vector data type and ybhnsw access method';\n"
+    b"\n"
+    b"CREATE TABLE public.notes (id integer, body text);\n"
+    b"COMMENT ON TABLE public.notes IS 'kept';\n"
+)
+
+
+class TestAYugabyteRestoreSkipsExtensionComments:
+    """Only an extension's owner may COMMENT ON it, and a restore runs as the application role.
+
+    Under ON_ERROR_STOP that one statement failed every restore of a database holding pgvector
+    ("must be owner of extension vector"). CREATE EXTENSION already sets the same comment.
+    """
+
+    async def test_the_extension_comment_is_dropped_and_everything_else_kept(self) -> None:
+        fed = await _fed_to_ysqlsh(_DUMP_WITH_EXTENSION)
+
+        assert b"COMMENT ON EXTENSION" not in fed
+        assert fed == _DUMP_WITH_EXTENSION.replace(
+            b"COMMENT ON EXTENSION vector IS 'vector data type and ybhnsw access method';\n", b""
+        )
+
+    async def test_a_comment_split_across_chunks_is_still_dropped(self) -> None:
+        cut = _DUMP_WITH_EXTENSION.index(b"EXTENSION vector IS")
+        fed = await _fed_to_ysqlsh(_DUMP_WITH_EXTENSION[:cut], _DUMP_WITH_EXTENSION[cut:])
+
+        assert b"COMMENT ON EXTENSION" not in fed
+        assert b"COMMENT ON TABLE public.notes IS 'kept';\n" in fed
+
+    async def test_a_comment_spanning_lines_is_dropped_through_its_semicolon(self) -> None:
+        dump = b"COMMENT ON EXTENSION odd IS 'line one\nline two';\nCREATE TABLE t (i int);\n"
+
+        assert await _fed_to_ysqlsh(dump) == b"CREATE TABLE t (i int);\n"
+
+    async def test_row_data_that_looks_like_the_statement_is_never_touched(self) -> None:
+        dump = (
+            b"COPY public.notes (id, body) FROM stdin;\n"
+            b"COMMENT ON EXTENSION vector IS 'a row, not a statement';\n"
+            b"\\.\n"
+            b"COMMENT ON EXTENSION vector IS 'a statement';\n"
+        )
+
+        fed = await _fed_to_ysqlsh(dump)
+
+        assert b"'a row, not a statement'" in fed
+        assert b"'a statement'" not in fed
+
+    async def test_a_last_line_without_a_newline_is_kept_as_is(self) -> None:
+        assert await _fed_to_ysqlsh(b"SELECT 1;\nSELECT 2;") == b"SELECT 1;\nSELECT 2;"
+
+    async def test_a_postgres_restore_streams_the_archive_untouched(self) -> None:
+        """pg_restore reads a binary custom-format archive: there are no lines to filter."""
+        fed = bytearray()
+
+        async def fake_feed_stdin(argv: list[str], source: AsyncIterator[bytes], **kwargs: Any) -> None:
+            async for chunk in source:
+                fed.extend(chunk)
+
+        with patch.object(drivers_module, "feed_stdin", fake_feed_stdin):
+            await PostgresDriver().restore("postgresql://u@h/db", _stream(_DUMP_WITH_EXTENSION))
+
+        assert bytes(fed) == _DUMP_WITH_EXTENSION
