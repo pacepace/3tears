@@ -1623,7 +1623,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
 | `campaign_id` | `string` | A campaign's id, as campaigns_list names it. |
-| `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one afterwards with campaign_update. |
+| `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one with campaign_create, an aspect over the sweep's run_ids and arms from from_run_ids. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
 | `case_material` | `string` | What the output is judged against: its source, or its facts. |
 | `case_name` | `string` | A case's name, as the report should call it: one token such as double-charge, not a bare number or a generated id, and used by no other case of its template or of a case set listing it. |
