@@ -817,7 +817,8 @@ async def test_a_failed_structured_parse_in_the_forced_pass_leaves_no_orphaned_t
     messages = state["messages"]
     assert messages[-1].content == "here is my answer"
     assert _no_orphaned_tool_results(messages)
-    assert "structured_response" not in state
+    # no structured response: langchain <1.4 left the key out, 1.4 writes it as None
+    assert state.get("structured_response") is None
 
 
 # --- another middleware's state command survives ------------------------------------------------------

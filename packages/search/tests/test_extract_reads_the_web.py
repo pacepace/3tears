@@ -44,7 +44,13 @@ _ALLOW = RecordedPage(body=b"User-agent: *\nAllow: /\n", content_type="text/plai
 _ARTICLE = (
     b"<html><head><title>Capybara habitats</title>"
     b'<meta property="article:published_time" content="2026-09-14T08:00:00Z"></head><body><article>'
-    + b"<p>Capybaras range across most of South America, favouring wetlands and slow rivers.</p>" * 30
+    # thirty DISTINCT paragraphs: trafilatura (from 2.3) folds repeated ones into one, and thirty
+    # copies of one sentence then read as a one-line page -- a thin page, not a long article
+    + b"".join(
+        f"<p>Capybaras range across most of South America, favouring wetlands and slow rivers "
+        f"(field note {n}).</p>".encode()
+        for n in range(1, 31)
+    )
     + b"</article></body></html>"
 )
 

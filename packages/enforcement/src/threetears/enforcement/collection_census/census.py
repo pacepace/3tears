@@ -180,6 +180,7 @@ def census(roots: list[Path], *, framework: bool = False) -> dict[str, Any]:
 
     found: list[type] = []
     pending: list[type] = [BaseCollection]
+    sub: type
     while pending:
         for sub in pending.pop().__subclasses__():
             if sub not in found:

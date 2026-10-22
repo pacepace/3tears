@@ -76,12 +76,17 @@ class TestTheHandlerRunsNothing:
 
     def test_the_handler_answers_without_running_the_tool(self) -> None:
         result = call_tool(lambda: _bound(_MustNotRunTool()), "threetears_send_email", {})
-        assert result.isError is False
+        assert result.model_dump(by_alias=True)["isError"] is False
         assert [(block.type, block.text) for block in result.content] == [("text", _HANDED_BACK)]
 
     def test_a_dotted_tool_is_registered_under_its_wire_name_and_still_not_run(self) -> None:
         assert list(advertised_tools(lambda: _bound(_MustNotRunTool()))) == ["threetears_send_email"]
-        assert call_tool(lambda: _bound(_MustNotRunTool()), "threetears_send_email", {}).isError is False
+        assert (
+            call_tool(lambda: _bound(_MustNotRunTool()), "threetears_send_email", {}).model_dump(by_alias=True)[
+                "isError"
+            ]
+            is False
+        )
 
 
 class TestDottedToolNamePermissionFix:

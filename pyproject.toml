@@ -48,7 +48,7 @@ dev-dependencies = [
     # rather than a `# type: ignore[misc]` on each base, so the loader override
     # (the whole guard) stays checked instead of resolving to Any.
     "types-PyYAML>=6.0",
-    "ruff>=0.15.18",
+    "ruff>=0.15.18,<0.16",  # 0.16 reformats 56 files: its own PR after 0.75, not mixed into one
     # the same floors and ceilings as 3tears-observe's `otel` extra (see the comment there); the
     # dev install must never resolve below what the package itself declares it needs, nor past
     # the major it is tested against.
@@ -117,7 +117,7 @@ dev-dependencies = [
     # [snowflake] / [bigquery]); pinning them in dev-deps ensures the
     # workspace pytest run exercises every driver module (same rationale as
     # prometheus-client above). the libs are still OPTIONAL for consumers.
-    "redshift-connector>=2.1",
+    "redshift-connector>=2.1.14",  # eval() RCE fix (CVE-2026-8838)
     "snowflake-connector-python>=3.0",
     "google-cloud-bigquery>=3.0",
     # property-based testing for structural/conformance checks (e.g. the EC
@@ -140,7 +140,7 @@ dev-dependencies = [
     "defusedxml>=0.7",
     # the FastMCP transport of 3tears-evals is behind its `fastmcp` extra; installed in dev so the
     # transport's in-process client test runs rather than skipping. Same bounds as the extra.
-    "fastmcp>=3.4.2,<4",
+    "fastmcp>=3.4.2,<5",
 ]
 
 # The 3tears family is exempt from the cooldown above. That window exists to
@@ -298,6 +298,9 @@ ignore = ["N818", "N811"]
 # tests/enforcement/_underscore_exemptions.txt, and test_claude_sdk_internals.py checks the
 # members against the installed SDK.
 "packages/models/src/threetears/models/_claude_sdk_internals.py" = ["SLF001"]
+# the one owner of the mcp SDK private member the CLI pool needs (a copied server's own handler
+# table under mcp 2.x); its entries are in tests/enforcement/_underscore_exemptions.txt
+"packages/models/src/threetears/models/_mcp_sdk_internals.py" = ["SLF001"]
 # NOT a per-file ignore for the sidecar: `packages/scrape/sidecar/ruff.toml` is a
 # nested config and therefore a FULL override, so ruff never reads a root key for a
 # path beneath it. The key that used to sit here was inert from the moment that file

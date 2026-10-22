@@ -1,4 +1,4 @@
-"""Streaming S3-compatible object store (aioboto3).
+"""Streaming S3-compatible object store (aiobotocore).
 
 Implements :class:`threetears.media.contracts.ObjectStore` over any
 S3-compatible backend (MinIO in dev, S3 in prod). Never buffers a whole
@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-import aioboto3  # type: ignore[import-untyped]
+from aiobotocore.session import get_session  # type: ignore[import-untyped]
 from botocore.config import Config as BotoConfig  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from threetears.media.contracts import ObjectListing, ObjectStore
@@ -66,8 +66,9 @@ class S3ObjectStore:
     :param part_size_bytes: multipart part size / upload buffer ceiling;
         must be >= 5 MiB
     :ptype part_size_bytes: int
-    :param session: aioboto3 session to use; defaults to a fresh
-        ``aioboto3.Session()``. Injectable so tests can supply a fake client.
+    :param session: the session clients are opened from; defaults to a fresh aiobotocore session.
+        Either an aiobotocore session (``create_client``) or an aioboto3 one (``client``), which
+        this store used until 0.75. Injectable so tests can supply a fake client.
     :ptype session: Any
     :param read_timeout_seconds: socket read ceiling for a single response read. Botocore's
         default is 60, which truncates any streaming read whose CONSUMER pauses longer than
@@ -97,15 +98,18 @@ class S3ObjectStore:
         self._bucket = bucket
         self._region = region
         self._part_size = part_size_bytes
-        self._session = session if session is not None else aioboto3.Session()
+        self._session = session if session is not None else get_session()
 
     def _client(self) -> Any:
         """Return an async-context-manager S3 client.
 
-        :return: aioboto3 client context manager
+        :return: an S3 client context manager
         :rtype: Any
         """
-        return self._session.client(
+        # aiobotocore names it create_client; an aioboto3 session (what a caller may still pass)
+        # names the same call client
+        open_client = getattr(self._session, "create_client", None) or self._session.client
+        return open_client(
             "s3",
             endpoint_url=self._endpoint_url,
             aws_access_key_id=self._access_key,

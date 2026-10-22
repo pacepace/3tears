@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.versioning import (
@@ -76,21 +76,30 @@ def test_the_base_pins_its_configuration_values_literally():
       and the alternative serialises them as ``null``, which reads as "not measured".
     - ``populate_by_name=True`` — an aliased field is constructible by either name.
 
-    The assertion is over the RESOLVED config rather than the declared options, so
-    ``validate_by_alias``/``validate_by_name`` appear: pydantic expands
-    ``populate_by_name`` into them. Pinning the resolved form means a pydantic
-    release that changes that expansion shows up here as a failing equality rather
-    than as a silent change in what eval's models accept.
+    ``populate_by_name`` is pinned by what it does, not only by what the config says.
+    pydantic 2.11 to 2.13 expanded it into ``validate_by_alias``/``validate_by_name``
+    in the resolved config; 2.14 reports the option as declared and still honours it.
+    The pin moved from the expansion to the behaviour, so a pydantic release that
+    stops accepting either name still fails here, whatever its config reports.
     """
-    assert EvalBaseModel.model_config == {
+    config = dict(EvalBaseModel.model_config)
+    # pydantic <2.14 also reported populate_by_name's expansion; it must still say both
+    assert config.pop("validate_by_alias", True) is True
+    assert config.pop("validate_by_name", True) is True
+    assert config == {
         "extra": "forbid",
         "validate_assignment": True,
         "str_strip_whitespace": True,
         "ser_json_inf_nan": "constants",
         "populate_by_name": True,
-        "validate_by_alias": True,
-        "validate_by_name": True,
     }
+
+    class Aliased(EvalBaseModel):
+        wire_name: int = Field(alias="wireName")
+
+    assert Aliased.model_validate({"wireName": 1}).wire_name == 1
+    assert Aliased.model_validate({"wire_name": 2}).wire_name == 2
+    assert Aliased(wire_name=3).wire_name == 3
 
 
 def test_the_document_base_derives_from_the_same_options_and_names_only_its_deltas():

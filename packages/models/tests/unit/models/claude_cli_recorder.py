@@ -18,7 +18,7 @@ one.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import Awaitable, AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +42,7 @@ __all__ = [
     "recording_cli",
     "sent_to_cli",
     "subscription_model",
+    "tool_call_on",
 ]
 
 TOKEN = "sk-ant-oat01-faketokenfortest"
@@ -194,6 +195,10 @@ async def _list_tools(server: Any) -> list[Any]:
     :return: the listed tools
     :rtype: list[Any]
     """
+    if hasattr(server, "get_request_handler"):  # mcp 2.x: (ctx, params) -> the result itself
+        entry = server.get_request_handler("tools/list")
+        listed_v2: list[Any] = (await entry.handler(None, None)).tools
+        return listed_v2
     from mcp.types import ListToolsRequest  # noqa: PLC0415
 
     result = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
@@ -224,7 +229,8 @@ def advertised_tools(build: Callable[[], Runnable[Any, Any]]) -> dict[str, dict[
 
     call = sent_to_cli([HumanMessage(content="hi")], build=build)
     listed = asyncio.run(_list_tools(_tool_server(call.options)))
-    return {tool.name: tool.inputSchema for tool in listed}
+    # by the wire name: 1.x calls the field inputSchema, 2.x input_schema with that as its alias
+    return {tool.name: tool.model_dump(by_alias=True)["inputSchema"] for tool in listed}
 
 
 def call_tool(build: Callable[[], Runnable[Any, Any]], name: str, arguments: dict[str, Any]) -> Any:
@@ -240,12 +246,44 @@ def call_tool(build: Callable[[], Runnable[Any, Any]], name: str, arguments: dic
     :rtype: Any
     """
     from langchain_core.messages import HumanMessage  # noqa: PLC0415
-    from mcp.types import CallToolRequest, CallToolRequestParams  # noqa: PLC0415
 
     call = sent_to_cli([HumanMessage(content="hi")], build=build)
-    handler = _tool_server(call.options).request_handlers[CallToolRequest]
-    request = CallToolRequest(method="tools/call", params=CallToolRequestParams(name=name, arguments=arguments))
-    return asyncio.run(handler(request)).root
+
+    async def answer() -> Any:
+        return await tool_call_on(_tool_server(call.options), name, arguments)
+
+    return asyncio.run(answer())
+
+
+def tool_call_on(server: Any, name: str, arguments: dict[str, Any]) -> Awaitable[Any]:
+    """a ``tools/call`` on an in-process MCP server's own handler, as the SDK's reader task runs it.
+
+    an awaitable rather than a result, so a test can run it in a context of its choosing
+    (``asyncio.create_task(..., context=...)``). mcp 1.x keys handlers by request type and wraps
+    the answer in a ``ServerResult``; 2.x keys them by method, calls them with ``(ctx, params)``
+    and returns the result itself. both answer the ``CallToolResult``.
+
+    :param server: the server instance
+    :ptype server: Any
+    :param name: the tool's listed name
+    :ptype name: str
+    :param arguments: the call's arguments
+    :ptype arguments: dict[str, Any]
+    :return: an awaitable answering the ``CallToolResult``
+    :rtype: Awaitable[Any]
+    """
+    from mcp.types import CallToolRequest, CallToolRequestParams  # noqa: PLC0415
+
+    params = CallToolRequestParams(name=name, arguments=arguments)
+    if hasattr(server, "get_request_handler"):
+        result: Awaitable[Any] = server.get_request_handler("tools/call").handler(None, params)
+        return result
+    handler = server.request_handlers[CallToolRequest]
+
+    async def unwrapped() -> Any:
+        return (await handler(CallToolRequest(method="tools/call", params=params))).root
+
+    return unwrapped()
 
 
 @dataclass
