@@ -41,7 +41,8 @@ from threetears.agent.memory.extraction import ExtractionResult, MemoryExtractor
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.memory.read_filter import ReadFilter
 from threetears.agent.memory.retrieval_scope import RetrievalScope
-from threetears.agent.memory.tools import load_memory_keep_tool
+from threetears.agent.memory.revisions import LabelsDifferError, supersede, write_once
+from threetears.agent.memory.tools import load_memory_keep_tool, load_memory_recall_tool
 from threetears.agent.memory.types import MemoryConfig
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
@@ -653,3 +654,109 @@ class TestExtractionTargets:
         assert await self._state(world, "hide") == (0.5, None, ["doc", "hide"]), "a hidden memory was changed"
         salience, superseded_by, tags = await self._state(world, "keep")
         assert (salience == 0.0 and "retracted" in tags) if verb == "DELETE" else superseded_by is not None
+
+
+# --- a rewrite stays in its audience ---------------------------------------------------------
+#
+# The labels are the host's, in ``tags``; the package never reads them, so every rewrite must
+# carry them over unchanged -- or one update moves a memory out of the audience it was kept in.
+
+
+def _rewrite(w: World, text: str) -> dict[str, Any]:
+    """the columns of a rewritten memory, as a tool passes them: no tags of its own."""
+    return {
+        "customer_id": w.customer,
+        "user_id": w.user,
+        "conversation_id": w.conversation,
+        "type_memory": "fact",
+        "content": text,
+        "embedding": vec(1.0),
+        "salience": 0.5,
+    }
+
+
+async def test_a_rewritten_memory_keeps_its_audience(world: World) -> None:
+    """Replacing a hidden memory writes a replacement the same filter still hides."""
+    replacement = await supersede(
+        world.memories,
+        world.edges,
+        agent_id=world.agent,
+        source_ids=[world.memory["hide"]],
+        fields=_rewrite(world, "the keeper now logs the tide twice a day"),
+        rationale="rewritten",
+    )
+    world.use(None)
+    row = await world.memories.find_for_recall(memory_id=replacement, **world.owner)
+    assert row is not None and {"doc", "hide"} <= set(
+        json.loads(row["tags"]) if isinstance(row["tags"], str) else row["tags"]
+    )
+    world.use(_hide_one)
+    assert await world.memories.find_for_recall(memory_id=replacement, **world.owner) is None
+
+
+async def test_memories_in_different_audiences_are_never_merged(world: World) -> None:
+    """A merge across label sets is refused before anything is written."""
+    before = await world.pool.fetchval("SELECT count(*) FROM memories WHERE agent_id = $1", world.agent)
+    with pytest.raises(LabelsDifferError):
+        await supersede(
+            world.memories,
+            world.edges,
+            agent_id=world.agent,
+            source_ids=[world.memory["keep"], world.memory["hide"]],
+            fields=_rewrite(world, "a gist of both"),
+            rationale="merged",
+        )
+    assert await world.pool.fetchval("SELECT count(*) FROM memories WHERE agent_id = $1", world.agent) == before
+
+
+@pytest.mark.parametrize(("own", "replaced"), [("hide", True), ("keep", False)])
+async def test_a_write_replaces_an_earlier_one_only_in_its_own_audience(world: World, own: str, replaced: bool) -> None:
+    """The same event in another audience is not the same event: it is left standing."""
+    written = await write_once(
+        world.memories,
+        world.edges,
+        agent_id=world.agent,
+        fields={**_rewrite(world, "the keeper logs the harbour tide"), "tags": ["doc", own]},
+        near_message_ids=[world.message["hide"]],
+        threshold=0.5,
+    )
+    assert (world.memory["hide"] in {r["memory_id"] for r in written.replaced}) is replaced
+    world.use(None)
+    old = await world.memories.find_for_recall(memory_id=world.memory["hide"], **world.owner)
+    assert old is not None
+
+
+async def test_recall_never_names_a_related_memory_the_reader_cannot_read(
+    world: World, permissive_memory_authorizer: Any
+) -> None:
+    """A memory linked to one in another audience -- rows from before rewrites carried labels --
+    is recalled without that one's id: not as a source, not as what replaced or corrected it."""
+    hidden = world.memory["hide"]
+    await world.pool.execute(
+        "INSERT INTO memory_consolidations (agent_id, consolidated_memory_id, source_memory_id, rationale, "
+        "date_created, date_updated) VALUES ($1, $2, $3, 'legacy', now(), now())",
+        world.agent,
+        world.memory["keep"],
+        hidden,
+    )
+    await world.pool.execute(
+        "UPDATE memories SET superseded_by = $1 WHERE memory_id = $2", hidden, world.memory["keep"]
+    )
+    [recall] = await load_memory_recall_tool(
+        world.user,
+        world.agent,
+        world.customer,
+        permissive_memory_authorizer,
+        world.memories,
+        world.media,
+        world.chunks,
+        consolidations_collection=world.edges,
+    )
+
+    world.use(None)
+    unfiltered = await recall.ainvoke({"memory_id": str(world.memory["keep"])})
+    assert str(hidden) in unfiltered, "the setup links the two"
+    world.use(_hide_one)
+    filtered = await recall.ainvoke({"memory_id": str(world.memory["keep"])})
+    assert "harbour tide (keep)" in filtered
+    assert str(hidden) not in filtered

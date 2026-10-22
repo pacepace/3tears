@@ -1444,7 +1444,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         :ptype threshold: float
         :param top_k: the most to return
         :ptype top_k: int
-        :return: ``{memory_id, content, type_memory, evergreen, date_created, similarity}``, nearest first
+        :return: ``{memory_id, content, type_memory, evergreen, date_created, tags, similarity}``, nearest first
         :rtype: list[dict[str, Any]]
         """
         if self.l3_pool is None or not message_ids:
@@ -1454,7 +1454,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         allowed = filter_clause(self.read_filter, "memories.tags", args)
         rows = await self.l3_pool.fetch(
             f"""
-            SELECT memory_id, content, type_memory, evergreen, date_created,
+            SELECT memory_id, content, type_memory, evergreen, date_created, tags,
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
@@ -1475,6 +1475,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 "type_memory": row["type_memory"],
                 "evergreen": bool(row["evergreen"]),
                 "date_created": row["date_created"],
+                "tags": row["tags"],
                 "similarity": float(row["similarity"]),
             }
             for row in rows

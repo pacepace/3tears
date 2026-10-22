@@ -28,6 +28,16 @@ from the cache tiers. Two places acted on a memory found by `get` alone, and now
 UPDATE and DELETE, whose target id the resolution model names. A guard test makes every public coroutine of the
 three collections declare itself filtered, or unfiltered with its reason.
 
+A rewrite keeps a memory in its audience. The host's labels are every tag but the package's own
+(`retracted`, `retracted_because:`, `retracted_salience:`, `unattended`, `made_by:`;
+`revisions.host_labels`). `supersede` and `correct_beside` carry their sources' labels onto the
+new row, so an update, a correction or a replacement is filtered as what it replaced was; and they
+refuse, with `LabelsDifferError` and before writing anything, to merge memories whose labels differ
+or to relabel one. A dream skips a cluster whose members carry different labels, `write_once`
+replaces an earlier write of the same event only in the new one's audience, and `memory_add`
+leaves a near-duplicate in another audience standing. `memory_recall` names a related memory (what
+it replaced, what replaced or corrected it) only when the reader may read it.
+
 ### search: the standalone transport's address guard can no longer be got past by DNS rebinding
 
 **Fixed:** `StandaloneTransport` resolved a URL's host, refused it if any address was private,

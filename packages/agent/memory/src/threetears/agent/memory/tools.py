@@ -34,6 +34,7 @@ tool schema — the runtime injects it, full stop.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
@@ -47,9 +48,11 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field, model_validator
 
 from threetears.agent.memory.revisions import (
+    LabelsDifferError,
     MemoryMarks,
     WriteIncompleteError,
     correct_beside,
+    host_labels,
     is_permanent,
     marks_of,
     restore,
@@ -1472,19 +1475,38 @@ async def load_memory_recall_tool(
         header = f"[memory:{mem_uuid}] [{memory['type_memory']}]"
         if written:
             header += f" written {written}"
-        state = _mark_text(marks, zone).rstrip()
+        # a related memory is named only when this reader may read it: find_for_recall applies the
+        # host's read filter, so an id in an audience the reader is not in is never printed
+        related: dict[UUID, dict[str, Any]] = {}
+        for other_id in (marks.replaced_by, marks.corrected_by):
+            if other_id is not None:
+                other = await memories_collection.find_for_recall(
+                    memory_id=other_id, user_id=user_id, agent_id=agent_id
+                )
+                if other is not None:
+                    related[other_id] = other
+        shown = dataclasses.replace(
+            marks,
+            replaced_by=marks.replaced_by if marks.replaced_by in related else None,
+            replaced_at=marks.replaced_at if marks.replaced_by in related else None,
+            corrected_by=marks.corrected_by if marks.corrected_by in related else None,
+        )
+        state = _mark_text(shown, zone).rstrip()
         if state:
             header += f" {state}"
         lines: list[str] = [header]
-        for label, other_id in (("Replaced by", marks.replaced_by), ("Corrected by", marks.corrected_by)):
-            if other_id is None:
-                continue
-            other = await memories_collection.find_for_recall(memory_id=other_id, user_id=user_id, agent_id=agent_id)
-            if other is not None:
-                lines.append(f"{label} [memory:{other_id}]: {_quoted(other)}")
+        for label, other_id in (("Replaced by", shown.replaced_by), ("Corrected by", shown.corrected_by)):
+            if other_id is not None:
+                lines.append(f"{label} [memory:{other_id}]: {_quoted(related[other_id])}")
         if consolidations_collection is not None:
             try:
                 sources = await consolidations_collection.find_sources(agent_id, mem_uuid)
+                sources = [
+                    source
+                    for source in sources
+                    if await memories_collection.find_for_recall(memory_id=source, user_id=user_id, agent_id=agent_id)
+                    is not None
+                ]
             except STORAGE_FAILURES as exc:  # the header's last fact is optional; the memory is still read
                 contain(exc, log=log, what="memory_recall: reading what a memory replaced failed", level="error")
                 sources = []
@@ -2206,6 +2228,9 @@ async def load_memory_add_tool(
                         fields=fields,
                         rationale="corrected beside a permanent memory by memory_add",
                     )
+            except LabelsDifferError as exc:
+                # refused before anything was written: the corrected memories are in different audiences
+                return _tool_error("memory_add", "correct", f"{exc}; correct them one at a time")
             except WriteIncompleteError as exc:
                 contain(exc, log=log, what="memory_add: correction written, its links not", extra={"error": str(exc)})
                 return _incomplete(
@@ -2253,6 +2278,10 @@ async def load_memory_add_tool(
                         memory_id=row["memory_id"], user_id=user_id, agent_id=agent_id
                     )
                     if existing is None:
+                        continue
+                    if host_labels(existing.get("tags")) != host_labels(fields.get("tags")):
+                        # in another host audience it is not a duplicate of this one: replacing it
+                        # would move what it holds across the host's labels
                         continue
                     similarity = float(row["similarity"])
                     if is_permanent(existing) or consolidations_collection is None or not replace:

@@ -46,6 +46,7 @@ from threetears.core.exceptions import (
     GenerationNotCommittedError,
     GenerationUnavailableError,
 )
+from threetears.agent.memory.origin import MADE_BY_PREFIX, UNATTENDED_TAG
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -183,6 +184,65 @@ def _tag_list(tags: Any) -> list[str]:
     return [t for t in tags if isinstance(t, str)] if isinstance(tags, list) else []
 
 
+#: tags this package writes on a memory itself; every other tag is the host's own label
+_BOOKKEEPING_TAGS = frozenset({RETRACTED_TAG, UNATTENDED_TAG})
+_BOOKKEEPING_PREFIXES = (RETRACTED_BECAUSE_PREFIX, RETRACTED_SALIENCE_PREFIX, MADE_BY_PREFIX)
+
+
+def host_labels(tags: Any) -> frozenset[str]:
+    """The host's labels among a memory's tags: everything but this package's own bookkeeping.
+
+    A host that filters reads (:mod:`threetears.agent.memory.read_filter`) keeps its audience
+    labels in ``tags``; the package never interprets them, so a rewrite carries them over
+    unchanged and never mixes two different sets.
+
+    :param tags: a row's ``tags`` (a list, or the column's JSON text)
+    :ptype tags: Any
+    :return: the host's labels
+    :rtype: frozenset[str]
+    """
+    return frozenset(
+        tag for tag in _tag_list(tags) if tag not in _BOOKKEEPING_TAGS and not tag.startswith(_BOOKKEEPING_PREFIXES)
+    )
+
+
+class LabelsDifferError(ValueError):
+    """A rewrite would merge memories, or relabel one, across different host label sets.
+
+    The labels decide who may read a memory, and the package does not know what they mean, so
+    it cannot say which audience a merged row belongs to: it refuses instead of guessing.
+    """
+
+
+async def _carrying_labels(
+    memories: MemoriesCollection, agent_id: UUID, source_ids: Sequence[UUID], fields: dict[str, Any]
+) -> dict[str, Any]:
+    """``fields`` for a memory written from ``source_ids``, carrying the sources' host labels.
+
+    Without this a rewrite -- an update, a correction, a merge -- wrote its new row with only
+    the tags its caller passed, so one rewrite moved a memory out of the audience its labels
+    kept it in.
+
+    :raises LabelsDifferError: when the sources disagree on their labels, or ``fields`` names others
+    """
+    labels: frozenset[str] | None = None
+    for source_id in source_ids:
+        row = await memories.get((agent_id, source_id))
+        found = host_labels(row.get("tags") if isinstance(row, dict) else getattr(row, "tags", None))
+        if labels is None:
+            labels = found
+        elif found != labels:
+            raise LabelsDifferError(f"memories {list(source_ids)} carry different host labels and are never merged")
+    inherited = labels or frozenset()
+    own = host_labels(fields.get("tags"))
+    if own and own != inherited:
+        raise LabelsDifferError(f"a rewrite of {list(source_ids)} may not change its host labels")
+    if not inherited:
+        return fields
+    tags = list(dict.fromkeys([*_tag_list(fields.get("tags")), *sorted(inherited - own)]))
+    return {**fields, "tags": tags}
+
+
 def marks_of(row: dict[str, Any]) -> MemoryMarks:
     """Read a memory row's state from the mark columns the collection selects beside it.
 
@@ -310,12 +370,14 @@ async def supersede(
     :return: the new memory's id
     :rtype: UUID
     :raises ValueError: when asked to replace a permanent memory without ``allow_permanent``
+    :raises LabelsDifferError: when the replaced memories carry different host labels, or ``fields`` others
     :raises WriteIncompleteError: when the new memory was written and a step after it failed
     """
     if not allow_permanent:
         for source_id in source_ids:
             if is_permanent(await memories.get((agent_id, source_id))):
                 raise ValueError(f"memory {source_id} is permanent and is never superseded")
+    fields = await _carrying_labels(memories, agent_id, source_ids, fields)
     new_id, pending = await _write_linked(
         memories, consolidations, agent_id=agent_id, source_ids=source_ids, fields=fields, rationale=rationale
     )
@@ -416,6 +478,10 @@ async def write_once(
             message_ids=list(near_message_ids),
             threshold=threshold,
         )
+    # an earlier write in another audience is not the same event for this one: replacing it
+    # would move what it holds across the host's labels
+    own = host_labels(fields.get("tags"))
+    same = [row for row in same if host_labels(row.get("tags")) == own]
     standing = next((row for row in same if row["evergreen"]), None)
     replaceable = [row for row in same if not row["evergreen"]]
     if standing is not None and when_permanent == "skip":
@@ -471,7 +537,9 @@ async def correct_beside(
     :return: the new memory's id
     :rtype: UUID
     :raises WriteIncompleteError: when the new memory was written and its generation or edges were not
+    :raises LabelsDifferError: when the corrected memories carry different host labels
     """
+    fields = await _carrying_labels(memories, agent_id, source_ids, fields)
     new_id, pending = await _write_linked(
         memories, consolidations, agent_id=agent_id, source_ids=source_ids, fields=fields, rationale=rationale
     )
