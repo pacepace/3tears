@@ -1684,7 +1684,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judges` | `boolean` | Name its judged dims whose judging failed; this action never asks a judge. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
 | `label` | `string` or `null` | List only runs carrying this label (run_label sets them); every run if unset. |
-| `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction, quote, note?}: a dimension the template scores, a direction of low\|low_mid\|mid\|mid_high\|high, and the reader's words verbatim. They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. |
+| `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction, quote, note?, reader?}: a dimension the template scores, a direction of low\|low_mid\|mid\|mid_high\|high, the reader's words verbatim, and who the reader is (omitted, you). They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. The host must vouch that you relay each reader's verdict. |
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
 | `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its launch job names, as run_ids), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
 | `limit` | `integer` | The most rows to return, up to 200. |

@@ -102,6 +102,8 @@ class _ReporterCampaign:
             self.eval_host,
             ReporterCaseFreeze(template_id=TEMPLATE_ID, campaign_id=self.fixture.campaign.id),
             TOYHOST_SCOPE,
+            # A bundle-only freeze carries no reader verdict, so the host is asked nothing.
+            collected_by="agent:test",
         ).test_case_id
 
         def priced(_quote: ArmQuote) -> ArmPrice:

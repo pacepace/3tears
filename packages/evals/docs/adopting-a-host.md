@@ -161,12 +161,16 @@ pass it to every entrypoint. It holds:
   makes an agent's verdict a person's**: its cases then count in judge campaigns and judge profiles as people's
   labels, which is exactly what the check exists to stop. The case's author is the name you return, and the case
   records the caller (`collected_by`), which is not part of the case, so the same case relayed by two callers, or
-  seeded, is one case under one id. The check guards the operation itself, not only the action: without one,
-  `judge_case_author` refuses every call, your own code's direct call included. Your own code that names its people
-  itself asks no attestation: the seed corpus's `judge_cases`, an `AuthoredJudgeCase` you build and freeze with
-  `freeze_judge_cases(authored=)`, and `rate_result` with `rater_kind="person"`. No other action records a calibration
-  rating or a judge case label as a person's. Reader verdicts frozen into reporter cases (`reporter_case_freeze`'s
-  labels) are still recorded on the caller's word: they are not yet under this check.
+  seeded, is one case under one id. The `reporter_case_freeze` action asks it for each reader its labels name (a
+  label naming no `reader` is the caller's own), since each label is a reader's verdict on a memo and the judge's
+  agreement with readers reads it as a person's: one refused reader refuses the freeze, each label is stored under
+  the name you return with the caller as its `collected_by`, and neither is part of what makes two freezes the same
+  case, so re-freezing the same verdicts returns the stored case. A freeze with no labels asks nothing. Every action
+  that records a verdict as a person's asks you. The check guards the operations themselves, not only the actions:
+  without one, `judge_case_author` and `reporter_case_freeze` (with labels) refuse every call, your own code's direct
+  call included. Your own code that names its people itself asks no attestation: the seed corpus's `judge_cases`, an
+  `AuthoredJudgeCase` you build and freeze with `freeze_judge_cases(authored=)`, `freeze_reporter_case` with labels
+  naming their `reader` (or none), and `rate_result` with `rater_kind="person"`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 

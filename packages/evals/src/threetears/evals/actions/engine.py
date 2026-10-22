@@ -1188,7 +1188,14 @@ async def _judge_profiles_list(host: OpsHost, caller: Caller, params: JudgeProfi
 async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
     eval_host = host.eval_host
     freeze = ReporterCaseFreeze.model_validate(params.model_dump())
-    return await run_blocking(eval_host.blocking_executor, reporter_case_freeze, eval_host, freeze, caller.scope_id)
+    # The caller relays each label's verdict, its own or a reader's it names; the host attests which.
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(reporter_case_freeze, collected_by=caller.identity),
+        eval_host,
+        freeze,
+        caller.scope_id,
+    )
 
 
 async def _reporter_cases_list(host: OpsHost, caller: Caller, params: ReporterCasesListParams) -> ReporterCaseListing:
@@ -2156,8 +2163,11 @@ def engine_actions() -> tuple[Action, ...]:
                 "candidate replays and labels are written about; without it only a generating candidate can run "
                 "the case. One campaign and memo is one case: a freeze matching the pair's live case returns it, and "
                 "one that differs (other labels, or evidence that moved) is refused unless supersedes names the live "
-                "case. limits states what the frozen evidence cannot support. Then run_launch the template; "
-                "reporter_cases_list reads its bank, reporter_case_archive retires a case. Calls no model."
+                "case. Each label is a reader's verdict, its reader named in the label or, omitted, you; the host "
+                "must vouch that you relay each reader's verdict, or the freeze is refused and nothing is written. "
+                "Who gave or relayed a verdict is not part of the case's identity: re-freezing the same verdicts "
+                "returns the stored case. limits states what the frozen evidence cannot support. Then run_launch the "
+                "template; reporter_cases_list reads its bank, reporter_case_archive retires a case. Calls no model."
             ),
         ),
         Action(

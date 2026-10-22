@@ -24,7 +24,10 @@ packages (bumped in lock-step).
   identity; the freeze receipt and `judge_cases_list` show it. A host attests a caller as itself only for a person's
   own account, never an agent's. A seed corpus's cases, and an `AuthoredJudgeCase` the host freezes itself, ask
   nothing. Cases agents authored before this keep reading as person labels: find them with `judge_cases_list`
-  (`authored_by`) and keep them out of launches with a case set, or archive them.
+  (`authored_by`) and keep them out of launches with a case set, or archive them. `reporter_case_freeze` asks it
+  for each reader a label names (omitted, the caller), and records the reader and the relaying caller on the label,
+  outside the case's identity; existing reporter cases are found with `reporter_cases_list` and retired with
+  `reporter_case_archive`.
 - **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
   finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
   the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
@@ -49,8 +52,9 @@ packages (bumped in lock-step).
 moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
 `threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
 and host; the `judge_case_author` action and operation need `attests_person` (a host without one authors no judge case through
-either, its own direct call included), and the operation's `author=` keyword becomes `collected_by=`; durable schema
-16.1. See
+either, its own direct call included), and the operation's `author=` keyword becomes `collected_by=`; the
+`reporter_case_freeze` action and operation need `attests_person` for reader verdicts (a freeze with labels), and the
+operation takes `collected_by=`; `ReporterLabel` gains `reader` and `collected_by`; durable schema 16.1. See
 `packages/evals/MIGRATIONS.toml`.
 
 ## v0.75.0 -- 2026-10-21

@@ -190,6 +190,12 @@ class ReporterLabel(BaseModel):
 
     A direction, never a number: the reads these come from never gave one. Plain ``BaseModel``
     because ``quote`` is someone's words verbatim.
+
+    A verdict is read as a person's (the judge's agreement with readers), so the ``reporter_case_freeze``
+    operation names its ``reader`` only as the host attests them (``EvalHost.attests_person``) and records the caller
+    that relayed it (``collected_by``). A host's own code freezing through ``freeze_reporter_case`` is trusted to
+    name its readers, or none. Neither field is part of what makes two freezes the same case, and neither is written
+    to the stored payload while None, so a label stored before them reads, and is stored, as it was.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -200,6 +206,24 @@ class ReporterLabel(BaseModel):
     direction: LabelDirection = Field(description="Where the reader places the memo on that dimension.")
     quote: str = Field(description="The reader's own words, verbatim — the evidence for the direction.")
     note: str | None = Field(default=None, description="Why the quote maps to this dimension, when not self-evident.")
+    reader: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Who gave the verdict, as the host names them: attested by the host for a verdict relayed through the "
+            "reporter_case_freeze action; None = not recorded (a host's own freeze naming no one, or a label stored "
+            "before readers were). Not part of what makes two freezes the same case."
+        ),
+    )
+    collected_by: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The calling identity that relayed the verdict, which the host attested for its reader; None = written by "
+            "the host's own code, or stored before relays were recorded. Not part of what makes two freezes the same "
+            "case."
+        ),
+    )
     criterion: LabelCriterion | None = Field(
         default=None,
         description=(
@@ -351,12 +375,21 @@ def writer_message_check(case: ReporterCase) -> WriterMessageCheck | None:
 def reporter_case_payload(case: ReporterCase) -> dict[str, Any]:
     """The ``host_payload`` a reporter ``EvalTestCase`` carries.
 
+    A label's ``reader`` and ``collected_by`` are written only when set, so a label naming neither is stored exactly
+    as a build at durable v16.0 stored it, and that build, whose ``ReporterLabel`` refuses a key it does not declare,
+    still reads the case: ``host_payload`` is opaque, so no newer-minor tolerance reaches it.
+
     :param case: The case to store.
     :ptype case: ReporterCase
     :return: The payload, keyed so :func:`reporter_case_of` can read it back.
     :rtype: dict[str, Any]
     """
-    return {REPORTER_CASE_KEY: case.model_dump(mode="json")}
+    frozen = case.model_dump(mode="json")
+    for label in frozen["labels"]:
+        for added in ("reader", "collected_by"):
+            if label[added] is None:
+                del label[added]
+    return {REPORTER_CASE_KEY: frozen}
 
 
 def reporter_case_of(test_case: EvalTestCase) -> ReporterCase | None:

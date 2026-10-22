@@ -6,6 +6,7 @@ of a template beside the toy host's own, which a rename must tell apart by name.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from threetears.evals.analysis import REPORTER_KIND
@@ -42,7 +43,25 @@ def reporter_fixture() -> OpsFixture:
     return fixture
 
 
+#: The reader whose verdicts :func:`freeze_corpus_campaign` relays: a person's own account, which the host attests as
+#: itself.
+READER = "reviewer@example.com"
+
+
+def attests_reader(*, scope_id: str, caller: str, person: str) -> str | None:
+    """A host's check that attests :data:`READER`'s own account as the reader of its verdicts, and no one else."""
+    return person if caller == person == READER else None
+
+
 def freeze_corpus_campaign(fixture: OpsFixture, scope_id: str = TOYHOST_SCOPE, **fields: Any) -> FrozenReporterCase:
-    """Freeze the fixture's corpus campaign into the reporter template, ``fields`` overriding the freeze's own."""
+    """Freeze the fixture's corpus campaign into the reporter template, ``fields`` overriding the freeze's own.
+
+    Frozen by :data:`READER` relaying its own verdicts, on a host that attests it for them (:func:`attests_reader`).
+    """
     arguments = {"template_id": reporter_template().id, "campaign_id": fixture.campaign.id} | fields
-    return reporter_case_freeze(fixture.host.eval_host, ReporterCaseFreeze.model_validate(arguments), scope_id)
+    return reporter_case_freeze(
+        replace(fixture.host.eval_host, attests_person=attests_reader),
+        ReporterCaseFreeze.model_validate(arguments),
+        scope_id,
+        collected_by=READER,
+    )

@@ -531,7 +531,12 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   seed corpus, or stored at v16.0). It is in no digest pre-image, so it moves no case's id or content hash, and it
 #:   is written only when set: an authored case no caller relayed is stored exactly as v16.0 stored it. A build at
 #:   v16.0 refuses only a relayed authored case, by name, when its judge kind reads it, and keeps the test case's
-#:   payload verbatim on every write.
+#:   payload verbatim on every write. A reporter case's reader verdicts say who gave and relayed them: each label of
+#:   the reporter case a reporter template's test case carries (``ReporterLabel``) may name its ``reader`` (the host's
+#:   name for that person) and ``collected_by`` (the caller the host attested for them), both default None and
+#:   written only when set, so a label naming neither is stored exactly as v16.0 stored it. Neither is part of what
+#:   makes two freezes the same case. A build at v16.0 refuses a reporter case with a label naming either, by name,
+#:   when it reads the case, and keeps the test case's payload verbatim on every write.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 1
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""

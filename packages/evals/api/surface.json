@@ -5893,7 +5893,7 @@
     },
     "threetears.evals.analysis.ReporterLabel": {
       "kind": "model",
-      "signature": "ReporterLabel(dimension: DimName, direction: LabelDirection, quote: str, note: str | None = None, criterion: LabelCriterion | None = None)",
+      "signature": "ReporterLabel(dimension: DimName, direction: LabelDirection, quote: str, note: str | None = None, reader: str | None = None, collected_by: str | None = None, criterion: LabelCriterion | None = None)",
       "tier": "stable"
     },
     "threetears.evals.analysis.ReporterOverlays": {
