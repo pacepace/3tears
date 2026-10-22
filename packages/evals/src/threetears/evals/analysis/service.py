@@ -1526,6 +1526,8 @@ def _campaign_page(
         memo,
         call=campaign.call,
         recommended_variant_key=analysis.recommended_variant_key if analysis is not None else None,
+        resolutions=analysis.resolutions if analysis is not None else (),
+        trial_ids=bundle.trial_ids(),
     )
     return page if analysis is None else page.model_copy(update={"analysis_id": analysis.id})
 

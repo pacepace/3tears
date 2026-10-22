@@ -77,6 +77,11 @@ ENGINE_WORDS: dict[str, str] = {
 #: Words that never appear on a report's first two screens: the engine's nouns, and "winner", which no arm is.
 FIRST_SCREEN_BANNED: tuple[str, ...] = (*ENGINE_WORDS, "winner")
 
+#: What a finding's trace says where it reaches nothing: no cost, floor, contrast, guardrail, bar or one-arm reading on
+#: the page prints a figure the finding cites, and it names no trial the page holds, so nothing of it links anywhere.
+#: Said in the finding's ``Evidence`` fold.
+UNTRACED = "No contrast, guardrail, bar or cost on this page shows this finding's figures."
+
 #: A confidence tier as a reader says it.
 CONFIDENCE_WORDS = worded(
     {"very_high": "very high", "high": "high", "medium": "medium", "low": "low"}, ConfidenceTier, "a confidence tier"
@@ -325,11 +330,25 @@ def evidence_rows(
             "spread": _restated_spread(analysis, row, ruler),
         }
         cells = {key: TableCell(value=value) for key, value in values.items()}
-        cells["value"] = TableCell(value=row.value * ruler.factor, unit=ruler.unit)
-        if (passed := _passed_of(row)) is not None:
-            cells["value"] = TableCell(value=passed)
+        cells["value"] = evidence_figure(row, ruler)
         rows.append({key: cells[key] for key, _ in evidence_columns(analysis)})
     return rows
+
+
+def evidence_figure(row: EvidenceRow, ruler: MeasureRuler) -> TableCell:
+    """One evidence row's figure as a reader is shown it: a goal check's pass rate as the scoreboard counts it
+    (``11 of 12``), any other reading on its ruler for the report.
+
+    :param row: The resolved evidence row.
+    :ptype row: EvidenceRow
+    :param ruler: The ruler its reading is stated on.
+    :ptype ruler: MeasureRuler
+    :return: The figure's cell.
+    :rtype: TableCell
+    """
+    if (passed := _passed_of(row)) is not None:
+        return TableCell(value=passed)
+    return TableCell(value=row.value * ruler.factor, unit=ruler.unit)
 
 
 def _passed_of(row: EvidenceRow) -> str | None:
@@ -368,12 +387,14 @@ def counted(n: int, of: int, what: str) -> str:
 
 __all__ = [
     "NO_RECOMMENDATION_WORDS",
+    "UNTRACED",
     "BAR_DECISION_WORDS",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
     "ENGINE_WORDS",
     "EVIDENCE_COLUMNS",
     "evidence_columns",
+    "evidence_figure",
     "EVIDENCE_TIER_WORDS",
     "FIRST_SCREEN_BANNED",
     "GUARDRAIL_DECISION_WORDS",

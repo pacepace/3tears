@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
@@ -367,11 +367,9 @@ class CampaignBundle(EvalDocumentModel):
         :return: ``campaign trial id -> (aspect, the trial's id in that aspect's bundle)``.
         :rtype: dict[str, tuple[str, str]]
         """
-        ids: dict[str, tuple[str, str]] = {}
-        for bundle in self.aspects:
-            for trial in bundle.trials:
-                ids[f"T{len(ids) + 1}"] = (bundle.aspect, trial.trial_id)
-        return ids
+        return campaign_trial_ids(
+            (bundle.aspect, [trial.trial_id for trial in bundle.trials]) for bundle in self.aspects
+        )
 
     def trial(self, trial_id: str) -> tuple[str, str] | None:
         """The aspect and bundle trial a campaign trial id names; None for an id the campaign does not hold.
@@ -1077,6 +1075,23 @@ def _tail(text: str, limit: int) -> str:
     return text if len(text) <= limit else "…" + text[-limit:]
 
 
+def campaign_trial_ids(aspects: Iterable[tuple[str, Sequence[str]]]) -> dict[str, tuple[str, str]]:
+    """The ids the writer names a campaign's trials by: ``T1`` … ``TN``, aspect after aspect, each trial in its bundle's
+    order. The one rule: what the writer is shown (:meth:`CampaignBundle.trial_ids`) and every page that reads a
+    writer's id back to its trial number them here.
+
+    :param aspects: Each aspect's label and its bundle's trial ids, in the campaign's order.
+    :ptype aspects: Iterable[tuple[str, Sequence[str]]]
+    :return: ``campaign trial id -> (aspect, the trial's id in that aspect's bundle)``.
+    :rtype: dict[str, tuple[str, str]]
+    """
+    ids: dict[str, tuple[str, str]] = {}
+    for aspect, trials in aspects:
+        for trial in trials:
+            ids[f"T{len(ids) + 1}"] = (aspect, trial)
+    return ids
+
+
 __all__ = [
     "CAMPAIGN_BUNDLE_SHAPE",
     "CAMPAIGN_MESSAGE_CHARS_PER_ASPECT",
@@ -1088,5 +1103,6 @@ __all__ = [
     "campaign_evidence_digest",
     "build_campaign_bundle",
     "build_campaign_user_message",
+    "campaign_trial_ids",
     "writer_view",
 ]
