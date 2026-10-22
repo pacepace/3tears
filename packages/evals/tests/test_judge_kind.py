@@ -33,6 +33,8 @@ from threetears.evals.kernel import (
     withhold_failure_detail,
 )
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.providers import ProviderError, describe_failure
+from threetears.evals.providers.failures import error_from_response
 from threetears.evals.run import (
     JUDGE_REQUEST_SETTINGS,
     JudgeKind,
@@ -437,6 +439,80 @@ async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what
     again = await kind.invoke(prepared, stored, sink=spent_already)
     assert len(campaign.judge.calls) > calls, "the call is sent: the run's cap is read between cells, never inside one"
     assert again.telemetry.usage and not again.candidate_errors
+
+
+class _ProviderAnswers:
+    """The judge's client, whose provider answers every call with ``error`` instead of a reply."""
+
+    def __init__(self, error: ProviderError) -> None:
+        self.error = error
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    ("body", "owner"),
+    [
+        ({"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
+        ({"error": {"code": "insufficient_quota", "message": "You exceeded your quota"}}, "account"),
+        ({"error": {"code": 500, "message": "upstream died"}}, "candidate"),
+    ],
+)
+async def test_a_judge_call_the_provider_rationed_is_excluded_and_never_charged_to_the_judge(
+    body: dict[str, Any], owner: str
+) -> None:
+    """A 429 says the provider declined the call, as it would any request: the trial measured nothing of the judge.
+
+    So it is excluded (``infra_errors``) and the run goes on; the account's refusal is excluded too and also stops the
+    run; any other failure is the judge's own, a failed trial. One fixture, all three ways.
+    """
+    campaign = await _campaign()
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
+    assert stored is not None
+    status = 500 if owner == "candidate" else 429
+    error = error_from_response("openai", status, json.dumps(body))
+    answering = _ProviderAnswers(error)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: answering,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=describe_failure,
+    )
+
+    class _Window:
+        def identity(self) -> Any:
+            import contextlib
+
+            return contextlib.nullcontext()
+
+        collecting = identity
+
+    from threetears.evals.kernel import VariantConfig
+
+    prepared = await kind.prepare(
+        subject_snapshot=None,
+        variant_config=VariantConfig(candidate_model=TOY_JUDGE_MODEL),
+        world_seed=None,
+        span_window=_Window(),
+        cassettes=None,
+        world=None,
+    )
+    output = await kind.invoke(prepared, stored, sink=FakeCellSink())
+
+    assert output.kind_payload is not None and output.kind_payload["outcome"] == "no_reply"
+    if owner == "candidate":
+        [charged] = output.candidate_errors
+        assert str(error) in charged and not output.infra_errors and not output.account_refused
+        return
+    assert output.candidate_errors == [], "a call the provider or the account declined is never the judge's failure"
+    [excluded] = output.infra_errors
+    assert str(error) in excluded
+    if owner == "provider":
+        assert excluded.startswith("apparatus: judge: the provider rationed the call: ")
+        assert output.account_refused is False, "a rationed call stops nothing: the next one may be served"
+    else:
+        assert excluded.startswith("apparatus: judge: the call was refused for the calling account: ")
+        assert output.account_refused is True
 
 
 class _Untempered:

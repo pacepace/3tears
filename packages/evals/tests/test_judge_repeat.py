@@ -192,7 +192,9 @@ class _AccountRefused(Exception):
 def _describe_account_refusal(exc: BaseException) -> ProviderFailure:
     """The host's describer: :class:`_AccountRefused` is a refusal for the account, anything else is not."""
     return ProviderFailure(
-        f"{type(exc).__name__}", payload_withheld=True, account_refused=isinstance(exc, _AccountRefused)
+        f"{type(exc).__name__}",
+        payload_withheld=True,
+        owner="account" if isinstance(exc, _AccountRefused) else "candidate",
     )
 
 

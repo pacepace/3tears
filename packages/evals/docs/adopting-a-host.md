@@ -121,9 +121,11 @@ pass it to every entrypoint. It holds:
   recorded excluded (`apparatus_failed`) with what it was billed, so the run's totals and its cost cap count it, as
   a cell failed by a `CandidateKindDefect` is. A judged witnessed cell is not recorded, but its billed judge calls
   count against the run's judge ceiling. A re-judge, a judge repeat, a second judge and a witnessed cell's judging raise it the same way;
-- your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
-  was refused for the calling account, which stops a run rather than excluding its cells;
-  `withhold_failure_detail` is the honest one for an app with no error types of its own;
+- your `failure_describer` — how a raised provider call reads. It is the only thing that can say whose failure a
+  call was (`ProviderFailure.owner`): the calling `account`'s (a refused key, spent credit), which stops a run
+  rather than excluding its cells; the `provider`'s (it rationed the call, a 429), which excludes the cell and lets
+  the run go on; or the `candidate`'s, charged as any failure. `withhold_failure_detail` is the honest one for an
+  app with no error types of its own, and says `candidate` for every failure;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions

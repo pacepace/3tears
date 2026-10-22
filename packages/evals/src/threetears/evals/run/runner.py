@@ -865,7 +865,7 @@ class _CellSink:
         """
         if (refusal := self.errors.account_refusal) is not None:
             return refusal
-        judged = [f"judge {dim_id}: {outcome.error}" for dim_id, outcome in self.judged if outcome.account_refused]
+        judged = [f"judge {dim_id}: {outcome.error}" for dim_id, outcome in self.judged if outcome.owner == "account"]
         return "; ".join(judged) or None
 
 

@@ -21,6 +21,7 @@ through the operations and through :meth:`MountedTool.call`, the one path every 
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Any
 
@@ -29,7 +30,10 @@ import pytest
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_campaign_bundle, assemble_context_bundle
 from threetears.evals.analysis.reporter_kind import REPORTER_CASE_KEY, LabelCriterion, reporter_case_of
-from threetears.evals.schema import EvalResult
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.providers import ProviderError, describe_failure
+from threetears.evals.providers.failures import error_from_response
+from threetears.evals.schema import EvalResult, EvalRun, ProviderFailureDescriber
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.kernel import NotFoundError, ValidationFailedError, delivered_a_turn
 from threetears.evals.schema.models import EvalTestCase
@@ -386,8 +390,28 @@ async def _reporter_result(client: FixturedClient, *, cap: EvalRunCostCap | None
     Under ``cap`` the run is held to it as a launch holds one, and a stop it causes is left to the caller to see on
     the result.
     """
+    host, run = await _reporter_run(client, cap=cap)
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    campaign = make_campaign(scope_id=TOYHOST_SCOPE, run_ids=[run.id])
+    return result, off_loop(assemble_context_bundle, campaign, storage=host.storage, profile=host.profile)
+
+
+async def _reporter_run(
+    client: FixturedClient,
+    *,
+    cap: EvalRunCostCap | None = None,
+    k_runs: int = 1,
+    failure_describer: ProviderFailureDescriber | None = None,
+) -> tuple[EvalHost, EvalRun]:
+    """Run the reporter kind ``k_runs`` times over a frozen case with ``client``, and return the host and the run.
+
+    ``failure_describer`` replaces the toy host's (which withholds every failure as the candidate's), as a host
+    whose client is the package's own names :func:`~threetears.evals.providers.describe_failure`.
+    """
     fixture = off_loop(reporter_fixture)
     host = fixture.host.eval_host
+    if failure_describer is not None:
+        host = dataclasses.replace(host, failure_describer=failure_describer)
     receipt = off_loop(freeze_corpus_campaign, fixture)
     case = off_loop(host.storage.load_test_case, receipt.test_case_id, TOYHOST_SCOPE)
     template = off_loop(host.storage.load_template, reporter_template().id, TOYHOST_SCOPE)
@@ -398,7 +422,7 @@ async def _reporter_result(client: FixturedClient, *, cap: EvalRunCostCap | None
         scope_id=TOYHOST_SCOPE,
         template_id=template.id,
         candidate_model=MODEL,
-        k_runs=1,
+        k_runs=k_runs,
         test_case_ids=[case.id],
     )
     off_loop(host.storage.save_eval_run, run)
@@ -416,9 +440,7 @@ async def _reporter_result(client: FixturedClient, *, cap: EvalRunCostCap | None
         )
     except BudgetStoppedError:
         assert cap is not None
-    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
-    campaign = make_campaign(scope_id=TOYHOST_SCOPE, run_ids=[run.id])
-    return result, off_loop(assemble_context_bundle, campaign, storage=host.storage, profile=host.profile)
+    return host, run
 
 
 async def test_a_memo_refused_after_its_billed_calls_returned_keeps_their_cost() -> None:
@@ -459,6 +481,49 @@ async def test_a_memo_whose_first_call_was_refused_delivered_no_turn() -> None:
     assert not delivered_a_turn(result)
     (cell,) = bundle.cell_measures
     assert (cell.n_candidate_failed, cell.n_no_turn, cell.all_failed) == (1, 1, True)
+
+
+class _AnsweredOnceWith(FixturedClient):
+    """A generator client whose provider answers its first call with ``error``, and serves every call after it."""
+
+    def __init__(self, body: str, error: ProviderError) -> None:
+        super().__init__(body)
+        self.error: ProviderError | None = error
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None, tools: Any = None) -> Any:
+        """Raise the provider's answer once, then hand back the prepared completion."""
+        if self.error is not None:
+            error, self.error = self.error, None
+            raise error
+        return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "charged"),
+    [
+        # The provider rationed the call: the cell measured the provider, so it is excluded and the run goes on.
+        (429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, False),
+        # A provider fault that is no rationing stays the candidate's, as any failure is.
+        (500, {"error": {"code": 500, "message": "upstream died"}}, True),
+    ],
+)
+async def test_a_generator_call_the_provider_rationed_excludes_its_cell_and_the_run_goes_on(
+    status: int, body: dict[str, Any], charged: bool
+) -> None:
+    error = error_from_response("openrouter", status, json.dumps(body))
+    client = _AnsweredOnceWith("this is not a memo", error)
+    # Only the account's refusal stops a run (``AccountExhaustedError``, which the run would raise here).
+    host, run = await _reporter_run(client, k_runs=2, failure_describer=describe_failure)
+
+    results = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    assert len(results) == 2, "the run went on to its other cell"
+    [answered] = [result for result in results if str(error) in (result.candidate_error or result.infra_error or "")]
+    if charged:
+        assert answered.candidate_error == f"reporter: the generator call failed: {error}"
+        assert answered.infra_error is None
+    else:
+        assert answered.candidate_error is None, "a rationed call is never charged to the candidate"
+        assert answered.infra_error == f"apparatus: reporter: the provider rationed the generator call: {error}"
 
 
 async def test_a_generator_repair_past_the_runs_cap_is_sent_and_both_calls_keep_their_cost_for_the_cap_to_read() -> (
