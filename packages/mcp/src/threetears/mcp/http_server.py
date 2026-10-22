@@ -145,7 +145,7 @@ class _BearerTokenAsgiEndpoint:
 
 
 def build_mcp_http_app(
-    sdk_server: _SdkServer[Any, Any],
+    sdk_server: _SdkServer[Any],
     *,
     path: str = "/mcp",
     stateless: bool = True,
@@ -163,7 +163,7 @@ def build_mcp_http_app(
     :param sdk_server: the wired ``mcp.server.Server`` from an
         :class:`McpServer` (its ``list_tools`` / ``call_tool`` handlers
         are already registered)
-    :ptype sdk_server: mcp.server.Server[Any, Any]
+    :ptype sdk_server: mcp.server.Server[Any]
     :param path: URL path the MCP endpoint is served at
     :ptype path: str
     :param stateless: run the transport statelessly (fresh transport +

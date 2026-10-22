@@ -138,6 +138,12 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         run: ./scripts/test-otel-floor.sh -v
 
+      # 3tears 0.75 runs on mcp 1.x as well as the locked 2.x, so consumers can move on their own
+      # schedule; the step above only ever sees 2.x. Goes away when 3tears requires mcp 2 (0.76).
+      - name: Test the MCP packages on mcp 1.x
+        if: steps.scope.outputs.needed == 'true'
+        run: ./scripts/test-mcp-v1.sh -q
+
   # The `integration` marker, which nothing ran until 2026-08-18.
   #
   # Why a separate job with SERVICE CONTAINERS rather than testcontainers: the

@@ -1243,7 +1243,7 @@ class TestAToolCallRunsInItsBorrowersContext:
     async def test_a_tool_call_from_the_readers_context_sees_the_borrowers_values(self) -> None:
         pytest.importorskip("claude_agent_sdk")
         from claude_agent_sdk import create_sdk_mcp_server, tool
-        from mcp.types import CallToolRequest, CallToolRequestParams
+        from .claude_cli_recorder import tool_call_on
 
         from threetears.models.claude_cli_pool import bind_tool_server_to_context
 
@@ -1272,9 +1272,7 @@ class TestAToolCallRunsInItsBorrowersContext:
         captured.set(b_bucket)
         bound = bind_tool_server_to_context(server, contextvars.copy_context())
 
-        handler = bound.request_handlers[CallToolRequest]
-        request = CallToolRequest(method="tools/call", params=CallToolRequestParams(name="probe", arguments={}))
-        await asyncio.create_task(handler(request), context=reader_context)
+        await asyncio.create_task(tool_call_on(bound, "probe", {}), context=reader_context)
 
         assert seen == ["conversation-B"], "the tool ran in the conversation that started the CLI"
         assert b_bucket == ["interrupt"], "the borrower's interrupt was captured somewhere it will never be read"
@@ -1282,7 +1280,7 @@ class TestAToolCallRunsInItsBorrowersContext:
     async def test_concurrent_tool_calls_in_one_turn_do_not_collide(self) -> None:
         pytest.importorskip("claude_agent_sdk")
         from claude_agent_sdk import create_sdk_mcp_server, tool
-        from mcp.types import CallToolRequest, CallToolRequestParams
+        from .claude_cli_recorder import tool_call_on
 
         from threetears.models.claude_cli_pool import bind_tool_server_to_context
 
@@ -1293,9 +1291,7 @@ class TestAToolCallRunsInItsBorrowersContext:
 
         server = create_sdk_mcp_server(name="langchain-tools", tools=[slow])["instance"]
         bound = bind_tool_server_to_context(server, contextvars.copy_context())
-        handler = bound.request_handlers[CallToolRequest]
-        request = CallToolRequest(method="tools/call", params=CallToolRequestParams(name="slow", arguments={}))
-        await asyncio.gather(handler(request), handler(request), handler(request))
+        await asyncio.gather(*(tool_call_on(bound, "slow", {}) for _ in range(3)))
 
 
 class TestWhatMayShareACli:

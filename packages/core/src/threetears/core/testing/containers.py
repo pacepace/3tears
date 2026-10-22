@@ -229,7 +229,7 @@ def _ping_docker() -> bool:
     try:
         client = docker.from_env()  # type: ignore[attr-defined]
         client.ping()
-    except (docker.errors.DockerException, OSError) as exc:  # type: ignore[attr-defined]
+    except (docker.errors.DockerException, OSError) as exc:
         # requests' errors are OSErrors; the SDK wraps them in DockerException when it reads the version
         if not _docker_is_absent(exc):
             raise

@@ -61,7 +61,7 @@ claude-cli = [
     "langchain-claude-code>=0.1.0",
     "claude-agent-sdk>=0.2.163,<0.3",
     "3tears-langgraph>=0.75.0,<0.76.0",
-    "mcp",  # CallToolRequest (models.claude_cli_pool); claude-agent-sdk brings it
+    "mcp>=1.27,<3",  # CallToolRequest (models.claude_cli_pool); claude-agent-sdk brings it; 1.x or 2.x
 ]
 # LLM spans (models.tracking); without it, span emission is off
 tracing = ["opentelemetry-api>=1.20,<2"]

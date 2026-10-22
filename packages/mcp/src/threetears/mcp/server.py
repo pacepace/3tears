@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+import jsonschema
 import mcp.types as mcp_types
 from mcp.server import Server as _SdkServer
 from mcp.server.stdio import stdio_server as _stdio_server
@@ -49,6 +50,11 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: mcp 1.x registers handlers with ``@server.list_tools()`` / ``@server.call_tool()``; 2.x removed
+#: both and takes ``on_list_tools`` / ``on_call_tool`` in the constructor. 3tears runs on either
+#: (``mcp>=1.27,<3``) until 0.76, so consumers can move to 2.x on their own schedule.
+_SDK_V1 = hasattr(_SdkServer, "call_tool")
 
 
 class McpServer:
@@ -107,12 +113,11 @@ class McpServer:
         self._identity_provider = identity_provider
         self._authorizer = authorizer
         self._registry = registry
-        self._sdk_server: _SdkServer = _SdkServer(name)
         self._started = False
         # one ERROR per grant-cache outage, not one traceback per refused call: the authorizer
         # already logged the failed reload with its traceback, and an outage refuses every call.
         self._grant_cache_outage_logged = False
-        self._wire_handlers()
+        self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name)
 
     @property
     def name(self) -> str:
@@ -123,49 +128,64 @@ class McpServer:
         """
         return self._name
 
-    def _wire_handlers(self) -> None:
-        """register the ``list_tools`` + ``call_tool`` SDK handlers.
+    def _build_sdk_server(self, name: str) -> _SdkServer[Any]:
+        """build the SDK server with this server's ``tools/list`` + ``tools/call`` handlers.
 
-        idempotent in the sense that constructing two :class:`McpServer`
-        instances each get their own SDK server (no cross-pollination).
+        each :class:`McpServer` gets its own SDK server (no cross-pollination). mcp 1.x and
+        2.x register handlers differently (see :data:`_SDK_V1`); both answer from the same
+        :meth:`_tools` and :meth:`_dispatch`, so a caller sees one behaviour on either.
 
-        :return: nothing
-        :rtype: None
+        :param name: advertised server name
+        :ptype name: str
+        :return: the wired SDK server
+        :rtype: mcp.server.Server
         """
+        if _SDK_V1:
+            # typed as Any: the 1.x decorators do not exist in the 2.x stubs mypy checks against
+            server: Any = _SdkServer(name)
 
-        # The MCP SDK ships py.typed but leaves `list_tools`/`call_tool` themselves
-        # unannotated (mcp/server/lowlevel/server.py: `def list_tools(self):`), so mypy
-        # sees an untyped decorator and treats everything it wraps as untyped too. Nothing
-        # here is unchecked by choice -- both handlers below carry full annotations. These
-        # narrow ignores disappear on their own once the SDK annotates its decorators,
-        # because `warn_unused_ignores` is on.
-        @self._sdk_server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
-        async def _list_tools() -> list[mcp_types.Tool]:
-            """return the registered tool inventory in registration order."""
-            tools = []
-            for tool in self._registry.all():
-                tools.append(
-                    mcp_types.Tool(
-                        name=tool.name,
-                        description=tool.description,
-                        inputSchema=tool.input_schema,
-                    ),
-                )
-            return tools
+            @server.list_tools()  # type: ignore[untyped-decorator]
+            async def _list_tools() -> list[mcp_types.Tool]:
+                return self._tools()
 
-        @self._sdk_server.call_tool()  # type: ignore[untyped-decorator]
-        async def _call_tool(
-            name: str,
-            arguments: dict[str, Any],
-        ) -> mcp_types.CallToolResult | list[mcp_types.TextContent]:
-            """dispatch one tool call; RBAC gate + error mapping."""
-            return await self._dispatch(name, arguments)
+            @server.call_tool()  # type: ignore[untyped-decorator]
+            async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> mcp_types.CallToolResult:
+                return await self._dispatch(tool_name, arguments)
+
+            built: _SdkServer[Any] = server
+            return built
+
+        async def _on_list_tools(_ctx: Any, _params: Any) -> mcp_types.ListToolsResult:
+            return mcp_types.ListToolsResult(tools=self._tools())
+
+        async def _on_call_tool(_ctx: Any, params: Any) -> mcp_types.CallToolResult:
+            # 2.x passes arguments=None for a call that sent none; 1.x passed {}. what escapes
+            # _dispatch is a bug (it answers every refusal itself), so it is not caught here: 2.x
+            # reports it as a JSON-RPC error, where 1.x's decorator made it an isError result
+            return await self._dispatch(params.name, params.arguments or {})
+
+        return _SdkServer(name, on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
+
+    def _tools(self) -> list[mcp_types.Tool]:
+        """the registered tool inventory, in registration order.
+
+        :return: one MCP tool per registered tool
+        :rtype: list[mcp_types.Tool]
+        """
+        # model_validate with the wire names: 1.x calls the field inputSchema, 2.x input_schema
+        # with inputSchema as its alias, and the alias is accepted by both
+        return [
+            mcp_types.Tool.model_validate(
+                {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
+            )
+            for tool in self._registry.all()
+        ]
 
     async def _dispatch(
         self,
         tool_name: str,
         arguments: dict[str, Any],
-    ) -> mcp_types.CallToolResult | list[mcp_types.TextContent]:
+    ) -> mcp_types.CallToolResult:
         """resolve identity, gate via authorizer, run handler, map errors.
 
         the gate fires BEFORE the handler so denied callers cannot
@@ -173,8 +193,8 @@ class McpServer:
         framework error path -- unknown tool, denied permission,
         handler exception -- returns a :class:`CallToolResult` with
         ``isError=True`` so the MCP client sees the failure at the
-        protocol level. happy-path returns a ``list[TextContent]``
-        which the SDK wraps in ``CallToolResult(isError=False, ...)``.
+        protocol level. the happy path returns one too, with
+        ``isError=False``: 2.x no longer wraps a bare content list.
 
         the structured error detail (machine-readable ``code`` field)
         is preserved in the content text as JSON so callers that want
@@ -185,10 +205,8 @@ class McpServer:
         :ptype tool_name: str
         :param arguments: validated input arguments
         :ptype arguments: dict[str, Any]
-        :return: :class:`CallToolResult` (errors) or
-            ``list[TextContent]`` (success; SDK wraps with
-            ``isError=False``)
-        :rtype: mcp_types.CallToolResult | list[mcp_types.TextContent]
+        :return: the call's result, failed or not
+        :rtype: mcp_types.CallToolResult
         """
         tool = self._registry.get(tool_name)
         if tool is None:
@@ -201,6 +219,14 @@ class McpServer:
                 code="UNKNOWN_TOOL",
                 message=f"no tool named {tool_name!r} registered",
             )
+
+        # 1.x's call_tool decorator checked the arguments against the tool's inputSchema before
+        # the handler ran; 2.x's low-level server does not. checked here so both refuse alike
+        # (on 1.x the decorator answers first, with the same words).
+        try:
+            jsonschema.validate(instance=arguments, schema=tool.input_schema)
+        except jsonschema.ValidationError as exc:
+            return _plain_error_result(f"Input validation error: {exc.message}")
 
         try:
             identity = await self._identity_provider.identify()
@@ -301,12 +327,14 @@ class McpServer:
         # single TextContent, a list of TextContent (already wire-
         # ready), or something JSON-serialisable. the SDK wraps
         # the returned list in CallToolResult(isError=False, ...).
+        # a plain content result is wrapped here rather than by the SDK: 1.x wrapped a returned
+        # list in CallToolResult(isError=False), 2.x requires the handler to return the result
         if isinstance(result, list) and all(isinstance(item, mcp_types.TextContent) for item in result):
-            return result
+            return _call_tool_result(content=result, is_error=False)
         if isinstance(result, mcp_types.TextContent):
-            return [result]
+            return _call_tool_result(content=[result], is_error=False)
         if isinstance(result, str):
-            return [mcp_types.TextContent(type="text", text=result)]
+            return _call_tool_result(content=[mcp_types.TextContent(type="text", text=result)], is_error=False)
 
         # a structured handler result rides BOTH faces: the prose a model
         # reads, and the spec's ``structuredContent`` a program reads. it
@@ -317,10 +345,10 @@ class McpServer:
         # structured field be set; the SDK's list wrapper has nowhere to
         # put it (search-spec.md §4.8).
         text = json.dumps(result, default=str, indent=2)
-        return mcp_types.CallToolResult(
+        return _call_tool_result(
             content=[mcp_types.TextContent(type="text", text=text)],
-            structuredContent=result if isinstance(result, dict) else {"result": result},
-            isError=False,
+            structured=result if isinstance(result, dict) else {"result": result},
+            is_error=False,
         )
 
     @staticmethod
@@ -353,9 +381,9 @@ class McpServer:
             "tool_name": tool_name,
             "error": {"code": code, "message": message},
         }
-        return mcp_types.CallToolResult(
+        return _call_tool_result(
             content=[mcp_types.TextContent(type="text", text=json.dumps(envelope, indent=2))],
-            isError=True,
+            is_error=True,
         )
 
     async def start(self) -> None:
@@ -493,3 +521,41 @@ class McpServer:
             json_response=json_response,
         )
         await serve_mcp_http(app, host=host, port=port)
+
+
+def _call_tool_result(
+    *,
+    content: list[mcp_types.TextContent],
+    is_error: bool,
+    structured: dict[str, Any] | None = None,
+) -> mcp_types.CallToolResult:
+    """build a :class:`CallToolResult` on either SDK major.
+
+    built from the wire names: 1.x's fields are ``isError`` / ``structuredContent`` and 2.x's
+    are ``is_error`` / ``structured_content`` with the wire names as aliases, so a constructor
+    keyword would be wrong on one of them while a validated dict is right on both.
+
+    :param content: the content blocks
+    :ptype content: list[mcp_types.TextContent]
+    :param is_error: whether the call failed
+    :ptype is_error: bool
+    :param structured: the structured result, when there is one
+    :ptype structured: dict[str, Any] | None
+    :return: the result
+    :rtype: mcp_types.CallToolResult
+    """
+    fields: dict[str, Any] = {"content": content, "isError": is_error}
+    if structured is not None:
+        fields["structuredContent"] = structured
+    return mcp_types.CallToolResult.model_validate(fields)
+
+
+def _plain_error_result(message: str) -> mcp_types.CallToolResult:
+    """the bare-text error result mcp 1.x's ``call_tool`` decorator answered with.
+
+    :param message: the error text
+    :ptype message: str
+    :return: an ``isError`` result carrying ``message``
+    :rtype: mcp_types.CallToolResult
+    """
+    return _call_tool_result(content=[mcp_types.TextContent(type="text", text=message)], is_error=True)

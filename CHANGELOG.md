@@ -8,6 +8,57 @@ packages (bumped in lock-step).
 
 ## v0.75.0 -- 2026-10-21
 
+### mcp: 3tears runs on mcp 2.x and fastmcp 4.x, and still supports mcp 1.x
+
+**Changed:** the workspace now locks `mcp` 2.3 and `fastmcp` 4.0, and declares `mcp>=1.27,<3`
+(3tears-mcp, 3tears-models) and `fastmcp>=3.4.2,<5` (evals). A consumer still on mcp 1.x keeps
+working; one that moves to 2.x needs nothing from 3tears to do it. fastmcp follows mcp on its own
+(fastmcp 3 requires mcp 1, fastmcp 4 mcp 2). 0.76 drops mcp 1.x.
+
+- `McpServer` registers its handlers through whichever API the installed SDK has: 1.x's
+  `@list_tools()` / `@call_tool()` decorators, or 2.x's `Server(on_list_tools=, on_call_tool=)`.
+  It now also does itself what 1.x's decorator did and 2.x dropped: it checks arguments against the
+  tool's `inputSchema` ("Input validation error: ...", before the handler runs), passes a call with
+  no arguments as `{}`, and returns every success as a `CallToolResult`. One difference stays the
+  SDK's: a bug that escapes dispatch (not a refusal -- those are answered as `isError` results on
+  both) reaches the client as an `isError` result on 1.x and as a JSON-RPC error on 2.x.
+  3tears-mcp now declares `jsonschema`, which mcp already depends on.
+- The CLI pool's per-borrower tool server (`bind_tool_server_to_context`) works on either SDK.
+- CI runs the MCP packages' tests on mcp 1.30 as well (`scripts/test-mcp-v1.sh`).
+
+**For a consumer moving to mcp 2.x** (from mcp's own changes, not 3tears'): result and tool
+objects lose their camelCase attributes -- read `result.is_error`, `.structured_content`,
+`tool.input_schema`, or `model_dump(by_alias=True)["isError"]` on either major;
+`streamable_http_client` yields two values, not three; a low-level `Server` takes its handlers in
+the constructor; `mcp.server.fastmcp.FastMCP` is `mcp.server.mcpserver.MCPServer`. Clients and
+servers on different majors interoperate (tested: 1.28 with 2.3, both directions, over stateless
+streamable HTTP).
+
+### Dependencies: security fixes, and the lock brought current
+
+**Fixed:** known vulnerabilities in `pyjwt` (2.13 -> 2.15), `cryptography` (49 -> 50), `aiohttp`,
+`urllib3`, `soupsieve`, `anyio`, `multidict`, `langgraph-sdk` and `snowflake-connector-python`,
+found by `pip-audit` over the lock (Dependabot alerts are off for this repository); and
+`redshift-connector` 2.1.7 -> 2.1.17, a remote code execution through `eval()` (CVE-2026-8838),
+now the declared floor of the `redshift` extra. Every other dependency moves to its newest release past the 14-day cooldown,
+including the majors `anthropic` 1.x, `openai` 3, `websockets` 16, `xxhash` 4 and SQLAlchemy 2.1.
+
+**Changed:** 3tears-object-store opens S3 clients through `aiobotocore` 3 directly instead of
+`aioboto3`. aioboto3's last release (15.5.0, 2025-10) pins aiobotocore 2.25 and with it a boto3
+too old for the redshift fix above, so while the workspace held aioboto3 that fix could not
+resolve. `S3ObjectStore(session=...)` still accepts an aioboto3 session (`.client`) as well as an
+aiobotocore one (`.create_client`); the default is aiobotocore's.
+
+**Changed by an upstream release:** trafilatura 2.3 folds repeated paragraphs into one, so a page
+whose text is one paragraph many times over now extracts as that paragraph once -- and, below
+`thin_page_chars`, reads as a thin page (whose single same-site frame `extract` then follows).
+pydantic 2.14 no longer reports `populate_by_name`'s `validate_by_*` expansion in `model_config`;
+aliased fields still validate by either name.
+
+**Not yet:** `pillow` 13.0 (24 advisories) and `certifi` 2026.10.19 are younger than the lock's
+14-day cooldown and land when they clear it (Oct 30, Nov 3). `ruff` stays below 0.16, which
+reformats 56 files: that is its own change, after this release.
+
 ### backup: a restore no longer fails on an extension the restoring role does not own
 
 **Fixed:** every restore of a database holding an extension a superuser installed (pgvector)
