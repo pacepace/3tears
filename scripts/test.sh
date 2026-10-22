@@ -32,7 +32,7 @@ EXTRA_ARGS=("$@")
 # do not have it, so its tests would skip -- and a skip reads like a pass. And a run that selects
 # with `-m` would meet the manifest's own `-m "not integration"`, where pytest keeps only one.
 local_only=""
-if env | grep -qE '^(RECORD|THREETEARS_LIVE_[A-Z_]*|THREETEARS_EVALS_PAID[A-Z_]*)='; then
+if env | grep -E '^(RECORD|THREETEARS_LIVE_[A-Z_]*|THREETEARS_EVALS_PAID[A-Z_]*)=' >/dev/null; then
     local_only="an environment gate is set"
 fi
 for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
