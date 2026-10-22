@@ -109,6 +109,7 @@ td.prose { max-width: 36ch; }
 td.glyph { white-space: nowrap; }
 td.glyph .figure { display: inline-block; min-width: 6ch; text-align: right; }
 td.glyph .no-glyph { display: inline-block; width: 7.5em; margin-right: 6px; }
+td:target, tr:target > td { background: var(--rule); }
 .axis { color: var(--muted); font-size: 0.8125rem; margin: 0 0 8px; }
 [data-table="scoreboard"] table { font-size: 1rem; }
 figure { margin: 16px 0; overflow-x: auto; }
@@ -172,6 +173,11 @@ _CODE = re.compile(r"`([^`]+)`")
 
 #: A trial id in a table cell, linked to its drill-down.
 _TRIAL_ID = re.compile(r"\bT\d+\b")
+
+#: The columns whose trial ids link to their records: the cases table's, the trials table's, and a finding's facts.
+_TRIAL_COLUMNS: frozenset[tuple[str, str]] = frozenset(
+    {("cases", "trials"), ("trials", "trial"), ("finding_facts", "trials")}
+)
 
 #: A case as the cases table numbers it, whose number its row's anchor is made of; a case named by its author anchors
 #: by its name (``case-double-charge``).
@@ -535,7 +541,10 @@ def _grid(block: TableBlock) -> str:
         for column in block.columns:
             cell = row[column.key]
             text = _code(cell.text)
-            if (block.name == "cases" and column.key == "trials") or (block.name == "trials" and column.key == "trial"):
+            if cell.ref is not None:
+                # A finding's figure, linked to where code states the reading in full.
+                text = f'<a href="#{cell.ref}">{text}</a>'
+            if (block.name, column.key) in _TRIAL_COLUMNS:
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
             if block.name == "cases" and column.key == "trials":
                 # Navigation beside the marks, not information: the stylesheet mutes it.
@@ -545,7 +554,8 @@ def _grid(block: TableBlock) -> str:
                 text = _glyph(cell, column.key, scales) + f'<span class="figure">{text}</span>'
             else:
                 css = classes[column.key] or (' class="prose"' if len(cell.text) >= _PROSE_CELL else "")
-            cells.append(f"<td{css}>{text}</td>")
+            anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
+            cells.append(f"<td{anchor}{css}>{text}</td>")
         anchor = ""
         if block.name == "cases" and "case" in row:
             # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote

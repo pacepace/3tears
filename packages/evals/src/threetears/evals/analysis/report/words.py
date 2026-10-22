@@ -77,6 +77,10 @@ ENGINE_WORDS: dict[str, str] = {
 #: Words that never appear on a report's first two screens: the engine's nouns, and "winner", which no arm is.
 FIRST_SCREEN_BANNED: tuple[str, ...] = (*ENGINE_WORDS, "winner")
 
+#: What a finding's trace says where it reaches nothing: no table on the page states a reading the finding cites, and
+#: it names no trial the page holds, so no figure of it links anywhere. Said in the finding's ``Evidence`` fold.
+UNTRACED = "Nothing else on this page states what this finding cites."
+
 #: A confidence tier as a reader says it.
 CONFIDENCE_WORDS = worded(
     {"very_high": "very high", "high": "high", "medium": "medium", "low": "low"}, ConfidenceTier, "a confidence tier"
@@ -368,6 +372,7 @@ def counted(n: int, of: int, what: str) -> str:
 
 __all__ = [
     "NO_RECOMMENDATION_WORDS",
+    "UNTRACED",
     "BAR_DECISION_WORDS",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
