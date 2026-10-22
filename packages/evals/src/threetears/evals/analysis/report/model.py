@@ -37,25 +37,18 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self, get_args
+from typing import Annotated, Literal, Self, get_args
 
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialCheck, TrialJudgement, TrialState
-from threetears.evals.analysis.campaign_readings import (
-    AspectReading,
-    BarStatus,
-    CampaignReadings,
-    FloorStatus,
-    MeasureReading,
-    PairReading,
-)
+from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.quantities import number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.hashing import round_figures
+from threetears.evals.schema.hashing import round_floats
 from threetears.evals.schema.prose import ModelProse
 
 #: A table cell's value: a number, words, a boolean, or None where there is none.
@@ -1170,11 +1163,17 @@ class CampaignReport(EvalDocumentModel):
         and each aspect's bundle by its fingerprint and shape, with what of its question was set after its runs and
         when (``question_after_runs``, null where nothing was), since its readings read as asked either way.
 
+        Every float in it is served to twelve significant figures (:func:`~threetears.evals.schema.hashing.round_floats`):
+        a figure code computed carries bits past that which two Python builds compute differently, so one campaign
+        serves one JSON across builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary; a declared value (a
+        margin, a bar, alpha) has fewer figures and is unchanged.
+        The page's models keep their figures as computed.
+
         :return: A JSON-ready mapping.
         :rtype: dict[str, object]
         """
         recommendation = self.recommendation
-        return {
+        document: dict[str, object] = {
             "kind": "campaign",
             "shape": CAMPAIGN_JSON_SHAPE,
             "campaign_id": self.campaign_id,
@@ -1187,7 +1186,7 @@ class CampaignReport(EvalDocumentModel):
                 "variant_key": self.recommended_variant_key,
                 "confidence": recommendation.confidence,
             },
-            "readings": _served_readings(self.readings),
+            "readings": self.readings.to_dict(),
             "call": self.call.to_dict() if self.call is not None else None,
             "aspects": [
                 {
@@ -1200,70 +1199,8 @@ class CampaignReport(EvalDocumentModel):
                 for late in [fold.report.bundle.reading_scope.question_after_runs]
             ],
         }
-
-
-#: The figures code computes on each row of a campaign's readings, by the list of :class:`CampaignReadings` that
-#: holds the rows: a change, an interval, a level read at, a p. What a person declared (a margin, a bar, alpha) and
-#: every count are not here, since they are served exactly as given.
-_COMPUTED_READINGS: dict[str, tuple[type[EvalDocumentModel], frozenset[str]]] = {
-    "readings": (
-        AspectReading,
-        frozenset(
-            {
-                "change",
-                "gain_interval",
-                "gain_confidence",
-                "drop_interval",
-                "drop_confidence",
-                "gain_p",
-                "gain_p_holm",
-                "drop_p",
-                "drop_p_holm",
-            }
-        ),
-    ),
-    "floors": (FloorStatus, frozenset({"interval"})),
-    "pairs": (PairReading, frozenset({"change", "interval", "confidence", "p", "p_holm"})),
-    "bars": (BarStatus, frozenset({"value", "interval"})),
-    "measures": (MeasureReading, frozenset({"value", "interval"})),
-}
-if _strays := sorted(
-    f"{model.__name__}.{name}"
-    for model, names in _COMPUTED_READINGS.values()
-    for name in names
-    if name not in model.model_fields
-):
-    raise TypeError(f"the served readings round figures the readings models do not declare: {_strays}")
-
-
-def _served_figure(value: Any) -> Any:
-    """A computed figure as the page serves it: a float, or each end of an interval, to twelve figures."""
-    if isinstance(value, float):
-        return round_figures(value)
-    if isinstance(value, list | tuple):
-        return [_served_figure(end) for end in value]
-    return value
-
-
-def _served_readings(readings: CampaignReadings) -> dict[str, Any]:
-    """A campaign's readings as its page's JSON serves them: every figure code computed, to twelve significant figures.
-
-    A computed figure carries bits past the 15th that depend on the Python build that computed it (an interval's
-    multiplier comes from C maths), so the page JSON of one campaign would differ between two machines in digits
-    nobody reads. Rounded where it is served, and only there: the readings themselves keep full precision for any
-    reading made from them, and what a person declared is served as declared.
-
-    :param readings: The campaign's readings.
-    :ptype readings: CampaignReadings
-    :return: Their document, each computed figure rounded (:func:`~threetears.evals.schema.hashing.round_figures`).
-    :rtype: dict[str, Any]
-    """
-    served = readings.to_dict()
-    for rows, (_, names) in _COMPUTED_READINGS.items():
-        for row in served.get(rows) or []:
-            for name in names & row.keys():
-                row[name] = _served_figure(row[name])
-    return served
+        served: dict[str, object] = round_floats(document)
+        return served
 
 
 def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:

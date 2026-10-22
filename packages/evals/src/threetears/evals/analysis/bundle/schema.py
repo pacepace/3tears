@@ -3241,9 +3241,10 @@ class AnalysisContextBundle(EvalDocumentModel):
         twelve significant figures (:func:`~threetears.evals.schema.hashing.identity_json`), so two structurally
         identical bundles produce identical bytes. Because the bundle carries no wall-clock value, identical
         (runs, results, insights) yield an identical fingerprint — the invariant the prompt-tuning A/B loop
-        depends on — **on any Python build**: the bundle's intervals and multipliers come from C maths
-        (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``) whose last bits differ between two builds of one
-        Python, and the rounding is what keeps those bits out of the key.
+        depends on — **across Python builds**, except, rarely, a value that falls exactly on a 12th-figure rounding boundary: the
+        bundle's intervals and multipliers come from C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``)
+        whose last bits differ between two builds of one Python, and the rounding is what keeps those bits out of the
+        key.
 
         **Under one host profile**, which is a condition rather than a caveat: this assembly reads
         the profile it is handed at several points, ``measure_catalog`` among them (a measure whose
@@ -3271,8 +3272,9 @@ _NOT_EVIDENCE: frozenset[str] = frozenset({"package_version", "first_result_at"}
 
 #: What a fingerprint of the current version starts with. Version 1 had no prefix: the bare sha256 of the canonical
 #: JSON, floats at full precision. Version 2 rounds every float to twelve significant figures first, so one
-#: evidence fingerprints alike on every Python build. A stored fingerprint names its version by this prefix, which is
-#: how a comparison computes the fresh one in the stored one's version (:func:`fingerprint_digest`).
+#: evidence fingerprints alike across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. A
+#: stored fingerprint names its version by this prefix, which is how a comparison computes the fresh one in the
+#: stored one's version (:func:`fingerprint_digest`).
 FINGERPRINT_PREFIX: Final[str] = "v2:"
 
 

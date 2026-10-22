@@ -80,7 +80,9 @@ def round_figures(value: float) -> float:
 
     A float a computation produced carries bits past the 15th figure that depend on the Python build that computed
     it, so the same evidence compared, hashed or served in full would differ between two machines. Rounded here, it
-    does not. A typed float (``0.7``, ``2.5``) has fewer figures than this and comes back unchanged.
+    does not, except, rarely, a value that falls exactly on a 12th-figure rounding boundary, where the two builds' last bits round to
+    neighbouring twelfth figures. A typed float (``0.7``, ``2.5``) has fewer figures than this and comes back
+    unchanged.
 
     ``-0.0`` becomes ``0.0``, since the two are equal and a sign on nothing is not a difference. NaN and the
     infinities come back as they are: each has one value, which JSON writes as one token (``NaN``, ``Infinity``,
@@ -95,14 +97,25 @@ def round_figures(value: float) -> float:
     return 0.0 if rounded == 0 else rounded
 
 
-def _figures_rounded(payload: Any) -> Any:
-    """``payload`` with every float, at any depth of dicts, lists and tuples, as :func:`round_figures` gives it."""
+def round_floats(payload: Any) -> Any:
+    """``payload`` with every float, at any depth of dicts, lists and tuples, as :func:`round_figures` gives it.
+
+    The one pass a JSON-able value takes to be the same across the Python builds that computed it: before it is hashed
+    (:func:`identity_json`), and where a document code computed is served (a campaign page's JSON, the writer's
+    message). A typed float, a bool, an int and a string come back as they were; a tuple comes back a list, as JSON
+    writes it.
+
+    :param payload: Any JSON-able structure.
+    :ptype payload: Any
+    :return: A copy with every float rounded; nothing is changed in place.
+    :rtype: Any
+    """
     if isinstance(payload, float):
         return round_figures(payload)
     if isinstance(payload, dict):
-        return {key: _figures_rounded(value) for key, value in payload.items()}
+        return {key: round_floats(value) for key, value in payload.items()}
     if isinstance(payload, list | tuple):
-        return [_figures_rounded(value) for value in payload]
+        return [round_floats(value) for value in payload]
     return payload
 
 
@@ -110,7 +123,7 @@ def identity_json(payload: Any) -> str:
     """Render ``payload`` as canonical JSON for comparing it by identity: every float rounded to twelve figures.
 
     :func:`canonical_json` with one change: every float, at any depth, is first :func:`round_figures`'d, so a
-    document holding computed statistics renders the same on every Python build that computed them. Nothing else
+    document holding computed statistics renders the same across the Python builds that computed them. Nothing else
     differs: sorted keys, tight separators, a bool stays a bool and an int an int, and a value JSON cannot encode
     raises as it does there. **For what is hashed or compared, never for what is stored or shown**: it is the
     pre-image of an identity, and the document itself keeps what it holds.
@@ -121,7 +134,7 @@ def identity_json(payload: Any) -> str:
     :rtype: str
     :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
     """
-    return canonical_json(_figures_rounded(payload))
+    return canonical_json(round_floats(payload))
 
 
 def identity_digest(payload: Any) -> str:
@@ -160,4 +173,5 @@ __all__ = [
     "identity_digest",
     "identity_json",
     "round_figures",
+    "round_floats",
 ]

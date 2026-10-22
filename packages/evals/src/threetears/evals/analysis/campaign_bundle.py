@@ -66,6 +66,7 @@ from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.hashing import round_floats
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
@@ -213,8 +214,8 @@ class CampaignBundle(EvalDocumentModel):
     def fingerprint(self, *, like: str | None = None) -> str:
         """The campaign bundle's fingerprint: its frame's, which names each aspect's bundle by its fingerprint.
 
-        Its floats rounded to twelve significant figures, so one campaign's evidence fingerprints alike on every
-        Python build (:meth:`AnalysisContextBundle.fingerprint` says why).
+        Its floats rounded to twelve significant figures, so one campaign's evidence fingerprints alike across Python
+        builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary (:meth:`AnalysisContextBundle.fingerprint` says why).
 
         :param like: A fingerprint stored earlier, to compute this one in that one's version so the two compare;
             None for the current version.
@@ -542,7 +543,10 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
     :ptype bundle: CampaignBundle
     :param budget: The most characters each aspect's part may take, as compact JSON.
     :ptype budget: int
-    :return: The view, as the message carries it.
+    :return: The view, as the message carries it: every float to twelve significant figures at most
+        (:func:`~threetears.evals.schema.hashing.round_floats`), so one campaign renders one message across Python
+        builds, whose C maths differ in a computed figure's last bits, except, rarely, a value that falls exactly on a 12th-figure rounding boundary; the figures
+        :func:`_figure` keeps are shorter.
     :rtype: dict[str, Any]
     """
     namer = _Namer(bundle)
@@ -653,7 +657,10 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
             shared - budget,
             budget,
         )
-    return view
+    # One pass over the finished view, every section alike: a figure no section rounds is still not served past
+    # the twelfth figure, where two Python builds can disagree.
+    rounded: dict[str, Any] = round_floats(view)
+    return rounded
 
 
 def aspect_view(

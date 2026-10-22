@@ -566,7 +566,7 @@ fingerprint it read on `generation.bundle_fingerprint`.
 A fingerprint is `v2:` and the sha256 of the bundle's canonical JSON with every float rounded to twelve significant
 figures. The bundle's intervals and multipliers come from C maths (`math.lgamma`, `NormalDist().inv_cdf`) whose last
 bits differ between two builds of one Python, so the rounding is what makes one evidence fingerprint alike on a
-laptop, in a container image and on another architecture. The rounding is in the fingerprint only: the bundle keeps
+laptop, in a container image and on another architecture, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. The rounding is in the fingerprint only: the bundle keeps
 its figures as computed. A fingerprint recorded before the rounding has no prefix, and every comparison computes the
 fresh one in the recorded one's version (`fingerprint(like=recorded)`), so an analysis or a reporter case recorded then
 still matches its evidence on the machine that recorded it. The insight-ledger cutoff (`bundle_assembled_at`),
