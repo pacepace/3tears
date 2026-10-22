@@ -418,7 +418,8 @@ The bare-httpx `SearchTransport` implementation for hosts without core
 (samsung; any embedded consumer). Carries the same obligations the injected
 core transport gives for free: configurable timeout, bounded retry with
 backoff, per-attempt accounting visible to spend, SSRF guards
-(private-address and redirect policy per D21), streamed reads with caps. This
+(private-address and redirect policy per D21, with a direct connection held to
+the address the guard checked), streamed reads with caps. This
 module's path is the one added to `_SANCTIONED_HTTPX_SITES` (D19). MUST NOT
 be imported by anything else in the package at module level -- it is an
 implementation a host chooses. When Extract lands (Phase 2) this module

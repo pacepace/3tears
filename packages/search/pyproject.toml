@@ -33,8 +33,11 @@ dependencies = [
 
 [project.optional-dependencies]
 # the bare-httpx SearchTransport implementation, for hosts that do not inject
-# their own transport (embedded consumers without core). D24 / D19.
-standalone = ["httpx>=0.27"]
+# their own transport (embedded consumers without core). D24 / D19. httpcore is
+# httpx's own connection layer, named because standalone builds its pool
+# directly: that pool's network backend is what holds a connection to the
+# address the SSRF guard checked.
+standalone = ["httpx>=0.27", "httpcore>=1.0"]
 # Extract's HTML-to-text path. D24.
 extract = [
     "trafilatura>=2.0.0",
