@@ -89,7 +89,10 @@ def fold_ids(labels: Sequence[str]) -> list[str]:
     ids: list[str] = []
     for label in labels:
         slug = re.sub(r"[^a-z0-9]+", "-", label.casefold()).strip("-") or "aspect"
-        ids.append(f"{slug}-{len(ids) + 1}" if slug in ids else slug)
+        named, number = slug, len(ids) + 1
+        while named in ids:
+            named, number = f"{slug}-{number}", number + 1
+        ids.append(named)
     return ids
 
 
@@ -104,6 +107,10 @@ ReportBasis = Literal["analysis", "code_only"]
 ReportSection = Literal[
     "header", "scoreboard", "decision", "memo", "contrasts", "cases", "trials", "not_tested", "methods", "glossary"
 ]
+
+#: The sections a reader opens on demand, each laid out closed: the cases, the trials, what was not tested, the
+#: methods and the glossary.
+FOLDED_SECTIONS: frozenset[str] = frozenset({"cases", "trials", "not_tested", "methods", "glossary"})
 
 #: Each section's heading, in reading order — the order every serializer lays the sections out in, each three words
 #: or fewer. The first screen (``header`` and ``scoreboard``) carries no heading: it is the page's own head. A page
@@ -449,16 +456,17 @@ class TableCell(EvalDocumentModel):
         default=None,
         pattern=_ID,
         description=(
-            "The id this cell carries, so a link elsewhere on the page lands on it: where code states one reading at "
-            "one cell (:func:`reading_anchor`), the first place on the page that states it. None for none."
+            "The id this cell carries, so a link elsewhere on the page lands on it: a cell printing one reading's own "
+            "figure at one cell (:func:`reading_anchor`), the first such cell on the page. None for none."
         ),
     )
     ref: str | None = Field(
         default=None,
         pattern=_ID,
         description=(
-            "An anchor on the page the cell links to: a finding's figure links where code states that reading in "
-            "full, and a campaign's trace a place inside an aspect's fold. None where no place on the page states it."
+            "An id on the page the cell links to: a finding's figure links to another cell printing the same figure "
+            "of the same reading at the same cell, or to the heading of the closed fold holding it; a campaign's "
+            "trace links to the heading of the aspect's fold that prints it. None where nothing on the page prints it."
         ),
     )
 
@@ -840,18 +848,19 @@ class Report(EvalDocumentModel):
 
     @model_validator(mode="after")
     def _every_link_lands(self) -> Self:
-        """Refuse two cells carrying one id, and a cell linking to an id no cell on the page carries.
+        """Refuse two cells carrying one id, and a cell linking to an id no cell or block on the page carries.
 
-        A finding's trace links a figure only where the page states that reading; a finding whose trace reaches
+        A finding's trace links a figure only where the page prints the same figure; a finding whose trace reaches
         nothing says so in words instead (:data:`~threetears.evals.analysis.report.words.UNTRACED`).
 
-        :raises ValueError: An id is carried twice, or a link names one no cell carries.
+        :raises ValueError: An id is carried twice, or a link names one nothing carries.
         """
         anchors = [cell.anchor for cell in _cells(self.blocks) if cell.anchor is not None]
         if twice := sorted({anchor for anchor in anchors if anchors.count(anchor) > 1}):
             raise ValueError(f"cells carry the ids {twice} more than once, and an id names one place on the page")
-        if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - set(anchors)):
-            raise ValueError(f"cells link to {stray}, which no cell on the page carries")
+        places = {*anchors, *(block.anchor for block in self.blocks if block.anchor is not None)}
+        if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
+            raise ValueError(f"cells link to {stray}, which nothing on the page carries")
         return self
 
     @model_validator(mode="after")
@@ -1036,21 +1045,15 @@ class CampaignReport(EvalDocumentModel):
 
     @model_validator(mode="after")
     def _every_link_lands_in_a_fold(self) -> Self:
-        """Refuse a cell linking to a place no aspect's fold holds: a reading a fold's tables state, or a trial its
-        bundle holds, by the id the fold prefixes it with (``a-<fold id>-``).
+        """Refuse a cell linking anywhere but an aspect's fold, by the id of the section around it
+        (``aspect-<fold id>``): a fold is closed, and a link landing inside one is lost where a browser does not open
+        it, so a trace lands on the fold's heading.
 
-        :raises ValueError: A link names a place no fold holds.
+        :raises ValueError: A link names something other than a fold.
         """
-        places = {
-            f"a-{fold_id}-{place}"
-            for fold, fold_id in zip(self.aspects, self.fold_ids, strict=True)
-            for place in [
-                *(cell.anchor for cell in _cells(fold.report.blocks) if cell.anchor is not None),
-                *(trial.trial_id for trial in fold.report.bundle.trials),
-            ]
-        }
+        places = {f"aspect-{fold_id}" for fold_id in self.fold_ids}
         if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
-            raise ValueError(f"cells link to {stray}, which no aspect's fold holds")
+            raise ValueError(f"cells link to {stray}, which is no aspect's fold")
         return self
 
     @model_validator(mode="after")
@@ -1193,6 +1196,7 @@ __all__ = [
     "CAMPAIGN_JSON_SHAPE",
     "FINDING_ROLES",
     "FIRST_SCREEN",
+    "FOLDED_SECTIONS",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",

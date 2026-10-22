@@ -31,6 +31,7 @@ from collections.abc import Sequence
 
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
+    FOLDED_SECTIONS,
     SECTION_TITLES,
     CampaignAspectFold,
     CampaignReport,
@@ -160,8 +161,6 @@ dl.glossary dd { margin: 2px 0 0 16px; max-width: 72ch; }
 }
 """
 
-#: The sections a reader opens on demand: everything after the result, the decision, what it means and the contrasts.
-_FOLDED_SECTIONS: frozenset[str] = frozenset({"cases", "trials", "not_tested", "methods", "glossary"})
 
 #: The folded sections whose own table lists every one of their units, so the summary can say how many: the cases.
 #: Not the trials — their table lists only the failed and lost, and the section's census line counts the rest.
@@ -174,10 +173,8 @@ _CODE = re.compile(r"`([^`]+)`")
 #: A trial id in a table cell, linked to its drill-down.
 _TRIAL_ID = re.compile(r"\bT\d+\b")
 
-#: The columns whose trial ids link to their records: the cases table's, the trials table's, and a finding's facts.
-_TRIAL_COLUMNS: frozenset[tuple[str, str]] = frozenset(
-    {("cases", "trials"), ("trials", "trial"), ("finding_facts", "trials")}
-)
+#: The columns whose trial ids link to their records: the cases table's and the trials table's.
+_TRIAL_COLUMNS: frozenset[tuple[str, str]] = frozenset({("cases", "trials"), ("trials", "trial")})
 
 #: A case as the cases table numbers it, whose number its row's anchor is made of; a case named by its author anchors
 #: by its name (``case-double-charge``).
@@ -390,7 +387,7 @@ def _section(section: str, title: str, body: Sequence[str], *, count: int | None
     term — is inside that element too, so a link to any of them opens the fold as well.
     """
     heading = f"<h2>{_escape(title)}</h2>"
-    if section not in _FOLDED_SECTIONS:
+    if section not in FOLDED_SECTIONS:
         return [heading, *body]
     size = f' <span class="count">· {count}</span>' if count is not None else ""
     return [
@@ -403,7 +400,7 @@ def _section(section: str, title: str, body: Sequence[str], *, count: int | None
 
 def _section_anchor(section: str) -> str:
     """The id a link to a section lands on: the section itself when open, its body inside the fold when closed."""
-    return f"{section}-body" if section in _FOLDED_SECTIONS else section
+    return f"{section}-body" if section in FOLDED_SECTIONS else section
 
 
 def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> int | None:
@@ -493,7 +490,10 @@ def _table(block: TableBlock) -> str:
     if block.title_ref is not None:
         title = f'<a href="#{_escape(block.title_ref)}">{title}</a>'
     if block.details:
-        return f'<details data-table="{_escape(block.name)}"><summary>{title}</summary>{grid}</details>'
+        # A closed table carries its own id where a finding's figure lands on it: on the fold, which every browser
+        # shows, never on a cell inside it, which a browser that leaves the fold shut would not.
+        anchor = f' id="{_escape(block.anchor)}"' if block.anchor is not None else ""
+        return f'<details{anchor} data-table="{_escape(block.name)}"><summary>{title}</summary>{grid}</details>'
     if block.fold is not None:
         return f'<div class="table-block" data-table="{_escape(block.name)}">{grid}</div>'
     return f'<div class="table-block" data-table="{_escape(block.name)}"><h3>{title}</h3>{grid}</div>'
@@ -542,10 +542,14 @@ def _grid(block: TableBlock) -> str:
             cell = row[column.key]
             text = _code(cell.text)
             if cell.ref is not None:
-                # A finding's figure, linked to where code states the reading in full.
+                # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it.
                 text = f'<a href="#{cell.ref}">{text}</a>'
             if (block.name, column.key) in _TRIAL_COLUMNS:
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
+            elif block.name == "finding_facts" and column.key == "trials":
+                # A finding's trials land on the Trials section's heading, outside its closed fold, so the link is
+                # seen in every browser; the record is the fold's, under the id the link names.
+                text = _TRIAL_ID.sub(lambda match: f'<a href="#trials">{match.group(0)}</a>', text)
             if block.name == "cases" and column.key == "trials":
                 # Navigation beside the marks, not information: the stylesheet mutes it.
                 css = ' class="trial-links"'
