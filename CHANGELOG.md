@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### search: the standalone transport's address guard can no longer be got past by DNS rebinding
+
+**Fixed:** `StandaloneTransport` resolved a URL's host, refused it if any address was private,
+loopback, link-local or reserved, and then let httpx open the connection, which resolved the name
+again. A name whose owner answers the first lookup with a public address and the second with an
+internal one (DNS rebinding) passed the check and reached the internal address. A fetch of a URL a
+user can steer, from inside a cluster, is exactly that case. A direct request's socket now goes to an
+address the guard resolved and checked, and the name is not looked up a second time. TLS still
+verifies the certificate against the host name, and SNI and the `Host` header still carry it. Every
+redirect hop is resolved, checked and held to its own addresses.
+
+**Fixed:** the guard now also refuses an address IANA does not list as globally reachable. Before, it
+let through `100.64.0.0/10` (the shared address space), which Python's `ipaddress` counts as neither
+private nor reserved and which some clusters and overlay networks use for pods and nodes.
+
+**Changed:**
+
+- The transport, not httpx, decides whether a request goes through a proxy. It reads the same
+  environment variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`), through the one check
+  the guard already used, so the route the guard checks is the route the request takes. A `NO_PROXY`
+  entry that `urllib` and httpx used to read differently now follows `urllib`.
+- When a name resolves to several addresses, the connection races the checked addresses in the
+  resolver's order, as a connect by name did: the next starts when one fails or after 250 ms without
+  an answer, and the connect timeout bounds the whole race. A custom `resolve=` callable's order now
+  decides which address is tried first.
+- `3tears-search[standalone]` now declares `httpcore>=1.0`. httpx already required it.
+
+**Not covered:** a request sent through a forward proxy is resolved by the proxy, so stopping
+rebinding there is the proxy's job. A transport built with `allow_private_addresses=True` checks no
+address and so is not held to one.
+
 ## v0.75.0 -- 2026-10-21
 
 ### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease

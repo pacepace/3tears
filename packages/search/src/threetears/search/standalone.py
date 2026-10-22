@@ -43,7 +43,11 @@ What it owes, and where each obligation is discharged:
 - **SSRF guards** (D21, SR-K3, SR-N3) -- private-address refusal, an
   optional host allowlist, and a redirect policy that defaults to not
   following. Enforced here rather than per call site, because the third call
-  site written is the one that skips it.
+  site written is the one that skips it. The address check and the connection
+  are one decision: a direct connection is opened to an address the guard
+  resolved and checked, never to a second resolution of the name, so a name
+  that answers differently by the time the socket opens (DNS rebinding) has
+  nothing left to steer.
 - **streamed reads with byte caps** (SR-G5) -- the body is consumed in
   chunks against a cap and never through an unbounded ``response.text``,
   which is a memory incident on a ``MemoryMax``-capped host.
@@ -107,13 +111,15 @@ import ipaddress
 import socket
 import time
 import urllib.request
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
 from urllib.parse import urljoin, urlparse
 
+import httpcore
 import httpx
 from pydantic import JsonValue
 
@@ -215,7 +221,11 @@ def _is_blocked_address(address: str) -> bool:
 
     Loopback, private, link-local, reserved, multicast and unspecified
     ranges are all refused: on a host with an internal network, each one
-    reaches something a search provider is not.
+    reaches something a search provider is not. So is anything else IANA does
+    not list as globally reachable -- the shared address space
+    ``100.64.0.0/10`` above all, which is neither private nor reserved to
+    :mod:`ipaddress` and is where some clusters put their pods and some
+    overlay networks their nodes.
 
     :param address: a literal IPv4 or IPv6 address
     :ptype address: str
@@ -227,7 +237,8 @@ def _is_blocked_address(address: str) -> bool:
     except ValueError:
         return True
     return (
-        parsed.is_private
+        not parsed.is_global
+        or parsed.is_private
         or parsed.is_loopback
         or parsed.is_link_local
         or parsed.is_reserved
@@ -251,27 +262,32 @@ def _is_address_literal(host: str) -> bool:
     return True
 
 
-def _leaves_through_a_proxy(scheme: str, host: str) -> bool:
-    """Whether a request to ``host`` leaves through a forward proxy rather than directly.
+def _proxy_for(scheme: str, host: str) -> str | None:
+    """The forward proxy a request to ``host`` leaves through, or ``None`` for a direct one.
 
-    httpx honours the proxy environment (``HTTPS_PROXY`` / ``HTTP_PROXY`` /
-    ``ALL_PROXY``, with ``NO_PROXY`` exempting hosts), and this answers the same
-    question from the same variables, so the guard checks the route the request
-    actually takes rather than assuming a direct one.
+    Read from the proxy environment (``HTTPS_PROXY`` / ``HTTP_PROXY`` /
+    ``ALL_PROXY``, with ``NO_PROXY`` exempting hosts), per request. This is the
+    one answer to "which route does this request take": the guard checks the
+    route it names and :class:`_GuardedRoutes` then sends the request down that
+    same route, so the route checked and the route taken cannot disagree.
 
     :param scheme: the URL's scheme
     :ptype scheme: str
     :param host: the URL's host, lower-cased
     :ptype host: str
-    :return: ``True`` when the connection goes to a proxy
-    :rtype: bool
+    :return: the proxy URL, with ``http://`` supplied where the variable named
+        only a host and port, or ``None`` when the connection is direct
+    :rtype: str | None
     """
     proxies = urllib.request.getproxies_environment()
-    if not (proxies.get(scheme) or proxies.get("all")):
-        return False
+    proxy = proxies.get(scheme) or proxies.get("all")
+    if not proxy:
+        return None
     # getattr: present at runtime on every supported Python, absent from the type stubs.
     bypass = getattr(urllib.request, "proxy_bypass_environment")
-    return not bypass(host, proxies)
+    if bypass(host, proxies):
+        return None
+    return proxy if "://" in proxy else f"http://{proxy}"
 
 
 def _as_address(host: str) -> str | None:
@@ -319,7 +335,10 @@ async def _resolve(host: str) -> tuple[str, ...]:
 
     :param host: a hostname or an IP literal
     :ptype host: str
-    :return: every address the host resolves to
+    :return: every address the host resolves to, in the resolver's order of
+        preference, each once. The order is kept because a direct connection
+        tries these addresses in it: the system resolver sorts an address this
+        host cannot route (IPv6 on an IPv4-only pod) after one it can
     :rtype: tuple[str, ...]
     :raises TransportFailed: when the name does not resolve -- an
         unresolvable host is a failed request, not a reachable one
@@ -330,7 +349,412 @@ async def _resolve(host: str) -> tuple[str, ...]:
         infos = await asyncio.to_thread(socket.getaddrinfo, host, None, 0, socket.SOCK_STREAM)
     except OSError as exc:
         raise TransportFailed(f"cannot resolve host {host!r}: {exc}", spend=Spend()) from exc
-    return tuple({str(info[4][0]) for info in infos})
+    return tuple(dict.fromkeys(str(info[4][0]) for info in infos))
+
+
+#: the request extension :meth:`StandaloneTransport._exchange` puts the guard's
+#: route on, and :class:`_GuardedRoutes` reads it from. Namespaced so it cannot
+#: collide with an extension httpx or httpcore defines.
+_ROUTE_EXTENSION: Final[str] = "threetears.search.route"
+
+
+@dataclass(frozen=True, slots=True)
+class _Pinned:
+    """A direct connection, to one of the addresses the guard checked and to nothing else."""
+
+    #: the checked addresses, in the order a connection tries them. Never
+    #: empty: an empty pin would be a route with nowhere to go.
+    addresses: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Refuse a pin with no address in it.
+
+        :raises ValueError: when ``addresses`` is empty
+        """
+        if not self.addresses:
+            raise ValueError("a pinned route needs at least one checked address")
+
+
+@dataclass(frozen=True, slots=True)
+class _Unpinned:
+    """A direct connection by name, for a transport with no address policy to protect.
+
+    Only a transport built with ``allow_private_addresses=True`` routes this
+    way: it checks no address, so there is no checked address to hold the
+    connection to, and connecting by name changes nothing it relies on.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class _Proxied:
+    """A connection to a forward proxy, which reaches the target on this request's behalf."""
+
+    #: the proxy's URL, scheme included.
+    proxy_url: str
+
+
+#: where one request goes. The guard decides it, and the connection follows it.
+type _Route = _Pinned | _Unpinned | _Proxied
+
+
+@dataclass(frozen=True, slots=True)
+class _ConnectPermit:
+    """What one direct request may open a TCP connection to.
+
+    Set by :class:`_GuardedRoutes` for the length of one request and read by
+    :class:`_PinnedNetwork` when httpcore asks it for a socket. httpcore opens a
+    request's connection inside that request's own task (HTTP/1.1 never hands a
+    connection that is still opening to a second request), so a context
+    variable reaches exactly the connect it is meant for.
+    """
+
+    #: the host httpcore will ask to connect to, as it will spell it.
+    host: str
+    #: the route that request was given.
+    route: _Pinned | _Unpinned
+
+
+_CONNECT_PERMIT: ContextVar[_ConnectPermit | None] = ContextVar("_CONNECT_PERMIT", default=None)
+
+#: httpcore's errors and the httpx errors they become, most specific first, so
+#: the retry loop sees exactly the classes httpx's own transport would raise.
+_HTTPCORE_TO_HTTPX: Final[tuple[tuple[type[Exception], type[httpx.HTTPError]], ...]] = (
+    (httpcore.ConnectTimeout, httpx.ConnectTimeout),
+    (httpcore.ReadTimeout, httpx.ReadTimeout),
+    (httpcore.WriteTimeout, httpx.WriteTimeout),
+    (httpcore.PoolTimeout, httpx.PoolTimeout),
+    (httpcore.TimeoutException, httpx.TimeoutException),
+    (httpcore.ConnectError, httpx.ConnectError),
+    (httpcore.ReadError, httpx.ReadError),
+    (httpcore.WriteError, httpx.WriteError),
+    (httpcore.NetworkError, httpx.NetworkError),
+    (httpcore.ProxyError, httpx.ProxyError),
+    (httpcore.UnsupportedProtocol, httpx.UnsupportedProtocol),
+    (httpcore.LocalProtocolError, httpx.LocalProtocolError),
+    (httpcore.RemoteProtocolError, httpx.RemoteProtocolError),
+    (httpcore.ProtocolError, httpx.ProtocolError),
+)
+
+#: every httpcore error the table translates.
+_HTTPCORE_ERRORS: Final[tuple[type[Exception], ...]] = tuple(core_class for core_class, _ in _HTTPCORE_TO_HTTPX)
+
+
+@contextmanager
+def _as_httpx_errors() -> Iterator[None]:
+    """Raise an httpcore error as the httpx error it corresponds to.
+
+    :return: a context manager translating the errors raised inside it
+    :rtype: Iterator[None]
+    :raises httpx.HTTPError: the translation of an httpcore error
+    """
+    try:
+        yield
+    except _HTTPCORE_ERRORS as exc:
+        translated = next(httpx_class for core_class, httpx_class in _HTTPCORE_TO_HTTPX if isinstance(exc, core_class))
+        raise translated(str(exc)) from exc
+
+
+#: how long a pinned connect waits on one address before starting the next
+#: alongside it, in seconds. RFC 8305's recommended connection attempt delay,
+#: and anyio's default for the race a connect by name runs.
+_CONNECTION_ATTEMPT_DELAY_SECONDS: Final[float] = 0.25
+
+
+async def _abandon(attempt: asyncio.Task[httpcore.AsyncNetworkStream]) -> None:
+    """Stop a connect attempt that lost the race, closing what it opened if it got that far.
+
+    An attempt that failed to connect lost anyway, so its :class:`httpcore.ConnectError`
+    is the expected end; any other failure is a fault and is raised.
+
+    :param attempt: the losing attempt
+    :ptype attempt: asyncio.Task[httpcore.AsyncNetworkStream]
+    :raises BaseException: whatever the attempt raised other than a connect failure
+    """
+    attempt.cancel()
+    await asyncio.wait([attempt])
+    if attempt.cancelled():
+        return
+    error = attempt.exception()
+    if error is None:
+        await attempt.result().aclose()
+    elif not isinstance(error, httpcore.ConnectError):
+        raise error
+
+
+class _PinnedNetwork(httpcore.AsyncNetworkBackend):
+    """httpcore's network, with every TCP connect held to the addresses its request was given.
+
+    This is where the guard's answer becomes the connection's destination.
+    httpcore hands :meth:`connect_tcp` the URL's *host*; left to itself it
+    would resolve that name again, and a name that answered the guard with a
+    public address can answer the second lookup with a cluster-internal one.
+    So for a pinned request the name is never looked up here at all: the
+    socket goes to a checked address, while TLS still verifies the
+    certificate against the name (httpcore takes the server name from the
+    URL, not from this socket) and the ``Host`` header still carries it.
+    """
+
+    def __init__(self) -> None:
+        """Wrap httpcore's own asyncio network."""
+        self._network = httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        """Open a TCP connection to where this request's route allows.
+
+        A pinned route races its checked addresses the way a connect by name
+        does (RFC 8305's staggered start): the first address is tried, the
+        next is started when that one fails or after
+        :data:`_CONNECTION_ATTEMPT_DELAY_SECONDS` without an answer, and the
+        first connection made wins while the rest are cancelled. So an address
+        this host cannot reach -- a refused one, or an IPv6 one whose route
+        drops packets -- costs a quarter-second, not the whole call. The
+        connect timeout bounds the race as a whole, never each address.
+
+        :param host: the host httpcore was asked to reach
+        :ptype host: str
+        :param port: the port to connect to
+        :ptype port: int
+        :param timeout: connect timeout for the whole race, in seconds
+        :ptype timeout: float | None
+        :param local_address: local address to bind, if any
+        :ptype local_address: str | None
+        :param socket_options: socket options to set, if any
+        :ptype socket_options: Iterable[httpcore.SOCKET_OPTION] | None
+        :return: the connected stream
+        :rtype: httpcore.AsyncNetworkStream
+        :raises RuntimeError: when no route was given for this host -- a
+            connection the guard never saw is refused rather than made
+        :raises httpcore.ConnectTimeout: when no checked address connected
+            inside the timeout
+        :raises httpcore.ConnectError: when every checked address failed
+        """
+        permit = _CONNECT_PERMIT.get()
+        if permit is None or permit.host != host:
+            raise RuntimeError(f"refusing a connection to {host!r} that no guarded request asked for")
+        if isinstance(permit.route, _Unpinned):
+            return await self._network.connect_tcp(
+                host, port, timeout=timeout, local_address=local_address, socket_options=socket_options
+            )
+        try:
+            async with asyncio.timeout(timeout):
+                return await self._race(host, permit.route.addresses, port, local_address, socket_options)
+        except TimeoutError as exc:
+            raise httpcore.ConnectTimeout(
+                f"no checked address for {host!r} connected within {timeout}s: {list(permit.route.addresses)}"
+            ) from exc
+
+    async def _race(
+        self,
+        host: str,
+        addresses: tuple[str, ...],
+        port: int,
+        local_address: str | None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None,
+    ) -> httpcore.AsyncNetworkStream:
+        """Connect to the first of ``addresses`` that answers, starting each in turn.
+
+        :param host: the host the addresses were checked for, for the failure message
+        :ptype host: str
+        :param addresses: the checked addresses, in the resolver's order
+        :ptype addresses: tuple[str, ...]
+        :param port: the port to connect to
+        :ptype port: int
+        :param local_address: local address to bind, if any
+        :ptype local_address: str | None
+        :param socket_options: socket options to set, if any
+        :ptype socket_options: Iterable[httpcore.SOCKET_OPTION] | None
+        :return: the first connected stream
+        :rtype: httpcore.AsyncNetworkStream
+        :raises httpcore.ConnectError: when every address failed
+        """
+        waiting = list(addresses)
+        attempts: dict[asyncio.Task[httpcore.AsyncNetworkStream], str] = {}
+        failures: list[str] = []
+        try:
+            while waiting or attempts:
+                if waiting:
+                    address = waiting.pop(0)
+                    attempt = asyncio.create_task(
+                        self._network.connect_tcp(
+                            address, port, local_address=local_address, socket_options=socket_options
+                        )
+                    )
+                    attempts[attempt] = address
+                done, _ = await asyncio.wait(
+                    attempts,
+                    timeout=_CONNECTION_ATTEMPT_DELAY_SECONDS if waiting else None,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for attempt in done:
+                    address = attempts.pop(attempt)
+                    error = attempt.exception()
+                    if error is None:
+                        return attempt.result()
+                    if not isinstance(error, httpcore.ConnectError):
+                        raise error
+                    failures.append(f"{address}: {error}")
+        finally:
+            # the losers, on every way out: a win, a failure, or the caller's
+            # timeout cancelling this race.
+            for attempt in attempts:
+                await _abandon(attempt)
+        raise httpcore.ConnectError(f"could not connect to any checked address for {host!r}: {'; '.join(failures)}")
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        """Refuse a Unix socket: this transport reaches URLs, never local paths.
+
+        :param path: the socket path asked for
+        :ptype path: str
+        :param timeout: connect timeout, in seconds
+        :ptype timeout: float | None
+        :param socket_options: socket options, if any
+        :ptype socket_options: Iterable[httpcore.SOCKET_OPTION] | None
+        :return: never returns
+        :rtype: httpcore.AsyncNetworkStream
+        :raises RuntimeError: always
+        """
+        raise RuntimeError(f"refusing a Unix-socket connection to {path!r}: this transport reaches URLs only")
+
+    async def sleep(self, seconds: float) -> None:
+        """Sleep on httpcore's own network.
+
+        :param seconds: how long
+        :ptype seconds: float
+        """
+        await self._network.sleep(seconds)
+
+
+class _CoreResponseStream(httpx.AsyncByteStream):
+    """An httpcore response body read as an httpx one, with its errors translated."""
+
+    def __init__(self, response: httpcore.Response) -> None:
+        """Hold the httpcore response whose body this streams.
+
+        :param response: the response, its body not yet read
+        :ptype response: httpcore.Response
+        """
+        self._response = response
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        """Yield the body's chunks as they arrive.
+
+        :return: the body, chunk by chunk
+        :rtype: AsyncIterator[bytes]
+        """
+        with _as_httpx_errors():
+            async for chunk in self._response.aiter_stream():
+                yield chunk
+
+    async def aclose(self) -> None:
+        """Release the response's connection back to its pool."""
+        with _as_httpx_errors():
+            await self._response.aclose()
+
+
+class _GuardedRoutes(httpx.AsyncBaseTransport):
+    """The client's only transport: each request goes down the route its guard chose.
+
+    httpx's default transport would decide the route again from the proxy
+    environment, and connect a direct request by resolving its name again.
+    Either second decision can differ from the one the guard checked, so this
+    transport makes neither. A :class:`_Proxied` request goes to the proxy the
+    guard named; a :class:`_Pinned` one goes through one pool whose network
+    connects only to the checked addresses; an :class:`_Unpinned` one through
+    the same pool by name. A request carrying no route was never guarded, and
+    is refused.
+
+    One pool for every direct host, keyed by host name as httpx's own is, so
+    the connection limit binds across hosts and a pooled TLS connection is
+    only ever reused for the name its certificate was checked against.
+    """
+
+    def __init__(self, *, verify: bool, limits: httpx.Limits) -> None:
+        """Build the direct pool; proxy transports are built when first routed to.
+
+        :param verify: whether to verify TLS certificates
+        :ptype verify: bool
+        :param limits: connection limits, applied to the direct pool and to
+            each proxy transport
+        :ptype limits: httpx.Limits
+        """
+        # trust_env left on, as httpx's own transport leaves it: SSL_CERT_FILE
+        # and SSL_CERT_DIR still choose the trust store.
+        self._ssl_context = httpx.create_ssl_context(verify=verify)
+        self._limits = limits
+        self._direct = httpcore.AsyncConnectionPool(
+            ssl_context=self._ssl_context,
+            max_connections=limits.max_connections,
+            max_keepalive_connections=limits.max_keepalive_connections,
+            keepalive_expiry=limits.keepalive_expiry,
+            network_backend=_PinnedNetwork(),
+        )
+        self._proxied: dict[str, httpx.AsyncHTTPTransport] = {}
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        """Send ``request`` down the route its guard chose.
+
+        :param request: the request, carrying its route as an extension
+        :ptype request: httpx.Request
+        :return: the response, its body not yet read
+        :rtype: httpx.Response
+        :raises RuntimeError: when the request carries no route
+        :raises httpx.HTTPError: the transport errors httpx's own transport raises
+        """
+        route = request.extensions.get(_ROUTE_EXTENSION)
+        if isinstance(route, _Proxied):
+            proxy = self._proxied.get(route.proxy_url)
+            if proxy is None:
+                proxy = httpx.AsyncHTTPTransport(proxy=route.proxy_url, verify=self._ssl_context, limits=self._limits)
+                self._proxied[route.proxy_url] = proxy
+            return await proxy.handle_async_request(request)
+        if not isinstance(route, (_Pinned, _Unpinned)):
+            raise RuntimeError(f"refusing to send {request.url}: it carries no route from the address guard")
+        if not isinstance(request.stream, httpx.AsyncByteStream):
+            raise TypeError(f"an async transport needs an async request body, got {type(request.stream).__name__}")
+        core_request = httpcore.Request(
+            method=request.method,
+            url=httpcore.URL(
+                scheme=request.url.raw_scheme,
+                host=request.url.raw_host,
+                port=request.url.port,
+                target=request.url.raw_path,
+            ),
+            headers=request.headers.raw,
+            content=request.stream,
+            extensions=request.extensions,
+        )
+        token = _CONNECT_PERMIT.set(_ConnectPermit(host=request.url.raw_host.decode("ascii"), route=route))
+        try:
+            with _as_httpx_errors():
+                core_response = await self._direct.handle_async_request(core_request)
+        finally:
+            _CONNECT_PERMIT.reset(token)
+        return httpx.Response(
+            status_code=core_response.status,
+            headers=core_response.headers,
+            stream=_CoreResponseStream(core_response),
+            extensions=core_response.extensions,
+        )
+
+    async def aclose(self) -> None:
+        """Close the direct pool and every proxy transport, the rest even when one fails to close."""
+        try:
+            await self._direct.aclose()
+        finally:
+            for proxy in self._proxied.values():
+                await proxy.aclose()
 
 
 class StandaloneTransport:
@@ -410,10 +834,13 @@ class StandaloneTransport:
             backoff would wait in real time against a clock that never moves
         :ptype sleep: Callable[[float], Awaitable[None]]
         :param resolve: how the address guard resolves a hostname to its
-            addresses, raising :class:`TransportFailed` for a name that does
-            not resolve. Resolution off the event loop by default; injected
-            so a test can present a name that resolves somewhere it should
-            not (DNS rebinding) without owning a resolver
+            addresses, in order of preference, raising
+            :class:`TransportFailed` for a name that does not resolve. It is
+            the only resolution a direct request gets: the connection is
+            opened to these addresses, tried in the order given, and the name
+            is never looked up again. Resolution off the event loop by
+            default; injected so a test can present a name that resolves
+            somewhere it should not without owning a resolver
         :ptype resolve: Callable[[str], Awaitable[tuple[str, ...]]]
         :raises ValueError: when ``max_attempts`` is below 1 or
             ``max_response_bytes`` is not positive
@@ -500,6 +927,10 @@ class StandaloneTransport:
         call made through it. Each request states what remains of its own
         bound.
 
+        Nor does the client read the proxy environment. Its one transport
+        sends each request down the route the address guard chose for it,
+        so the route is decided once, by the code that checked it.
+
         :param keepalive: connections this client may hold open between
             requests. Zero for the per-request client, which has no next
             request to hold one for
@@ -507,10 +938,11 @@ class StandaloneTransport:
         :return: the configured client
         :rtype: httpx.AsyncClient
         """
+        limits = httpx.Limits(max_connections=self._max_connections, max_keepalive_connections=keepalive)
         return httpx.AsyncClient(
             follow_redirects=False,
-            limits=httpx.Limits(max_connections=self._max_connections, max_keepalive_connections=keepalive),
-            verify=self._verify_tls,
+            transport=_GuardedRoutes(verify=self._verify_tls, limits=limits),
+            trust_env=False,
         )
 
     @asynccontextmanager
@@ -956,7 +1388,10 @@ class StandaloneTransport:
         target = url
         read_total = 0
         for hop in range(self._max_redirects + 1):
-            await self._guard(target, elapsed=elapsed_so_far, bytes_seen=bytes_so_far + read_total)
+            # every hop is guarded and routed afresh: a redirect names a new
+            # host, and the addresses checked for the last one say nothing
+            # about it.
+            route = await self._guard(target, elapsed=elapsed_so_far, bytes_seen=bytes_so_far + read_total)
             async with client.stream(
                 method,
                 target,
@@ -964,6 +1399,7 @@ class StandaloneTransport:
                 params=dict(params) if params else None,
                 json=dict(json_body) if json_body else None,
                 timeout=timeout,
+                extensions={_ROUTE_EXTENSION: route},
             ) as response:
                 # header keys are normalised here so every consumer of the
                 # seam reads one casing -- the protocol promises lower-case,
@@ -1139,8 +1575,8 @@ class StandaloneTransport:
             scope=RESPONSE_BYTES_SCOPE,
         )
 
-    async def _guard(self, url: str, *, elapsed: float, bytes_seen: int) -> None:
-        """Refuse a target this transport must not reach (D21, SR-N3).
+    async def _guard(self, url: str, *, elapsed: float, bytes_seen: int) -> _Route:
+        """Refuse a target this transport must not reach, and route the rest (D21, SR-N3).
 
         Two guards, both deployment-configured: an optional host allowlist,
         which is the strongest available answer to "never a caller-supplied
@@ -1150,18 +1586,25 @@ class StandaloneTransport:
         resolves to, since a name resolving to one public and one loopback
         address is the interesting case rather than a hypothetical one.
 
-        One exception, and only one: a name that cannot be resolved here, on a
-        request that leaves through a forward proxy. Such a host has no DNS of
-        its own, the proxy resolves the name, and the proxy's ACL is the
-        boundary. Where local resolution works its answers are checked whatever
-        route the request takes.
+        The route returned is what the connection then follows, which is what
+        makes the address check binding rather than advisory. A direct request
+        is :class:`_Pinned` to the addresses checked here, and its socket is
+        opened to one of them and nothing else: the name is not resolved a
+        second time, so a name that answers this lookup with a public address
+        and the next with an internal one (DNS rebinding) never reaches the
+        internal one. A redirect is a new target, guarded and pinned on its
+        own.
 
-        Honest about its limit: httpx resolves the name again when it
-        connects, so a name that changes answers between the two can still
-        slip through. Closing that needs the connection pinned to the
-        address that was checked, which is a client-internals concern. This
-        raises the bar; it does not seal the door, and a deployment that
-        needs sealing puts the instance behind an allowlisted host.
+        One exception to resolving here, and only one: a name that cannot be
+        resolved here, on a request that leaves through a forward proxy. Such
+        a host has no DNS of its own, the proxy resolves the name, and the
+        proxy's ACL is the boundary. Where local resolution works its answers
+        are checked whatever route the request takes.
+
+        What this does not cover: a proxied request is :class:`_Proxied`, and
+        the proxy resolves the name itself when it connects -- so behind a
+        proxy, rebinding is the proxy's to refuse. A transport built with
+        ``allow_private_addresses=True`` checks no address, and so pins none.
 
         :param url: the absolute URL about to be reached
         :ptype url: str
@@ -1169,6 +1612,8 @@ class StandaloneTransport:
         :ptype elapsed: float
         :param bytes_seen: bytes read, for the failure's spend
         :ptype bytes_seen: int
+        :return: the route this request must take
+        :rtype: _Route
         :raises threetears.search.contracts.errors.TransportFailed: when the
             scheme, host or resolved addresses are refused
         """
@@ -1183,11 +1628,12 @@ class StandaloneTransport:
                 spend=spend,
                 remediation="add the host to allowed_hosts if the deployment intends it to be reachable",
             )
-        if self._allow_private_addresses:
-            return
         # A trailing dot and the numeric spellings of an address reach the same place as the plain
         # forms, so they are normalised before anything is checked.
         host = host.rstrip(".")
+        proxy = _proxy_for(parsed.scheme, host)
+        if self._allow_private_addresses:
+            return _Proxied(proxy) if proxy is not None else _Unpinned()
         address = _as_address(host)
         if (address is not None and _is_blocked_address(address)) or _is_local_name(host):
             raise TransportFailed(
@@ -1200,17 +1646,18 @@ class StandaloneTransport:
                 ),
             )
         try:
-            addresses = await self._resolve(address or host)
+            # an address names itself: there is nothing to look up, and nothing a lookup could change.
+            addresses = (address,) if address is not None else await self._resolve(host)
         except TransportFailed:
             # A host whose only way out is a forward proxy has no DNS of its own: names resolve at
             # the proxy. Found live -- every fetch failed "cannot resolve host" while curl through
             # the same proxy returned 200. Only when the name cannot be resolved here AND the
             # request goes to a proxy is the check the proxy's to make. Where local resolution
-            # works, its answers are checked whichever way the request leaves; and if this ever
-            # disagrees with httpx about the route, a name that does not resolve here cannot be
-            # connected to directly either, so the disagreement fails closed.
-            if _leaves_through_a_proxy(parsed.scheme, host):
-                return
+            # works, its answers are checked whichever way the request leaves. The route returned
+            # is the one the request then takes, so a request judged proxied here cannot leave
+            # direct and unchecked.
+            if proxy is not None:
+                return _Proxied(proxy)
             raise
         blocked = sorted(address for address in addresses if _is_blocked_address(address))
         if blocked:
@@ -1223,6 +1670,11 @@ class StandaloneTransport:
                     "parameter (D21)"
                 ),
             )
+        if proxy is not None:
+            return _Proxied(proxy)
+        if not addresses:
+            raise TransportFailed(f"refusing to reach host {host!r}: it resolved to no address", spend=spend)
+        return _Pinned(addresses)
 
     def _guarded_redirect(self, current: str, location: str) -> str:
         """Resolve a redirect target, refusing the ones policy forbids.

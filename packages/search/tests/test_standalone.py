@@ -23,9 +23,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import ssl
 import time
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from urllib.parse import urlparse
 
+import anyio
+import anyio.abc
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from threetears.search.adapters.searxng import SearxngAdapter
 from threetears.search.bind import bind_search
@@ -970,3 +982,498 @@ async def test_an_unresolvable_name_on_a_direct_route_still_fails(no_proxy_env: 
         await StandaloneTransport(max_attempts=1, **FAST_BACKOFF).request(  # type: ignore[arg-type]
             "GET", "http://only-the-proxy-resolves.invalid/page"
         )
+
+
+# --- the connection goes where the guard looked (DNS rebinding) -----------
+#
+# The guard resolves a name and checks every address. If the socket were then
+# opened by name, the name would be resolved a second time -- and a name its
+# owner controls can answer the guard with a public address and the connect
+# with a cluster-internal one. These pins stand in for DNS twice over: the
+# injected ``resolve`` is what the guard is told, and ``_Network`` is what a
+# connect by name would reach. They disagree, as a rebinding name does, and the
+# pins hold that the guard's answer is the one the socket follows.
+#
+# ``_Network`` replaces ``anyio.connect_tcp``, the call httpcore's network makes
+# to open a socket, so the public addresses below are never contacted: each is
+# a label for a loopback server, and a host it does not know is refused.
+
+#: addresses the guard accepts, each standing for a server the test controls.
+_PUBLIC = "93.184.215.14"
+_OTHER_PUBLIC = "8.8.4.4"
+_UNREACHABLE_PUBLIC = "1.1.1.1"
+_SILENT_PUBLIC = "9.9.9.9"
+
+#: a route that never answers: the connect hangs, as on a path that drops packets.
+_BLACKHOLE = -1
+
+
+def _port(server: LocalHttpServer) -> int:
+    """The loopback port ``server`` listens on.
+
+    :param server: a running server
+    :ptype server: LocalHttpServer
+    :return: its port
+    :rtype: int
+    """
+    port = urlparse(server.base_url).port
+    assert port is not None
+    return port
+
+
+class _Network:
+    """Where a TCP connect to each host lands, and a record of the hosts asked for."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, routes: dict[str, int]) -> None:
+        """Route each host to a loopback port and take over the socket call.
+
+        :param monkeypatch: the test's monkeypatch
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :param routes: host (a name or an address) to the loopback port it reaches,
+            or :data:`_BLACKHOLE` for one whose connect never answers
+        :ptype routes: dict[str, int]
+        """
+        self.routes = routes
+        self.connected: list[str] = []
+        self._connect = anyio.connect_tcp
+        monkeypatch.setattr(anyio, "connect_tcp", self.connect_tcp)
+
+    async def connect_tcp(self, remote_host: str, remote_port: int, **kwargs: object) -> anyio.abc.SocketStream:
+        """Connect to the loopback server ``remote_host`` stands for.
+
+        :param remote_host: the host the client asked for
+        :ptype remote_host: str
+        :param remote_port: the port the client asked for, ignored for the route's own
+        :ptype remote_port: int
+        :param kwargs: the rest of the connect call, passed through
+        :ptype kwargs: object
+        :return: the connected stream
+        :rtype: anyio.abc.SocketStream
+        :raises ConnectionRefusedError: for a host with no route
+        """
+        self.connected.append(remote_host)
+        port = self.routes.get(remote_host)
+        if port is None:
+            raise ConnectionRefusedError(f"no route to {remote_host}")
+        if port == _BLACKHOLE:
+            await asyncio.sleep(3600)
+        return await self._connect("127.0.0.1", port, **kwargs)  # type: ignore[arg-type]
+
+
+def _resolver(
+    answers: dict[str, tuple[str, ...]], asked: list[str] | None = None
+) -> Callable[[str], Awaitable[tuple[str, ...]]]:
+    """A resolver giving fixed answers, recording each name it is asked for.
+
+    :param answers: name to the addresses it resolves to
+    :ptype answers: dict[str, tuple[str, ...]]
+    :param asked: where to record the names asked for, if anywhere
+    :ptype asked: list[str] | None
+    :return: the resolver
+    :rtype: Callable[[str], Awaitable[tuple[str, ...]]]
+    """
+
+    async def resolve(host: str) -> tuple[str, ...]:
+        if asked is not None:
+            asked.append(host)
+        if host not in answers:
+            raise TransportFailed(f"cannot resolve host {host!r}")
+        return answers[host]
+
+    return resolve
+
+
+async def _resolve_nothing(host: str) -> tuple[str, ...]:
+    """A resolver for pins whose host is an address literal, which never reaches it.
+
+    :param host: the name asked for
+    :ptype host: str
+    :return: never returns
+    :rtype: tuple[str, ...]
+    :raises AssertionError: always -- a literal must not be looked up
+    """
+    raise AssertionError(f"an address literal was looked up: {host!r}")
+
+
+def _guarded(resolve: Callable[[str], Awaitable[tuple[str, ...]]], **kwargs: object) -> StandaloneTransport:
+    """Build a transport with the address guard ON, which every pin in this section needs.
+
+    :param resolve: what the guard is told each name resolves to
+    :ptype resolve: Callable[[str], Awaitable[tuple[str, ...]]]
+    :param kwargs: constructor overrides
+    :ptype kwargs: object
+    :return: the transport under test
+    :rtype: StandaloneTransport
+    """
+    settings: dict[str, object] = {"max_attempts": 1, "resolve": resolve, **FAST_BACKOFF}
+    settings.update(kwargs)
+    return StandaloneTransport(**settings)  # type: ignore[arg-type]
+
+
+async def test_the_connection_goes_to_the_address_the_guard_checked(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """A name that rebinds between the guard's lookup and the connect never reaches the second answer."""
+    asked: list[str] = []
+    async with LocalHttpServer() as checked, LocalHttpServer() as internal:
+        network = _Network(no_proxy_env, {_PUBLIC: _port(checked), "rebind.example": _port(internal)})
+        transport = _guarded(_resolver({"rebind.example": (_PUBLIC,)}, asked))
+        response = await transport.request("GET", "http://rebind.example/admin")
+
+    assert internal.requests == [], "the connect resolved the name again and reached the rebound address"
+    assert response.status_code == 200
+    assert network.connected == [_PUBLIC]
+    assert asked == ["rebind.example"], "one lookup per hop: the guard's, and no other"
+    assert "host: rebind.example" in checked.requests[0].lower(), "the Host header still names the host"
+
+
+async def test_a_redirect_is_resolved_checked_and_pinned_on_its_own(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """Each hop names a new host; the last hop's addresses say nothing about it."""
+    asked: list[str] = []
+    hop = (Reply(status=302, body=b"", headers={"Location": "http://second.example/landed"}),)
+    async with LocalHttpServer(hop) as first, LocalHttpServer() as second, LocalHttpServer() as internal:
+        network = _Network(
+            no_proxy_env,
+            {
+                _PUBLIC: _port(first),
+                _OTHER_PUBLIC: _port(second),
+                "first.example": _port(internal),
+                "second.example": _port(internal),
+            },
+        )
+        resolve = _resolver({"first.example": (_PUBLIC,), "second.example": (_OTHER_PUBLIC,)}, asked)
+        response = await _guarded(resolve, max_redirects=1).request("GET", "http://first.example/start")
+
+    assert internal.requests == []
+    assert response.status_code == 200
+    assert response.final_url == "http://second.example/landed"
+    assert network.connected == [_PUBLIC, _OTHER_PUBLIC]
+    assert asked == ["first.example", "second.example"]
+    assert "host: second.example" in second.requests[0].lower()
+
+
+async def test_a_redirect_to_a_name_that_resolves_internally_is_refused(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """The second hop's guard is a real guard, not a formality the first hop discharged."""
+    hop = (Reply(status=302, body=b"", headers={"Location": "http://second.example/landed"}),)
+    async with LocalHttpServer(hop) as first:
+        network = _Network(no_proxy_env, {_PUBLIC: _port(first)})
+        resolve = _resolver({"first.example": (_PUBLIC,), "second.example": ("10.0.0.7",)})
+        with pytest.raises(TransportFailed, match="non-public address"):
+            await _guarded(resolve, max_redirects=1).request("GET", "http://first.example/start")
+
+    assert network.connected == [_PUBLIC], "the refused hop opened no socket"
+
+
+async def test_a_refusing_address_is_tried_past_to_the_next_checked_one(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """Pinning keeps the resolver's fallback: an IPv6 answer an IPv4-only pod cannot route is not the end."""
+    async with LocalHttpServer() as checked:
+        network = _Network(no_proxy_env, {_PUBLIC: _port(checked)})
+        resolve = _resolver({"two.example": (_UNREACHABLE_PUBLIC, _PUBLIC)})
+        response = await _guarded(resolve).request("GET", "http://two.example/page")
+
+    assert response.status_code == 200
+    assert network.connected == [_UNREACHABLE_PUBLIC, _PUBLIC]
+
+
+async def test_when_every_checked_address_refuses_the_failure_names_them(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """Running out of checked addresses fails; it never falls back to the name."""
+    network = _Network(no_proxy_env, {"two.example": 1})
+    with pytest.raises(TransportFailed, match=re.escape(_UNREACHABLE_PUBLIC)):
+        await _guarded(_resolver({"two.example": (_UNREACHABLE_PUBLIC,)})).request("GET", "http://two.example/page")
+
+    assert network.connected == [_UNREACHABLE_PUBLIC]
+
+
+async def test_the_shared_address_space_is_refused_and_its_neighbours_are_not(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """100.64.0.0/10 is neither private nor reserved to ipaddress, and is where some clusters put pods."""
+    async with LocalHttpServer() as outside:
+        network = _Network(no_proxy_env, {"100.128.0.1": _port(outside)})
+        resolve = _resolver({"cgnat.example": ("100.64.12.7",), "beside.example": ("100.128.0.1",)})
+        with pytest.raises(TransportFailed, match="non-public address"):
+            await _guarded(resolve).request("GET", "http://cgnat.example/")
+        response = await _guarded(resolve).request("GET", "http://beside.example/")
+
+    assert response.status_code == 200, "the first address past the /10 is public, and reachable"
+    assert network.connected == ["100.128.0.1"], "the refused name opened no socket"
+
+
+async def test_an_address_that_never_answers_costs_a_moment_not_the_call(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """The checked addresses race, as a connect by name does: a silent IPv6 route does not sink a dual-stack site."""
+    async with LocalHttpServer() as checked:
+        network = _Network(no_proxy_env, {_SILENT_PUBLIC: _BLACKHOLE, _PUBLIC: _port(checked)})
+        started = time.monotonic()
+        response = await _guarded(_resolver({"dual.example": (_SILENT_PUBLIC, _PUBLIC)})).request(
+            "GET", "http://dual.example/page", timeout_seconds=10.0
+        )
+        took = time.monotonic() - started
+
+    assert response.status_code == 200
+    assert network.connected == [_SILENT_PUBLIC, _PUBLIC]
+    assert took < 5.0, f"the second address waited on the first for {took:.2f}s"
+
+
+async def test_the_connect_timeout_bounds_the_whole_race_not_each_address(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """Three silent addresses under a 0.7s bound fail in about 0.7s, not the 2.1s a bound per address would take."""
+    silent = ("9.9.9.9", "9.9.9.10", "9.9.9.11")
+    network = _Network(no_proxy_env, dict.fromkeys(silent, _BLACKHOLE))
+    started = time.monotonic()
+    with pytest.raises(TimedOut):
+        await _guarded(_resolver({"silent.example": silent})).request(
+            "GET", "http://silent.example/page", timeout_seconds=0.7
+        )
+    took = time.monotonic() - started
+
+    assert network.connected == list(silent), "every checked address was started inside the bound"
+    assert took < 1.5, f"the bound was spent per address: {took:.2f}s"
+
+
+async def test_an_address_literal_is_held_to_itself(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """An IPv6 literal resolves to itself, is checked, and is the only place the socket goes."""
+    async with LocalHttpServer() as checked:
+        network = _Network(no_proxy_env, {"2606:4700::1111": _port(checked)})
+        response = await _guarded(_resolve_nothing).request("GET", "http://[2606:4700::1111]/page")
+
+    assert response.status_code == 200
+    assert network.connected == ["2606:4700::1111"]
+
+
+async def test_a_host_no_proxy_exempts_goes_direct_and_pinned(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """The route the guard judged direct is the route taken: NO_PROXY is read once, by one check."""
+    async with LocalHttpServer() as proxy, LocalHttpServer() as checked, LocalHttpServer() as internal:
+        network = _Network(
+            no_proxy_env, {"proxy.example": _port(proxy), _PUBLIC: _port(checked), "public.example": _port(internal)}
+        )
+        no_proxy_env.setenv("HTTP_PROXY", "http://proxy.example:3128")
+        no_proxy_env.setenv("NO_PROXY", "public.example")
+        response = await _guarded(_resolver({"public.example": (_PUBLIC,)})).request(
+            "GET", "http://public.example/page"
+        )
+
+    assert response.status_code == 200
+    assert proxy.requests == [] and internal.requests == []
+    assert network.connected == [_PUBLIC]
+
+
+async def test_requests_queued_for_a_connection_each_connect_where_their_own_guard_looked(
+    no_proxy_env: pytest.MonkeyPatch,
+) -> None:
+    """With one connection slot, later requests wait and connect afterwards -- each still to its own pin."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"}, delay=0.05)
+    async with LocalHttpServer((page,)) as one, LocalHttpServer((page,)) as two, LocalHttpServer((page,)) as three:
+        addresses = {"one.example": "203.0.114.1", "two.example": "203.0.114.2", "three.example": "203.0.114.3"}
+        network = _Network(
+            no_proxy_env,
+            {
+                addresses["one.example"]: _port(one),
+                addresses["two.example"]: _port(two),
+                addresses["three.example"]: _port(three),
+            },
+        )
+        transport = _guarded(_resolver({name: (address,) for name, address in addresses.items()}), max_connections=1)
+        async with transport.connection_scope():
+            responses = await asyncio.gather(
+                *(transport.fetch("GET", f"http://{name}/page", max_bytes=4096) for name in addresses)
+            )
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    for server, name in ((one, "one.example"), (two, "two.example"), (three, "three.example")):
+        assert len(server.requests) == 1 and f"host: {name}" in server.requests[0].lower()
+    assert sorted(network.connected) == sorted(addresses.values())
+
+
+async def test_two_names_on_one_address_never_share_a_connection(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """Pooling stays per name, so a TLS connection is only reused for the name it was verified for."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as shared:
+        _Network(no_proxy_env, {_PUBLIC: _port(shared)})
+        transport = _guarded(_resolver({"a.example": (_PUBLIC,), "b.example": (_PUBLIC,)}))
+        async with transport.connection_scope():
+            for host in ("a.example", "b.example", "a.example"):
+                await transport.fetch("GET", f"http://{host}/page", max_bytes=4096)
+
+    assert len(shared.requests) == 3
+    assert shared.connections == 2
+
+
+async def test_a_proxied_request_goes_to_the_proxy_not_to_the_checked_address(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """Behind a proxy the proxy connects; the guard's route says so and the request follows it."""
+    async with LocalHttpServer() as proxy, LocalHttpServer() as checked:
+        network = _Network(no_proxy_env, {"proxy.example": _port(proxy), _PUBLIC: _port(checked)})
+        no_proxy_env.setenv("HTTP_PROXY", "http://proxy.example:3128")
+        response = await _guarded(_resolver({"public.example": (_PUBLIC,)})).request(
+            "GET", "http://public.example/page"
+        )
+
+    assert response.status_code == 200
+    assert checked.requests == []
+    assert network.connected == ["proxy.example"]
+    assert proxy.requests[0].startswith("GET http://public.example/page ")
+
+
+# --- TLS against a pinned address ------------------------------------------
+
+
+def _issue_certificate(directory: Path, name: str) -> tuple[Path, Path, Path]:
+    """Write a CA, and a server certificate it signs for ``name``, under ``directory``.
+
+    :param directory: where to write the PEM files
+    :ptype directory: Path
+    :param name: the DNS name the server certificate is for -- and the only one
+    :ptype name: str
+    :return: the CA certificate, the server certificate and the server key
+    :rtype: tuple[Path, Path, Path]
+    """
+    now = datetime.now(UTC)
+
+    def _build(
+        subject: str, key: ec.EllipticCurvePrivateKey, issuer: str, signer: ec.EllipticCurvePrivateKey, *, ca: bool
+    ) -> x509.Certificate:
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, subject)]))
+            .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer)]))
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(hours=1))
+            .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+        )
+        if ca:
+            builder = builder.add_extension(
+                x509.KeyUsage(
+                    digital_signature=True,
+                    content_commitment=False,
+                    key_encipherment=False,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=True,
+                    crl_sign=True,
+                    encipher_only=False,
+                    decipher_only=False,
+                ),
+                critical=True,
+            ).add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+        else:
+            builder = (
+                builder.add_extension(x509.SubjectAlternativeName([x509.DNSName(subject)]), critical=False)
+                .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+                .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(signer.public_key()), critical=False)
+            )
+        return builder.sign(signer, hashes.SHA256())
+
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_cert = _build("pin test CA", ca_key, "pin test CA", ca_key, ca=True)
+    server_key = ec.generate_private_key(ec.SECP256R1())
+    server_cert = _build(name, server_key, "pin test CA", ca_key, ca=False)
+    ca_path, cert_path, key_path = directory / "ca.pem", directory / "server.pem", directory / "server.key"
+    ca_path.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+    cert_path.write_bytes(server_cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        server_key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+        )
+    )
+    return ca_path, cert_path, key_path
+
+
+class _TlsServer:
+    """A loopback HTTPS server answering 200, recording the SNI name each handshake presented."""
+
+    def __init__(self, cert: Path, key: Path) -> None:
+        """Load the server's certificate.
+
+        :param cert: the server certificate
+        :ptype cert: Path
+        :param key: its private key
+        :ptype key: Path
+        """
+        self.server_names: list[str | None] = []
+        self.requests: list[str] = []
+        self._context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        self._context.load_cert_chain(cert, key)
+        self._context.sni_callback = self._record_sni
+        self._server: asyncio.Server | None = None
+        self.port = 0
+
+    def _record_sni(self, _socket: ssl.SSLObject, server_name: str | None, _context: ssl.SSLContext) -> None:
+        """Record the name the client asked for in its handshake.
+
+        :param _socket: the connection being handshaken
+        :ptype _socket: ssl.SSLObject
+        :param server_name: the SNI name, or None when the client sent none
+        :ptype server_name: str | None
+        :param _context: the server's context
+        :ptype _context: ssl.SSLContext
+        """
+        self.server_names.append(server_name)
+
+    async def __aenter__(self) -> _TlsServer:
+        """Listen on an ephemeral loopback port.
+
+        :return: this server
+        :rtype: _TlsServer
+        """
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0, ssl=self._context)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        """Stop listening.
+
+        :param exc_info: the exception the block raised, if any
+        :ptype exc_info: object
+        """
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Answer one request with a short 200 and close.
+
+        :param reader: the connection's reader
+        :ptype reader: asyncio.StreamReader
+        :param writer: the connection's writer
+        :ptype writer: asyncio.StreamWriter
+        """
+        try:
+            head = await reader.readuntil(b"\r\n\r\n")
+            self.requests.append(head.decode("latin-1"))
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+            )
+            await writer.drain()
+        # NOSILENT: a client that failed verification hangs up mid-handshake, which is the case under test
+        except asyncio.IncompleteReadError, ConnectionError, ssl.SSLError:
+            return
+        finally:
+            writer.close()
+
+
+async def test_tls_is_verified_against_the_name_while_the_socket_goes_to_the_pinned_address(
+    no_proxy_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pinning moves the socket, not the identity: SNI, certificate check and Host all still say the name."""
+    ca, cert, key = _issue_certificate(tmp_path, "secure.example")
+    no_proxy_env.setenv("SSL_CERT_FILE", str(ca))
+    async with _TlsServer(cert, key) as server, LocalHttpServer() as internal:
+        network = _Network(no_proxy_env, {_PUBLIC: server.port, "secure.example": _port(internal)})
+        response = await _guarded(_resolver({"secure.example": (_PUBLIC,)})).request("GET", "https://secure.example/")
+
+    assert response.status_code == 200
+    assert response.body == b"ok"
+    assert network.connected == [_PUBLIC]
+    assert server.server_names == ["secure.example"]
+    assert "host: secure.example" in server.requests[0].lower()
+    assert internal.requests == []
+
+
+async def test_a_certificate_for_another_name_is_still_refused_at_the_pinned_address(
+    no_proxy_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Connecting to an address must not quietly turn hostname verification off."""
+    ca, cert, key = _issue_certificate(tmp_path, "someone-else.example")
+    no_proxy_env.setenv("SSL_CERT_FILE", str(ca))
+    async with _TlsServer(cert, key) as server:
+        _Network(no_proxy_env, {_PUBLIC: server.port})
+        with pytest.raises(TransportFailed, match="CERTIFICATE_VERIFY_FAILED"):
+            await _guarded(_resolver({"secure.example": (_PUBLIC,)})).request("GET", "https://secure.example/")
+
+    assert server.requests == []
