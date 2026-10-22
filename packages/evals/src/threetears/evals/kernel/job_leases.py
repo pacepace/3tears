@@ -89,14 +89,6 @@ CONTENDED_RENEWAL_RETRIES = 4
 #: renewal interval, so the retries always fit inside one).
 CONTENDED_BACKOFF_S = (0.5, 2.0)
 
-#: How many renewal intervals a renewal whose store call is stuck may hold its record before the record is expired
-#: anyway. A stuck call is never followed by a second one for the same record, so it costs at most one lease-pool
-#: thread; while it is stuck, the job's own writes may still keep the lease (:meth:`JobLeases.write_own`). Six is two
-#: leases: the call has already had what was left of its lease (up to three intervals) before it counted as hung, and
-#: one more whole lease of own writes vouching for the holder is past anything a slow store explains — a call stuck that
-#: long is a dead connection, and its record is expired as any hung renewal's is, its thread named in the fault.
-HUNG_RENEWAL_INTERVALS = 6
-
 #: The lost cause a graceful shutdown writes on every job its process holds.
 SHUTDOWN_CAUSE = "process shut down"
 
@@ -658,7 +650,8 @@ class JobLeases:
         return self._executor
 
     def _close_pool(self) -> None:
-        """Let the pool go: work already handed to it finishes, and its idle threads exit."""
+        """Let the pool go: work already handed to it finishes, and its idle threads exit. Done when no lease is held,
+        and when a renewal's call is found stuck in it, which retires it with the stuck thread."""
         pool, self._executor = self._executor, None
         if pool is not None:
             pool.shutdown(wait=False)
@@ -925,9 +918,11 @@ class JobLeases:
         lease** by this holder's own count: one that has not returned by then counts as a failed renewal for a whole
         lease and expires the record (:meth:`_expire`) whether or not the call ever returns, its fault naming the
         hung renewal — unless the job's own writes extended the lease while it hung (:meth:`write_own`). The call's
-        worker thread is left to finish on its own, and **no second renewal of the record is sent while it is stuck**,
-        so a hang costs at most one lease-pool thread per record. A call still stuck after
-        :data:`HUNG_RENEWAL_INTERVALS` intervals, or once the lease is a whole lease unextended, expires the record.
+        worker thread is left to finish on its own, and **no second renewal of the record is sent while it is stuck**.
+        The pool it is stuck in is retired (:meth:`_close_pool`): it takes no new work, and the next renewal of any
+        record makes a fresh one, so a stuck call costs one abandoned thread, never a slot of the live pool, however
+        many hangs a long-lived process meets. While the call stays stuck, the record is kept by its job's own writes,
+        each interval logging that it is stuck; with none, it is expired once the lease is a whole lease unextended.
         """
         if held.stuck_call is not None:
             if not held.stuck_call.done():
@@ -942,13 +937,15 @@ class JobLeases:
             # The store call gets only what is left of the lease by this holder's own count: a call that never
             # returns must not keep the record from being expired (_expire), as the check below only runs once it has.
             hung = False
+            pool: ThreadPoolExecutor | None = None
             call: Future[tuple[float, RenewalVerdict, str | None]] | None = None
             left = held.renewed_at + self._lease_s - time.monotonic()
             try:
                 if (
                     left > 0
                 ):  # none left: the lease is already unrenewed for a whole lease, and the last failure says why
-                    call = self._pool().submit(contextvars.copy_context().run, self._renew, held)
+                    pool = self._pool()
+                    call = pool.submit(contextvars.copy_context().run, self._renew, held)
                     async with asyncio.timeout(left) as deadline:
                         renewal = await asyncio.wrap_future(call)
                     started, verdict, reason = renewal
@@ -957,6 +954,8 @@ class JobLeases:
                 hung = deadline.expired()
                 if hung and call is not None and not call.done():
                     held.stuck_call, held.stuck_since = call, issued
+                    if self._executor is pool:
+                        self._close_pool()  # retired: the stuck thread is abandoned with it, the next need makes another
                 # The store's own error when it raised one; a hung call is named as such, not as the timeout's
                 # cancellation. Only a renewal that lost every write (a "contended" verdict, never an exception) is
                 # a lost race.
@@ -1008,24 +1007,28 @@ class JobLeases:
                 return
 
     async def _while_stuck(self, held: _Held) -> None:
-        """A renewal of ``held`` is due while its last one's store call is still stuck: send none, and expire the record
-        once the call has been stuck :data:`HUNG_RENEWAL_INTERVALS` intervals or the lease is a whole lease unextended."""
+        """A renewal of ``held`` is due while its last one's store call is still stuck: send none. Expire the record once
+        its lease is a whole lease unextended, as any record no renewal reaches; otherwise its job's own writes are
+        keeping it, and the stuck call is logged."""
         now = time.monotonic()
-        stuck_for = now - held.stuck_since
-        if stuck_for < HUNG_RENEWAL_INTERVALS * self.renew_every_s and now - held.renewed_at < self._lease_s:
-            return
         stuck = TimeoutError(
-            f"the renewal's store call has not returned in {stuck_for:.1f}s ({HUNG_RENEWAL_INTERVALS} renewal "
-            f"intervals allowed); its lease-pool thread is still waiting on it"
+            f"the renewal's store call has not returned in {now - held.stuck_since:.1f}s; no second renewal is sent "
+            "while it is stuck, and its lease-pool thread was abandoned with the pool it ran on"
         )
-        held.last_failure = f"{type(stuck).__name__}: {stuck}"
+        if now - held.renewed_at >= self._lease_s:
+            held.last_failure = f"{type(stuck).__name__}: {stuck}"
+            await self._expire(held)
+            return
+        # NOSILENT: the job's own writes are keeping the lease (write_own); this line names the call still stuck.
         contain(
             stuck,
             log=log,
-            what=f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: renewal stuck — expiring it",
-            level="error",
+            what=(
+                f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: renewal stuck — kept by "
+                "the job's own writes"
+            ),
+            level="warning",
         )
-        await self._expire(held)
 
     def _log_if_late(self, held: _Held, due: float, issued: float, started: float, landed: float) -> None:
         """Log a renewal landing more than one and a half intervals after the lease was last extended.
