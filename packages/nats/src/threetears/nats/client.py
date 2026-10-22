@@ -1360,7 +1360,10 @@ class JetStreamPullConsumer:
         await self._follow_connection()
         try:
             msgs = await self._psub.fetch(self._batch, timeout=self._fetch_timeout_seconds)
-        except _NatsTimeoutError:
+        except TimeoutError:
+            # NOSILENT: an empty poll is the idle case. nats-py raises its own TimeoutError on
+            # some paths and a bare asyncio.TimeoutError when the deadline runs out between its
+            # two pull requests; the builtin catches both.
             msgs = []
         for msg in msgs:
             await self._handle(msg)
