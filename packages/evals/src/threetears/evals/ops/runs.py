@@ -13,6 +13,7 @@ from typing import Annotated, Any
 from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.errors import EvalServiceError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema.models import (
@@ -57,6 +58,8 @@ from threetears.evals.run.judge_temperature import (
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.ratings import rate_result
 from threetears.evals.run.reads import list_runs_disclosing
+
+log = get_logger(__name__)
 
 
 class TemplateLine(EvalBaseModel):
@@ -647,6 +650,18 @@ class ResultRated(EvalBaseModel):
     collected_by: str | None = Field(
         default=None, description="The caller that relayed the person's rating; None on an agent's own rating."
     )
+    rated_at: str = Field(description="When the rating was given: the person's own time on a relay that names one.")
+    replaced: bool = Field(
+        default=False,
+        description=(
+            "Whether this write replaced the same rater's earlier rating of the same dimension of the same result, "
+            "which is gone: one rater holds one rating of one thing."
+        ),
+    )
+    replaced_source: str | None = Field(
+        default=None,
+        description="Where the replaced rating was given; None when nothing was replaced or it named no source.",
+    )
     output_fingerprint: str | None = Field(
         default=None,
         description=(
@@ -691,6 +706,7 @@ def result_rate(
     :raises ValidationFailedError: The judge scored no such dimension, or the score is off its scale.
     :raises StorageError: The write failed.
     """
+    prior = _prior(host, scope_id, result_id, rubric_dim, rater, "agent")
     rating = rate_result(
         host.storage,
         result_id=result_id,
@@ -701,7 +717,7 @@ def result_rate(
         score=score,
         reason=reason,
     )
-    return _rated(rating)
+    return _rated(rating, prior)
 
 
 def result_rate_person(
@@ -715,6 +731,7 @@ def result_rate_person(
     person: str,
     source: str,
     collected_by: str,
+    rated_at: str | None = None,
 ) -> ResultRated:
     """Record a person's rating of one judged dimension of one result, relayed by a caller the host attests for them.
 
@@ -723,7 +740,15 @@ def result_rate_person(
     follows its output into judge cases and profiles by its label key, and names its ``source`` and the caller that
     relayed it (``collected_by``). So the engine asks the host first (``EvalHost.attests_person``) and records nothing
     unless the host vouches that this caller relays this person's rating: a caller cannot make its own opinion a
-    person's by naming one. Checked before the result is read, so a refused caller learns nothing of it.
+    person's by naming one. Checked before the result is read, so a refused caller learns nothing of it. The rating is
+    stored under the name the host returns, so two spellings the host knows as one person are one rater.
+
+    The person's earlier rating of the same dimension of the same result, given directly or relayed from another
+    source, is replaced: one person holds one opinion of one thing, the later by when they gave it. So the relay
+    carries when the person rated (``rated_at``), and the result says what it replaced (``replaced``,
+    ``replaced_source``), as a log line does.
+
+    A host check that raises is a defect in the host, not a refusal: it propagates, and nothing is written.
 
     :param host: The host whose store holds the result, and whose check attests the person.
     :ptype host: EvalHost
@@ -743,16 +768,27 @@ def result_rate_person(
     :ptype source: str
     :param collected_by: The calling identity that relays it, as the host resolved it.
     :ptype collected_by: str
-    :return: What was written.
+    :param rated_at: When the person gave the rating, ISO-8601 with an offset and not in the future; ``None`` for
+        now, the relay's own time.
+    :ptype rated_at: str | None
+    :return: What was written, and what it replaced.
     :rtype: ResultRated
     :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
         for this person. Nothing is written.
+    :raises TypeError: The host's check returned something other than a name or ``None``: a defect in the host.
     :raises NotFoundError: No such result in the scope.
-    :raises ValidationFailedError: The judge scored no such dimension, the score is off its scale, or a name is blank.
+    :raises ValidationFailedError: The judge scored no such dimension, the score is off its scale, a name is blank, or
+        ``rated_at`` is not an ISO-8601 time with an offset at or before now.
     :raises StorageError: The write failed.
     """
     attests = host.attests_person
     if attests is None:
+        log.warning(
+            "eval.result_rate_person refused caller=%s person=%s scope=%s: the host supplies no attests_person",
+            collected_by,
+            person,
+            scope_id,
+        )
         raise EvalServiceError(
             f"host {host.profile.host_id!r} vouches for no person (it supplies no attests_person), so no rating is "
             "recorded as a person's through an action",
@@ -763,7 +799,20 @@ def result_rate_person(
                 "attests_person=<its check>"
             ),
         )
-    if not attests(scope_id=scope_id, caller=collected_by, person=person):
+    canonical = attests(scope_id=scope_id, caller=collected_by, person=person)
+    if canonical is not None and not isinstance(canonical, str):
+        raise TypeError(
+            f"host {host.profile.host_id!r}'s attests_person returned {type(canonical).__name__}; it returns the "
+            "person's name as the host knows them, or None to refuse"
+        )
+    if canonical is None:
+        log.warning(
+            "eval.result_rate_person refused caller=%s person=%s scope=%s: the host does not attest the caller for "
+            "the person",
+            collected_by,
+            person,
+            scope_id,
+        )
         raise EvalServiceError(
             f"the host does not attest {collected_by!r} relaying a rating for {person!r}, so it is not recorded as "
             "that person's",
@@ -771,22 +820,49 @@ def result_rate_person(
             details={"person": person, "collected_by": collected_by},
             remedy="rate it as yourself with result_rate, or relay it as a caller the host attests for that person",
         )
+    prior = _prior(host, scope_id, result_id, rubric_dim, canonical, "person")
     rating = rate_result(
         host.storage,
         result_id=result_id,
         scope_id=scope_id,
         rubric_dim=rubric_dim,
-        rater=person,
+        rater=canonical,
         rater_kind="person",
         score=score,
         reason=reason,
         source=source,
         collected_by=collected_by,
+        rated_at=rated_at,
     )
-    return _rated(rating)
+    return _rated(rating, prior)
 
 
-def _rated(rating: CalibrationRating) -> ResultRated:
+def _prior(
+    host: EvalHost, scope_id: str, result_id: str, rubric_dim: str, rater: str, rater_kind: str
+) -> CalibrationRating | None:
+    """The rating a write by this rater, of this kind, on this dimension of this result would replace, if any."""
+    return next(
+        (
+            rating
+            for rating in host.storage.query_calibration_ratings(scope_id, result_id=result_id)
+            if (rating.rubric_dim, rating.rater, rating.rater_kind) == (rubric_dim, rater, rater_kind)
+        ),
+        None,
+    )
+
+
+def _rated(rating: CalibrationRating, prior: CalibrationRating | None) -> ResultRated:
+    if prior is not None:
+        log.info(
+            "eval.rate_result replaced rating=%s rater=%s rater_kind=%s replaced_source=%s replaced_rated_at=%s "
+            "source=%s",
+            rating.id,
+            rating.rater,
+            rating.rater_kind,
+            prior.source,
+            prior.rated_at,
+            rating.source,
+        )
     return ResultRated(
         rating_id=rating.id,
         result_id=rating.result_id,
@@ -796,6 +872,9 @@ def _rated(rating: CalibrationRating) -> ResultRated:
         rater_kind=rating.rater_kind,
         source=rating.source,
         collected_by=rating.collected_by,
+        rated_at=rating.rated_at,
+        replaced=prior is not None,
+        replaced_source=None if prior is None else prior.source,
         output_fingerprint=rating.output_fingerprint,
         criterion_fingerprint=rating.criterion_fingerprint,
     )

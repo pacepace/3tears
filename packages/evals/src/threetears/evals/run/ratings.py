@@ -45,6 +45,7 @@ disappeared would shrink a dimension's n with nothing saying why.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -61,6 +62,7 @@ from threetears.evals.schema.models import (
     RaterKind,
     RubricScore,
     label_key_of,
+    utc_now_iso,
 )
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT, SCHEMA_REMEDY
@@ -101,6 +103,7 @@ def rate_result(
     reason: str,
     source: str | None = None,
     collected_by: str | None = None,
+    rated_at: str | None = None,
 ) -> CalibrationRating:
     """Record one rater's score for one judged dimension of one result — a person's, or an agent's.
 
@@ -130,6 +133,9 @@ def rate_result(
         vouches here, not this function: a host's own code is the host, and an action caller reaches this only through
         :func:`~threetears.evals.ops.result_rate_person`, which asks the host first. Set with ``source``.
     :ptype collected_by: str | None
+    :param rated_at: When the rater gave the rating, ISO-8601 with an offset, stored in UTC; ``None`` for now. A
+        relay names the person's own time, since a rater's later rating of the same thing is the one that stands.
+    :ptype rated_at: str | None
     :return: The rating as written, carrying the judge score's label key (the fingerprints of the output read
         and of the criterion) when the score has one, and what was rated (``rated``) or why it could not be
         rebuilt (``rated_withheld``). A second rating by the same rater, of the same kind, of the same dimension
@@ -139,7 +145,7 @@ def rate_result(
     :raises ValidationFailedError: The judge scored no such dimension on the result; or the score is
         not on its scale, the dimension name is not namespaced, the rater or reason is blank, ``rater_kind``
         is neither ``person`` nor ``agent``, or ``source`` and ``collected_by`` are not both set on a person's rating
-        or both ``None``.
+        or both ``None``, or ``rated_at`` is not an ISO-8601 time with an offset, at or before now.
     :raises StorageError: The write failed.
     """
     result = storage.load_eval_result(result_id, scope_id)
@@ -159,6 +165,7 @@ def rate_result(
             remedy=f"rate a dimension the result was judged on: {scored or 'it was judged on none'}",
         )
     rated = _rated_content(storage, result, judged)
+    given_at = utc_now_iso() if rated_at is None else _rated_at(rated_at)
     try:
         rating = CalibrationRating(
             scope_id=result.scope_id,
@@ -172,6 +179,7 @@ def rate_result(
             reason=reason,
             source=source,
             collected_by=collected_by,
+            rated_at=given_at,
             # What the rater read, as the judge stamped it: the label then holds for every judgement of a
             # byte-identical output on the same criterion, not only this result's (#628).
             output_fingerprint=judged.output_fingerprint,
@@ -205,6 +213,27 @@ def rate_result(
         collected_by,
     )
     return rating
+
+
+def _rated_at(stamp: str) -> str:
+    """``stamp`` in UTC, as every rating's time is written, so ratings order by when they were given.
+
+    :raises ValidationFailedError: It is not ISO-8601 with an offset, or it is later than now.
+    """
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError:
+        instant = None
+    if instant is None or instant.tzinfo is None:
+        raise ValidationFailedError(
+            f"rated_at {stamp!r} is not an ISO-8601 time with an offset",
+            remedy="give when the rater rated as e.g. 2026-10-17T14:30:00+00:00, or omit it for now",
+        )
+    if instant > datetime.now(UTC):
+        raise ValidationFailedError(
+            f"rated_at {stamp!r} is later than now", remedy="give when the rater rated, which has happened"
+        )
+    return instant.astimezone(UTC).isoformat()
 
 
 def _rated_content(storage: RatingStore, result: EvalResult, judged: RubricScore) -> RatedOutput | str:

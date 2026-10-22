@@ -712,6 +712,16 @@ class ResultRatePersonParams(ResultRateParams):
     rating_source: Annotated[
         str, Field(min_length=1, description="Where the person gave the rating, e.g. a blind read's id.")
     ]
+    rated_at: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            description=(
+                "When the person gave the rating, ISO-8601 with an offset; omitted is now. Their later rating of the "
+                "same thing is the one that stands."
+            ),
+        ),
+    ] = None
 
 
 class ResultRegradeParams(EvalBaseModel):
@@ -1362,6 +1372,7 @@ async def _result_rate_person(host: OpsHost, caller: Caller, params: ResultRateP
             person=params.person,
             source=params.rating_source,
             collected_by=caller.identity,
+            rated_at=params.rated_at,
         ),
         eval_host,
         params.result_id,
@@ -2523,12 +2534,15 @@ def engine_actions() -> tuple[Action, ...]:
                 "rating_reason": "flat, misses the ask",
                 "person": "ana@example.com",
                 "rating_source": "blind_read:2026-10-17",
+                "rated_at": "2026-10-17T14:30:00+00:00",
             },
             detail=(
-                "Recorded with rater_kind person, so it counts in the judge's agreement with people and follows its "
-                "output into judge cases, naming the person, the source and the caller that relayed it. The host "
-                "decides whether this caller relays this person's ratings; without its word the call is refused "
-                "(refused, 403) and nothing is written. An agent's own opinion goes through result_rate."
+                "Recorded with rater_kind person, under the host's name for the person, so it counts in the judge's "
+                "agreement with people and is a label for judge cases of its output. The stored rating names the "
+                "source and the caller that relayed it. It replaces the person's earlier rating of the same dimension "
+                "of the same result, and the result says what it replaced. The host decides whether this caller "
+                "relays this person's ratings; without its word the call is refused (refused, 403) and nothing is "
+                "written. An agent's own opinion goes through result_rate."
             ),
         ),
         Action(

@@ -251,9 +251,11 @@ A person's verdicts often reach the store through an agent: the agent ran a blin
 said. `result_rate` would record them as the agent's own opinion. `result_rate_person` records them as the person's,
 with `person` and `rating_source` (where they gave it, such as `blind_read:2026-10-17`), and only when your host's
 `attests_person` check says this caller relays this person's ratings ([Adopting a host](adopting-a-host.md)).
-Otherwise the call is refused and nothing is written. The rating carries `source` and `collected_by` (the caller),
-so it counts as the person's and still names who put it there. In your own code, `rate_result` takes the same two
-as `source=` and `collected_by=`.
+Otherwise the call is refused and nothing is written. The rating is stored under the host's name for the person,
+and carries `source` and `collected_by` (the caller), so it counts as the person's and still names who put it there.
+Pass `rated_at` with when the person rated: a person holds one rating of one dimension of one result, so a relay
+replaces their earlier one, direct or from another source, and the result says so (`replaced`, `replaced_source`).
+In your own code, `rate_result` takes `source=`, `collected_by=` and `rated_at=`.
 
 ### A rating is bound to what was read, not only to the result
 

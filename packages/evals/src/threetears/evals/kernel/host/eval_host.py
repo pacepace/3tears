@@ -156,20 +156,23 @@ class AttestsPerson(Protocol):
     An action caller is whoever the host's surface let in, often an agent acting for an account. A rating it records
     as a person's would enter the judge's agreement with people, so a caller cannot make one by naming a person: the
     host, which knows its accounts and how the rating reached it, says whether this caller may record this person's
-    rating. Keyword-only, so the caller and the person cannot be swapped where the host writes the check.
+    rating, and under which name. Keyword-only, so the caller and the person cannot be swapped where the host writes
+    the check.
     """
 
-    def __call__(self, *, scope_id: str, caller: str, person: str) -> bool:
-        """Whether the host vouches that ``person`` is a person, and that ``caller`` relays that person's rating.
+    def __call__(self, *, scope_id: str, caller: str, person: str) -> str | None:
+        """The person's name as the host knows them, when it vouches that ``caller`` relays that person's rating.
 
         :param scope_id: The scope the rating is written in, as the host resolved it for the call.
         :ptype scope_id: str
         :param caller: The calling identity, as the host resolved it for the call (``Caller.identity``).
         :ptype caller: str
-        :param person: Who the caller says gave the rating, as the host names its people.
+        :param person: Who the caller says gave the rating, in the caller's spelling.
         :ptype person: str
-        :return: ``True`` to record the rating as that person's; ``False`` refuses it, and nothing is written.
-        :rtype: bool
+        :return: The host's own name for that person (one name however the caller spells them: the rating is stored
+            under it, so an alias or a case-folded email is the same rater); ``None`` refuses, and nothing is written.
+            A check that raises is a defect in the host: it propagates, and nothing is written.
+        :rtype: str | None
         """
         ...  # pragma: no cover — protocol
 

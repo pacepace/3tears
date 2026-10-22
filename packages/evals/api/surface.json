@@ -4113,7 +4113,7 @@
     },
     "threetears.evals.run.rate_result": {
       "kind": "function",
-      "signature": "rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str, source: str | None = None, collected_by: str | None = None) -> CalibrationRating",
+      "signature": "rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str, source: str | None = None, collected_by: str | None = None, rated_at: str | None = None) -> CalibrationRating",
       "tier": "stable"
     },
     "threetears.evals.run.RatingStore": {
