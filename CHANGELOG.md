@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.75.0 -- 2026-10-21
+
+### backup: a restore no longer fails on an extension the restoring role does not own
+
+**Fixed:** every restore of a database holding an extension a superuser installed (pgvector)
+failed when run as the application role, which is how restores run: `ysqlsh exit 3: ... must be
+owner of extension vector` on Yugabyte, and the same from `pg_restore` on Postgres. So restore
+verification never passed, and a disaster-recovery restore would stop part-way. Both dump tools
+write `COMMENT ON EXTENSION` after each extension, and only the extension's owner may run it. A
+restore now drops top-level `COMMENT ON EXTENSION` statements before loading (row data inside
+`COPY` blocks is never touched). Nothing is lost: `CREATE EXTENSION` sets the same comment from
+the extension's control file.
+
+**Changed:** a Postgres restore now runs `pg_restore --file=-` to turn the custom-format archive
+into SQL, and loads that through `psql --set ON_ERROR_STOP=1`, instead of `pg_restore --dbname`.
+`PostgresDriver.restore_argv` is therefore `psql`; a failing statement still stops the restore.
+
+**Added:** `threetears.backup.process.pipe_through`, which feeds a child's stdin and streams its
+stdout at once, with the same kill, timeout, stderr and short-feed guarantees as `feed_stdin`
+and `stream_stdout`. Also `DbDumpDriver.archive_to_sql_argv`, which a driver whose archive is
+not plain SQL overrides.
+
 ## v0.74.0 -- 2026-10-20
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever
