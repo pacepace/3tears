@@ -120,6 +120,7 @@ from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
     CauseWords,
     arm_exclusions,
+    arm_run_statuses,
     cause_short,
     caveat_lines,
     fail_words,
@@ -3519,6 +3520,7 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
     blocks: list[ReportBlock] = [DisclosureBlock(section="trials", source="runs", text=_census_line(bundle))]
     arms = len(bundle.scoreboard)
     exclusions = arm_exclusions(bundle)
+    statuses = arm_run_statuses(bundle)
     case_name = _case_namer(bundle)
     wrong = [trial for trial in _wrong_first(bundle.trials) if trial.state != "passed"]
     rows: list[dict[str, CellValue]] = []
@@ -3526,7 +3528,12 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
     for position, trial in enumerate(wrong):
         words: CauseWords
         if trial.state == "lost":
-            words = loss_words(trial.cause or "unknown", exclusions=exclusions.get(trial.arm, ()), arms=arms)
+            words = loss_words(
+                trial.cause or "unknown",
+                exclusions=exclusions.get(trial.arm, ()),
+                arms=arms,
+                run_statuses=statuses.get(trial.arm, ()),
+            )
         else:
             words = fail_words(trial.cause or "unknown")
         why = _trial_why(trial)

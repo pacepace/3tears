@@ -60,7 +60,8 @@ by the names the bundle gives each arm (:mod:`threetears.evals.analysis.arm_ment
 **The recommendation is pinned, and it answers to code's readings.** It names the findings it rests on and an arm
 the campaign holds; a finding names only trials the campaign holds. A candidate is recommended only where the campaign
 asks some aspect a question, whenever it was asked (:func:`_reject_exploratory_adoption`), where code's reading or a comparison
-separated it from the control in its favour and no guardrail breached (:func:`_reject_unseparated_adoption`), and
+separated it from the control in its favour, or every floor held on the asked aspects (each declaring one), and no
+guardrail breached (:func:`_reject_unseparated_adoption`), and
 **a broken floor is addressed**: a floor only warns, never blocks, but a recommendation of an arm that broke one names
 each such floor and why the breach is acceptable (:func:`_reject_unaddressed_warnings`), as a choice's pick names
 each aspect another arm was shown ahead on, and any recommendation each absolute bar its arm missed. Which kind a
@@ -1136,17 +1137,21 @@ def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
 
 
 def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
-    """Refuse a change's switch to a candidate no confirmatory reading separated from the control in its favour.
+    """Refuse a change's switch to a candidate shown neither better than the control nor no worse than its floors.
 
-    Recommending a candidate is a claim that it beat what it replaces, and the bundle says whether it did in two
-    places: code's reading of each aspect (``better`` is the gain shown, Holm-adjusted), and each aspect's
-    ``multiple_comparisons``. **Only confirmatory evidence counts**: a reading code marked ``confirmatory`` and a
-    comparison on an aspect the campaign asks a question, whenever it was asked. A pattern found on an aspect asked
-    nothing is a lead, and licenses no switch however strong it looks. One such ``better`` reading or
-    ``improved`` comparison is enough: a trade-off is a legitimate recommendation. What is refused is a candidate with
-    no confirmatory upside — every tested reading ``not_separated``, or separated only by ``regressed`` — or one no
-    test could reach, which is refused saying so, since a reader cannot tell a recommendation resting on nothing from
-    one resting on a test.
+    Recommending a candidate is a claim that it may replace the control, and a campaign makes that claim one of two
+    ways. **Better:** code's reading of an aspect (``better`` is the gain shown, Holm-adjusted) or one of the aspect's
+    ``multiple_comparisons`` separated it in its favour. One such ``better`` reading or ``improved`` comparison is
+    enough: a trade-off is a legitimate recommendation. **No worse:** every floor on every aspect the campaign asks
+    reads ``held`` for it, each aspect carrying at least one. A floor is the campaign's own line for how much worse a
+    candidate may be, and ``held`` is code showing it within that line, so a campaign asking "is it no worse?" is
+    answered by its floors, and refusing the switch until the candidate also separated would answer "is it better?"
+    instead. **Only confirmatory evidence counts**, either way: a reading code marked ``confirmatory``, and a
+    comparison or a floor on an aspect the campaign asks a question, whenever it was asked. A pattern found on an
+    aspect asked nothing is a lead, and licenses no switch however strong it looks. What is refused is a candidate
+    with no confirmatory upside — every tested reading ``not_separated``, or separated only by ``regressed`` — and a
+    floor on an asked aspect not ``held`` (or an asked aspect with no floor), or one no test could reach, which is
+    refused saying so, since a reader cannot tell a recommendation resting on nothing from one resting on a test.
 
     **A breached guardrail refuses the candidate whatever it gained**, on any aspect: a guardrail is what the arm must
     not get worse on, and it is held, never traded. An undecided guardrail does not refuse it, and is never read as
@@ -1156,7 +1161,8 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     readings instead (:func:`_reject_unaddressed_warnings`).
 
     :raises SoundnessRefusal: A change's recommendation names a candidate with a breached guardrail, or with no
-        confirmatory ``better`` reading and no confirmatory ``improved`` comparison.
+        confirmatory ``better`` reading, no confirmatory ``improved`` comparison, and not every floor ``held`` on the
+        asked aspects (or an asked aspect declaring none).
     """
     arm = _recommended(document, bundle)
     control = bundle.control()
@@ -1185,6 +1191,9 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     ]
     if any(comparison.verdict == "improved" for comparison in against):
         return
+    open_floors = _floors_not_held(bundle, keys, confirmatory)
+    if confirmatory and not open_floors:
+        return
     unasked = [
         aspect.aspect
         for aspect in bundle.aspects
@@ -1208,8 +1217,36 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     )
     raise SoundnessRefusal(
         f"the recommendation names {arm.label!r}, but on the aspects the question asks about {why}, and code's "
-        f"reading shows it better on none of them.{leads} {remedy[:1].upper()}{remedy[1:]}"
+        f"reading shows it better on none of them. Nor is it shown no worse than its floors: "
+        f"{'; '.join(open_floors)}.{leads} {remedy[:1].upper()}{remedy[1:]}"
     )
+
+
+def _floors_not_held(bundle: CampaignBundle, keys: frozenset[str], asked: Sequence[AnalysisContextBundle]) -> list[str]:
+    """Say, per asked aspect, why the candidate is not shown no worse there; empty when every floor ``held``.
+
+    The floors are the declared ones (``declaration.floors``), each looked up in code's reading of it on the candidate.
+    An asked aspect declaring no floor is not shown no worse, since the campaign drew no line there; a declared floor
+    not ``held`` is named with code's reason, and one code holds no reading of on the candidate is named as unread.
+
+    :param bundle: The campaign's bundle: its declared floors, and ``readings.floors`` per floor and candidate.
+    :param keys: The candidate's variant keys.
+    :param asked: The aspects the campaign asks a question.
+    :return: One clause per floor or aspect where the candidate is not shown no worse, in the aspects' order.
+    """
+    read = {status.floor: status for status in bundle.readings.floors if status.arm in keys}
+    clauses = []
+    for aspect in asked:
+        declared = [floor for floor in bundle.declaration.floors if floor.aspect == aspect.aspect]
+        if not declared:
+            clauses.append(f"aspect {aspect.aspect!r} declares no floor, so nothing there shows it no worse")
+        for floor in declared:
+            status = read.get(floor.key)
+            if status is None:
+                clauses.append(f"floor {floor.key} was not read on it, so it is not shown held")
+            elif status.status != "held":
+                clauses.append(f"floor {floor.key} is {status.status} ({status.reason.rstrip('.')})")
+    return clauses
 
 
 #: One warning code raised on the recommended arm, as the writer must address it: its key, the words of what code

@@ -27,7 +27,8 @@ page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is th
 printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
 (by label and variant key) and confidence, the call, and each aspect's bundle by its fingerprint
 ([its shape](serving.md#the-campaign-json)). Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
-`AnalysisContextBundle.from_json(...).fingerprint()` over the file returns the fingerprint the page names. A host that
+`AnalysisContextBundle.from_json(...).fingerprint(like=named)` over the file returns the fingerprint the page names
+(`like` computes it in the named one's version: see below). A host that
 wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return
 `campaign.json`. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
 
@@ -164,7 +165,8 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   marked `▸` in a table. Only the arms line and the verdict name a model.
 - **Verdict**, written by code and never by a memo, result first: one sentence for the result, a second only for
   a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
-  models.`, the arm, the cause, the fix); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
+  models.`, the arm, the cause, the fix; `No verdict: nothing was measured, because the test setup failed or the
+  provider declined every call.` when every arm's run failed having measured nothing); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
   gdpr-delete, …`, each case by the name its author gave it, else `case N`); which arm passed more, when an arm is
   under the case floor; a declared question's contrasts (`Declared question: v2 worse than v1 on Accuracy; …`);
   `Exploratory:` (linked to the glossary) and what separated, or `nothing separated v2 from v1 on any reading`,
@@ -488,8 +490,11 @@ description stay editable, and an amended question is a new campaign that adopts
 ## Excluded trials by cause
 
 A trial is left out of an arm's measures for one of three causes (`trial_exclusion`): `infra`, the harness faulted
-it or the provider rationed one of its calls (a 429 that is not a spent quota, which says nothing about the model:
-it needs no fix, only a rerun once the provider has capacity, and the trial's error says which it was);
+it or the provider declined one of its calls (a 429 that is not a spent quota, or a 529 overloaded or 503
+unavailable, which says nothing about the model: it needs no fix, only a rerun once the provider can serve it, and the
+trial's error says which it was; but when an arm lost every trial this way and its run ended `failed` for it, the
+page says nothing was measured and asks for the cause to be fixed before a rerun, not waited out; and when the
+account stopped the run, the fix names the account);
 `truncated`, a judge reply was cut off at the output cap it was sent and was not bought again; and
 `judge_cannot_tell`, the judge could not score a capability dimension, which leaves the trial out of pass^k and the
 composite only. A candidate's own failure is never an exclusion: it fails, and is counted. The bundle's
@@ -560,7 +565,15 @@ An analysis is written from the campaign's **bundle** alone (`AnalysisContextBun
 in it is a reference code resolves against that bundle. Save the bundle (`bundle.to_json()`), reload it
 (`AnalysisContextBundle.from_json`) and its `fingerprint()` is unchanged, so `generate_analysis` over the
 saved file under a second prompt compares the two prompts and nothing else; each analysis records the
-fingerprint it read on `generation.bundle_fingerprint`. The insight-ledger cutoff (`bundle_assembled_at`),
+fingerprint it read on `generation.bundle_fingerprint`.
+
+A fingerprint is `v2:` and the sha256 of the bundle's canonical JSON with every float rounded to twelve significant
+figures. The bundle's intervals and multipliers come from C maths (`math.lgamma`, `NormalDist().inv_cdf`) whose last
+bits differ between two builds of one Python, so the rounding is what makes one evidence fingerprint alike on a
+laptop, in a container image and on another architecture, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. The rounding is in the fingerprint only: the bundle keeps
+its figures as computed. A fingerprint recorded before the rounding has no prefix, and every comparison computes the
+fresh one in the recorded one's version (`fingerprint(like=recorded)`), so an analysis or a reporter case recorded then
+still matches its evidence on the machine that recorded it. The insight-ledger cutoff (`bundle_assembled_at`),
 the generation time and its cost are on that provenance, not in the bundle.
 
 The provenance also records the bundle `schema_version` the generation ran over and the
@@ -593,7 +606,7 @@ finding's title; a summary proposing a sample size or cost no code computed is d
 |---|---|---|
 | measurement | write findings and summaries | recommend anything |
 | choice | pick an arm, or say no clear winner | pick at more than `low` confidence when no pair separated its pick ahead; leave unanswered an aspect where another arm is shown ahead (`behind_on`) |
-| change | recommend a switch or keeping the control | switch on exploratory evidence alone, to a candidate with no better reading or improved contrast on any aspect, or to one that breached a guardrail |
+| change | recommend a switch or keeping the control | switch on exploratory evidence alone, to a candidate with no better reading or improved contrast on any asked aspect and not every floor held on them (each asked aspect declaring one), or to one that breached a guardrail |
 
 Every kind answers its pick's warnings, each once and each with a why: a broken floor in `floors_overridden`, a
 missed bar in `bars_missed`. A switch rests on at least one finding; keeping the control may rest on none. The page

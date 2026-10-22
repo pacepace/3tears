@@ -24,6 +24,8 @@ import pydantic
 import pytest
 
 from threetears.evals import Eval, grader
+from threetears.evals.analysis import report_markdown
+from threetears.evals.analysis.report.verdict import verdict_line
 from threetears.evals.analysis.stats import wilson_interval
 from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
 from threetears.evals.kernel.host import EvalHost, KindContract
@@ -71,6 +73,7 @@ async def test_a_raising_runner_fails_its_cell_and_says_why() -> None:
     ("status", "body", "owner"),
     [
         (429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
+        (529, {"error": {"code": 529, "message": "Overloaded"}}, "provider"),
         (402, {"error": {"code": 402, "message": "Insufficient credits"}}, "account"),
         (500, {"error": {"code": 500, "message": "upstream died"}}, "candidate"),
     ],
@@ -78,7 +81,7 @@ async def test_a_raising_runner_fails_its_cell_and_says_why() -> None:
 async def test_whose_failure_a_runners_provider_call_was_decides_whether_its_cell_fails_is_excluded_or_stops_the_run(
     status: int, body: dict[str, Any], owner: str
 ) -> None:
-    """A rationed call is excluded and the run goes on; the account's refusal stops it; any other failure fails."""
+    """A declined call is excluded and the run goes on; the account's refusal stops it; any other failure fails."""
     error = error_from_response("openrouter", status, json.dumps(body))
 
     async def calls(case: Mapping[str, Any]) -> int:
@@ -91,12 +94,121 @@ async def test_whose_failure_a_runners_provider_call_was_decides_whether_its_cel
         assert summary.status == "completed"
         assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (2, 1, 0)
     elif owner == "provider":
-        assert summary.status == "completed", "a rationed call stops nothing: the next one may be served"
+        assert summary.status == "completed", "a declined call stops nothing: the next one may be served"
         assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (2, 0, 1)
-        assert any(f"the candidate's provider call was rationed by the provider: {error}" in e for e in summary.errors)
+        assert any(f"the candidate's provider call was declined by the provider: {error}" in e for e in summary.errors)
     else:
         assert summary.status == "exhausted", "every later call is behind the same refused key"
         assert summary.n_candidate_failed == 0
+
+
+def _declining(error: Exception, *, served: frozenset[int] = frozenset()) -> Any:
+    """A runner whose provider declines every case's call with ``error``, but serves the cases numbered in ``served``."""
+
+    async def calls(case: Mapping[str, Any]) -> int:
+        if case["n"] not in served:
+            raise error
+        return int(case["n"])
+
+    return calls
+
+
+_OVERLOADED = json.dumps({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})
+_MISROUTED = json.dumps(
+    {"error": {"code": 503, "message": "No allowed providers are available for the selected model."}}
+)
+
+
+@pytest.mark.parametrize(
+    ("provider", "status", "body", "quoted"),
+    [
+        ("anthropic", 529, _OVERLOADED, "anthropic 529: Overloaded"),
+        ("openrouter", 503, _MISROUTED, "openrouter 503: No allowed providers are available for the selected model."),
+    ],
+    ids=["overloaded on every call", "an OpenRouter model no allowed provider serves"],
+)
+async def test_a_run_whose_every_call_the_provider_declined_measured_nothing_and_fails_naming_the_answer(
+    provider: Any, status: int, body: str, quoted: str
+) -> None:
+    """Nothing was measured, so the run fails, quoting the provider's answer once, and the command exits 1."""
+    error = error_from_response(provider, status, body)
+    result = await Eval(CASES, _declining(error), [size], k=1).run(store=MEMORY, scope=SCOPE)
+    summary = result.summary
+    assert summary.status == "failed", "a run that measured nothing did not finish"
+    assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 3)
+    [reason] = [error for error in summary.errors if "the run measured nothing" in error]
+    assert reason.count(quoted) == 1, "the provider's answer is quoted once, however many cells it declined"
+    assert result.exit_code() == 1
+    assert "the run measured nothing" in result.render()
+    page = report_markdown(result.report)
+    assert (
+        "No verdict: nothing was measured, because the test setup failed or the provider declined every call." in page
+    )
+    assert "needs no fix" not in page, "a provider that declined every call is not a moment to wait out"
+
+
+async def test_a_run_that_measured_one_cell_and_had_the_rest_declined_completes_showing_the_exclusions() -> None:
+    error = error_from_response("anthropic", 529, _OVERLOADED)
+    result = await Eval(CASES, _declining(error, served=frozenset({1})), [size], k=1).run(store=MEMORY, scope=SCOPE)
+    summary = result.summary
+    assert summary.status == "completed"
+    assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (1, 0, 2)
+    assert not any("the run measured nothing" in error for error in summary.errors)
+    assert sum("was declined by the provider: anthropic 529: Overloaded" in error for error in summary.errors) == 2
+    assert result.exit_code() == 0
+    assert "nothing was measured" not in report_markdown(result.report)
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["completed", "budget_stopped", "cancelled"],
+    ids=["a run stored before a run that measured nothing failed", "a cap stopped it", "it was cancelled"],
+)
+async def test_a_page_says_nothing_was_measured_only_of_a_run_that_failed_for_it(status: str) -> None:
+    """The words come from the run's stored status, not from its losses alone: the same losses on a run that did not
+    fail for them keep the setup's own words."""
+    error = error_from_response("anthropic", 529, _OVERLOADED)
+    result = await Eval(CASES, _declining(error), [size], k=1).run(store=MEMORY, scope=SCOPE)
+    bundle = result.report.bundle
+    (run_id,) = bundle.incomplete_runs
+    assert bundle.incomplete_runs[run_id] == "failed"
+    failed = verdict_line(bundle, lambda _key: "calls").text
+    assert failed.startswith("No verdict: nothing was measured,")
+    restated = bundle.model_copy(update={"incomplete_runs": {} if status == "completed" else {run_id: status}})
+    said = verdict_line(restated, lambda _key: "calls").text
+    assert said.startswith("No verdict: the test setup failed, not the models.")
+    assert "nothing was measured" not in said and "needs no fix, only a rerun" in said
+
+
+async def test_a_run_the_account_stopped_names_the_account_in_its_remedy() -> None:
+    refused = error_from_response("openrouter", 402, json.dumps({"error": {"code": 402, "message": "Insufficient"}}))
+    result = await Eval(CASES, _declining(refused), [size], k=1).run(store=MEMORY, scope=SCOPE)
+    assert result.summary.status == "exhausted" and result.exit_code() == 1
+    page = report_markdown(result.report)
+    assert "top up the account or fix its key" in page
+    assert "nothing was measured" not in page and "needs no fix" not in page
+
+
+async def test_a_cancelled_run_whose_finished_cells_were_all_declined_stays_cancelled() -> None:
+    host = callable_host([size])
+    declined, stuck = asyncio.Event(), asyncio.Event()
+    error = error_from_response("anthropic", 529, _OVERLOADED)
+
+    async def calls(case: Mapping[str, Any]) -> int:
+        if case["n"] == 1:
+            declined.set()
+            raise error
+        stuck.set()
+        await asyncio.Event().wait()
+        return 0
+
+    call = asyncio.create_task(Eval(CASES[:2], calls, [size], k=1).run(host=host, scope=SCOPE))
+    await asyncio.wait_for(asyncio.gather(declined.wait(), stuck.wait()), timeout=5.0)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    (run,) = off_loop(list_runs, host, SCOPE)
+    assert run.status == "cancelled", "a cancelled run is never relabelled a run that measured nothing"
 
 
 @pytest.mark.parametrize(

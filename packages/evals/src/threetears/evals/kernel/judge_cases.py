@@ -107,7 +107,7 @@ JUDGE_LABEL_AGREEMENT_MEASURE = "judge_label_agreement"
 #:                    short by the provider) — a parse failure, which is what parse validity counts.
 #:   ``no_reply``     the judge's call itself failed, so there was no reply to read, and no measure reads it; the
 #:                    cell is charged by whose failure the call was (``JudgeOutcome.owner``): the judge's own
-#:                    fails it, and one the account or the provider declined excludes it.
+#:                    fails it, and a call refused for the account or declined by the provider excludes it.
 JudgeTrialOutcome = Literal["scored", "cannot_tell", "invalid", "no_reply"]
 
 
@@ -130,7 +130,13 @@ class JudgeCaseLabel(EvalBaseModel):
 
 
 class JudgeCaseAuthoring(EvalBaseModel):
-    """Who wrote an authored judge case, and why its verdict is what it is: the case's provenance in place of a result."""
+    """Who wrote an authored judge case, and why its verdict is what it is: the case's provenance in place of a result.
+
+    A case authored through an action records the caller that relayed it (``collected_by``), whom the host attested
+    for the author; a case the host's own code writes (its seed corpus, or a direct ``freeze_judge_cases``) records
+    none. Who relayed a case is provenance, never content: it is in no digest pre-image, so a seeded case and the same
+    case authored through an action are one case under one id.
+    """
 
     author: str = Field(
         min_length=1, description="Who wrote the case and its expected verdict, as the host names them."
@@ -138,6 +144,15 @@ class JudgeCaseAuthoring(EvalBaseModel):
     note: str = Field(
         min_length=1,
         description="The author's own words for the verdict: why the output must pass or fail, or earns its score.",
+    )
+    collected_by: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The calling identity that relayed the case, which the host attested for its author "
+            "(EvalHost.attests_person); None = written by the host's own code (its seed corpus, a direct freeze), or "
+            "stored before the field existed. In no digest pre-image."
+        ),
     )
 
 
@@ -283,6 +298,11 @@ class AuthoredJudgeCase(EvalBaseModel):
 
     Refused at authoring when the criterion's scale cannot hold the verdict, naming both: a hard negative whose
     verdict is quietly moved is a calibration item that measures nothing.
+
+    Its verdict is read downstream as its author's, a person's label. So the ``judge_case_author`` operation writes
+    one only under the name the host attests (``EvalHost.attests_person``), recording the caller that relayed it
+    (``collected_by``); the host's own code (its seed corpus, a direct ``freeze_judge_cases``) is trusted to name its
+    authors, as it may record a person's rating directly, and records no relay.
     """
 
     criterion: RubricDim = Field(
@@ -304,6 +324,14 @@ class AuthoredJudgeCase(EvalBaseModel):
     )
     author: str = Field(min_length=1, description="Who wrote the case, as the host names them: the label's rater.")
     note: str = Field(min_length=1, description="Why the output must get that verdict: the label's reason.")
+    collected_by: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The calling identity that relayed the case, attested by the host for its author; None = written by the "
+            "host's own code. Provenance, not content: in no digest pre-image."
+        ),
+    )
     subject: str | None = Field(
         default=None,
         description="Who or what produced the output, as the judge should know it; None when it speaks for itself.",
@@ -417,7 +445,11 @@ class JudgeCase(EvalBaseModel):
                     rater=authored.author, score=authored.expected_score, reason=authored.note, rating_id=None
                 )
             ],
-            source=JudgeCaseSource(authored=JudgeCaseAuthoring(author=authored.author, note=authored.note)),
+            source=JudgeCaseSource(
+                authored=JudgeCaseAuthoring(
+                    author=authored.author, note=authored.note, collected_by=authored.collected_by
+                )
+            ),
         )
 
     @classmethod
@@ -464,7 +496,9 @@ class JudgeCase(EvalBaseModel):
         ``source.first_judge_sent_settings`` and ``source.authored`` are left out of the pre-image while they are
         None, so a case whose first score recorded no sent settings, and every case frozen from a stored result,
         digests as it did before the field existed (the digest-default rule of
-        :mod:`~threetears.evals.schema.versioning`).
+        :mod:`~threetears.evals.schema.versioning`). ``source.authored.collected_by`` is always left out: who relayed
+        a case is not what it is, so a seeded case and the same case authored through an action digest alike, as
+        does every authored case stored before the field existed.
 
         :return: The digest.
         :rtype: str
@@ -473,6 +507,8 @@ class JudgeCase(EvalBaseModel):
         for added in ("first_judge_sent_settings", "authored"):
             if frozen["source"][added] is None:
                 del frozen["source"][added]
+        if "authored" in frozen["source"]:
+            del frozen["source"]["authored"]["collected_by"]
         return canonical_digest(frozen)
 
 
@@ -503,12 +539,21 @@ def judge_case_payload(case: JudgeCase) -> dict[str, Any]:
     The one writer of the payload :func:`judge_case_of` reads back, so the judge kind reads no key it does not own
     (the self-keyed lane of the engine's opaque-payload gate, which the reporter kind's case takes too).
 
+    An authored case no caller relayed (``source.authored.collected_by`` None: seeded, reset, a quick ``Judge``'s
+    example, or a host's own freeze) is written without the ``collected_by`` key, exactly as a build at durable
+    v16.0 wrote it, so that build still reads it: its ``JudgeCaseAuthoring`` refuses a key it does not declare, and
+    ``host_payload`` is opaque, so no newer-minor tolerance reaches it. Only a relayed case carries the key.
+
     :param case: The case to store.
     :ptype case: JudgeCase
     :return: The payload.
     :rtype: dict[str, Any]
     """
-    return {JUDGE_CASE_KEY: case.model_dump(mode="json")}
+    frozen = case.model_dump(mode="json")
+    authored = frozen["source"]["authored"]
+    if authored is not None and authored["collected_by"] is None:
+        del authored["collected_by"]
+    return {JUDGE_CASE_KEY: frozen}
 
 
 def judge_case_of(test_case: EvalTestCase) -> JudgeCase | None:
