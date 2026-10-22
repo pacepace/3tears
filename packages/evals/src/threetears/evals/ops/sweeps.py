@@ -71,7 +71,6 @@ from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import LaunchGroup, launch_as_group, quote_launch, start_run
 from threetears.evals.kernel.job_leases import SWEEP_JOB, require_held, write_held_record
 from threetears.evals.run.lifecycle import get_run
-from threetears.evals.run.runner import NOTHING_MEASURED_FAULT
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
@@ -401,7 +400,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         # Arms already launched are measurements in their own right: they finish and stay members.
         await asyncio.gather(*run.in_flight.values(), return_exceptions=True)
     sweep.outcome = "failed" if run.failure else "completed"
-    sweep.detail = run.failure[0] if run.failure else None
+    sweep.detail = run.failure[0] if run.failure else "; ".join(run.measured_nothing) or None
     sweep.refusal = run.refusal
     sweep.ended_at = utc_now_iso()
     try:
@@ -409,15 +408,6 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
     except JobFenced as why:
         # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over it.
         fenced(why)
-
-
-def _measured_nothing(run: EvalRun) -> bool:
-    """Whether ``run`` failed because every cell was excluded (:class:`~threetears.evals.run.NothingMeasuredError`).
-
-    Read off the ``error_details`` entry the job manager wrote for that error, which opens with
-    :data:`~threetears.evals.run.runner.NOTHING_MEASURED_FAULT`.
-    """
-    return any(detail.startswith(NOTHING_MEASURED_FAULT) for detail in run.error_details)
 
 
 class _SweepRun:
@@ -429,6 +419,8 @@ class _SweepRun:
         self.sweep = sweep
         self.in_flight: dict[str, asyncio.Task[None]] = {}
         self.failure: list[str] = []
+        #: Each arm that measured nothing, said on the sweep's detail when nothing else failed it.
+        self.measured_nothing: list[str] = []
         # The engine refusal the sweep ended on, kept as data beside its words: set only for the failure the sweep's
         # detail states (the first), since a refusal after another failure did not end it.
         self.refusal: JobRefusal | None = None
@@ -478,11 +470,14 @@ class _SweepRun:
                 eval_host.blocking_executor, get_run, eval_host.storage, run_id, self.sweep.scope_id
             )
             # An arm that measured nothing (every cell excluded: a model no allowed provider serves, a decline that
-            # lasted its run) failed as a measurement of that arm alone, so the sweep goes on to the others; any
-            # other failure of an arm's run ends the sweep.
-            if run.status == "failed" and not _measured_nothing(run):
+            # lasted its run) failed as a measurement of that arm alone, so the sweep goes on to the others and says
+            # so; any other failure of an arm's run, a reason this build does not know included, ends the sweep.
+            if run.status == "failed" and run.failed_because == "nothing_measured":
+                self.measured_nothing.append(f"arm {label!r} measured nothing (its run {run_id} failed)")
+            elif run.status == "failed":
                 after = "so no further arm was launched" if done is not None else "beside its siblings"
-                self.failure.append(f"arm {label!r}'s run {run_id} ended failed, {after}")
+                why = f" ({run.failed_because})" if run.failed_because is not None else ""
+                self.failure.append(f"arm {label!r}'s run {run_id} ended failed{why}, {after}")
         finally:
             if done is not None:
                 done.release()

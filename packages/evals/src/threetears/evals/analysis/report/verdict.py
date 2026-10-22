@@ -169,15 +169,17 @@ def cap_words(exclusions: Iterable[ArmExclusions] = ()) -> str:
 #: (:func:`measured_nothing`), in place of the rerun the infra remedy offers: a provider that declined every call is a
 #: setup to change, not a moment to wait out. The verdict says nothing was measured; this says what to do.
 NOTHING_MEASURED_REMEDY: Final = (
-    "fix what the lost trials' errors below name (a broken part of the setup, a model no allowed provider serves, or"
+    "clear what the lost trials' errors below name (a broken part of the setup, a model no allowed provider serves, or"
     " a rate limit or overload that lasted the run), then rerun {every}"
 )
 
 #: The remedy for ``infra`` losses on an arm whose run stopped because the provider refused the calling account
-#: (status ``exhausted``): the cause is the account, which no rerun or other setting changes.
+#: (status ``exhausted``). Worded for the arm's run, so it is true of every lost trial it is attached to: the bundle
+#: does not say which trial the refusal ended, and the others' errors name their own causes.
 ACCOUNT_REFUSED_REMEDY: Final = (
-    "the provider refused the account paying for the run (out of credit, or its key refused), so the run stopped:"
-    " top up the account or fix its key, then rerun {every}"
+    "this arm's run stopped when the provider refused the account paying for it (out of credit, or its key"
+    " refused): top up the account or fix its key, clear anything else the lost trials' errors below name, then"
+    " rerun {every}"
 )
 
 

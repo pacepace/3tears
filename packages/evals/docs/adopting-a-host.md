@@ -283,7 +283,10 @@ wait, the provider's `retry-after` or one then two seconds, at most three attemp
 WARNING (`retry=DeclinedRetry(...)` on `Model` sets it; `attempts=1` sends once). A provider that asks to wait longer
 than 20 seconds is not sent it again: its answer stands. Every wait and resend ends within one request's timeout of
 the first attempt (a resend still running then is cut, and the decline before it stands), so a call ends one
-request's timeout after it started, or when its first attempt does if that took longer. Neither resend is billed.
+request's timeout after it started, or when its first attempt does if that took longer. A resend lost on the way (a
+reset, a connect timeout) also leaves the decline before it standing. A setting refusal and a decline are not
+billed; a resend cut at the time bound may already have been, and its spend is not recorded, since no reply came
+back to carry it.
 `describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
 never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
 credit, which stops a run), and an `httpx` transport error by the host it was sending to.

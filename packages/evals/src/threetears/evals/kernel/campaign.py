@@ -1335,7 +1335,13 @@ class EvalSweep(CoreDocumentModel):
         "sweep stored before the field existed.",
     )
     outcome: SweepOutcome = "running"
-    detail: str | None = Field(default=None, description="Why it ended other than completed.")
+    detail: str | None = Field(
+        default=None,
+        description=(
+            "Why it ended other than completed; on a completed sweep, each arm that measured nothing (its run failed "
+            "alone, and the sweep went on), or None."
+        ),
+    )
     created_at: str = Field(default_factory=utc_now_iso)
     ended_at: str | None = None
     lease: LeaseField = None

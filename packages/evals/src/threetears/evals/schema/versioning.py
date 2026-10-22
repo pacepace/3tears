@@ -129,7 +129,8 @@ the registry is read only from a newer minor's document, and refused anywhere el
 each vocabulary also has a ``Literal`` of the values this build knows (``KnownUsageRole``, …), which every
 caller-facing parameter (an action's filter, a query's) and every writer here takes, so a caller's misspelt value
 is refused as before, and the registry is that ``Literal``'s values. The open vocabularies:
-``UsageRole`` (``USAGE_ROLES``), ``SimulatorPurpose`` (``SIMULATOR_PURPOSES``), ``CostCapOrigin``
+``UsageRole`` (``USAGE_ROLES``), ``SimulatorPurpose`` (``SIMULATOR_PURPOSES``), ``FailedBecause``
+(``FAILED_BECAUSE``), ``CostCapOrigin``
 (``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
 (``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``
 (``ROLE_MODEL_ORIGINS``), ``ReasoningEffort`` (``REASONING_EFFORTS``), ``OutOfRunPurpose``
@@ -288,7 +289,14 @@ CORE_SCHEMA_VERSION: int = 15
 #:   no identity, context key or cell, so no stored key moves, and None reads as "not recorded", never as one of the
 #:   three. ``EvalSweep.max_concurrent_arms`` keeps its meaning (how many arms ran at once).
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 5
+#: - **v15.6** — a failed run says why, when a reader acts on the kind of failure: ``EvalRun.failed_because`` (an
+#:   open vocabulary, ``FailedBecause``; today only ``nothing_measured``, written by the job manager when every cell
+#:   was excluded for a fault the harness recorded; default None: the run did not fail, failed for another reason,
+#:   or was stored before the field existed). A sweep reads it to go on past an arm that measured nothing. In no
+#:   identity, context key or digest. An older build reads such a run at this newer minor, keeping the field
+#:   unread, so it ends a sweep at that arm as it always did; it never refuses the run.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 6
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

@@ -32,7 +32,9 @@ class DeclinedRetry:
     ``Model(timeout=)``) of the call's first attempt: no wait starts that would end past it, and a resend still
     running then is cut, raising the decline before it. The first attempt is bounded by the client's timeout as any
     request is. So a call ends one request's timeout after it started, or when its first attempt does if that took
-    longer.
+    longer. A cut resend may already have been served and billed by the provider; its spend is not recorded, since
+    no reply came back to carry it. A resend lost on the way (a reset, a connect timeout) raises the decline before
+    it too, never charging the candidate for the retry's transport.
 
     :ivar attempts: Attempts in all, the first included; ``1`` sends a declined call once and raises its answer.
     :ivar first_wait_s: The wait before the second attempt when the provider named none, in seconds.

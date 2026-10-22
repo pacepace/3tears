@@ -310,19 +310,22 @@ class _Live:
         made = 0
         previous: httpx.Response | None = None
         while True:
-            if previous is not None and budget is not None:
-                response = await self._resend(client, path, body, headers, until=started + budget)
+            if previous is not None:
+                until = started + budget if budget is not None else None
+                response, lost = await self._resend(client, path, body, headers, until=until)
                 if response is None:
+                    # The resend brought no answer: cut at the call's time bound, or lost on the way (a reset, a
+                    # connect timeout). The decline before it is what the provider said, so it is what is raised.
                     log.warning(
-                        "eval.providers cut a resend at the call's time bound provider=%s model=%s attempt=%d bound_s=%.1f",
+                        "eval.providers a resend of a declined call brought no answer provider=%s model=%s attempt=%d: %s",
                         self.provider,
                         self.model_name,
                         made + 1,
-                        budget,
+                        "cut at the call's time bound" if isinstance(lost, TimeoutError) else type(lost).__name__,
                     )
                     error, _ = self._read(previous, made + 1)
                     assert error is not None, "the answer before a resend is a decline"
-                    raise error
+                    raise error from lost
             else:
                 response = await client.post(self._url + path, json=body, headers=headers)
             made += 1
@@ -369,18 +372,28 @@ class _Live:
         return None, parsed
 
     async def _resend(
-        self, client: httpx.AsyncClient, path: str, body: Mapping[str, Any], headers: Mapping[str, str], *, until: float
-    ) -> httpx.Response | None:  # Any: JSON
-        """Send ``body`` again, or ``None`` when the resend was still running at ``until`` (``time.monotonic``)."""
-        window = asyncio.timeout(max(until - time.monotonic(), 0.0))
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        body: Mapping[str, Any],
+        headers: Mapping[str, str],
+        *,
+        until: float | None,
+    ) -> tuple[httpx.Response | None, BaseException | None]:  # Any: JSON
+        """Send ``body`` again: its answer, or ``None`` and why none came (still running at ``until``, a
+        ``time.monotonic`` reading, or an ``httpx`` transport error)."""
+        window = asyncio.timeout(None if until is None else max(until - time.monotonic(), 0.0))
         try:
             async with window:
-                return await client.post(self._url + path, json=body, headers=headers)
-        except TimeoutError:
+                return await client.post(self._url + path, json=body, headers=headers), None
+        except TimeoutError as cut:
             if not window.expired():
                 raise
             # NOSILENT: the resend ran past the call's time bound; the caller logs it and raises the decline before it.
-            return None
+            return None, cut
+        except httpx.TransportError as lost:
+            # NOSILENT: the resend was lost on the way; the caller logs it and raises the decline before it, chained.
+            return None, lost
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None

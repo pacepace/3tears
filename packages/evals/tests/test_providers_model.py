@@ -890,6 +890,29 @@ async def test_a_resend_still_running_at_the_calls_time_bound_is_cut_and_the_dec
     assert (raised.value.status, raised.value.owner, raised.value.attempts) == (529, "provider", 2)
 
 
+@pytest.mark.parametrize(
+    "lost",
+    [httpx.ConnectError("connection reset by peer"), httpx.ConnectTimeout("connect timed out")],
+    ids=["a reset", "a connect timeout"],
+)
+async def test_a_resend_lost_on_the_way_raises_the_decline_before_it_never_the_transport_error(lost: Exception) -> None:
+    """The provider declined; the retry's own transport failing says nothing about the candidate."""
+    sent: list[int] = []
+
+    def unavailable_then_lost(request: httpx.Request) -> httpx.Response:
+        sent.append(1)
+        if len(sent) == 1:
+            return httpx.Response(503, json=_UNAVAILABLE)
+        raise lost
+
+    with pytest.raises(ProviderError) as raised:
+        await answering(unavailable_then_lost, Waits()).generate(system="", user="x")
+    assert len(sent) == 2
+    assert (raised.value.status, raised.value.owner, raised.value.attempts) == (503, "provider", 2)
+    assert raised.value.__cause__ is lost
+    assert describe_failure(raised.value).owner == "provider"
+
+
 async def test_a_derived_model_keeps_its_retry_policy() -> None:
     status, reply = message()
     server, waits = Answers((529, _OVERLOADED, {}), (status, reply, {})), Waits()

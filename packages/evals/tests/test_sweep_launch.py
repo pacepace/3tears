@@ -223,6 +223,8 @@ async def test_an_arm_whose_run_fails_ends_the_sweep_launching_nothing_after_it(
     assert done.progress["arms"] == {"broken": "failed", "fine": "not_launched"}
     campaign = off_loop(storage.load_campaign, job.target_id, TOYHOST_SCOPE)
     assert campaign is not None and len(campaign.run_ids) == 1
+    (broken,) = off_loop(storage.load_eval_runs, campaign.run_ids, TOYHOST_SCOPE)
+    assert broken.failed_because is None, "a run that failed for another reason records no reason a sweep goes on past"
 
 
 @pytest.mark.parametrize("schedule", ["sequential", "interleaved"])
@@ -236,14 +238,13 @@ async def test_an_arm_that_measured_nothing_fails_alone_and_the_sweep_goes_on(sc
     (job,) = (await sweep_launch(host, _sweep(arms=arms, arm_schedule=schedule), TOYHOST_SCOPE, created_by="t")).jobs
     done = await _watch(host, job.job_id, lambda status: status.done, [])
 
-    assert done.state == "completed" and done.detail is None
+    assert done.state == "completed"
     assert done.progress["arms"] == {"misrouted": "failed", "fine": "completed"}
     campaign = off_loop(storage.load_campaign, job.target_id, TOYHOST_SCOPE)
     assert campaign is not None
     runs = {run.candidate_model: run for run in off_loop(storage.load_eval_runs, campaign.run_ids, TOYHOST_SCOPE)}
     misrouted = runs[RUN_MODELS[1]]
-    assert misrouted.status == "failed"
-    assert any(
-        detail.startswith("the run measured nothing") and _ROUTING in detail for detail in misrouted.error_details
-    )
-    assert runs[RUN_MODELS[0]].status == "completed"
+    assert (misrouted.status, misrouted.failed_because) == ("failed", "nothing_measured"), "the sweep reads this field"
+    assert any(_ROUTING in detail for detail in misrouted.error_details)
+    assert done.detail == f"arm 'misrouted' measured nothing (its run {misrouted.id} failed)"
+    assert (runs[RUN_MODELS[0]].status, runs[RUN_MODELS[0]].failed_because) == ("completed", None)

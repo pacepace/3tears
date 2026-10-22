@@ -316,7 +316,8 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
         run_ids=[arm.run_id for arm in sweep.arms if arm.run_id is not None],
         campaign_id=sweep.campaign_id,
         sweep_id=sweep.id,
-        detail=detail if state != "completed" else None,
+        # A completed sweep's detail names each arm that measured nothing, which failed alone while the sweep went on.
+        detail=detail,
         faults=list(sweep.faults),
         refusal=sweep.refusal,
     )
