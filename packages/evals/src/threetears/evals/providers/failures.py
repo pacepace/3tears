@@ -35,6 +35,11 @@ _MESSAGE_LIMIT: Final = 500
 #: Anthropic's notice when an account's prepaid credit is spent, which arrives as a 400 rather than a 402.
 _CREDIT_NOTICE: Final = "credit balance"
 
+#: The statuses by which the provider declines to serve a call at that moment: a rate limit (429), service
+#: unavailable (503), and Anthropic's overloaded (529). Each says nothing about the model and would meet any request.
+#: A 500 or a 502 is an error rather than a refusal, so it stays the candidate's.
+_DECLINED: Final = frozenset({429, 503, 529})
+
 
 def _parsed(body: object) -> object:
     """``body`` as JSON when it is text, else as given; ``None`` when it is text that is not JSON."""
@@ -62,15 +67,16 @@ class ProviderError(Exception):
     so it is safe to log and to store. ``owner`` says whose failure it was, read off the status, and off the body
     where one status means two things: the calling ``account`` when every model behind the key would get the same
     answer (a key it refuses, credit spent, a quota exhausted), so a run stops instead of charging the candidate; the
-    ``provider`` when it rationed the call (any other 429), which says nothing about the model, so the cell is
-    excluded and the run goes on; otherwise the ``candidate``, as any failure is charged.
+    ``provider`` when it declined the call (any other 429 rate limit, or a 529 overloaded or 503 unavailable), which
+    says nothing about the model, so the cell is excluded and the run goes on; otherwise the ``candidate``, as any
+    failure is charged. An in-body code OpenRouter answers with a 200 is read the same way.
 
     :ivar provider: The provider that answered.
     :ivar status: The HTTP status, or the code an in-body error named (OpenRouter answers some failures with a 200).
     :ivar message: The provider's own message, or ``None`` when its answer carried none.
     :ivar owner: Whose failure it was. ``account``: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
         402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``. ``provider``: any other
-        429. ``candidate``: everything else.
+        429, a 529 or a 503. ``candidate``: everything else, a 500 and a 502 among it.
     """
 
     def __init__(self, provider: Provider, status: int, message: str | None, *, body: object = None) -> None:
@@ -98,7 +104,7 @@ class ProviderError(Exception):
             or credit
             or (status == 429 and code == "insufficient_quota")
         )
-        self.owner: FailureOwner = "account" if account else "provider" if status == 429 else "candidate"
+        self.owner: FailureOwner = "account" if account else "provider" if status in _DECLINED else "candidate"
         said = f": {self.message}" if self.message else " (the response carried no message)"
         super().__init__(f"{provider} {status}{said}")
 

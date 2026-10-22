@@ -152,7 +152,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`AsyncDeliveryStatus`** · literal · Where one piece of background work stood when the cell ended.
   <br>`'delivered'` | `'failed'` | `'undelivered'`
-- **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment, a rate limit), or the `candidate` (anything else, charged to whoever made the call).
+- **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment: a rate limit, 429, or the provider overloaded or unavailable, 529 or 503), or the `candidate` (anything else, charged to whoever made the call).
   <br>`'account'` | `'provider'` | `'candidate'`
 - **`KnownCellTimeoutOrigin`** · *host contract* · literal · A value of `CellTimeoutOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'launch'` | `'kind'` | `'default'`

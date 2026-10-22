@@ -6,14 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
+### evals: a declined call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
 
-- **A call the provider rationed is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
+- **A call the provider declined is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
   replaced by `owner`, one of `account`, `provider` or `candidate` (`FailureOwner`), and `ProviderError.account` by
-  `ProviderError.owner`. A 429 that is not `insufficient_quota` is `provider`: on a reporter or judge call, and on the
-  quick path, the cell is excluded and the run goes on. A 429 `insufficient_quota` (or a 402) is `account` and stops
-  the run, as before. A rationed repair or parse retry says so in its error, and the page's setup-fault words cover a
-  rationed call.
+  `ProviderError.owner`. A 429 that is not `insufficient_quota` is `provider`, and so are a 529 (overloaded) and a 503
+  (unavailable): on a reporter or judge call, and on the quick path, the cell is excluded and the run goes on. A 500
+  or a 502 is an error rather than a refusal, so it stays the candidate's. A 429 `insufficient_quota` (or a 402) is
+  `account` and stops the run, as before. A declined repair or parse retry says so in its error, and the page's
+  setup-fault words cover a declined call.
 - **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
   `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
   returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and

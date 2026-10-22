@@ -250,7 +250,7 @@ async def test_a_judged_comparison_discloses_the_arm_whose_answers_the_judges_mo
     assert comparison.arms["baseline"].judge_shares_candidate_model == []
 
 
-async def test_a_judge_call_the_account_was_refused_stops_a_quick_run_and_one_the_provider_rationed_is_excluded() -> (
+async def test_a_judge_call_the_account_was_refused_stops_a_quick_run_and_one_the_provider_declined_is_excluded() -> (
     None
 ):
     """The quick path reads its judge's calls with the package client's describer, so whose failure each was decides."""
@@ -262,3 +262,10 @@ async def test_a_judge_call_the_account_was_refused_stops_a_quick_run_and_one_th
     summary = await _one(helpful, _FakeDecliningJudgeClient(rationed))
     assert summary.status == "completed", "a rationed call stops nothing"
     assert (summary.n_candidate_failed, summary.n_excluded) == (0, 1), "the rationed cell is excluded, never failed"
+
+    overloaded = error_from_response(
+        "anthropic", 529, json.dumps({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})
+    )
+    summary = await _one(helpful, _FakeDecliningJudgeClient(overloaded))
+    assert summary.status == "completed", "an overloaded provider stops nothing"
+    assert (summary.n_candidate_failed, summary.n_excluded) == (0, 1), "the declined cell is excluded, never failed"

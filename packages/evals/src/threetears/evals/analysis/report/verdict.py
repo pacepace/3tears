@@ -73,12 +73,12 @@ LOSS_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
     "infra": CauseWords(
         words=(
             "the test setup faulted (a simulator, a tool, the deadline or the judge's call failed), or the provider"
-            " rationed a call"
+            " declined a call"
         ),
         remedy=(
             "read the lost trials' errors below: fix the part of the setup that faulted, then rerun every arm; a call"
-            " the provider rationed needs no fix, only a rerun once it has capacity (fewer calls at once, or a higher"
-            " rate limit)"
+            " the provider declined needs no fix, only a rerun once it can serve it (later, or with fewer calls at"
+            " once)"
         ),
         short="setup fault",
     ),

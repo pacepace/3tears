@@ -686,16 +686,32 @@ async def test_an_error_in_a_200_body_is_a_failure_not_a_reply() -> None:
             "account",
         ),
         ("openai", 429, {"error": {"message": "quota", "code": "insufficient_quota"}}, "account"),
-        # The provider: it rationed the call, which says nothing about the model.
+        # The provider: it declined the call (rate-limited, overloaded or unavailable), which says nothing about the
+        # model.
         ("openai", 429, {"error": {"message": "slow down", "code": "rate_limit_exceeded"}}, "provider"),
         ("openrouter", 429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
         ("anthropic", 429, {"error": {"type": "rate_limit_error", "message": "Number of requests"}}, "provider"),
         ("openai", 429, "", "provider"),
+        (
+            "anthropic",
+            529,
+            {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+            "provider",
+        ),
+        ("openrouter", 503, {"error": {"code": 503, "message": "No available provider"}}, "provider"),
+        ("openai", 503, "<html>Service Unavailable</html>", "provider"),
         # The candidate: everything else, charged as any failure.
         ("openrouter", 403, {"error": {"message": "flagged by moderation"}}, "candidate"),
         ("anthropic", 400, {"error": {"type": "invalid_request_error", "message": "bad request"}}, "candidate"),
         ("openai", 500, "<html>oops</html>", "candidate"),
+        (
+            "anthropic",
+            500,
+            {"type": "error", "error": {"type": "api_error", "message": "Internal server error"}},
+            "candidate",
+        ),
         ("openrouter", 502, {"error": {"code": 502, "message": "upstream died"}}, "candidate"),
+        ("anthropic", 502, "<html>Bad Gateway</html>", "candidate"),
     ],
 )
 def test_whose_failure_a_providers_answer_is_read_off_its_status_and_body(
@@ -709,7 +725,10 @@ def test_whose_failure_a_providers_answer_is_read_off_its_status_and_body(
     assert describe_failure(error).owner == owner
 
 
-@pytest.mark.parametrize(("code", "owner"), [(429, "provider"), (402, "account"), (502, "candidate")])
+@pytest.mark.parametrize(
+    ("code", "owner"),
+    [(429, "provider"), (529, "provider"), (503, "provider"), (402, "account"), (500, "candidate"), (502, "candidate")],
+)
 def test_an_error_in_a_200_body_is_owned_by_the_code_it_names(code: int, owner: str) -> None:
     """OpenRouter answers some failures with a 200 and the status in the body: the body's code is the one read."""
     from threetears.evals.providers.wire import read_reply

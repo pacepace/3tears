@@ -75,7 +75,7 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 #: What a judge call that raised is said to have done, by whose failure the host's describer read it as.
 _FAILED_BECAUSE: dict[FailureOwner, str] = {
     "account": "was refused for the calling account",
-    "provider": "was rationed by the provider",
+    "provider": "was declined by the provider",
     "candidate": "failed",
 }
 
@@ -428,7 +428,7 @@ async def run_judge_llm(
         error is its description, and the result carries its ``owner``
         (:data:`~threetears.evals.schema.FailureOwner`): ``account`` when the provider refused the
         call for the calling account, which no retry or other model changes; ``provider`` when it
-        rationed the call. ``None`` — a host caller that acts on no account fault — keeps the
+        declined the call (a rate limit, or the provider overloaded or unavailable). ``None`` — a host caller that acts on no account fault — keeps the
         raised text and carries no owner.
     :ptype failure_describer: ProviderFailureDescriber | None
     :return: Parsed result dict with ``criteria_scores`` (normalised to 0-1),

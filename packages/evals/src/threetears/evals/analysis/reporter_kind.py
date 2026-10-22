@@ -831,7 +831,8 @@ class ReporterKind:
         engine refused, or the candidate's own provider call failing, is the candidate's
         (``candidate_errors``, the cell failed, no judge) — unless the host's describer says the
         call was the account's, which excludes the cell and stops the run (``account_refused``), or
-        the provider's (it rationed the call), which excludes the cell and lets the run go on. Spend
+        the provider's (it declined the call: a rate limit, or the provider overloaded or unavailable),
+        which excludes the cell and lets the run go on. Spend
         is reported on every exit that reached the provider, because a refused generation was still
         billed — and to ``sink`` as each call returns, because a
         generation is up to two calls and a deadline in the second must not lose the first. Each call is
@@ -913,13 +914,13 @@ class ReporterKind:
                             log,
                             failure,
                             exc,
-                            "Reporter candidate's %s was rationed by the provider",
+                            "Reporter candidate's %s was declined by the provider",
                             call,
                             level=logging.WARNING,
                         )
                         return CandidateOutput(
                             infra_errors=[
-                                f"apparatus: reporter: the {call} was rationed by the provider: {failure.description}"
+                                f"apparatus: reporter: the {call} was declined by the provider: {failure.description}"
                             ],
                             telemetry=telemetry,
                         )

@@ -71,6 +71,7 @@ async def test_a_raising_runner_fails_its_cell_and_says_why() -> None:
     ("status", "body", "owner"),
     [
         (429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
+        (529, {"error": {"code": 529, "message": "Overloaded"}}, "provider"),
         (402, {"error": {"code": 402, "message": "Insufficient credits"}}, "account"),
         (500, {"error": {"code": 500, "message": "upstream died"}}, "candidate"),
     ],
@@ -78,7 +79,7 @@ async def test_a_raising_runner_fails_its_cell_and_says_why() -> None:
 async def test_whose_failure_a_runners_provider_call_was_decides_whether_its_cell_fails_is_excluded_or_stops_the_run(
     status: int, body: dict[str, Any], owner: str
 ) -> None:
-    """A rationed call is excluded and the run goes on; the account's refusal stops it; any other failure fails."""
+    """A declined call is excluded and the run goes on; the account's refusal stops it; any other failure fails."""
     error = error_from_response("openrouter", status, json.dumps(body))
 
     async def calls(case: Mapping[str, Any]) -> int:
@@ -91,9 +92,9 @@ async def test_whose_failure_a_runners_provider_call_was_decides_whether_its_cel
         assert summary.status == "completed"
         assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (2, 1, 0)
     elif owner == "provider":
-        assert summary.status == "completed", "a rationed call stops nothing: the next one may be served"
+        assert summary.status == "completed", "a declined call stops nothing: the next one may be served"
         assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (2, 0, 1)
-        assert any(f"the candidate's provider call was rationed by the provider: {error}" in e for e in summary.errors)
+        assert any(f"the candidate's provider call was declined by the provider: {error}" in e for e in summary.errors)
     else:
         assert summary.status == "exhausted", "every later call is behind the same refused key"
         assert summary.n_candidate_failed == 0

@@ -507,12 +507,16 @@ class _ProviderAnswersOnce(FixturedClient):
 @pytest.mark.parametrize(
     ("status", "body", "owner"),
     [
-        # The provider rationed the call: the cell measured the provider, so it is excluded and the run goes on.
+        # The provider declined the call (rate-limited, overloaded or unavailable): the cell measured the provider,
+        # so it is excluded and the run goes on.
         (429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
+        (529, {"error": {"code": 529, "message": "Overloaded"}}, "provider"),
+        (503, {"error": {"code": 503, "message": "Service unavailable"}}, "provider"),
         # The account was refused: every later call would be too, so the cell is excluded and the run stops.
         (402, {"error": {"code": 402, "message": "Insufficient credits"}}, "account"),
-        # A provider fault that is no rationing stays the candidate's, as any failure is.
+        # A provider fault that is an error rather than a refusal stays the candidate's, as any failure is.
         (500, {"error": {"code": 500, "message": "upstream died"}}, "candidate"),
+        (502, {"error": {"code": 502, "message": "bad gateway"}}, "candidate"),
     ],
 )
 async def test_whose_failure_a_generator_call_was_decides_whether_its_cell_fails_is_excluded_or_stops_the_run(
@@ -529,10 +533,10 @@ async def test_whose_failure_a_generator_call_was_decides_whether_its_cell_fails
         assert answered.candidate_error == f"reporter: the generator call failed: {error}"
         assert answered.infra_error is None
     elif owner == "provider":
-        assert stopped is None, "a rationed call stops nothing: the next one may be served"
+        assert stopped is None, "a declined call stops nothing: the next one may be served"
         assert len(results) == 2, "the run went on to its other cell"
-        assert answered.candidate_error is None, "a rationed call is never charged to the candidate"
-        assert answered.infra_error == f"apparatus: reporter: the generator call was rationed by the provider: {error}"
+        assert answered.candidate_error is None, "a declined call is never charged to the candidate"
+        assert answered.infra_error == f"apparatus: reporter: the generator call was declined by the provider: {error}"
     else:
         assert isinstance(stopped, AccountExhaustedError), "every later call is behind the same refused key"
         assert answered.candidate_error is None
@@ -542,10 +546,10 @@ async def test_whose_failure_a_generator_call_was_decides_whether_its_cell_fails
         )
 
 
-async def test_a_repair_call_the_provider_rationed_excludes_its_cell_naming_the_repair_and_keeps_the_first_calls_cost() -> (
+async def test_a_repair_call_the_provider_declined_excludes_its_cell_naming_the_repair_and_keeps_the_first_calls_cost() -> (
     None
 ):
-    """The first reply was refused, so the generator bought a repair, and the provider rationed that.
+    """The first reply was refused, so the generator bought a repair, and the provider declined that.
 
     What the repair would have returned is unknown, so the cell is excluded rather than charged; its record names the
     repair and the refused first reply, and the first call's turn and spend stay on it.
@@ -555,11 +559,11 @@ async def test_a_repair_call_the_provider_rationed_excludes_its_cell_naming_the_
     client.completion.cost_usd = 0.15
     host, run, stopped = await _reporter_run(client, failure_describer=describe_failure)
 
-    assert not isinstance(stopped, AccountExhaustedError), "a rationed repair stops nothing"
+    assert not isinstance(stopped, AccountExhaustedError), "a declined repair stops nothing"
     (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
-    assert result.candidate_error is None, "a rationed repair is never charged to the candidate"
+    assert result.candidate_error is None, "a declined repair is never charged to the candidate"
     assert result.infra_error == (
-        "apparatus: reporter: the generator's repair call, after its first reply was refused, was rationed by the provider: "
+        "apparatus: reporter: the generator's repair call, after its first reply was refused, was declined by the provider: "
         f"{error}"
     )
     assert (result.turns_delivered, result.cost_usd) == (1, pytest.approx(0.15))
