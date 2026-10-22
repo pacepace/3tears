@@ -41,6 +41,42 @@ profiles are refused on read until dropped and generated again; hosts push the n
 59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
 replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
 
+### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
+
+- **A call the provider rationed is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
+  replaced by `owner`, one of `account`, `provider` or `candidate` (`FailureOwner`), and `ProviderError.account` by
+  `ProviderError.owner`. A 429 that is not `insufficient_quota` is `provider`: on a reporter or judge call, and on the
+  quick path, the cell is excluded and the run goes on. A 429 `insufficient_quota` (or a 402) is `account` and stops
+  the run, as before. A rationed repair or parse retry says so in its error, and the page's setup-fault words cover a
+  rationed call.
+- **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
+  `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
+  returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and
+  `collected_by`. A relay may carry the person's own `rated_at`; a dated relay older than that person's stored rating
+  is refused (409), so a newer opinion stands. `ResultRated` says what a write replaced.
+- **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
+  finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
+  the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
+  inside a closed fold, since a host's sandboxed frame runs no script to open one: nav, glossary and trial links land
+  on the fold or section heading when their exact target is folded away.
+- **A lease holder's own writes keep its lease (#811).** A run's progress and status writes, and every held record
+  write, extend the lease as a renewal does, through one method (`JobLeases.write_own`); a lapsed lease is never
+  revived. A renewal that hangs is never resent and costs one retired pool thread, not the job. A renewal landing late
+  logs one line separating loop, pool and store waits. A grid test runs launches at several widths and store
+  latencies, with a degraded control that must lapse (#810).
+- **The lease numbers live on the light schema (#825).** `DEFAULT_JOB_LEASE_S`, `JOB_LEASE_RENEWAL_FRACTION` and
+  `LEASE_POOL_WORKERS` are host-contract on `threetears.evals.schema`, which imports no kernel, so a host sizing its
+  pool reads them cheaply.
+- **Smaller fixes.** `sweep_launch`'s help names a route that works: declare the design afterwards with
+  `campaign_create` over the sweep's `run_ids`, which a sweep's job result now carries (#843). `measuring-soundly.md`
+  says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,100
+  characters (#822).
+
+**Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
+moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
+`threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
+and host; durable schema 16.1. See `packages/evals/MIGRATIONS.toml`.
+
 ## v0.74.0 -- 2026-10-20
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever

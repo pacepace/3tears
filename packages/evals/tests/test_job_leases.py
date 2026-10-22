@@ -1306,31 +1306,42 @@ async def test_a_cancel_reaches_the_job_once_though_an_own_write_and_a_renewal_b
 
 
 class RenewalHangingStore(InMemoryDocumentStore):
-    """A store where a run's renewal (a conditional write moving only its lease) hangs until released; the run's own
-    writes land. A renewal-path hang: a dead connection only the lease pool's threads hold."""
+    """A store where a hanging run's renewal (a conditional write moving only its lease) hangs until released, and
+    everything else lands: a renewal-path hang, a dead connection only the lease pool's threads hold.
 
-    def __init__(self) -> None:
-        """Hang every renewal until released; count the renewals sent."""
+    Every run hangs by default; ``hanging`` names the runs that do when it is set.
+    """
+
+    def __init__(self, hanging: set[str] | None = None) -> None:
+        """Hang the renewals of ``hanging`` (every run's when None) until released; count each run's renewals sent."""
         super().__init__()
+        self.hanging = hanging
         self.release = threading.Event()
-        self.renewals_sent = 0
+        self.renewals_sent: dict[str, int] = {}
 
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
-        """Hang a write moving only a stored run's lease; write anything else."""
+        """Hang a write moving only a hanging run's lease; write anything else."""
+        run_id = str(document["id"])
         if if_match is not None and document.get("doc_type") == "eval_run":
-            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            stored = self.get(run_id, str(document["scope_id"]))
             if stored is not None and {**stored, "lease": None} == {**document, "lease": None}:
-                self.renewals_sent += 1
-                self.release.wait()
+                self.renewals_sent[run_id] = self.renewals_sent.get(run_id, 0) + 1
+                if self.hanging is None or run_id in self.hanging:
+                    self.release.wait()
         super().upsert(document, if_match=if_match, create_only=create_only)
 
 
-async def test_a_stuck_renewal_is_never_resent_its_own_writes_keep_the_lease_and_a_bound_expires_it(
+def _live_lease(storage: EvalStorage, run_id: str) -> bool:
+    lease = off_loop(_stored_run, storage, run_id)[0].lease
+    return lease is not None and lease.expires() > datetime.now(UTC)
+
+
+async def test_a_stuck_renewal_is_never_resent_its_own_writes_keep_the_lease_and_renewal_resumes_once_it_returns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     store = RenewalHangingStore()
     storage = EvalStorage(store)
-    leases = JobLeases(storage, lease_s=1.2)  # renewed every 0.4 s; the first renewal, at 0.4 s, never returns
+    leases = JobLeases(storage, lease_s=1.2)  # renewed every 0.4 s; the first renewal, at 0.4 s, hangs
     stopped: list[str] = []
     tick = 0
 
@@ -1346,19 +1357,48 @@ async def test_a_stuck_renewal_is_never_resent_its_own_writes_keep_the_lease_and
         _seeded_run(storage, "run-hung", off_loop(leases.grant))
         leases.hold(RUN_JOB, "run-hung", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x"))
 
-        await writing_until(2.2)  # the renewal hangs from 0.4 s, counts as hung by 1.6 s, and is due again since
+        await writing_until(3.6)  # stuck from 0.4 s, hung by about 1.6 s, and due again every interval since
 
         assert stopped == [] and leases.holds("run-hung") and not leases.fenced("run-hung"), (
-            "its own writes kept the lease while the renewal hung"
+            "its own writes kept the lease the whole time its renewal was stuck, three leases"
         )
-        assert store.renewals_sent == 1, "no second renewal was sent while the first was stuck"
+        assert store.renewals_sent == {"run-hung": 1}, "no second renewal was sent while the first was stuck"
+        assert any("renewal stuck — kept by the job's own writes" in r.getMessage() for r in caplog.records)
 
-        await writing_until(3.0)  # six intervals after it was sent (2.8 s), the stuck call expires the record
+        store.release.set()  # the stuck call returns; the job stops writing, so only renewals can keep its lease
+        await asyncio.sleep(2.0)  # past a whole lease
 
-        assert stopped == ["x"] and leases.fenced("run-hung"), "the bound expired it"
-        assert store.renewals_sent == 1
-        faults = off_loop(_stored_run, storage, "run-hung")[0].faults
-        assert any("has not returned" in fault for fault in faults), faults
+        assert store.renewals_sent["run-hung"] >= 2, "renewal resumed once the stuck call returned"
+        assert stopped == [] and not leases.fenced("run-hung") and _live_lease(storage, "run-hung"), (
+            "the resumed renewals keep the lease"
+        )
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
+async def test_hangs_retire_the_lease_pool_so_they_never_take_renewal_capacity_from_other_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(job_leases, "LEASE_POOL_WORKERS", 2)  # two hangs in one pool would leave it no thread
+    store = RenewalHangingStore(hanging={"run-a1", "run-a2", "run-a3"})
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)
+    stopped: list[str] = []
+    try:
+        _seeded_run(storage, "run-b", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-b", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("b"))
+        for hanging in ("run-a1", "run-a2", "run-a3"):  # one after another, each hanging its first renewal
+            _seeded_run(storage, hanging, off_loop(leases.grant))
+            leases.hold(RUN_JOB, hanging, TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+            async with asyncio.timeout(5):
+                while not leases.fenced(hanging):  # stuck, found hung, and expired: nothing else keeps it
+                    await asyncio.sleep(0.05)
+
+        assert all(store.renewals_sent[hanging] == 1 for hanging in ("run-a1", "run-a2", "run-a3"))
+        assert stopped == [] and not leases.fenced("run-b") and _live_lease(storage, "run-b"), (
+            "the healthy record renewed on a fresh pool after every hang"
+        )
     finally:
         store.release.set()
         await leases.shut_down()
