@@ -12,6 +12,7 @@ lands on a span attribute).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from unittest.mock import patch
 
 import httpx
@@ -233,6 +234,124 @@ async def test_5xx_exhaustion_has_no_transport_cause() -> None:
         with pytest.raises(UpstreamHttpError) as exc_info:
             await client.request("GET", "/down")
     assert exc_info.value.__cause__ is None
+
+
+def _script(*steps: int | Exception) -> tuple[httpx.MockTransport, list[int]]:
+    """a mock transport answering each attempt in turn: a status, or an exception it raises."""
+    calls = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        step = steps[min(calls[0], len(steps) - 1)]
+        calls[0] += 1
+        if isinstance(step, Exception):
+            raise step
+        return httpx.Response(step, content=f"body-{step}".encode())
+
+    return httpx.MockTransport(handler), calls
+
+
+class TestExhaustionDescribesTheLastAttempt:
+    """An earlier attempt's answer never leaks into the error: a caller reads the status as "the upstream answered
+    the last attempt" and the cause as "the last attempt got no answer", and both must be true when they say so."""
+
+    async def test_a_connect_failure_then_5xx_carries_the_last_status_and_no_cause(self) -> None:
+        transport, calls = _script(httpx.ConnectError("refused"), 503, 503)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("GET", "/flapping")
+        assert calls[0] == 3
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.body == b"body-503"
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.attempts == 3
+
+    async def test_a_5xx_then_read_failures_carries_no_stale_status(self) -> None:
+        """A connection reset mid-read is a transport failure like a refused connect: recorded and chained."""
+        failure = httpx.ReadError("connection reset")
+        transport, calls = _script(503, failure, failure)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("GET", "/resetting")
+        assert calls[0] == 3
+        assert exc_info.value.status_code is None
+        assert exc_info.value.body == b""
+        assert exc_info.value.__cause__ is failure
+
+    async def test_a_read_failure_counts_against_the_breaker(self) -> None:
+        breaker = CircuitBreaker(provider_name="test-upstream", failure_threshold=2)
+        transport, _calls = _script(httpx.ReadError("connection reset"))
+        async with _client(transport, max_attempts=2, circuit_breaker=breaker) as client:
+            with pytest.raises(UpstreamHttpError):
+                await client.request("GET", "/resetting")
+        with pytest.raises(CircuitOpenError):
+            breaker.check()
+
+    async def test_a_non_idempotent_request_whose_read_failed_is_not_sent_again(self) -> None:
+        """It left, so the upstream may have acted on it: one attempt only."""
+        failure = httpx.ReadError("connection reset")
+        transport, calls = _script(failure, 200)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("POST", "/jobs", idempotent=False)
+        assert calls[0] == 1
+        assert exc_info.value.__cause__ is failure
+        assert exc_info.value.attempts == 1
+
+    async def test_a_non_idempotent_request_is_not_sent_again_after_a_local_failure(self) -> None:
+        """A corrupt encoding is not the upstream's failure, but the request left: it ends the call as itself."""
+        failure = httpx.DecodingError("corrupt gzip")
+        transport, calls = _script(failure, 200)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(httpx.DecodingError) as exc_info:
+                await client.request("POST", "/jobs", idempotent=False)
+        assert calls[0] == 1
+        assert exc_info.value is failure
+
+    async def test_a_local_failure_does_not_count_against_the_breaker(self) -> None:
+        """non-vacuous beside the read-failure pin: only the upstream's failures charge the breaker."""
+        breaker = CircuitBreaker(provider_name="test-upstream", failure_threshold=1)
+        transport, calls = _script(httpx.DecodingError("corrupt gzip"))
+        async with _client(transport, max_attempts=2, circuit_breaker=breaker) as client:
+            with pytest.raises(UpstreamHttpError):
+                await client.request("GET", "/corrupt")
+        assert calls[0] == 2, "sending twice is safe here, so it was retried"
+        breaker.check()
+
+    async def test_a_stream_whose_error_body_read_fails_is_closed_and_says_why(self) -> None:
+        """The 5xx's body is read for the error; a read that fails still closes the stream, and is the cause."""
+        failure = httpx.ReadError("connection reset")
+        closed: list[bool] = []
+
+        class _BrokenBody(httpx.AsyncByteStream):
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                raise failure
+                yield b""  # pragma: no cover -- makes this an async generator
+
+            async def aclose(self) -> None:
+                closed.append(True)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, stream=_BrokenBody())
+
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            async with _client(httpx.MockTransport(handler), max_attempts=2) as client:
+                async with client.stream("GET", "/down"):
+                    pass  # pragma: no cover -- establishment never succeeds
+        assert len(closed) == 2, "each failed attempt's stream is closed"
+        assert exc_info.value.status_code is None
+        assert exc_info.value.__cause__ is failure
+
+    async def test_a_stream_whose_last_attempt_got_no_answer_carries_no_stale_status(self) -> None:
+        failure = httpx.ConnectError("refused")
+        transport, calls = _script(503, failure)
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            async with _client(transport, max_attempts=2) as client:
+                async with client.stream("GET", "/down"):
+                    pass  # pragma: no cover -- establishment never succeeds
+        assert calls[0] == 2
+        assert exc_info.value.status_code is None
+        assert exc_info.value.__cause__ is failure
+        assert exc_info.value.attempts == 2
 
 
 async def test_circuit_open_fast_fails_without_request() -> None:

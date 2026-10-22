@@ -606,6 +606,30 @@ async def test_statuses_map_onto_distinguishable_classes(status: int, expected: 
         await adapter.search(SearchRequest(query="capybara"))
 
 
+@pytest.mark.parametrize("status", [500, 502, 422, 400])
+async def test_a_served_transport_failure_carries_the_status_tavily_answered(status: int) -> None:
+    """A served 5xx is Tavily's fault and transient, a 4xx is ours: the caller reads which off the failure's
+    status, never out of its message, and a 400 keeps its remediation beside it."""
+    adapter, transport = _scripted(TransportScript(status_code=status, body=b""))
+    with pytest.raises(TransportFailed) as raised:
+        await adapter.search(SearchRequest(query="capybara"))
+
+    assert raised.value.status == status
+    assert raised.value.egress == transport.egress_name, "the status must survive the adapter's re-stamp"
+    assert raised.value.to_record().status == status
+    if status == 400:
+        assert raised.value.remediation == TAVILY_400_REMEDIATION
+
+
+async def test_a_transport_failure_nothing_answered_carries_no_status() -> None:
+    """A connect failure got no answer, so there is no status to report."""
+    adapter, _ = _scripted(TransportScript(failure=OSError("connection refused")))
+    with pytest.raises(TransportFailed) as raised:
+        await adapter.search(SearchRequest(query="capybara"))
+
+    assert raised.value.status is None
+
+
 async def test_a_failure_is_fully_attributed_for_pacing_keys() -> None:
     """D8/D20: rate and quota tracking key on (provider instance, egress), and
     pod-resident the failure record on ToolResult.metadata is the only fact a

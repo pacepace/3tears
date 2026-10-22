@@ -54,7 +54,8 @@ from threetears.search.contracts import (
     TimedOut,
     TransportFailed,
 )
-from threetears.search.testing import ScriptedTransport, TransportScript
+from threetears.search.standalone import StandaloneTransport
+from threetears.search.testing import LocalHttpServer, Reply, ScriptedTransport, TransportScript
 from packages.search.tests.searxng_payloads import (
     IMAGE_RESULT,
     MALFORMED_BODY,
@@ -353,6 +354,45 @@ async def test_a_429_carries_the_providers_stated_backoff() -> None:
         await adapter.search(SearchRequest(query="capybara"))
 
     assert raised.value.retry_after_seconds == 30.0
+
+
+@pytest.mark.parametrize("status", [500, 503, 301, 400, 404])
+async def test_a_served_transport_failure_carries_the_status_the_instance_answered(status: int) -> None:
+    """A served 5xx (transient) and a 3xx or 4xx (a misconfigured base URL) need different responses, so the
+    caller reads the status off the failure, never out of its message -- after the adapter re-stamps it too."""
+    adapter, transport = _scripted(TransportScript(status_code=status, body=b""))
+    with pytest.raises(TransportFailed) as raised:
+        await adapter.search(SearchRequest(query="capybara"))
+
+    assert raised.value.status == status
+    assert raised.value.egress == transport.egress_name, "the status must survive the adapter's re-stamp"
+    assert raised.value.to_record().status == status
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [Reply(status=503, body=b"down"), Reply(status=301, body=b"", headers={"Location": "https://elsewhere.test/"})],
+    ids=["5xx-on-every-attempt", "redirect"],
+)
+async def test_over_the_standalone_transport_the_status_reaches_the_caller(reply: Reply) -> None:
+    """End to end over a real socket: a 5xx the transport retried until it gave up, and the redirect a mistyped
+    base URL answers with (search follows none), both leave the adapter carrying the status the instance sent."""
+    async with LocalHttpServer((reply,)) as server:
+        transport = StandaloneTransport(allow_private_addresses=True, initial_backoff=0.001, max_backoff=0.002)
+        adapter = SearxngAdapter(base_url=server.base_url, transport=transport)
+        with pytest.raises(TransportFailed) as raised:
+            await adapter.search(SearchRequest(query="capybara"))
+
+    assert raised.value.status == reply.status
+
+
+async def test_a_transport_failure_nothing_answered_carries_no_status() -> None:
+    """A connect failure got no answer, so there is no status to report."""
+    adapter, _ = _scripted(TransportScript(failure=OSError("connection refused")))
+    with pytest.raises(TransportFailed) as raised:
+        await adapter.search(SearchRequest(query="capybara"))
+
+    assert raised.value.status is None
 
 
 async def test_a_failure_is_fully_attributed_for_pacing_keys() -> None:
