@@ -231,6 +231,12 @@ Glossary start folded, and a nav link opens the one it lands on.
   tested (`The analysis also noted: …`). The memo's words are held to the page's style (below).
   A campaign's summary and recommendation are on its first screen, not in a fold; the writer's summary of the aspect
   opens the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
+  **Each finding traces to its evidence, in HTML.** Each figure in its table links to the row where code states that
+  reading at that arm in full (a contrast, a guardrail, a bar, or a one-arm page's readings), and each trial id in its
+  `Evidence` fold to the trial's record. On a campaign's page each finding's `Evidence` fold lists the readings and
+  trials it cites, each linked into the aspect's fold that states it. Code draws every link from the cells and trials
+  the memo cites, never from its words, and draws none where the page states nothing: a finding whose trace reaches
+  nothing says `Nothing else on this page states what this finding cites.` in its fold.
 - **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
   Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
   ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
