@@ -664,7 +664,7 @@ async def _ask(
                 judged.append(planned.result.id)
             else:
                 unwritten.append(planned.result.id)
-            if any(outcome.account_refused for _, outcome in outcomes):
+            if any(outcome.owner == "account" for _, outcome in outcomes):
                 stopped = (
                     f"the account behind the second judge refused a call while asking about result "
                     f"'{planned.result.id}', so every later call would be refused too"

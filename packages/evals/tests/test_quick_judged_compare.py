@@ -28,6 +28,7 @@ from threetears.evals import Answer, Eval, Judge, Result
 from threetears.evals.schema import RubricDim, StopReason
 from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import get_run, list_results
+from threetears.evals.providers.failures import error_from_response
 from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "quick-judged-compare-tests"
@@ -108,6 +109,31 @@ class _FakeFixedTemperatureClient:
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         await self.aclose()
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class _FakeDecliningJudgeClient(_FakeJudgeClient):
+    """The scripted judge, whose provider answers its first call (or every call, ``every``) with ``error``."""
+
+    def __init__(self, error: Exception, *, every: bool = False) -> None:
+        super().__init__()
+        self.error = error
+        self.every = every
+
+    async def generate(
+        self,
+        *,
+        system: str,
+        user: str,
+        response_format: dict[str, Any] | None = None,
+        temperature: float | None = None,
+    ) -> _Reply:
+        if self.every or not self.temperatures:
+            self.temperatures.append(temperature)
+            raise self.error
+        return await super().generate(
+            system=system, user=user, response_format=response_format, temperature=temperature
+        )
 
 
 def _judge(client: Any) -> Judge:
@@ -222,3 +248,17 @@ async def test_a_judged_comparison_discloses_the_arm_whose_answers_the_judges_mo
     assert "arm same-model's answers" in said and "may favour that arm" in said
     assert said in report_markdown(comparison.report)
     assert comparison.arms["baseline"].judge_shares_candidate_model == []
+
+
+async def test_a_judge_call_the_account_was_refused_stops_a_quick_run_and_one_the_provider_rationed_is_excluded() -> (
+    None
+):
+    """The quick path reads its judge's calls with the package client's describer, so whose failure each was decides."""
+    refused = error_from_response("openrouter", 402, json.dumps({"error": {"code": 402, "message": "Insufficient"}}))
+    stopped = await _one(helpful, _FakeDecliningJudgeClient(refused, every=True))
+    assert stopped.status == "exhausted", "every later judge call is behind the same refused key"
+
+    rationed = error_from_response("openrouter", 429, json.dumps({"error": {"code": 429, "message": "Rate limit"}}))
+    summary = await _one(helpful, _FakeDecliningJudgeClient(rationed))
+    assert summary.status == "completed", "a rationed call stops nothing"
+    assert (summary.n_candidate_failed, summary.n_excluded) == (0, 1), "the rationed cell is excluded, never failed"

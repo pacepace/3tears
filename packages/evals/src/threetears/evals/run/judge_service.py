@@ -89,7 +89,7 @@ from threetears.evals.schema.models import (
     label_key_of,
 )
 from threetears.evals.kernel.host.eval_host import CompletionClients
-from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
+from threetears.evals.schema.completion import BoundCompletionClient, FailureOwner, ProviderFailureDescriber
 from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
 from threetears.evals.run.judge import (
@@ -193,10 +193,12 @@ class JudgeOutcome:
     #: failure — the judge worked and said the transcript does not decide the dim — so it is
     #: never folded into the errors that exclude a result.
     cannot_tell: str | None = None
-    #: The call was refused for the calling account (out of credit, the key refused), as the
-    #: host's describer read what the client raised. Still an ``error`` — the dim is unscored and
-    #: the result excluded — and also what stops the run, since every later call is behind the key.
-    account_refused: bool = False
+    #: Whose failure the call was, when it raised and the host's describer read what the client
+    #: raised (:attr:`~threetears.evals.schema.ProviderFailure.owner`); ``None`` for a call that did
+    #: not raise, or that no describer read. Beside ``error`` either way: the dim is unscored. ``account``
+    #: (out of credit, the key refused) also stops the run, since every later call is behind the key;
+    #: ``provider`` (the call was rationed) is the provider's, never the judge's own.
+    owner: FailureOwner | None = None
     #: The reply the provider cut short, as facts: its stop reason, what the call was sent with and its token
     #: counts. Set only beside ``error`` (the call's reply was cut off and not re-bought), and folded onto the
     #: result's ``judge_cut_short`` so the exclusion it causes is counted as ``truncated``, not as a fault.
@@ -909,13 +911,12 @@ class JudgeService:
         if result is None or "error" in result:
             error_text = "no result" if result is None else (result.get("error") or "unknown judge error")
             log.warning("Judge dim=%s failed for case=%s: %s", dim_id, case_id, error_text)
-            account_refused = result is not None and result.get("account_refused") is True
             return JudgeOutcome(
                 score=None,
                 config_id=config_id,
                 error=error_text,
                 usage=usage,
-                account_refused=account_refused,
+                owner=None if result is None else result.get("owner"),
                 cut_short=None if result is None else result.get("judge_cut_short"),
             )
 

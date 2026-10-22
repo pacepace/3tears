@@ -34,6 +34,7 @@ from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocO
 from threetears.evals.schema.completion import (
     BoundCompletionClient,
     CompletionClient,
+    FailureOwner,
     PricedCompletion,
     ProviderFailure,
     ProviderFailureDescriber,
@@ -420,6 +421,7 @@ __all__ = [
     "PreconditionOutcome",
     "ProposedDimSuggestion",
     "ProposedTemplate",
+    "FailureOwner",
     "ProviderFailure",
     "ProviderFailureDescriber",
     "RecordedCall",

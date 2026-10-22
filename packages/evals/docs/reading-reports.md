@@ -476,7 +476,9 @@ description stay editable, and an amended question is a new campaign that adopts
 ## Excluded trials by cause
 
 A trial is left out of an arm's measures for one of three causes (`trial_exclusion`): `infra`, the harness faulted
-it; `truncated`, a judge reply was cut off at the output cap it was sent and was not bought again; and
+it or the provider rationed one of its calls (a 429 that is not a spent quota, which says nothing about the model:
+it needs no fix, only a rerun once the provider has capacity, and the trial's error says which it was);
+`truncated`, a judge reply was cut off at the output cap it was sent and was not bought again; and
 `judge_cannot_tell`, the judge could not score a capability dimension, which leaves the trial out of pass^k and the
 composite only. A candidate's own failure is never an exclusion: it fails, and is counted. The bundle's
 `exclusions` gives every arm its trial count, its usable count and its exclusions by cause, with the caps the

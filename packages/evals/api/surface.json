@@ -511,6 +511,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.FailureOwner": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.FaultsField": {
       "kind": "type alias",
       "signature": "",
@@ -913,7 +918,7 @@
     },
     "threetears.evals.schema.ProviderFailure": {
       "kind": "dataclass",
-      "signature": "ProviderFailure(description: str, payload_withheld: bool, account_refused: bool)",
+      "signature": "ProviderFailure(description: str, payload_withheld: bool, owner: FailureOwner)",
       "tier": "stable"
     },
     "threetears.evals.schema.ProviderFailureDescriber": {

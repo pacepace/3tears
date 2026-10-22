@@ -901,8 +901,9 @@ class JudgeKind:
         """Ask the judge under test the case's criterion over the frozen evidence, and grade its answer.
 
         Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). The judge's
-        own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was
-        refused for the calling account, which excludes the cell and stops the run (``account_refused``). A reply
+        own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was the
+        account's, which excludes the cell and stops the run (``account_refused``), or the provider's (it rationed the
+        call), which excludes the cell and lets the run go on. A reply
         that came back is a measurement whatever it says: a score, a "can't tell", or a reply that broke the
         protocol, which is what parse validity counts.
 
@@ -1019,10 +1020,19 @@ class JudgeKind:
         payload = trial.model_dump(mode="json")
         if outcome_kind == "no_reply":
             error = outcome.error or "the judge's call failed"
-            if outcome.account_refused:
+            if outcome.owner == "account":
                 return CandidateOutput(
                     infra_errors=[f"apparatus: judge: the call was refused for the calling account: {error}"],
                     account_refused=True,
+                    telemetry=telemetry,
+                    kind_payload=payload,
+                )
+            if outcome.owner == "provider":
+                # The provider declined to serve the call at that moment, as it would any request: the trial measured
+                # the provider, not the judge under test, so it is excluded and the run goes on.
+                log.warning("Judge kind's call was rationed by the provider for case %s: %s", test_case.id, error)
+                return CandidateOutput(
+                    infra_errors=[f"apparatus: judge: the provider rationed the call: {error}"],
                     telemetry=telemetry,
                     kind_payload=payload,
                 )

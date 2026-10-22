@@ -408,9 +408,9 @@ class ErrorLedger:
     #: stop driving turns; see :meth:`add_apparatus` for why it is a flag and not a
     #: substring search over ``infra``.
     apparatus_failed: bool = False
-    #: The apparatus fault was the calling ACCOUNT being refused. Carried out of the cell as
-    #: ``CandidateOutput.account_refused``, which stops the whole run — see
-    #: :meth:`add_account_refusal`.
+    #: The apparatus fault was the calling ACCOUNT being refused, as the kind reported it
+    #: (``CandidateOutput.account_refused``, read by :meth:`of`). Carried out of the cell to
+    #: stop the whole run: every later call is behind the same key.
     account_refused: bool = False
 
     @classmethod
@@ -461,24 +461,13 @@ class ErrorLedger:
         self.infra.append(f"apparatus: {msg}")
         self.apparatus_failed = True
 
-    def add_account_refusal(self, msg: str) -> None:
-        """Record an apparatus fault that was the calling account being refused.
-
-        Everything :meth:`add_apparatus` does — excluded, and the cell stops — plus the flag the
-        run reads: the key is refused or the balance is gone for every cell after this one too,
-        so the run stops rather than paying to exclude them one by one.
-        """
-        self.add_apparatus(msg)
-        self.account_refused = True
-
     @property
     def account_refusal(self) -> str | None:
         """The cell's infra errors when the calling account was refused, else None — what stops the run.
 
-        Never ``None`` for a refused account: both ways the flag is set carry an infra entry with
-        it (:meth:`add_account_refusal` records one, and ``CandidateOutput`` refuses the flag
-        without one), so the run loop reads this one property rather than the flag and the
-        message separately.
+        Never ``None`` for a refused account: the flag arrives with the kind's report, and
+        ``CandidateOutput`` refuses it without an infra entry, so the run loop reads this one
+        property rather than the flag and the message separately.
         """
         return self.infra_error if self.account_refused else None
 
@@ -865,7 +854,7 @@ class _CellSink:
         """
         if (refusal := self.errors.account_refusal) is not None:
             return refusal
-        judged = [f"judge {dim_id}: {outcome.error}" for dim_id, outcome in self.judged if outcome.account_refused]
+        judged = [f"judge {dim_id}: {outcome.error}" for dim_id, outcome in self.judged if outcome.owner == "account"]
         return "; ".join(judged) or None
 
 
