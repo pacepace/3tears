@@ -34,7 +34,10 @@ not plain SQL overrides.
 failed, the tool answered "store failed". The agent retried, and the retry left two current
 memories (with an alias, "Alias already used"). Only the near-duplicate search may now fall
 through to a plain write, since nothing is written yet; once the replace starts, a failure is
-answered and never followed by a second write.
+answered and never followed by a second write. A failure after the commit no longer stops the
+rest either: a lagging generation or a lost edge still lets the replaced memory be marked
+superseded, so it never stays current beside its replacement, and the worst unfinished step is
+the one reported.
 
 **Added:** `WriteIncompleteError` in `threetears.agent.memory.revisions`, raised when the new
 memory committed and a later step did not. Its `unfinished` is `generation`, `edges` or `mark`. It
