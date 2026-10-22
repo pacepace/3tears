@@ -1,10 +1,11 @@
 """Subprocess plumbing shared by every dump driver.
 
-Two primitives: :func:`stream_stdout` runs a command and yields its stdout in chunks (the *dump*
-side — pg_dump/ysql_dump write the archive to stdout), and :func:`feed_stdin` runs a command and
-streams bytes into its stdin (the *restore* side — pg_restore/ysqlsh read the archive from stdin).
+Three primitives: :func:`stream_stdout` runs a command and yields its stdout in chunks (the *dump*
+side — pg_dump/ysql_dump write the archive to stdout), :func:`feed_stdin` runs a command and
+streams bytes into its stdin (the *restore* side — psql/ysqlsh read SQL from stdin), and
+:func:`pipe_through` does both at once (pg_restore turns a custom-format archive into SQL).
 
-Both drain stderr concurrently (so a chatty tool can't deadlock on a full stderr pipe), enforce an
+All three drain stderr concurrently (so a chatty tool can't deadlock on a full stderr pipe), enforce an
 optional wall-clock ``timeout``, and — critically — **never leave a child running**: if the caller
 aborts, the operation times out, or the input stream errors, the child is killed before the helper
 returns (otherwise a child blocked on a full stdout pipe would wedge ``proc.wait()`` forever). A
@@ -40,6 +41,7 @@ __all__ = [
     "ReadAhead",
     "feed_stdin",
     "fill_read_ahead",
+    "pipe_through",
     "stream_stdout",
 ]
 
@@ -189,6 +191,83 @@ async def feed_stdin(
         # _SHORT_FEED rather than the real (zero) exit code: a consumer branching on
         # ``exc.returncode`` would read 0 as "no failure", which is precisely the reading this
         # error exists to prevent. Mirrors the _TIMED_OUT convention already in this module.
+        raise BackupToolError(
+            argv[0], _SHORT_FEED, f"stdin closed before the archive was fully written. {stderr_final}"
+        )
+
+
+async def pipe_through(
+    argv: list[str],
+    source: AsyncIterator[bytes],
+    *,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+) -> AsyncIterator[bytes]:
+    """Run ``argv``, stream ``source`` into its stdin, and yield its stdout; raise on failure.
+
+    The two directions run concurrently, so a tool that writes while it reads (``pg_restore -f -``
+    converting an archive to SQL) can never deadlock on a full pipe either way. The guarantees are
+    :func:`feed_stdin`'s and :func:`stream_stdout`'s together: the child is killed if the consumer
+    stops early, the source fails, or ``timeout`` passes; a non-zero exit raises; and a child that
+    exits ``0`` without taking the whole of ``source`` raises as a short feed.
+
+    :param argv: the command and its arguments.
+    :param source: async iterator of bytes to write to the child's stdin.
+    :param env: environment for the child; ``None`` inherits.
+    :param timeout: wall-clock ceiling in seconds; ``None`` disables it.
+    :raises BackupToolError: when the command exits non-zero, exceeds ``timeout``, or closes its
+        stdin before ``source`` is fully written.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=dict(env) if env is not None else None,
+        start_new_session=True,  # own process group, so _kill can take down the whole tree
+    )
+    stderr_task = asyncio.ensure_future(_drain(proc.stderr))
+
+    async def pump_or_kill() -> bool:
+        # a source that fails mid-stream leaves the child's stdin open, so it would wait for
+        # input forever and the stdout read below with it; killing it ends both.
+        try:
+            return await _pump_stdin(proc, source)
+        except BaseException:
+            _kill(proc)
+            raise
+
+    pump = asyncio.ensure_future(pump_or_kill())
+    deadline = None if timeout is None else asyncio.get_running_loop().time() + timeout
+    assert proc.stdout is not None
+    reached_eof = False
+    try:
+        while True:
+            try:
+                chunk = await _read_within(proc.stdout, deadline)
+            except TimeoutError:
+                _kill(proc)
+                stderr = (await stderr_task).decode(errors="replace")
+                raise BackupToolError(argv[0], _TIMED_OUT, f"timed out after {timeout}s. {stderr}") from None
+            if not chunk:
+                reached_eof = True
+                break
+            yield chunk
+    finally:
+        if not reached_eof:
+            # the consumer stopped, or the read timed out: the child may be blocked on a full
+            # stdout pipe and the pump on a full stdin one, so neither would ever finish alone.
+            _kill(proc)
+            # a source failure the pump already hit is raised from here rather than lost.
+            await cancel_and_wait(pump)
+        stderr_final = (await stderr_task).decode(errors="replace")
+        returncode = await proc.wait()
+    # the child closed stdout, so the pump has written all it ever will; a source failure is
+    # raised from here, as feed_stdin raises one.
+    fully_fed = await pump
+    if returncode != 0:
+        raise BackupToolError(argv[0], returncode, stderr_final)
+    if not fully_fed:
         raise BackupToolError(
             argv[0], _SHORT_FEED, f"stdin closed before the archive was fully written. {stderr_final}"
         )

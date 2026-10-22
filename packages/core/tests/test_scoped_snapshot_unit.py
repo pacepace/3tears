@@ -290,8 +290,11 @@ async def test_a_scope_whose_chunks_are_gone_is_shown_behind_and_retried_at_the_
 
     _point_at_a_missing_chunk(pointers)
 
-    await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
-    assert snapshot.status().phase is SnapshotPhase.READY and "behind" in snapshot.status().detail
+    await _until(
+        lambda: "TX" in snapshot.status().behind and snapshot.status().phase is SnapshotPhase.READY,
+        what="TX shown behind, the replica still ready",
+    )
+    assert "behind" in snapshot.status().detail
     assert "enr/TX/2/results.gone" in snapshot.status().behind["TX"], "the status does not say why TX is behind"
     # a retry per recheck (0.05 s): a handful of reads, not hundreds
     reads = await _reads_in(store, 0.25)
@@ -2310,9 +2313,13 @@ async def test_a_piece_holding_a_row_already_held_is_refused_and_the_scope_rebui
     # a writer that broke the promise, past this library's own refusal: c1 is held already
     _with_pieces(pointers, store, epoch=2, pieces=[(2, [_county("c1", 9)])])
 
-    await _until(lambda: replica.applied_epoch("TX") == 2, what="TX rebuilt from L3 after its piece was refused")
+    # the epoch is applied before the rebuild hands the phase back, so both are waited for:
+    # asserting READY the moment the epoch moved failed on a loaded runner, mid-handback
+    await _until(
+        lambda: replica.applied_epoch("TX") == 2 and replica.status().phase is SnapshotPhase.READY,
+        what="TX rebuilt from L3 after its piece was refused, and the replica ready again",
+    )
     assert _tx_counties(replica) == [("c1", 1)], "the refused piece's row reached the L1"
-    assert replica.status().phase is SnapshotPhase.READY
     await writer.stop()
     await replica.stop()
 

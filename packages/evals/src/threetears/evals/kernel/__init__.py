@@ -155,8 +155,6 @@ from threetears.evals.kernel.job_context import running_job
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactory, default_job_timeout, timed_out_detail
 from threetears.evals.kernel.job_leases import (
     ANALYSIS_JOB,
-    DEFAULT_JOB_LEASE_S,
-    LEASE_POOL_WORKERS,
     LEASE_WRITE_ATTEMPTS,
     RUN_JOB,
     SHUTDOWN_CAUSE,
@@ -415,8 +413,6 @@ __all__ = [
     "EvalGenerationSlot",
     "generation_slot_id",
     "ANALYSIS_JOB",
-    "DEFAULT_JOB_LEASE_S",
-    "LEASE_POOL_WORKERS",
     "LEASE_WRITE_ATTEMPTS",
     "RUN_JOB",
     "SHUTDOWN_CAUSE",

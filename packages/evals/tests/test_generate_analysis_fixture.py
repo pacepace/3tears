@@ -54,9 +54,12 @@ async def test_with_no_api_key_the_writer_repairs_the_canned_draft_from_the_reco
     )
     assert verdict is not None and verdict.group(1) == "candidate and baseline not separated"
     assert out.index("Code's verdict") < out.index("\n- ")  # before the first finding the writer wrote
+    # The writer's read across every aspect, which the campaign's page opens on, printed before its findings.
+    assert analysis.document.summary.strip()
+    assert out.index(f"Summary: {analysis.document.summary}") < out.index("\n- ")
     # This run's bundle is frozen and reloads to the fingerprint printed; the writer read the recorded one.
     saved = tmp_path / "bundle.json"
-    printed = re.search(r"fingerprint ([0-9a-f]{64})", out)
+    printed = re.search(r"fingerprint (v2:[0-9a-f]{64})", out)
     assert printed is not None and saved.is_file()
     assert CampaignBundle.from_json(saved.read_text()).fingerprint() == printed.group(1)
     recorded = CampaignBundle.from_json(module.RECORDED_BUNDLE.read_text()).fingerprint()

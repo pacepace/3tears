@@ -34,6 +34,7 @@ tool schema — the runtime injects it, full stop.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
@@ -47,8 +48,11 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field, model_validator
 
 from threetears.agent.memory.revisions import (
+    LabelsDifferError,
     MemoryMarks,
+    WriteIncompleteError,
     correct_beside,
+    host_labels,
     is_permanent,
     marks_of,
     restore,
@@ -81,6 +85,7 @@ from threetears.core.coordination.tables import STORAGE_FAILURES
 from threetears.core.exceptions import (
     ConcurrentModificationError,
     DataLayerUnavailableError,
+    GenerationNotCommittedError,
     GenerationUnavailableError,
 )
 from threetears.core.utils.local_time import parse_date_bound, render_local_time, resolve_zone
@@ -1470,19 +1475,38 @@ async def load_memory_recall_tool(
         header = f"[memory:{mem_uuid}] [{memory['type_memory']}]"
         if written:
             header += f" written {written}"
-        state = _mark_text(marks, zone).rstrip()
+        # a related memory is named only when this reader may read it: find_for_recall applies the
+        # host's read filter, so an id in an audience the reader is not in is never printed
+        related: dict[UUID, dict[str, Any]] = {}
+        for other_id in (marks.replaced_by, marks.corrected_by):
+            if other_id is not None:
+                other = await memories_collection.find_for_recall(
+                    memory_id=other_id, user_id=user_id, agent_id=agent_id
+                )
+                if other is not None:
+                    related[other_id] = other
+        shown = dataclasses.replace(
+            marks,
+            replaced_by=marks.replaced_by if marks.replaced_by in related else None,
+            replaced_at=marks.replaced_at if marks.replaced_by in related else None,
+            corrected_by=marks.corrected_by if marks.corrected_by in related else None,
+        )
+        state = _mark_text(shown, zone).rstrip()
         if state:
             header += f" {state}"
         lines: list[str] = [header]
-        for label, other_id in (("Replaced by", marks.replaced_by), ("Corrected by", marks.corrected_by)):
-            if other_id is None:
-                continue
-            other = await memories_collection.find_for_recall(memory_id=other_id, user_id=user_id, agent_id=agent_id)
-            if other is not None:
-                lines.append(f"{label} [memory:{other_id}]: {_quoted(other)}")
+        for label, other_id in (("Replaced by", shown.replaced_by), ("Corrected by", shown.corrected_by)):
+            if other_id is not None:
+                lines.append(f"{label} [memory:{other_id}]: {_quoted(related[other_id])}")
         if consolidations_collection is not None:
             try:
                 sources = await consolidations_collection.find_sources(agent_id, mem_uuid)
+                sources = [
+                    source
+                    for source in sources
+                    if await memories_collection.find_for_recall(memory_id=source, user_id=user_id, agent_id=agent_id)
+                    is not None
+                ]
             except STORAGE_FAILURES as exc:  # the header's last fact is optional; the memory is still read
                 contain(exc, log=log, what="memory_recall: reading what a memory replaced failed", level="error")
                 sources = []
@@ -1719,6 +1743,37 @@ async def _is_present(person_present: PersonPresent | None) -> bool:
     ) as exc:  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
         contain(exc, log=log, what="person_present resolver failed; memory_add replaces nothing", level="error")
         return False
+
+
+def _incomplete(exc: WriteIncompleteError, done: str, *, again: str) -> str:
+    """What a tool says when its memory was written and a step after it was not.
+
+    The memory is stored, so the reply says so: an error reply would have the agent write it
+    again, beside the copy that stands.
+
+    :param exc: the incomplete write
+    :ptype exc: WriteIncompleteError
+    :param done: the sentence the tool says for the memory written
+    :ptype done: str
+    :param again: what the agent must not do again, e.g. ``"store it again"``
+    :ptype again: str
+    :return: the reply
+    :rtype: str
+    """
+    cause = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+    why = f"{type(cause).__name__}: {cause}"
+    named = ", ".join(f"[memory:{source_id}]" for source_id in exc.source_ids)
+    if not exc.source_ids:
+        tail = f"It may not show in searches for a short while ({why})."
+    elif exc.unfinished == "mark":
+        tail = (
+            f"But {named} could not be marked as replaced by it ({why}), so that may still read as current beside it."
+        )
+    else:
+        tail = f"But it could not be linked to {named} ({why}), so that may still read as current beside it."
+        if exc.unfinished == "generation":
+            tail += " It may not show in searches for a short while."
+    return f"{done} {tail} It is stored: do not {again}."
 
 
 def _held(rows: Sequence[dict[str, Any]], *, zone: tzinfo | None) -> str:
@@ -2148,18 +2203,22 @@ async def load_memory_add_tool(
                         rationale="corrected by memory_add",
                         allow_permanent=True,
                     )
-                    for row in beside:
-                        edge = consolidations_collection.create(
-                            {
-                                "agent_id": agent_id,
-                                "consolidated_memory_id": new_id,
-                                "source_memory_id": UUID(str(row["memory_id"])),
-                                "rationale": "corrected beside a permanent memory by memory_add",
-                                "date_created": datetime.now(UTC),
-                                "date_updated": datetime.now(UTC),
-                            }
-                        )
-                        await consolidations_collection.save_entity(edge)
+                    beside_ids = [UUID(str(row["memory_id"])) for row in beside]
+                    try:
+                        for source_id in beside_ids:
+                            edge = consolidations_collection.create(
+                                {
+                                    "agent_id": agent_id,
+                                    "consolidated_memory_id": new_id,
+                                    "source_memory_id": source_id,
+                                    "rationale": "corrected beside a permanent memory by memory_add",
+                                    "date_created": datetime.now(UTC),
+                                    "date_updated": datetime.now(UTC),
+                                }
+                            )
+                            await consolidations_collection.save_entity(edge)
+                    except _WRITE_FAILURES as exc:
+                        raise WriteIncompleteError(new_id, "edges", exc, beside_ids) from exc
                 else:
                     new_id = await correct_beside(
                         memories_collection,
@@ -2169,6 +2228,14 @@ async def load_memory_add_tool(
                         fields=fields,
                         rationale="corrected beside a permanent memory by memory_add",
                     )
+            except LabelsDifferError as exc:
+                # refused before anything was written: the corrected memories are in different audiences
+                return _tool_error("memory_add", "correct", f"{exc}; correct them one at a time")
+            except WriteIncompleteError as exc:
+                contain(exc, log=log, what="memory_add: correction written, its links not", extra={"error": str(exc)})
+                return _incomplete(
+                    exc, f"Stored as [memory:{exc.memory_id}]{alias_clause}: {content}.{kept}", again="store it again"
+                )
             except _LINKED_WRITE_FAILURES as exc:
                 taken = _alias_taken(exc)
                 if taken:
@@ -2192,7 +2259,11 @@ async def load_memory_add_tool(
 
         # A near-duplicate: replaced, or left standing and said so. A permanent one,
         # a call that said ``replace=false`` and an install with no edges all leave it.
+        # Only the search may fail into a plain write: nothing is written yet. Once the
+        # replace starts it may have written the new memory, so a failure there is the
+        # store error, never a second write of the same fields.
         standing: tuple[dict[str, Any], float] | None = None
+        replacing: tuple[dict[str, Any], float] | None = None
         try:
             similar_rows = await memories_collection.find_similar_for_dedup(
                 user_id=user_id,
@@ -2203,50 +2274,69 @@ async def load_memory_add_tool(
             )
             for row in similar_rows:
                 if float(row["similarity"]) >= dedup_threshold:
-                    existing_id = row["memory_id"]
                     existing = await memories_collection.find_for_recall(
-                        memory_id=existing_id, user_id=user_id, agent_id=agent_id
+                        memory_id=row["memory_id"], user_id=user_id, agent_id=agent_id
                     )
                     if existing is None:
+                        continue
+                    if host_labels(existing.get("tags")) != host_labels(fields.get("tags")):
+                        # in another host audience it is not a duplicate of this one: replacing it
+                        # would move what it holds across the host's labels
                         continue
                     similarity = float(row["similarity"])
                     if is_permanent(existing) or consolidations_collection is None or not replace:
                         standing = (existing, similarity)
-                        break
-                    if not await _is_present(person_present):
-                        return _held([existing], zone=zone)
-                    new_id = await supersede(
-                        memories_collection,
-                        consolidations_collection,
-                        agent_id=agent_id,
-                        source_ids=[existing_id],
-                        fields=fields,
-                        rationale="replaced by memory_add",
-                    )
-                    log.info(
-                        "memory_add: replaced a near-duplicate",
-                        extra={
-                            "extra_data": {
-                                "memory_id": str(new_id),
-                                "replaced": str(existing_id),  # convert at border: log extra_data field
-                                "similarity": round(similarity, 3),
-                                "old_content": row["content"][:100],
-                            }
-                        },
-                    )
-                    when = _fmt_dt(existing.get("date_created"), zone)
-                    written = f", written {when}" if when else ""
-                    return (
-                        f"Stored as [memory:{new_id}]{alias_clause}: {content}. It replaces "
-                        f"[memory:{existing_id}] ({similarity:.0%} the same{written}), which said "
-                        f"{_quoted(existing)} and stays readable by its id.{kept} "
-                        "If they are two facts and not one, store it again with replace=false."
-                    )
-        except _REPLACE_FAILURES as exc:
-            taken = _alias_taken(exc)
-            if taken:
-                return taken
+                    else:
+                        replacing = (existing, similarity)
+                    break
+        except STORAGE_FAILURES as exc:
             contain(exc, log=log, what="memory_add: dedup check failed, inserting new", extra={"error": str(exc)})
+
+        if replacing is not None:
+            assert consolidations_collection is not None  # a replace is chosen only with edges
+            existing, similarity = replacing
+            existing_id = existing["memory_id"]
+            if not await _is_present(person_present):
+                return _held([existing], zone=zone)
+            try:
+                new_id = await supersede(
+                    memories_collection,
+                    consolidations_collection,
+                    agent_id=agent_id,
+                    source_ids=[existing_id],
+                    fields=fields,
+                    rationale="replaced by memory_add",
+                )
+            except WriteIncompleteError as exc:
+                contain(exc, log=log, what="memory_add: replacement written, its links not", extra={"error": str(exc)})
+                return _incomplete(
+                    exc, f"Stored as [memory:{exc.memory_id}]{alias_clause}: {content}.{kept}", again="store it again"
+                )
+            except _REPLACE_FAILURES as exc:
+                taken = _alias_taken(exc)
+                if taken:
+                    return taken
+                contain(exc, log=log, what="memory_add: replace failed", extra={"error": str(exc)})
+                return _tool_error("memory_add", "store", str(exc))
+            log.info(
+                "memory_add: replaced a near-duplicate",
+                extra={
+                    "extra_data": {
+                        "memory_id": str(new_id),
+                        "replaced": str(existing_id),  # convert at border: log extra_data field
+                        "similarity": round(similarity, 3),
+                        "old_content": existing["content"][:100],
+                    }
+                },
+            )
+            when = _fmt_dt(existing.get("date_created"), zone)
+            written = f", written {when}" if when else ""
+            return (
+                f"Stored as [memory:{new_id}]{alias_clause}: {content}. It replaces "
+                f"[memory:{existing_id}] ({similarity:.0%} the same{written}), which said "
+                f"{_quoted(existing)} and stays readable by its id.{kept} "
+                "If they are two facts and not one, store it again with replace=false."
+            )
 
         try:
             near: Sequence[UUID] = ()
@@ -2316,6 +2406,11 @@ async def load_memory_add_tool(
                 f"and says {_quoted(other)}."
             )
 
+        except WriteIncompleteError as exc:
+            contain(exc, log=log, what="memory_add: written, a step after it not", extra={"error": str(exc)})
+            return _incomplete(
+                exc, f"Stored as [memory:{exc.memory_id}]{alias_clause}: {content}.{kept}", again="store it again"
+            )
         except _REPLACE_FAILURES as exc:
             taken = _alias_taken(exc)
             if taken:
@@ -2503,7 +2598,16 @@ async def load_memory_update_tool(
         try:
             if old_alias is not None:
                 entity.alias = None
-                await memories_collection.save_entity(entity)
+                try:
+                    await memories_collection.save_entity(entity)
+                except GenerationNotCommittedError:
+                    raise
+                except GenerationUnavailableError as exc:
+                    # the name is off the old memory: the commit landed, and only the table's
+                    # generation did not advance, so the replacement goes ahead
+                    contain(
+                        exc, log=log, what="memory_update: the name came off the old memory; its generation did not"
+                    )
             try:
                 new_id = await supersede(
                     memories_collection,
@@ -2525,6 +2629,9 @@ async def load_memory_update_tool(
                     rationale="changed by memory_update",
                     allow_permanent=allowed,
                 )
+            except WriteIncompleteError:
+                # the replacement is written and holds the name now, so it does not go back
+                raise
             except Exception:
                 if old_alias is not None:
                     fresh = await memories_collection.get((agent_id, target))
@@ -2532,6 +2639,11 @@ async def load_memory_update_tool(
                         fresh.alias = old_alias
                         await memories_collection.save_entity(fresh)
                 raise
+        except WriteIncompleteError as exc:
+            contain(exc, log=log, what="memory_update: replacement written, its links not", extra={"error": str(exc)})
+            return _incomplete(
+                exc, f"Updated: [memory:{exc.memory_id}] replaces [memory:{target}].", again="update it again"
+            )
         except _REPLACE_FAILURES as exc:
             exc_msg = str(exc)
             if name and _is_alias_taken(exc):
@@ -2832,7 +2944,10 @@ def load_memory_keep_tool(
         if denied:
             return denied
         entity = await memories_collection.get((agent_id, memory_uuid))
-        if entity is None or entity.user_id != user_id:
+        # the by-id read answers from the cache tiers, which the host's read filter cannot reach;
+        # find_for_recall carries it, so a memory this task may not read is not found here either
+        readable = await memories_collection.find_for_recall(memory_id=memory_uuid, user_id=user_id, agent_id=agent_id)
+        if entity is None or readable is None or entity.user_id != user_id:
             return _tool_error("memory_keep", "memory_id", f"No memory [memory:{memory_uuid}].")
         if entity.evergreen:
             return f"[memory:{memory_uuid}] was already kept permanently."

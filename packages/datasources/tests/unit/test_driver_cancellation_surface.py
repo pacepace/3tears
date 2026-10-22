@@ -32,6 +32,7 @@ import logging
 import ast
 import asyncio
 import inspect
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -257,7 +258,12 @@ class TestBackendCancellationSurface:
         """
         protocol_source = (Path(asyncpg.__file__).parent / "protocol" / "protocol.pyx").read_text()
         assert "self.waiter.add_done_callback(self._on_waiter_completed)" in protocol_source
-        assert "con._cancel_current_command(self.cancel_sent_waiter)" in protocol_source
+        # the callback requests the cancel itself when its waiter was cancelled
+        on_completed = protocol_source.split("def _on_waiter_completed(self, fut):", 1)[1].split("\n    def ", 1)[0]
+        assert "self._request_cancel()" in on_completed
+        # and the request reaches the connection's CancelRequest. matched by shape: 0.32 added the
+        # cancel_waiter argument (`(self.cancel_sent_waiter, self.cancel_waiter)`), 0.31 passed one.
+        assert re.search(r"con\._cancel_current_command\(\s*self\.cancel_sent_waiter\b", protocol_source)
 
     def test_redshift_connection_has_no_cancel(self) -> None:
         """``redshift_connector`` exposes no cancellation verb on connection or cursor.

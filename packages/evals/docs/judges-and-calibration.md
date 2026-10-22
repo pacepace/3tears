@@ -247,6 +247,20 @@ for result in results:  # in practice: the results a person has read
 result again replaces that rater's rating. Only `rater_kind="person"` counts as agreement with people. A rating
 an agent wrote is listed as `rated_by_an_agent` and never pooled.
 
+A person's verdicts often reach the store through an agent: the agent ran a blind read and holds what the person
+said. `result_rate` would record them as the agent's own opinion. `result_rate_person` records them as the person's,
+with `person` and `rating_source` (where they gave it, such as `blind_read:2026-10-17`), and only when your host's
+`attests_person` check says this caller relays this person's ratings ([Adopting a host](adopting-a-host.md)).
+Otherwise the call is refused and nothing is written. The rating is stored under the host's name for the person,
+and carries `source` and `collected_by` (the caller), so it counts as the person's and still names who put it there.
+Pass `rated_at` with when the person rated (not in the future). A person holds one rating of one dimension of one
+result, and the one they gave last stands. A dated relay replaces their stored rating, direct or from another
+source, when that was given at the same time or earlier. When the stored rating was given later, the relay is
+refused (`conflict`, 409), naming that rating's time and source, and nothing is written. An undated relay is the
+person's word now and replaces the stored rating. Either way the result says what it replaced (`replaced`,
+`replaced_source`). In your own code, `rate_result` takes `source=`, `collected_by=` and `rated_at=`, and follows
+the same rule.
+
 ### A rating is bound to what was read, not only to the result
 
 The judge stamps every score with a **label key** (`RubricScore.label_key`): a fingerprint of the evidence it read
@@ -696,7 +710,12 @@ seeded = await run_blocking(
 `authored=` also rides beside `run_ids` or `from_labels`, so one case set can list both kinds. A verdict the
 dimension's scale cannot hold (`"fail"` on an ordinal dimension, `7`, `3` on pass/fail) is refused when the case is
 written, naming both. Through an agent, the `judge_case_author` action writes one case, naming the dimension by its
-template (`criterion_template_id`, `criterion`) and recording the caller as its author. A host that ships its hard
+template (`criterion_template_id`, `criterion`). Its verdict is read as a person's, so the action asks your host's
+`attests_person` check first, as `result_rate_person` does: the case's author is the `person` the call names (the
+caller when it names none), stored under the host's name for them, and only when the host attests this caller for
+them; otherwise the call is refused and nothing is written. A host attests a caller as itself only for a person's own
+account: an agent names the person whose verdict it relays. The case records the caller as `collected_by`, outside
+its identity, so the same case relayed again, or seeded, is the stored one. A host that ships its hard
 negatives seeds them at boot instead: its definition seed corpus has a `judge_cases` slot (`SeedJudgeCase`, the
 templates named by name), which `seed_eval_definitions` builds through the same door as `judge_case_author` and
 writes only into a judge template holding no cases yet; a case added or changed later waits for a definition reset

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock
@@ -39,13 +40,14 @@ from threetears.nats import (
 )
 from threetears.registry.auth import INSUFFICIENT_CREDITS, DenyAllLimitGuard, LimitDecision
 from threetears.nats.errors import PublishTimeoutError
+from threetears.observe import get_context
 from threetears.registry import proxy as proxy_module
 from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallAccepted, ProxyCallResponse
 
 from .copy_entries import uniform_entry
 
-from .dispatch_auth import DEFAULT_AGENT_ID, make_authed_request, make_proxy
+from .dispatch_auth import DEFAULT_AGENT_ID, DEFAULT_CORRELATION_ID, make_authed_request, make_proxy
 
 _NS = "test"
 _LONG = 1200.0
@@ -368,6 +370,92 @@ class TestWhenTheOtherEndDoesNotPlayAlong:
         assert len(nats.request_raw_calls) == 1
 
 
+class _TagRecordingHandler(logging.Handler):
+    """keeps each ERROR record with the log tags bound when it was emitted."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.records: list[tuple[logging.LogRecord, dict[str, str]]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append((record, get_context()))
+
+
+class _NatsWhoseInboxFails(_Nats):
+    """a bus that cannot publish a reply on the inbox."""
+
+    async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
+        raise PublishError("broker unreachable")
+
+
+class TestWhenTheWaitFails:
+    """the waiter's own failures are answered as such; anything else it raises is a bug, which is
+    recorded with the call's identity, answered so the agent is not left to its deadline, and
+    propagates."""
+
+    @pytest.mark.asyncio
+    async def test_a_bug_in_the_wait_propagates_and_is_answered_as_a_registry_fault(self) -> None:
+        catalog = await _registered_catalog(_LONG)
+        nats = _Nats(delivered=AttributeError("a bug in the wait"))
+        proxy = make_proxy(catalog, namespace=_NS)
+        await proxy.start(nats)
+        handler = _TagRecordingHandler()
+        logging.getLogger().addHandler(handler)
+        try:
+            before = asyncio.all_tasks()
+            await proxy.handle_call(_msg(make_authed_request()))
+            (dispatch,) = asyncio.all_tasks() - before
+            with pytest.raises(AttributeError, match="a bug in the wait"):
+                await dispatch
+            await proxy.stop()
+        finally:
+            logging.getLogger().removeHandler(handler)
+
+        (reply,) = nats.replies
+        assert reply.success is False
+        assert reply.error_code == "REGISTRY_INTERNAL_ERROR"
+        assert "may or may not have run" in (reply.error or "")
+        assert nats.waiters[0].closed is True
+        recorded = [(r, tags) for r, tags in handler.records if "inside the registry" in r.getMessage()]
+        assert [(type(r.exc_info[1]).__name__, tags.get("cid")) for r, tags in recorded if r.exc_info] == [
+            ("AttributeError", str(DEFAULT_CORRELATION_ID))
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_call_accepted_for_delivery_hears_of_the_fault_on_its_own_subject(self) -> None:
+        """once acknowledged, the agent listens on its delivery subject, not the inbox."""
+        catalog = await _registered_catalog(_LONG)
+        nats = _Nats(delivered=AttributeError("a bug in the wait"))
+        subject = Subjects.tools_reply(DEFAULT_AGENT_ID, "call-1").path
+        request = make_authed_request().model_copy(update={"result_subject": subject})
+        await _dispatch(make_proxy(catalog, namespace=_NS), nats, request)
+
+        assert [type(reply) for reply in nats.replies] == [ProxyCallAccepted]
+        ((published_subject, payload),) = nats.published
+        assert published_subject == subject
+        assert json.loads(payload)["error_code"] == "REGISTRY_INTERNAL_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_a_fault_that_cannot_be_answered_still_propagates_as_itself(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the failed answer is recorded beside the fault; it never takes the fault's place."""
+        catalog = await _registered_catalog(_LONG)
+        nats = _NatsWhoseInboxFails(delivered=AttributeError("a bug in the wait"))
+        proxy = make_proxy(catalog, namespace=_NS)
+        await proxy.start(nats)
+        before = asyncio.all_tasks()
+        with caplog.at_level("ERROR"):
+            await proxy.handle_call(_msg(make_authed_request()))
+            (dispatch,) = asyncio.all_tasks() - before
+            with pytest.raises(AttributeError, match="a bug in the wait"):
+                await dispatch
+        await proxy.stop()
+
+        unanswered = [r for r in caplog.records if "could not answer a call it failed" in r.getMessage()]
+        assert [getattr(r, "extra_data", {}).get("exc_type") for r in unanswered] == ["PublishError"]
+
+
 class TestDeliveringToTheAgent:
     """The agent -> registry hop, where the responder is anonymous and the subject names the caller."""
 
@@ -557,4 +645,7 @@ class TestADeliveryFailure:
 
         with pytest.raises(TypeError, match="a bug in the publish"):
             await dispatch
-        assert nats.published == []
+        # the result is never published again; the one delivery is the registry's fault answer
+        assert [json.loads(payload)["error_code"] for _subject, payload in nats.published] == [
+            "REGISTRY_INTERNAL_ERROR"
+        ]

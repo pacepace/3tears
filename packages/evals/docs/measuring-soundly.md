@@ -2,8 +2,8 @@
 
 **For** anyone about to spend on a campaign, choose its arms, k and a case count, pick a judge, or decide whether to
 believe a surprising result. **Answers:** which design answers which question and what it cannot answer; how to
-declare a campaign, its question, arms, aspects and floors; how cases and repeats trade off; which read gives the answer; and which
-practices keep an eval's numbers honest, with what went wrong without them. Arm, lever, variant, k and campaign are as
+declare a campaign, its question, arms, aspects and floors; how cases and repeats trade off; which read gives the answer; which levers
+are worth sweeping; and which practices keep an eval's numbers honest, with what went wrong without them. Arm, lever, variant, k and campaign are as
 [Concepts](concepts.md) defines them.
 
 The second half is practice notes from building the engine against one production host between May and October
@@ -28,13 +28,24 @@ Two more terms, and a rule:
   `undesignated` means no control resolved, so nothing is known to be controlled.
 - Only goal-state checks and judged dimensions decide a pass for pass^k; guardrails take no part.
 
+## Choose which levers to sweep
+
+Before the design comes the choice of levers, and a host with many has more than a campaign can afford. Read where
+the evidence is already thin. Each aspect's fold on `report_read`'s page has a Not tested section that lists every
+`thin` and `unswept` lever. The full rows, with `n` and dispersion, are each aspect's `bundle.coverage`, in the
+`bundle-<aspect>.json` written beside a saved page (the command line's `report --out`).
+
+Sweep the `thin` or `unswept` levers that could change a decision, and leave out one whose every level would be
+shipped the same. Predicting an unrun cell and ranking what to run next is
+[#657](https://github.com/pacepace/3tears/issues/657).
+
 ## Start from the question
 
 | Your question | Run these arms | Shape | Read the answer from | It cannot tell you |
 |---|---|---|---|---|
 | Is B better than A? | A and B, differing in one lever; A is the control | `one_factor_at_a_time` | [the contrasts against the control](reading-reports.md#reading-a-comparison) | why B differs, or whether another level would do better |
 | Which of several single changes helps? | the control, plus one arm per change, each moving one lever | `one_factor_at_a_time` | the contrasts, Holm-corrected across the arms | how the changes combine |
-| Which combination wins? | every combination of the levers' levels (a full grid) | `multi_factor` | the contrasts, read again against other controls (`Result.against`) | which lever made a combination's gain, except where the grid holds that lever's two levels with all else equal |
+| Which combination wins? (say three models by three research-round settings by three search limits, once coverage shows those three levers are the thin ones: 27 arms at k of 3 or more, a control declared up front) | every combination of the levers' levels (a full grid) | `multi_factor` | the contrasts, read again against other controls (`Result.against`) | which lever made a combination's gain, except where the grid holds that lever's two levels with all else equal |
 | Which arm is cheapest among those good enough? | arms that differ in cost (model, effort), all run at one k, under one subject | any | the [frontier](#the-frontier-passk-against-cost): pass^k, cost and latency against a bar | whether two arms differ on a measure; that is a contrast |
 
 **"One lever per arm" is a rule for the first two questions, not a law.** It is what makes each contrast
@@ -148,25 +159,28 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
 | `aspects[].design.crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
 | `floors` | Lines a candidate is warned for crossing, each `{aspect, clause}` on a declared aspect: `{kind: "rate_drop", max_points, reading?}` or `{kind: "cost_lower"}`, typed, never words. A floor reads a candidate against the control, so a campaign naming none is refused one. A broken floor opens the page; no floor decides anything ([declaring them](adopting-a-host.md#declaring-what-a-campaign-asks)). | a warning nobody can miss |
 
-**A question counts only if it was asked before the evidence.** Each aspect keeps the time its question was asked
-(`asked_at`), and a reading confirms only what was asked before that aspect's first run; a control named after the aspect's
-first result (`set_campaign_control`) makes it post hoc too. So the declaration is frozen once any aspect holds a run:
-`update_campaign` (the `campaign_update` action) refuses `question`, `aspects` and `floors` in any form from then
-on, and names a control only while none is. To amend a question after the runs, create a new campaign that adopts
-the aspects it keeps (`aspects_from`): each adopted aspect keeps its own `asked_at`, so its readings stay as
-confirmatory as they were, and whatever the new campaign adds (a margin, a floor, an arm, the question's new
-words) is dated now and marked on the page as declared after the runs.
+**A question asked after the runs is said, not demoted.** Each aspect keeps the time its question was asked
+(`asked_at`). A question asked after that aspect's first run reads as one asked before it: the operator is trusted
+to have fixed it in good faith (in a plan, say, before the runs), and every page saying the aspect's readings also
+says when the question was set and when the runs began, so a reader can judge. A control named after the aspect's
+first result (`set_campaign_control`) dates the question at the naming. The declaration is frozen once any aspect
+holds a run: `update_campaign` (the `campaign_update` action) refuses `question`, `aspects` and `floors` in any
+form from then on, and names a control only while none is. To amend a question after the runs, create a new
+campaign that adopts the aspects it keeps (`aspects_from`): each adopted aspect keeps its own `asked_at`, so nothing
+re-dates its question, and whatever the new campaign adds (a margin, a floor, an arm, the question's new words) is
+dated now and marked on the page as declared after the runs.
 
 **Declare a design when you know the question; explore when you do not.** Either is a choice you state when the
 campaign is created: a `design` on an aspect, or `exploratory=True`. Declare
 one when the question is settled before the runs: you know which lever you are comparing, against which
-control, and what answer would change what you do. Only a question asked in time can confirm anything, so a
-decision you will act on needs one. Leave it out when you are learning how to run evals, or testing an
+control, and what answer would change what you do. Only a declared question can confirm anything, so a
+decision you will act on needs one; declare it before the runs where you can, since one set after them is disclosed
+as such. Leave it out when you are learning how to run evals, or testing an
 intuition you cannot yet put as a question. A campaign with no design is **exploratory**: its report and its
 bundle say so once, at the top, and its readings confirm nothing. Its analysis reads the design inferred from
 the runs, and never calls that design declared. Do not declare a design you do not have just to get past this:
 a made-up question makes leads read as answers, which is worse than declaring none. When an exploratory
-campaign finds something worth knowing, declare the campaign that tests it, before its runs. A design that names
+campaign finds something worth knowing, declare the campaign that tests it. A design that names
 an axis your host cannot vary is refused naming `declarable_axes()`, which lists the levers and open families
 your host accepts.
 
@@ -405,7 +419,11 @@ Each defect below produced plausible numbers, some for months. A rig fault is ex
 ([Rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run)); the converse
 matters as much: **a swept lever's own failure is the outcome.** Excluding a swept sub-model's
 timeouts as harness failures dropped 10 of 15 cells and left pass^k at 1.0 over 2 cases. The engine charges a
-candidate for a turn truncated at its output cap, and never excludes a trial a failed check already decided.
+candidate for a turn truncated at its output cap, and never excludes a trial a failed check already decided. A call
+the provider declined (a 429 that is not a spent quota, or a 529 overloaded or 503 unavailable) is not the model's
+failure but the provider declining to serve it, as it would any request, so it is excluded, never charged
+([design](design.md#a-failure-is-charged-to-whoever-caused-it)); its lost trials are bounded in every verdict, and an
+arm that loses more than a tenth of its trials to one cause is flagged.
 
 - **The candidate was told something the seed contradicted.** A "you were just restarted" notice fired at
   every cell start, so for about four months quality numbers measured which model ignores a contradiction.

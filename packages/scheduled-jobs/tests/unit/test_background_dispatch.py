@@ -28,7 +28,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from threetears.core.coordination import LockHeld
-from threetears.nats.errors import KvError
+from threetears.nats.errors import KvConfigMismatch, KvError, StreamSubjectsOverlapError
 
 from threetears.scheduled_jobs.background import (
     FINALIZE_ATTEMPTS,
@@ -828,7 +828,14 @@ async def test_a_kverror_on_lock_release_keeps_the_real_result_and_runs_the_body
     assert fires.succeeded[0]["output"] == {"ran": 1}
 
 
-@pytest.mark.parametrize("exc", [ValueError("ttl mismatch on scheduler-locks"), RuntimeError()])
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ValueError("ttl mismatch on scheduler-locks"),
+        KvConfigMismatch("bucket scheduler-locks: ttl differs"),
+        StreamSubjectsOverlapError("subjects $KV.scheduler-locks.> are owned by another stream"),
+    ],
+)
 async def test_a_lock_that_fails_otherwise_fails_the_fire_loudly_without_running_it(
     monkeypatch: pytest.MonkeyPatch, exc: Exception
 ) -> None:
@@ -850,6 +857,85 @@ async def test_a_lock_that_fails_otherwise_fails_the_fire_loudly_without_running
     error = fires.failed[0]["error"]
     assert error.startswith(f"poll:x: the in-flight lock failed ({type(exc).__name__}: ")
     assert error.endswith("the fire was not run")
+
+
+class _LockRecordingExit:
+    """A lock that is acquired cleanly and records what its exit was handed."""
+
+    def __init__(self) -> None:
+        self.exited_with: list[BaseException | None] = []
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, _type: Any, exc: BaseException | None, _tb: Any) -> bool:
+        self.exited_with.append(exc)
+        return False
+
+
+def _naive_trigger(kind: str = "poll:x") -> JobTrigger:
+    """A trigger stamped without a timezone: the body's reap-clock arithmetic raises TypeError on it,
+    a fault of the dispatcher's own code rather than of the fire or the lock."""
+    fired_at = datetime.now()
+    return JobTrigger(
+        job_id=uuid4(),
+        partition_key=uuid4(),
+        kind=kind,
+        schedule_type="interval",
+        fired_at=fired_at,
+        scheduled_fire_at=fired_at,
+    )
+
+
+@pytest.mark.parametrize("exc", [AttributeError("'NoneType' object has no attribute 'kv_bucket'"), RuntimeError()])
+async def test_a_fault_entering_the_lock_is_not_reported_as_a_lock_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, exc: Exception
+) -> None:
+    """Outside the lock's contract (LockHeld, KvError, ValueError, NatsClientError) is a fault: the row
+    still records the fire as failed, and the fault is logged with its traceback, not filed as the lock."""
+    _patch_lock(monkeypatch, _CtxRaisingOnEnter(exc))
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, nats_client=object())
+    ran = False
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        nonlocal ran
+        ran = True
+        return JobFireResult()
+
+    with caplog.at_level("ERROR", logger="threetears.scheduled_jobs.background"):
+        await dispatch.wrap(_body)(_trigger(kind="poll:x"), uuid4())
+        await dispatch.join()
+    assert ran is False
+    [failed] = fires.failed
+    assert failed["error"] == f"poll:x: the fire failed on an internal fault ({type(exc).__name__})"
+    [logged] = [r for r in caplog.records if "internal fault" in r.getMessage()]
+    assert logged.exc_info is not None and logged.exc_info[1] is exc
+    assert not any("in-flight lock failed" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_fault_in_the_body_is_not_reported_as_the_lock_and_still_releases_it(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The lock's guard covers the lock alone: a fault in the dispatcher's own code around the fire
+    is not "the in-flight lock failed; the fire was not run", and the lock is still left."""
+    lock = _LockRecordingExit()
+    _patch_lock(monkeypatch, lock)
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, nats_client=object())
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult()
+
+    with caplog.at_level("ERROR", logger="threetears.scheduled_jobs.background"):
+        await dispatch.wrap(_body)(_naive_trigger(), uuid4())
+        await dispatch.join()
+    [failed] = fires.failed
+    assert failed["error"] == "poll:x: the fire failed on an internal fault (TypeError)"
+    [exited] = lock.exited_with
+    assert isinstance(exited, TypeError), "the lock is left with the body's own exception, as async with would"
+    [logged] = [r for r in caplog.records if "internal fault" in r.getMessage()]
+    assert logged.exc_info is not None and logged.exc_info[1] is exited
 
 
 async def test_a_cancel_during_the_finalize_write_does_not_cut_the_record_short() -> None:

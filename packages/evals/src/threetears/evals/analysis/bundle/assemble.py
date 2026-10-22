@@ -8,7 +8,8 @@ during generation; the bundle *is* the context. This module builds that bundle.
 
 Why closed matters: to A/B a generation prompt you regenerate over a **fixed**
 bundle and compare. So the bundle is fingerprinted
-(:meth:`AnalysisContextBundle.fingerprint`, a sha256 over its canonical JSON) and
+(:meth:`AnalysisContextBundle.fingerprint`, ``v2:`` and a sha256 over its canonical JSON with every float
+rounded to twelve significant figures) and
 that fingerprint is stamped onto every analysis' ``generation`` provenance — two
 prompts run over the same fingerprint are comparable apples-to-apples.
 
@@ -328,7 +329,7 @@ def _dated_by_its_control(declared: AspectDeclaration | None, scored_at: Sequenc
     :ptype scored_at: Sequence[str]
     :return: ``declared`` unchanged, unless its control was named after the earliest of ``scored_at``; then with
         ``asked_at`` the control's ``named_at``. A time that cannot be ordered leaves the question undated (None),
-        read as asked after the evidence.
+        disclosed as possibly set after the runs.
     :rtype: AspectDeclaration | None
     """
     if declared is None or declared.control is None or declared.control.named_at is None or not scored_at:
@@ -439,7 +440,7 @@ def assemble_context_bundle(
     # algebra below has no coordinate that would keep them apart.
     refuse_pooled_revisions((run.template_id for run in runs), templates.get, what=f"campaign {view.name!r}")
     # When the campaign's evidence began: its earliest member run, archived ones included (an archived run's results
-    # existed all the same). A question asked after it confirms nothing (`asked_in_time`).
+    # existed all the same). A question asked after it is disclosed as such (`question_after_runs`).
     first_run_at = min((run.created_at for run in loaded.values()), default=None)
     # Before any lens reads a descriptor: each host measure is read as its runs were launched to read it, not as
     # whoever reads the campaign now declares it, so every lens below reads one set of declarations.
@@ -458,10 +459,12 @@ def assemble_context_bundle(
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
     # A control chosen once the aspect's evidence existed was chosen with it in view: the aspect's question is then
-    # dated no earlier than the control was named, so every reader that asks `asked_in_time` reads it post hoc. The
+    # dated no earlier than the control was named, so `question_after_runs` discloses it as set after the runs. The
     # evidence is the aspect's first result (`EvalResult.scored_at`), never a run's creation: a control named after
     # its arms were launched and before any result landed was named before anything could be seen.
     scored_at = [result.scored_at for run_results in every_result.values() for result in run_results]
+    # As declared, the question keeps its own time, which says whether it, or only its control, came late.
+    as_declared = declared
     declared = _dated_by_its_control(declared, scored_at)
     results_by_run: dict[str, list[EvalResult]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
@@ -772,7 +775,7 @@ def assemble_context_bundle(
         frontier_bar=frontier_bar,
         profile=profile,
     )
-    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, view.aspect, declared, first_run_at=first_run_at)
+    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, view.aspect, declared)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
@@ -845,16 +848,15 @@ def assemble_context_bundle(
         contended={
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
-        first_run_at=first_run_at,
         # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold: in
-        # the question's family when it was asked in time with a margin, and for the floors whatever the family holds.
+        # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
     )
     bundle.reading_scope = _reading_scope(
-        declared, bundle.measure_catalog, bundle.judged_measures, first_run_at=first_run_at
+        declared, bundle.measure_catalog, bundle.judged_measures, as_declared=as_declared, first_run_at=first_run_at
     )
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then
-    # on), and a question asked after that instant confirms nothing (`asked_in_time`): the same instant.
+    # on), and a question asked after that instant is disclosed as set after the runs: the same instant.
     bundle.design_frozen_at = first_run_at
     # When the aspect's evidence could first be seen: what a margin, a floor or the question's wording added later is
     # read against on the campaign's page, by the rule its control is read by (`_dated_by_its_control`).

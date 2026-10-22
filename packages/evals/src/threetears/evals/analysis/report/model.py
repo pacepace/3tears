@@ -1,8 +1,8 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the question declared before the run quoted and the subhead under it, the arms line, the
-verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
+campaign's name —, the question declared quoted, when it was set where that was after the runs, and the subhead under
+it, the arms line, the verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
 cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
@@ -32,9 +32,10 @@ which :meth:`Report.write` puts beside the page, and the page names its fingerpr
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Literal, Self, get_args
 
@@ -47,10 +48,54 @@ from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.hashing import round_floats
 from threetears.evals.schema.prose import ModelProse
 
 #: A table cell's value: a number, words, a boolean, or None where there is none.
 CellValue = str | int | float | bool | None
+
+#: An id a cell carries or links to: a letter, then letters, digits, hyphens or underscores. No space, since a fold's
+#: ids are prefixed word by word, and nothing HTML would have to escape.
+_ID = r"^[A-Za-z][A-Za-z0-9_-]*$"
+
+
+def reading_anchor(cell: str, measure_id: str, reading: str) -> str:
+    """The id of the place on a page where code states one reading at one cell, which a finding citing that reading
+    links to.
+
+    One id per reading at a cell, whichever table states it, so the cell a finding's evidence names and the table
+    row that tests it meet without either reading the other's words.
+
+    :param cell: The cell, as a full ``cell_ref`` (``<variant_key>:<apparatus_class_id>``).
+    :ptype cell: str
+    :param measure_id: The measure or judged dimension.
+    :ptype measure_id: str
+    :param reading: ``measure``, ``judged``, or ``trial`` for the overall pass rate.
+    :ptype reading: str
+    :return: The id, ``r-`` and twelve hex digits.
+    :rtype: str
+    """
+    return "r-" + hashlib.sha256(f"{cell}\0{reading}\0{measure_id}".encode()).hexdigest()[:12]
+
+
+def fold_ids(labels: Sequence[str]) -> list[str]:
+    """Each aspect's fold on a campaign's page as the id its section and every id inside it are named by: the label
+    in lower case, each run of other characters one hyphen, numbered where two would read alike.
+
+    :param labels: The aspects' labels, in the campaign's order.
+    :ptype labels: Sequence[str]
+    :return: One id per label, in the same order.
+    :rtype: list[str]
+    """
+    ids: list[str] = []
+    for label in labels:
+        slug = re.sub(r"[^a-z0-9]+", "-", label.casefold()).strip("-") or "aspect"
+        named, number = slug, len(ids) + 1
+        while named in ids:
+            named, number = f"{slug}-{number}", number + 1
+        ids.append(named)
+    return ids
+
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
@@ -63,6 +108,10 @@ ReportBasis = Literal["analysis", "code_only"]
 ReportSection = Literal[
     "header", "scoreboard", "decision", "memo", "contrasts", "cases", "trials", "not_tested", "methods", "glossary"
 ]
+
+#: The sections a reader opens on demand, each laid out closed: the cases, the trials, what was not tested, the
+#: methods and the glossary.
+FOLDED_SECTIONS: frozenset[str] = frozenset({"cases", "trials", "not_tested", "methods", "glossary"})
 
 #: Each section's heading, in reading order — the order every serializer lays the sections out in, each three words
 #: or fewer. The first screen (``header`` and ``scoreboard``) carries no heading: it is the page's own head. A page
@@ -84,8 +133,10 @@ SECTION_TITLES: dict[str, str] = {
 #: The sections the first screen is made of.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
 
-#: What a text block's author wrote it as.
+#: What a text block's author wrote it as. ``summary`` is the memo's read across every aspect, which a campaign's page
+#: opens on after its warnings.
 TextRole = Literal[
+    "summary",
     "answer",
     "recommendation",
     "reason",
@@ -104,7 +155,8 @@ TextRole = Literal[
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
 #: scoreboard that changes how the verdict is read, in normal weight: the case floor, an arm's label that its own row
-#: contradicts. ``basis``: the question declared before the run, quoted whole under the title. ``floor``: on the first
+#: contradicts. ``basis``: the question declared, quoted whole under the title. ``timing``: under it, that the question
+#: was set after the runs, with when each happened, or that it carries no date. ``floor``: on the first
 #: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
 #: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
 #: verdict line. ``design``, ``charts`` and
@@ -124,6 +176,7 @@ DisclosureSource = Literal[
     "call",
     "caveat",
     "basis",
+    "timing",
     "floor",
     "verdict",
     "design",
@@ -398,6 +451,23 @@ class TableCell(EvalDocumentModel):
         description=(
             "Whether the number is a difference, read against zero: the glyph holds zero on its scale and draws a "
             "line there. False for a figure read on its own scale."
+        ),
+    )
+    anchor: str | None = Field(
+        default=None,
+        pattern=_ID,
+        description=(
+            "The id this cell carries, so a link elsewhere on the page lands on it: a cell printing one reading's own "
+            "figure at one cell (:func:`reading_anchor`), the first such cell on the page. None for none."
+        ),
+    )
+    ref: str | None = Field(
+        default=None,
+        pattern=_ID,
+        description=(
+            "An id on the page the cell links to: a finding's figure links to another cell printing the same figure "
+            "of the same reading at the same cell, or to the heading of the closed fold holding it; a campaign's "
+            "trace links to the heading of the aspect's fold that prints it. None where nothing on the page prints it."
         ),
     )
 
@@ -778,6 +848,26 @@ class Report(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _every_link_lands(self) -> Self:
+        """Refuse one id carried twice, by cells or blocks, and a cell linking to an id nothing on the page carries.
+
+        A finding's trace links a figure only where the page prints the same figure; a finding whose trace reaches
+        nothing says so in words instead (:data:`~threetears.evals.analysis.report.words.UNTRACED`).
+
+        :raises ValueError: An id is carried twice, or a link names one nothing carries.
+        """
+        anchors = [
+            *(cell.anchor for cell in _cells(self.blocks) if cell.anchor is not None),
+            *(block.anchor for block in self.blocks if block.anchor is not None),
+        ]
+        if twice := sorted({anchor for anchor in anchors if anchors.count(anchor) > 1}):
+            raise ValueError(f"the ids {twice} are carried more than once, and an id names one place on the page")
+        places = set(anchors)
+        if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
+            raise ValueError(f"cells link to {stray}, which nothing on the page carries")
+        return self
+
+    @model_validator(mode="after")
     def _the_basis_matches_what_the_report_holds(self) -> Self:
         """Refuse a report whose basis disagrees with its source or its blocks.
 
@@ -834,7 +924,8 @@ class Report(EvalDocumentModel):
 
         ``report.html`` needs nothing beside it — no script, no stylesheet, no image — and ``bundle.json`` is the
         bundle with its ``schema_version``, so the fingerprint the page names is the one a reader computes from the
-        file (``AnalysisContextBundle.from_json(...).fingerprint()``). ``report.md`` is the same page as Markdown.
+        file (``AnalysisContextBundle.from_json(...).fingerprint(like=named)``, in the named one's version: an
+        unprefixed one was taken before ``v2:``). ``report.md`` is the same page as Markdown.
 
         :param out_dir: The directory; created when missing.
         :ptype out_dir: Path | str
@@ -860,7 +951,7 @@ class Report(EvalDocumentModel):
 
 #: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
 #: shape would misread the new one.
-CAMPAIGN_JSON_SHAPE = 1
+CAMPAIGN_JSON_SHAPE = 2
 
 
 class CampaignAspectFold(EvalDocumentModel):
@@ -888,11 +979,12 @@ class CampaignAspectFold(EvalDocumentModel):
     @property
     def head(self) -> list[ReportBlock]:
         """The aspect page's first screen as the fold lays it out: its arms line, scoreboard and caveats, without its
-        question and broken floors, which the campaign's first screen carries once, or its verdict line, which reads
-        the aspect alone and could contradict, or pick an arm against, the campaign's table. An aspect of one arm keeps
-        its verdict line: it counts that arm's cases passed and missed, and has no other arm to pick against."""
+        question, when it was set and its broken floors, which the campaign's first screen carries once, or its verdict
+        line, which reads the aspect alone and could contradict, or pick an arm against, the campaign's table. An aspect
+        of one arm keeps its verdict line: it counts that arm's cases passed and missed, and has no other arm to pick
+        against."""
         one_arm = len(self.report.bundle.scoreboard) == 1
-        dropped = {"floor", "basis"} if one_arm else {"floor", "basis", "verdict"}
+        dropped = {"floor", "basis", "timing"} if one_arm else {"floor", "basis", "timing", "verdict"}
         return [
             block
             for block in self.report.blocks
@@ -902,11 +994,12 @@ class CampaignAspectFold(EvalDocumentModel):
 
 
 class CampaignReport(EvalDocumentModel):
-    """A campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then one
-    fold per aspect.
+    """A campaign's page: the writer's summary and recommendation, what code read across its aspects, the person's
+    call, then one fold per aspect.
 
-    **The first screen, in order** (:attr:`blocks`, every one in the ``header`` section): every broken floor, one loud
-    line each, above the title; the question; the writer's recommendation, or a line saying none was written; code's
+    **The first screen, in order** (:attr:`blocks`, in the ``header`` and ``scoreboard`` sections): every missed bar,
+    broken floor and guardrail an arm is not shown safe on, one loud line each, above the title; the question; the
+    writer's summary across every aspect; the writer's recommendation, or a line saying none was written; code's
     table of every aspect × candidate (its change against the control, the interval it was read on, the margin and
     what it shows); the cases that would settle each unclear row; the person's call, or that none is recorded, and
     any broken floor it overrides. :attr:`blocks` may also hold the memo's findings and next steps (``memo``), which
@@ -932,6 +1025,41 @@ class CampaignReport(EvalDocumentModel):
     recommendation: Recommendation | None = Field(
         default=None, description="The writer's recommendation, as the memo holds it; None with no memo."
     )
+    recommended_variant_key: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The variant key of the arm the recommendation names, as the analysis recorded it when it was saved "
+            "(`EvalAnalysis.recommended_variant_key`): what a reader matches a call's `variant_key` to, whatever "
+            "later relabels the arm. Set exactly when the page holds a recommendation."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _the_recommendation_is_keyed(self) -> Self:
+        """Refuse a recommendation without its arm's key, and a key with no recommendation to name.
+
+        :raises ValueError: One of ``recommendation`` and ``recommended_variant_key`` is set without the other.
+        """
+        if (self.recommendation is None) != (self.recommended_variant_key is None):
+            raise ValueError(
+                "recommended_variant_key is the key of the arm the recommendation names: set exactly when the page "
+                "holds a recommendation"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _every_link_lands_in_a_fold(self) -> Self:
+        """Refuse a cell linking anywhere but an aspect's fold, by the id of the section around it
+        (``aspect-<fold id>``): a fold is closed, and a link landing inside one is lost where a browser does not open
+        it, so a trace lands on the fold's heading.
+
+        :raises ValueError: A link names something other than a fold.
+        """
+        places = {f"aspect-{fold_id}" for fold_id in self.fold_ids}
+        if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
+            raise ValueError(f"cells link to {stray}, which is no aspect's fold")
+        return self
 
     @model_validator(mode="after")
     def _the_basis_matches_what_the_page_holds(self) -> Self:
@@ -976,7 +1104,10 @@ class CampaignReport(EvalDocumentModel):
                 if isinstance(block, DisclosureBlock)
                 else []
             )
-            linked += [term for term in found if term is not None and term not in linked]
+            for term in found:
+                # Two columns of one table can link one term: it is defined once.
+                if term is not None and term not in linked:
+                    linked.append(term)
         for fold in self.aspects:
             linked += [term for term in fold.report.terms if term not in linked]
         return linked
@@ -1024,22 +1155,25 @@ class CampaignReport(EvalDocumentModel):
     def fold_ids(self) -> list[str]:
         """Each aspect's fold as the id its section and every id inside it are named by: the label in lower case,
         each run of other characters one hyphen, numbered where two would read alike."""
-        ids: list[str] = []
-        for fold in self.aspects:
-            slug = re.sub(r"[^a-z0-9]+", "-", fold.aspect.casefold()).strip("-") or "aspect"
-            ids.append(f"{slug}-{len(ids) + 1}" if slug in ids else slug)
-        return ids
+        return fold_ids([fold.aspect for fold in self.aspects])
 
     def json_document(self) -> dict[str, object]:
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
-        the writer's recommendation (its arm and how sure) where there is a memo, the call, and each aspect's bundle by
-        its fingerprint and shape.
+        the writer's recommendation (its arm's label and variant key, and how sure) where there is a memo, the call,
+        and each aspect's bundle by its fingerprint and shape, with what of its question was set after its runs and
+        when (``question_after_runs``, null where nothing was), since its readings read as asked either way.
+
+        Every float in it is served to twelve significant figures (:func:`~threetears.evals.schema.hashing.round_floats`):
+        a figure code computed carries bits past that which two Python builds compute differently, so one campaign
+        serves one JSON across builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary; a declared value (a
+        margin, a bar, alpha) has fewer figures and is unchanged.
+        The page's models keep their figures as computed.
 
         :return: A JSON-ready mapping.
         :rtype: dict[str, object]
         """
         recommendation = self.recommendation
-        return {
+        document: dict[str, object] = {
             "kind": "campaign",
             "shape": CAMPAIGN_JSON_SHAPE,
             "campaign_id": self.campaign_id,
@@ -1047,7 +1181,11 @@ class CampaignReport(EvalDocumentModel):
             "analysis_id": self.analysis_id,
             "recommendation": None
             if recommendation is None
-            else {"arm": recommendation.arm, "confidence": recommendation.confidence},
+            else {
+                "arm": recommendation.arm,
+                "variant_key": self.recommended_variant_key,
+                "confidence": recommendation.confidence,
+            },
             "readings": self.readings.to_dict(),
             "call": self.call.to_dict() if self.call is not None else None,
             "aspects": [
@@ -1055,16 +1193,26 @@ class CampaignReport(EvalDocumentModel):
                     "aspect": fold.aspect,
                     "bundle_fingerprint": fold.report.source.bundle_fingerprint,
                     "bundle_schema_version": fold.report.bundle.schema_version,
+                    "question_after_runs": None if late is None else late.to_dict(),
                 }
                 for fold in self.aspects
+                for late in [fold.report.bundle.reading_scope.question_after_runs]
             ],
         }
+        served: dict[str, object] = round_floats(document)
+        return served
+
+
+def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:
+    """Every cell of every table among ``blocks``, in reading order."""
+    return [cell for block in blocks if isinstance(block, TableBlock) for row in block.rows for cell in row.values()]
 
 
 __all__ = [
     "CAMPAIGN_JSON_SHAPE",
     "FINDING_ROLES",
     "FIRST_SCREEN",
+    "FOLDED_SECTIONS",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",
@@ -1096,7 +1244,9 @@ __all__ = [
     "Verdict",
     "VerdictKind",
     "VerdictReason",
+    "fold_ids",
     "interval_text",
     "interval_value_text",
+    "reading_anchor",
     "table_row",
 ]

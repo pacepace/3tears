@@ -26,11 +26,14 @@ from threetears.agent.tools.search_transport import (
     build_fetch_transport,
 )
 from threetears.core.egress import DirectEgress
+from threetears.core.http_client import UpstreamHttpError
+from threetears.search.adapters.searxng import SearxngAdapter
 from threetears.search.contracts import (
     EGRESS_DIRECT,
     FetchTransport,
     LocalCapExceeded,
     SearchFailure,
+    SearchRequest,
     SearchTransport,
     TransportFailed,
 )
@@ -178,6 +181,142 @@ class TestNothingIsLostCrossingTheBridge:
         await transport.request("GET", f"{_BASE_URL}/search")
 
         assert seen[0].extensions["timeout"]["read"] == pytest.approx(7.0)
+
+
+def _always(response: httpx.Response) -> tuple[httpx.MockTransport, list[httpx.Request]]:
+    """a mock transport that answers every request with ``response``."""
+    seen: list[httpx.Request] = []
+
+    def _handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return response
+
+    return httpx.MockTransport(_handle), seen
+
+
+class TestAServedFailureKeepsItsStatus:
+    """A 5xx the upstream answered is the answer, so it crosses as a response the adapter maps with its status --
+    as ``StandaloneTransport`` hands one back -- and only a failure nothing answered stays raised."""
+
+    @pytest.mark.asyncio
+    async def test_a_5xx_on_every_attempt_comes_back_as_the_response(self) -> None:
+        mock, seen = _always(httpx.Response(503, content=b"down"))
+        transport = TracedSearchTransport(
+            base_url=_BASE_URL, http_transport=mock, max_attempts=3, initial_backoff=0.0, max_backoff=0.0
+        )
+
+        response = await transport.request("GET", f"{_BASE_URL}/search")
+
+        assert response.status_code == 503
+        assert response.body == b"down"
+        assert len(seen) == 3
+        assert response.attempts == 3, "D4: every exchange the client spent is accounted"
+        assert response.egress == EGRESS_DIRECT
+
+    @pytest.mark.asyncio
+    async def test_a_failure_nothing_answered_stays_raised(self) -> None:
+        """non-vacuous: only an answered failure becomes a response."""
+
+        def _refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        transport = TracedSearchTransport(
+            base_url=_BASE_URL,
+            http_transport=httpx.MockTransport(_refuse),
+            max_attempts=2,
+            initial_backoff=0.0,
+            max_backoff=0.0,
+        )
+
+        with pytest.raises(UpstreamHttpError) as raised:
+            await transport.request("GET", f"{_BASE_URL}/search")
+
+        assert raised.value.status_code is None
+
+    @pytest.mark.asyncio
+    async def test_a_flapping_upstream_answered_last_comes_back_with_its_status(self) -> None:
+        """A refused connect, then two 5xx: the last attempt was answered, so its 5xx is the response."""
+        calls = [0]
+
+        def _flap(request: httpx.Request) -> httpx.Response:
+            calls[0] += 1
+            if calls[0] == 1:
+                raise httpx.ConnectError("connection refused", request=request)
+            return httpx.Response(503, content=b"down")
+
+        transport = TracedSearchTransport(
+            base_url=_BASE_URL,
+            http_transport=httpx.MockTransport(_flap),
+            max_attempts=3,
+            initial_backoff=0.0,
+            max_backoff=0.0,
+        )
+
+        response = await transport.request("GET", f"{_BASE_URL}/search")
+
+        assert response.status_code == 503
+        assert response.attempts == 3
+
+    @pytest.mark.asyncio
+    async def test_a_5xx_followed_by_resets_is_not_reported_as_answered(self) -> None:
+        """A 5xx, then connections reset mid-read: the last attempt got no answer, so no stale 5xx comes back."""
+        calls = [0]
+
+        def _reset(request: httpx.Request) -> httpx.Response:
+            calls[0] += 1
+            if calls[0] == 1:
+                return httpx.Response(503, content=b"down")
+            raise httpx.ReadError("connection reset", request=request)
+
+        transport = TracedSearchTransport(
+            base_url=_BASE_URL,
+            http_transport=httpx.MockTransport(_reset),
+            max_attempts=3,
+            initial_backoff=0.0,
+            max_backoff=0.0,
+        )
+
+        with pytest.raises(UpstreamHttpError) as raised:
+            await transport.request("GET", f"{_BASE_URL}/search")
+
+        assert raised.value.status_code is None
+        assert isinstance(raised.value.__cause__, httpx.ReadError)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "response",
+        [
+            httpx.Response(503, content=b"down"),
+            httpx.Response(301, headers={"Location": "https://elsewhere.test/"}),
+            httpx.Response(404, content=b"not here"),
+        ],
+        ids=["5xx-on-every-attempt", "redirect", "not-found"],
+    )
+    async def test_the_searxng_adapter_over_it_reports_the_status(self, response: httpx.Response) -> None:
+        """The production path end to end: what the instance answered reaches the caller as a status."""
+        mock, _seen = _always(response)
+        transport = TracedSearchTransport(base_url=_BASE_URL, http_transport=mock, initial_backoff=0.0, max_backoff=0.0)
+        adapter = SearxngAdapter(base_url=_BASE_URL, transport=transport)
+
+        with pytest.raises(TransportFailed) as raised:
+            await adapter.search(SearchRequest(query="otters"))
+
+        assert raised.value.status == response.status_code
+
+    @pytest.mark.asyncio
+    async def test_the_searxng_adapter_over_it_reports_no_status_when_nothing_answered(self) -> None:
+        def _refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        transport = TracedSearchTransport(
+            base_url=_BASE_URL, http_transport=httpx.MockTransport(_refuse), initial_backoff=0.0, max_backoff=0.0
+        )
+        adapter = SearxngAdapter(base_url=_BASE_URL, transport=transport)
+
+        with pytest.raises(TransportFailed) as raised:
+            await adapter.search(SearchRequest(query="otters"))
+
+        assert raised.value.status is None
 
 
 class TestEgressIsANameNotAnAbsence:

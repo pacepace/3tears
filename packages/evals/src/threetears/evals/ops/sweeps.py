@@ -31,8 +31,10 @@ therefore cannot give two arms different instruments. The one exception is an ar
 judge: it is left to the launch's own pin resolution, so no model grades its own output.
 
 **Its campaign is exploratory.** A sweep takes no design, so the campaign it creates declares none, and says so
-(``exploratory``) rather than leaving the caller to: what the arms were swept to learn is declared afterwards, once
-the arms are known, with ``campaign_update``.
+(``exploratory``) rather than leaving the caller to. A campaign's declaration is frozen once it holds a run, so
+``campaign_update`` refuses to add one; what the arms were swept to learn is declared with ``campaign_create``: an
+aspect over the sweep's ``run_ids`` (its job result names them), its arms named with ``from_run_ids``. A question
+asked after the runs reads as asked, with ``question_after_runs`` disclosing when.
 
 **When it stops early.** If an arm is refused at its launch (the host's admission ceiling, say), or an arm's run
 ends ``failed``, no further arm is launched and the sweep ends ``failed``, naming it. A harness fault is not
@@ -51,6 +53,7 @@ from typing import Annotated, Any
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.campaigns import add_runs_to_campaign
+from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
 from threetears.evals.kernel.errors import EvalServiceError, JobFenced, ValidationFailedError
@@ -108,7 +111,8 @@ class SweepSettings(EvalBaseModel):
     campaign_name: str = Field(
         min_length=1,
         description="The campaign every arm's run joins as it is created. It is created exploratory, since a sweep "
-        "takes no design; declare one afterwards with campaign_update.",
+        "takes no design; declare one with campaign_create, an aspect over the sweep's run_ids and arms from "
+        "from_run_ids.",
     )
     campaign_behavior: str = Field(min_length=1, description="What the sweep's campaign measures.")
     campaign_description: str = Field(default="", description="The sweep's campaign's description.")
@@ -278,7 +282,7 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
                 # One aspect, the sweep's template, which every arm's run joins as it is created.
                 aspects=[
                     {
-                        "label": arguments.campaign_behavior.replace("/", "-"),
+                        "label": aspect_label_for(arguments.campaign_behavior),
                         "template_id": arguments.template_id,
                     }
                 ],
@@ -396,7 +400,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         # Arms already launched are measurements in their own right: they finish and stay members.
         await asyncio.gather(*run.in_flight.values(), return_exceptions=True)
     sweep.outcome = "failed" if run.failure else "completed"
-    sweep.detail = run.failure[0] if run.failure else None
+    sweep.detail = run.failure[0] if run.failure else "; ".join(run.measured_nothing) or None
     sweep.refusal = run.refusal
     sweep.ended_at = utc_now_iso()
     try:
@@ -415,6 +419,8 @@ class _SweepRun:
         self.sweep = sweep
         self.in_flight: dict[str, asyncio.Task[None]] = {}
         self.failure: list[str] = []
+        #: Each arm that measured nothing, said on the sweep's detail when nothing else failed it.
+        self.measured_nothing: list[str] = []
         # The engine refusal the sweep ended on, kept as data beside its words: set only for the failure the sweep's
         # detail states (the first), since a refusal after another failure did not end it.
         self.refusal: JobRefusal | None = None
@@ -463,9 +469,15 @@ class _SweepRun:
             run = await run_blocking(
                 eval_host.blocking_executor, get_run, eval_host.storage, run_id, self.sweep.scope_id
             )
-            if run.status == "failed":
+            # An arm that measured nothing (every cell excluded: a model no allowed provider serves, a decline that
+            # lasted its run) failed as a measurement of that arm alone, so the sweep goes on to the others and says
+            # so; any other failure of an arm's run, a reason this build does not know included, ends the sweep.
+            if run.status == "failed" and run.failed_because == "nothing_measured":
+                self.measured_nothing.append(f"arm {label!r} measured nothing (its run {run_id} failed)")
+            elif run.status == "failed":
                 after = "so no further arm was launched" if done is not None else "beside its siblings"
-                self.failure.append(f"arm {label!r}'s run {run_id} ended failed, {after}")
+                why = f" ({run.failed_because})" if run.failed_because is not None else ""
+                self.failure.append(f"arm {label!r}'s run {run_id} ended failed{why}, {after}")
         finally:
             if done is not None:
                 done.release()

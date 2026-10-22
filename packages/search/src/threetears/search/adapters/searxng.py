@@ -1108,7 +1108,7 @@ class SearxngAdapter:
             raise QuotaExhausted(message, spend=spend, provider_instance=self._provider_instance)
         if status in {408, 504}:
             raise TimedOut(message, spend=spend, provider_instance=self._provider_instance)
-        raise TransportFailed(message, spend=spend, provider_instance=self._provider_instance)
+        raise TransportFailed(message, spend=spend, provider_instance=self._provider_instance, status=status)
 
     def _spend_for(self, response: TransportResponse) -> Spend:
         """What one completed exchange consumed (SR-E1, D6).

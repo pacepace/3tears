@@ -123,8 +123,8 @@ def _render_mcp_face(rendered: Any) -> dict[str, Any]:
         structuredContent=payload,
         isError=not rendered.success,
     )
-    assert call_result.structuredContent is not None
-    return dict(call_result.structuredContent)
+    assert call_result.model_dump(by_alias=True)["structuredContent"] is not None
+    return dict(call_result.model_dump(by_alias=True)["structuredContent"])
 
 
 class TestOneSuccessfulSearchAcrossFaces:

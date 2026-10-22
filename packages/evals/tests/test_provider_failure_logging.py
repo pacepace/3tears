@@ -37,7 +37,7 @@ def _raised() -> _ProviderDown:
 class TestTheHelperDecidesTheTraceback:
     def test_a_withheld_description_is_logged_with_no_traceback(self, caplog):
         exc = _raised()
-        failure = ProviderFailure("HTTP 402: Insufficient credits", payload_withheld=True, account_refused=True)
+        failure = ProviderFailure("HTTP 402: Insufficient credits", payload_withheld=True, owner="account")
         with caplog.at_level(logging.ERROR):
             log_provider_failure(logging.getLogger("t"), failure, exc, "judge call failed for case %s", "c1")
 
@@ -48,7 +48,7 @@ class TestTheHelperDecidesTheTraceback:
 
     def test_an_honest_description_keeps_its_traceback(self, caplog):
         exc = _raised()
-        failure = ProviderFailure("TimeoutError: read timed out", payload_withheld=False, account_refused=False)
+        failure = ProviderFailure("TimeoutError: read timed out", payload_withheld=False, owner="candidate")
         with caplog.at_level(logging.WARNING):
             log_provider_failure(logging.getLogger("t"), failure, exc, "call failed", level=logging.WARNING)
 
@@ -62,7 +62,7 @@ class TestTheHelperDecidesTheTraceback:
 
         def describer(e: BaseException) -> ProviderFailure:
             seen.append(e)
-            return ProviderFailure("HTTP 402: Insufficient credits", payload_withheld=True, account_refused=True)
+            return ProviderFailure("HTTP 402: Insufficient credits", payload_withheld=True, owner="account")
 
         with caplog.at_level(logging.ERROR):
             failure = describe_and_log_failure(
@@ -74,7 +74,7 @@ class TestTheHelperDecidesTheTraceback:
                 args=("c1",),
             )
 
-        assert seen == [exc] and failure.account_refused
+        assert seen == [exc] and failure.owner == "account"
         (record,) = caplog.records
         assert record.exc_info is None and "acct-SECRET" not in caplog.text
 

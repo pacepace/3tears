@@ -197,9 +197,15 @@ async def test_every_page_passes_the_style_lint() -> None:
 async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
     for report in await _pages():
         page = report_html(report)
-        linked = set(re.findall(r'href="#g-([a-z-]+)"', page))
+        # Every term link lands on the glossary's heading, outside its closed fold, so it is seen in every browser,
+        # and carries its term's definition: the terms the page links are read off those.
+        said = {html.unescape(title) for title in re.findall(r'<a[^>]*href="#glossary" title="([^"]*)"', page)}
+        linked = {
+            re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-") for term, words in GLOSSARY.items() if words in said
+        }
         defined = re.findall(r'<dt id="g-([a-z-]+)">', page)
         assert linked and linked == set(defined) and len(defined) == len(set(defined))
+        assert 'href="#g-' not in page
         assert set(report.terms) <= set(GLOSSARY)
         assert page.index('id="glossary"') > page.index('id="methods"'), "the glossary folds last"
 

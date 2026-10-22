@@ -879,13 +879,15 @@ class MemoryExtractor:
         :rtype: tuple[bool, str]
         :raises ExtractionModelFailedError: when the call or its reply failed
         """
+        # the prompt and the reading of the reply are our own code, outside the model call's
+        # handler: a bug in either raises as itself, not as an outage of the model.
+        prompt = self._prompts.worthiness.format(
+            user_message=user_message[:500],
+            assistant_response_preview=assistant_response[:500],
+        )
         try:
             model = await self._chat_model_factory.create_chat_model(
                 purpose="worthiness",
-            )
-            prompt = self._prompts.worthiness.format(
-                user_message=user_message[:500],
-                assistant_response_preview=assistant_response[:500],
             )
             response = await model.ainvoke(
                 [
@@ -897,12 +899,13 @@ class MemoryExtractor:
                 ],
                 **_invoke_identity_kwargs(user_id, conversation_id),
             )
-            content = self._get_response_content(response)
+        except Exception as exc:
+            raise ExtractionModelFailedError(f"the worthiness model call failed: {type(exc).__name__}: {exc}") from exc
+        content = self._get_response_content(response)
+        try:
             result = json.loads(self._strip_code_block(content))
         except json.JSONDecodeError as exc:
             raise ExtractionModelFailedError(f"the worthiness model's reply was not valid JSON: {exc}") from exc
-        except Exception as exc:
-            raise ExtractionModelFailedError(f"the worthiness model call failed: {type(exc).__name__}: {exc}") from exc
         if not isinstance(result, dict):
             raise ExtractionModelFailedError(f"the worthiness model's reply was {type(result).__name__}, not an object")
         return bool(result.get("worthy", False)), str(result.get("reason", "no_reason"))
@@ -965,12 +968,14 @@ class MemoryExtractor:
         :rtype: list[dict[str, str]]
         :raises ExtractionModelFailedError: when the call or its reply failed
         """
+        # the prompt and the reading of the reply are our own code, outside the model call's
+        # handler: a bug in either raises as itself, not as an outage of the model.
+        prompt = self._prompts.extraction.format(
+            user_message=user_message[:2000],
+            assistant_response=assistant_response[:2000],
+        )
         try:
             model = await self._chat_model_factory.create_chat_model(purpose="extraction")
-            prompt = self._prompts.extraction.format(
-                user_message=user_message[:2000],
-                assistant_response=assistant_response[:2000],
-            )
             response = await model.ainvoke(
                 [
                     SystemMessage(
@@ -980,12 +985,13 @@ class MemoryExtractor:
                 ],
                 **_invoke_identity_kwargs(user_id, conversation_id),
             )
-            content = self._get_response_content(response)
+        except Exception as exc:
+            raise ExtractionModelFailedError(f"the extraction model call failed: {type(exc).__name__}: {exc}") from exc
+        content = self._get_response_content(response)
+        try:
             memories = json.loads(self._strip_code_block(content))
         except json.JSONDecodeError as exc:
             raise ExtractionModelFailedError(f"the extraction model's reply was not valid JSON: {exc}") from exc
-        except Exception as exc:
-            raise ExtractionModelFailedError(f"the extraction model call failed: {type(exc).__name__}: {exc}") from exc
         if not isinstance(memories, list):
             raise ExtractionModelFailedError(f"the extraction model's reply was {type(memories).__name__}, not a list")
         valid: list[dict[str, str]] = []
@@ -999,6 +1005,21 @@ class MemoryExtractor:
             ):
                 valid.append({"type": mem["type"], "content": mem["content"].strip()})
         return valid
+
+    async def _readable(self, memory_id: UUID, *, user_id: UUID, agent_id: UUID) -> bool:
+        """whether this task may read ``memory_id``: the model names its target, and ``get`` is not filtered.
+
+        :param memory_id: the memory the resolution step named
+        :ptype memory_id: UUID
+        :param user_id: owning user
+        :ptype user_id: UUID
+        :param agent_id: partition column
+        :ptype agent_id: UUID
+        :return: ``True`` when the host's read filter, if any, lets this task read it
+        :rtype: bool
+        """
+        row = await self._memories.find_for_recall(memory_id=memory_id, user_id=user_id, agent_id=agent_id)
+        return row is not None
 
     async def _get_similar_memories(
         self,
@@ -1065,11 +1086,13 @@ class MemoryExtractor:
         if not has_any_similar:
             return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
 
+        # the prompt and the reading of the reply are our own code, outside the model call's
+        # handler: a bug in either raises as itself, not as an outage of the model.
+        prompt = self._build_resolution_prompt(candidates)
         try:
             model = await self._chat_model_factory.create_chat_model(
                 purpose="resolution",
             )
-            prompt = self._build_resolution_prompt(candidates)
             response = await model.ainvoke(
                 with_fence_rules(
                     [
@@ -1081,12 +1104,13 @@ class MemoryExtractor:
                 ),
                 **_invoke_identity_kwargs(user_id, conversation_id),
             )
-            content = self._get_response_content(response)
+        except Exception as exc:
+            raise ExtractionModelFailedError(f"the resolution model call failed: {type(exc).__name__}: {exc}") from exc
+        content = self._get_response_content(response)
+        try:
             actions = json.loads(self._strip_code_block(content))
         except json.JSONDecodeError as exc:
             raise ExtractionModelFailedError(f"the resolution model's reply was not valid JSON: {exc}") from exc
-        except Exception as exc:
-            raise ExtractionModelFailedError(f"the resolution model call failed: {type(exc).__name__}: {exc}") from exc
         if not isinstance(actions, list):
             raise ExtractionModelFailedError(f"the resolution model's reply was {type(actions).__name__}, not a list")
 
@@ -1328,7 +1352,11 @@ class MemoryExtractor:
                     updated_type = act.get("type", candidate["type"])
                     memory_uuid = UUID(act["memory_id"])
                     old_entity: MemoryEntity | None = await self._memories.get((agent_id, memory_uuid))
-                    if old_entity is None or old_entity.user_id != user_id:
+                    if (
+                        old_entity is None
+                        or old_entity.user_id != user_id
+                        or not await self._readable(memory_uuid, user_id=user_id, agent_id=agent_id)
+                    ):
                         tally.skipped += 1
                         continue
                     if self._consolidations is None and not is_permanent(old_entity):
@@ -1393,7 +1421,11 @@ class MemoryExtractor:
                     # memory is never retracted.
                     memory_uuid = UUID(act["memory_id"])
                     delete_entity: MemoryEntity | None = await self._memories.get((agent_id, memory_uuid))
-                    if delete_entity is None or delete_entity.user_id != user_id:
+                    if (
+                        delete_entity is None
+                        or delete_entity.user_id != user_id
+                        or not await self._readable(memory_uuid, user_id=user_id, agent_id=agent_id)
+                    ):
                         tally.skipped += 1
                         continue
                     if not await retract(

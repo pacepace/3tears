@@ -121,12 +121,9 @@ async def _mcp_client(app: Any, *, token: str) -> AsyncIterator[ClientSession]:
     )
 
     async with app.router.lifespan_context(app), client:
-        async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (
-            read_stream,
-            write_stream,
-            _get_session_id,
-        ):
-            async with ClientSession(read_stream, write_stream) as session:
+        async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:
+            # 1.x yields a third value (the session id), 2.x two
+            async with ClientSession(streams[0], streams[1]) as session:
                 yield session
 
 
@@ -145,7 +142,7 @@ class TestHttpTransportSmoke:
                 listed = await session.list_tools()
                 assert "echo" in [tool.name for tool in listed.tools]
                 result = await session.call_tool("echo", {"value": "hi"})
-                assert result.isError is False
+                assert result.model_dump(by_alias=True)["isError"] is False
                 text = result.content[0].text  # type: ignore[union-attr]
                 assert json.loads(text) == {"value": "hi"}
         finally:
@@ -182,7 +179,7 @@ class TestHttpRbacStillFires:
             async with _mcp_client(app, token="user-token") as session:
                 await session.initialize()
                 result = await session.call_tool("echo", {"value": "hi"})
-                assert result.isError is True
+                assert result.model_dump(by_alias=True)["isError"] is True
                 envelope = json.loads(result.content[0].text)  # type: ignore[union-attr]
                 assert envelope["error"]["code"] == "PERMISSION_DENIED"
         finally:
@@ -198,7 +195,7 @@ class TestHttpRbacStillFires:
             async with _mcp_client(app, token="mystery-token") as session:
                 await session.initialize()
                 result = await session.call_tool("echo", {"value": "hi"})
-                assert result.isError is True
+                assert result.model_dump(by_alias=True)["isError"] is True
                 envelope = json.loads(result.content[0].text)  # type: ignore[union-attr]
                 assert envelope["error"]["code"] == "IDENTITY_UNAVAILABLE"
         finally:

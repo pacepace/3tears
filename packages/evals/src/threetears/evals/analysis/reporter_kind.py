@@ -190,6 +190,12 @@ class ReporterLabel(BaseModel):
 
     A direction, never a number: the reads these come from never gave one. Plain ``BaseModel``
     because ``quote`` is someone's words verbatim.
+
+    A verdict is read as a person's (the judge's agreement with readers), so the ``reporter_case_freeze``
+    operation names its ``reader`` only as the host attests them (``EvalHost.attests_person``) and records the caller
+    that relayed it (``collected_by``). A host's own code freezing through ``freeze_reporter_case`` is trusted to
+    name its readers, or none. Neither field is part of what makes two freezes the same case, and neither is written
+    to the stored payload while None, so a label stored before them reads, and is stored, as it was.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -200,6 +206,24 @@ class ReporterLabel(BaseModel):
     direction: LabelDirection = Field(description="Where the reader places the memo on that dimension.")
     quote: str = Field(description="The reader's own words, verbatim — the evidence for the direction.")
     note: str | None = Field(default=None, description="Why the quote maps to this dimension, when not self-evident.")
+    reader: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Who gave the verdict, as the host names them: attested by the host for a verdict relayed through the "
+            "reporter_case_freeze action; None = not recorded (a host's own freeze naming no one, or a label stored "
+            "before readers were). Not part of what makes two freezes the same case."
+        ),
+    )
+    collected_by: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The calling identity that relayed the verdict, which the host attested for its reader; None = written by "
+            "the host's own code, or stored before relays were recorded. Not part of what makes two freezes the same "
+            "case."
+        ),
+    )
     criterion: LabelCriterion | None = Field(
         default=None,
         description=(
@@ -208,6 +232,25 @@ class ReporterLabel(BaseModel):
             "a caller submits it: every label a case stores carries one (``ReporterCase`` refuses one that does not)."
         ),
     )
+
+    @model_validator(mode="after")
+    def _a_relay_names_its_reader(self) -> ReporterLabel:
+        """Refuse a blank reader or relay, and a relay with no reader.
+
+        ``quote`` is kept verbatim, so this model strips nothing; a name that is only whitespace names no one. A relay
+        records who carried a named reader's verdict, so it has no meaning without one, as a rating's ``source`` and
+        ``collected_by`` are set together.
+
+        :raises ValueError: ``reader`` or ``collected_by`` is blank, or ``collected_by`` is set without ``reader``.
+        """
+        for name, value in (("reader", self.reader), ("collected_by", self.collected_by)):
+            if value is not None and not value.strip():
+                raise ValueError(f"a reporter label's {name} names who it is, and {value!r} is blank")
+        if self.collected_by is not None and self.reader is None:
+            raise ValueError(
+                f"a reporter label relayed by {self.collected_by!r} names the reader whose verdict it relays"
+            )
+        return self
 
 
 class ReporterCase(BaseModel):
@@ -351,12 +394,21 @@ def writer_message_check(case: ReporterCase) -> WriterMessageCheck | None:
 def reporter_case_payload(case: ReporterCase) -> dict[str, Any]:
     """The ``host_payload`` a reporter ``EvalTestCase`` carries.
 
+    A label's ``reader`` and ``collected_by`` are written only when set, so a label naming neither is stored exactly
+    as a build at durable v16.0 stored it, and that build, whose ``ReporterLabel`` refuses a key it does not declare,
+    still reads the case: ``host_payload`` is opaque, so no newer-minor tolerance reaches it.
+
     :param case: The case to store.
     :ptype case: ReporterCase
     :return: The payload, keyed so :func:`reporter_case_of` can read it back.
     :rtype: dict[str, Any]
     """
-    return {REPORTER_CASE_KEY: case.model_dump(mode="json")}
+    frozen = case.model_dump(mode="json")
+    for label in frozen["labels"]:
+        for added in ("reader", "collected_by"):
+            if label[added] is None:
+                del label[added]
+    return {REPORTER_CASE_KEY: frozen}
 
 
 def reporter_case_of(test_case: EvalTestCase) -> ReporterCase | None:
@@ -418,8 +470,8 @@ def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
     A case frozen under an older bundle shape could hand the generator and the judge a bundle
     that is not the one the case pins. Three checks make that loud:
 
-    - the frozen document must still digest to the fingerprint stored beside it, so the case
-      holds the bundle it says it holds;
+    - the frozen document must still digest to the fingerprint stored beside it, in that fingerprint's version
+      (an unprefixed one predates rounding floats), so the case holds the bundle it says it holds;
     - it must validate strictly — a field the bundle model no longer declares is refused, as on
       every stored read;
     - every frozen value must survive the rebuild unchanged — none altered by validation.
@@ -451,7 +503,7 @@ def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
     what = f"the reporter case frozen over bundle {case.bundle_fingerprint}"
     remedy = "freeze the case again from its campaign, so its bundle is the campaign bundle its writer now reads"
     CampaignBundle.refuse_another_shape(frozen, what=what, remedy=remedy)
-    frozen_digest = campaign_evidence_digest(frozen)
+    frozen_digest = campaign_evidence_digest(frozen, like=case.bundle_fingerprint)
     if frozen_digest != case.bundle_fingerprint:
         raise ValueError(
             f"the case's frozen bundle digests to {frozen_digest} and the case recorded "
@@ -830,9 +882,11 @@ class ReporterKind:
         harness's (``infra_errors``, the cell excluded); a generation the
         engine refused, or the candidate's own provider call failing, is the candidate's
         (``candidate_errors``, the cell failed, no judge) — unless the host's describer says the
-        call was refused for the calling account, which excludes the cell and stops the run
-        (``account_refused``). Spend is reported on every exit that reached the provider, because
-        a refused generation was still billed — and to ``sink`` as each call returns, because a
+        call was the account's, which excludes the cell and stops the run (``account_refused``), or
+        the provider's (it declined the call: a rate limit, or the provider overloaded or unavailable),
+        which excludes the cell and lets the run go on. Spend
+        is reported on every exit that reached the provider, because a refused generation was still
+        billed — and to ``sink`` as each call returns, because a
         generation is up to two calls and a deadline in the second must not lose the first. Each call is
         counted on the sink's candidate total as it returns; the run's cost cap is read between cells, so no
         call is refused inside the cell.
@@ -885,24 +939,48 @@ class ReporterKind:
                     failure = describe_failure(
                         self._host.failure_describer, exc, logger=log, where="Reporter generator call"
                     )
-                    if failure.account_refused:
+                    # A call after one that returned is the repair the first reply's refusal bought: named, so a
+                    # reader of an excluded cell knows the candidate had already written a memo that was refused.
+                    call = (
+                        "generator's repair call, after its first reply was refused,"
+                        if recorder.results
+                        else "generator call"
+                    )
+                    if failure.owner == "account":
                         # Every model behind the key gets the same answer, so this cell measured the
                         # account, not the candidate: excluded, and ``account_refused`` stops the RUN.
                         log_provider_failure(
-                            log, failure, exc, "Reporter candidate's generator call was refused for the calling account"
+                            log, failure, exc, "Reporter candidate's %s was refused for the calling account", call
                         )
                         return CandidateOutput(
                             infra_errors=[
-                                f"apparatus: reporter: the generator call was refused for the calling account: {failure.description}"
+                                f"apparatus: reporter: the {call} was refused for the calling account: {failure.description}"
                             ],
                             account_refused=True,
                             telemetry=telemetry,
                         )
+                    if failure.owner == "provider":
+                        # The provider declined to serve the call at that moment, as it would any request: the
+                        # cell measured the provider, not the candidate, so it is excluded and the run goes on.
+                        log_provider_failure(
+                            log,
+                            failure,
+                            exc,
+                            "Reporter candidate's %s was declined by the provider",
+                            call,
+                            level=logging.WARNING,
+                        )
+                        return CandidateOutput(
+                            infra_errors=[
+                                f"apparatus: reporter: the {call} was declined by the provider: {failure.description}"
+                            ],
+                            telemetry=telemetry,
+                        )
                     log_provider_failure(
-                        log, failure, exc, "Reporter candidate's generator call failed", level=logging.WARNING
+                        log, failure, exc, "Reporter candidate's %s failed", call, level=logging.WARNING
                     )
                     return CandidateOutput(
-                        candidate_errors=[f"reporter: the generator call failed: {failure.description}"],
+                        candidate_errors=[f"reporter: the {call} failed: {failure.description}"],
                         telemetry=telemetry,
                     )
                 # Everything else is the harness's: a defect below the kind. Failing the candidate for either would score it for the rig.
@@ -931,12 +1009,13 @@ REPLAY_NOTES_HEADING = "# NOTES ON THIS EVIDENCE — not seen by the memo's auth
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
     """The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
 
-    Markdown, in the order a reader acts on it: the recommendation (its arm, reasons, confidence, the findings it
-    rests on and every broken floor it is made over), each aspect's summary, the findings in the order the model wrote
-    them, and what to run next — each list section omitted when the model wrote nothing for it. Findings are numbered
-    ``F1`` onward, and every link the model made by position is printed that way, a finding's trials by their ids.
-    The memo has no headline, summary or chart: the report's first screen is code's, so the judge scores what the
-    writer wrote. Arms are named by :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
+    Markdown, in the order the campaign's page lays it out: the summary across every aspect, the recommendation (its
+    arm, reasons, confidence, the findings it rests on and every broken floor it is made over), each aspect's summary,
+    the findings in the order the model wrote them, and what to run next — each list section omitted when the model
+    wrote nothing for it. Findings are numbered ``F1`` onward, and every link the model made by position is printed
+    that way, a finding's trials by their ids. The memo has no headline or chart: the report's warnings and readings
+    are code's, so the judge scores what the writer wrote, its summary among it. Arms are named by
+    :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
     :func:`~threetears.evals.analysis.numbers.format_number`.
 
     The numbers code resolved from the model's own readings are printed beside them, because they are what the
@@ -952,13 +1031,15 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
-    sections: list[list[str]] = []
-
+    # The question, then the read across it, as the campaign's page opens.
     question = analysis.design_snapshot.question
+    opening = ["## Summary", ""]
+    if question:
+        opening += [f"Question: {one_line(question)}", ""]
+    sections: list[list[str]] = [[*opening, document.summary.strip()]]
+
     recommended = document.recommended()
     recommendation = ["## Recommendation", ""]
-    if question:
-        recommendation += [f"Question: {one_line(question)}", ""]
     if recommended is None:
         recommendation.append("- None: the memo recommends no arm.")
     else:

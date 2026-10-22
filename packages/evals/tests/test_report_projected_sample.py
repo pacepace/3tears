@@ -494,6 +494,23 @@ def _style(sample: SampleProjection | None) -> MemoStyle:
     return MemoStyle(bundle=_priced(12, PER_CASE), names={}, sample=sample, samples=() if sample is None else (sample,))
 
 
+def test_a_summary_restating_only_a_measured_number_is_kept_as_written_and_not_counted_dropped() -> None:
+    """The memo's one sentence across its aspects is what the page opens on: where the pass would leave none of it, it
+    is kept as written, and the methods never say the tables said it instead."""
+    style = _style(None)
+    restated = "Both arms passed 36 of 36, so cost decides it."
+    assert style.holds_measured(restated)
+    assert style.summary(restated) == restated
+    assert style.dropped == 0
+    assert decision_disclosures(style) == []
+
+
+def test_a_summary_proposing_its_own_sample_size_is_dropped_and_listed() -> None:
+    style = _style(None)
+    assert style.summary(THIRTY) == ""
+    assert style.proposed == [THIRTY]
+
+
 def test_a_next_step_proposing_its_own_sample_size_is_code_s_projection_instead() -> None:
     style = _style(PROJECTED)
     assert style.sentence(THIRTY, plans=True) == projection_sentence(PROJECTED)

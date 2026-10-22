@@ -36,12 +36,21 @@ The surface, and why each is used:
     :func:`cli_process_pid`. The CLI subprocess's pid, so the pool can kill the process and its
     descendants. The SDK exposes its process nowhere; the pool falls back to scanning ``/proc``
     for its own marker when this answers ``None``.
+``subprocess_cli.anyio``
+    :func:`spawn_clis_without_fork`. The transport module's global ``anyio``, through which
+    ``SubprocessCLITransport.connect`` calls ``anyio.open_process`` to start the CLI. Under uvloop that
+    forks the whole worker with the interpreter lock held (see :mod:`threetears.models._claude_cli_spawn`),
+    and the SDK takes no spawner, so the global is replaced by ``anyio`` with ``open_process`` swapped
+    for :func:`~threetears.models._claude_cli_spawn.open_process_without_fork`. A module global, not an
+    instance attribute: ``tests/unit/models/test_claude_cli_start_holds_no_loop.py`` checks it by
+    reading the transport's source and by starting a process through the real ``connect``.
 """
 
 from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Any, Final
 
 __all__ = [
@@ -52,6 +61,7 @@ __all__ = [
     "missing_private_attributes",
     "remove_tool_server",
     "send_control_request",
+    "spawn_clis_without_fork",
 ]
 
 
@@ -171,6 +181,45 @@ def cli_process_pid(client: Any) -> Any:
         # session's marker, and warns only if that finds nothing either.
         result = None
     return result
+
+
+class _AnyioSpawningWithoutFork:
+    """``anyio`` as the SDK's transport module sees it, with ``open_process`` started without a fork."""
+
+    def __init__(self, module: ModuleType) -> None:
+        # imported here: _claude_cli_spawn needs anyio, which only the claude-cli extra installs
+        from threetears.models._claude_cli_spawn import open_process_without_fork  # noqa: PLC0415
+
+        self.module = module
+        self.open_process = open_process_without_fork
+
+    def __getattr__(self, name: str) -> Any:
+        """every other name, from ``anyio`` itself.
+
+        :param name: the attribute
+        :ptype name: str
+        :return: ``anyio``'s attribute
+        :rtype: Any
+        """
+        return getattr(self.module, name)
+
+
+def spawn_clis_without_fork() -> None:
+    """make every CLI the SDK starts in this process start without forking it. Idempotent.
+
+    The SDK's transport starts the CLI (and its ``claude -v`` probe) with ``anyio.open_process``,
+    which under uvloop forks the whole worker while holding the interpreter lock. This points the
+    transport module's ``anyio`` at one whose ``open_process`` is
+    :func:`~threetears.models._claude_cli_spawn.open_process_without_fork`.
+
+    :raises AttributeError: when the SDK's transport module no longer has a global ``anyio``
+    """
+    from claude_agent_sdk._internal.transport import subprocess_cli  # noqa: PLC0415 -- the claude-cli extra
+
+    current = subprocess_cli.anyio  # type: ignore[attr-defined]  # the transport's own import, not an export
+    if isinstance(current, _AnyioSpawningWithoutFork):
+        return
+    subprocess_cli.anyio = _AnyioSpawningWithoutFork(current)  # type: ignore[attr-defined,assignment]
 
 
 def _instances() -> dict[str, object]:

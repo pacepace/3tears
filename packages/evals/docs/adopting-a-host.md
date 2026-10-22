@@ -121,9 +121,12 @@ pass it to every entrypoint. It holds:
   recorded excluded (`apparatus_failed`) with what it was billed, so the run's totals and its cost cap count it, as
   a cell failed by a `CandidateKindDefect` is. A judged witnessed cell is not recorded, but its billed judge calls
   count against the run's judge ceiling. A re-judge, a judge repeat, a second judge and a witnessed cell's judging raise it the same way;
-- your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
-  was refused for the calling account, which stops a run rather than excluding its cells;
-  `withhold_failure_detail` is the honest one for an app with no error types of its own;
+- your `failure_describer` — how a raised provider call reads. It is the only thing that can say whose failure a
+  call was (`ProviderFailure.owner`): the calling `account`'s (a refused key, spent credit), which stops a run
+  rather than excluding its cells; the `provider`'s (it declined the call: a 429 rate limit, or a 529 overloaded or
+  503 unavailable), which excludes the cell and lets the run go on; or the `candidate`'s, charged as any failure.
+  `withhold_failure_detail` is the honest one for an app with no error types of its own, and says `candidate` for
+  every failure;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
@@ -144,7 +147,31 @@ pass it to every entrypoint. It holds:
   unchecked; a check with nothing to refuse is a function that returns `None`. To test one of your checks alone,
   call `admit_template(template, profile=, checks=, active_judge_config=)` (from `threetears.evals.run`), the one list
   of create-time gates `create_template` and the seed both admit through, with your `TemplateChecks`: it takes no
-  store, and returns the admitted template or raises the refusal.
+  store, and returns the admitted template or raises the refusal;
+- if callers relay people's ratings (an agent carrying a person's blind-read verdicts), your word on who may:
+  `attests_person=<check>`, called as `check(scope_id=, caller=, person=)` (`AttestsPerson`, from
+  `threetears.evals.kernel.host`). It returns your own name for that person when that caller relays their ratings,
+  and `None` otherwise. The `result_rate_person` action asks it before it reads anything, and stores the rating under
+  the name you return, so two spellings you know as one person are one rater. On `None`, or with no check (`None`, the
+  default), the call is refused (`refused`, 403), a warning names the caller, the person and the scope, and nothing
+  is written. A check that raises propagates as your defect, and nothing is written. The `judge_case_author` action
+  asks it too, since an authored case's verdict is its one label and every label reads as a person's rating: a caller
+  authors a case for the `person` it names, or for itself when it names none, and only when you attest it for them.
+  Attest a caller as itself only when that identity is a person's own account. An agent names, in `person`, the
+  person whose verdict it relays, and you vouch for that pairing. **A check that attests every caller as itself
+  makes an agent's verdict a person's**: its cases then count in judge campaigns and judge profiles as people's
+  labels, which is exactly what the check exists to stop. The case's author is the name you return, and the case
+  records the caller (`collected_by`), which is not part of the case, so the same case relayed by two callers, or
+  seeded, is one case under one id. The `reporter_case_freeze` action asks it for each reader its labels name (a
+  label naming no `reader` is the caller's own), since each label is a reader's verdict on a memo and the judge's
+  agreement with readers reads it as a person's: one refused reader refuses the freeze, each label is stored under
+  the name you return with the caller as its `collected_by`, and neither is part of what makes two freezes the same
+  case, so re-freezing the same verdicts returns the stored case. A freeze with no labels asks nothing. Every action
+  that records a verdict as a person's asks you. The check guards the operations themselves, not only the actions:
+  without one, `judge_case_author` and `reporter_case_freeze` (with labels) refuse every call, your own code's direct
+  call included. Your own code that names its people itself asks no attestation: the seed corpus's `judge_cases`, an
+  `AuthoredJudgeCase` you build and freeze with `freeze_judge_cases(authored=)`, `freeze_reporter_case` with labels
+  naming their `reader` (or none), and `rate_result` with `rater_kind="person"`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -265,10 +292,20 @@ the provider takes one (Anthropic's `thinking.budget_tokens`, OpenRouter's `reas
 and not only the cap, and as the effort word its share of the cap reads as (`high`) where only words are taken
 (OpenAI's chat completions, a model that refused a budget), which the completion's `sent_settings` names
 (`unsent_reasoning_max_tokens=8192`); a budget not below `max_tokens` is refused naming both, never clamped;
-the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Nothing is retried: the only resends answer a
-provider's refusal of a setting, below. `describe_failure` reads the client's one error type, `ProviderError` (the
-provider, the status and its own message, never the body, and `account` for a refused key or spent credit, which
-stops a run), and an `httpx` transport error by the host it was sending to.
+the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Two resends, and nothing else is retried: one
+answers a provider's refusal of a setting, below; the other sends a call the provider declined (a 429 that is not a
+spent quota, a 529 overloaded, a 503 unavailable, as a status or as the code a 200's body carries) again after a
+wait, the provider's `retry-after` or one then two seconds, at most three attempts in all, each resend logged at
+WARNING (`retry=DeclinedRetry(...)` on `Model` sets it; `attempts=1` sends once). A provider that asks to wait longer
+than 20 seconds is not sent it again: its answer stands. Every wait and resend ends within one request's timeout of
+the first attempt (a resend still running then is cut, and the decline before it stands), so a call ends one
+request's timeout after it started, or when its first attempt does if that took longer. A resend lost on the way (a
+reset, a connect timeout) also leaves the decline before it standing. A setting refusal and a decline are not
+billed; a resend cut at the time bound may already have been, and its spend is not recorded, since no reply came
+back to carry it.
+`describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
+never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
+credit, which stops a run), and an `httpx` transport error by the host it was sending to.
 
 **A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
 the resending are `threetears.evals.negotiation`'s, the same a client of your own uses (below), and each completion's
@@ -620,6 +657,25 @@ code follows the same rule. A synchronous function that takes the storage or the
 fn, ...)`, as the action catalogue does for every synchronous operation. An async operation (`run_launch`,
 `job_poll`) offloads its own.
 
+**Size the database pool for the job leases too.** Beside the store calls on `blocking_executor`, each process
+renews its jobs' leases on a pool of its own, `LEASE_POOL_WORKERS` threads, every one of which may want a connection
+at once. Give the pool your `blocking_executor`'s workers plus `LEASE_POOL_WORKERS`, so a renewal never waits for a
+connection behind cell work, and keep a checkout's wait under the renewal interval, the lease times
+`JOB_LEASE_RENEWAL_FRACTION` (20s at `DEFAULT_JOB_LEASE_S`): a renewal that cannot get a connection then fails and is
+tried again within its lease, rather than holding up the next one. A renewal stuck in the store retires the lease pool
+with its calls still waiting on the store, and a fresh pool takes the next renewals, so through a store brownout the
+leases can briefly want more than `LEASE_POOL_WORKERS` connections; the checkout wait is what keeps that extra from
+starving cell work. Read the numbers instead of copying them;
+`threetears.evals.schema` loads no other part of the engine, so your config can import it as it loads:
+
+```python
+from threetears.evals.schema import DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION, LEASE_POOL_WORKERS
+
+job_lease_s = DEFAULT_JOB_LEASE_S  # or the LaunchHost.job_lease_s you set
+pool_size = blocking_workers + LEASE_POOL_WORKERS
+checkout_timeout_s = job_lease_s * JOB_LEASE_RENEWAL_FRACTION
+```
+
 **If your database driver is async**, write your adapter against it as an `AsyncDocumentStore` (in
 `threetears.evals.schema`: the same port, every method awaited and `iter_by_doc_type` an async iterator;
 `AsyncStoreClock` for its clock) and hand the
@@ -790,13 +846,14 @@ for profile in dropped.judge_profiles:                # the one kind that does n
 `drop_derived` deletes nothing else: runs, results, cassettes and every durable document stay. Analyses come back by
 generating them again and insights with the analyses that mint them; a judge profile only by recording it again, and
 until then a campaign that took its judges' tier from it reads its own evidence's tier. The campaign rewrite (durable v16) is such a bump
-(regenerable v12: one memo per campaign). A cassette is not touched by that bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
+(regenerable v12: one memo per campaign), and so is the memo's summary across its aspects (regenerable v13). A
+cassette is not touched by either bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
 when the cassette itself changes, because re-capturing a corpus calls your third-party tools again. A cassette
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v15.5), durable documents (v16.0), regenerable documents
-(v12), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
+(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
 (`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
@@ -977,7 +1034,7 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 520 names, mapped by rung in [the surface](surface.md).
+The first two tiers are the declared surface, about 540 names, mapped by rung in [the surface](surface.md).
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
@@ -1341,10 +1398,16 @@ definition = {
   at creation, over runs its aspects already hold; or `set_campaign_control` once the control's run has joined), and
   the server reads its variant key and lever map from the first; runs of one arm carrying two keys are refused,
   naming each. The control comes first. A candidate nobody names is read off the runs, one per other variant. A
-  control named after an aspect's first result makes that aspect's comparisons post hoc.
+  control named after an aspect's first result dates that aspect's question at the naming, which its pages
+  disclose as set after the runs.
 - **Each aspect holds its own runs.** A run joins one aspect of a campaign, by its template, or by the aspect
   `add_runs_to_campaign` (`campaign_runs_add`) names; a run another template ran, or one two aspects could take,
   is refused naming them.
+- **An aspect may leave its label out.** It is then named after the campaign's behavior, each `/` written `-`
+  (`tools/search` is `tools-search`), since `/` separates a floor key's parts. A form sends no label rather than
+  copying that rule. One aspect at most leaves it out: two would share a label, and the create (or update) is
+  refused, asking you to label each. A floor names its aspect by label, so a write declaring a floor labels the
+  aspect it sits on; the label the server gave is on the returned `CampaignLine`'s `aspects` for a later write.
 - **A floor is a typed clause on one aspect**, never words: `{kind: "rate_drop", max_points, reading?}` (a
   `RateDrop`: no pass rate drops by more than `max_points`; with `reading`, one goal-state check by its verbatim
   text, a pass/fail judged dimension by its name, or a check measure by its key) or `{kind: "cost_lower"}` (a
@@ -1354,9 +1417,9 @@ definition = {
   only warns**: it never blocks, never writes the verdict, and never rewrites what the writer recommends.
 - **The declaration is frozen once any aspect holds a run.** To ask again, create a campaign that adopts the aspects
   it keeps (`aspects_from`, each a campaign id, or `{campaign_id, label}` to relabel a campaign's one aspect): each
-  keeps its template, runs, design and the time its question was asked, so its readings stay as confirmatory as
-  they were. A `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one that never
-  declared one included. Whatever the new campaign adds is dated now and marked as declared after the runs.
+  keeps its template, runs, design and the time its question was asked, so nothing re-dates its question. A
+  `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one that never declared one
+  included. Whatever the new campaign adds is dated now and marked as declared after the runs.
 ### Recording the call
 
 **Code reports, the writer recommends, a person decides, and the decision is recorded.** `campaign_record` (the
@@ -1553,8 +1616,9 @@ nothing.
 `load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (host contract, from `threetears.evals.run`;
 in memory, `SeedCorpus(judge_cases=...)`): `judge_case_author`'s arguments with its two templates named by `name`
 (`judge_template`, `criterion_template`, since a corpus cannot know a seeded template's id), the `criterion`, the
-`output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`. `seed_eval_definitions`
-builds each through the door `judge_case_author` uses (`author_judge_case`: the criterion read from the template
+`output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`, taken as you write it:
+the corpus is yours, so no `attests_person` is asked and the case records no relay (`collected_by` is None).
+`seed_eval_definitions` builds each through the door `judge_case_author` uses (`author_judge_case`: the criterion read from the template
 that words it, the verdict held to its scale) before anything is written, refusing the whole seed by name for any
 case authoring would refuse, then freezes it into its judge template after the templates are written, as the same
 `AuthoredJudgeCase` under the same content-derived id. A case already stored is reported `already present` under
@@ -1763,7 +1827,14 @@ fault of the measuring rig rather than of the world under test is an `ApparatusE
 tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
 `invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
 the kind had reported through its sink, and goes on. A run whose every cell the rig excluded measured
-nothing, and ends `failed`.
+nothing, and ends `failed` (`EveryCellApparatusFailedError`). So does a run whose every cell was excluded for any
+other fault the harness recorded on the cell (`NothingMeasuredError`): a provider that declined every call, a
+candidate that could not be built. Its reason quotes the cells' own errors, the status and the provider's message
+among them, so a sustained rate limit or overload, or an OpenRouter model no allowed provider serves, reads as a
+setup fault to fix rather than a run to wait out. A run lost only to judge-call errors still completes, since a
+re-judge recovers it without paying for the candidate again; so does a run lost entirely to a judge that could not
+tell, or to judge replies cut off at their cap: the judge read evidence the run did measure. In a sweep, an arm that
+measured nothing fails alone, and the other arms still run.
 
 A cell cut off by its deadline or by its run's cancel is recorded the same way, from its sink; when the
 cut lands while the cell is being judged, the evidence and the scores that came back are kept and the

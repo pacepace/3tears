@@ -293,6 +293,11 @@ class CandidateOutput(EvalBaseModel):
     rest of the matrix one paid-for cell at a time. ``False`` for every kind that cannot tell an
     account's refusal from a model's.
 
+    Set exactly when the host's describer reads the failure as the account's
+    (:attr:`~threetears.evals.schema.ProviderFailure.owner` ``"account"``). A call the provider
+    declined (``"provider"``) is excluded the same way, on ``infra_errors``, without this flag:
+    the next call may be served, so the run goes on.
+
     Requires an ``infra_errors`` entry: the refusal is an apparatus fault first, and the entry is
     what excludes the cell and what the run's own stop reason quotes.
     """

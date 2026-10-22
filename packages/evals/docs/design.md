@@ -19,10 +19,12 @@ and its report leads with what the evidence taught. A watch re-runs a fixed suit
 measurement; its value is the regression it catches, so most of its runs change nothing.
 
 **What nobody asked about is a lead, not an answer.**
-A reading the question did not ask about, or asked about only once the evidence existed, is labelled exploratory
-wherever a reader meets it, so a report cannot lead with it as if it were confirmed; a campaign that asks no
-question says once that every finding is exploratory, rather than on every row, where the label would be skipped.
-Each aspect keeps the time its question was asked, so adopting it into a later campaign never re-dates it.
+A reading the question did not ask about is labelled exploratory wherever a reader meets it, so a report cannot
+lead with it as if it were confirmed; a campaign that asks no question says once that every finding is exploratory,
+rather than on every row, where the label would be skipped. A question asked only once the evidence existed is
+disclosed, not demoted: its readings read as an asked question's, and every page and listing over them says when it
+was set and when the runs began, since the operator is trusted and the reader judges. Each aspect keeps the time its
+question was asked, so adopting it into a later campaign never re-dates it.
 
 **Code reports, the writer recommends, a person decides.**
 Code reads each aspect against the control: shown better, shown worse or unclear, on an interval. A model may
@@ -88,8 +90,8 @@ has no interval.
 
 **A verdict comes from a corrected test, and "not separated" never means "no difference".**
 Each contrast against the control is `improved`, `regressed`, `equivalent`, `not_separated` or
-`untested`, read off a Holm-adjusted p within one family: the aspect's, where the question was asked before its
-first run, or else one exploratory family over every reading on a merit axis (the rig's own readings, such as the judge's time and spend, are on none).
+`untested`, read off a Holm-adjusted p within one family: the aspect's, where it is asked a question (whenever that was asked: a question set after
+the runs is disclosed, not demoted), or else one exploratory family over every reading on a merit axis (the rig's own readings, such as the judge's time and spend, are on none).
 `equivalent` takes an equivalence test (TOST) against the measure's declared margin, corrected in the same
 family; the run-history read follows the same rule. Twenty uncorrected tests find a chance "winner" more often
 than not. False-discovery control across campaigns and sequential testing stay out. The methods are named in
@@ -348,7 +350,7 @@ a call that may skip a warning (the override would leave no record of what it ov
 
 ### A failure is charged to whoever caused it
 
-Five steps, each fixing the last:
+Six steps, each fixing the last:
 
 1. An errored trial scored 0, so a candidate could not hide failures by erroring; excluding it was
    rejected because it diverges denominators.
@@ -363,8 +365,28 @@ Five steps, each fixing the last:
    its cost. A failure still counts against its arm in every rate, accuracy included, but latency and cost
    read only over results that delivered a turn, and an arm with none reads "no successful results". A kind
    reports how many turns it delivered, so a conversation that failed on its sixth turn keeps the first five.
+6. A provider rationing a call (a 429 that is not a spent quota) was charged to the candidate, so the model
+   the provider throttled first read as the worse one. One field now says whose failure a call was
+   (`ProviderFailure.owner`: `account`, `provider` or `candidate`): a call the provider declined is excluded and
+   the run goes on, on every path the package runs (a quick run, the reporter, the judge kind), and only the
+   account's refusal stops a run. Declined means a 429 that is not a spent quota, or the provider overloaded (529)
+   or unavailable (503); a 500 or 502 is an error, not a refusal, so it stays the candidate's. The package's client
+   sends a declined call again before it is excluded (at most three attempts, waiting the provider's `retry-after`
+   or a doubling backoff, all within one request's timeout, and never when the provider asks for longer than the
+   longest wait), since a provider that declined a call billed nothing and may serve it a moment later: a burst of
+   529s then costs a few seconds rather than every trial it struck. A run that measured nothing because every cell
+   was excluded for a fault the harness recorded ends `failed`, quoting the cells' errors (owner, 2026-10-22): a
+   decline that lasted the whole run, or an OpenRouter model no allowed provider serves, is a setup fault, and
+   completing with a page that says "rerun" hid it. A run lost only to judge-call errors completes, since a
+   re-judge recovers it; a sweep goes on past an arm that measured nothing. A model's own
+   failures stay its outcome, as in step 4: a declined call is the provider declining it, not the model failing
+   it. The lost trials are bounded in every verdict, and an arm
+   that loses more than a tenth of its trials to one cause is flagged (`differential_exclusions`). Rejected: a
+   second `rationed` flag beside `account_refused`, two flags for one question that could both be set.
 
 *Evidence:* agent with tools, account spend limit reached mid-campaign, 54 runs voided, 2026-10, single campaign.
+Rationing: a model decision whose arm met sustained 429s from a pinned upstream in six of seven runs, 2026-10,
+scored as candidate failures and written up as the other build eliminating silent turn drops.
 
 ### The subject key, and evaluability
 
@@ -418,10 +440,17 @@ current model — adopted" over a run whose judge had been cut off at its output
 trials, while the word "truncated" appeared nowhere a reader would look. Most of what a reader needs is countable, so
 the report's first screen — the basis, the verdict and each arm's census of passed, failed and lost trials, by cause
 — is written by code from the bundle, and the memo authors findings and recommendations only, each recommendation
-pinned to its findings and each finding to its trials. The null check moved onto finding titles: a title in one of a
-short list of null phrasings (`analysis/null_claims.py`) is refused when its finding cites no reading the bundle
-established alike. Only "does this title say the arms are alike" is read off the words; nothing is parsed, so a
-reworded null passes, and the judge measures the rest.
+pinned to its findings and each finding to its trials. (The campaign page later gave the writer one sentence on its
+first screen, the summary across the aspects, below every warning code raised; see below.) The null check moved onto
+finding titles: a title in one of a short list of null phrasings (`analysis/null_claims.py`) is refused when its
+finding cites no reading the bundle established alike. Only "does this title say the arms are alike" is read off the
+words; nothing is parsed, so a reworded null passes, and the judge measures the rest.
+
+**The memo's summary opens the campaign's page, after code's warnings** (2026-10, #864). The owner asked for a
+holistic summary first, then the recommendation, then the aspects. A measurement's memo and a no-clear-winner
+choice's held no prose reading across the aspects at all, so every kind's memo carries one `summary`, held to the
+reference and style rules a finding's body is, and the page reads warnings, question, summary, recommendation, then
+code's readings by aspect. The verdict, the readings and every number stay code's.
 
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
 
@@ -440,7 +469,7 @@ accepted but absent ([open problems](open-problems.md)).
 | [Miller, "Adding Error Bars to Evals"](https://arxiv.org/abs/2411.00640) (2024) | Report the standard error, clustered when questions come in related groups (about 3× the naive value on one benchmark). Resample each question K times; compare models on paired differences; size an eval by power analysis. | Adapted | Repeats are averaged within a case; arms are tested paired on shared cases (Welch when they share fewer than two). Standard errors are Miller's cluster-robust form over cases on `n_cases − 1` df, and a rate's Wilson interval uses the effective sample size. A launch estimate sizes the eval by power: the smallest difference its paired test finds at 80%, from earlier runs' variance. |
 | [Anthropic, "A statistical approach to model evaluations"](https://www.anthropic.com/research/statistical-approach-to-model-evals) (2024-11) | The Miller paper's five recommendations for practitioners: a standard error with every score, clustered standard errors, resampling within questions, paired differences, power analysis. | Adapted | As in the Miller row, with t rather than the normal at small n. |
 | [Bowyer, Aitchison & Ivanova](https://arxiv.org/abs/2503.01747) (ICML 2025); [Brown, Cai & DasGupta](https://doi.org/10.1214/ss/1009213286) (2001) | Central-limit intervals undercover below a few hundred datapoints; use exact or Bayesian methods, and Wilson or Jeffreys intervals for proportions. | Adapted | Every 0/1 measure takes a Wilson interval, so 3 of 3 keeps a width. Means use t, clipped to the measure's scale. A gap with zero spread is read by the bounded test on the measure's declared range on every surface, and with no range is `not_separated`: the exact sign-flip test it once read tests symmetry, not the mean. |
-| [Holm](https://www.jstor.org/stable/4615733) (1979); [Benjamini & Hochberg](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) (1995) | Control error across a family of tests: the family-wise rate (Holm) or the false discovery rate (BH). | Adapted | Holm runs within each aspect's family where the campaign's question was asked before that aspect's first run, or within one exploratory family otherwise, and a separation needs the adjusted p below α and its interval clear of zero. Across a campaign's aspects, Holm runs again per candidate, gains and drops apart, and over every pair × aspect for a choice; there is no correction across candidates. Only measures on a merit axis join a family (judge latency and judge-inclusive cost stay out), and each contrast's interval is Bonferroni-widened to 1 − α/m. There is no FDR across campaigns and no sequential testing. The run-history lens tests each adjacent pair of runs uncorrected. |
+| [Holm](https://www.jstor.org/stable/4615733) (1979); [Benjamini & Hochberg](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) (1995) | Control error across a family of tests: the family-wise rate (Holm) or the false discovery rate (BH). | Adapted | Holm runs within each aspect's family where the campaign asks that aspect a question, whenever it was asked, or within one exploratory family otherwise, and a separation needs the adjusted p below α and its interval clear of zero. Across a campaign's aspects, Holm runs again per candidate, gains and drops apart, and over every pair × aspect for a choice; there is no correction across candidates. Only measures on a merit axis join a family (judge latency and judge-inclusive cost stay out), and each contrast's interval is Bonferroni-widened to 1 − α/m. There is no FDR across campaigns and no sequential testing. The run-history lens tests each adjacent pair of runs uncorrected. |
 | [Lakens, equivalence testing (TOST)](https://doi.org/10.1177/1948550617697177) (2017) | Claim "no difference" only when the interval sits inside a declared equivalence margin. | Adapted | A comparison that misses significance reads `not_separated`, which claims no null. A campaign comparison reads `equivalent` only when a paired TOST against the measure's declared margin (`materiality_threshold`) passes after Holm correction; judged dimensions and unpaired tests run no equivalence test. The run-history read applies the same rule per step. The same threshold is the margin a bar's verdict allows. The history read covers engine-core measures, which declare no threshold and on which a host cannot declare one, so no history step reads `equivalent` yet. |
 | [Waudby-Smith & Ramdas, estimating means of bounded random variables by betting](https://doi.org/10.1093/jrsssb/qkad009) (JRSS-B 2024) | A test of a mean that holds its error rate for any distribution on a known range, at any sample size. | Adopted | Each one-sided test of the TOST on a measure with a declared range (the predictable plug-in bet, its stake capped at 0.9 of the most it could stake without ruin). A t-test on coarse scores claimed `equivalent` at up to fifteen times its rate where a regression broke a few cases outright. |
 | [Gelman & Stern](https://doi.org/10.1198/000313006X152649) (2006) | Test a difference directly. "A moved and B did not" is not evidence that A and B differ. | Adopted | Each contrast is tested against the control itself, and a scope divergence tests the whole's movement minus the part's; neither is inferred from two separate verdicts. |
@@ -449,7 +478,7 @@ accepted but absent ([open problems](open-problems.md)).
 | [Kohavi, Henne & Sommerfield](https://ai.stanford.edu/~ronnyk/2007GuideControlledExperiments.pdf) (2007); [NIST/SEMATECH e-Handbook](https://www.itl.nist.gov/div898/handbook/pri/section3/pri332.htm) | Factors and levels; control against treatments; one overall evaluation criterion; blocking on nuisance factors; A/A tests to measure the system's own noise. | Adapted | A [lever](concepts.md#lever) is a factor, and the [rig](concepts.md#apparatus-rig) is the held-constant nuisance factors. Arms launched together share drift, which is blocking. The composite stays secondary to per-dimension results. A/A runs are not a built practice. |
 | [Kohavi, Tang & Xu, *Trustworthy Online Controlled Experiments*](https://doi.org/10.1017/9781108653985) (2020); [Ng, *Machine Learning Yearning*](https://home-wordpress.deeplearning.ai/wp-content/uploads/2022/03/andrew-ng-machine-learning-yearning.pdf) (2018), "optimizing and satisficing metrics" | Keep guardrail metrics, which must not degrade, apart from the criterion you optimize (Kohavi); a "satisficing" metric need only clear a threshold while one "optimizing" metric is maximized (Ng). | Adapted | A boundary judged dimension or a measure declared `guardrail` joins no composite and no comparison family. Each is decided per arm against the control as non-inferiority against its margin: `held`, `breached` or `undecided`. A breach warns, and the writer may not recommend the arm; an undecided guardrail is stated rather than blocking anything, since at a few cases almost every guardrail is undecided. |
 | [Kapoor et al., "AI Agents That Matter"](https://arxiv.org/abs/2407.01502) (2024) | Optimise accuracy and cost jointly, and hold out data against overfitting. | Adapted | The frontier ranks on what shipping costs, and the cost of measuring is kept apart ([cost and budgets](cost-and-budgets.md)). A contestant is flagged dominated only when another is shown better on every axis by paired tests, Holm-adjusted across the subject's pairs; otherwise it reads `not_separated`, or `untested` where no test could decide. There is no held-out split. |
-| [Center for Open Science, preregistration](https://www.cos.io/initiatives/prereg) | State the plan before the study; keep confirmatory work apart from exploratory work. | Adapted | A [campaign](concepts.md#campaign) declares its question and each aspect's design, and the bundle compares the design with the one actually realised. Each aspect keeps the time its question was asked, and a question asked (or a control named) after the aspect's first run confirms nothing there. A reading the question did not ask about in time is labelled exploratory in the bundle, the report and the writer's view, and a finding resting only on such readings carries the label; a campaign asking no question says once that every finding is exploratory. The declaration freezes once an aspect holds a run; asking again is a new campaign that adopts the aspects, each keeping its own time, and what it adds is marked as declared after the runs. |
+| [Center for Open Science, preregistration](https://www.cos.io/initiatives/prereg) | State the plan before the study; keep confirmatory work apart from exploratory work. | Adapted | A [campaign](concepts.md#campaign) declares its question and each aspect's design, and the bundle compares the design with the one actually realised. Each aspect keeps the time its question was asked, and a question asked (or a control named) after the aspect's first run is disclosed with both times wherever its readings are shown, never demoted (owner, 2026-10-21: operators are trusted to act in good faith). A reading the question did not ask about is labelled exploratory in the bundle, the report and the writer's view, and a finding resting only on such readings carries the label; a campaign asking no question says once that every finding is exploratory. The declaration freezes once an aspect holds a run; asking again is a new campaign that adopts the aspects, each keeping its own time, and what it adds is marked as declared after the runs. |
 | [Messing, "Hidden Measurement Error in LLM Pipelines"](https://arxiv.org/abs/2604.11581) (2026); [Kotawala, "Resolution Diagnostics for Paired LLM Evaluation"](https://arxiv.org/abs/2605.30315) (2026) | Naive standard errors omit judge and prompt variance. Invert the paired test to find the smallest detectable effect; many published gaps do not resolve. | Adapted | One judge per dimension; its noise sets the evidence tier, not the interval. A launch estimate states the smallest difference its paired test detects at 80% power, from earlier runs' repeat and case variance ([cost and budgets](cost-and-budgets.md)); judge and prompt variance are not separated in it. |
 
 ### Judging and graders

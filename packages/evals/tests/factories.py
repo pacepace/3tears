@@ -675,6 +675,7 @@ def empty_document(**overrides: Any) -> AuthoredCampaignAnalysis:
             )
         ],
         aspect_summaries=[],
+        summary="Nothing here moves the control.",
         next=[],
     )
     fields.update(overrides)

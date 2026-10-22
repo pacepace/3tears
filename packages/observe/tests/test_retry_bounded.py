@@ -185,3 +185,153 @@ async def test_a_schedule_that_cannot_back_off_is_refused(first_delay: float, ma
         await retry_bounded(
             _Script([]), retry_on=_transient, first_delay=first_delay, max_delay=max_delay, max_attempts=1
         )
+
+
+class _Asks(Exception):
+    """a failure that names how long to wait before the next attempt, as an HTTP ``Retry-After`` does."""
+
+    def __init__(self, seconds: float | None) -> None:
+        super().__init__(f"asks for {seconds}")
+        self.seconds = seconds
+
+
+def _asked(exc: Exception) -> float | None:
+    return exc.seconds if isinstance(exc, _Asks) else None
+
+
+def _retry_asks(exc: Exception) -> bool:
+    return isinstance(exc, _Asks | _Transient)
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_names_its_wait_is_waited_for_longer_than_the_schedule() -> None:
+    clock = _Clock()
+    script = _Script([_Asks(7.0), _Transient()])
+
+    await retry_bounded(
+        script,
+        retry_on=_retry_asks,
+        asked_pause=_asked,
+        max_asked_pause=30.0,
+        first_delay=1.0,
+        max_delay=2.0,
+        max_attempts=5,
+        sleep=clock.sleep,
+    )
+
+    assert clock.slept == [7.0, 2.0], "the asked wait, then the schedule, which kept advancing"
+
+
+@pytest.mark.asyncio
+async def test_an_asked_wait_shorter_than_the_schedule_takes_the_schedule() -> None:
+    clock = _Clock()
+    script = _Script([_Asks(0.5), _Asks(None)])
+
+    await retry_bounded(
+        script,
+        retry_on=_retry_asks,
+        asked_pause=_asked,
+        first_delay=1.0,
+        max_delay=4.0,
+        max_attempts=5,
+        sleep=clock.sleep,
+    )
+
+    assert clock.slept == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_an_asked_wait_overrides_a_failure_that_does_not_back_off() -> None:
+    clock = _Clock()
+    script = _Script([_Asks(3.0)])
+
+    await retry_bounded(
+        script,
+        retry_on=_retry_asks,
+        asked_pause=_asked,
+        backs_off=lambda exc: False,
+        first_delay=1.0,
+        max_delay=4.0,
+        max_attempts=5,
+        sleep=clock.sleep,
+    )
+
+    assert clock.slept == [3.0]
+
+
+@pytest.mark.asyncio
+async def test_an_asked_wait_past_its_ceiling_is_raised_at_once() -> None:
+    clock = _Clock()
+    reported: list[int] = []
+    long = _Asks(120.0)
+    script = _Script([long, _Transient()])
+
+    with pytest.raises(_Asks) as raised:
+        await retry_bounded(
+            script,
+            retry_on=_retry_asks,
+            asked_pause=_asked,
+            max_asked_pause=30.0,
+            first_delay=1.0,
+            max_delay=2.0,
+            max_attempts=5,
+            on_retry=lambda exc, attempt, pause: reported.append(attempt),
+            sleep=clock.sleep,
+        )
+
+    assert raised.value is long
+    assert script.calls == 1 and clock.slept == [] and reported == []
+
+
+@pytest.mark.asyncio
+async def test_the_asked_ceiling_defaults_to_the_longest_scheduled_pause() -> None:
+    clock = _Clock()
+    script = _Script([_Asks(5.0)])
+
+    with pytest.raises(_Asks):
+        await retry_bounded(
+            script,
+            retry_on=_retry_asks,
+            asked_pause=_asked,
+            first_delay=1.0,
+            max_delay=4.0,
+            max_attempts=5,
+            sleep=clock.sleep,
+        )
+
+    assert clock.slept == []
+
+
+@pytest.mark.asyncio
+async def test_an_asked_wait_past_the_deadline_is_raised_at_once_and_not_cut_short() -> None:
+    clock = _Clock()
+    script = _Script([_Transient(), _Asks(9.0)])
+
+    with pytest.raises(_Asks):
+        await retry_bounded(
+            script,
+            retry_on=_retry_asks,
+            asked_pause=_asked,
+            max_asked_pause=30.0,
+            first_delay=1.0,
+            max_delay=2.0,
+            deadline_seconds=5.0,
+            sleep=clock.sleep,
+            clock=clock.time,
+        )
+
+    assert clock.slept == [1.0], "asking again sooner than the provider said would only be refused again"
+
+
+@pytest.mark.asyncio
+async def test_a_ceiling_shorter_than_the_schedule_is_refused() -> None:
+    with pytest.raises(ValueError, match="max_asked_pause"):
+        await retry_bounded(
+            _Script([]),
+            retry_on=_transient,
+            asked_pause=_asked,
+            max_asked_pause=0.5,
+            first_delay=1.0,
+            max_delay=2.0,
+            max_attempts=1,
+        )

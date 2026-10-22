@@ -40,11 +40,12 @@ class AspectDeclaration(EvalDocumentModel):
     )
     asked_at: str | None = Field(
         description=(
-            "When this aspect was asked its question in full (ISO-8601), which a reading confirms only if it predates "
-            "the aspect's first run: the aspect's own time (an adopted aspect keeps its source's). A bundle dates it "
-            "no earlier than the control's `named_at` where the control was named after the aspect's first result, "
-            "since a control chosen once the evidence existed makes what is read against it post hoc. Never a time a "
-            "later edit of the design re-stamps. None when no time is recorded, read as asked after the evidence."
+            "When this aspect was asked its question in full (ISO-8601), which the bundle discloses where it is later "
+            "than the aspect's first run (`reading_scope.question_after_runs`): the aspect's own time (an adopted "
+            "aspect keeps its source's). A bundle dates it no earlier than the control's `named_at` where the control "
+            "was named after the aspect's first result, since a control chosen once the evidence existed was chosen "
+            "with it in view. Never a time a later edit of the design re-stamps. None when no time is recorded, "
+            "disclosed as possibly set after the runs."
         )
     )
     question_declared_at: str | None = Field(

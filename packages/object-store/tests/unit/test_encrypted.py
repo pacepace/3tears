@@ -104,6 +104,7 @@ def _store(inner: _MemStore, *, frame_size: int = 16) -> EncryptedObjectStore:
         b"b" * (16 * 3 + 5),  # three frames + a partial final
         bytes(range(256)) * 10,  # binary, multi-frame
     ],
+    ids=["empty", "short", "one-frame", "four-frames", "partial-tail", "binary"],
 )
 @pytest.mark.asyncio
 async def test_round_trip_preserves_bytes(payload: bytes) -> None:

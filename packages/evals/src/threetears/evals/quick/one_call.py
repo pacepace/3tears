@@ -70,7 +70,6 @@ from threetears.evals.kernel import (
     VariantConfig,
     WorldSession,
     confusion_cell,
-    withhold_failure_detail,
 )
 from threetears.evals.schema import (
     DEFAULT_LAUNCH_K_RUNS,
@@ -78,9 +77,11 @@ from threetears.evals.schema import (
     EvalRun,
     EvalTemplate,
     EvalTestCase,
+    FailureOwner,
     JudgedArtifact,
     JudgeEvidence,
     KnownUsageRole,
+    ProviderFailureDescriber,
     WorldSeed,
     canonical_digest,
 )
@@ -688,12 +689,29 @@ def callable_host(
             variant_levers=_arm_levels if arms else None,
         ),
         storage=EvalStorage(InMemoryDocumentStore() if store is None else store),
-        failure_describer=withhold_failure_detail,
+        # A quick run's model calls go through the package's own client, whose errors this reads: a judge's call the
+        # account was refused stops the run, and one the provider declined excludes its cell.
+        failure_describer=_describe_failure(),
         trace_sink=trace_sink,
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
         clients=clients,
     )
+
+
+def _describe_failure() -> ProviderFailureDescriber:
+    """The package client's describer, imported when a host is built: the client loads only when a run needs it."""
+    from threetears.evals.providers import describe_failure
+
+    return describe_failure
+
+
+def _owner_of(raised: BaseException) -> FailureOwner:
+    """Whose failure a candidate's raise was: the owner a :class:`~threetears.evals.providers.ProviderError` names,
+    else the candidate's — any other exception is the caller's code, or a client this package cannot read."""
+    from threetears.evals.providers import ProviderError
+
+    return raised.owner if isinstance(raised, ProviderError) else "candidate"
 
 
 def callable_kind(
@@ -899,8 +917,21 @@ class CallableKind:
             telemetry = spent(ledger, telemetry)
         except ApparatusError:
             raise  # the rig's fault under the candidate — a replay miss — is the engine's to exclude the cell on
-        # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell
+        # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell, unless the provider's answer says the account was refused or the provider declined the call
         except Exception as raised:
+            owner = _owner_of(raised)
+            if owner != "candidate":
+                # A call the package's client made that the provider refused or declined says nothing about the
+                # candidate: the cell is excluded, and the account's refusal also stops the run, since every later
+                # call meets it.
+                said = "was refused for the calling account" if owner == "account" else "was declined by the provider"
+                excluded = f"apparatus: the candidate's provider call {said}: {raised}"
+                contain(raised, log=log, what=excluded)
+                return CandidateOutput(
+                    infra_errors=[excluded],
+                    account_refused=owner == "account",
+                    telemetry=CandidateTelemetry(turns_delivered=0),
+                )
             contain(raised, log=log, what=f"the candidate raised {type(raised).__name__}: {raised}")
             missed = _missed(test_case.host_payload[_EXPECTED_KEY]) if self._classifies else {}
             return CandidateOutput(

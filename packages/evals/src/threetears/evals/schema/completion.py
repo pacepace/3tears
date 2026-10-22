@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Final, Protocol, Self
+from typing import Any, Final, Literal, Protocol, Self, get_args
 
 from threetears.evals.schema.models import ClientRequestSettings, StopReason
 
@@ -37,7 +37,9 @@ JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 #: request (``Ceilings().generation_ceiling_s``, ``Ceilings().judge_phase_ceiling_s``
 #: of :class:`~threetears.evals.run.Ceilings`, and :func:`~threetears.evals.analysis.reporter_cell_timeout_s`) is a count of requests times this, so
 #: an answer below the client's real worst case cancels requests that were still going to finish,
-#: after they were billed.
+#: after they were billed. On the package's ``Model``, the resends of a declined call all end within
+#: one request's timeout of the first attempt (:class:`~threetears.evals.providers.DeclinedRetry`), so
+#: one request takes its first attempt's time or one timeout, whichever is longer.
 RequestCeiling = Callable[[int], float]
 
 
@@ -464,6 +466,14 @@ class VariationLLM(SimulatorLLM, Protocol):
         ...
 
 
+#: Whose failure a raised completion call was, as the host's describer reads it
+#: (:attr:`ProviderFailure.owner`): the calling ``account`` (refused for every model behind
+#: the key), the ``provider`` (it declined to serve the call at that moment: a rate limit, 429, or
+#: the provider overloaded or unavailable, 529 or 503), or the ``candidate`` (anything else,
+#: charged to whoever made the call).
+FailureOwner = Literal["account", "provider", "candidate"]
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderFailure:
     """What eval is allowed to know about a completion call that raised.
@@ -490,19 +500,30 @@ class ProviderFailure:
     bool exists because that decision cannot be made from ``description`` alone:
     redacted text and honest text look alike.
 
-    ``account_refused`` says the provider refused the call for the calling ACCOUNT — out
-    of credit, or the key refused — rather than for anything about the model or the
-    request. Every model behind the same key gets the same answer, so a caller that
-    runs a candidate's own call reads it as an apparatus fault and stops the run
-    (``CandidateOutput.account_refused``) instead of charging the candidate. It is a
-    field of the port rather than a type eval matches on because only the host knows
-    its client's error types; a describer that cannot tell says ``False``, and the
-    failure is then charged as any other.
+    ``owner`` says whose failure the call was (:data:`FailureOwner`), the one predicate every
+    caller charges it by. ``"account"``: the provider refused the calling ACCOUNT — out of
+    credit, a quota spent, the key refused — so every model behind the same key gets the same
+    answer, and a caller excludes the cell and stops the run (``CandidateOutput.account_refused``).
+    ``"provider"``: the provider declined to serve the call at that moment — a rate limit (429), or
+    the provider overloaded or unavailable (529, 503) — which says nothing about the model and would
+    meet any request, so a caller excludes the cell and the run goes on. ``"candidate"``:
+    anything else, charged to whoever made the call. It is a field of the port rather than a
+    type eval matches on because only the host knows its client's error types; a describer that
+    cannot tell says ``"candidate"``, and the failure is then charged as any other. An owner
+    outside :data:`FailureOwner` is refused at construction, so a misspelt one surfaces as a
+    describer that raised rather than as a silent charge to the candidate.
     """
 
     description: str
     payload_withheld: bool
-    account_refused: bool
+    owner: FailureOwner
+
+    def __post_init__(self) -> None:
+        """Refuse an owner outside :data:`FailureOwner`."""
+        if self.owner not in get_args(FailureOwner):
+            raise ValueError(
+                f"ProviderFailure.owner is {self.owner!r}; it is one of {', '.join(get_args(FailureOwner))}"
+            )
 
 
 class ProviderFailureDescriber(Protocol):
@@ -535,6 +556,7 @@ __all__ = [
     "CompletionGenerator",
     "CompletionProtocolDefect",
     "CompletionResult",
+    "FailureOwner",
     "JSON_OBJECT_RESPONSE_FORMAT",
     "OPTIONAL_COMPLETION_ATTRIBUTES",
     "PricedCompletion",

@@ -99,8 +99,9 @@ _MARK_SURFACED_STATUSES = tuple(s for s in INTENTION_STATUS_VALUES if s != Inten
 #: ``date_updated`` between the read and the save (``ConcurrentModificationError``), a committed
 #: write whose table generation could not be advanced (``GenerationUnavailableError``, retry), and a
 #: write whose row count the store did not report (``RowcountUnreadableError``, a ``ValueError``,
-#: named alone so no other ``ValueError`` reads as an outage). The tool answers each with an error
-#: string; anything else is a bug and propagates. ``ConcurrentModificationError`` is not in
+#: named alone so no other ``ValueError`` reads as an outage). A new want's insert meets all of
+#: them except the CAS race, which needs a row already stored. The tool answers each with an error string;
+#: anything else is a bug and propagates. ``ConcurrentModificationError`` is not in
 #: :data:`STORAGE_FAILURES` because a coordination primitive reads it as its own signal.
 _SAVE_FAILURES: Final[tuple[type[Exception], ...]] = (
     *STORAGE_FAILURES,
@@ -363,26 +364,29 @@ async def load_intention_log_tool(
                     what=f"intention_log: context_resolver unavailable; source_conversation_id left null ({exc})",
                 )
 
+        now = datetime.now(UTC)
+        intention_id = UUID(str(uuid7()))
+        new_data: dict[str, Any] = {
+            "intention_id": intention_id,
+            "agent_id": agent_id,
+            "customer_id": customer_id,
+            "user_id": user_id,
+            "status": IntentionStatus.OPEN.value,
+            "content": text,
+            "embedding": embedding,
+            "salience": salience_seed,
+            "source_memory_id": source_memory_uuid,
+            "source_conversation_id": source_conversation_id,
+            "date_created": now,
+            "date_updated": now,
+        }
+        entity: IntentionEntity = intentions_collection.create(new_data)
+        # the insert is an unfenced upsert on a key minted here, so no concurrent writer can make it
+        # land no row. it lands none only on a collection with no L3 store, and that RuntimeError,
+        # like a vector of the wrong width (ValueError), is a wiring fault: it propagates.
         try:
-            now = datetime.now(UTC)
-            intention_id = UUID(str(uuid7()))
-            new_data: dict[str, Any] = {
-                "intention_id": intention_id,
-                "agent_id": agent_id,
-                "customer_id": customer_id,
-                "user_id": user_id,
-                "status": IntentionStatus.OPEN.value,
-                "content": text,
-                "embedding": embedding,
-                "salience": salience_seed,
-                "source_memory_id": source_memory_uuid,
-                "source_conversation_id": source_conversation_id,
-                "date_created": now,
-                "date_updated": now,
-            }
-            entity: IntentionEntity = intentions_collection.create(new_data)
             await intentions_collection.save_entity(entity)
-        except Exception as exc:
+        except _SAVE_FAILURES as exc:
             contain(exc, log=log, what="intention_log: create failed", extra={"error": str(exc)})
             return _tool_error("intention_log", "store", type(exc).__name__)
 

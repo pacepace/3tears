@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-evals"
-version = "0.74.0"
+version = "0.75.0"
 description = "Evaluate LLM-backed products: campaigns over levers, judged and code-graded trials, cost and latency accounting, and analysis reports"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -36,9 +36,10 @@ dependencies = [
 # gates it: it was checked manually (passed on 2026-10-06) by running the transport's tests against it:
 #   uv run --with "fastmcp==3.4.2" pytest packages/evals/tests/test_fastmcp_transport.py
 # Re-run that when the transport starts using a fastmcp API it did not, and raise the floor if it fails.
-# The cap is the major this is tested against.
+# The cap is the newest major this is tested against: the suite runs on the locked 4.x, and
+# scripts/test-mcp-v1.sh runs the transport's tests on 3.x (fastmcp 3 needs mcp 1, fastmcp 4 mcp 2).
 # fastmcp-slim is named too: since 3.x the `fastmcp` module ships in it, and fastmcp is its wrapper
-fastmcp = ["fastmcp>=3.4.2,<4", "fastmcp-slim>=3.4.2,<4"]
+fastmcp = ["fastmcp>=3.4.2,<5", "fastmcp-slim>=3.4.2,<5"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

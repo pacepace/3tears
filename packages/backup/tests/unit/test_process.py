@@ -12,7 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from threetears.backup.process import BackupToolError, ReadAhead, feed_stdin, fill_read_ahead, stream_stdout
+from threetears.backup.process import (
+    BackupToolError,
+    ReadAhead,
+    feed_stdin,
+    fill_read_ahead,
+    pipe_through,
+    stream_stdout,
+)
 
 
 async def _emit(data: bytes, *, chunk: int = 4) -> AsyncIterator[bytes]:
@@ -203,3 +210,49 @@ class TestTheReadAheadBuffer:
 
         await buffer.close()
         await asyncio.wait_for(parked, timeout=1)
+
+
+class TestPipeThrough:
+    """`pipe_through` feeds a child's stdin and reads its stdout at once (pg_restore -f -)."""
+
+    async def test_a_large_stream_passes_through_without_deadlocking(self) -> None:
+        """both pipes fill well past the OS buffer, so this hangs unless the two directions overlap."""
+        payload = b"0123456789abcdef" * (512 * 1024)  # 8 MiB
+
+        out = await asyncio.wait_for(_collect(pipe_through(["cat"], _emit(payload, chunk=64 * 1024))), timeout=30)
+
+        assert out == payload
+
+    async def test_the_child_transforms_what_it_is_fed(self) -> None:
+        out = await _collect(pipe_through(["tr", "a-z", "A-Z"], _emit(b"archive to sql")))
+        assert out == b"ARCHIVE TO SQL"
+
+    async def test_a_nonzero_exit_raises_with_stderr(self) -> None:
+        with pytest.raises(BackupToolError) as excinfo:
+            await _collect(pipe_through(["sh", "-c", "cat >/dev/null; printf bad-archive >&2; exit 1"], _emit(b"x")))
+        assert excinfo.value.returncode == 1
+        assert "bad-archive" in excinfo.value.stderr
+
+    async def test_a_child_that_exits_zero_without_reading_a_large_input_is_a_short_feed(self) -> None:
+        with pytest.raises(BackupToolError, match="stdin closed before the archive was fully written") as excinfo:
+            await _collect(pipe_through(["sh", "-c", "exit 0"], _emit(b"x" * (5 * 1024 * 1024), chunk=64 * 1024)))
+        assert excinfo.value.returncode != 0
+
+    async def test_a_source_failure_is_raised_and_the_child_does_not_hang(self) -> None:
+        async def failing() -> AsyncIterator[bytes]:
+            yield b"start of an archive\n"
+            raise RuntimeError("object store read failed")
+
+        with pytest.raises(RuntimeError, match="object store read failed"):
+            await asyncio.wait_for(_collect(pipe_through(["cat"], failing())), timeout=10)
+
+    async def test_a_timeout_kills_a_hung_child(self) -> None:
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(BackupToolError, match="timed out"):
+            await _collect(pipe_through(["sh", "-c", "sleep 5"], _emit(b"tiny"), timeout=0.3))
+        assert asyncio.get_running_loop().time() - started < 3
+
+    async def test_a_consumer_that_stops_early_does_not_hang(self) -> None:
+        gen = pipe_through(["cat"], _emit(b"y" * (50 * 1024 * 1024), chunk=64 * 1024))
+        assert await anext(gen)
+        await asyncio.wait_for(gen.aclose(), timeout=5)

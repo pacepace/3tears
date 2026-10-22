@@ -387,8 +387,6 @@ def _verdict_order(
     adjudications: list[BarAdjudication],
     aspect: str,
     declared: AspectDeclaration | None,
-    *,
-    first_run_at: str | None,
 ) -> VerdictOrder:
     """Order the adjudicated bars by the aspect's declared merit priority, and scope them to its question.
 
@@ -402,9 +400,6 @@ def _verdict_order(
     :ptype aspect: str
     :param declared: What the campaign declared, as the aspect reads it, or None.
     :ptype declared: AspectDeclaration | None
-    :param first_run_at: The earliest member run's ``created_at``: only a question asked by then is scoped
-        (:func:`~threetears.evals.analysis.bundle.schema.asked_in_time`).
-    :ptype first_run_at: str | None
     :return: The order. With no declaration or an empty priority, every adjudicated bar is unranked and no
         tier exists — the analysis must not invent a preference the campaign never stated.
     :rtype: VerdictOrder
@@ -421,7 +416,7 @@ def _verdict_order(
         if bar.state == "adjudicated" and (bar.merit_axis is None or bar.merit_axis not in ranked)
     ]
     question = None
-    if asked := question_axes(declared, first_run_at):
+    if asked := question_axes(declared):
         # Each axis once: the declaration refuses a repeat, so the reader takes the list as it is.
         axes = sorted(asked, key=lambda axis: priority.index(axis) if axis in ranked else len(priority))
         question = QuestionScope(

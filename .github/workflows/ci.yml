@@ -125,8 +125,9 @@ jobs:
 
       - name: Test (unit + enforcement; integration runs in its own job below)
         if: steps.scope.outputs.needed == 'true'
-        # four workers, one package per worker, as ./scripts/test.sh runs it locally
-        run: uv run pytest packages/ tests/ -m "not integration" -n 4 --dist loadgroup -v
+        # four workers, one package per worker, as ./scripts/test.sh runs it locally -- split into
+        # several sessions so no worker outgrows the runner's memory (see the script's header)
+        run: ./scripts/ci-unit-tests.sh -v
 
       # The step above only ever sees the OpenTelemetry uv.lock pins, which is always recent, so a
       # declared floor can fall behind the code with everything green. It did: observe imported a
@@ -136,6 +137,12 @@ jobs:
       - name: Test observe at its declared OpenTelemetry floor
         if: steps.scope.outputs.needed == 'true'
         run: ./scripts/test-otel-floor.sh -v
+
+      # 3tears 0.75 runs on mcp 1.x as well as the locked 2.x, so consumers can move on their own
+      # schedule; the step above only ever sees 2.x. Goes away when 3tears drops mcp 1.x, which the owner decides; no release is set.
+      - name: Test the MCP packages on mcp 1.x
+        if: steps.scope.outputs.needed == 'true'
+        run: ./scripts/test-mcp-v1.sh -q
 
   # The `integration` marker, which nothing ran until 2026-08-18.
   #

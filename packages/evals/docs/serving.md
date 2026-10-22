@@ -279,8 +279,11 @@ the launch and reads each run with `run_get`. One `job_cancel` of a launch stops
 A job id names the durable record its work writes, so
 every process sharing the store answers it alike, and it is still answerable after a restart. Whether a job is
 still running is its record's answer: the process running it holds a **lease** on the record and renews it
-(every third of `LaunchHost.job_lease_s`, 60s by default; all held leases at once, on a pool of its own that
-cell work never queues behind). A job whose record has not ended and whose lease has
+(every `JOB_LEASE_RENEWAL_FRACTION`, a third, of `LaunchHost.job_lease_s`, `DEFAULT_JOB_LEASE_S` (60s) by default;
+all held leases at once, on a pool of its own, `LEASE_POOL_WORKERS` threads, that cell work never queues behind;
+each in `threetears.evals.schema`), and each of the job's own writes of its record that lands extends it as a renewal
+does, so a job busy writing its record keeps its lease though its renewals lose the race. A job whose record has not
+ended and whose lease has
 lapsed reads `lost`, and the first read to see that writes it on the record: not only `job_poll`, but every read
 of the record — `run_get`, `runs_list`, a campaign's or a report's read of its runs, a sweep's, an analysis
 attempt's — so a job whose process died reads `lost` everywhere once its lease lapses, and nothing counts it as
@@ -311,9 +314,11 @@ launches one arm after another and `concurrent` launches them all at once, each 
 also declare `measure_latency`, which every arm's launch takes and which runs the arms sequential. Launched one after
 another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
 the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design, and its readings are leads: to ask a
-question of what it found, declare a campaign before the runs that answer it. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+question of what it found, `campaign_create` an aspect over the sweep's runs (`run_ids` from `job_poll`) with its arms
+named by `from_run_ids`; the question reads as asked after the runs, and the page discloses when. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
-the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
+the sweep `failed`, except an arm whose run failed because it measured nothing (every cell excluded, as for a model
+no allowed provider serves): that arm fails alone and the sweep goes on to the others. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a
 role default that moves mid-sweep cannot split the arms.
 
@@ -368,8 +373,8 @@ exploratory one takes none of them.
 2. `run_launch` the arms, then `campaign_runs_add` each run to its aspect (by its template, or the `aspect` you
    name; `campaign_runs_remove` takes one out, and its results stay);
 3. `campaign_update` with `control_from_run_id`, naming the member run whose variant is the control. Once a run has
-   joined, the control is named once and never re-pointed, and a control named after an aspect's first result makes
-   that aspect's comparisons post hoc.
+   joined, the control is named once and never re-pointed, and a control named after an aspect's first result dates
+   that aspect's question at the naming, which its pages disclose as set after the runs.
 
 To ask again after the runs, `campaign_create` with `aspects_from` adopts the aspects it keeps, each with the time
 its question was asked; what it adds (`margins` for an adopted aspect, a floor, an arm, the question's new words)
@@ -387,12 +392,12 @@ is dated now and reads as declared after the runs.
 
 | Key | Holds |
 |---|---|
-| `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 1) |
+| `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 2) |
 | `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
-| `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason |
-| `recommendation` | the writer's arm and confidence, or null |
+| `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
+| `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |
 | `call` | the recorded call (`CampaignCall`), or null |
-| `aspects` | each aspect's `aspect`, `bundle_fingerprint` and `bundle_schema_version` |
+| `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v2:` and a digest; one with no prefix was recorded before fingerprints rounded floats), `bundle_schema_version` and `question_after_runs`: what was set after its runs (`late`: `question` or `control`), when (`at`, null with no orderable time) and when the runs began (`first_run_at`), or null. Its readings read as asked either way; this says when, for a reader to judge |
 
 Each aspect's bundle is not inlined: it is written beside the page as `bundle-<aspect>.json` (the label in lower case, hyphenated),
 and the fingerprint names it. Branch on the typed fields, never on a row's `reason`, which is words.
@@ -610,7 +615,9 @@ frozen case, never a generated one.
 
 - `reporter_case_freeze` (write) freezes a campaign's analysis bundle into a case of a reporter template —
   with `recorded_analysis_id`, the memo the campaign got too, and any reader `labels` on it — and answers
-  with the case id, its bundle fingerprint and the `limits` the freeze recorded.
+  with the case id, its bundle fingerprint and the `limits` the freeze recorded. Each label is a reader's verdict:
+  it names its `reader` (omitted, the caller), and the host's `attests_person` must vouch that the caller relays
+  that reader's verdict, or the freeze is refused (403) and nothing is written; a freeze with no labels asks nothing.
 - `reporter_cases_list` reads the template's bank: which case each campaign and memo launches, and what
   superseded or retired the rest.
 - `reporter_case_archive` retires a case or restores it.

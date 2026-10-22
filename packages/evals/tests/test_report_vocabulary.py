@@ -99,6 +99,15 @@ def test_the_word_tables_cover_exactly_their_causes() -> None:
     assert set(FAIL_CAUSE_WORDS) == set(get_args(FailCause))
 
 
+def test_a_setup_loss_says_a_declined_call_needs_no_fix_only_a_rerun() -> None:
+    worded = loss_words("infra")
+    assert worded.words.endswith(", or the provider declined a call")
+    assert worded.remedy.endswith(
+        "a call the provider declined needs no fix, only a rerun once the provider can serve it (later, or with"
+        " fewer calls at once)"
+    )
+
+
 def test_a_truncated_judge_names_the_cap_it_was_sent_or_says_it_was_unreported() -> None:
     from threetears.evals.analysis.bundle.schema import ArmExclusions
 

@@ -9,17 +9,23 @@ progress writes waited a whole interval. Pinned, each against the shape that fai
 - **One slow record** delays no other record's renewal.
 - **A hung renewal** never returns, and its record still lapses at its own deadline, the others untouched.
 - **Contended renewal**: tried again within the interval, after a short wait, not a whole interval later.
+- **A renewal that lands late** says how late, against what interval, and whether it waited to be scheduled or on
+  the store.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from collections.abc import Callable
 from typing import Any
+
+import pytest
 
 
 from threetears.evals.kernel import RUN_JOB, EvalStorage, JobLeases
@@ -208,4 +214,28 @@ async def test_a_renewal_that_never_returns_expires_its_own_record_at_the_lease_
         assert any("had not returned" in fault for fault in faults), f"a fault names the hung renewal: {faults}"
     finally:
         store.release.set()
+        await leases.shut_down()
+
+
+async def test_a_renewal_that_lands_late_says_how_late_and_why(caplog: pytest.LogCaptureFixture) -> None:
+    store = _SlowRecordStore("run-slow", 0.8)  # its renewal's write lands well past one interval, inside the lease
+    storage = _storage(store)
+    leases = JobLeases(storage, lease_s=LEASE_S)
+    try:
+        with caplog.at_level(logging.WARNING, logger="threetears.evals.kernel.job_leases"):
+            for run_id in ("run-slow", "run-b"):
+                _hold(leases, storage, run_id)
+            await asyncio.sleep(1.7)  # the slow renewal, due at one interval, lands about 0.8 s later
+
+        late = [record.getMessage() for record in caplog.records if "renewal landed late" in record.getMessage()]
+        assert len(late) == 1 and "run=run-slow" in late[0], f"one line, for the late renewal only: {late}"
+        assert f"against a {LEASE_S / 3:.1f}s renewal interval and a {LEASE_S:.1f}s lease" in late[0]
+        # the line names all three waits; which one was slow is the point, not how slow a loaded box made it
+        waits = re.search(
+            r"the loop's wait (\d+\.\d\d)s, the lease pool's wait (\d+\.\d\d)s, the store call (\d+\.\d\d)s", late[0]
+        )
+        assert waits is not None, late[0]
+        loop_wait, pool_wait, store_wait = (float(value) for value in waits.groups())
+        assert store_wait > max(loop_wait, pool_wait), f"the store call is the slow one: {late[0]}"
+    finally:
         await leases.shut_down()

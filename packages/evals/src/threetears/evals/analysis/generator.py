@@ -58,9 +58,10 @@ none of the finding's readings or trials is taken at; only "which arms does this
 by the names the bundle gives each arm (:mod:`threetears.evals.analysis.arm_mentions`).
 
 **The recommendation is pinned, and it answers to code's readings.** It names the findings it rests on and an arm
-the campaign holds; a finding names only trials the campaign holds. A candidate is recommended only where some aspect
-asked its question before its runs (:func:`_reject_exploratory_adoption`), where code's reading or a comparison
-separated it from the control in its favour and no guardrail breached (:func:`_reject_unseparated_adoption`), and
+the campaign holds; a finding names only trials the campaign holds. A candidate is recommended only where the campaign
+asks some aspect a question, whenever it was asked (:func:`_reject_exploratory_adoption`), where code's reading or a comparison
+separated it from the control in its favour, or every floor held on the asked aspects (each declaring one), and no
+guardrail breached (:func:`_reject_unseparated_adoption`), and
 **a broken floor is addressed**: a floor only warns, never blocks, but a recommendation of an arm that broke one names
 each such floor and why the breach is acceptable (:func:`_reject_unaddressed_warnings`), as a choice's pick names
 each aspect another arm was shown ahead on, and any recommendation each absolute bar its arm missed. Which kind a
@@ -352,8 +353,9 @@ async def generate_analysis(
 ) -> tuple[EvalAnalysis, list[EvalInsight]]:
     """Generate one campaign's analysis from its campaign bundle, in one LLM call or two.
 
-    One call per campaign, over every aspect: the writer recommends one arm, states the findings across the aspects,
-    summarises each aspect and says what to run next; code has already read each aspect and every floor.
+    One call per campaign, over every aspect: the writer reads across the aspects in one summary, recommends one arm,
+    states the findings across the aspects, summarises each aspect and says what to run next; code has already read
+    each aspect and every floor.
 
     A refusal of what a FINISHED call produced buys exactly ONE repair round-trip — a
     soundness rejection, an unparseable payload and a missing required field alike; only a
@@ -739,8 +741,8 @@ Emit the WHOLE analysis again with exactly that corrected. The refusal names wha
 alternative. Follow it literally.
 
 Keep everything the refusal does not name. Where your previous output was a complete \
-analysis, its other findings, its recommendation and its aspect summaries were not at \
-issue: reproduce them as they were rather than rewriting the report around the fix.
+analysis, its other findings, its recommendation, its summary and its aspect summaries were \
+not at issue: reproduce them as they were rather than rewriting the report around the fix.
 
 Do NOT satisfy the refusal by REMOVING what it complains about — not the offending finding, \
 and not an evidence row or list you are unsure how to key. That answers the refusal by \
@@ -807,13 +809,13 @@ def _assemble_and_validate(
     (:func:`_stray_arm_titles`).
 
     :raises GenerationError: The provider cut the call short (not repaired).
-    :raises SoundnessRefusal: The output does not match the contract, a position, reading or trial points nowhere,
-        the aspect summaries are not one per aspect, the recommendation is one the campaign's kind cannot make (a
-        measurement's; none in a change; a choice's unseparated pick above ``low`` confidence), rests on no finding,
-        names no arm the campaign holds, recommends a candidate in an exploratory campaign or one no reading
-        separated from the control, leaves a warning on its arm unaddressed (a broken floor, another arm ahead, a
-        missed bar) or names one code never raised, or a finding's title states a null it established nowhere or
-        names an arm it cites nothing of (repaired once).
+    :raises SoundnessRefusal: The output does not match the contract (an empty summary among it), a position, reading
+        or trial points nowhere, the aspect summaries are not one per aspect, the recommendation is one the campaign's
+        kind cannot make (a measurement's; none in a change; a choice's unseparated pick above ``low`` confidence),
+        rests on no finding, names no arm the campaign holds, recommends a candidate in an exploratory campaign or one
+        no reading separated from the control, leaves a warning on its arm unaddressed (a broken floor, another arm
+        ahead, a missed bar) or names one code never raised, or a finding's title states a null it established nowhere
+        or names an arm it cites nothing of (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
@@ -1106,18 +1108,19 @@ def _recommended(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> 
 
 
 def _confirmatory(bundle: CampaignBundle) -> list[AnalysisContextBundle]:
-    """The aspects whose question was asked before their first result: the only ones whose evidence decides."""
+    """The aspects the campaign asks a question, whenever it was asked: the only ones whose evidence decides."""
     return [aspect for aspect in bundle.aspects if aspect.question_declared]
 
 
 def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
-    """Refuse a change's switch to a candidate when none of its aspects asked its question before its runs.
+    """Refuse a change's switch to a candidate when the campaign asks none of its aspects a question.
 
-    With no question asked before the evidence was read, every pattern in it is a lead, and switching on a lead is a
-    decision nothing was designed to make. Keeping the control is what such a campaign recommends: it changes
-    nothing, and the next steps say what campaign, declared before it runs, would settle the rest. The structural fact
-    is each aspect's ``question_declared``; nothing is read off prose. A switch in a campaign some of whose aspects
-    asked in time rests only on those aspects (:func:`_reject_unseparated_adoption`).
+    With no question asked, every pattern in the evidence is a lead, and switching on a lead is a decision nothing
+    was designed to make. Keeping the control is what such a campaign recommends: it changes nothing, and the next
+    steps say what declared question would settle the rest. The structural fact is each aspect's
+    ``question_declared``; nothing is read off prose. A question asked after the runs counts as asked: it is disclosed
+    (``reading_scope.question_after_runs``), never enforced. A switch in a campaign some of whose aspects are asked
+    rests only on those aspects (:func:`_reject_unseparated_adoption`).
 
     :raises SoundnessRefusal: Every aspect is exploratory and a change's recommendation names a candidate.
     """
@@ -1126,25 +1129,29 @@ def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     if arm is None or control is None or bundle.kind != "change" or arm.role == "control" or _confirmatory(bundle):
         return
     raise SoundnessRefusal(
-        f"the recommendation names {arm.label!r}, a candidate, and this campaign asked no question before its first "
-        "run on any aspect, so it is exploratory: nothing in it is a decision to switch on. "
+        f"the recommendation names {arm.label!r}, a candidate, and this campaign asks no question of any aspect, so "
+        "it is exploratory: nothing in it is a decision to switch on. "
         + f"Recommend the control, {control.label!r}, "
-        + "and say in `next` what campaign, declared before it runs, would settle the switch"
+        + "and say in `next` what declared question would settle the switch"
     )
 
 
 def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> None:
-    """Refuse a change's switch to a candidate no confirmatory reading separated from the control in its favour.
+    """Refuse a change's switch to a candidate shown neither better than the control nor no worse than its floors.
 
-    Recommending a candidate is a claim that it beat what it replaces, and the bundle says whether it did in two
-    places: code's reading of each aspect (``better`` is the gain shown, Holm-adjusted), and each aspect's
-    ``multiple_comparisons``. **Only confirmatory evidence counts**: a reading code marked ``confirmatory`` and a
-    comparison on an aspect whose question was asked before its first result. A pattern found on an aspect asked
-    after its runs is a lead, and licenses no switch however strong it looks. One such ``better`` reading or
-    ``improved`` comparison is enough: a trade-off is a legitimate recommendation. What is refused is a candidate with
-    no confirmatory upside — every tested reading ``not_separated``, or separated only by ``regressed`` — or one no
-    test could reach, which is refused saying so, since a reader cannot tell a recommendation resting on nothing from
-    one resting on a test.
+    Recommending a candidate is a claim that it may replace the control, and a campaign makes that claim one of two
+    ways. **Better:** code's reading of an aspect (``better`` is the gain shown, Holm-adjusted) or one of the aspect's
+    ``multiple_comparisons`` separated it in its favour. One such ``better`` reading or ``improved`` comparison is
+    enough: a trade-off is a legitimate recommendation. **No worse:** every floor on every aspect the campaign asks
+    reads ``held`` for it, each aspect carrying at least one. A floor is the campaign's own line for how much worse a
+    candidate may be, and ``held`` is code showing it within that line, so a campaign asking "is it no worse?" is
+    answered by its floors, and refusing the switch until the candidate also separated would answer "is it better?"
+    instead. **Only confirmatory evidence counts**, either way: a reading code marked ``confirmatory``, and a
+    comparison or a floor on an aspect the campaign asks a question, whenever it was asked. A pattern found on an
+    aspect asked nothing is a lead, and licenses no switch however strong it looks. What is refused is a candidate
+    with no confirmatory upside — every tested reading ``not_separated``, or separated only by ``regressed`` — and a
+    floor on an asked aspect not ``held`` (or an asked aspect with no floor), or one no test could reach, which is
+    refused saying so, since a reader cannot tell a recommendation resting on nothing from one resting on a test.
 
     **A breached guardrail refuses the candidate whatever it gained**, on any aspect: a guardrail is what the arm must
     not get worse on, and it is held, never traded. An undecided guardrail does not refuse it, and is never read as
@@ -1154,7 +1161,8 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     readings instead (:func:`_reject_unaddressed_warnings`).
 
     :raises SoundnessRefusal: A change's recommendation names a candidate with a breached guardrail, or with no
-        confirmatory ``better`` reading and no confirmatory ``improved`` comparison.
+        confirmatory ``better`` reading, no confirmatory ``improved`` comparison, and not every floor ``held`` on the
+        asked aspects (or an asked aspect declaring none).
     """
     arm = _recommended(document, bundle)
     control = bundle.control()
@@ -1183,7 +1191,10 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     ]
     if any(comparison.verdict == "improved" for comparison in against):
         return
-    late = [
+    open_floors = _floors_not_held(bundle, keys, confirmatory)
+    if confirmatory and not open_floors:
+        return
+    unasked = [
         aspect.aspect
         for aspect in bundle.aspects
         if not aspect.question_declared
@@ -1199,15 +1210,43 @@ def _reject_unseparated_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     withheld = [aspect.multiple_comparisons.withheld for aspect in confirmatory]
     why = _no_separation(against, withheld=withheld[0] if withheld and all(withheld) else None)
     leads = (
-        f" It is shown better only on {', '.join(repr(label) for label in late)}, whose question was asked after its "
-        "runs: a lead there licenses no switch."
-        if late
+        f" It is shown better only on {', '.join(repr(label) for label in unasked)}, which the question does not ask "
+        "about: a lead there licenses no switch."
+        if unasked
         else ""
     )
     raise SoundnessRefusal(
-        f"the recommendation names {arm.label!r}, but on the aspects asked in time {why}, and code's reading shows it "
-        f"better on none of them.{leads} {remedy[:1].upper()}{remedy[1:]}"
+        f"the recommendation names {arm.label!r}, but on the aspects the question asks about {why}, and code's "
+        f"reading shows it better on none of them. Nor is it shown no worse than its floors: "
+        f"{'; '.join(open_floors)}.{leads} {remedy[:1].upper()}{remedy[1:]}"
     )
+
+
+def _floors_not_held(bundle: CampaignBundle, keys: frozenset[str], asked: Sequence[AnalysisContextBundle]) -> list[str]:
+    """Say, per asked aspect, why the candidate is not shown no worse there; empty when every floor ``held``.
+
+    The floors are the declared ones (``declaration.floors``), each looked up in code's reading of it on the candidate.
+    An asked aspect declaring no floor is not shown no worse, since the campaign drew no line there; a declared floor
+    not ``held`` is named with code's reason, and one code holds no reading of on the candidate is named as unread.
+
+    :param bundle: The campaign's bundle: its declared floors, and ``readings.floors`` per floor and candidate.
+    :param keys: The candidate's variant keys.
+    :param asked: The aspects the campaign asks a question.
+    :return: One clause per floor or aspect where the candidate is not shown no worse, in the aspects' order.
+    """
+    read = {status.floor: status for status in bundle.readings.floors if status.arm in keys}
+    clauses = []
+    for aspect in asked:
+        declared = [floor for floor in bundle.declaration.floors if floor.aspect == aspect.aspect]
+        if not declared:
+            clauses.append(f"aspect {aspect.aspect!r} declares no floor, so nothing there shows it no worse")
+        for floor in declared:
+            status = read.get(floor.key)
+            if status is None:
+                clauses.append(f"floor {floor.key} was not read on it, so it is not shown held")
+            elif status.status != "held":
+                clauses.append(f"floor {floor.key} is {status.status} ({status.reason.rstrip('.')})")
+    return clauses
 
 
 #: One warning code raised on the recommended arm, as the writer must address it: its key, the words of what code

@@ -552,7 +552,7 @@ async def _repeat(
             repeated.append(planned.result.id)
         else:
             unwritten.append(planned.result.id)
-        if any(outcome.account_refused for _, outcome in outcomes):
+        if any(outcome.owner == "account" for _, outcome in outcomes):
             stopped = (
                 f"the account behind the judge refused a call while repeating result '{planned.result.id}', "
                 "so every later call would be refused too"

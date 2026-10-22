@@ -68,7 +68,6 @@ from threetears.evals.analysis.bundle.schema import (
     ComparisonFamily,
     ComparisonReading,
     ComparisonVerdict,
-    asks_a_question,
     exploratory_disclosure,
     FLOOR_COST_MEASURE,
     FamilyComparison,
@@ -78,6 +77,7 @@ from threetears.evals.analysis.bundle.schema import (
     MultipleComparisons,
     ReadingScope,
     RealizedDesign,
+    question_after_runs,
     question_axes,
 )
 from threetears.evals.analysis.bundle.measures import (
@@ -104,9 +104,9 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
 
 
 #: Why a bundle carries no family of comparisons, one sentence per cause.
-#: Opens the exploratory family's disclosure, where the campaign asked no question before the aspect's first run.
+#: Opens the exploratory family's disclosure, where the campaign asks the aspect no question.
 _NO_QUESTION_FAMILY = (
-    "This campaign asked no question before its first run, so every comparison it holds — each contrast against the "
+    "This campaign asks no question of this aspect, so every comparison it holds — each contrast against the "
     "control, on every reading on a merit axis — is corrected as one family."
 )
 _NO_CONTROL_TO_COMPARE_AGAINST = (
@@ -646,7 +646,6 @@ def _multiple_comparisons(
     profile: HostProfile,
     run_margins: Mapping[str, float] | None = None,
     contended: Collection[_CellKey] = frozenset(),
-    first_run_at: str | None,
     rubric_threshold: int,
 ) -> tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]:
     """Test each contrast against the control in the aspect's one family, decide every guardrail, and carry what the
@@ -654,16 +653,16 @@ def _multiple_comparisons(
 
     The aspect's family is every comparison its question could draw a verdict from: each contrast cell against
     the control cell under the same rig (a contrast across rigs differs by its instrument too, so it is
-    not this test), on every reading on the aspect's merit axes (:func:`_family_readings`). With no question
-    asked before the first run it is the exploratory family, every reading on a merit axis. The family is
+    not this test), on every reading on the aspect's merit axes (:func:`_family_readings`), whenever the question
+    was asked. With no question asked it is the exploratory family, every reading on a merit axis. The family is
     corrected by Holm's method over the comparisons that carried a p, and each verdict is read off its
     adjusted p, so a family of ten cannot hand the writer a chance "difference" as a finding.
 
     The guardrails are read over the same pairs and the same per-case values, and kept out of every
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
-    **The overall pass rate joins the question's family when the question was asked before the first run and the aspect
-    declares a margin**: the margin is how far the pass rate may fall, so the pass rate is a hypothesis the question
+    **The overall pass rate joins the question's family when a question is asked and the aspect declares a
+    margin**: the margin is how far the pass rate may fall, so the pass rate is a hypothesis the question
     asks and its family grows by one, every adjusted p in it moving with it. It never joins the exploratory family,
     whose size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
     (:func:`_trial_pass_values`), tested and bounded as a check's pass rate is, on its 0-1 range.
@@ -674,9 +673,8 @@ def _multiple_comparisons(
 
     :param aspect: The aspect's label, which keys its question's family.
     :ptype aspect: str
-    :param declared: What the campaign declared, as the aspect reads it: its question, asked before the first run
-        or not (:func:`~threetears.evals.analysis.bundle.schema.asked_in_time`), its merit axes and its margin. A
-        question asked after it builds no family of its own, and the aspect is read as if it had asked nothing.
+    :param declared: What the campaign declared, as the aspect reads it: its question, its merit axes and its
+        margin. A question asked after the first run builds its family as one asked before it.
     :ptype declared: AspectDeclaration | None
     :param realized: The derived design, for the control arm.
     :ptype realized: RealizedDesign
@@ -700,13 +698,11 @@ def _multiple_comparisons(
     :param contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
         reason a comparison or a guardrail on elapsed time could not be read, where it could not.
     :ptype contended: Collection[_CellKey]
-    :param first_run_at: The earliest member run's ``created_at``, which a question must predate to scope a family.
-    :ptype first_run_at: str | None
     :param rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
         rate's per-case shares read (:func:`_trial_pass_values`), as the scoreboard does.
     :ptype rubric_threshold: int
-    :return: The aspect's question's family; the exploratory family over every reading when no question was asked
-        in time; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
+    :return: The aspect's question's family; the exploratory family over every reading when no question is
+        asked; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
         against the control, and the floors' per-case values; with no control, each pair of arms' pass rate per case
         instead (:func:`_choice_contrasts`), what a choice reads.
     :rtype: tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]
@@ -722,11 +718,11 @@ def _multiple_comparisons(
             ),
             _choice_contrasts(results_by_cell, rubric_threshold=rubric_threshold, catalog=catalog),
         )
-    axes_asked = question_axes(declared, first_run_at)
-    # An aspect that asked nothing (or only once its results existed) is not thereby licensed to report chance
-    # differences: its family is every comparison it holds, on every reading, corrected as one.
+    axes_asked = question_axes(declared)
+    # An aspect that asked nothing is not thereby licensed to report chance differences: its family is every
+    # comparison it holds, on every reading, corrected as one.
     scopes: list[tuple[str | None, list[MeritAxis]]] = [(aspect, axes_asked) if axes_asked is not None else (None, [])]
-    # The pass rate is a hypothesis only of a question asked in time with a margin to fall by (never the exploratory
+    # The pass rate is a hypothesis only of an asked question with a margin to fall by (never the exploratory
     # family's: it would move every other reading's adjusted p there over unchanged runs).
     pass_rate_asked = axes_asked is not None and declared is not None and declared.margin is not None
     control_variant = realized.control_arm.variant_key
@@ -899,24 +895,24 @@ def _reading_scope(
     catalog: dict[str, MetricDescriptor],
     judged_measures: list[JudgedMeasure],
     *,
+    as_declared: AspectDeclaration | None,
     first_run_at: str | None,
 ) -> ReadingScope:
-    """Label the readings the aspect's question, asked before the first run, does not ask about exploratory — or,
-    with none asked in time, say so once.
+    """Label the readings the aspect's question does not ask about exploratory — or, with none asked, say so once —
+    and say whether the question was asked after the first run.
 
     The same rule the family is scoped by (:func:`~threetears.evals.kernel.declaration.axis_in_question_scope` over
     :func:`~threetears.evals.analysis.bundle.schema.question_axes`), so a reading is exploratory exactly when the
-    family could not test it, and a question asked after the first run is said to be post hoc.
+    family could not test it. A question asked after the first run, or a control named after the first result,
+    labels nothing: it is disclosed with its time (:func:`~threetears.evals.analysis.bundle.schema.question_after_runs`),
+    read off ``as_declared``, the declaration before its control dated it, beside ``declared``, after.
     """
-    axes = question_axes(declared, first_run_at)
+    axes = question_axes(declared)
     if axes is None:
-        return ReadingScope(
-            questions_declared=False,
-            question_post_hoc=asks_a_question(declared),
-            disclosure=exploratory_disclosure(declared, first_run_at),
-        )
+        return ReadingScope(questions_declared=False, disclosure=exploratory_disclosure(declared))
     return ReadingScope(
         questions_declared=True,
+        question_after_runs=question_after_runs(as_declared, first_run_at, dated=declared),
         exploratory_measures=sorted(
             name
             for name, descriptor in catalog.items()

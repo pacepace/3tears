@@ -1,26 +1,29 @@
-"""Build a campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then
-one fold per aspect.
+"""Build a campaign's page: the writer's summary across its aspects, the recommendation, what code read on each
+aspect, the person's call, then one fold per aspect.
 
 Code reports, the writer recommends, a person decides, and the page keeps the three apart. What the first screen
 holds depends on the campaign's kind (:func:`~threetears.evals.analysis.campaign_readings.campaign_kind`). For every
 kind it opens, above the title, with **every bar an arm misses**, then **every broken floor**, then **every guardrail
 an arm is not shown safe on**, one loud line each, a bar or a floor followed by the writer's why where the memo
 recommends that arm over it: each only warns, and this is where it warns. Then **the question**, quoted whole as the
-campaign asks it. Then, for **a change**:
+campaign asks it, and, where it was set after an aspect's runs began, one line saying when each happened: disclosed,
+never a demotion, since its readings read as any asked question's. Then **the writer's summary**, its read across
+every aspect, for every kind that has a memo; a code-only page has none. Then **the writer's recommendation** for a change or a choice: the arm and how sure, then
+each reason; where the memo recommends nothing, one line by the campaign's kind (no clear winner); with no memo, one
+line saying no recommendation was written. A measurement recommends nothing, so it has no such line. Then, for
+**a change**:
 
-1. **The writer's recommendation**, the arm and how sure, then each reason; with no memo, one line saying no
-   recommendation was written.
-2. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
+1. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
    interval it was read on, the aspect's margin, and what the row shows (shown better, shown worse or unclear). Under
    it, the lines that change how a row reads: the level each interval was read at, an aspect with no margin (never
-   shown worse), an aspect whose question came after its first run (its readings are leads), a margin or a floor
-   declared after the runs, the test setup a row was read under where the arms ran under several.
-3. **What would settle each unclear row** on an aspect with a margin: the cases that would show the arm within it,
+   shown worse), a margin or a floor declared after the runs, the test setup a row was read under where the arms ran
+   under several.
+2. **What would settle each unclear row** on an aspect with a margin: the cases that would show the arm within it,
    if the arms do not differ and if they differ as observed.
 
 For **a choice**: the table of every pair of arms on every aspect and the arm shown ahead, the writer's why for each
-aspect its pick is shown behind on, the frontier's reading of which arm clears a bar cheapest, then the writer's
-recommendation. For **a measurement**: each aspect's measures for its one arm, and no recommendation.
+aspect its pick is shown behind on, then the frontier's reading of which arm clears a bar cheapest. For **a
+measurement**: each aspect's measures for its one arm.
 
 Every kind then shows its bars table and the person's call (a measurement only once one is recorded), or that none is
 recorded yet; a call adopting an arm past a broken floor says which floor it overrides.
@@ -28,22 +31,31 @@ recorded yet; a call adopting an arm past a broken floor says which floor it ove
 Then the memo's findings and next steps, and one closed fold per aspect: the writer's summary of the aspect (what
 changed, how sure, what it means) when there is one, then the aspect's own page as
 :func:`~threetears.evals.analysis.report.build.build_code_only_report` built it, which the serializers lay out in the
-fold without its title, its question, its broken floors or its verdict line.
+fold without its title, its question, when that was set, its broken floors or its verdict line.
 
 Every arm is named by its label, never by its role; every line is held to :mod:`~threetears.evals.analysis.style`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.arms import arm_names, short_digest
+from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, FloorStatus, PairReading
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.campaign_readings import (
+    AspectReading,
+    BarStatus,
+    CampaignReadings,
+    FloorStatus,
+    PairReading,
+)
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS
 from threetears.evals.analysis.report.decision import floor_statement, projected_cell
+from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.report.model import (
     CampaignAspectFold,
@@ -58,13 +70,21 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     TextBlock,
     TextRole,
+    fold_ids,
     interval_text,
+    reading_anchor,
     table_row,
 )
-from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, NO_RECOMMENDATION_WORDS
+from threetears.evals.analysis.report.words import (
+    CONFIDENCE_WORDS,
+    NO_RECOMMENDATION_WORDS,
+    UNTRACED,
+    evidence_figure,
+    reading_heading,
+)
 from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, measure_name, sentences
-from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis
-from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis, Finding
+from threetears.evals.kernel.campaign import EvalCampaign, FindingResolution
 from threetears.evals.kernel.declaration import (
     CampaignCall,
     CostLower,
@@ -83,6 +103,7 @@ __all__ = [
     "READING_WORDS",
     "build_campaign_report",
     "campaign_verdict",
+    "campaign_warnings",
 ]
 
 #: What each reading is called on the page.
@@ -102,9 +123,12 @@ def build_campaign_report(
     memo: AuthoredCampaignAnalysis | None,
     *,
     call: CampaignCall | None = None,
+    recommended_variant_key: str | None = None,
+    resolutions: Sequence[FindingResolution] = (),
+    trial_ids: Mapping[str, tuple[str, str]] | None = None,
 ) -> CampaignReport:
-    """Lay a campaign out as its page: code's readings first, the writer's recommendation, the person's call, then one
-    fold per aspect.
+    """Lay a campaign out as its page: code's warnings first, the writer's summary and recommendation, code's readings
+    on each aspect, the person's call, the findings, then one fold per aspect.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -117,12 +141,28 @@ def build_campaign_report(
     :ptype memo: AuthoredCampaignAnalysis | None
     :param call: The person's call; None while none is recorded.
     :ptype call: CampaignCall | None
+    :param recommended_variant_key: The variant key of the arm the memo recommends, as the analysis recorded it
+        (``EvalAnalysis.recommended_variant_key``); required where the page holds a recommendation, which a
+        measurement's never does.
+    :ptype recommended_variant_key: str | None
+    :param resolutions: What code filled for each of the memo's findings, by position (``EvalAnalysis.resolutions``),
+        which each finding's trace reads the readings it cites off; empty traces only the trials each names.
+    :ptype resolutions: Sequence[FindingResolution]
+    :param trial_ids: The ids the memo names trials by, each to its aspect and its id in that aspect's bundle
+        (:meth:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.trial_ids`); None traces no trial.
+    :ptype trial_ids: Mapping[str, tuple[str, str]] | None
     :return: The page, ``basis="analysis"`` with a memo, ``code_only`` without one.
     :rtype: CampaignReport
-    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, or the
-        readings are of another campaign.
+    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
+        are of another campaign, or the memo recommends an arm and no key is given for it.
     """
     reports = _checked_reports(campaign, readings, aspect_reports)
+    recommendation = memo.recommended() if memo is not None and readings.kind != "measurement" else None
+    if recommendation is not None and recommended_variant_key is None:
+        raise RefusedInput(
+            f"the memo recommends {recommendation.arm}, and the page is given no variant key for that arm",
+            remedy="pass the key the analysis recorded for its recommended arm (EvalAnalysis.recommended_variant_key)",
+        )
     style = _CampaignStyle.over(campaign, readings, reports)
     kind = readings.kind
     blocks: list[ReportBlock] = [
@@ -134,21 +174,27 @@ def build_campaign_report(
         blocks.append(
             DisclosureBlock(section="header", source="basis", text=f'"{" ".join(campaign.question.split())}"')
         )
-    if kind == "change":
+    bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
+    blocks += [
+        DisclosureBlock(section="header", source="timing", text=line) for line in question_after_runs_lines(bundles)
+    ]
+    # The writer's read across every aspect, then what it recommends, then the aspects code read them on.
+    blocks += _memo_summary_blocks(memo, style)
+    if kind != "measurement":
         blocks += _recommendation_blocks(memo, style, kind)
+    if kind == "change":
         blocks += _table_blocks(campaign, readings, reports)
         blocks += _settle_blocks(readings)
     elif kind == "choice":
         blocks += _pair_blocks(campaign, readings, reports)
         blocks += _behind_on(memo, style)
         blocks += _frontier_blocks(campaign, readings, reports)
-        blocks += _recommendation_blocks(memo, style, kind)
     else:
         blocks += _measure_blocks(campaign, readings, reports)
     blocks += _bar_blocks(readings, reports)
     if kind != "measurement" or call is not None:
         blocks += _call_blocks(campaign, readings, call)
-    blocks += _memo_blocks(memo, style)
+    blocks += _memo_blocks(memo, style, _Trace.over(campaign, readings, reports, resolutions, trial_ids or {}))
     summaries = {summary.aspect: summary for summary in (memo.aspect_summaries if memo is not None else [])}
     folds = [
         CampaignAspectFold(
@@ -171,7 +217,8 @@ def build_campaign_report(
         aspects=folds,
         readings=readings,
         call=call,
-        recommendation=memo.recommended() if memo is not None and kind != "measurement" else None,
+        recommendation=recommendation,
+        recommended_variant_key=recommended_variant_key if recommendation is not None else None,
     )
 
 
@@ -203,9 +250,9 @@ def _checked_reports(
 # =============================================================================
 
 
-def _floor_of(campaign: EvalCampaign, key: str) -> Floor | None:
-    """The campaign's floor by its key."""
-    return next((floor for floor in campaign.floors if floor.key == key), None)
+def _floor_of(floors: Sequence[Floor], key: str) -> Floor | None:
+    """The floor by its key, among a campaign's floors."""
+    return next((floor for floor in floors if floor.key == key), None)
 
 
 def _floor_words(floor: Floor | None, status: FloorStatus) -> str:
@@ -232,10 +279,8 @@ def _bar_warnings(
                     )
                 )
     blocks: list[ReportBlock] = []
-    for status in readings.missed_bars():
-        blocks.append(
-            DisclosureBlock(section="header", source="bar", text=f"Bar missed on {status.aspect}: {status.reason}.")
-        )
+    for status, text in _bar_lines(readings):
+        blocks.append(DisclosureBlock(section="header", source="bar", text=text))
         if recommendation is not None and status.arm_label == recommendation.arm:
             blocks += answers.pop((status.aspect, status.measure), [])
     return blocks
@@ -309,39 +354,103 @@ def _floor_warnings(
     the arm, the rate that broke it and the interval it broke on; each followed at once by the writer's why, where the
     memo recommends the arm over that floor. Past :data:`_WARNINGS_APART` of them, one line per candidate names every
     floor it breaks, so the warnings stay readable, its whys after it."""
-    broken = readings.broken_floors()
     recommended, overrides = _overrides(memo, style)
 
     def answered(status: FloorStatus) -> list[ReportBlock]:
         # The why answers the recommended arm's breaking of the floor, never another arm's breaking of the same one.
         return overrides.get(status.floor, []) if status.arm_label == recommended else []
 
+    blocks: list[ReportBlock] = []
+    for statuses, text in _floor_lines(campaign.floors, readings):
+        blocks.append(DisclosureBlock(section="header", source="floor", text=text))
+        blocks += [block for status in statuses for block in answered(status)]
+    return blocks
+
+
+def campaign_warnings(floors: Sequence[Floor], readings: CampaignReadings) -> list[str]:
+    """The loud lines a campaign's page opens with for its bars and floors, as code words them: every bar an arm
+    misses, then every floor a candidate breaks — never the writer's why beside them, nor the guardrail lines after.
+
+    The page's own warnings are these lines, so whatever repeats them (an analysis's listing line) says what its page
+    opens with, word for word.
+
+    :param floors: The floors the readings were read against, which word each broken one: the campaign's, or the
+        ones frozen with an analysis (``EvalAnalysis.design_snapshot.floors``).
+    :ptype floors: Sequence[Floor]
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :return: The lines, in the page's order; none where no bar is missed and no floor broken.
+    :rtype: list[str]
+    """
+    return [text for _, text in _bar_lines(readings)] + [text for _, text in _floor_lines(floors, readings)]
+
+
+def question_after_runs_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
+    """The lines a page and a listing say where the question was set after an aspect's runs began, or its control
+    named after its first result, with both dates: disclosed, never a demotion (owner, 2026-10-21), so a reader can
+    judge what the readings rest on.
+
+    One line per distinct pair of dates and thing set late, each worded as what was late (the question set, the
+    control named). A line names its aspects only where some of ``bundles`` do not share it; a time that carries no
+    date says it may have come after the runs. Two dates on one day carry their times of day
+    (:meth:`~threetears.evals.analysis.bundle.schema.QuestionAfterRuns.page_dates`).
+
+    :param bundles: Each aspect's evidence, in the campaign's order; one for an aspect's own page.
+    :ptype bundles: Sequence[AnalysisContextBundle]
+    :return: The lines; none where every question came before its aspect's runs, or none is asked.
+    :rtype: list[str]
+    """
+    groups: dict[tuple[str, str | None, str], list[str]] = {}
+    for bundle in bundles:
+        late = bundle.reading_scope.question_after_runs
+        if late is not None:
+            groups.setdefault((late.late, *late.page_dates()), []).append(bundle.aspect)
+    lines: list[str] = []
+    for (what, at, began), labels in groups.items():
+        runs = "the runs" if len(labels) == len(bundles) else f"the runs on {_listed(labels)}"
+        lines.append(_after_runs_line(what, at, f"{runs} began on {began}"))
+    return lines
+
+
+def _after_runs_line(what: str, at: str | None, after: str) -> str:
+    """One line saying what was set after the runs, and when."""
+    if what == "control":
+        if at is None:
+            return f"The control was named at a time that cannot be ordered, so it may have been named after {after}."
+        return f"The control was named on {at}, after {after}."
+    if at is None:
+        return f"The question carries no date, so it may have been set after {after}."
+    return f"The question was set on {at}, after {after}."
+
+
+def _listed(labels: Sequence[str]) -> str:
+    """Aspects as a sentence lists them: ``billing``, ``billing and tone``, ``billing, tone and refunds``."""
+    return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+
+def _bar_lines(readings: CampaignReadings) -> list[tuple[BarStatus, str]]:
+    """Each bar an arm misses, with the line the page warns of it in: ``Bar missed on tone: <reason>.``"""
+    return [(status, f"Bar missed on {status.aspect}: {status.reason}.") for status in readings.missed_bars()]
+
+
+def _floor_lines(floors: Sequence[Floor], readings: CampaignReadings) -> list[tuple[list[FloorStatus], str]]:
+    """Each line the page warns of broken floors in, with the statuses it says: one per broken floor, worded as an
+    aspect's page words it; past :data:`_WARNINGS_APART` of them, one per candidate naming every floor it breaks."""
+    broken = readings.broken_floors()
     if len(broken) <= _WARNINGS_APART:
-        blocks: list[ReportBlock] = []
-        for status in broken:
-            blocks.append(
-                DisclosureBlock(
-                    section="header", source="floor", text=_warning(_floor_of(campaign, status.floor), status)
-                )
-            )
-            blocks += answered(status)
-        return blocks
+        return [([status], _warning(_floor_of(floors, status.floor), status)) for status in broken]
     by_arm: dict[str, list[FloorStatus]] = {}
     for status in broken:
         by_arm.setdefault(status.arm_label, []).append(status)
-    grouped: list[ReportBlock] = []
-    for arm, statuses in by_arm.items():
-        grouped.append(
-            DisclosureBlock(
-                section="header",
-                source="floor",
-                text=f"Floors broken for {arm}: "
-                + "; ".join(f"its {_which(status)} on {status.aspect}" for status in statuses)
-                + ".",
-            )
+    return [
+        (
+            statuses,
+            f"Floors broken for {arm}: "
+            + "; ".join(f"its {_which(status)} on {status.aspect}" for status in statuses)
+            + ".",
         )
-        grouped += [block for status in statuses for block in answered(status)]
-    return grouped
+        for arm, statuses in by_arm.items()
+    ]
 
 
 def _overrides(
@@ -396,6 +505,15 @@ def _warning(floor: Floor | None, status: FloorStatus) -> str:
 def _points(value: float) -> str:
     """A change in points to one decimal, a whole number whole."""
     return format_number(round(value, 1))
+
+
+def _memo_summary_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
+    """The writer's read across every aspect, held to the style pass (:meth:`_CampaignStyle.summary`), the first thing
+    the page says after code's warnings and the question, for every kind; nothing with no memo, or where the summary
+    proposed a sample size or cost no code computed."""
+    if memo is None or not (said := style.summary(memo.summary)):
+        return []
+    return [TextBlock(section="header", role="summary", body=said)]
 
 
 def _recommendation_blocks(
@@ -605,16 +723,19 @@ def _after(stamp: str | None, first_result: str | None, what: str) -> bool:
 
 
 def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]) -> list[str]:
-    """What was declared after the evidence: a question asked after an aspect's first run makes its readings leads
-    (the bundle's ``question_declared``, the rule every reading reads); the question's wording, a margin or a floor
-    added later than the aspect's first result (the bundle's ``first_result_at``) reads as declared after it.
+    """What was declared after the evidence: the question's wording, a margin or a floor added later than the aspect's
+    first result (the bundle's ``first_result_at``) reads as declared after it. An aspect whose question was set after
+    its runs (``reading_scope.question_after_runs``) is said once, under the question
+    (:func:`question_after_runs_lines`), so nothing stamped no later than the question is said again here; whatever
+    was added later still is. A question that carries no date orders nothing, so every late stamp of its aspect is
+    said; a control named late dates only itself, so it holds nothing back either. Nothing is said of an aspect the
+    question does not ask about.
 
     Each kind of lateness is one line naming the aspects it holds on (``every aspect`` where it holds on all), so a
     campaign of seven adopted aspects says it once, not seven times; a floor is named with the aspects its clause is
     late on."""
     if not campaign.question.strip():
         return ["No question was declared, so every reading is a lead."]
-    asked: list[str] = []
     worded: list[str] = []
     margins: list[str] = []
     floors: dict[str, list[str]] = {}
@@ -623,21 +744,18 @@ def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: M
         first_result = bundle.first_result_at
         label = aspect.label
         if _read_on(readings, label) and not bundle.question_declared:
-            # Everything declared with a question asked late is late too: said once, of the question.
-            asked.append(label)
             continue
+        # Declared with a question set late, a stamp is said once, of the question, under it; added later, it is not.
+        late = _late_after_the_question(bundle, first_result)
         declared = bundle.declared
-        if declared is not None and _after(declared.question_declared_at, first_result, f"the question on {label}"):
+        if declared is not None and late(declared.question_declared_at, f"the question on {label}"):
             worded.append(label)
-        if declared is not None and _after(declared.margin_declared_at, first_result, f"the margin on {label}"):
+        if declared is not None and late(declared.margin_declared_at, f"the margin on {label}"):
             margins.append(label)
         for floor in campaign.floors:
-            if floor.aspect == label and _after(floor.declared_at, first_result, f"floor {floor.key}"):
+            if floor.aspect == label and late(floor.declared_at, f"floor {floor.key}"):
                 floors.setdefault(floor_statement(floor.clause, candidate="the arm"), []).append(label)
     lines: list[str] = []
-    if asked:
-        its = "its readings are" if len(asked) == 1 else "their readings are"
-        lines.append(f"The question was asked after the first run on {_on(asked, campaign)}, so {its} leads.")
     if worded:
         its = "its readings keep" if len(worded) == 1 else "their readings keep"
         lines.append(
@@ -658,12 +776,33 @@ def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: M
     return lines
 
 
+def _late_after_the_question(
+    bundle: AnalysisContextBundle, first_result: str | None
+) -> Callable[[str | None, str], bool]:
+    """Whether a stamp on ``bundle``'s aspect is later than its first result and not said already by the line under
+    the question, which says whatever was declared no later than a question set after the runs. A question with no
+    date orders nothing, and a control named late dates only itself, so neither holds a stamp back."""
+    flag = bundle.reading_scope.question_after_runs
+    question_at = flag.at if flag is not None and flag.late == "question" else None
+
+    def late(stamp: str | None, what: str) -> bool:
+        if not _after(stamp, first_result, what):
+            return False
+        return (
+            question_at is None
+            or stamp is None
+            or aware_instant(stamp, what) > aware_instant(question_at, "the question")
+        )
+
+    return late
+
+
 def _on(labels: Sequence[str], campaign: EvalCampaign) -> str:
     """Aspects as a sentence lists them: ``billing``, ``billing and tone``, ``billing, tone and refunds``, or ``every
     aspect`` where they are all of a campaign's several."""
     if len(labels) > 1 and len(labels) == len(campaign.aspects):
         return "every aspect"
-    return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+    return _listed(labels)
 
 
 def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
@@ -744,7 +883,7 @@ def _call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: Campa
     for key in call.floors_overridden:
         broken = next((status for status in floors if status.floor == key and status.status == "broken"), None)
         if broken is not None:
-            lines.append(f"The call overrides a broken floor: {_floor_words(_floor_of(campaign, key), broken)}.")
+            lines.append(f"The call overrides a broken floor: {_floor_words(_floor_of(campaign.floors, key), broken)}.")
         else:
             lines.append(f"The call overrides the floor {code(key)} (no longer broken).")
     unanswered: dict[str, FloorStatus] = {}
@@ -752,7 +891,7 @@ def _call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: Campa
         if status.status == "broken" and status.floor not in call.floors_overridden:
             unanswered.setdefault(status.floor, status)
     for key, status in unanswered.items():
-        said = _floor_words(_floor_of(campaign, key), status)
+        said = _floor_words(_floor_of(campaign.floors, key), status)
         lines.append(f"The call does not name the broken floor as overridden: {said}.")
     missed = {(bar.aspect, bar.measure): bar for bar in readings.missed_bars() if bar.arm in keys}
     overridden = {(bar.aspect, bar.measure) for bar in call.bars_overridden}
@@ -785,23 +924,148 @@ def _date(stamp: str) -> str:
 # =============================================================================
 
 
-def _memo_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
-    """The memo's findings, each its headline and body, then its next steps, every word through the style pass;
-    nothing with no memo."""
+def _memo_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle, trace: _Trace) -> list[ReportBlock]:
+    """The memo's findings, each its headline and body and, folded, its trace; then its next steps, every word through
+    the style pass; nothing with no memo."""
     if memo is None:
         return []
     blocks: list[ReportBlock] = []
     for position, finding in enumerate(memo.findings):
-        title = style.sentence(finding.title) or " ".join(finding.title.split())
+        title = style.title(finding.title)
         blocks.append(
             TextBlock(section="memo", role="finding_title", body=title, finding=position, anchor=f"F{position + 1}")
         )
         if body := style.prose(finding.body):
             blocks.append(TextBlock(section="memo", role="finding_body", body=body, finding=position))
+        blocks += trace.blocks(position, finding)
     for step in memo.next:
         if title := style.sentence(step.title, plans=True):
             blocks.append(TextBlock(section="memo", role="next_step", body=title))
     return blocks
+
+
+@dataclass(frozen=True)
+class _Trace:
+    """What each finding cites, with the figure code filled for it, linked to the aspect's fold that prints it.
+
+    A fold is closed, and a link landing inside a closed ``<details>`` is lost where a browser does not open it, so a
+    trace lands on the fold's heading (``aspect-<fold id>``), outside it, and states the figure itself: the reader
+    sees the number without a click, and the link says which fold holds it.
+    """
+
+    campaign: EvalCampaign
+    labels: Mapping[str, str]
+    reports: Mapping[str, Report]
+    resolutions: Sequence[FindingResolution]
+    trial_ids: Mapping[str, tuple[str, str]]
+
+    @classmethod
+    def over(
+        cls,
+        campaign: EvalCampaign,
+        readings: CampaignReadings,
+        reports: Mapping[str, Report],
+        resolutions: Sequence[FindingResolution],
+        trial_ids: Mapping[str, tuple[str, str]],
+    ) -> _Trace:
+        """The trace over the campaign's folds, each arm named by its campaign label as the folds name it."""
+        return cls(
+            campaign=campaign,
+            labels=readings.arm_labels(),
+            reports=reports,
+            resolutions=resolutions,
+            trial_ids=trial_ids,
+        )
+
+    def blocks(self, position: int, finding: Finding) -> list[ReportBlock]:
+        """One finding's trace, in its ``Evidence`` fold: a row per reading it cites and per trial it names, each
+        figure linked to the fold that prints it; where nothing links, the line saying so (:data:`UNTRACED`)."""
+        rows = [*self._readings(position), *(self._trial(trial) for trial in finding.trials)]
+        blocks: list[ReportBlock] = []
+        if rows:
+            several = len(self.campaign.aspects) > 1
+            columns = [
+                *([TableColumn(key="aspect", header="Aspect", term="aspect")] if several else []),
+                TableColumn(key="arm", header="Arm"),
+                TableColumn(key="reading", header="Reading"),
+                TableColumn(key="value", header="Value"),
+            ]
+            blocks.append(
+                TableBlock(
+                    section="memo",
+                    finding=position,
+                    name="trace",
+                    title="Cites",
+                    columns=columns,
+                    rows=[{column.key: row[column.key] for column in columns} for row in rows],
+                    order="each reading as the finding cites it, then each trial",
+                    total_rows=len(rows),
+                    fold="Evidence",
+                )
+            )
+        if not any(cell.ref is not None for row in rows for cell in row.values()):
+            blocks.append(
+                DisclosureBlock(section="memo", source="memo", text=UNTRACED, finding=position, fold="Evidence")
+            )
+        return blocks
+
+    def _readings(self, position: int) -> list[dict[str, TableCell]]:
+        """A row per reading the finding cites, read on the aspect it was resolved on, its figure linked to the fold
+        where a cell there prints the same figure."""
+        if position >= len(self.resolutions):
+            return []
+        rows = []
+        for row in self.resolutions[position].evidence:
+            report = self.reports[row.aspect]
+            surface = bundle_decision_surface(report.bundle)
+            ruler = report_rulers(surface, report.bundle.measure_catalog).of(row.measure_id, row.reading)
+            place = reading_anchor(row.cell_ref, row.measure_id, row.reading)
+            printed = any(
+                cell.anchor == place
+                for block in report.blocks
+                if isinstance(block, TableBlock)
+                for line in block.rows
+                for cell in line.values()
+            )
+            figure = evidence_figure(row, ruler)
+            rows.append(
+                {
+                    "aspect": TableCell(value=row.aspect),
+                    "arm": TableCell(value=self._arm(row.aspect, variant_of_cell_ref(row.cell_ref) or row.cell_ref)),
+                    "reading": TableCell(value=ruler.scaled(reading_heading(surface, row.measure_id, row.reading))),
+                    "value": figure.model_copy(update={"ref": self._fold(row.aspect) if printed else None}),
+                }
+            )
+        return rows
+
+    def _trial(self, trial: str) -> dict[str, TableCell]:
+        """A trial the finding names by its campaign id, shown by its id in its aspect's fold, where the reader finds
+        its record, and linked to that fold; an id the campaign does not hold, listed as written and linked nowhere."""
+        if (where := self.trial_ids.get(trial)) is None:
+            return {
+                "aspect": TableCell(value=None),
+                "arm": TableCell(value=None),
+                "reading": TableCell(value="trial"),
+                "value": TableCell(value=trial),
+            }
+        aspect, own = where
+        arm = next((held.arm for held in self.reports[aspect].bundle.trials if held.trial_id == own), None)
+        return {
+            "aspect": TableCell(value=aspect),
+            "arm": TableCell(value=self._arm(aspect, arm) if arm is not None else None),
+            "reading": TableCell(value="trial"),
+            "value": TableCell(value=own, ref=self._fold(aspect) if arm is not None else None),
+        }
+
+    def _arm(self, aspect: str, variant_key: str) -> str:
+        """An arm as the aspect's fold names it: by the campaign's label, else its variant's name."""
+        names = _names(self.reports[aspect].bundle, self.labels)
+        return names[variant_key].label if variant_key in names else f"unplaced arm {short_digest(variant_key)}"
+
+    def _fold(self, aspect: str) -> str:
+        """The id of the section around ``aspect``'s fold, outside its closed ``<details>``."""
+        labels = [held.label for held in self.campaign.aspects]
+        return f"aspect-{fold_ids(labels)[labels.index(aspect)]}"
 
 
 def _summary_blocks(summary: AspectSummary | None, style: _CampaignStyle) -> list[ReportBlock]:
@@ -1204,6 +1468,16 @@ class _CampaignStyle:
                 continue
             kept.append(part)
         return self.primary.prose(" ".join(kept)) if kept else ""
+
+    def title(self, text: str) -> str:
+        """A finding's title held to every rule; where that would leave none of it, kept as written and not counted as
+        dropped, since the page prints it: a finding is never laid out without its headline."""
+        return self.primary.or_as_written(lambda: self.sentence(text), self._named(text))
+
+    def summary(self, text: str) -> str:
+        """The memo's one sentence across the aspects, as :meth:`MemoStyle.summary` holds it, over every aspect: kept as
+        written where the pass would leave none of it, unless it proposed a sample or cost no aspect projects."""
+        return self.primary.or_as_written(lambda: self.prose(text, plans=True), self._named(text))
 
     def methods(self) -> list[ReportBlock]:
         """What the memo said that the page did not print as written, and what still breaks a rule: the methods."""

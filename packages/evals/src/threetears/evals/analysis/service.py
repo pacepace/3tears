@@ -1519,7 +1519,16 @@ def _campaign_page(
         for aspect in bundle.aspects
     }
     memo = analysis.document if analysis is not None else None
-    page = build_campaign_report(campaign, bundle.readings, reports, memo, call=campaign.call)
+    page = build_campaign_report(
+        campaign,
+        bundle.readings,
+        reports,
+        memo,
+        call=campaign.call,
+        recommended_variant_key=analysis.recommended_variant_key if analysis is not None else None,
+        resolutions=analysis.resolutions if analysis is not None else (),
+        trial_ids=bundle.trial_ids(),
+    )
     return page if analysis is None else page.model_copy(update={"analysis_id": analysis.id})
 
 
@@ -1946,6 +1955,16 @@ def reporter_case_bank(storage: AnalysisStore, template_id: str, scope_id: str) 
     )
 
 
+def _label_set(labels: Sequence[ReporterLabel], *, criterion: bool) -> list[str]:
+    """Labels as what makes two freezes the same case compares them: their verdicts, with or without the criterion
+    each was written against, and never who gave or relayed them (``reader``, ``collected_by``) — provenance, so a
+    re-freeze of the same verdicts names the stored case, whose own record of them stands."""
+    dropped: dict[str, Any] = {"reader": None, "collected_by": None}
+    if not criterion:
+        dropped["criterion"] = None
+    return sorted(label.model_copy(update=dropped).model_dump_json() for label in labels)
+
+
 def freeze_reporter_case(
     host: EvalHost,
     *,
@@ -1978,6 +1997,12 @@ def freeze_reporter_case(
     the template states for its dimension (``ReporterLabel.criterion``), so a reworded rubric shows
     on a calibration read instead of silently re-meaning the label; a label that arrives already
     carrying one is refused.
+
+    **Who gave a verdict is taken as the caller names it.** This is the host's own door, trusted as its own
+    ``rate_result`` is: a label's ``reader`` and ``collected_by`` are stored as given, or not at all. An action reaches
+    it only through the ``reporter_case_freeze`` operation, which names each reader the host attests
+    (``EvalHost.attests_person``) and the caller that relayed them. Neither is part of what makes two freezes the
+    same case (below): a re-freeze of the same verdicts returns the stored case, whose record of them stands.
 
     **With an analysis, the bundle is assembled AS OF that analysis**: the insight ledger is
     read at its ``generation.bundle_assembled_at``, exactly as ``bundle_inspect`` re-assembles
@@ -2155,7 +2180,7 @@ def freeze_reporter_case(
     # the case carries so the text stays checkable against it.
     writer_message = build_campaign_user_message(bundle) if analysis is not None else None
     recorded_message_digest = analysis.generation.user_message_digest if analysis is not None else None
-    wanted_labels = sorted(label.model_dump_json() for label in parsed)
+    wanted_labels = _label_set(parsed, criterion=True)
     memo_text = f"analysis {wanted_analysis!r}" if wanted_analysis else "no recorded memo"
     bank = reporter_case_bank(storage, template.id, scope_id)
     # The pair is the campaign the bundle names and the memo — never the fingerprint, which
@@ -2183,14 +2208,19 @@ def freeze_reporter_case(
             f"{bundle.campaign_id!r} with {memo_text} has no live case — every stored case of it is superseded or "
             "retired, so there is nothing for this freeze to replace",
             remedy=(
-                "freeze without supersedes: the new case is the pair's live case, and the retired ones stay as they are"
+                "freeze without supersedes: the new case is the pair's live case, and the retired ones stay as they "
+                "are; supersedes takes only a live case, so to retire a retired case for good, restore it first "
+                "(reporter_case_archive with archived=false), then freeze with supersedes naming it"
             ),
         )
-    same_labels = len(live) == 1 and sorted(label.model_dump_json() for label in live[0][1].labels) == wanted_labels
-    same_verdicts = len(live) == 1 and sorted(
-        label.model_copy(update={"criterion": None}).model_dump_json() for label in live[0][1].labels
-    ) == sorted(label.model_copy(update={"criterion": None}).model_dump_json() for label in parsed)
-    same_evidence = len(live) == 1 and live[0][1].bundle_fingerprint == fingerprint
+    same_labels = len(live) == 1 and _label_set(live[0][1].labels, criterion=True) == wanted_labels
+    same_verdicts = len(live) == 1 and _label_set(live[0][1].labels, criterion=False) == _label_set(
+        parsed, criterion=False
+    )
+    # Today's bundle in the live case's fingerprint version, so a case frozen before fingerprints rounded their
+    # floats still matches the evidence it froze; the case this freeze stores carries the current version.
+    as_frozen = bundle.fingerprint(like=live[0][1].bundle_fingerprint) if len(live) == 1 else fingerprint
+    same_evidence = len(live) == 1 and live[0][1].bundle_fingerprint == as_frozen
     # The digest rides with the message: a live case that froze this text without the digest its
     # analysis records is not the case this freeze would store.
     same_message = len(live) == 1 and (live[0][1].writer_message, live[0][1].recorded_writer_message_digest) == (

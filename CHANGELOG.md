@@ -6,6 +6,388 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.75.0 -- 2026-10-21
+
+### agent-memory: a host can restrict every memory read with its own predicate over the row's tags
+
+**Added:** `threetears.agent.memory.read_filter.ReadFilter`, a callable `(tags, bind) -> str | None`.
+`MemoriesCollection`, `MemoryChunkCollection` and `MediaContentCollection` carry a `read_filter` (default `None`)
+and `set_read_filter(f)`. Every read that returns memory rows, content, ids, counts or scores ANDs the filter's
+fragment into its `WHERE`, before `ORDER BY ... LIMIT`, in every arm of a hybrid search, so a filtered read never
+under-fills and no arm lets an excluded row in. `tags` is the SQL for the row's `tags` array; `bind(value)` adds a
+parameter after the query's own and returns its `$n`. The filter is asked on every query, never cached, so a host
+can answer from a contextvar per task; `None` means no restriction, and with no filter the SQL is as before. A
+chunk is decided on its parent memory's tags, a media-content row on the tags of the memory its media row is
+paired with; a row whose memory cannot be found is excluded while a filter applies. For a host that keeps
+per-audience labels in `tags`; the package knows nothing of what they mean.
+
+Writes and bookkeeping are not filtered (`save_memory`, `delete_by_tags`, `count_by_user`, `mark_retracted`,
+`clear_retracted`, the salience passes, `mark_superseded`), nor the framework's primary-key `get`, which answers
+from the cache tiers. Two places acted on a memory found by `get` alone, and now also need the filtered
+`find_for_recall` to find it: the `memory_keep` tool, which printed the memory it kept, and the extractor's
+UPDATE and DELETE, whose target id the resolution model names. A guard test makes every public coroutine of the
+three collections declare itself filtered, or unfiltered with its reason.
+
+A rewrite keeps a memory in its audience. The host's labels are every tag but the package's own
+(`retracted`, `retracted_because:`, `retracted_salience:`, `unattended`, `made_by:`;
+`revisions.host_labels`). `supersede` and `correct_beside` carry their sources' labels onto the
+new row, so an update, a correction or a replacement is filtered as what it replaced was; and they
+refuse, with `LabelsDifferError` and before writing anything, to merge memories whose labels differ
+or to relabel one. A dream skips a cluster whose members carry different labels, `write_once`
+replaces an earlier write of the same event only in the new one's audience, and `memory_add`
+leaves a near-duplicate in another audience standing. `memory_recall` names a related memory (what
+it replaced, what replaced or corrected it) only when the reader may read it.
+
+### search: the standalone transport's address guard can no longer be got past by DNS rebinding
+
+**Fixed:** `StandaloneTransport` resolved a URL's host, refused it if any address was private,
+loopback, link-local or reserved, and then let httpx open the connection, which resolved the name
+again. A name whose owner answers the first lookup with a public address and the second with an
+internal one (DNS rebinding) passed the check and reached the internal address. A fetch of a URL a
+user can steer, from inside a cluster, is exactly that case. A direct request's socket now goes to an
+address the guard resolved and checked, and the name is not looked up a second time. TLS still
+verifies the certificate against the host name, and SNI and the `Host` header still carry it. Every
+redirect hop is resolved, checked and held to its own addresses.
+
+**Fixed:** the guard now also refuses an address IANA does not list as globally reachable. Before, it
+let through `100.64.0.0/10` (the shared address space), which Python's `ipaddress` counts as neither
+private nor reserved and which some clusters and overlay networks use for pods and nodes.
+
+**Changed:**
+
+- The transport, not httpx, decides whether a request goes through a proxy. It reads the same
+  environment variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`), through the one check
+  the guard already used, so the route the guard checks is the route the request takes. A `NO_PROXY`
+  entry that `urllib` and httpx used to read differently now follows `urllib`.
+- When a name resolves to several addresses, the connection races the checked addresses in the
+  resolver's order, as a connect by name did: the next starts when one fails or after 250 ms without
+  an answer, and the connect timeout bounds the whole race. A custom `resolve=` callable's order now
+  decides which address is tried first.
+- `3tears-search[standalone]` now declares `httpcore>=1.0`. httpx already required it.
+
+**Not covered:** a request sent through a forward proxy is resolved by the proxy, so stopping
+rebinding there is the proxy's job. A transport built with `allow_private_addresses=True` checks no
+address and so is not held to one.
+
+A losing connect that fails with a fault other than a connect failure is raised only after every
+other attempt is stopped and the winning connection -- which the caller never receives -- is closed.
+
+### mcp: 3tears runs on mcp 2.x and fastmcp 4.x, and still supports mcp 1.x
+
+**Changed:** the workspace now locks `mcp` 2.3 and `fastmcp` 4.0, and declares `mcp>=1.27,<3`
+(3tears-mcp, 3tears-models) and `fastmcp>=3.4.2,<5` (evals). A consumer still on mcp 1.x keeps
+working; one that moves to 2.x needs nothing from 3tears to do it. fastmcp follows mcp on its own
+(fastmcp 3 requires mcp 1, fastmcp 4 mcp 2). mcp 1.x support stays until the owner drops it; no
+release is set for that.
+
+- `McpServer` registers its handlers through whichever API the installed SDK has: 1.x's
+  `@list_tools()` / `@call_tool()` decorators, or 2.x's `Server(on_list_tools=, on_call_tool=)`.
+  It now also does itself what 1.x's decorator did and 2.x dropped: it checks arguments against the
+  tool's `inputSchema` ("Input validation error: ...", before the handler runs), passes a call with
+  no arguments as `{}`, and returns every success as a `CallToolResult`. One difference stays the
+  SDK's: a bug that escapes dispatch (not a refusal -- those are answered as `isError` results on
+  both) reaches the client as an `isError` result on 1.x and as a JSON-RPC error on 2.x.
+  3tears-mcp now declares `jsonschema`, which mcp already depends on.
+- The CLI pool's per-borrower tool server (`bind_tool_server_to_context`) works on either SDK.
+- CI runs the MCP packages' tests on mcp 1.30 as well (`scripts/test-mcp-v1.sh`).
+
+**For a consumer moving to mcp 2.x** (from mcp's own changes, not 3tears'): result and tool
+objects lose their camelCase attributes -- read `result.is_error`, `.structured_content`,
+`tool.input_schema`, or `model_dump(by_alias=True)["isError"]` on either major;
+`streamable_http_client` yields two values, not three; a low-level `Server` takes its handlers in
+the constructor; `mcp.server.fastmcp.FastMCP` is `mcp.server.mcpserver.MCPServer`. Clients and
+servers on different majors interoperate (tested: 1.28 with 2.3, both directions, over stateless
+streamable HTTP).
+
+### Dependencies: security fixes, and the lock brought current
+
+**Fixed:** known vulnerabilities in `pyjwt` (2.13 -> 2.15), `cryptography` (49 -> 50), `aiohttp`,
+`urllib3`, `soupsieve`, `anyio`, `multidict`, `langgraph-sdk` and `snowflake-connector-python`,
+found by `pip-audit` over the lock (Dependabot alerts are off for this repository); and
+`redshift-connector` 2.1.7 -> 2.1.17, a remote code execution through `eval()` (CVE-2026-8838),
+now the declared floor of the `redshift` extra. Every other dependency moves to its newest release past the 14-day cooldown,
+including the majors `anthropic` 1.x, `openai` 3, `websockets` 16, `xxhash` 4 and SQLAlchemy 2.1.
+
+**Changed:** 3tears-object-store opens S3 clients through `aiobotocore` 3 directly instead of
+`aioboto3`. aioboto3's last release (15.5.0, 2025-10) pins aiobotocore 2.25 and with it a boto3
+too old for the redshift fix above, so while the workspace held aioboto3 that fix could not
+resolve. `S3ObjectStore(session=...)` still accepts an aioboto3 session (`.client`) as well as an
+aiobotocore one (`.create_client`); the default is aiobotocore's.
+
+**Changed by an upstream release:** trafilatura 2.3 folds repeated paragraphs into one, so a page
+whose text is one paragraph many times over now extracts as that paragraph once -- and, below
+`thin_page_chars`, reads as a thin page (whose single same-site frame `extract` then follows).
+pydantic 2.14 no longer reports `populate_by_name`'s `validate_by_*` expansion in `model_config`;
+aliased fields still validate by either name.
+asyncpg 0.32 terminates a pool's connections itself when its initialisation fails;
+`create_pool_with_startup_timeout`'s retry warning still counts every connection the failed attempt
+opened (`connections_closed`), and still closes any asyncpg left open.
+
+**Not yet:** `pillow` 13.0 (24 advisories) and `certifi` 2026.10.19 are younger than the lock's
+14-day cooldown and land when they clear it (Oct 30, Nov 3). `ruff` stays below 0.16, which
+reformats 56 files: that is its own change, after this release.
+
+### evals: a declined call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
+
+- **A call the provider declined is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
+  replaced by `owner`, one of `account`, `provider` or `candidate` (`FailureOwner`), and `ProviderError.account` by
+  `ProviderError.owner`. A 429 that is not `insufficient_quota` is `provider`, and so are a 529 (overloaded) and a 503
+  (unavailable): on a reporter or judge call, and on the quick path, the cell is excluded and the run goes on. A 500
+  or a 502 is an error rather than a refusal, so it stays the candidate's. A 429 `insufficient_quota` (or a 402) is
+  `account` and stops the run, as before. A declined repair or parse retry says so in its error, and the page's
+  setup-fault words cover a declined call.
+- **The package's client sends a declined call again before it gives up (#849).** `Model` resends a 429 that is not
+  `insufficient_quota`, a 529 or a 503, as a status or as the code a 200's body carries, after a wait: the provider's
+  `retry-after` (seconds or a date) or one then two seconds, at most three attempts in all, each resend logged at
+  WARNING. A provider that asks to wait longer than 20 seconds is not sent it again. Every wait and resend ends within
+  one request's timeout of the first attempt; a resend cut there may already have been billed, and that spend is not
+  recorded. A resend lost on the way raises the decline before it. `retry=DeclinedRetry(...)` sets the policy
+  (`attempts=1` sends once).
+  The error that stands says how many attempts it took. An account's or the candidate's failure is never sent again.
+- **A run that measured nothing ends `failed` (#849).** When every cell was excluded for a fault the harness recorded
+  (most often a provider that declined every call: a rate limit or overload that lasted the run, or an OpenRouter
+  model no allowed provider serves), the run fails with `NothingMeasuredError`, quoting the cells' errors, instead of
+  completing. The quick command exits 1, and the page says nothing was measured and asks for the cause to be fixed
+  before a rerun, not waited out. A run that measured at least one cell completes as before, its exclusions shown; so
+  does a run lost only to judge-call errors (a re-judge recovers it), or entirely to a judge that could not tell or to
+  judge replies cut off at their cap. The run records why on `EvalRun.failed_because` (`nothing_measured`, core
+  v15.6), and a sweep reads it to go on past an arm that measured nothing, naming the arm on its detail.
+- **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
+  `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
+  returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and
+  `collected_by`. A relay may carry the person's own `rated_at`; a dated relay older than that person's stored rating
+  is refused (409), so a newer opinion stands. `ResultRated` says what a write replaced. An authored judge case's
+  verdict is a person's label too, so `judge_case_author` asks the same check: a caller authors for the `person` it
+  names, or as itself, only when the host attests it, and the case records the caller as `collected_by`, outside its
+  identity; the freeze receipt and `judge_cases_list` show it. A host attests a caller as itself only for a person's
+  own account, never an agent's. A seed corpus's cases, and an `AuthoredJudgeCase` the host freezes itself, ask
+  nothing. Cases agents authored before this keep reading as person labels: find them with `judge_cases_list`
+  (`authored_by`) and keep them out of launches with a case set, or archive them. `reporter_case_freeze` asks it
+  for each reader a label names (omitted, the caller), and records the reader and the relaying caller on the label,
+  outside the case's identity; an existing case an agent labelled is found with `reporter_cases_list` and retired
+  for good by superseding it (a re-freeze of its memo, with no labels or attested ones, and `supersedes`), since
+  any action caller can restore an archived one; `supersedes` takes only a live case, so restore an archived one
+  first. Superseding retires a case and every reader verdict on it for good, and asks no one, so supersede only a
+  case you mean to retire.
+- **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
+  finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
+  the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
+  inside a closed fold, since a host's sandboxed frame runs no script to open one: nav, glossary and trial links land
+  on the fold or section heading when their exact target is folded away.
+- **A lease holder's own writes keep its lease (#811).** A run's progress and status writes, and every held record
+  write, extend the lease as a renewal does, through one method (`JobLeases.write_own`); a lapsed lease is never
+  revived. A renewal that hangs is never resent and costs one retired pool thread, not the job. A renewal landing late
+  logs one line separating loop, pool and store waits. A grid test runs launches at several widths and store
+  latencies, with a degraded control that must lapse (#810).
+- **The lease numbers live on the light schema (#825).** `DEFAULT_JOB_LEASE_S`, `JOB_LEASE_RENEWAL_FRACTION` and
+  `LEASE_POOL_WORKERS` are host-contract on `threetears.evals.schema`, which imports no kernel, so a host sizing its
+  pool reads them cheaply.
+- **Smaller fixes.** `sweep_launch`'s help names a route that works: declare the design afterwards with
+  `campaign_create` over the sweep's `run_ids`, which a sweep's job result now carries (#843). `measuring-soundly.md`
+  says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,300
+  characters (24,100 for #822, raised to 24,300 for #910's floor clause). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
+  quote, the reader conformance suite, `FailureOwner` and others) are
+  stable, and its import list is refreshed.
+- **A bundle fingerprints alike across Python builds**, except, rarely, a value that falls exactly on a 12th-figure
+  rounding boundary. The fingerprint hashed the bundle's floats in full, and their last bits come from C maths that
+  two builds of one Python (uv-managed and Debian's CPython 3.14.6) compute differently, so a reporter case re-frozen
+  on another machine was refused as moved evidence and recorded a false "does not reproduce" limit. A fingerprint is
+  now `v2:` and a digest with every float rounded to twelve significant figures, in the fingerprint only. A fingerprint
+  stored before is compared as it was taken, so stored cases keep matching on the build that recorded them. The page
+  JSON and the writer's message serve every float to twelve figures, and the writer's view keeps a bar verdict's
+  figures and a scoreboard row's costs to its four. Finish a rolling deploy before generating: a pod on the previous
+  build can't render what this one generates.
+
+**Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
+moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
+`threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
+and host; the `judge_case_author` action and operation need `attests_person` (a host without one authors no judge case through
+either, its own direct call included), and the operation's `author=` keyword becomes `collected_by=`; the
+`reporter_case_freeze` action and operation need `attests_person` for reader verdicts (a freeze with labels), and the
+operation takes `collected_by=`; `ReporterLabel` gains `reader` and `collected_by`; a bundle fingerprint is `v2:`-prefixed; durable schema 16.1. A v16.0 pod
+cannot read a relayed case: one relayed reporter label stops that whole reporter template there (launches, prices,
+freezes, calibration reads, restores), and a relayed judge case stops every launch of its judge template that runs
+it, until the pod upgrades. So during a rolling deploy across 16.0 and 16.1, the first labelled freeze through the
+action stops that template on the old pods. See `packages/evals/MIGRATIONS.toml`.
+
+### search: a transport failure says which HTTP status the provider answered with; core's retry error describes the last attempt
+
+**Added:** `TransportFailed.status` (`int | None`), and `status` on its `FailureRecord`. The SearXNG and Tavily
+adapters set it when the provider answered with a status no other failure class claims, so a caller tells a served
+5xx (the provider's fault, transient) from a 3xx or 4xx (usually a misconfigured base URL) without parsing the
+message. It is `None` when no status reached the adapter: a connect or TLS failure, a final attempt that never got
+an answer, or an exception an adapter could not map. The status survives the record round trip the adapters and the
+standalone transport re-stamp failures through.
+
+**Fixed:** agent-tools' `TracedSearchTransport`, the transport `WebSearchTool` builds by default, raised the traced
+client's `UpstreamHttpError` when an upstream answered its last attempt with a 5xx, so the adapter reported a provider
+that answered as one that never did. It now returns that 5xx as the response, as `StandaloneTransport` does, with the
+attempts the client counted; a last attempt that got no answer still raises. A caller can see one consequence: an
+exhausted 504 now reaches the adapter as the gateway timeout it is, and is reported `TimedOut`, not `TransportFailed`.
+
+**Fixed:** core's `TracedHttpClient` let an earlier attempt's answer leak into `UpstreamHttpError`. Neither the saved
+response nor the saved transport error was cleared between attempts, so a 503 followed by connection resets raised
+with `status_code=503`, and a refused connect followed by two 503s chained the refused connect. Each attempt now starts
+clean, so the error describes the last attempt only: a status means it was answered, a chained cause means it was
+not. A read, write or close failure (`httpx.NetworkError`) is now recorded as a transport failure like a connect
+failure: it counts against the circuit breaker and it is chained. A non-idempotent request (`idempotent=False`) is
+no longer sent again after it left, whatever ended the attempt: a read failure ends the call with
+`UpstreamHttpError`, and a failure that is not the upstream's (a corrupt encoding, too many redirects) ends it as
+itself, without charging the breaker. Before, both were retried, so a POST could run twice. `UpstreamHttpError` gains
+`attempts`, the count the client made. This applies to `request` and to `stream`; `stream`'s message now gives the
+attempts it made rather than the ceiling, and a 5xx whose error body fails to read closes its stream and chains the
+read failure instead of leaving the connection out of the pool. A last attempt that failed locally on an idempotent
+request is chained as the cause too, so the error never arrives with neither a status nor a cause.
+
+**Wire:** additive, like `egress` and `occurred_at` before it. Every `FailureRecord` now carries `status` (null
+outside a transport failure), so a reader at an older version refuses every failure record this one writes; the
+exact-version pin consumers keep already covers that (D13).
+
+### backup: a restore no longer fails on an extension the restoring role does not own
+
+**Fixed:** every restore of a database holding an extension a superuser installed (pgvector)
+failed when run as the application role, which is how restores run: `ysqlsh exit 3: ... must be
+owner of extension vector` on Yugabyte, and the same from `pg_restore` on Postgres. So restore
+verification never passed, and a disaster-recovery restore would stop part-way. Both dump tools
+write `COMMENT ON EXTENSION` after each extension, and only the extension's owner may run it. A
+restore now drops top-level `COMMENT ON EXTENSION` statements before loading (row data inside
+`COPY` blocks is never touched). Nothing is lost: `CREATE EXTENSION` sets the same comment from
+the extension's control file.
+
+**Changed:** a Postgres restore now runs `pg_restore --file=-` to turn the custom-format archive
+into SQL, and loads that through `psql --set ON_ERROR_STOP=1`, instead of `pg_restore --dbname`.
+`PostgresDriver.restore_argv` is therefore `psql`; a failing statement still stops the restore.
+
+**Added:** `threetears.backup.process.pipe_through`, which feeds a child's stdin and streams its
+stdout at once, with the same kill, timeout, stderr and short-feed guarantees as `feed_stdin`
+and `stream_stdout`. Also `DbDumpDriver.archive_to_sql_argv`, which a driver whose archive is
+not plain SQL overrides.
+
+### agent-memory: a failed memory replace never writes twice
+
+**Fixed:** when `memory_add` replaced a near-duplicate and a step after the new memory's commit
+failed, the tool answered "store failed". The agent retried, and the retry left two current
+memories (with an alias, "Alias already used"). Only the near-duplicate search may now fall
+through to a plain write, since nothing is written yet; once the replace starts, a failure is
+answered and never followed by a second write. A failure after the commit no longer stops the
+rest either: a lagging generation or a lost edge still lets the replaced memory be marked
+superseded, so it never stays current beside its replacement, and the worst unfinished step is
+the one reported.
+
+**Added:** `WriteIncompleteError` in `threetears.agent.memory.revisions`, raised when the new
+memory committed and a later step did not. Its `unfinished` is `generation`, `edges` or `mark`. It
+subclasses `DataLayerUnavailableError`, so existing storage handlers catch it as before.
+`memory_add` and `memory_update` now say the memory is stored, which step was not done and which
+memory may still read as current, and tell the agent not to store it again.
+
+**Fixed:** `memory_update` no longer moves a name back onto the old memory once the replacement
+holds it. A name cleared under a stale generation now goes ahead instead of reporting "nothing
+was changed".
+
+### Swallowed exceptions: eleven broad handlers guard only the call they mean (#893)
+
+**Changed:** a bug in an MCP identity provider, the registry's result wait, a langgraph
+anonymize rule, a scheduled-jobs fire body, or a host `KeyPurger` now propagates instead of
+being reported as an outage. A host `KeyPurger` that raises outside
+`(CollectionKeysRequestError, ValidationError)` makes `VersionedAnswers.retire_older_than` raise,
+after every retired version is cleared. A scheduled-jobs fire body that faults no longer runs
+twice. The fault is recorded on the row.
+
+**Fixed:** a JetStream result whose ack cannot be sent is returned, not failed. The tool already ran.
+
+### registry: a call the registry fails is answered `REGISTRY_INTERNAL_ERROR`
+
+**Added:** error code `REGISTRY_INTERNAL_ERROR`. A fault inside the registry while it handles a
+call, from parsing the request on, used to leave the agent with no reply until its own deadline.
+It is now logged at ERROR (with the call's log tags once the request parses), answered on the
+subject the agent is listening on (the inbox, or the delivery subject once the call was
+accepted), and propagates. The answer does not say whether the tool ran. A host maps it like any other registry failure.
+
+### agent-knowledge: invariants injected alone still reach the provenance footer
+
+**Fixed:** when ranking the situational knowledge faulted and the invariants were injected alone,
+the turn's metadata carried only the block: no `knowledge_injected_*` counts and no shadow
+disclosures, so the provenance footer and the anonymizer missed what was injected. The fallback
+now records the same ledgers as a full render.
+
+### agent-wake: the reply helpers webhook tools share are public
+
+**Added:** `tool_error`, `no_change`, `validate_name` and `skill_label` in
+`threetears.agent.wake.tools.schedule_tools`, renamed from their private forms because
+`webhook_tools` uses them too.
+
+### evals: the campaign page opens on a summary across its aspects; the listing, the page JSON and the aspect label follow the page; a question set after the runs is disclosed, not demoted
+
+- **The memo reads across its aspects (#864).** `AuthoredCampaignAnalysis.summary` is required of every kind: one
+  sentence across every aspect saying what the campaign found and what it means for its question, held to the same
+  figure references and style pass as the rest of the memo. An empty one is refused through the repair round, so a
+  measurement's memo and a choice with no clear winner now say what they found too. The writer prompt asks for it in
+  rule 11 (no new rule; 23,908 of 24,500 characters).
+- **The page reads summary, then recommendation, then the aspects (#864).** After the missed bars, broken floors and
+  guardrails and the question: the writer's summary, the recommendation (now above a choice's pairs), then the aspect
+  table, pairs or measures, To settle, bars and the call, then the findings and one fold per aspect. The summary leads
+  the one-aspect page's memo and the reporter's memo text (`render_memo_as_written`) too, and where the style pass
+  would drop all of its one sentence it is kept as written.
+- **The listing line says what the page opens with (#895).** `analyses_list` (`analysis_verdict`) leads each line with
+  every bar an arm misses, then every floor a candidate breaks, in the page's own words over what was frozen with the
+  analysis, then the verdict. An analysis with neither lists what it did before.
+- **The page JSON keys its recommendation (#880).** `recommendation` is `{arm, variant_key, confidence}`, the key being
+  the one the analysis recorded, so a reader matches a recorded call by key and a relabelled arm no longer miscounts.
+  `CAMPAIGN_JSON_SHAPE` is 2.
+- **One rule names an aspect after its behavior (#879).** `aspect_label_for(behavior)` (`threetears.evals.schema`,
+  `/` written `-`) replaces three hand copies. An aspect in `campaign_create` or `campaign_update` may leave out its
+  `label` and is named by the rule; two unlabelled aspects in one write are refused.
+- **A question set after the runs is disclosed, not demoted (#901).** A campaign whose question was asked after an
+  aspect's first run reads that aspect exactly as if the question had come first: its own comparison family, rows and
+  pairs `confirmatory`, and a change may recommend a candidate on them. The bundle carries both times
+  (`reading_scope.question_after_runs`: `late`, `question` or `control`; `at`; `first_run_at`), the page JSON carries
+  it per aspect, and the campaign's page, each aspect's page and `analyses_list` say it in one sentence under the
+  question ("The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named
+  on …" for a control named after the first result); the writer's summary says it once, with the page's dates. A
+  margin or floor added after a late question is still said as declared after its first result. Bundle shape 60.
+
+**Breaking (pre-release line, no shims):** regenerable schema 12 -> 13, so stored analyses, insights and judge
+profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
+59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
+replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
+
+### core, observe: a 5xx retry line says what the upstream answered
+
+**Fixed:** `TracedHttpClient` signalled a retryable 5xx with a message-less private exception, so
+every retry line and the exhaustion line from `retry_with_backoff` ended in an empty reason, and the
+exhaustion was an ERROR with a traceback naming only `_Retryable` (handmcp, 2026-10-21: three blank
+lines for a `PUT` answered HTTP 500). Each line now reads `HTTP 500 from PUT https://host/path`; the
+URL drops its query string and userinfo, and the body is left out. `UpstreamHttpError`'s message
+ends `(last answer: HTTP 500)`, or `(no answer: ConnectError)` when no response arrived; `status_code`
+and `body` are unchanged. A request with `idempotent=False` that stops on a 5xx or a failure after it
+left now logs a WARNING naming it, where it logged nothing. `retry_with_backoff` names a message-less
+failure by its type on every line, and takes `caller_raises=True` from a caller that raises its own
+error on `False`: the exhaustion is then a WARNING without a traceback. The default is unchanged
+(contained at ERROR with the traceback), because the registry's startup steps discard the result and
+that line is their only record.
+
+### observe: `retry_bounded` waits as long as a failure asked
+
+**Added:** `asked_pause` reads how long a failure itself asked to wait (an HTTP `Retry-After`),
+and the pause before the next attempt is at least that, over the schedule and over `backs_off`.
+An attempt made sooner is only refused again. A failure asking for longer than
+`max_asked_pause` (default `max_delay`), or for longer than the deadline leaves, is raised at
+once, so the bound still holds. metallm's composed turn uses it to ask a rate-limited model
+round again. Both parameters are optional; existing callers are unchanged.
+
+### models: starting a Claude CLI no longer forks the worker
+
+**Fixed:** under uvloop the SDK's `anyio.open_process` is libuv's `uv_spawn`, a full `fork()` of
+the worker made with the interpreter lock held, so no thread ran until the child exec'd. The stall
+grows with resident memory (one spawn, idle host: 23 ms at 0.5 GB, 95 ms at 2 GB); in metallm's
+~500 MB production workers it was 2-12 s, and uvicorn killed the worker at 5 s (2026-10-14..21: 134 of
+208 freeze reports in `PooledCliSession.start`). A pooled start and a call's own CLI now start the
+CLI with `subprocess.Popen` (vfork) in a worker thread and join its pipes to the loop: under 9 ms at any
+size. The child is reaped by a thread of its own, so a CLI that outlives the loop that started it is
+still collected. Setting `ClaudeAgentOptions.user` brings the stall back: with a uid to change,
+CPython's `_posixsubprocess` cannot vfork and makes a full `fork()`. The `claude-cli` extra declares
+`anyio`, which it imports.
+
 ## v0.74.0 -- 2026-10-20
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever
@@ -4823,7 +5205,6 @@ client retired when it moved off a lame-duck server.
 - **Fixed, `DiscordAdapter`:** its handlers are registered as `on_message` and `on_ready`, the names
   discord.py dispatches to. `Client.event` registered them under their own names, `_on_message` and
   `_on_ready`, so no inbound message ever reached a router.
-
 
 ### Security: `ScrapeTool`'s SSRF guard checks every request, not only the target URL
 
@@ -10627,7 +11008,6 @@ Full rationale, and which consumer owns which step, in `docs/design-durable-coor
 - A test fails any tool under `agent/tools` that writes a truncation phrase of its
   own. It is what found the analyser and the save node.
 
-
 ## v0.42.0 -- 2026-09-15
 
 ### Added
@@ -11564,7 +11944,6 @@ has no such attribute at 0.35.0.
   key, or with no cache supplied, the family is revoked exactly as before, so
   every existing caller keeps today's behaviour.
 
-
 ## v0.31.0 -- 2026-09-01
 
 ### Added
@@ -11901,7 +12280,6 @@ has no such attribute at 0.35.0.
   hnsw index does not index a NULL vector, and a similarity scan skips NULL
   embeddings either way.
 
-
 ## v0.28.0 -- 2026-08-24
 
 ### Added
@@ -11949,7 +12327,6 @@ has no such attribute at 0.35.0.
   `kv_key_scope_for` has required UUIDs since scopes became per-principal. The
   module raised at permission-build time and never reached the broker it exists
   to test.
-
 
 ### Added
 
@@ -14468,7 +14845,6 @@ and makes impossible to repeat. See **Added -- enforcement** below.
   primary mechanism.
 
   Opt-in per collection, and degrades to uncached when no registry is present.
-
 
 ## v0.23.5 -- 2026-08-07
 
