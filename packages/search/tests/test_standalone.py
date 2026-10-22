@@ -1477,3 +1477,41 @@ async def test_a_certificate_for_another_name_is_still_refused_at_the_pinned_add
             await _guarded(_resolver({"secure.example": (_PUBLIC,)})).request("GET", "https://secure.example/")
 
     assert server.requests == []
+
+
+class _RecordedStream:
+    """the connected stream a winning connect hands back, recording whether it was closed."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def test_a_losers_fault_is_raised_only_after_the_winner_is_closed(
+    no_proxy_env: pytest.MonkeyPatch,
+) -> None:
+    """A losing connect that faults instead of stopping is raised, and the winner nobody receives is closed.
+
+    The first address hangs and, when the race abandons it, fails with a fault that is not a connect
+    failure; the second connects. The fault reaches the caller -- and the second address's stream,
+    which the caller will now never be handed, is closed rather than left open.
+    """
+    winner = _RecordedStream()
+
+    async def connect_tcp(remote_host: str, remote_port: int, **kwargs: object) -> _RecordedStream:
+        if remote_host == _SILENT_PUBLIC:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                raise RuntimeError("a fault in the losing connect") from None
+        return winner
+
+    no_proxy_env.setattr(anyio, "connect_tcp", connect_tcp)
+    with pytest.raises(Exception) as raised:  # noqa: PT011 -- the fault, however the transport wraps it
+        await _guarded(_resolver({"two.example": (_SILENT_PUBLIC, _PUBLIC)})).request("GET", "http://two.example/")
+
+    chain = [raised.value, *(raised.value.__cause__, raised.value.__context__)]
+    assert any("a fault in the losing connect" in str(error) for error in chain if error is not None), raised.value
+    assert winner.closed, "the winning stream was dropped open"

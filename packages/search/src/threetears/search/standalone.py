@@ -460,25 +460,28 @@ def _as_httpx_errors() -> Iterator[None]:
 _CONNECTION_ATTEMPT_DELAY_SECONDS: Final[float] = 0.25
 
 
-async def _abandon(attempt: asyncio.Task[httpcore.AsyncNetworkStream]) -> None:
+async def _abandon(attempt: asyncio.Task[httpcore.AsyncNetworkStream]) -> BaseException | None:
     """Stop a connect attempt that lost the race, closing what it opened if it got that far.
 
     An attempt that failed to connect lost anyway, so its :class:`httpcore.ConnectError`
-    is the expected end; any other failure is a fault and is raised.
+    is the expected end; any other failure is a fault, returned rather than raised so the
+    race can stop every other attempt, and close its winner, before it raises it.
 
     :param attempt: the losing attempt
     :ptype attempt: asyncio.Task[httpcore.AsyncNetworkStream]
-    :raises BaseException: whatever the attempt raised other than a connect failure
+    :return: whatever the attempt raised other than a connect failure, else ``None``
+    :rtype: BaseException | None
     """
     attempt.cancel()
     await asyncio.wait([attempt])
-    if attempt.cancelled():
-        return
-    error = attempt.exception()
-    if error is None:
-        await attempt.result().aclose()
-    elif not isinstance(error, httpcore.ConnectError):
-        raise error
+    fault: BaseException | None = None
+    if not attempt.cancelled():
+        error = attempt.exception()
+        if error is None:
+            await attempt.result().aclose()
+        elif not isinstance(error, httpcore.ConnectError):
+            fault = error
+    return fault
 
 
 class _PinnedNetwork(httpcore.AsyncNetworkBackend):
@@ -577,6 +580,7 @@ class _PinnedNetwork(httpcore.AsyncNetworkBackend):
         waiting = list(addresses)
         attempts: dict[asyncio.Task[httpcore.AsyncNetworkStream], str] = {}
         failures: list[str] = []
+        won: httpcore.AsyncNetworkStream | None = None
         try:
             while waiting or attempts:
                 if waiting:
@@ -596,15 +600,21 @@ class _PinnedNetwork(httpcore.AsyncNetworkBackend):
                     address = attempts.pop(attempt)
                     error = attempt.exception()
                     if error is None:
-                        return attempt.result()
+                        won = attempt.result()
+                        return won
                     if not isinstance(error, httpcore.ConnectError):
                         raise error
                     failures.append(f"{address}: {error}")
         finally:
             # the losers, on every way out: a win, a failure, or the caller's
             # timeout cancelling this race.
-            for attempt in attempts:
-                await _abandon(attempt)
+            faults = [fault for fault in [await _abandon(attempt) for attempt in attempts] if fault is not None]
+            if faults:
+                # a loser's fault is raised, but not before every loser is stopped and the
+                # winner -- which the caller will now never receive -- is closed
+                if won is not None:
+                    await won.aclose()
+                raise faults[0]
         raise httpcore.ConnectError(f"could not connect to any checked address for {host!r}: {'; '.join(failures)}")
 
     async def connect_unix_socket(
