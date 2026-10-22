@@ -38,6 +38,20 @@ done
 
 SESSIONS=("${SOLO[@]}" "${remaining[*]}" tests)
 
+# A memory trace every 20s, so a run the runner kills says what was using memory. On Linux only
+# (it reads /proc); it stops when the script does.
+if [ -r /proc/meminfo ]; then
+    (
+        while sleep 20; do
+            avail=$(awk '/^MemAvailable/ {print int($2 / 1024)}' /proc/meminfo)
+            swap=$(awk '/^SwapTotal/ {t=$2} /^SwapFree/ {f=$2} END {print int((t - f) / 1024)}' /proc/meminfo)
+            top=$(ps -eo rss=,args= --sort=-rss | head -3 | awk '{printf "%dMB %s; ", $1 / 1024, substr($0, index($0, $2), 60)}')
+            echo "[memory] available=${avail}MB swap_used=${swap}MB top: ${top}"
+        done
+    ) &
+    trap 'kill $! 2>/dev/null' EXIT
+fi
+
 failed=()
 for session in "${SESSIONS[@]}"; do
     # shellcheck disable=SC2086 -- a session is a space-separated list of directories
