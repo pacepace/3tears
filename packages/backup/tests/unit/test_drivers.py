@@ -47,13 +47,16 @@ def test_postgres_argv() -> None:
         "--no-owner",
         "--no-privileges",
     ]
+    # the archive is converted to SQL first, so the extension-comment filter can read it, and
+    # psql loads that SQL; ON_ERROR_STOP keeps pg_restore's old --exit-on-error behaviour.
+    assert driver.archive_to_sql_argv() == ["pg_restore", "--no-owner", "--no-privileges", "--file=-"]
     assert driver.restore_argv("postgresql://u@h/tmp") == [
-        "pg_restore",
+        "psql",
         "--dbname",
         "postgresql://u@h/tmp",
-        "--no-owner",
-        "--no-privileges",
-        "--exit-on-error",
+        "--quiet",
+        "--set",
+        "ON_ERROR_STOP=1",
     ]
 
 
@@ -261,7 +264,7 @@ _DUMP_WITH_EXTENSION = (
 )
 
 
-class TestAYugabyteRestoreSkipsExtensionComments:
+class TestARestoreSkipsExtensionComments:
     """Only an extension's owner may COMMENT ON it, and a restore runs as the application role.
 
     Under ON_ERROR_STOP that one statement failed every restore of a database holding pgvector
@@ -304,15 +307,30 @@ class TestAYugabyteRestoreSkipsExtensionComments:
     async def test_a_last_line_without_a_newline_is_kept_as_is(self) -> None:
         assert await _fed_to_ysqlsh(b"SELECT 1;\nSELECT 2;") == b"SELECT 1;\nSELECT 2;"
 
-    async def test_a_postgres_restore_streams_the_archive_untouched(self) -> None:
-        """pg_restore reads a binary custom-format archive: there are no lines to filter."""
+    async def test_a_postgres_archive_is_converted_to_sql_and_filtered_the_same_way(self) -> None:
+        """pg_restore's archive is binary, so it becomes SQL (pg_restore --file=-) before the filter."""
+        converted: list[list[str]] = []
         fed = bytearray()
 
+        def fake_pipe_through(argv: list[str], source: AsyncIterator[bytes], **kwargs: Any) -> AsyncIterator[bytes]:
+            converted.append(argv)
+            return _stream(_DUMP_WITH_EXTENSION)  # what pg_restore --file=- writes for the archive
+
         async def fake_feed_stdin(argv: list[str], source: AsyncIterator[bytes], **kwargs: Any) -> None:
+            assert argv[0] == "psql"
             async for chunk in source:
                 fed.extend(chunk)
 
-        with patch.object(drivers_module, "feed_stdin", fake_feed_stdin):
-            await PostgresDriver().restore("postgresql://u@h/db", _stream(_DUMP_WITH_EXTENSION))
+        with (
+            patch.object(drivers_module, "pipe_through", fake_pipe_through),
+            patch.object(drivers_module, "feed_stdin", fake_feed_stdin),
+        ):
+            await PostgresDriver().restore("postgresql://u@h/db", _stream(b"PGDMP binary archive"))
 
-        assert bytes(fed) == _DUMP_WITH_EXTENSION
+        assert converted == [["pg_restore", "--no-owner", "--no-privileges", "--file=-"]]
+        assert b"COMMENT ON EXTENSION" not in fed
+        assert b"COMMENT ON TABLE public.notes IS 'kept';\n" in fed
+
+    async def test_a_yugabyte_dump_is_already_sql_and_is_not_converted(self) -> None:
+        with patch.object(drivers_module, "pipe_through", side_effect=AssertionError("converted")):
+            assert b"CREATE TABLE" in await _fed_to_ysqlsh(_DUMP_WITH_EXTENSION)
