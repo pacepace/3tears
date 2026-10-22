@@ -21,6 +21,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from nats.errors import ConnectionClosedError as NatsConnectionClosedError
 from nats.errors import TimeoutError as NatsTimeoutError
 
 from threetears.nats import RequestTimeoutError, Subject
@@ -55,14 +56,24 @@ class _Msg:
     chose, and ``None`` is a message with no reply at all. Status messages carry no reply.
     """
 
-    def __init__(self, data: bytes, headers: dict[str, str] | None = None, *, reply: object = OWN) -> None:
+    def __init__(
+        self,
+        data: bytes,
+        headers: dict[str, str] | None = None,
+        *,
+        reply: object = OWN,
+        ack_error: BaseException | None = None,
+    ) -> None:
         self.data = data
         self.headers = headers
         self.reply: Any = None if headers and not data else reply
         self.subject = ""
         self.acked = False
+        self._ack_error = ack_error
 
     async def ack(self) -> None:
+        if self._ack_error is not None:
+            raise self._ack_error
         self.acked = True
 
 
@@ -185,6 +196,26 @@ async def test_the_answer_is_returned_and_acked() -> None:
 
     assert payload == b"68KB of results"
     assert answer.acked
+
+
+async def test_an_answer_whose_ack_the_connection_refuses_is_still_returned() -> None:
+    """the answer is in hand; an unsent ack must not discard the result of a call that already ran."""
+    waiter = _waiter(
+        _Raw([_Sub([_Msg(b"68KB of results", ack_error=NatsConnectionClosedError())])]),
+        _Js(),
+    )
+    await waiter.open()
+
+    assert await waiter.wait(timeout=timedelta(seconds=5)) == b"68KB of results"
+
+
+async def test_a_bug_in_the_ack_propagates_unwrapped() -> None:
+    """only the transport's refusals are wrapped; a bug under the ack is not dressed as one."""
+    waiter = _waiter(_Raw([_Sub([_Msg(b"68KB of results", ack_error=TypeError("a bug in the ack"))])]), _Js())
+    await waiter.open()
+
+    with pytest.raises(TypeError, match="a bug in the ack"):
+        await waiter.wait(timeout=timedelta(seconds=5))
 
 
 async def test_the_consumer_is_named_filtered_and_pushed_to_the_callers_own_inbox() -> None:

@@ -1632,7 +1632,10 @@ class TestAHostFailureIsAnsweredNotTimedOut:
 
         with pytest.raises(type(bug), match=str(bug)):
             await dispatch
-        nc.publish_reply.assert_not_awaited()
+        # answered, so the agent is not left to its deadline, but as the registry's fault: never
+        # as the ledger's outage, nor as a bad proof
+        (reply,) = [c.kwargs["message"] for c in nc.publish_reply.await_args_list]
+        assert reply.error_code == "REGISTRY_INTERNAL_ERROR"
         nc.request_raw.assert_not_called()
 
     @pytest.mark.asyncio

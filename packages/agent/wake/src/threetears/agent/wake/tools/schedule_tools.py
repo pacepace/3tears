@@ -37,7 +37,7 @@ Spec ref: ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, tzinfo
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -98,7 +98,11 @@ __all__ = [
     "load_wake_schedule_update_tool",
     "load_wake_yield_tool",
     "next_fires",
+    "no_change",
+    "skill_label",
     "standing_same_wake",
+    "tool_error",
+    "validate_name",
 ]
 
 
@@ -334,16 +338,17 @@ class ScheduleDeleteInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Helpers (the reply wording and checks are shared with webhook_tools, so a
+# schedule and a subscription answer the agent in the same words)
 # ---------------------------------------------------------------------------
 
 
-def _tool_error(tool_name: str, description: str) -> str:
+def tool_error(tool_name: str, description: str) -> str:
     """Format the canonical ``[TOOL ERROR] <tool>: <description>``."""
     return f"[TOOL ERROR] {tool_name}: {description}"
 
 
-def _no_change(tool_name: str, what: str) -> str:
+def no_change(tool_name: str, what: str) -> str:
     """Format ``[NO CHANGE] <tool>: <what>``: a call that ran and changed nothing.
 
     The words ``threetears.agent.tools.utils.tool_no_change`` writes; this
@@ -396,9 +401,65 @@ async def standing_same_wake(
     :return: the standing wake, or ``None``
     :rtype: Any | None
     """
-    if not (name or "").strip() and not (task_prompt or "").strip():
+    if not _wake_says_what_it_is(name, task_prompt):
         return None
-    for held in await schedules_collection.list_for_agent(agent_id):
+    return _matching_wake(
+        await schedules_collection.list_for_agent(agent_id),
+        name=name,
+        schedule_type=schedule_type,
+        schedule_config=schedule_config,
+        task_prompt=task_prompt,
+        skill_id=skill_id,
+        missed_fire_policy=missed_fire_policy,
+        context_from_schedule_id=context_from_schedule_id,
+        include_conversation_history=include_conversation_history,
+    )
+
+
+def _wake_says_what_it_is(name: str | None, task_prompt: str | None) -> bool:
+    """Whether a wake has a name or a text: one with neither is never taken for another."""
+    return bool((name or "").strip() or (task_prompt or "").strip())
+
+
+def _matching_wake(
+    held_wakes: Iterable[Any],
+    *,
+    name: str | None,
+    schedule_type: str,
+    schedule_config: dict[str, Any],
+    task_prompt: str | None,
+    skill_id: UUID | None,
+    missed_fire_policy: str,
+    context_from_schedule_id: UUID | None,
+    include_conversation_history: bool,
+) -> Any | None:
+    """The one of ``held_wakes`` that is this wake in every part, or ``None``.
+
+    The comparison of :func:`standing_same_wake`, apart from its read, so a
+    caller that absorbs a failed read does not absorb a fault in the comparison.
+
+    :param held_wakes: the agent's active and paused wakes
+    :ptype held_wakes: Iterable[Any]
+    :param name: the new wake's name
+    :ptype name: str | None
+    :param schedule_type: its schedule type
+    :ptype schedule_type: str
+    :param schedule_config: its schedule
+    :ptype schedule_config: dict[str, Any]
+    :param task_prompt: its text
+    :ptype task_prompt: str | None
+    :param skill_id: its skill
+    :ptype skill_id: UUID | None
+    :param missed_fire_policy: its missed-fire policy
+    :ptype missed_fire_policy: str
+    :param context_from_schedule_id: the wake whose context it reads
+    :ptype context_from_schedule_id: UUID | None
+    :param include_conversation_history: whether its fires read the conversation
+    :ptype include_conversation_history: bool
+    :return: the standing wake, or ``None``
+    :rtype: Any | None
+    """
+    for held in held_wakes:
         if (
             held.schedule_type == schedule_type
             and dict(held.schedule_config or {}) == dict(schedule_config)
@@ -413,7 +474,7 @@ async def standing_same_wake(
     return None
 
 
-def _validate_name(name: str | None) -> str | None:
+def validate_name(name: str | None) -> str | None:
     """Validate optional schedule/subscription name."""
     if name is None:
         return None
@@ -440,7 +501,7 @@ def _validate_task_prompt(prompt: str | None) -> str | None:
 SKILL_LOOKUP_FAILED = "unknown (lookup failed)"
 
 
-async def _skill_label(
+async def skill_label(
     registry: WakeRegistryClient,
     *,
     user_id: UUID,
@@ -705,31 +766,31 @@ def load_wake_schedule_create_tool(
     ) -> str:
         """Create a wake schedule."""
         for err in (
-            _validate_name(name),
+            validate_name(name),
             _validate_task_prompt(task_prompt),
             validate_schedule_config(schedule_type, schedule_config),
         ):
             if err is not None:
-                return _tool_error("wake_schedule_create", err)
+                return tool_error("wake_schedule_create", err)
 
         target_conversation_id = conversation_id
         if wake_conversation_id is not None:
             if wake_conversations is None:
-                return _tool_error(
+                return tool_error(
                     "wake_schedule_create", "wakes here live in this conversation; omit wake_conversation_id"
                 )
             parsed_target = parse_conversation_id(wake_conversation_id)
             if parsed_target is None:
-                return _tool_error("wake_schedule_create", f"invalid wake_conversation_id {wake_conversation_id!r}")
+                return tool_error("wake_schedule_create", f"invalid wake_conversation_id {wake_conversation_id!r}")
             if not await wake_conversations.is_wake_conversation(agent_id=agent_id, conversation_id=parsed_target):
-                return _tool_error(
+                return tool_error(
                     "wake_schedule_create",
                     f"[conversation:{parsed_target}] is not one of your wake conversations",
                 )
             target_conversation_id = parsed_target
 
         if missed_fire_policy not in _VALID_MISSED_FIRE_POLICIES:
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_create",
                 f"missed_fire_policy must be 'coalesce' or 'catch_up'; got {missed_fire_policy!r}",
             )
@@ -749,7 +810,7 @@ def load_wake_schedule_create_tool(
             # error so the LLM corrects the call instead of silently
             # ACL-denying a UUID that happens to parse.
             if stripped.startswith("[schedule:"):
-                return _tool_error(
+                return tool_error(
                     "wake_schedule_create",
                     f"skill_id received a schedule tag {skill_id!r}; "
                     "did you mean to pass a skill catalog id from "
@@ -768,7 +829,7 @@ def load_wake_schedule_create_tool(
             except TypeError:
                 parsed_skill = None
             if parsed_skill is None:
-                return _tool_error(
+                return tool_error(
                     "wake_schedule_create",
                     f"invalid skill_id {skill_id!r} (use [skill:<uuid>] or bare UUID)",
                 )
@@ -780,24 +841,35 @@ def load_wake_schedule_create_tool(
                 tool_name="wake_schedule_create",
             )
             if err is not None:
-                return _tool_error("wake_schedule_create", err)
+                return tool_error("wake_schedule_create", err)
             attached_skill = parsed_skill
 
         parsed_context_from: UUID | None = None
         if context_from_schedule_id is not None:
             parsed_context_from = parse_schedule_id(context_from_schedule_id)
             if parsed_context_from is None:
-                return _tool_error(
+                return tool_error(
                     "wake_schedule_create",
                     f"invalid context_from_schedule_id {context_from_schedule_id!r}",
                 )
 
         # The same wake made twice fires twice. Asked before anything is made; a
-        # listing that cannot be read leaves the create to go ahead, as it did.
-        try:
-            standing = await standing_same_wake(
-                schedules_collection,
-                agent_id,
+        # listing that cannot be read leaves the create to go ahead, as it did. Only
+        # the read is guarded: a fault in the comparison is ours and propagates.
+        standing = None
+        if _wake_says_what_it_is(name, task_prompt):
+            try:
+                held_wakes = await schedules_collection.list_for_agent(agent_id)
+            except Exception as exc:  # noqa: BLE001 - the check must not cost the create
+                contain(
+                    exc,
+                    log=log,
+                    what="wake_schedule_create could not read the agent's wakes; creating without the same-wake check",
+                    extra={"error": str(exc)},
+                )
+                held_wakes = []
+            standing = _matching_wake(
+                held_wakes,
                 name=name,
                 schedule_type=schedule_type,
                 schedule_config=schedule_config,
@@ -807,14 +879,6 @@ def load_wake_schedule_create_tool(
                 context_from_schedule_id=parsed_context_from,
                 include_conversation_history=include_conversation_history,
             )
-        except Exception as exc:  # noqa: BLE001 - the check must not cost the create
-            contain(
-                exc,
-                log=log,
-                what="wake_schedule_create could not read the agent's wakes; creating without the same-wake check",
-                extra={"error": str(exc)},
-            )
-            standing = None
         if standing is not None:
             return (
                 f"[NO CHANGE] wake_schedule_create: you already have this wake, [schedule:{standing.schedule_id}] "
@@ -833,7 +897,7 @@ def load_wake_schedule_create_tool(
                 now=now,
             )
         except ValueError as exc:
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_create",
                 f"schedule_config rejected by reschedule engine: {exc}",
             )
@@ -851,7 +915,7 @@ def load_wake_schedule_create_tool(
                 resolver=resolver,
             )
             if err is not None:
-                return _tool_error("wake_schedule_create", err)
+                return tool_error("wake_schedule_create", err)
 
         make_wake_conversation: WakeConversationMaker | None = None
         if wake_conversations is not None and wake_conversation_id is None:
@@ -926,7 +990,7 @@ def load_wake_schedule_create_tool(
                     }
                 },
             )
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_create",
                 f"you have {max_active_schedules_per_agent} active wakes, the most allowed (pause or delete one first)",
             )
@@ -937,11 +1001,11 @@ def load_wake_schedule_create_tool(
                 what="wake_schedule_create persist failed",
                 extra={"schedule_id": str(new_schedule_id), "error": str(exc)},
             )
-            return _tool_error("wake_schedule_create", f"persist failed ({type(exc).__name__})")
+            return tool_error("wake_schedule_create", f"persist failed ({type(exc).__name__})")
 
         skill_name: str | None = None
         if attached_skill is not None:
-            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
+            skill_name = await skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
 
         log.info(
             "wake_schedule_create persisted",
@@ -1034,19 +1098,19 @@ def load_wake_schedule_update_tool(
         # Contradictory-input guards. Attach value + detach flag is
         # ambiguous; reject before touching the DB.
         if skill_id is not None and detach_skill:
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_update",
                 "skill_id and detach_skill=true cannot be combined; "
                 "pass exactly one (or neither, to leave the attachment unchanged).",
             )
         if name is not None and clear_name:
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_update",
                 "name and clear_name=true cannot be combined; "
                 "pass exactly one (or neither, to leave the name unchanged).",
             )
         if context_from_schedule_id is not None and detach_context_from:
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_update",
                 "context_from_schedule_id and detach_context_from=true "
                 "cannot be combined; pass exactly one (or neither).",
@@ -1054,13 +1118,13 @@ def load_wake_schedule_update_tool(
 
         parsed = parse_schedule_id(schedule_id)
         if parsed is None:
-            return _tool_error("wake_schedule_update", f"invalid schedule_id {schedule_id!r}")
+            return tool_error("wake_schedule_update", f"invalid schedule_id {schedule_id!r}")
 
         entity = await schedules_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("wake_schedule_update", "schedule not found")
+            return tool_error("wake_schedule_update", "schedule not found")
         if entity.protected:
-            return _tool_error("wake_schedule_update", PROTECTED_REFUSAL)
+            return tool_error("wake_schedule_update", PROTECTED_REFUSAL)
         before = _update_snapshot(entity)
         next_fire_before = entity.next_fire_at
 
@@ -1071,17 +1135,17 @@ def load_wake_schedule_update_tool(
         # affected by a changed neighbour.
         validation_errors: list[str | None] = []
         if name is not None:
-            validation_errors.append(_validate_name(name))
+            validation_errors.append(validate_name(name))
         if task_prompt is not None:
             validation_errors.append(_validate_task_prompt(task_prompt))
         if schedule_type is not None or schedule_config is not None:
             validation_errors.append(validate_schedule_config(merged_type, merged_config))
         for err in validation_errors:
             if err is not None:
-                return _tool_error("wake_schedule_update", err)
+                return tool_error("wake_schedule_update", err)
 
         if missed_fire_policy is not None and missed_fire_policy not in _VALID_MISSED_FIRE_POLICIES:
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_update",
                 f"missed_fire_policy must be 'coalesce' or 'catch_up'; got {missed_fire_policy!r}",
             )
@@ -1097,7 +1161,7 @@ def load_wake_schedule_update_tool(
             stripped = skill_id.strip()
             # Tag-confusion guard: schedule tag is not a skill id.
             if stripped.startswith("[schedule:"):
-                return _tool_error(
+                return tool_error(
                     "wake_schedule_update",
                     f"skill_id received a schedule tag {skill_id!r}; "
                     "did you mean to pass a skill catalog id from "
@@ -1110,11 +1174,11 @@ def load_wake_schedule_update_tool(
             try:
                 new_skill = UUID(stripped)
             except ValueError:
-                return _tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
+                return tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
             except AttributeError:
-                return _tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
+                return tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
             except TypeError:
-                return _tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
+                return tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
             err = await _check_skill_acl(
                 registry=registry,
                 user_id=user_id,
@@ -1123,7 +1187,7 @@ def load_wake_schedule_update_tool(
                 tool_name="wake_schedule_update",
             )
             if err is not None:
-                return _tool_error("wake_schedule_update", err)
+                return tool_error("wake_schedule_update", err)
             skill_change = (new_skill, True)
         else:
             skill_change = (None, False)
@@ -1137,7 +1201,7 @@ def load_wake_schedule_update_tool(
         elif context_from_schedule_id is not None:
             new_context_from = parse_schedule_id(context_from_schedule_id)
             if new_context_from is None:
-                return _tool_error(
+                return tool_error(
                     "wake_schedule_update",
                     f"invalid context_from_schedule_id {context_from_schedule_id!r}",
                 )
@@ -1154,7 +1218,7 @@ def load_wake_schedule_update_tool(
                 resolver=resolver,
             )
             if err is not None:
-                return _tool_error("wake_schedule_update", err)
+                return tool_error("wake_schedule_update", err)
 
         # Apply changes via setters.
         recompute_next_fire = False
@@ -1182,7 +1246,7 @@ def load_wake_schedule_update_tool(
         changes = _update_changes(before, _update_snapshot(entity))
         if not changes:
             # Every value given is the one it had: saving would move its next fire for nothing.
-            return _no_change(
+            return no_change(
                 "wake_schedule_update",
                 f"every value given is the one [schedule:{parsed}] already has. It is {_state_said(entity, zone)}.",
             )
@@ -1200,7 +1264,7 @@ def load_wake_schedule_update_tool(
                     now=datetime.now(UTC),
                 )
             except ValueError as exc:
-                return _tool_error(
+                return tool_error(
                     "wake_schedule_update",
                     f"schedule_config rejected by reschedule engine: {exc}",
                 )
@@ -1216,7 +1280,7 @@ def load_wake_schedule_update_tool(
                 "wake_schedule_update refused: schedule changed since it was read",
                 extra={"extra_data": {"schedule_id": str(parsed)}},
             )
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_update",
                 "the schedule changed after this edit read it (it fired, expired, was paused or resumed, "
                 "or was edited elsewhere); nothing was saved. Read it again with wake_schedule_list and "
@@ -1229,11 +1293,11 @@ def load_wake_schedule_update_tool(
                 what="wake_schedule_update persist failed",
                 extra={"schedule_id": str(parsed), "error": str(exc)},
             )
-            return _tool_error("wake_schedule_update", f"persist failed ({type(exc).__name__})")
+            return tool_error("wake_schedule_update", f"persist failed ({type(exc).__name__})")
 
         skill_name: str | None = None
         if entity.skill_id is not None:
-            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
+            skill_name = await skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
         if entity.next_fire_at != next_fire_before:
             changes.append(
                 f"next fire: {format_wake_time(next_fire_before, zone, unset='not set')} -> "
@@ -1289,7 +1353,7 @@ def load_wake_schedule_list_tool(
             visible = await schedules_collection.list_for_agent(agent_id, include_paused=include_paused)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="wake_schedule_list list failed")
-            return _tool_error("wake_schedule_list", f"list failed ({type(exc).__name__})")
+            return tool_error("wake_schedule_list", f"list failed ({type(exc).__name__})")
 
         if not visible:
             return "You have no wake schedules."
@@ -1298,7 +1362,7 @@ def load_wake_schedule_list_tool(
         for entity in visible:
             skill_name: str | None = None
             if entity.skill_id is not None:
-                skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
+                skill_name = await skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
             lines.append("- " + _format_schedule_line(entity, skill_name=skill_name, zone=zone))
         return "\n".join(lines)
 
@@ -1348,13 +1412,13 @@ def load_wake_schedule_get_tool(
         """Read one wake schedule in full."""
         parsed = parse_schedule_id(schedule_id)
         if parsed is None:
-            return _tool_error("wake_schedule_get", f"invalid schedule_id {schedule_id!r}")
+            return tool_error("wake_schedule_get", f"invalid schedule_id {schedule_id!r}")
         entity = await schedules_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("wake_schedule_get", "schedule not found; wake_schedule_list shows the ones you have")
+            return tool_error("wake_schedule_get", "schedule not found; wake_schedule_list shows the ones you have")
         skill = "none"
         if entity.skill_id is not None:
-            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
+            skill_name = await skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
             skill = f"{skill_name or 'unnamed'} [skill:{entity.skill_id}]"
         upcoming = next_fires(entity, 3)
         if upcoming:
@@ -1503,14 +1567,21 @@ def load_wake_fires_tool(
     """
     zone = resolve_zone(tz)
 
+    # Each history is read first and written out after: only the reads are guarded,
+    # so a read that failed says so and a fault in the writing-out is ours and propagates.
+
     async def _of_schedule(raw: str, limit: int) -> str:
         parsed = parse_schedule_id(raw)
         if parsed is None:
-            return _tool_error("wake_fires", f"invalid schedule_id {raw!r}")
-        entity = await schedules_collection.find_for_agent(agent_id, parsed)
-        if entity is None:
-            return _tool_error("wake_fires", "schedule not found; wake_schedule_list shows the ones you have")
-        fires = await fires_collection.list_for_schedule(entity.conversation_id, parsed, limit=limit)
+            return tool_error("wake_fires", f"invalid schedule_id {raw!r}")
+        try:
+            entity = await schedules_collection.find_for_agent(agent_id, parsed)
+            if entity is None:
+                return tool_error("wake_fires", "schedule not found; wake_schedule_list shows the ones you have")
+            fires = await fires_collection.list_for_schedule(entity.conversation_id, parsed, limit=limit)
+        except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
+            contain(exc, log=log, what="wake_fires history read failed")
+            return tool_error("wake_fires", f"the history could not be read ({type(exc).__name__})")
         head = f"[schedule:{parsed}] {entity.name or 'untitled'}: {_state_said(entity, zone)}."
         if not fires:
             return f"{head}\nIt has not fired yet."
@@ -1522,17 +1593,21 @@ def load_wake_fires_tool(
 
     async def _of_subscription(raw: str, limit: int) -> str:
         if subscriptions_collection is None:
-            return _tool_error("wake_fires", "webhook subscriptions are not available here")
+            return tool_error("wake_fires", "webhook subscriptions are not available here")
         parsed = parse_subscription_id(raw)
         if parsed is None:
-            return _tool_error("wake_fires", f"invalid subscription_id {raw!r}")
-        entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
-        if entity is None:
-            return _tool_error(
-                "wake_fires", "subscription not found; webhook_subscription_list shows the ones you have"
-            )
-        fires = await fires_collection.list_for_subscription(entity.conversation_id, parsed, limit=limit)
-        refusals = await subscriptions_collection.list_refusals(parsed, limit=limit)
+            return tool_error("wake_fires", f"invalid subscription_id {raw!r}")
+        try:
+            entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
+            if entity is None:
+                return tool_error(
+                    "wake_fires", "subscription not found; webhook_subscription_list shows the ones you have"
+                )
+            fires = await fires_collection.list_for_subscription(entity.conversation_id, parsed, limit=limit)
+            refusals = await subscriptions_collection.list_refusals(parsed, limit=limit)
+        except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
+            contain(exc, log=log, what="wake_fires history read failed")
+            return tool_error("wake_fires", f"the history could not be read ({type(exc).__name__})")
         lines = [
             f"[webhook:{parsed}] {entity.name or 'untitled'} ({entity.status}): last accepted delivery "
             f"{format_wake_time(entity.last_fired_at, zone, unset='never')}."
@@ -1560,15 +1635,11 @@ def load_wake_fires_tool(
     async def wake_fires(schedule_id: str | None = None, subscription_id: str | None = None, limit: int = 10) -> str:
         """Read how a wake's past fires went, or a webhook subscription's deliveries."""
         if bool(schedule_id) == bool(subscription_id):
-            return _tool_error("wake_fires", "give a schedule_id or a subscription_id, one of the two")
+            return tool_error("wake_fires", "give a schedule_id or a subscription_id, one of the two")
         limit = max(1, min(int(limit), 50))
-        try:
-            if schedule_id:
-                return await _of_schedule(schedule_id, limit)
-            return await _of_subscription(subscription_id or "", limit)
-        except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
-            contain(exc, log=log, what="wake_fires history read failed")
-            return _tool_error("wake_fires", f"the history could not be read ({type(exc).__name__})")
+        if schedule_id:
+            return await _of_schedule(schedule_id, limit)
+        return await _of_subscription(subscription_id or "", limit)
 
     wake_fires.description = (
         "Read how a wake schedule's past fires went, newest first: when each ran, whether on schedule "
@@ -1611,21 +1682,21 @@ def load_wake_schedule_pause_tool(
         """Pause a wake schedule. Reversible via wake_schedule_resume."""
         parsed = parse_schedule_id(schedule_id)
         if parsed is None:
-            return _tool_error("wake_schedule_pause", f"invalid schedule_id {schedule_id!r}")
+            return tool_error("wake_schedule_pause", f"invalid schedule_id {schedule_id!r}")
 
         entity = await schedules_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("wake_schedule_pause", "schedule not found")
+            return tool_error("wake_schedule_pause", "schedule not found")
         if entity.protected:
-            return _tool_error("wake_schedule_pause", PROTECTED_REFUSAL)
+            return tool_error("wake_schedule_pause", PROTECTED_REFUSAL)
         if entity.status == "expired":
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_pause",
                 "schedule is expired (one-shot fires cannot be paused); create a new schedule",
             )
 
         if entity.status == "paused":
-            return _no_change(
+            return no_change(
                 "wake_schedule_pause",
                 f"[schedule:{parsed}] ({entity.name or 'untitled'}) is already paused. "
                 f"It is {describe_schedule(entity.schedule_type, entity.schedule_config or {})}.",
@@ -1635,7 +1706,7 @@ def load_wake_schedule_pause_tool(
             await schedules_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="wake_schedule_pause persist failed")
-            return _tool_error("wake_schedule_pause", f"persist failed ({type(exc).__name__})")
+            return tool_error("wake_schedule_pause", f"persist failed ({type(exc).__name__})")
         return (
             f"Paused [schedule:{parsed}] ({entity.name or 'untitled'}). It was {was}. "
             "It does not fire until wake_schedule_resume."
@@ -1688,13 +1759,13 @@ def load_wake_schedule_resume_tool(
         """Resume a paused wake schedule. Recomputes next_fire_at from now."""
         parsed = parse_schedule_id(schedule_id)
         if parsed is None:
-            return _tool_error("wake_schedule_resume", f"invalid schedule_id {schedule_id!r}")
+            return tool_error("wake_schedule_resume", f"invalid schedule_id {schedule_id!r}")
 
         entity = await schedules_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("wake_schedule_resume", "schedule not found")
+            return tool_error("wake_schedule_resume", "schedule not found")
         if entity.status == "expired":
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_resume",
                 "schedule is expired (one-shot already fired); create a new schedule",
             )
@@ -1708,14 +1779,14 @@ def load_wake_schedule_resume_tool(
                 now=datetime.now(UTC),
             )
         except ValueError as exc:
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_resume",
                 f"reschedule failed: {exc}",
             )
         if next_fire_at is None:
             # Terminal one-shot whose last_fired_at is set; should be
             # expired but defend in depth.
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_resume",
                 "schedule has no future fire (one-shot already fired); create a new schedule",
             )
@@ -1750,13 +1821,13 @@ def load_wake_schedule_resume_tool(
                     }
                 },
             )
-            return _tool_error(
+            return tool_error(
                 "wake_schedule_resume",
                 f"you have {max_active_schedules_per_agent} active wakes, the most allowed (pause or delete one first)",
             )
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="wake_schedule_resume persist failed")
-            return _tool_error("wake_schedule_resume", f"persist failed ({type(exc).__name__})")
+            return tool_error("wake_schedule_resume", f"persist failed ({type(exc).__name__})")
         return (
             f"Resumed [schedule:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. "
             f"It is {describe_schedule(entity.schedule_type, entity.schedule_config or {})}. "
@@ -1800,20 +1871,20 @@ def load_wake_schedule_delete_tool(
         """Delete a wake schedule permanently. Fire history cascades."""
         parsed = parse_schedule_id(schedule_id)
         if parsed is None:
-            return _tool_error("wake_schedule_delete", f"invalid schedule_id {schedule_id!r}")
+            return tool_error("wake_schedule_delete", f"invalid schedule_id {schedule_id!r}")
 
         entity = await schedules_collection.find_for_agent(agent_id, parsed)
         if entity is None:
-            return _tool_error("wake_schedule_delete", "schedule not found")
+            return tool_error("wake_schedule_delete", "schedule not found")
         if entity.protected:
-            return _tool_error("wake_schedule_delete", PROTECTED_REFUSAL)
+            return tool_error("wake_schedule_delete", PROTECTED_REFUSAL)
         was = _state_said(entity, zone)
 
         try:
             await schedules_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="wake_schedule_delete persist failed")
-            return _tool_error("wake_schedule_delete", f"persist failed ({type(exc).__name__})")
+            return tool_error("wake_schedule_delete", f"persist failed ({type(exc).__name__})")
         return (
             f"Deleted [schedule:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}: {was}. "
             "Its history went with it, and it cannot be brought back."
@@ -1880,7 +1951,7 @@ def load_wake_yield_tool(
             set_yield_requested()
         except Exception as exc:  # noqa: BLE001 - surface as tool error
             contain(exc, log=log, what="wake_yield setter raised", extra={"error": str(exc)})
-            return _tool_error("wake_yield", f"yield setter failed ({type(exc).__name__})")
+            return tool_error("wake_yield", f"yield setter failed ({type(exc).__name__})")
         log.info("wake_yield fired")
         return "Wake yielded. Your last message ends it, and the person's waiting message is answered next."
 

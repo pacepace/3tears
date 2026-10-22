@@ -165,6 +165,14 @@ class ReprobeScheduler(Protocol):
     polling caller does not need at all, since a poller's next poll IS the re-probe.
     :class:`threetears.scrape.reprobe.ScheduledJobsReprobeScheduler` is the implementation,
     and it books a ``relative_delay`` job rather than sleeping.
+
+    **A host boundary, so no error contract.** A deployment supplies whatever it schedules work
+    with, and an implementation raises whatever that raises: the scheduled-jobs one raises a
+    collection write's failures (storage, ``KvError``, ``GenerationUnavailableError``), and one
+    over another queue raises that queue's. :class:`TargetCircuit` therefore contains every
+    ``Exception`` from either method, logged at error with its traceback and counted by type,
+    and carries on: the fetch result it holds is worth more than the booking. A cancellation is
+    not an ``Exception`` and propagates.
     """
 
     async def schedule_reprobe(self, *, target_id: str, delay_seconds: float) -> None:
@@ -938,8 +946,9 @@ class TargetCircuit:
         deployment this is a real gap and not merely a lost convenience.
 
         It stays swallowed because the alternative is worse -- turning a scheduler outage
-        into a failed scrape of a target we already have an answer for -- and ``log.exception``
-        makes it detectable. An event-driven deployment that cannot tolerate the gap needs a
+        into a failed scrape of a target we already have an answer for -- and ``contain()``
+        makes it detectable. It is broad because :class:`ReprobeScheduler` is a host boundary
+        with no error contract. An event-driven deployment that cannot tolerate the gap needs a
         reconciliation sweep over rows whose ``blocked_until`` has passed while
         ``circuit_state`` is still open; that is deliberately not built here, because it is a
         scheduled job about the whole table rather than a decision about one fetch.
@@ -948,7 +957,7 @@ class TargetCircuit:
             return
         try:
             await self._reprobe_scheduler.schedule_reprobe(target_id=target_id, delay_seconds=delay_seconds)
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a scheduler outage must not fail a fetch whose result we already hold; blocked_until still stands, so a poller loses nothing and an event-driven caller loses this wake-up, which the docstring states and log.exception makes detectable
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- ReprobeScheduler is host-supplied with no error contract, and a scheduler outage must not fail a fetch whose result we already hold; blocked_until still stands, so a poller loses nothing and an event-driven caller loses this wake-up, which the docstring states and contain() makes detectable
             contain(
                 exc,
                 log=log,
@@ -963,7 +972,7 @@ class TargetCircuit:
             return
         try:
             await self._reprobe_scheduler.cancel_reprobe(target_id=target_id)
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a failed cancel costs one spurious wake-up against a target that has recovered, which is a wasted poll and not a wrong answer; failing the fetch that just succeeded would be worse. Logged with its traceback below
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- ReprobeScheduler is host-supplied with no error contract, and a failed cancel costs one spurious wake-up against a target that has recovered, which is a wasted poll and not a wrong answer; failing the fetch that just succeeded would be worse. Logged with its traceback below
             contain(
                 exc,
                 log=log,

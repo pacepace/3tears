@@ -879,13 +879,15 @@ class MemoryExtractor:
         :rtype: tuple[bool, str]
         :raises ExtractionModelFailedError: when the call or its reply failed
         """
+        # the prompt and the reading of the reply are our own code, outside the model call's
+        # handler: a bug in either raises as itself, not as an outage of the model.
+        prompt = self._prompts.worthiness.format(
+            user_message=user_message[:500],
+            assistant_response_preview=assistant_response[:500],
+        )
         try:
             model = await self._chat_model_factory.create_chat_model(
                 purpose="worthiness",
-            )
-            prompt = self._prompts.worthiness.format(
-                user_message=user_message[:500],
-                assistant_response_preview=assistant_response[:500],
             )
             response = await model.ainvoke(
                 [
@@ -897,12 +899,13 @@ class MemoryExtractor:
                 ],
                 **_invoke_identity_kwargs(user_id, conversation_id),
             )
-            content = self._get_response_content(response)
+        except Exception as exc:
+            raise ExtractionModelFailedError(f"the worthiness model call failed: {type(exc).__name__}: {exc}") from exc
+        content = self._get_response_content(response)
+        try:
             result = json.loads(self._strip_code_block(content))
         except json.JSONDecodeError as exc:
             raise ExtractionModelFailedError(f"the worthiness model's reply was not valid JSON: {exc}") from exc
-        except Exception as exc:
-            raise ExtractionModelFailedError(f"the worthiness model call failed: {type(exc).__name__}: {exc}") from exc
         if not isinstance(result, dict):
             raise ExtractionModelFailedError(f"the worthiness model's reply was {type(result).__name__}, not an object")
         return bool(result.get("worthy", False)), str(result.get("reason", "no_reason"))
@@ -965,12 +968,14 @@ class MemoryExtractor:
         :rtype: list[dict[str, str]]
         :raises ExtractionModelFailedError: when the call or its reply failed
         """
+        # the prompt and the reading of the reply are our own code, outside the model call's
+        # handler: a bug in either raises as itself, not as an outage of the model.
+        prompt = self._prompts.extraction.format(
+            user_message=user_message[:2000],
+            assistant_response=assistant_response[:2000],
+        )
         try:
             model = await self._chat_model_factory.create_chat_model(purpose="extraction")
-            prompt = self._prompts.extraction.format(
-                user_message=user_message[:2000],
-                assistant_response=assistant_response[:2000],
-            )
             response = await model.ainvoke(
                 [
                     SystemMessage(
@@ -980,12 +985,13 @@ class MemoryExtractor:
                 ],
                 **_invoke_identity_kwargs(user_id, conversation_id),
             )
-            content = self._get_response_content(response)
+        except Exception as exc:
+            raise ExtractionModelFailedError(f"the extraction model call failed: {type(exc).__name__}: {exc}") from exc
+        content = self._get_response_content(response)
+        try:
             memories = json.loads(self._strip_code_block(content))
         except json.JSONDecodeError as exc:
             raise ExtractionModelFailedError(f"the extraction model's reply was not valid JSON: {exc}") from exc
-        except Exception as exc:
-            raise ExtractionModelFailedError(f"the extraction model call failed: {type(exc).__name__}: {exc}") from exc
         if not isinstance(memories, list):
             raise ExtractionModelFailedError(f"the extraction model's reply was {type(memories).__name__}, not a list")
         valid: list[dict[str, str]] = []
@@ -1065,11 +1071,13 @@ class MemoryExtractor:
         if not has_any_similar:
             return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
 
+        # the prompt and the reading of the reply are our own code, outside the model call's
+        # handler: a bug in either raises as itself, not as an outage of the model.
+        prompt = self._build_resolution_prompt(candidates)
         try:
             model = await self._chat_model_factory.create_chat_model(
                 purpose="resolution",
             )
-            prompt = self._build_resolution_prompt(candidates)
             response = await model.ainvoke(
                 with_fence_rules(
                     [
@@ -1081,12 +1089,13 @@ class MemoryExtractor:
                 ),
                 **_invoke_identity_kwargs(user_id, conversation_id),
             )
-            content = self._get_response_content(response)
+        except Exception as exc:
+            raise ExtractionModelFailedError(f"the resolution model call failed: {type(exc).__name__}: {exc}") from exc
+        content = self._get_response_content(response)
+        try:
             actions = json.loads(self._strip_code_block(content))
         except json.JSONDecodeError as exc:
             raise ExtractionModelFailedError(f"the resolution model's reply was not valid JSON: {exc}") from exc
-        except Exception as exc:
-            raise ExtractionModelFailedError(f"the resolution model call failed: {type(exc).__name__}: {exc}") from exc
         if not isinstance(actions, list):
             raise ExtractionModelFailedError(f"the resolution model's reply was {type(actions).__name__}, not a list")
 
