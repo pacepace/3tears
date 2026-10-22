@@ -1232,6 +1232,7 @@ extract = [
     { name = "trafilatura" },
 ]
 standalone = [
+    { name = "httpcore" },
     { name = "httpx" },
 ]
 
@@ -1240,6 +1241,7 @@ requires-dist = [
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "charset-normalizer", marker = "extra == 'extract'" },
+    { name = "httpcore", marker = "extra == 'standalone'", specifier = ">=1.0" },
     { name = "httpx", marker = "extra == 'standalone'", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-core" },
