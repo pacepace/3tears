@@ -462,7 +462,7 @@ class DocumentDriver(ScrapeDriver):
                 response = await client.get(url)
             except (httpx.ConnectError, httpx.TimeoutException, UpstreamHttpError) as exc:
                 # UpstreamHttpError: an injected TracedHttpClient already retried the
-                # transient class (connect/timeout/RemoteProtocolError/5xx) and gave up;
+                # transient class (connect/read/timeout/RemoteProtocolError/5xx) and gave up;
                 # the self-constructed httpx client raises the raw httpx errors.
                 log.warning("document driver transport failure", extra={"extra_data": {"url": url, "error": str(exc)}})
                 raise DocumentDriverError("transport", str(exc)) from exc

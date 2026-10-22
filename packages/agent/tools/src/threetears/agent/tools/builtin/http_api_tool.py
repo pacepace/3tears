@@ -249,8 +249,8 @@ class HttpApiTool(TearsTool):
     def _result_from_upstream_error(self, exc: UpstreamHttpError) -> ToolResult:
         """convert a retry-exhausted ``UpstreamHttpError`` to a failed result.
 
-        the last upstream body still rides in ``content``; the last status (or
-        ``None`` when no response was ever received) rides in
+        the last attempt's body still rides in ``content``; its status (or
+        ``None`` when the last attempt got no response) rides in
         ``metadata["http"]``.
 
         :param exc: the retry-exhausted upstream error

@@ -8,6 +8,39 @@ packages (bumped in lock-step).
 
 ## v0.75.0 -- 2026-10-21
 
+### search: a transport failure says which HTTP status the provider answered with; core's retry error describes the last attempt
+
+**Added:** `TransportFailed.status` (`int | None`), and `status` on its `FailureRecord`. The SearXNG and Tavily
+adapters set it when the provider answered with a status no other failure class claims, so a caller tells a served
+5xx (the provider's fault, transient) from a 3xx or 4xx (usually a misconfigured base URL) without parsing the
+message. It is `None` when no status reached the adapter: a connect or TLS failure, a final attempt that never got
+an answer, or an exception an adapter could not map. The status survives the record round trip the adapters and the
+standalone transport re-stamp failures through.
+
+**Fixed:** agent-tools' `TracedSearchTransport`, the transport `WebSearchTool` builds by default, raised the traced
+client's `UpstreamHttpError` when an upstream answered its last attempt with a 5xx, so the adapter reported a provider
+that answered as one that never did. It now returns that 5xx as the response, as `StandaloneTransport` does, with the
+attempts the client counted; a last attempt that got no answer still raises. A caller can see one consequence: an
+exhausted 504 now reaches the adapter as the gateway timeout it is, and is reported `TimedOut`, not `TransportFailed`.
+
+**Fixed:** core's `TracedHttpClient` let an earlier attempt's answer leak into `UpstreamHttpError`. Neither the saved
+response nor the saved transport error was cleared between attempts, so a 503 followed by connection resets raised
+with `status_code=503`, and a refused connect followed by two 503s chained the refused connect. Each attempt now starts
+clean, so the error describes the last attempt only: a status means it was answered, a chained cause means it was
+not. A read, write or close failure (`httpx.NetworkError`) is now recorded as a transport failure like a connect
+failure: it counts against the circuit breaker and it is chained. A non-idempotent request (`idempotent=False`) is
+no longer sent again after it left, whatever ended the attempt: a read failure ends the call with
+`UpstreamHttpError`, and a failure that is not the upstream's (a corrupt encoding, too many redirects) ends it as
+itself, without charging the breaker. Before, both were retried, so a POST could run twice. `UpstreamHttpError` gains
+`attempts`, the count the client made. This applies to `request` and to `stream`; `stream`'s message now gives the
+attempts it made rather than the ceiling, and a 5xx whose error body fails to read closes its stream and chains the
+read failure instead of leaving the connection out of the pool. A last attempt that failed locally on an idempotent
+request is chained as the cause too, so the error never arrives with neither a status nor a cause.
+
+**Wire:** additive, like `egress` and `occurred_at` before it. Every `FailureRecord` now carries `status` (null
+outside a transport failure), so a reader at an older version refuses every failure record this one writes; the
+exact-version pin consumers keep already covers that (D13).
+
 ### backup: a restore no longer fails on an extension the restoring role does not own
 
 **Fixed:** every restore of a database holding an extension a superuser installed (pgvector)
