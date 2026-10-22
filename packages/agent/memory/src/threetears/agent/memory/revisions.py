@@ -211,6 +211,19 @@ def marks_of(row: dict[str, Any]) -> MemoryMarks:
     )
 
 
+#: how much each unfinished step leaves wrong, so a revision that missed several names the worst:
+#: a missing mark leaves what was replaced current beside its replacement, a missing edge loses
+#: only the link, and a missed generation only delays the memory's appearance in search.
+_UNFINISHED_RANK = {"generation": 0, "edges": 1, "mark": 2}
+
+
+def _worse(pending: WriteIncompleteError | None, failure: WriteIncompleteError) -> WriteIncompleteError:
+    """The unfinished step to report: ``failure`` unless ``pending`` already names a worse one."""
+    if pending is not None and _UNFINISHED_RANK[pending.unfinished] >= _UNFINISHED_RANK[failure.unfinished]:
+        return pending
+    return failure
+
+
 async def _write_linked(
     memories: MemoriesCollection,
     consolidations: MemoryConsolidationsCollection,
@@ -219,8 +232,17 @@ async def _write_linked(
     source_ids: list[UUID],
     fields: dict[str, Any],
     rationale: str | None,
-) -> UUID:
-    """Write a new memory and an edge from each of ``source_ids`` to it; mark nothing."""
+) -> tuple[UUID, WriteIncompleteError | None]:
+    """Write a new memory and an edge from each of ``source_ids`` to it; mark nothing.
+
+    Once the memory has committed, a step that fails after it does not stop the rest: the caller
+    still has the mark to make, and skipping it would leave what is replaced current beside its
+    replacement. The failure comes back instead of being raised, for the caller to raise once
+    every step has been tried.
+
+    :return: the new memory's id, and the step left unfinished, if one was
+    :rtype: tuple[UUID, WriteIncompleteError | None]
+    """
     new_id = UUID(str(uuid7()))
     # the new id is fresh, so nothing reaches it yet; the guard also proves no
     # source descends from an earlier memory in the chain
@@ -229,7 +251,12 @@ async def _write_linked(
     entity = memories.create(
         {**fields, "memory_id": new_id, "agent_id": agent_id, "date_created": now, "date_updated": now}
     )
-    await _save_new(memories, entity, new_id, source_ids)
+    pending: WriteIncompleteError | None = None
+    try:
+        await _save_new(memories, entity, new_id, source_ids)
+    except WriteIncompleteError as exc:
+        # committed, and only the generation lagged: the edges and the mark still apply
+        pending = exc
     # the edges after the new memory commits, so their keys have a target
     try:
         for source_id in source_ids:
@@ -245,8 +272,10 @@ async def _write_linked(
             )
             await consolidations.save_entity(edge)
     except _AFTER_COMMIT_FAILURES as exc:
-        raise WriteIncompleteError(new_id, "edges", exc, source_ids) from exc
-    return new_id
+        failure = WriteIncompleteError(new_id, "edges", exc, source_ids)
+        failure.__cause__ = exc
+        pending = _worse(pending, failure)
+    return new_id, pending
 
 
 async def supersede(
@@ -287,13 +316,19 @@ async def supersede(
         for source_id in source_ids:
             if is_permanent(await memories.get((agent_id, source_id))):
                 raise ValueError(f"memory {source_id} is permanent and is never superseded")
-    new_id = await _write_linked(
+    new_id, pending = await _write_linked(
         memories, consolidations, agent_id=agent_id, source_ids=source_ids, fields=fields, rationale=rationale
     )
+    # the mark is tried whatever came before it: it is what stops the replaced memories reading as
+    # current, so a lagging generation or a lost edge must not leave two current memories (#892)
     try:
         await memories.mark_superseded(agent_id, source_memory_ids=source_ids, gist_id=new_id)
     except _AFTER_COMMIT_FAILURES as exc:
-        raise WriteIncompleteError(new_id, "mark", exc, source_ids) from exc
+        failure = WriteIncompleteError(new_id, "mark", exc, source_ids)
+        failure.__cause__ = exc
+        pending = _worse(pending, failure)
+    if pending is not None:
+        raise pending
     return new_id
 
 
@@ -435,11 +470,14 @@ async def correct_beside(
     :ptype rationale: str | None
     :return: the new memory's id
     :rtype: UUID
-    :raises WriteIncompleteError: when the new memory was written and its edges were not
+    :raises WriteIncompleteError: when the new memory was written and its generation or edges were not
     """
-    return await _write_linked(
+    new_id, pending = await _write_linked(
         memories, consolidations, agent_id=agent_id, source_ids=source_ids, fields=fields, rationale=rationale
     )
+    if pending is not None:
+        raise pending
+    return new_id
 
 
 async def retract(

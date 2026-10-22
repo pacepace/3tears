@@ -34,6 +34,7 @@ class _Memories:
     def __init__(self, fail: dict[str, BaseException] | None = None) -> None:
         self.fail = fail or {}
         self.saved: list[UUID] = []
+        self.marked: list[UUID] = []
 
     def create(self, data: dict[str, Any]) -> SimpleNamespace:
         return SimpleNamespace(**data)
@@ -48,9 +49,10 @@ class _Memories:
             raise self.fail["save_entity"]
 
     async def mark_superseded(self, agent_id: UUID, *, source_memory_ids: list[UUID], gist_id: UUID) -> None:
-        _ = agent_id, source_memory_ids, gist_id
+        _ = agent_id, gist_id
         if "mark_superseded" in self.fail:
             raise self.fail["mark_superseded"]
+        self.marked.extend(source_memory_ids)
 
 
 # parity-exempt: records the cycle check and the edge saves the revision writers make on the edges collection
@@ -143,3 +145,43 @@ async def test_a_plain_write_whose_generation_did_not_advance_names_the_memory_w
     assert raised.value.memory_id == memories.saved[0]
     assert raised.value.unfinished == "generation"
     assert raised.value.source_ids == ()
+
+
+@pytest.mark.parametrize(
+    ("memories", "edges", "unfinished"),
+    [
+        (_Memories(fail={"save_entity": GenerationUnavailableError("generation store down")}), _Edges(), "generation"),
+        (_Memories(), _Edges(fail={"save_entity": KvError("kv down")}), "edges"),
+    ],
+    ids=["after a lagging generation", "after a lost edge"],
+)
+async def test_the_replaced_memory_is_still_marked_when_an_earlier_step_failed(
+    memories: _Memories, edges: _Edges, unfinished: str
+) -> None:
+    """the mark is what stops the replaced memory reading as current: skipping it left two (#892)."""
+    with pytest.raises(WriteIncompleteError) as raised:
+        await _supersede(memories, edges)
+    assert memories.marked == [_SOURCE]
+    assert raised.value.unfinished == unfinished
+
+
+async def test_a_failed_mark_is_named_over_an_earlier_lagging_generation() -> None:
+    """two current memories is the worse state, so the step that leaves them is the one reported."""
+    memories = _Memories(
+        fail={
+            "save_entity": GenerationUnavailableError("generation store down"),
+            "mark_superseded": DataLayerUnavailableError("broker down"),
+        }
+    )
+    with pytest.raises(WriteIncompleteError) as raised:
+        await _supersede(memories, _Edges())
+    assert raised.value.unfinished == "mark"
+    assert isinstance(raised.value.__cause__, DataLayerUnavailableError)
+
+
+async def test_a_lost_edge_is_named_over_an_earlier_lagging_generation() -> None:
+    memories = _Memories(fail={"save_entity": GenerationUnavailableError("generation store down")})
+    with pytest.raises(WriteIncompleteError) as raised:
+        await _supersede(memories, _Edges(fail={"save_entity": KvError("kv down")}))
+    assert raised.value.unfinished == "edges"
+    assert memories.marked == [_SOURCE]
