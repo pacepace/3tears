@@ -8,7 +8,8 @@ during generation; the bundle *is* the context. This module builds that bundle.
 
 Why closed matters: to A/B a generation prompt you regenerate over a **fixed**
 bundle and compare. So the bundle is fingerprinted
-(:meth:`AnalysisContextBundle.fingerprint`, a sha256 over its canonical JSON) and
+(:meth:`AnalysisContextBundle.fingerprint`, ``v2:`` and a sha256 over its canonical JSON with every float
+rounded to twelve significant figures) and
 that fingerprint is stamped onto every analysis' ``generation`` provenance — two
 prompts run over the same fingerprint are comparable apples-to-apples.
 

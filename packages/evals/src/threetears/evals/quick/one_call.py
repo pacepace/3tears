@@ -690,7 +690,7 @@ def callable_host(
         ),
         storage=EvalStorage(InMemoryDocumentStore() if store is None else store),
         # A quick run's model calls go through the package's own client, whose errors this reads: a judge's call the
-        # account was refused stops the run, and one the provider rationed excludes its cell.
+        # account was refused stops the run, and one the provider declined excludes its cell.
         failure_describer=_describe_failure(),
         trace_sink=trace_sink,
         blocking_executor=None,
@@ -917,17 +917,18 @@ class CallableKind:
             telemetry = spent(ledger, telemetry)
         except ApparatusError:
             raise  # the rig's fault under the candidate — a replay miss — is the engine's to exclude the cell on
-        # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell, unless the provider's answer says the account or the provider declined the call
+        # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell, unless the provider's answer says the account was refused or the provider declined the call
         except Exception as raised:
             owner = _owner_of(raised)
             if owner != "candidate":
-                # A call the package's client made and the provider declined says nothing about the candidate: the
-                # cell is excluded, and the account's refusal also stops the run, since every later call meets it.
-                said = "was refused for the calling account" if owner == "account" else "was rationed by the provider"
-                declined = f"apparatus: the candidate's provider call {said}: {raised}"
-                contain(raised, log=log, what=declined)
+                # A call the package's client made that the provider refused or declined says nothing about the
+                # candidate: the cell is excluded, and the account's refusal also stops the run, since every later
+                # call meets it.
+                said = "was refused for the calling account" if owner == "account" else "was declined by the provider"
+                excluded = f"apparatus: the candidate's provider call {said}: {raised}"
+                contain(raised, log=log, what=excluded)
                 return CandidateOutput(
-                    infra_errors=[declined],
+                    infra_errors=[excluded],
                     account_refused=owner == "account",
                     telemetry=CandidateTelemetry(turns_delivered=0),
                 )

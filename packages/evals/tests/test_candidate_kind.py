@@ -17,7 +17,7 @@ import ast
 import logging
 import sys
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +52,13 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.kernel.world_session import WorldSession
 from threetears.evals.run.metering import MeteredCallLedger
-from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, run_one_result
+from threetears.evals.run.runner import (
+    EveryCellApparatusFailedError,
+    NothingMeasuredError,
+    RunnerOptions,
+    execute_run,
+    run_one_result,
+)
 from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
 from threetears.evals.schema.values import SweepableValue
 from packages.evals.tests.factories import make_eval_run
@@ -371,11 +377,13 @@ class _ApparatusFaultOnInvokeKind(_FakeSingleShotKind):
 @pytest.mark.parametrize(
     ("make_kind", "raised"),
     [
+        # The run's only cell excluded because its candidate could not be built: the run measured nothing, so the
+        # loop saves the cell and then refuses the run.
         pytest.param(
             lambda: _FailingPrepareKind(
                 CandidatePreparationFailed("subject_factory: no", termination="factory_failed")
             ),
-            nullcontext(),
+            pytest.raises(NothingMeasuredError, match="subject_factory: no"),
             id="refused-preparation",
         ),
         # The run's only cell excluded by its rig: the loop saves it and then refuses the run.

@@ -38,6 +38,7 @@ __all__ = [
     "Reply",
     "declared_facts",
     "directive_of",
+    "in_body_error",
     "read_reply",
     "reported_cost",
     "request_body",
@@ -336,6 +337,29 @@ def _is_alias(model_id: str) -> bool:
     return model_id.startswith("~") or model_id.endswith("-latest") or model_id.startswith(_ROUTERS)
 
 
+def in_body_error(
+    provider: Provider, status: int, body: Mapping[str, Any], *, attempts: int = 1
+) -> ProviderError | None:  # Any: JSON
+    """The error a body carries in place of a reply (OpenRouter answers some failures with a 200), or ``None``.
+
+    :param provider: The provider that answered.
+    :ptype provider: Provider
+    :param status: The HTTP status, the error's status when the body names no code.
+    :ptype status: int
+    :param body: The parsed JSON body.
+    :ptype body: Mapping[str, Any]
+    :param attempts: How many times the call was sent, this answer's attempt included.
+    :ptype attempts: int
+    :return: The error, its status the code the body named; ``None`` when the body carries no error.
+    :rtype: ProviderError | None
+    """
+    if not isinstance(body.get("error"), Mapping):
+        return None
+    code = _count(body["error"].get("code"))
+    message = _named(body["error"].get("message"))
+    return ProviderError(provider, code if code is not None else status, message, body=dict(body), attempts=attempts)
+
+
 def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, Any]) -> Reply:  # Any: JSON
     """A successful reply's members.
 
@@ -352,10 +376,8 @@ def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, A
     :raises ProviderError: The body carries an error in place of a reply (OpenRouter answers some failures with a 200),
         or no choice.
     """
-    if isinstance(body.get("error"), Mapping):
-        code = _count(body["error"].get("code"))
-        message = _named(body["error"].get("message"))
-        raise ProviderError(provider, code if code is not None else status, message, body=dict(body))
+    if (failed := in_body_error(provider, status, body)) is not None:
+        raise failed
     if provider == "anthropic":
         return _read_anthropic(body)
     choices = body.get("choices")

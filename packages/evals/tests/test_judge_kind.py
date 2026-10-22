@@ -11,6 +11,7 @@ labels, agreement with the judge's own repeats and parse validity, and every cen
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import types
 
 import json
@@ -35,7 +36,7 @@ from threetears.evals.kernel import (
     withhold_failure_detail,
 )
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.providers import ProviderError, describe_failure
+from threetears.evals.providers import Provider, ProviderError, describe_failure
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.run import (
     JUDGE_REQUEST_SETTINGS,
@@ -441,17 +442,24 @@ class _ProviderAnswers:
 
 
 @pytest.mark.parametrize(
-    ("body", "owner"),
+    ("provider", "status", "body", "owner"),
     [
-        ({"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
-        ({"error": {"code": "insufficient_quota", "message": "You exceeded your quota"}}, "account"),
-        ({"error": {"code": 500, "message": "upstream died"}}, "candidate"),
+        ("openai", 429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
+        (
+            "anthropic",
+            529,
+            {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+            "provider",
+        ),
+        ("openai", 429, {"error": {"code": "insufficient_quota", "message": "You exceeded your quota"}}, "account"),
+        ("openai", 500, {"error": {"code": 500, "message": "upstream died"}}, "candidate"),
     ],
 )
 async def test_whose_failure_a_judge_call_was_decides_whether_its_trial_fails_is_excluded_or_stops_the_run(
-    body: dict[str, Any], owner: str
+    provider: Provider, status: int, body: dict[str, Any], owner: str
 ) -> None:
-    """A 429 says the provider declined the call, as it would any request: the trial measured nothing of the judge.
+    """A 429 or a 529 says the provider declined the call, as it would any request: the trial measured nothing of the
+    judge.
 
     So it is excluded (``infra_errors``) and the run goes on; the account's refusal is excluded too and also stops the
     run; any other failure is the judge's own, a failed trial. One fixture, all three ways.
@@ -459,8 +467,7 @@ async def test_whose_failure_a_judge_call_was_decides_whether_its_trial_fails_is
     campaign = await _campaign()
     stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
     assert stored is not None
-    status = 500 if owner == "candidate" else 429
-    error = error_from_response("openai", status, json.dumps(body))
+    error = error_from_response(provider, status, json.dumps(body))
     answering = _ProviderAnswers(error)
     kind = JudgeKind(
         clients=lambda role, model, *, temperature=None: answering,
@@ -480,8 +487,8 @@ async def test_whose_failure_a_judge_call_was_decides_whether_its_trial_fails_is
     [excluded] = output.infra_errors
     assert str(error) in excluded
     if owner == "provider":
-        assert excluded.startswith("apparatus: judge: the provider rationed the call: ")
-        assert output.account_refused is False, "a rationed call stops nothing: the next one may be served"
+        assert excluded.startswith("apparatus: judge: the provider declined the call: ")
+        assert output.account_refused is False, "a declined call stops nothing: the next one may be served"
     else:
         assert excluded.startswith("apparatus: judge: the call was refused for the calling account: ")
         assert output.account_refused is True
@@ -503,10 +510,10 @@ class _UnreadableThenProviderAnswers:
         return ToyJudgeCompletion(**{**reply.__dict__, "content": "I would rather not say."})
 
 
-async def test_a_parse_retry_the_provider_rationed_excludes_its_trial_naming_the_retry_and_keeps_the_first_calls_cost() -> (
+async def test_a_parse_retry_the_provider_declined_excludes_its_trial_naming_the_retry_and_keeps_the_first_calls_cost() -> (
     None
 ):
-    """The judge's first reply did not parse, so it bought a retry, and the provider rationed that.
+    """The judge's first reply did not parse, so it bought a retry, and the provider declined that.
 
     What the retry would have returned is unknown, so the trial is excluded rather than charged to the judge; its record
     names the retry and the unreadable first reply, and the first call's turn and spend stay on it.
@@ -524,10 +531,10 @@ async def test_a_parse_retry_the_provider_rationed_excludes_its_trial_naming_the
     prepared = await _prepared(kind)
     output = await kind.invoke(prepared, stored, sink=FakeCellSink())
 
-    assert output.candidate_errors == [], "a rationed retry is never the judge's failure"
+    assert output.candidate_errors == [], "a declined retry is never the judge's failure"
     [excluded] = output.infra_errors
-    assert excluded.startswith("apparatus: judge: the provider rationed the call: ")
-    assert f"LLM call's parse retry, after its first reply did not parse, was rationed by the provider: {error}" in (
+    assert excluded.startswith("apparatus: judge: the provider declined the call: ")
+    assert f"LLM call's parse retry, after its first reply did not parse, was declined by the provider: {error}" in (
         excluded
     )
     assert output.account_refused is False
@@ -1026,11 +1033,17 @@ def test_a_freeze_naming_no_run_no_labels_and_no_authored_case_is_refused() -> N
         freeze_judge_cases(host.storage, template=_judge_template(), scope_id=TOYHOST_SCOPE)
 
 
+def _vouches_for_itself(*, scope_id: str, caller: str, person: str) -> str | None:
+    """A host's check that attests each caller authoring as itself, and for no one else."""
+    return person if person == caller else None
+
+
 async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_the_caller() -> None:
     from threetears.evals.actions import engine_actions
     from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
 
-    host = toyhost_host()
+    # The operation writes only what the host attests: here, each caller authoring as itself.
+    host = dataclasses.replace(toyhost_host(), attests_person=_vouches_for_itself)
     subject = toyhost_judged_template()
     off_loop(host.storage.save_template, subject)
     template = _judge_template()
@@ -1045,7 +1058,7 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
         note="three of four fields missing is not faithful",
     )
 
-    report = off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR)
+    report = off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, collected_by=_AUTHOR)
 
     (frozen,) = report.cases
     stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
@@ -1058,7 +1071,7 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
     (line,) = [line for line in action.render(report).splitlines() if line.startswith("- test_case_id=")]
     assert f"dim={FAITHFULNESS_DIM}" in line and f"authored_by={_AUTHOR}" in line
     # Authoring it again names the stored case.
-    assert off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR).cases[0].created is False
+    assert off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, collected_by=_AUTHOR).cases[0].created is False
     # A dimension the template does not have, and a verdict its scale cannot hold, are each refused by name.
     with pytest.raises(ValidationFailedError, match="has no rubric dimension 'extraction.tone'"):
         off_loop(
@@ -1066,7 +1079,7 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
             host,
             hard.model_copy(update={"criterion": "extraction.tone"}),
             TOYHOST_SCOPE,
-            author=_AUTHOR,
+            collected_by=_AUTHOR,
         )
     with pytest.raises(
         ValidationFailedError, match=rf"criterion '{FAITHFULNESS_DIM}' .* cannot hold the verdict 'fail'"
@@ -1076,5 +1089,5 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
             host,
             JudgeCaseAuthor.model_validate({**hard.model_dump(), "expected": "fail"}),
             TOYHOST_SCOPE,
-            author=_AUTHOR,
+            collected_by=_AUTHOR,
         )

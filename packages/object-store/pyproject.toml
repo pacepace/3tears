@@ -21,18 +21,20 @@ classifiers = [
     "Typing :: Typed",
 ]
 # the contract is dependency-free (media-contracts); this impl package
-# isolates the aioboto3 (-> aiobotocore -> botocore) S3 client tree so it
+# isolates the aiobotocore (-> botocore) S3 client tree so it
 # never leaks into the contract or its other consumers. core (``3tears``) is
 # pulled in for the secret_refs resolver used by the wiring helper -- core is
-# foundational + acyclic and brings no aioboto3, so the isolation still holds.
+# foundational + acyclic and brings no aiobotocore, so the isolation still holds. aiobotocore
+# directly rather than through aioboto3, whose last release (15.5.0, 2025-10) pins aiobotocore 2.25
+# and with it a boto3 too old for redshift-connector's eval() fix (CVE-2026-8838, needs 2.1.14).
 dependencies = [
     "3tears>=0.75.0,<0.76.0",
     "3tears-media-contracts>=0.75.0,<0.76.0",
     "3tears-observe>=0.75.0,<0.76.0",
-    "aioboto3>=13",
+    "aiobotocore>=3.9",
     "cryptography>=42",  # AES-256-GCM sealing and scrypt key derivation (object_store.encrypted)
     "pydantic>=2",  # SecretStr for the sealing passphrase (object_store.encrypted)
-    "botocore",  # retry config and ClientError (object_store.s3); aioboto3 brings the release it needs
+    "botocore",  # retry config and ClientError (object_store.s3); aiobotocore brings the release it needs
 ]
 
 [project.urls]

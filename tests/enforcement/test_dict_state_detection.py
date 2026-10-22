@@ -281,6 +281,17 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/search/src/threetears/search/standalone.py",
+        class_name="_GuardedRoutes",
+        attr_name="_proxied",
+        rationale=(
+            "live httpx transports -- open connection pools -- one per proxy URL a request's route "
+            "named, owned by one client and closed with it. They are objects holding sockets, not "
+            "data: an L1/L2/L3 backend stores values, cannot hold a connection, and a transport "
+            "rebuilt per request would defeat the pooling it exists for. Nothing outlives the client"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeKvBucket",
         attr_name="_entries",

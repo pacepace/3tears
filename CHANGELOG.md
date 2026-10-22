@@ -28,19 +28,137 @@ from the cache tiers. Two places acted on a memory found by `get` alone, and now
 UPDATE and DELETE, whose target id the resolution model names. A guard test makes every public coroutine of the
 three collections declare itself filtered, or unfiltered with its reason.
 
-### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
+### search: the standalone transport's address guard can no longer be got past by DNS rebinding
 
-- **A call the provider rationed is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
+**Fixed:** `StandaloneTransport` resolved a URL's host, refused it if any address was private,
+loopback, link-local or reserved, and then let httpx open the connection, which resolved the name
+again. A name whose owner answers the first lookup with a public address and the second with an
+internal one (DNS rebinding) passed the check and reached the internal address. A fetch of a URL a
+user can steer, from inside a cluster, is exactly that case. A direct request's socket now goes to an
+address the guard resolved and checked, and the name is not looked up a second time. TLS still
+verifies the certificate against the host name, and SNI and the `Host` header still carry it. Every
+redirect hop is resolved, checked and held to its own addresses.
+
+**Fixed:** the guard now also refuses an address IANA does not list as globally reachable. Before, it
+let through `100.64.0.0/10` (the shared address space), which Python's `ipaddress` counts as neither
+private nor reserved and which some clusters and overlay networks use for pods and nodes.
+
+**Changed:**
+
+- The transport, not httpx, decides whether a request goes through a proxy. It reads the same
+  environment variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`), through the one check
+  the guard already used, so the route the guard checks is the route the request takes. A `NO_PROXY`
+  entry that `urllib` and httpx used to read differently now follows `urllib`.
+- When a name resolves to several addresses, the connection races the checked addresses in the
+  resolver's order, as a connect by name did: the next starts when one fails or after 250 ms without
+  an answer, and the connect timeout bounds the whole race. A custom `resolve=` callable's order now
+  decides which address is tried first.
+- `3tears-search[standalone]` now declares `httpcore>=1.0`. httpx already required it.
+
+**Not covered:** a request sent through a forward proxy is resolved by the proxy, so stopping
+rebinding there is the proxy's job. A transport built with `allow_private_addresses=True` checks no
+address and so is not held to one.
+
+A losing connect that fails with a fault other than a connect failure is raised only after every
+other attempt is stopped and the winning connection -- which the caller never receives -- is closed.
+
+### mcp: 3tears runs on mcp 2.x and fastmcp 4.x, and still supports mcp 1.x
+
+**Changed:** the workspace now locks `mcp` 2.3 and `fastmcp` 4.0, and declares `mcp>=1.27,<3`
+(3tears-mcp, 3tears-models) and `fastmcp>=3.4.2,<5` (evals). A consumer still on mcp 1.x keeps
+working; one that moves to 2.x needs nothing from 3tears to do it. fastmcp follows mcp on its own
+(fastmcp 3 requires mcp 1, fastmcp 4 mcp 2). mcp 1.x support stays until the owner drops it; no
+release is set for that.
+
+- `McpServer` registers its handlers through whichever API the installed SDK has: 1.x's
+  `@list_tools()` / `@call_tool()` decorators, or 2.x's `Server(on_list_tools=, on_call_tool=)`.
+  It now also does itself what 1.x's decorator did and 2.x dropped: it checks arguments against the
+  tool's `inputSchema` ("Input validation error: ...", before the handler runs), passes a call with
+  no arguments as `{}`, and returns every success as a `CallToolResult`. One difference stays the
+  SDK's: a bug that escapes dispatch (not a refusal -- those are answered as `isError` results on
+  both) reaches the client as an `isError` result on 1.x and as a JSON-RPC error on 2.x.
+  3tears-mcp now declares `jsonschema`, which mcp already depends on.
+- The CLI pool's per-borrower tool server (`bind_tool_server_to_context`) works on either SDK.
+- CI runs the MCP packages' tests on mcp 1.30 as well (`scripts/test-mcp-v1.sh`).
+
+**For a consumer moving to mcp 2.x** (from mcp's own changes, not 3tears'): result and tool
+objects lose their camelCase attributes -- read `result.is_error`, `.structured_content`,
+`tool.input_schema`, or `model_dump(by_alias=True)["isError"]` on either major;
+`streamable_http_client` yields two values, not three; a low-level `Server` takes its handlers in
+the constructor; `mcp.server.fastmcp.FastMCP` is `mcp.server.mcpserver.MCPServer`. Clients and
+servers on different majors interoperate (tested: 1.28 with 2.3, both directions, over stateless
+streamable HTTP).
+
+### Dependencies: security fixes, and the lock brought current
+
+**Fixed:** known vulnerabilities in `pyjwt` (2.13 -> 2.15), `cryptography` (49 -> 50), `aiohttp`,
+`urllib3`, `soupsieve`, `anyio`, `multidict`, `langgraph-sdk` and `snowflake-connector-python`,
+found by `pip-audit` over the lock (Dependabot alerts are off for this repository); and
+`redshift-connector` 2.1.7 -> 2.1.17, a remote code execution through `eval()` (CVE-2026-8838),
+now the declared floor of the `redshift` extra. Every other dependency moves to its newest release past the 14-day cooldown,
+including the majors `anthropic` 1.x, `openai` 3, `websockets` 16, `xxhash` 4 and SQLAlchemy 2.1.
+
+**Changed:** 3tears-object-store opens S3 clients through `aiobotocore` 3 directly instead of
+`aioboto3`. aioboto3's last release (15.5.0, 2025-10) pins aiobotocore 2.25 and with it a boto3
+too old for the redshift fix above, so while the workspace held aioboto3 that fix could not
+resolve. `S3ObjectStore(session=...)` still accepts an aioboto3 session (`.client`) as well as an
+aiobotocore one (`.create_client`); the default is aiobotocore's.
+
+**Changed by an upstream release:** trafilatura 2.3 folds repeated paragraphs into one, so a page
+whose text is one paragraph many times over now extracts as that paragraph once -- and, below
+`thin_page_chars`, reads as a thin page (whose single same-site frame `extract` then follows).
+pydantic 2.14 no longer reports `populate_by_name`'s `validate_by_*` expansion in `model_config`;
+aliased fields still validate by either name.
+asyncpg 0.32 terminates a pool's connections itself when its initialisation fails;
+`create_pool_with_startup_timeout`'s retry warning still counts every connection the failed attempt
+opened (`connections_closed`), and still closes any asyncpg left open.
+
+**Not yet:** `pillow` 13.0 (24 advisories) and `certifi` 2026.10.19 are younger than the lock's
+14-day cooldown and land when they clear it (Oct 30, Nov 3). `ruff` stays below 0.16, which
+reformats 56 files: that is its own change, after this release.
+
+### evals: a declined call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
+
+- **A call the provider declined is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
   replaced by `owner`, one of `account`, `provider` or `candidate` (`FailureOwner`), and `ProviderError.account` by
-  `ProviderError.owner`. A 429 that is not `insufficient_quota` is `provider`: on a reporter or judge call, and on the
-  quick path, the cell is excluded and the run goes on. A 429 `insufficient_quota` (or a 402) is `account` and stops
-  the run, as before. A rationed repair or parse retry says so in its error, and the page's setup-fault words cover a
-  rationed call.
+  `ProviderError.owner`. A 429 that is not `insufficient_quota` is `provider`, and so are a 529 (overloaded) and a 503
+  (unavailable): on a reporter or judge call, and on the quick path, the cell is excluded and the run goes on. A 500
+  or a 502 is an error rather than a refusal, so it stays the candidate's. A 429 `insufficient_quota` (or a 402) is
+  `account` and stops the run, as before. A declined repair or parse retry says so in its error, and the page's
+  setup-fault words cover a declined call.
+- **The package's client sends a declined call again before it gives up (#849).** `Model` resends a 429 that is not
+  `insufficient_quota`, a 529 or a 503, as a status or as the code a 200's body carries, after a wait: the provider's
+  `retry-after` (seconds or a date) or one then two seconds, at most three attempts in all, each resend logged at
+  WARNING. A provider that asks to wait longer than 20 seconds is not sent it again. Every wait and resend ends within
+  one request's timeout of the first attempt; a resend cut there may already have been billed, and that spend is not
+  recorded. A resend lost on the way raises the decline before it. `retry=DeclinedRetry(...)` sets the policy
+  (`attempts=1` sends once).
+  The error that stands says how many attempts it took. An account's or the candidate's failure is never sent again.
+- **A run that measured nothing ends `failed` (#849).** When every cell was excluded for a fault the harness recorded
+  (most often a provider that declined every call: a rate limit or overload that lasted the run, or an OpenRouter
+  model no allowed provider serves), the run fails with `NothingMeasuredError`, quoting the cells' errors, instead of
+  completing. The quick command exits 1, and the page says nothing was measured and asks for the cause to be fixed
+  before a rerun, not waited out. A run that measured at least one cell completes as before, its exclusions shown; so
+  does a run lost only to judge-call errors (a re-judge recovers it), or entirely to a judge that could not tell or to
+  judge replies cut off at their cap. The run records why on `EvalRun.failed_because` (`nothing_measured`, core
+  v15.6), and a sweep reads it to go on past an arm that measured nothing, naming the arm on its detail.
 - **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
   `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
   returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and
   `collected_by`. A relay may carry the person's own `rated_at`; a dated relay older than that person's stored rating
-  is refused (409), so a newer opinion stands. `ResultRated` says what a write replaced.
+  is refused (409), so a newer opinion stands. `ResultRated` says what a write replaced. An authored judge case's
+  verdict is a person's label too, so `judge_case_author` asks the same check: a caller authors for the `person` it
+  names, or as itself, only when the host attests it, and the case records the caller as `collected_by`, outside its
+  identity; the freeze receipt and `judge_cases_list` show it. A host attests a caller as itself only for a person's
+  own account, never an agent's. A seed corpus's cases, and an `AuthoredJudgeCase` the host freezes itself, ask
+  nothing. Cases agents authored before this keep reading as person labels: find them with `judge_cases_list`
+  (`authored_by`) and keep them out of launches with a case set, or archive them. `reporter_case_freeze` asks it
+  for each reader a label names (omitted, the caller), and records the reader and the relaying caller on the label,
+  outside the case's identity; an existing case an agent labelled is found with `reporter_cases_list` and retired
+  for good by superseding it (a re-freeze of its memo, with no labels or attested ones, and `supersedes`), since
+  any action caller can restore an archived one; `supersedes` takes only a live case, so restore an archived one
+  first. Superseding retires a case and every reader verdict on it for good, and asks no one, so supersede only a
+  case you mean to retire.
 - **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
   finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
   the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
@@ -56,15 +174,31 @@ three collections declare itself filtered, or unfiltered with its reason.
   pool reads them cheaply.
 - **Smaller fixes.** `sweep_launch`'s help names a route that works: declare the design afterwards with
   `campaign_create` over the sweep's `run_ids`, which a sweep's job result now carries (#843). `measuring-soundly.md`
-  says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,100
-  characters (#822). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
+  says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,300
+  characters (24,100 for #822, raised to 24,300 for #910's floor clause). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
   quote, the reader conformance suite, `FailureOwner` and others) are
   stable, and its import list is refreshed.
+- **A bundle fingerprints alike across Python builds**, except, rarely, a value that falls exactly on a 12th-figure
+  rounding boundary. The fingerprint hashed the bundle's floats in full, and their last bits come from C maths that
+  two builds of one Python (uv-managed and Debian's CPython 3.14.6) compute differently, so a reporter case re-frozen
+  on another machine was refused as moved evidence and recorded a false "does not reproduce" limit. A fingerprint is
+  now `v2:` and a digest with every float rounded to twelve significant figures, in the fingerprint only. A fingerprint
+  stored before is compared as it was taken, so stored cases keep matching on the build that recorded them. The page
+  JSON and the writer's message serve every float to twelve figures, and the writer's view keeps a bar verdict's
+  figures and a scoreboard row's costs to its four. Finish a rolling deploy before generating: a pod on the previous
+  build can't render what this one generates.
 
 **Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
 moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
 `threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
-and host; durable schema 16.1. See `packages/evals/MIGRATIONS.toml`.
+and host; the `judge_case_author` action and operation need `attests_person` (a host without one authors no judge case through
+either, its own direct call included), and the operation's `author=` keyword becomes `collected_by=`; the
+`reporter_case_freeze` action and operation need `attests_person` for reader verdicts (a freeze with labels), and the
+operation takes `collected_by=`; `ReporterLabel` gains `reader` and `collected_by`; a bundle fingerprint is `v2:`-prefixed; durable schema 16.1. A v16.0 pod
+cannot read a relayed case: one relayed reporter label stops that whole reporter template there (launches, prices,
+freezes, calibration reads, restores), and a relayed judge case stops every launch of its judge template that runs
+it, until the pod upgrades. So during a rolling deploy across 16.0 and 16.1, the first labelled freeze through the
+action stops that template on the old pods. See `packages/evals/MIGRATIONS.toml`.
 
 ### search: a transport failure says which HTTP status the provider answered with; core's retry error describes the last attempt
 
@@ -206,6 +340,43 @@ now records the same ledgers as a full render.
 profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
 59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
 replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
+
+### core, observe: a 5xx retry line says what the upstream answered
+
+**Fixed:** `TracedHttpClient` signalled a retryable 5xx with a message-less private exception, so
+every retry line and the exhaustion line from `retry_with_backoff` ended in an empty reason, and the
+exhaustion was an ERROR with a traceback naming only `_Retryable` (handmcp, 2026-10-21: three blank
+lines for a `PUT` answered HTTP 500). Each line now reads `HTTP 500 from PUT https://host/path`; the
+URL drops its query string and userinfo, and the body is left out. `UpstreamHttpError`'s message
+ends `(last answer: HTTP 500)`, or `(no answer: ConnectError)` when no response arrived; `status_code`
+and `body` are unchanged. A request with `idempotent=False` that stops on a 5xx or a failure after it
+left now logs a WARNING naming it, where it logged nothing. `retry_with_backoff` names a message-less
+failure by its type on every line, and takes `caller_raises=True` from a caller that raises its own
+error on `False`: the exhaustion is then a WARNING without a traceback. The default is unchanged
+(contained at ERROR with the traceback), because the registry's startup steps discard the result and
+that line is their only record.
+
+### observe: `retry_bounded` waits as long as a failure asked
+
+**Added:** `asked_pause` reads how long a failure itself asked to wait (an HTTP `Retry-After`),
+and the pause before the next attempt is at least that, over the schedule and over `backs_off`.
+An attempt made sooner is only refused again. A failure asking for longer than
+`max_asked_pause` (default `max_delay`), or for longer than the deadline leaves, is raised at
+once, so the bound still holds. metallm's composed turn uses it to ask a rate-limited model
+round again. Both parameters are optional; existing callers are unchanged.
+
+### models: starting a Claude CLI no longer forks the worker
+
+**Fixed:** under uvloop the SDK's `anyio.open_process` is libuv's `uv_spawn`, a full `fork()` of
+the worker made with the interpreter lock held, so no thread ran until the child exec'd. The stall
+grows with resident memory (one spawn, idle host: 23 ms at 0.5 GB, 95 ms at 2 GB); in metallm's
+~500 MB production workers it was 2-12 s, and uvicorn killed the worker at 5 s (2026-10-14..21: 134 of
+208 freeze reports in `PooledCliSession.start`). A pooled start and a call's own CLI now start the
+CLI with `subprocess.Popen` (vfork) in a worker thread and join its pipes to the loop: under 9 ms at any
+size. The child is reaped by a thread of its own, so a CLI that outlives the loop that started it is
+still collected. Setting `ClaudeAgentOptions.user` brings the stall back: with a uid to change,
+CPython's `_posixsubprocess` cannot vfork and makes a full `fork()`. The `claude-cli` extra declares
+`anyio`, which it imports.
 
 ## v0.74.0 -- 2026-10-20
 

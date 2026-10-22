@@ -467,7 +467,9 @@ _COMPLETION_ATTRIBUTES: dict[str, str] = {
 def _field_adapter(name: str) -> TypeAdapter[Any]:
     """The validation ``OutOfRunSpend`` applies to its field ``name``: its type and its constraints."""
     declared = OutOfRunSpend.model_fields[name]
-    return TypeAdapter(Annotated[declared.annotation, *declared.metadata] if declared.metadata else declared.annotation)
+    # Any: pydantic types a field's annotation as possibly None, and every field here declares one
+    annotation: Any = declared.annotation
+    return TypeAdapter(Annotated[annotation, *declared.metadata] if declared.metadata else annotation)
 
 
 _COMPLETED_FIELD_ADAPTERS: dict[str, TypeAdapter[Any]] = {name: _field_adapter(name) for name in _COMPLETION_ATTRIBUTES}

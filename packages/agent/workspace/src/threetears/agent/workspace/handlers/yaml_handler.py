@@ -15,11 +15,16 @@ registry via :func:`threetears.core.serialization.register_handler`.
 from __future__ import annotations
 
 from io import StringIO
+from collections.abc import Callable
 from typing import Any
 
-import jsonpath_ng.ext
+import jsonpath_ng.ext.parser
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+
+#: jsonpath-ng's extended parser (filters, slices). jsonpath-ng is unannotated, so it is named once
+#: here with the type the handlers rely on rather than called untyped at each site.
+_parse_extended: Callable[[str], Any] = jsonpath_ng.ext.parser.parse
 
 from threetears.core.serialization import register_handler
 
@@ -95,7 +100,7 @@ class YamlHandler:
         :rtype: Any
         :raises jsonpath_ng.exceptions.JsonPathParserError: if path is invalid
         """
-        expr = jsonpath_ng.ext.parse(path)
+        expr = _parse_extended(path)
         matches = expr.find(tree)
         result: Any
         if not matches:
@@ -122,7 +127,7 @@ class YamlHandler:
         :rtype: Any
         :raises jsonpath_ng.exceptions.JsonPathParserError: if path is invalid
         """
-        expr = jsonpath_ng.ext.parse(path)
+        expr = _parse_extended(path)
         expr.update_or_create(tree, value)
         return tree
 

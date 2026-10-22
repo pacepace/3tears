@@ -1,0 +1,65 @@
+{
+  "archived": false,
+  "archived_reason": null,
+  "content_hash": "74a38e9bed69b92e8a8027b14eedae4d1bffd2e4085509a985b5d14ecb35abec",
+  "created_at": "2026-10-22T15:45:39.104149+00:00",
+  "doc_type": "eval_test_case",
+  "host_payload": {
+    "judge_case": {
+      "criterion": {
+        "axis": "capability",
+        "description": "Every field matches the invoice.",
+        "judge": null,
+        "name": "extraction.faithful",
+        "scale": "ordinal",
+        "scoring_guide": {
+          "1": "nothing matches",
+          "5": "every field matches"
+        }
+      },
+      "dim": "extraction.faithful",
+      "evidence": {
+        "artifact": "{\"invoice_number\": \"INV-0042\"}",
+        "case_material": "Invoice INV-0042 from Acme, total 120.00 EUR.",
+        "subject": null
+      },
+      "goal_outcomes": [],
+      "intent": "Extract the invoice's fields.",
+      "judged_artifact": "document",
+      "labels": [
+        {
+          "rater": "reviewer@example.com",
+          "rating_id": null,
+          "reason": "three of four fields missing is not faithful",
+          "score": 1
+        }
+      ],
+      "scale": "ordinal",
+      "source": {
+        "authored": {
+          "author": "reviewer@example.com",
+          "note": "three of four fields missing is not faithful"
+        },
+        "first_judge_config_id": null,
+        "first_judge_sent_settings": null,
+        "first_judge_temperature": null,
+        "first_score": null,
+        "first_served_model": null,
+        "result_id": null,
+        "run_id": null,
+        "test_case_id": null
+      },
+      "variation": {}
+    }
+  },
+  "id": "6bdc18af-6dcd-5856-bce1-f096c16f8501",
+  "name": null,
+  "schema_minor": 1,
+  "schema_version": 16,
+  "scope_id": "frozen-scope",
+  "seed_digest": null,
+  "seed_name": null,
+  "stratum": "extraction.faithful",
+  "template_id": "frozen-judge",
+  "variation_params": {}
+}

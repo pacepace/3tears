@@ -38,6 +38,21 @@ def run_git(cwd: Path, *args: str) -> str:
 GitCli = Callable[..., str]
 
 
+@pytest.fixture(autouse=True)
+def _git_reads_no_machine_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """every git these tests start, the store's and the person's, reads no system or user config.
+
+    a machine's ``/etc/gitconfig`` or ``~/.gitconfig`` can install hooks, rewrite URLs or sign commits; a dev
+    container's system ``core.hooksPath`` refuses every push, which failed every test that pushes to a local
+    bare origin. the store inherits the process environment (production keeps its machine's config on purpose),
+    so the tests set it there.
+    """
+    empty = tmp_path_factory.mktemp("git-config") / "gitconfig"
+    empty.touch()
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+
+
 @pytest.fixture()
 def git_cli() -> GitCli:
     """git as a person runs it, beside the store."""

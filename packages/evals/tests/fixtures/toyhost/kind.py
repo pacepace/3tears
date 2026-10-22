@@ -63,6 +63,7 @@ from threetears.evals.schema import (
     WorldSeed,
 )
 from threetears.evals.kernel.host import ApparatusError, SeedRefused, WorldRegistry
+from threetears.evals.providers import ProviderError
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.quick import measure
 from threetears.evals.run import GoalCheckUnevaluable, grade_goal_checks
@@ -540,7 +541,17 @@ class ToyExtractorKind:
                         # The product's own constructor, not a copy of it: the fidelity contract
                         # (``fidelity.py``) holds this call to it.
                         request = extraction_request(model=instance.model, document=document)
-                        extraction = await self._client.extract(request)
+                        try:
+                            extraction = await self._client.extract(request)
+                        except ProviderError as declined:
+                            if declined.owner != "provider":
+                                raise
+                            # The provider declined the call, as it would any request: the cell measured the
+                            # provider, not the extractor, so it is excluded and never charged, as the package's
+                            # own kinds do.
+                            return CandidateOutput(
+                                infra_errors=[f"apparatus: the extractor call was declined by the provider: {declined}"]
+                            )
 
             # What the candidate did, recorded through the engine's helper from what the call
             # actually returned: one call per field the extraction emitted, empty or not.
