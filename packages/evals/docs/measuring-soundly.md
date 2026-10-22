@@ -28,13 +28,25 @@ Two more terms, and a rule:
   `undesignated` means no control resolved, so nothing is known to be controlled.
 - Only goal-state checks and judged dimensions decide a pass for pass^k; guardrails take no part.
 
+## Choose which levers to sweep
+
+Before the design comes the choice of levers, and a host with many has more than a campaign can afford. Read where
+the evidence is already thin. Each aspect page's `Coverage` fold (under Methods) gives every lever a status
+(`measured`, `thin` or `unswept`) with the next steps that name it, and its Not tested section says which levers ran at
+one level. `bundle.coverage` carries the same rows. The campaign's own page has no coverage section, so read an
+aspect's.
+
+Sweep the `thin` or `unswept` levers that could change a decision, and leave out one whose every level would be shipped
+the same. Reading the status list and the next steps together is by hand; predicting an unrun cell and ranking what to
+run next is [#657](https://github.com/pacepace/3tears/issues/657).
+
 ## Start from the question
 
 | Your question | Run these arms | Shape | Read the answer from | It cannot tell you |
 |---|---|---|---|---|
 | Is B better than A? | A and B, differing in one lever; A is the control | `one_factor_at_a_time` | [the contrasts against the control](reading-reports.md#reading-a-comparison) | why B differs, or whether another level would do better |
 | Which of several single changes helps? | the control, plus one arm per change, each moving one lever | `one_factor_at_a_time` | the contrasts, Holm-corrected across the arms | how the changes combine |
-| Which combination wins? | every combination of the levers' levels (a full grid) | `multi_factor` | the contrasts, read again against other controls (`Result.against`) | which lever made a combination's gain, except where the grid holds that lever's two levels with all else equal |
+| Which combination wins? (three models by three research-round settings by three search limits, for best quality and best return: 27 arms at k of 3 or more, a control declared up front) | every combination of the levers' levels (a full grid) | `multi_factor` | the contrasts, read again against other controls (`Result.against`) | which lever made a combination's gain, except where the grid holds that lever's two levels with all else equal |
 | Which arm is cheapest among those good enough? | arms that differ in cost (model, effort), all run at one k, under one subject | any | the [frontier](#the-frontier-passk-against-cost): pass^k, cost and latency against a bar | whether two arms differ on a measure; that is a contrast |
 
 **"One lever per arm" is a rule for the first two questions, not a law.** It is what makes each contrast
