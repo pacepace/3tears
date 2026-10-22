@@ -31,8 +31,10 @@ therefore cannot give two arms different instruments. The one exception is an ar
 judge: it is left to the launch's own pin resolution, so no model grades its own output.
 
 **Its campaign is exploratory.** A sweep takes no design, so the campaign it creates declares none, and says so
-(``exploratory``) rather than leaving the caller to: what the arms were swept to learn is declared afterwards, once
-the arms are known, with ``campaign_update``.
+(``exploratory``) rather than leaving the caller to. A campaign's declaration is frozen once it holds a run, so
+``campaign_update`` refuses to add one; what the arms were swept to learn is declared with ``campaign_create``: an
+aspect over the sweep's ``run_ids`` (its job result names them), its arms named with ``from_run_ids``. A question
+asked after the runs reads as asked, with ``question_after_runs`` disclosing when.
 
 **When it stops early.** If an arm is refused at its launch (the host's admission ceiling, say), or an arm's run
 ends ``failed``, no further arm is launched and the sweep ends ``failed``, naming it. A harness fault is not
@@ -109,7 +111,8 @@ class SweepSettings(EvalBaseModel):
     campaign_name: str = Field(
         min_length=1,
         description="The campaign every arm's run joins as it is created. It is created exploratory, since a sweep "
-        "takes no design; declare one afterwards with campaign_update.",
+        "takes no design; declare one with campaign_create, an aspect over the sweep's run_ids and arms from "
+        "from_run_ids.",
     )
     campaign_behavior: str = Field(min_length=1, description="What the sweep's campaign measures.")
     campaign_description: str = Field(default="", description="The sweep's campaign's description.")

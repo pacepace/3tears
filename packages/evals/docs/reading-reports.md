@@ -255,9 +255,10 @@ Glossary start folded, and a nav link opens the one it lands on.
   not shown to beat doing nothing, the measures with no margin and how to declare one, each judge not yet calibrated,
   a finding that names no reading, the readings no declared question asked about, and, folded, a cost not measured.
   With none of these, `Nothing declared went untested.`
-- **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the bundle); the coverage map
-  in a closed `Coverage` fold (one row per lever: its status, how many findings name it, the next steps that do),
-  which restates no finding; and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of
+- **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the bundle); and the engine's own
+  disclosures in a closed fold. The per-lever coverage map (status, findings that name it, next steps) is in the
+  bundle's `coverage`, in the `bundle-<aspect>.json` written beside a saved page (the command line's `report --out`); the page lists each `thin` or `unswept` lever under Not tested.
+  `threetears.evals.analysis.build_report` lays it out as a closed `Coverage` fold, one row per lever, for one analysis. Then the **Glossary**: every term of
   art the page links, in one plain sentence. Every column header that is a term of art links its entry, and in HTML a
   hover reads it.
 
