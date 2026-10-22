@@ -416,9 +416,10 @@ async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch
 
 
 class RenewalRefusingStore(ClockedStore):
-    """A clocked store that refuses, once told to, every write moving a record's lease — the renewals — and no other.
+    """A clocked store that refuses, once told to, every write moving a record's lease and no other.
 
-    A store a holder cannot renew through while the store's clock has not reached the lease's expiry: no reader
+    The writes moving a lease are its renewals and the holder's own writes of its record, each of which extends it. A
+    store a holder cannot renew through while the store's clock has not reached the lease's expiry: no reader
     writes the loss yet, so only the holder's own count can tell it its lease is gone.
     """
 
@@ -475,7 +476,8 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     assert not gate.is_set() and all(not writer.calls for writer in fixture.writers), "no call was paid for"
     attempt = off_loop(_attempt, fixture.host, job.job_id)
     assert (attempt.outcome, attempt.lost) == ("running", None), (
-        "it wrote no ending of its own, though the store took every write but a renewal: it no longer held the attempt"
+        "it wrote no ending of its own, though the store took every write but one moving its lease: it no longer "
+        "held the attempt"
     )
     assert off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses == []
     store.refusing = False
@@ -484,11 +486,32 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     assert (lost.state, lost.status) == ("lost", "cancelled"), "the next reader writes the loss, as for any lapse"
 
 
-async def test_a_sweep_whose_renewals_fail_for_a_whole_lease_writes_nothing_more_and_launches_nothing_more(
+class LeasedWriteRefusingStore(ClockedStore):
+    """A clocked store that fails, once told to, every write of a stored record carrying a lease, and no other.
+
+    A store a job's process cannot reach for its own records for a whole lease: its renewals fail, and so do the
+    job's own writes of its record, which would otherwise extend the lease as they landed.
+    """
+
+    def __init__(self) -> None:
+        """Start accepting every write."""
+        super().__init__()
+        self.refusing = False
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Fail a write over a stored record carrying a lease while refusing; write anything else."""
+        if self.refusing and not create_only:
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and stored.get("lease") is not None:
+                raise RuntimeError("the store failed the write")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_sweep_whose_store_fails_its_writes_for_a_whole_lease_writes_nothing_more_and_launches_nothing_more(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _held_extraction(monkeypatch)  # its first arm runs until the sweep has let go
-    store = RenewalRefusingStore()
+    store = LeasedWriteRefusingStore()
     holder = off_loop(
         _sweeping_host, store, job_lease_s=0.9
     )  # not 0.3: its first arm must be running before a loaded loop can lapse the lease
@@ -502,7 +525,7 @@ async def test_a_sweep_whose_renewals_fail_for_a_whole_lease_writes_nothing_more
 
     sweep, _ = off_loop(holder.eval_host.storage.load_job_record, EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and (sweep.outcome, sweep.lost) == ("running", None), (
-        "it wrote no cancelled ending of its own, though the store took every write but a renewal"
+        "it wrote no cancelled ending of its own once its lease lapsed by its own count"
     )
     assert len(off_loop(holder.eval_host.storage.query_eval_runs, TOYHOST_SCOPE)) == 1, "it launched no further arm"
 

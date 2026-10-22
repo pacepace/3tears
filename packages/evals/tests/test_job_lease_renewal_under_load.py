@@ -9,6 +9,8 @@ progress writes waited a whole interval. Pinned, each against the shape that fai
 - **One slow record** delays no other record's renewal.
 - **A hung renewal** never returns, and its record still lapses at its own deadline, the others untouched.
 - **Contended renewal**: tried again within the interval, after a short wait, not a whole interval later.
+- **Renewals that lose to the holder's own writes for a whole lease**: each write that lands extends the lease, so the
+  holder keeps it.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from collections.abc import Callable
 from typing import Any
 
 
-from threetears.evals.kernel import RUN_JOB, EvalStorage, JobLeases
+from threetears.evals.kernel import RUN_JOB, EvalStorage, JobLeases, write_held_record
 from threetears.evals.schema import EvalRun
 from threetears.evals.schema.store_port import StoreConflict
 from threetears.evals.storage import InMemoryDocumentStore
@@ -208,4 +210,46 @@ async def test_a_renewal_that_never_returns_expires_its_own_record_at_the_lease_
         assert any("had not returned" in fault for fault in faults), f"a fault names the hung renewal: {faults}"
     finally:
         store.release.set()
+        await leases.shut_down()
+
+
+class _OwnWritesWinStore(InMemoryDocumentStore):
+    """A store where every renewal loses its race to the holder's own writes, as a job writing its record often sees.
+
+    A conditional write that changes nothing but the record's lease — a renewal — is refused as a lost race; a write
+    changing anything else — the job's own — lands.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.renewals_refused = 0
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse a write moving only the lease; write anything else."""
+        if if_match is not None:
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and {**stored, "lease": None} == {**document, "lease": None}:
+                self.renewals_refused += 1
+                raise StoreConflict("the holder's own write reached the record first")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_holder_whose_renewals_lose_to_its_own_writes_for_a_whole_lease_keeps_it() -> None:
+    store = _OwnWritesWinStore()
+    storage = _storage(store)
+    leases = JobLeases(storage, lease_s=LEASE_S)
+    stopped: list[str] = []
+    try:
+        _hold(leases, storage, "run-busy", stop=lambda: stopped.append("run-busy"))
+        started, ticks = time.monotonic(), 0
+        while time.monotonic() - started < 2 * LEASE_S:  # two whole leases of renewals lost to the job's writes
+            ticks += 1
+            ticked = _stored(storage, "run-busy").model_copy(update={"progress": {"ticks": ticks}})
+            await asyncio.to_thread(write_held_record, storage, RUN_JOB, ticked, leases=leases)
+            await asyncio.sleep(LEASE_S / 6)
+
+        assert store.renewals_refused >= 6, "every renewal lost its race to the job's writes"
+        assert stopped == [] and leases.holds("run-busy") and not leases.fenced("run-busy"), "the lease was kept"
+        assert _live(storage, "run-busy"), "the record's lease was extended by the job's own writes"
+    finally:
         await leases.shut_down()

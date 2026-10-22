@@ -280,7 +280,9 @@ A job id names the durable record its work writes, so
 every process sharing the store answers it alike, and it is still answerable after a restart. Whether a job is
 still running is its record's answer: the process running it holds a **lease** on the record and renews it
 (every third of `LaunchHost.job_lease_s`, 60s by default; all held leases at once, on a pool of its own that
-cell work never queues behind). A job whose record has not ended and whose lease has
+cell work never queues behind), and each of the job's own writes of its record that lands extends it as a renewal
+does, so a job busy writing its record keeps its lease though its renewals lose the race. A job whose record has not
+ended and whose lease has
 lapsed reads `lost`, and the first read to see that writes it on the record: not only `job_poll`, but every read
 of the record — `run_get`, `runs_list`, a campaign's or a report's read of its runs, a sweep's, an analysis
 attempt's — so a job whose process died reads `lost` everywhere once its lease lapses, and nothing counts it as
