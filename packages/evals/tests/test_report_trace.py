@@ -329,6 +329,34 @@ async def test_every_link_on_both_pages_lands_in_sight() -> None:
     _trace_links_land_in_sight(campaign_html)
 
 
+async def test_a_link_keeps_its_exact_target_where_the_reader_sees_it() -> None:
+    """The Trials table's own trial ids sit in the Trials fold with their records, so once the reader opens it to see
+    the table, each id lands on its record: ``#T<n>`` on the aspect page, ``#a-<fold>-T<n>`` inside a campaign's
+    fold. The nav names each section itself."""
+    host, analysis, page = await toy_report()
+    html = report_html(page)
+    (trials,) = _tables(page.blocks, "trials")
+    first = str(trials.rows[0]["trial"].value)
+    table = html[html.index('data-table="trials"') :].split("</table>", 1)[0]
+    assert f'<a href="#{first}">{first}</a>' in table and f'id="{first}"' in html
+    nav = html[html.index("<nav>") : html.index("</nav>")]
+    assert re.findall(r'href="#([^"]+)"', nav) == [
+        "memo",
+        "contrasts",
+        "cases",
+        "trials",
+        "not_tested",
+        "methods",
+        "glossary",
+    ]
+    campaign = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+    campaign_html = campaign_report_html(campaign)
+    (fold_id,) = campaign.fold_ids
+    folded = campaign_html[campaign_html.index(f'id="a-{fold_id}-trials"') :]
+    table = folded[folded.index('data-table="trials"') :].split("</table>", 1)[0]
+    assert f'<a href="#a-{fold_id}-{first}">{first}</a>' in table and f'id="a-{fold_id}-{first}"' in campaign_html
+
+
 async def test_a_figure_never_lands_on_another_number() -> None:
     """The candidate never answers the last two cases, so the contrast on cost reads production over the ten cases
     both ran: its paired mean, not production's own figure over twelve. The finding's figure lands where production's

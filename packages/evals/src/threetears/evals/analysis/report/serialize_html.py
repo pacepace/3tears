@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from collections.abc import Sequence
 
@@ -49,6 +50,9 @@ from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMM
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.schema.logs import contain, get_logger
+
+log = get_logger(__name__)
 
 #: The page's stylesheet: the system's own fonts (named once, as variables — the page loads no font), a readable
 #: measure, light and dark from the reader's setting (and a ``data-theme`` a host's page may set), with the charts'
@@ -218,9 +222,7 @@ def report_html(report: Report) -> str:
     present = _present_sections(report)
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append(
-        "<nav>"
-        + "".join(f'<a href="#{_section_anchor(section)}">{_escape(titles[section])}</a>' for section in nav)
-        + "</nav>"
+        "<nav>" + "".join(f'<a href="#{section}">{_escape(titles[section])}</a>' for section in nav) + "</nav>"
     )
     parts += _sections(report, present)
     parts += _glossary(report.terms)
@@ -270,10 +272,11 @@ def campaign_report_html(report: CampaignReport) -> str:
     # What the memo says reads before the folds; how the page was made (the methods) after them.
     before = [section for section in present if section == "memo"]
     after = [section for section in present if section != "memo"]
-    links = [(_section_anchor(section), SECTION_TITLES[section]) for section in before]
-    links += [(f"aspect-{slug}-body", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
-    links += [(_section_anchor(section), SECTION_TITLES[section]) for section in after]
-    links += [("glossary-body", SECTION_TITLES["glossary"])] if report.terms else []
+    # Each nav link names the section itself, whose heading every browser shows, a closed one's included.
+    links = [(section, SECTION_TITLES[section]) for section in before]
+    links += [(f"aspect-{slug}", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [(section, SECTION_TITLES[section]) for section in after]
+    links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
     for section in before:
         parts += _campaign_section(report, section)
@@ -384,9 +387,8 @@ def _section(section: str, title: str, body: Sequence[str], *, count: int | None
     ``title`` is the heading as this page heads the section (:attr:`Report.section_titles`), which can differ from
     the section's fixed id: a one-arm page heads ``contrasts`` as ``Readings``.
 
-    A closed section's body is one element with an id of its own (``cases-body``), which the nav names; every link
-    is then drawn to the nearest place a reader sees (:func:`_links_in_sight`), here the ``<section>`` around the
-    fold, whose heading every browser shows.
+    A closed section's body is one element with an id of its own (``cases-body``), which the stylesheet keeps clear of
+    the sticky nav; the nav links the ``<section>`` around it, whose heading every browser shows.
     """
     heading = f"<h2>{_escape(title)}</h2>"
     if section not in FOLDED_SECTIONS:
@@ -394,15 +396,10 @@ def _section(section: str, title: str, body: Sequence[str], *, count: int | None
     size = f' <span class="count">· {count}</span>' if count is not None else ""
     return [
         f'<details class="section"><summary>{heading}{size}</summary>',
-        f'<div class="section-body" id="{_section_anchor(section)}">',
+        f'<div class="section-body" id="{section}-body">',
         *body,
         "</div></details>",
     ]
-
-
-def _section_anchor(section: str) -> str:
-    """The id a link to a section lands on: the section itself when open, its body inside the fold when closed."""
-    return f"{section}-body" if section in FOLDED_SECTIONS else section
 
 
 def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> int | None:
@@ -766,25 +763,43 @@ def _inline(text: str) -> str:
 #: Elements HTML never closes, which hold nothing.
 _VOID_ELEMENTS: frozenset[str] = frozenset({"meta", "br", "hr", "img", "input", "link", "wbr"})
 
-#: A link to a place on the page, the text it is drawn around, and nothing nested in it but markup of its own text.
-_LINK = re.compile(r'<a\b([^>]*?)\bhref="#([^"]*)"([^>]*)>(.*?)</a>', re.DOTALL)
+#: A link's target in the start tag the parser read as that link: the one ``href`` attribute, double-quoted.
+_HREF = re.compile(r'(?<![\w-])href="#([^"]*)"')
+
+
+@dataclass
+class _Link:
+    """One ``<a href="#…">`` as the parser read it: where its start tag and its end tag sit in the page, what it
+    names, and the closed folds holding it."""
+
+    start: int
+    tag: str
+    target: str
+    shut: frozenset[int]
+    end: int | None = None
 
 
 class _Outline(HTMLParser):
-    """The page's own markup read once: each id with the ids around it, each with the closed folds holding it, and the
-    closed folds holding each link.
+    """The page's own markup read once: each id with the ids around it, each with the closed folds holding it, and
+    each link with where it sits and the closed folds holding it.
 
     A closed fold is a ``<details>`` without ``open``. A place inside one is shown only once the reader opens it, which
     a browser does on its own for a link landing there in some browsers and not in others, so where a link may land
     depends on the folds the reader has already opened to see the link.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, page: str) -> None:
         super().__init__(convert_charrefs=True)
+        self._lines = [0, *(index + 1 for index, char in enumerate(page) if char == "\n")]
         self._open: list[tuple[str, str | None, int | None, frozenset[int]]] = []
         self._folds = 0
+        self._link: _Link | None = None
         self.places: dict[str, list[tuple[str, frozenset[int]]]] = {}
-        self.links: list[frozenset[int]] = []
+        self.links: list[_Link] = []
+
+    def _offset(self) -> int:
+        line, column = self.getpos()
+        return self._lines[line - 1] + column
 
     def _shut(self) -> frozenset[int]:
         return frozenset(fold for _, _, fold, _ in self._open if fold is not None)
@@ -792,8 +807,10 @@ class _Outline(HTMLParser):
     def _read(self, tag: str, attrs: list[tuple[str, str | None]]) -> tuple[str | None, int | None]:
         found = dict(attrs)
         shut = self._shut()
-        if tag == "a" and (found.get("href") or "").startswith("#"):
-            self.links.append(shut)
+        href = found.get("href") or ""
+        if tag == "a" and href.startswith("#"):
+            self._link = _Link(self._offset(), self.get_starttag_text() or "", href[1:], shut)
+            self.links.append(self._link)
         if (name := found.get("id")) is not None:
             around = [(held, above) for _, held, _, above in reversed(self._open) if held is not None]
             self.places[name] = [(name, shut), *around]
@@ -813,6 +830,9 @@ class _Outline(HTMLParser):
         self._read(tag, attrs)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._link is not None:
+            self._link.end = self._offset()
+            self._link = None
         if any(open_tag == tag for open_tag, _, _, _ in self._open):
             while self._open.pop()[0] != tag:
                 pass
@@ -826,31 +846,61 @@ def _links_in_sight(page: str) -> str:
     reader where they were, and the page runs no script to open it. A trial id naming a trial the page does not hold
     is not linked.
 
+    The links are the parser's own, rewritten where it found them, so nothing else has to agree with it on what a link
+    is. A link this cannot redraw keeps the target it was written with, and is recorded; the page always renders.
+
     :param page: The page, as the serializer laid it out.
     :ptype page: str
     :return: The page, every link landing in sight.
     :rtype: str
     """
-    outline = _Outline()
-    outline.feed(page)
-    outline.close()
-    seen = iter(outline.links)
+    try:
+        outline = _Outline(page)
+        outline.feed(page)
+        outline.close()
+    except Exception as exc:
+        contain(exc, log=log, what="the page's outline could not be read, so its links keep the targets they name")
+        return page
+    drawn: list[str] = []
+    cursor = 0
+    for link in outline.links:
+        drawn.append(page[cursor : link.start])
+        try:
+            replacement, cursor = _redrawn(page, link, outline)
+        except ValueError as exc:
+            contain(
+                exc,
+                log=log,
+                what="a link could not be redrawn, so it keeps the target it names",
+                extra={"target": link.target},
+            )
+            replacement, cursor = link.tag, link.start + len(link.tag)
+        drawn.append(replacement)
+    drawn.append(page[cursor:])
+    return "".join(drawn)
 
-    def drawn(match: re.Match[str]) -> str:
-        before, target, after, text = match.groups()
-        if (shut := next(seen, None)) is None:
-            raise ValueError("the page holds a link its outline did not read")
-        chain = outline.places.get(target)
-        if chain is None:
-            # prose-canary: allow — a trial id (T4), which code numbered, not anything a model wrote
-            return text if _TRIAL_ID.fullmatch(text) else match.group(0)
-        landing = next((place for place, above in chain if above <= shut), target)
-        return f'<a{before}href="#{landing}"{after}>{text}</a>'
 
-    drawn_page = _LINK.sub(drawn, page)
-    if next(seen, None) is not None:
-        raise ValueError("the page holds a link its outline did not read")
-    return drawn_page
+def _redrawn(page: str, link: _Link, outline: _Outline) -> tuple[str, int]:
+    """One link redrawn to land in sight, and where in the page what it replaces ends: its start tag with its target
+    moved, or, for a trial id the page does not hold, the id alone in place of the whole link.
+
+    :raises ValueError: The page does not hold the start tag where the parser read it, or the tag names its target
+        other than once, double-quoted.
+    """
+    after = link.start + len(link.tag)
+    if page[link.start : after] != link.tag:
+        raise ValueError(f"the link to #{link.target} is not where the outline read it")
+    chain = outline.places.get(link.target)
+    if chain is None:
+        text = page[after : link.end] if link.end is not None else ""
+        # prose-canary: allow — a trial id (T4), which code numbered, not anything a model wrote
+        if link.end is not None and _TRIAL_ID.fullmatch(text):
+            return text, page.index(">", link.end) + 1
+        return link.tag, after
+    landing = next((place for place, above in chain if above <= link.shut), link.target)
+    if _HREF.findall(link.tag) != [link.target]:
+        raise ValueError(f"the link to #{link.target} names it other than once, double-quoted: {link.tag}")
+    return _HREF.sub(f'href="#{landing}"', link.tag), after
 
 
 def _escape(text: str) -> str:
