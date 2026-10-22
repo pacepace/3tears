@@ -421,7 +421,8 @@ A line a candidate is warned for crossing on one aspect (`Floor`): a typed claus
 by more than `max_points`) or `CostLower` (the candidate costs less per reply), never words the engine parses. A
 floor reads `broken`, `held` or `unclear`, on its own interval at the nominal level. It only **warns**, loudly: a
 broken floor is the first line of the page. It never decides, blocks or writes the verdict; code reports, the
-writer recommends, and a person decides.
+writer recommends, and a person decides. Held on every floor of every asked aspect, each declaring one, a candidate is shown no worse,
+which licenses the writer to recommend it as a separated gain does: a floor is how a campaign asks "no worse?".
 
 #### Campaign kind
 What a campaign can decide, read off its arms and never declared (`campaign_kind`):

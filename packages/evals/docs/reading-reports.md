@@ -606,7 +606,7 @@ finding's title; a summary proposing a sample size or cost no code computed is d
 |---|---|---|
 | measurement | write findings and summaries | recommend anything |
 | choice | pick an arm, or say no clear winner | pick at more than `low` confidence when no pair separated its pick ahead; leave unanswered an aspect where another arm is shown ahead (`behind_on`) |
-| change | recommend a switch or keeping the control | switch on exploratory evidence alone, to a candidate with no better reading or improved contrast on any aspect, or to one that breached a guardrail |
+| change | recommend a switch or keeping the control | switch on exploratory evidence alone, to a candidate with no better reading or improved contrast on any asked aspect and not every floor held on them (each asked aspect declaring one), or to one that breached a guardrail |
 
 Every kind answers its pick's warnings, each once and each with a why: a broken floor in `floors_overridden`, a
 missed bar in `bars_missed`. A switch rests on at least one finding; keeping the control may rest on none. The page
