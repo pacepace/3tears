@@ -713,7 +713,8 @@ written, naming both. Through an agent, the `judge_case_author` action writes on
 template (`criterion_template_id`, `criterion`). Its verdict is read as a person's, so the action asks your host's
 `attests_person` check first, as `result_rate_person` does: the case's author is the `person` the call names (the
 caller when it names none), stored under the host's name for them, and only when the host attests this caller for
-them; otherwise the call is refused and nothing is written. The case records the caller as `collected_by`, outside
+them; otherwise the call is refused and nothing is written. A host attests a caller as itself only for a person's own
+account: an agent names the person whose verdict it relays. The case records the caller as `collected_by`, outside
 its identity, so the same case relayed again, or seeded, is the stored one. A host that ships its hard
 negatives seeds them at boot instead: its definition seed corpus has a `judge_cases` slot (`SeedJudgeCase`, the
 templates named by name), which `seed_eval_definitions` builds through the same door as `judge_case_author` and

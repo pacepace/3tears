@@ -178,8 +178,10 @@ def judge_case_author(
     (:func:`~threetears.evals.run.freeze_judge_cases`, ``authored=``). It mints no case set: a launch with none runs
     every live case of the template, and ``case_set_mint`` lists the ones a launch should run.
 
-    A host's own code that writes cases it already trusts (its seed corpus, or ``author_judge_case`` with
-    ``freeze_judge_cases``) asks no attestation, as it may record a person's rating with ``rate_result``.
+    Every call is asked, from any surface: a host's own direct call to this operation is refused too when the host
+    supplies no check. A host's own code that writes cases it already trusts goes through the public door instead,
+    an :class:`~threetears.evals.kernel.AuthoredJudgeCase` frozen with ``freeze_judge_cases(authored=)`` (or its seed
+    corpus), and asks no attestation, as it may record a person's rating with ``rate_result``.
 
     A host check that raises is a defect in the host, not a refusal: it propagates, and nothing is written.
 
@@ -238,6 +240,13 @@ class JudgeCaseEntry(EvalBaseModel):
     scale: RubricScale = Field(description="The criterion's scale: 'pass_fail' or 'ordinal'.")
     authored_by: str | None = Field(
         description="Who wrote the case by hand; None for a case frozen from a stored result or a label."
+    )
+    collected_by: str | None = Field(
+        description=(
+            "The caller that relayed an authored case, whom the host attested for its author; None for a case the "
+            "host's own code wrote (its seed corpus, a direct freeze), one stored before relays were recorded, or a "
+            "case frozen from a stored result or a label."
+        )
     )
     expected: int | None = Field(
         description=(
@@ -311,6 +320,7 @@ def judge_cases_list(host: EvalHost, template_id: str, scope_id: str) -> JudgeCa
                 criterion=case.dim,
                 scale=case.scale,
                 authored_by=authored.author if authored is not None else None,
+                collected_by=authored.collected_by if authored is not None else None,
                 expected=case.labels[0].score if authored is not None else None,
                 labels=len(case.labels),
                 live=not stored.archived,

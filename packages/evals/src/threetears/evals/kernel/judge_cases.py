@@ -539,12 +539,21 @@ def judge_case_payload(case: JudgeCase) -> dict[str, Any]:
     The one writer of the payload :func:`judge_case_of` reads back, so the judge kind reads no key it does not own
     (the self-keyed lane of the engine's opaque-payload gate, which the reporter kind's case takes too).
 
+    An authored case no caller relayed (``source.authored.collected_by`` None: seeded, reset, a quick ``Judge``'s
+    example, or a host's own freeze) is written without the ``collected_by`` key, exactly as a build at durable
+    v16.0 wrote it, so that build still reads it: its ``JudgeCaseAuthoring`` refuses a key it does not declare, and
+    ``host_payload`` is opaque, so no newer-minor tolerance reaches it. Only a relayed case carries the key.
+
     :param case: The case to store.
     :ptype case: JudgeCase
     :return: The payload.
     :rtype: dict[str, Any]
     """
-    return {JUDGE_CASE_KEY: case.model_dump(mode="json")}
+    frozen = case.model_dump(mode="json")
+    authored = frozen["source"]["authored"]
+    if authored is not None and authored["collected_by"] is None:
+        del authored["collected_by"]
+    return {JUDGE_CASE_KEY: frozen}
 
 
 def judge_case_of(test_case: EvalTestCase) -> JudgeCase | None:

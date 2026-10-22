@@ -203,6 +203,10 @@ class FrozenJudgeCase(EvalBaseModel):
     """Whether this freeze wrote the case; ``False`` when an identical case was already stored."""
     authored_by: str | None = None
     """The author of an authored case, whose one label is its expected verdict; ``None`` for a frozen one."""
+    collected_by: str | None = None
+    """The caller this freeze recorded as relaying an authored case (attested by the host for its author); ``None``
+    when it relayed none (a seeded case, a host's own freeze), or when the case was already stored, whose stored relay
+    stands (``judge_cases_list`` shows it)."""
 
 
 class JudgeCaseSkip(EvalBaseModel):
@@ -348,6 +352,7 @@ def _store_case(
         labels=len(case.labels),
         created=stored is None,
         authored_by=case.source.authored.author if case.source.authored is not None else None,
+        collected_by=case.source.authored.collected_by if case.source.authored is not None and stored is None else None,
     )
 
 

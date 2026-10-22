@@ -160,7 +160,9 @@ class AttestsPerson(Protocol):
     the check.
 
     An authored judge case asks it too (``judge_case_author``): its verdict is its one label, read downstream as its
-    author's rating, so a caller authors one only for a person the host attests it for, itself included.
+    author's rating, so a caller authors one only for a person the host attests it for, itself included. Attest a
+    caller as itself only when its identity is a person's own account: a check that attests every caller as itself
+    makes an agent's verdict a person's.
     """
 
     def __call__(self, *, scope_id: str, caller: str, person: str) -> str | None:

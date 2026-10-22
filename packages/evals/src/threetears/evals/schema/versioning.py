@@ -528,9 +528,10 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   the relay is dated and theirs was given later. An authored judge case says who relayed it too: the judge case a
 #:   judge template's test case carries (``JudgeCase``) may name, beside its author, the caller the host attested
 #:   for that author (``JudgeCaseAuthoring.collected_by``, default None: written by the host's own code, such as its
-#:   seed corpus, or stored at v16.0). It is in no digest pre-image, so it moves no case's id or content hash. A build
-#:   at v16.0 refuses an authored case written by this one by name when its judge kind reads it, and keeps the test
-#:   case's payload verbatim on every write.
+#:   seed corpus, or stored at v16.0). It is in no digest pre-image, so it moves no case's id or content hash, and it
+#:   is written only when set: an authored case no caller relayed is stored exactly as v16.0 stored it. A build at
+#:   v16.0 refuses only a relayed authored case, by name, when its judge kind reads it, and keeps the test case's
+#:   payload verbatim on every write.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 1
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
