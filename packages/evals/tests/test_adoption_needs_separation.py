@@ -36,6 +36,8 @@ from packages.evals.tests.campaign_bundle_support import arms_of, campaign_bundl
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.campaign_readings import AspectReading, FloorState, FloorStatus
+from threetears.evals.kernel.declaration import Floor, RateDrop
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import generate_analysis
@@ -215,6 +217,179 @@ class TestAnArmNoTestCouldReachHasNoSeparationToAdoptOn:
         )
         with pytest.raises(SoundnessRefusal, match="no comparison in `multiple_comparisons` tests it"):
             await _adopt(bundle, TOYHOST_WIDE)
+
+
+# --- no worse: a candidate held on every floor of every asked aspect is recommendable --------------------------
+
+
+def _aspect(label: str | None = None, *, asked: bool = True, guardrail: bool = False) -> AnalysisContextBundle:
+    """The control-declared toy aspect, nothing separated: relabelled, asked or not, its guardrail breached or not."""
+    bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="not_separated")
+    if guardrail:
+        bundle = _with_guardrail(bundle, "breached")
+    if label is not None:
+        bundle = bundle.model_copy(update={"aspect": label})
+    if asked:
+        return bundle
+    scope = bundle.reading_scope.model_copy(update={"questions_declared": False})
+    return bundle.model_copy(update={"reading_scope": scope})
+
+
+def _with_floors(
+    aspects: list[AnalysisContextBundle], floors: list[tuple[str, FloorState]], *, arm: str | None = None
+) -> CampaignBundle:
+    """The campaign over ``aspects``, declaring one floor per (aspect label, status), each read so for the wide width.
+
+    ``arm`` reads them for another variant key instead, so the wide width holds no reading of any.
+    """
+    campaign = campaign_bundle(*aspects)
+    (wide,) = [candidate for candidate in campaign.arms if candidate.label == arm_at(campaign, TOYHOST_WIDE)]
+    declared = [
+        Floor(aspect=label, clause=RateDrop(max_points=15.0, reading=f"check_{index}"))
+        for index, (label, _status) in enumerate(floors)
+    ]
+    statuses = [
+        FloorStatus(
+            floor=floor.key,
+            aspect=floor.aspect,
+            arm=arm or wide.variant_key,
+            arm_label=wide.label,
+            status=status,
+            reading=f"check_{index}",
+            interval=(-4.0, 3.0) if status == "held" else (-22.0, 3.0),
+            reason=f"check_{index} reads {status} on its interval",
+        )
+        for index, (floor, (_label, status)) in enumerate(zip(declared, floors, strict=True))
+    ]
+    return campaign.model_copy(
+        update={
+            "declaration": campaign.declaration.model_copy(update={"floors": declared}),
+            "readings": campaign.readings.model_copy(update={"floors": statuses}),
+        }
+    )
+
+
+def _wide_memo(campaign: CampaignBundle) -> str:
+    """The toy memo recommending the wide width, with one aspect summary per aspect."""
+    payload = memo_payload(campaign)
+    payload["recommendation"][0]["arm"] = arm_at(campaign, TOYHOST_WIDE)
+    (summary,) = payload["aspect_summaries"]
+    payload["aspect_summaries"] = [{**summary, "aspect": label} for label in campaign.labels]
+    return json.dumps(payload)
+
+
+async def _refusal(campaign: CampaignBundle) -> str:
+    with pytest.raises(SoundnessRefusal) as refused:
+        await _generate(campaign, FixturedClient(_wide_memo(campaign)))
+    return str(refused.value)
+
+
+class TestACandidateShownNoWorseIsRecommendable:
+    """A floor is the campaign's line for how much worse a candidate may be: held on all of them answers "no worse"."""
+
+    async def test_a_candidate_held_on_every_floor_of_every_asked_aspect_is_accepted_though_nothing_separated(self):
+        first = _aspect()
+        campaign = _with_floors([first, _aspect("second")], [(first.aspect, "held"), ("second", "held")])
+        client = FixturedClient(_wide_memo(campaign))
+
+        analysis = await _generate(campaign, client)
+
+        assert len(client.calls) == 1, "a candidate shown no worse is accepted first time"
+        assert analysis.document.recommendation[0].arm == arm_at(campaign, TOYHOST_WIDE)
+
+    async def test_an_unasked_aspect_needs_no_floor_and_its_floors_are_not_read(self):
+        """Only the asked aspects decide: an unasked one with no floor, or with a broken one, changes nothing."""
+        first = _aspect()
+        for floors in ([(first.aspect, "held")], [(first.aspect, "held"), ("lead", "broken")]):
+            campaign = _with_floors([first, _aspect("lead", asked=False)], floors)
+            payload = json.loads(_wide_memo(campaign))
+            broken = [status.floor for status in campaign.readings.floors if status.status == "broken"]
+            payload["recommendation"][0]["floors_overridden"] = [{"floor": key, "why": "A lead."} for key in broken]
+            client = FixturedClient(json.dumps(payload))
+            await _generate(campaign, client)
+            assert len(client.calls) == 1
+
+    async def test_held_floors_carry_the_switch_though_a_reading_is_worse_against_a_tighter_margin(self):
+        """The floor is the campaign's declared line: a drop past the aspect's margin and within the floor is accepted.
+
+        The separated-gain path accepts a trade-off with a regressed reading unaddressed, and this path does the same.
+        """
+        first = _aspect()
+        campaign = _with_floors([first], [(first.aspect, "held")])
+        worse = AspectReading(
+            aspect=first.aspect,
+            arm=campaign.readings.floors[0].arm,
+            arm_label=arm_at(campaign, TOYHOST_WIDE),
+            change=-12.0,
+            gain_interval=None,
+            gain_confidence=None,
+            drop_interval=(-13.5, -10.5),
+            drop_confidence=0.95,
+            gain_p=None,
+            gain_p_holm=None,
+            drop_p=0.01,
+            drop_p_holm=0.01,
+            reading="worse",
+            margin=10.0,
+            control_cases=60,
+            arm_cases=60,
+            control_passed=150,
+            control_trials=180,
+            arm_passed=128,
+            arm_trials=180,
+            projection=None,
+            reason="the wide width's drop is past the 10-point margin on its whole interval",
+            confirmatory=True,
+        )
+        campaign = campaign.model_copy(update={"readings": campaign.readings.model_copy(update={"readings": [worse]})})
+        client = FixturedClient(_wide_memo(campaign))
+
+        analysis = await _generate(campaign, client)
+
+        assert len(client.calls) == 1
+        assert analysis.document.recommendation[0].arm == arm_at(campaign, TOYHOST_WIDE)
+
+    async def test_one_floor_still_unclear_refuses_it_naming_that_floor_and_why(self):
+        first = _aspect()
+        campaign = _with_floors([first], [(first.aspect, "held"), (first.aspect, "unclear")])
+        message = await _refusal(campaign)
+        held, unclear = campaign.readings.floors
+        assert (
+            f"Nor is it shown no worse than its floors: floor {unclear.floor} is unclear ({unclear.reason})" in message
+        )
+        assert held.floor not in message, "only a floor not held is named"
+        assert f"Recommend the control, {arm_at(campaign, TOYHOST_NARROW)!r}," in message
+
+    async def test_every_floor_held_on_one_asked_aspect_does_not_carry_another(self):
+        first = _aspect()
+        campaign = _with_floors([first, _aspect("second")], [(first.aspect, "held"), ("second", "unclear")])
+        message = await _refusal(campaign)
+        assert "floor second/rate_drop/check_1 is unclear" in message
+        assert first.aspect not in message.split("Nor is it shown no worse than its floors:")[1]
+
+    async def test_a_broken_floor_refuses_it(self):
+        first = _aspect()
+        campaign = _with_floors([first], [(first.aspect, "held"), (first.aspect, "broken")])
+        assert f"floor {first.aspect}/rate_drop/check_1 is broken" in await _refusal(campaign)
+
+    async def test_an_asked_aspect_declaring_no_floor_shows_nothing_no_worse(self):
+        first = _aspect()
+        campaign = _with_floors([first, _aspect("second")], [(first.aspect, "held")])
+        message = await _refusal(campaign)
+        assert "aspect 'second' declares no floor, so nothing there shows it no worse" in message
+        assert first.aspect not in message.split("Nor is it shown no worse than its floors:")[1]
+
+    async def test_a_declared_floor_read_only_on_another_arm_is_not_held_by_this_one(self):
+        first = _aspect()
+        campaign = _with_floors([first], [(first.aspect, "held")], arm="some-other-candidate")
+        message = await _refusal(campaign)
+        assert f"floor {first.aspect}/rate_drop/check_0 was not read on it, so it is not shown held" in message
+        assert "declares no floor" not in message
+
+    async def test_a_breached_guardrail_refuses_it_whatever_its_floors_held(self):
+        first = _aspect(guardrail=True)
+        campaign = _with_floors([first], [(first.aspect, "held")])
+        assert "breached the guardrail boundary.correct" in await _refusal(campaign)
 
 
 # --- guardrails: a breached guardrail refuses the adoption, an undecided one is stated on it ----------------
