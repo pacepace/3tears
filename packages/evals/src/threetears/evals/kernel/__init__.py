@@ -154,9 +154,6 @@ from threetears.evals.kernel.errors import (
 from threetears.evals.kernel.job_context import running_job
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactory, default_job_timeout, timed_out_detail
 
-# The lease pool's width lives in `schema` (a host sizing its database pool reads it there, loading no kernel); it is
-# also exported here, its old home, for the one minor release a host-contract name keeps working beside its new one.
-from threetears.evals.schema.job_lease import LEASE_POOL_WORKERS
 from threetears.evals.kernel.job_leases import (
     ANALYSIS_JOB,
     LEASE_WRITE_ATTEMPTS,
@@ -417,7 +414,6 @@ __all__ = [
     "EvalGenerationSlot",
     "generation_slot_id",
     "ANALYSIS_JOB",
-    "LEASE_POOL_WORKERS",
     "LEASE_WRITE_ATTEMPTS",
     "RUN_JOB",
     "SHUTDOWN_CAUSE",

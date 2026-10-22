@@ -52,9 +52,11 @@ from threetears.evals.kernel import (
     StorageError,
     SweepArmRecord,
     ValidationFailedError,
+    request_job_cancel,
     require_held,
     settle_job_record,
 )
+from threetears.evals.kernel import job_leases
 from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_cancel, job_poll, run_job_id, run_launch
 from threetears.evals.ops import LaunchArguments, SweepArguments, SweepArm, generation_key, sweep_launch
 from threetears.evals.ops import sweeps
@@ -1119,10 +1121,12 @@ def _stored_run(storage: EvalStorage, run_id: str) -> tuple[EvalRun, str | None]
     return run, etag
 
 
-async def _own_write(leases: JobLeases, storage: EvalStorage, run_id: str) -> EvalRun:
-    """The run's own progress write, made as the holder makes it: read, then written through the leases."""
+async def _own_write(
+    leases: JobLeases, storage: EvalStorage, run_id: str, *, tick: int = 1, status: str = "running"
+) -> EvalRun:
+    """The run's own write, made as the holder makes it: read, then written through the leases."""
     stored, etag = off_loop(_stored_run, storage, run_id)
-    ticked = stored.model_copy(update={"progress": {"cells": 1}})
+    ticked = stored.model_copy(update={"progress": {"cells": tick}, "status": status})
     return await asyncio.to_thread(
         leases.write_own, stored, ticked, lambda written: storage.save_eval_run(written, if_match=etag)
     )
@@ -1134,15 +1138,24 @@ def _seeded_run(storage: EvalStorage, run_id: str, lease: JobLease) -> EvalRun:
     return run
 
 
+#: The lease the own-write tests hold, renewed every second: an own write extends it only once its last extension is
+#: half an interval old, so each waits :data:`DUE_S` after the hold, and is made before the first renewal at 1 s.
+OWN_LEASE_S = 3.0
+
+#: How long after a hold an own write waits so that it extends the lease, inside the first renewal interval.
+DUE_S = 0.6
+
+
 async def test_an_own_write_never_revives_a_lease_the_stores_clock_reads_lapsed() -> None:
     store = ClockedStore()
     storage = EvalStorage(store)
-    leases = JobLeases(storage, lease_s=60.0)
+    leases = JobLeases(storage, lease_s=OWN_LEASE_S)
     stopped: list[str] = []
     try:
         seeded = _seeded_run(storage, "run-own", off_loop(leases.grant))
         leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x"))
-        store.at = T0 + timedelta(seconds=61)  # past the expiry by the store's clock; no reader has looked
+        await asyncio.sleep(DUE_S)
+        store.at = T0 + timedelta(seconds=4)  # past the expiry by the store's clock; no reader has looked
 
         with pytest.raises(JobFenced, match="lapsed"):
             await _own_write(leases, storage, "run-own")
@@ -1164,24 +1177,25 @@ async def test_an_own_write_never_revives_a_lease_the_stores_clock_reads_lapsed(
 async def test_an_own_write_extends_only_a_lease_this_process_holds(whose: str, extended: bool) -> None:
     store = ClockedStore()
     storage = EvalStorage(store)
-    leases = JobLeases(storage, lease_s=60.0)
+    leases = JobLeases(storage, lease_s=OWN_LEASE_S)
     try:
         lease = (
-            JobLease(holder="another-process", expires_at=(T0 + timedelta(seconds=60)).isoformat())
+            JobLease(holder="another-process", expires_at=(T0 + timedelta(seconds=OWN_LEASE_S)).isoformat())
             if whose == "another process's"
             else off_loop(leases.grant)
         )
         _seeded_run(storage, "run-own", lease)
         if whose != "this process's, not held here":
             leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
-        store.at = T0 + timedelta(seconds=5)
+        await asyncio.sleep(DUE_S)
+        store.at = T0 + timedelta(seconds=1)
 
         written = await _own_write(leases, storage, "run-own")
 
         after, _ = off_loop(_stored_run, storage, "run-own")
         assert after.progress == {"cells": 1} and after.lease == written.lease, "the write landed"
         expected = (
-            JobLease(holder=leases.holder_id, expires_at=(T0 + timedelta(seconds=65)).isoformat())
+            JobLease(holder=leases.holder_id, expires_at=(T0 + timedelta(seconds=1 + OWN_LEASE_S)).isoformat())
             if extended
             else lease
         )
@@ -1197,9 +1211,11 @@ class ClockFailingStore(ClockedStore):
         """Start with a readable clock."""
         super().__init__()
         self.clock_down = False
+        self.clock_reads = 0
 
     def now(self) -> datetime:
         """The store's time, or a failure while the clock is down."""
+        self.clock_reads += 1
         if self.clock_down:
             raise RuntimeError("the store's clock query failed")
         return self.at
@@ -1210,11 +1226,12 @@ async def test_an_own_write_whose_clock_read_fails_still_lands_with_its_lease_as
 ) -> None:
     store = ClockFailingStore()
     storage = EvalStorage(store)
-    leases = JobLeases(storage, lease_s=60.0)
+    leases = JobLeases(storage, lease_s=OWN_LEASE_S)
     try:
         seeded = _seeded_run(storage, "run-own", off_loop(leases.grant))
         leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
-        store.at, store.clock_down = T0 + timedelta(seconds=5), True
+        await asyncio.sleep(DUE_S)
+        store.at, store.clock_down = T0 + timedelta(seconds=1), True
 
         await _own_write(leases, storage, "run-own")
 
@@ -1225,9 +1242,132 @@ async def test_an_own_write_whose_clock_read_fails_still_lands_with_its_lease_as
         await leases.shut_down()
 
 
+async def test_an_own_write_soon_after_the_lease_was_extended_reads_no_clock_and_carries_it() -> None:
+    store = ClockFailingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=OWN_LEASE_S)
+    try:
+        seeded = _seeded_run(storage, "run-own", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+        reads = store.clock_reads
+
+        await _own_write(leases, storage, "run-own")  # under half an interval after the hold extended it
+
+        after, _ = off_loop(_stored_run, storage, "run-own")
+        assert after.progress == {"cells": 1} and after.lease == seeded.lease, "it landed, its lease as stored"
+        assert store.clock_reads == reads, "no renewal was due, so the store's clock was not read"
+    finally:
+        await leases.shut_down()
+
+
+async def test_a_write_that_ends_the_job_does_not_extend_its_lease_or_deliver_a_cancel() -> None:
+    store = ClockedStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=OWN_LEASE_S)
+    cancelled: list[str | None] = []
+    try:
+        seeded = _seeded_run(storage, "run-own", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=cancelled.append, stop=lambda: None)
+        off_loop(request_job_cancel, storage, "run-own", TOYHOST_SCOPE, reason="too late")
+        await asyncio.sleep(DUE_S)
+        store.at = T0 + timedelta(seconds=1)
+
+        await _own_write(leases, storage, "run-own", status="completed")
+        await asyncio.sleep(0.05)
+
+        after, _ = off_loop(_stored_run, storage, "run-own")
+        assert (after.status, after.lease) == ("completed", seeded.lease), "its ending carried the lease as stored"
+        assert cancelled == [], "a cancel does not reach a job its own write just ended"
+    finally:
+        await leases.shut_down()
+
+
+async def test_a_cancel_reaches_the_job_once_though_an_own_write_and_a_renewal_both_find_it() -> None:
+    store = ClockedStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=OWN_LEASE_S)
+    cancelled: list[str | None] = []
+    try:
+        _seeded_run(storage, "run-own", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=cancelled.append, stop=lambda: None)
+        off_loop(request_job_cancel, storage, "run-own", TOYHOST_SCOPE, reason="stop it")
+        await asyncio.sleep(DUE_S)
+
+        await _own_write(leases, storage, "run-own", tick=1)  # finds the cancel and delivers it
+        await asyncio.sleep(1.0)  # the first renewal, at one interval, finds it too
+        await _own_write(leases, storage, "run-own", tick=2)
+        await asyncio.sleep(DUE_S)
+        await _own_write(leases, storage, "run-own", tick=3)
+        await asyncio.sleep(0.05)
+
+        assert cancelled == ["stop it"], "handed to the job once"
+    finally:
+        await leases.shut_down()
+
+
+class RenewalHangingStore(InMemoryDocumentStore):
+    """A store where a run's renewal (a conditional write moving only its lease) hangs until released; the run's own
+    writes land. A renewal-path hang: a dead connection only the lease pool's threads hold."""
+
+    def __init__(self) -> None:
+        """Hang every renewal until released; count the renewals sent."""
+        super().__init__()
+        self.release = threading.Event()
+        self.renewals_sent = 0
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Hang a write moving only a stored run's lease; write anything else."""
+        if if_match is not None and document.get("doc_type") == "eval_run":
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and {**stored, "lease": None} == {**document, "lease": None}:
+                self.renewals_sent += 1
+                self.release.wait()
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_stuck_renewal_is_never_resent_its_own_writes_keep_the_lease_and_a_bound_expires_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = RenewalHangingStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=1.2)  # renewed every 0.4 s; the first renewal, at 0.4 s, never returns
+    stopped: list[str] = []
+    tick = 0
+
+    async def writing_until(seconds: float) -> None:
+        nonlocal tick
+        until = time.monotonic() + seconds
+        while time.monotonic() < until and not stopped:
+            tick += 1
+            await _own_write(leases, storage, "run-hung", tick=tick)
+            await asyncio.sleep(0.25)  # past half an interval: each write extends the lease
+
+    try:
+        _seeded_run(storage, "run-hung", off_loop(leases.grant))
+        leases.hold(RUN_JOB, "run-hung", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x"))
+
+        await writing_until(2.2)  # the renewal hangs from 0.4 s, counts as hung by 1.6 s, and is due again since
+
+        assert stopped == [] and leases.holds("run-hung") and not leases.fenced("run-hung"), (
+            "its own writes kept the lease while the renewal hung"
+        )
+        assert store.renewals_sent == 1, "no second renewal was sent while the first was stuck"
+
+        await writing_until(3.0)  # six intervals after it was sent (2.8 s), the stuck call expires the record
+
+        assert stopped == ["x"] and leases.fenced("run-hung"), "the bound expired it"
+        assert store.renewals_sent == 1
+        faults = off_loop(_stored_run, storage, "run-hung")[0].faults
+        assert any("has not returned" in fault for fault in faults), faults
+    finally:
+        store.release.set()
+        await leases.shut_down()
+
+
 def test_the_kernel_keeps_its_leases_by_the_numbers_the_schema_defines() -> None:
     leases = kernel.JobLeases(kernel.EvalStorage(InMemoryDocumentStore()))
 
     assert leases.lease_s == schema.DEFAULT_JOB_LEASE_S
     assert leases.renew_every_s == schema.DEFAULT_JOB_LEASE_S * schema.JOB_LEASE_RENEWAL_FRACTION
-    assert kernel.LEASE_POOL_WORKERS is schema.LEASE_POOL_WORKERS
+    assert job_leases.LEASE_POOL_WORKERS is schema.LEASE_POOL_WORKERS, "the pool's width is the schema's"
+    assert not {"DEFAULT_JOB_LEASE_S", "LEASE_POOL_WORKERS"} & set(kernel.__all__), "defined once, exported from schema"

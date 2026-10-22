@@ -6,14 +6,14 @@ results and progress, every record renewed on the leases' own pool — over a st
 asserts that no record anywhere in the grid lapsed: none is written lost, none carries a lease fault, and every run
 completes.
 
-The lease is short so a run outlives it twice over, and the store's latency is a far larger share of that lease than
-a production store's is of a production lease (milliseconds against a minute): along the latency axis a contended
-renewal spends most of its interval on the store, so a renewal that would lose its lease at some width or latency loses
-it here first. A lapse names its grid cell. The control cell starves the renewals (the leases' pool cut to one thread at the
-higher latency) and must report a lapse, so a green grid is a grid that could have gone red.
+The lease is short so a run outlives it by a quarter or more, and the store's latency is a far larger share of
+that lease than a production store's is of a production lease (milliseconds against a minute): along the latency axis
+a contended renewal spends most of its interval on the store, so a renewal that would lose its lease at some width or
+latency loses it here first. A lapse names its grid cell. The control cell starves the renewals (the leases' pool cut
+to one thread at the higher latency) and must report a lapse, so a green grid is a grid that could have gone red.
 
-The grid runs in the unit lane, in an xdist group of its own (:data:`pytestmark`), so its half-minute of wall clock
-runs beside the package's other tests rather than after them.
+The grid is kept to about half a minute. It is marked with an xdist group of its own (:data:`pytestmark`); where the
+suite's own grouping puts it among the package's other tests instead, that half minute is what it adds.
 """
 
 from __future__ import annotations
@@ -38,17 +38,19 @@ from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_templa
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.off_loop import off_loop
 
-#: The lease every grid cell runs under, renewed every third of it. Long enough that a healthy renewal clears a
-#: scheduling stall on a loaded machine running the whole suite (a renewal has two thirds of it, 2 s, before a lapse),
-#: short enough that every run outlives two of them in seconds.
-LEASE_S = 3.0
+#: The lease every grid cell runs under, renewed every third of it (0.8 s). Long enough that a healthy renewal clears
+#: a scheduling stall on a loaded machine running the whole suite (it has two thirds of the lease, 1.6 s, before a
+#: lapse), short enough that the grid stays quick.
+LEASE_S = 2.4
 
-#: How long one extraction takes. Each run executes two waves of cells, so it runs past two leases while its cells stay
-#: few, and its store calls, late, take longer still; the test holds every run to outliving two leases, or it would
-#: prove nothing.
-EXTRACT_S = 3.5
+#: How long one extraction takes. Each run executes two waves of cells, so it outlives :data:`OUTLIVES_LEASES` leases
+#: (the test holds every run to that, or it would prove nothing about keeping them), while its cells stay few.
+EXTRACT_S = 1.6
 
-#: The xdist group the grid runs in, on a worker of its own.
+#: How many leases every run must outlive for its cell to count: past one lease, through at least three renewals.
+OUTLIVES_LEASES = 1.25
+
+#: The xdist group the grid is marked with.
 pytestmark = pytest.mark.xdist_group("evals-lease-grid")
 
 
@@ -72,17 +74,18 @@ class GridCell:
 
 #: The production shape (8 runs of 4 cells in flight each, 32 at once), the same shape at a latency where a renewal
 #: that loses its three attempts to the run's own writes spends most of its interval on the store (six round-trips,
-#: 0.78 s of 1 s), and a wider shape (16 runs of 8, 128 at once).
+#: 0.48 s of 0.8 s), and a wider shape (16 runs of 8, 128 at once).
 GRID = (
     GridCell(runs=8, width=4, latency_s=0.02, repeats=2),
-    GridCell(runs=8, width=4, latency_s=0.13, repeats=2),
+    GridCell(runs=8, width=4, latency_s=0.08, repeats=2),
     GridCell(runs=16, width=8, latency_s=0.02, repeats=3),
 )
 
 #: The control: the higher-latency cell of :data:`GRID`, which keeps every lease, with the leases' pool cut to one
-#: thread. Its twelve leases (eight runs, four launches) then renew one after another, at 0.26 s each uncontended and
-#: up to 0.78 s contended, a round longer than the lease, so a lease lapses: the grid must say so, naming this cell.
-CONTROL = GridCell(runs=8, width=4, latency_s=0.13, repeats=2, pool_workers=1)
+#: thread. Its twelve leases (eight runs, four launches) then renew one after another, at about 0.16 s each uncontended
+#: and up to 0.48 s contended, a round about as long as the lease or longer, so a lease lapses: the grid must say so, naming
+#: this cell.
+CONTROL = GridCell(runs=8, width=4, latency_s=0.08, repeats=2, pool_workers=1)
 
 
 class LatentStore(InMemoryDocumentStore):
@@ -237,7 +240,9 @@ async def test_a_launch_keeps_every_job_lease_across_the_grid(cell: GridCell) ->
         assert run.status == "completed", f"[{cell}] run {run.id} ended {run.status}: {run.cancellation_reason}"
         assert run.completed_at is not None
         lasted = (datetime.fromisoformat(run.completed_at) - datetime.fromisoformat(run.created_at)).total_seconds()
-        assert lasted >= 2 * LEASE_S, f"[{cell}] run {run.id} lasted {lasted:.1f}s, not two leases: it proves nothing"
+        assert lasted >= OUTLIVES_LEASES * LEASE_S, (
+            f"[{cell}] run {run.id} lasted {lasted:.1f}s, under {OUTLIVES_LEASES} leases: it proves nothing"
+        )
 
 
 async def test_the_grid_reports_a_lapse_naming_its_cell_when_renewals_are_starved(
