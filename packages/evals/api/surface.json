@@ -518,8 +518,8 @@
     },
     "threetears.evals.schema.FailureOwner": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "'account'` | `'provider'` | `'candidate'",
+      "tier": "stable"
     },
     "threetears.evals.schema.FaultsField": {
       "kind": "type alias",
@@ -1293,8 +1293,8 @@
     },
     "threetears.evals.kernel.Aspect": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "Aspect(label: str, template_id: str | None = None, stratum: None = None, margin: float | None = None, design: AspectDesign | None = None, run_ids: list[str] = list(), declared_at: str | None = None, asked_at: str | None = None, margin_declared_at: str | None = None)",
+      "tier": "stable"
     },
     "threetears.evals.kernel.AspectAnalysis": {
       "kind": "model",
@@ -3359,7 +3359,7 @@
     "threetears.evals.kernel.host.UNSEATED_LEVEL": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.kernel.host.UnsupportedSchemaError": {
       "kind": "exception",
@@ -4118,8 +4118,8 @@
     },
     "threetears.evals.run.quote_launch": {
       "kind": "async function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "quote_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, case_count: int | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None) -> LaunchQuote",
+      "tier": "stable"
     },
     "threetears.evals.run.rate_result": {
       "kind": "function",
@@ -4588,8 +4588,8 @@
     },
     "threetears.evals.analysis.assemble_campaign_bundle": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle",
+      "tier": "stable"
     },
     "threetears.evals.analysis.assemble_context_bundle": {
       "kind": "function",
@@ -4703,8 +4703,8 @@
     },
     "threetears.evals.analysis.CampaignBundle": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "CampaignBundle(schema_version: int = 1, campaign_id: str, scope_id: str, name: str, subject_id: str, subject_kind: str, behavior: str, declaration: CampaignDeclaration, arms: list[CampaignArm], readings: CampaignReadings, aspects: list[AnalysisContextBundle])",
+      "tier": "stable"
     },
     "threetears.evals.analysis.CampaignKind": {
       "kind": "literal",
@@ -6494,12 +6494,12 @@
     "threetears.evals.testing.READER_CONFORMANCE_CASES": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.testing.ReaderConformanceCase": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ReaderConformanceCase(name: str, rule: str, check: Callable[[ReaderSample], None])",
+      "tier": "stable"
     },
     "threetears.evals.testing.ReaderConformanceFailure": {
       "kind": "exception",
@@ -6508,8 +6508,8 @@
     },
     "threetears.evals.testing.ReaderSample": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ReaderSample(profile: HostProfile, runs: Sequence[tuple[EvalRun, Sequence[EvalResult]]])",
+      "tier": "stable"
     },
     "threetears.evals.testing.RecordedCompletions": {
       "kind": "class",

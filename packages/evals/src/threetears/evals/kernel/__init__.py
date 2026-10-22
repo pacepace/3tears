@@ -153,7 +153,6 @@ from threetears.evals.kernel.errors import (
 )
 from threetears.evals.kernel.job_context import running_job
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactory, default_job_timeout, timed_out_detail
-
 from threetears.evals.kernel.job_leases import (
     ANALYSIS_JOB,
     LEASE_WRITE_ATTEMPTS,

@@ -6,10 +6,10 @@ must carry, or every process answers it from its own memory and two of them answ
 the process that did not start a job would read a live job as lost, and a cancel there would be refused.
 
 So the record carries a **lease** (:class:`JobLease`): the holding process's id and an expiry, renewed by the
-holder with a conditional write every :data:`JOB_LEASE_RENEWAL_FRACTION` of its duration. A record that has not ended by its own account
-and whose lease has expired — or that carries none — is **lost**, and every process reads it so. The first
-reader to see that writes it down (:class:`JobLoss`, with the record's own ending beside it), so the answer
-is durable and the same everywhere rather than recomputed.
+holder with a conditional write every :data:`JOB_LEASE_RENEWAL_FRACTION` of its duration. A record that has not
+ended by its own account and whose lease has expired — or that carries none — is **lost**, and every process
+reads it so. The first reader to see that writes it down (:class:`JobLoss`, with the record's own ending beside
+it), so the answer is durable and the same everywhere rather than recomputed.
 
 A **cancel** is a field on the record too (``cancel_requested_at`` and ``cancel_request_reason``), written by whichever
 process was asked and read by the holder at its next renewal, so a cancel does not need the job to be

@@ -70,7 +70,9 @@ replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
 - **Smaller fixes.** `sweep_launch`'s help names a route that works: declare the design afterwards with
   `campaign_create` over the sweep's `run_ids`, which a sweep's job result now carries (#843). `measuring-soundly.md`
   says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,100
-  characters (#822).
+  characters (#822). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
+  quote, the reader conformance suite, `FailureOwner` and others) are
+  stable, and its import list is refreshed.
 
 **Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
 moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to

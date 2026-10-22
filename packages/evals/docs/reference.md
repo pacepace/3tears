@@ -152,6 +152,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`AsyncDeliveryStatus`** · literal · Where one piece of background work stood when the cell ended.
   <br>`'delivered'` | `'failed'` | `'undelivered'`
+- **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment, a rate limit), or the `candidate` (anything else, charged to whoever made the call).
+  <br>`'account'` | `'provider'` | `'candidate'`
 - **`KnownCellTimeoutOrigin`** · *host contract* · literal · A value of `CellTimeoutOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'launch'` | `'kind'` | `'default'`
 - **`KnownCostCapOrigin`** · *host contract* · literal · A value of `CostCapOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
@@ -270,6 +272,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ActionSeam`** · protocol · A kind's synchronous tools, as the cassette lane records and replays them.
 - **`AdmissionRefusedError`** · *host contract* · exception · A launch refused because it would admit more unfinished runs than the process may hold (status 429).
 - **`AdmittedCall`** · dataclass · A planned call its budget admitted, at the ceiling it was priced at.
+- **`Aspect`** · model · One part of what a campaign asks, read on its own runs: its template, its margin, its design and its runs.
 - **`AspectDesign`** · *host contract* · model · What one aspect of a campaign set out to vary and hold itself to — the declaration, one aspect's worth.
 - **`AuthoredJudgeCase`** · model · A calibration case written by hand: an output, the criterion it is judged on, and the verdict it must get.
 - **`BarOverride`** · model · A standard this campaign holds itself to, tighter than the registered one.
@@ -432,6 +435,8 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`CANDIDATE_MODEL_LEVER`** · constant (str) · The one name the candidate model answers to, everywhere — a DECLARED COORDINATE of every observation (`ScoreRecord.model`) as well as the core lever below, which is why it is the only lever a reporting lens resolves off the observation rather than off the run.
   <br>`= 'model'`
 - **`SHARED_CORE`** · *host contract* · constant (SweepableRegistry) · The registry a host extends. Nothing here names a product.
+- **`UNSEATED_LEVEL`** · constant (str) · The level an apparatus dimension reads at for a run whose rig has no such seat (`HostProfile.apparatus_level`), where the dimension is kept because another run in the same comparison does have it.
+  <br>`= "(none — this run's rig has no such seat)"`
 
 <a id="api-run"></a>
 ### `threetears.evals.run`
@@ -498,6 +503,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`precondition_failure_text(outcomes: Sequence[PreconditionOutcome]) -> str`
 - **`price_subject_call_floor`** · *host contract* · async function · A floor under a subject arm's largest judge or simulator call, for its `LaunchableKind.price_largest_call`.
   <br>`price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | None`
+- **`quote_launch`** · async function · What `start_run` with the same arguments would make of its arms' prices — read-only.
+  <br>`quote_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, case_count: int | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None) -> LaunchQuote`
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str, source: str | None = None, collected_by: str | None = None, rated_at: str | None = None) -> CalibrationRating`
 - **`regrade`** · async function · Grade one stored result again from what its cell stored, and report every verdict that moved.
@@ -589,6 +596,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`analysis_gen_request_settings_for`** · *host contract* · function · The generator role's request settings as ONE value, from the host's answer budget, effort and headroom.
   <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings`
+- **`assemble_campaign_bundle`** · function · Assemble the campaign bundle a generation launched right now would read, without generating.
+  <br>`assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle`
 - **`assemble_context_bundle`** · function · Assemble the closed context bundle for a campaign's runs.
   <br>`assemble_context_bundle(campaign: EvalCampaign, *, aspect: str | None = None, storage: CampaignReadStore, insights_as_of: str | None = None, profile: HostProfile) -> AnalysisContextBundle`
 - **`campaign_report`** · function · The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
@@ -654,6 +663,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
 - **`AsRecordedReporterKind`** · class · The memo each case's campaign actually got, replayed — the calibration candidate.
+- **`CampaignBundle`** · model · A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
 - **`CampaignReadings`** · model · Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's measures; for every kind, each arm against each absolute bar.
 - **`CampaignReport`** · model · A campaign's page: the writer's summary and recommendation, what code read across its aspects, the person's call, then one fold per aspect.
 - **`ChartBlock`** · *host contract* · model · One of the two charts a report draws, with every value it draws, so it prints as a table too.
@@ -755,6 +765,8 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`JobsConformanceCase`** · dataclass · One action held to one rule.
 - **`JobsConformanceHost`** · *host contract* · dataclass · What a host hands the kit for one case: its operations host, who calls, and its sample launch.
 - **`NegotiationConformanceFailure`** · *host contract* · exception · A host's client mishandled the router's refusals: each mistake it made, named.
+- **`ReaderConformanceCase`** · dataclass · One promise a reader makes, as a check over a sample.
+- **`ReaderSample`** · dataclass · What the kit checks a host's readers over: the host's profile and runs it produced.
 - **`RecordedCompletions`** · *host contract* · class · A completion client that records the calls an inner client answers, or replays a recording of them.
 - **`RecordedPrompt`** · *host contract* · class · One call a recording is expected to serve, as `RecordedCompletions.check_covers` is handed it.
 - **`RecordingRefused`** · *host contract* · exception · A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
@@ -767,6 +779,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 **Constants**
 
+- **`READER_CONFORMANCE_CASES`** · constant (tuple) · Every promise, as a case. Parametrise over this tuple.
 - **`STORE_CONFORMANCE_CASES`** · *host contract* · constant (tuple) · Every case, in the order the port states its rules: scoping, the strip on read, projection, querying, optimistic concurrency (with the re-read that recovers a lost race), merge, delete — and last, that every `doc_type` the engine writes is one the store stores.
 
 <a id="api-quick"></a>

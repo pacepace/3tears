@@ -635,7 +635,10 @@ renews its jobs' leases on a pool of its own, `LEASE_POOL_WORKERS` threads, ever
 at once. Give the pool your `blocking_executor`'s workers plus `LEASE_POOL_WORKERS`, so a renewal never waits for a
 connection behind cell work, and keep a checkout's wait under the renewal interval, the lease times
 `JOB_LEASE_RENEWAL_FRACTION` (20s at `DEFAULT_JOB_LEASE_S`): a renewal that cannot get a connection then fails and is
-tried again within its lease, rather than holding up the next one. Read the numbers instead of copying them;
+tried again within its lease, rather than holding up the next one. A renewal stuck in the store retires the lease pool
+with its calls still waiting on the store, and a fresh pool takes the next renewals, so through a store brownout the
+leases can briefly want more than `LEASE_POOL_WORKERS` connections; the checkout wait is what keeps that extra from
+starving cell work. Read the numbers instead of copying them;
 `threetears.evals.schema` loads no other part of the engine, so your config can import it as it loads:
 
 ```python
@@ -1004,7 +1007,7 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 520 names, mapped by rung in [the surface](surface.md).
+The first two tiers are the declared surface, about 540 names, mapped by rung in [the surface](surface.md).
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
