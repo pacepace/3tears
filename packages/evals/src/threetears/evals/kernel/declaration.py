@@ -794,8 +794,9 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
     named_at: str | None = Field(
         default=None,
         description=(
-            "When the arm was addressed from its run (ISO-8601). A control named after an aspect's first result turns "
-            "that aspect's comparisons post hoc: what they are read against was chosen once the evidence existed. "
+            "When the arm was addressed from its run (ISO-8601). A control named after an aspect's first result dates "
+            "that aspect's question no earlier than the naming, which its page discloses as set after the runs: what "
+            "its comparisons are read against was chosen once the evidence existed. "
             "Named after its runs were launched and before any result landed, it was named before anything was seen. "
             "None = not recorded (an arm upgraded from a campaign stored before arms existed)."
         ),
@@ -918,9 +919,10 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
     asked_at: str | None = Field(
         default=None,
         description=(
-            "When the question this aspect is asked was asked in full (ISO-8601): its pre-registration time, which a "
-            "reading confirms only if it predates the aspect's first run. An adopted aspect keeps its source's, so "
-            "adopting it never re-dates it. None = no time recorded, read as asked after the evidence."
+            "When the question this aspect is asked was asked in full (ISO-8601): its pre-registration time, which "
+            "the aspect's pages disclose where it is later than its first run, without changing any reading. An "
+            "adopted aspect keeps its source's, so adopting it never re-dates it. None = no time recorded, disclosed "
+            "as possibly set after the runs."
         ),
     )
     margin_declared_at: str | None = Field(

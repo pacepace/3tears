@@ -190,6 +190,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/campaign.py",
     # The step a stored campaign is upgraded by, in the schema package with the version chain that registers it.
     "schema/campaign_upgrade.py",
+    # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.
+    "schema/aspect_label.py",
     "kernel/declaration.py",
     "kernel/surface.py",
     "kernel/authored.py",

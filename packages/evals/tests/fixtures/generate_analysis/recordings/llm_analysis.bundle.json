@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "campaign_id": "01a14ff1-14e5-736e-a545-39941cad9baf",
+  "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
   "scope_id": "llm-analysis",
   "name": "baseline vs candidate",
   "subject_id": "baseline vs candidate",
@@ -8,7 +8,7 @@
   "behavior": "classify",
   "declaration": {
     "question": "",
-    "declared_at": "2026-10-18T16:56:02.018449+00:00",
+    "declared_at": "2026-10-21T23:02:54.962973+00:00",
     "declared_by": "eval",
     "arms": [
       {
@@ -42,7 +42,7 @@
           }
         },
         "identity_version": 24,
-        "named_at": "2026-10-18T16:56:02.018449+00:00"
+        "named_at": "2026-10-21T23:02:54.962973+00:00"
       }
     ],
     "aspects": [
@@ -91,11 +91,11 @@
           "measure_latency": false
         },
         "run_ids": [
-          "01a14ff1-1491-74d1-8d56-4b5be58b48a8",
-          "01a14ff1-1493-7267-911e-f0e5c108a459"
+          "01a160b4-0c93-72cb-a83f-4e082cdf3918",
+          "01a160b4-0c95-707e-be93-0ea35a72b0df"
         ],
-        "declared_at": "2026-10-18T16:56:02.018449+00:00",
-        "asked_at": "2026-10-18T16:56:02.018449+00:00",
+        "declared_at": "2026-10-21T23:02:54.962973+00:00",
+        "asked_at": "2026-10-21T23:02:54.962973+00:00",
         "margin_declared_at": null
       }
     ],
@@ -133,7 +133,7 @@
         }
       },
       "identity_version": 24,
-      "named_at": "2026-10-18T16:56:02.018449+00:00"
+      "named_at": "2026-10-21T23:02:54.962973+00:00"
     },
     {
       "label": "candidate",
@@ -170,7 +170,7 @@
     }
   ],
   "readings": {
-    "campaign_id": "01a14ff1-14e5-736e-a545-39941cad9baf",
+    "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
     "alpha": 0.05,
     "control": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
     "control_label": "baseline",
@@ -216,8 +216,8 @@
   },
   "aspects": [
     {
-      "schema_version": 59,
-      "campaign_id": "01a14ff1-14e5-736e-a545-39941cad9baf",
+      "schema_version": 60,
+      "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
       "subject_id": "baseline vs candidate",
       "subject_kind": "",
       "behavior": "classify",
@@ -225,8 +225,8 @@
       "template_id": "eval-4feedbcc275d466e",
       "scope_id": "llm-analysis",
       "run_ids": [
-        "01a14ff1-1491-74d1-8d56-4b5be58b48a8",
-        "01a14ff1-1493-7267-911e-f0e5c108a459"
+        "01a160b4-0c93-72cb-a83f-4e082cdf3918",
+        "01a160b4-0c95-707e-be93-0ea35a72b0df"
       ],
       "unresolved_run_ids": [],
       "archived_run_ids": [],
@@ -234,14 +234,14 @@
         "candidate": "callable"
       },
       "window": {
-        "start": "2026-10-18T16:56:01.937749+00:00",
-        "end": "2026-10-18T16:56:01.939355+00:00"
+        "start": "2026-10-21T23:02:54.867269+00:00",
+        "end": "2026-10-21T23:02:54.869607+00:00"
       },
       "run_summaries": [
         {
-          "run_id": "01a14ff1-1491-74d1-8d56-4b5be58b48a8",
+          "run_id": "01a160b4-0c93-72cb-a83f-4e082cdf3918",
           "status": "completed",
-          "created_at": "2026-10-18T16:56:01.937749+00:00",
+          "created_at": "2026-10-21T23:02:54.867269+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -528,13 +528,13 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "bug → bug": 4,
-                  "billing → billing": 6,
-                  "feature_request → bug": 4,
-                  "feature_request → billing": 2,
-                  "account → account": 4,
                   "billing → account": 2,
-                  "bug → account": 2
+                  "account → account": 4,
+                  "billing → billing": 6,
+                  "feature_request → billing": 2,
+                  "bug → account": 2,
+                  "feature_request → bug": 4,
+                  "bug → bug": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -595,9 +595,9 @@
           "judge_shares_candidate_model": []
         },
         {
-          "run_id": "01a14ff1-1493-7267-911e-f0e5c108a459",
+          "run_id": "01a160b4-0c95-707e-be93-0ea35a72b0df",
           "status": "completed",
-          "created_at": "2026-10-18T16:56:01.939355+00:00",
+          "created_at": "2026-10-21T23:02:54.869607+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -928,10 +928,10 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "bug → bug": 6,
                   "billing → billing": 6,
-                  "feature_request → feature_request": 6,
                   "account → account": 4,
+                  "feature_request → feature_request": 6,
+                  "bug → bug": 6,
                   "billing → bug": 2
                 },
                 "rate": null,
@@ -1000,8 +1000,8 @@
             "subject_label": "baseline vs candidate",
             "template_id": "eval-4feedbcc275d466e",
             "run_ids": [
-              "01a14ff1-1491-74d1-8d56-4b5be58b48a8",
-              "01a14ff1-1493-7267-911e-f0e5c108a459"
+              "01a160b4-0c93-72cb-a83f-4e082cdf3918",
+              "01a160b4-0c95-707e-be93-0ea35a72b0df"
             ],
             "shared_test_case_ids": [
               "eval-4feedbcc275d466e-0",
@@ -1022,8 +1022,8 @@
                 "fingerprint": "00083aea9c64182bfc677af9f016c1c4572cd96fbea1e7a85e7bf0174637cca1",
                 "n_cases": 12,
                 "run_ids": [
-                  "01a14ff1-1491-74d1-8d56-4b5be58b48a8",
-                  "01a14ff1-1493-7267-911e-f0e5c108a459"
+                  "01a160b4-0c93-72cb-a83f-4e082cdf3918",
+                  "01a160b4-0c95-707e-be93-0ea35a72b0df"
                 ]
               }
             ],
@@ -1079,7 +1079,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a14ff1-1493-7267-911e-f0e5c108a459": {
+                    "01a160b4-0c95-707e-be93-0ea35a72b0df": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1139,7 +1139,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a14ff1-1491-74d1-8d56-4b5be58b48a8": {
+                    "01a160b4-0c93-72cb-a83f-4e082cdf3918": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1504,13 +1504,13 @@
               "ci_high": null,
               "case_means": null,
               "categories": {
-                "bug → bug": 10,
-                "billing → billing": 12,
-                "feature_request → bug": 4,
-                "feature_request → billing": 2,
-                "account → account": 8,
                 "billing → account": 2,
+                "account → account": 8,
+                "billing → billing": 12,
+                "feature_request → billing": 2,
                 "bug → account": 2,
+                "feature_request → bug": 4,
+                "bug → bug": 10,
                 "feature_request → feature_request": 6,
                 "billing → bug": 2
               },
@@ -1616,8 +1616,8 @@
       "divergences_untested": 0,
       "declared": {
         "question": "",
-        "asked_at": "2026-10-18T16:56:02.018449+00:00",
-        "question_declared_at": "2026-10-18T16:56:02.018449+00:00",
+        "asked_at": "2026-10-21T23:02:54.962973+00:00",
+        "question_declared_at": "2026-10-21T23:02:54.962973+00:00",
         "margin_declared_at": null,
         "design": {
           "axes": [
@@ -1689,11 +1689,11 @@
             }
           },
           "identity_version": 24,
-          "named_at": "2026-10-18T16:56:02.018449+00:00"
+          "named_at": "2026-10-21T23:02:54.962973+00:00"
         },
         "margin": null,
         "floors": [],
-        "declared_at": "2026-10-18T16:56:02.018449+00:00",
+        "declared_at": "2026-10-21T23:02:54.962973+00:00",
         "declared_by": "eval",
         "unread_without_control": null
       },
@@ -1701,7 +1701,7 @@
         "control_arm": {
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "run_ids": [
-            "01a14ff1-1491-74d1-8d56-4b5be58b48a8"
+            "01a160b4-0c93-72cb-a83f-4e082cdf3918"
           ],
           "k": 2,
           "moved": {},
@@ -1714,7 +1714,7 @@
           {
             "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
             "run_ids": [
-              "01a14ff1-1493-7267-911e-f0e5c108a459"
+              "01a160b4-0c95-707e-be93-0ea35a72b0df"
             ],
             "k": 2,
             "moved": {
@@ -1750,8 +1750,8 @@
         "stimulus_reason": "",
         "declared_apparatus": "commissioned",
         "run_provenance": {
-          "01a14ff1-1491-74d1-8d56-4b5be58b48a8": "commissioned",
-          "01a14ff1-1493-7267-911e-f0e5c108a459": "commissioned"
+          "01a160b4-0c93-72cb-a83f-4e082cdf3918": "commissioned",
+          "01a160b4-0c95-707e-be93-0ea35a72b0df": "commissioned"
         },
         "contradicting_run_ids": [],
         "disclosure": null
@@ -1924,7 +1924,7 @@
                 "mechanism_confounds": []
               }
             ],
-            "disclosure": "This campaign asked no question before its first run, so every comparison it holds — each contrast against the control, on every reading on a merit axis — is corrected as one family. 1 comparison the campaign holds carried a p and was corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 95%, so the family's intervals hold together at 95%."
+            "disclosure": "This campaign asks no question of this aspect, so every comparison it holds — each contrast against the control, on every reading on a merit axis — is corrected as one family. 1 comparison the campaign holds carried a p and was corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 95%, so the family's intervals hold together at 95%."
           }
         ],
         "withheld": null
@@ -1988,7 +1988,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14a6-71ff-8978-a5b1c3da5e6d"
+          "result_id": "01a160b4-0c9f-718f-9394-cf47775f1ddf"
         },
         {
           "trial_id": "T2",
@@ -2005,7 +2005,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14bc-721c-b446-36bd65b85cd1"
+          "result_id": "01a160b4-0c9f-718f-9394-cf43722596e8"
         },
         {
           "trial_id": "T3",
@@ -2022,7 +2022,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14a8-73be-9b95-987eb8f32780"
+          "result_id": "01a160b4-0ca1-7341-8990-790d0c4f455c"
         },
         {
           "trial_id": "T4",
@@ -2039,7 +2039,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14bd-7175-ade9-df59446accd4"
+          "result_id": "01a160b4-0c9f-718f-9394-cf45745cb8f2"
         },
         {
           "trial_id": "T5",
@@ -2056,7 +2056,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14b5-725d-bead-39244e884c2a"
+          "result_id": "01a160b4-0cd7-75c2-bd1f-fb63908eb6ad"
         },
         {
           "trial_id": "T6",
@@ -2073,7 +2073,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14be-71f8-a6e4-5a56a30bdaea"
+          "result_id": "01a160b4-0ccc-77a2-97ad-0eb44a894448"
         },
         {
           "trial_id": "T7",
@@ -2095,7 +2095,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14b5-725d-bead-39267ea84320"
+          "result_id": "01a160b4-0cd7-75c2-bd1f-fb65bb2dd7d8"
         },
         {
           "trial_id": "T8",
@@ -2117,7 +2117,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14bf-755d-9c8b-bfd238973736"
+          "result_id": "01a160b4-0ccc-77a2-97ad-0eb6999d0c3e"
         },
         {
           "trial_id": "T9",
@@ -2134,7 +2134,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-1498-7658-bacb-f0b23b52454a"
+          "result_id": "01a160b4-0ce0-7395-80ec-affa6d285e49"
         },
         {
           "trial_id": "T10",
@@ -2151,7 +2151,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14d3-7383-931d-78a9207fb03f"
+          "result_id": "01a160b4-0cd1-7024-a875-07bd2738600c"
         },
         {
           "trial_id": "T11",
@@ -2168,7 +2168,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-1498-7658-bacb-f0b488f5fa11"
+          "result_id": "01a160b4-0ce2-7522-a785-7da5374d2b70"
         },
         {
           "trial_id": "T12",
@@ -2185,7 +2185,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14d3-7383-931d-78ab49d6311f"
+          "result_id": "01a160b4-0cd1-7024-a875-07bf3666f12e"
         },
         {
           "trial_id": "T13",
@@ -2207,7 +2207,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14a8-73be-9b95-98800f508ff6"
+          "result_id": "01a160b4-0cde-759b-8801-bdfad559abce"
         },
         {
           "trial_id": "T14",
@@ -2229,7 +2229,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14ab-72bd-a64e-2738eae51010"
+          "result_id": "01a160b4-0c9a-718d-a30e-fb051374ec97"
         },
         {
           "trial_id": "T15",
@@ -2246,7 +2246,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14ab-72bd-a64e-273613f3fbc0"
+          "result_id": "01a160b4-0cde-759b-8801-bdfc4ea66181"
         },
         {
           "trial_id": "T16",
@@ -2263,7 +2263,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14ac-738e-9a2a-849efc1ed5c8"
+          "result_id": "01a160b4-0c9a-718d-a30e-fb07381e74a6"
         },
         {
           "trial_id": "T17",
@@ -2280,7 +2280,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14b2-74b4-90b9-a039464700c2"
+          "result_id": "01a160b4-0cb5-7285-9a34-115718bfab46"
         },
         {
           "trial_id": "T18",
@@ -2297,7 +2297,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14cf-762d-bd6a-27bd14e26818"
+          "result_id": "01a160b4-0cb9-7566-b253-7dfe26d8eadb"
         },
         {
           "trial_id": "T19",
@@ -2314,7 +2314,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14b3-709b-980d-f563e56c678b"
+          "result_id": "01a160b4-0cb9-7566-b253-7dfc2ddc06b3"
         },
         {
           "trial_id": "T20",
@@ -2331,7 +2331,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14d0-72c3-be3e-f92e98cfdab3"
+          "result_id": "01a160b4-0cbb-73e4-99aa-422dea624899"
         },
         {
           "trial_id": "T21",
@@ -2348,7 +2348,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-149f-76ff-a3b1-94ed4b66edd6"
+          "result_id": "01a160b4-0cd3-7350-a4ea-f6d08a26feb6"
         },
         {
           "trial_id": "T22",
@@ -2365,7 +2365,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-1497-7259-b66a-d0b4e154ab0c"
+          "result_id": "01a160b4-0cc5-74a1-ae39-bcd95884b8a0"
         },
         {
           "trial_id": "T23",
@@ -2382,7 +2382,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14a1-778f-b950-717d0b22608d"
+          "result_id": "01a160b4-0cd5-7662-82c7-d345acc1ee57"
         },
         {
           "trial_id": "T24",
@@ -2399,7 +2399,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-1497-7259-b66a-d0b6aa85e593"
+          "result_id": "01a160b4-0cc6-7235-8648-ca6ef7393cf7"
         },
         {
           "trial_id": "T25",
@@ -2421,7 +2421,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14bc-721c-b446-36b9942e229b"
+          "result_id": "01a160b4-0cb5-7285-9a34-115306d3e263"
         },
         {
           "trial_id": "T26",
@@ -2443,7 +2443,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14b7-722a-9201-e2f9c51966c5"
+          "result_id": "01a160b4-0cab-7225-a8a4-152a1832cca3"
         },
         {
           "trial_id": "T27",
@@ -2460,7 +2460,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14bc-721c-b446-36bb58c296dc"
+          "result_id": "01a160b4-0cb5-7285-9a34-1155a2202926"
         },
         {
           "trial_id": "T28",
@@ -2477,7 +2477,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14b9-7044-93d0-2839ee1ea0a9"
+          "result_id": "01a160b4-0cab-7225-a8a4-152c3bfd8f42"
         },
         {
           "trial_id": "T29",
@@ -2494,7 +2494,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14ae-7317-ba61-33429e0b1b05"
+          "result_id": "01a160b4-0cc9-7605-bf9b-93b591397a7b"
         },
         {
           "trial_id": "T30",
@@ -2511,7 +2511,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14a2-75b1-985a-3e819c62d325"
+          "result_id": "01a160b4-0cda-70b6-accb-0afecf30c09f"
         },
         {
           "trial_id": "T31",
@@ -2528,7 +2528,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14ae-7317-ba61-33447c0df402"
+          "result_id": "01a160b4-0cc9-7605-bf9b-93b763b586c1"
         },
         {
           "trial_id": "T32",
@@ -2545,7 +2545,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14a4-7664-9145-596814504ccd"
+          "result_id": "01a160b4-0cdb-70f3-b600-b8d2b4be7903"
         },
         {
           "trial_id": "T33",
@@ -2562,7 +2562,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c7-7177-ba97-703340f64747"
+          "result_id": "01a160b4-0c9a-718d-a30e-fb0950c451d4"
         },
         {
           "trial_id": "T34",
@@ -2579,7 +2579,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c9-7470-96bf-f8754e690ba5"
+          "result_id": "01a160b4-0ca4-765f-84a0-13ba28491aeb"
         },
         {
           "trial_id": "T35",
@@ -2596,7 +2596,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c8-733d-883b-41b6c7d27b9f"
+          "result_id": "01a160b4-0c9a-718d-a30e-fb0b74c9db5a"
         },
         {
           "trial_id": "T36",
@@ -2613,7 +2613,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14cf-762d-bd6a-27bb78471dd5"
+          "result_id": "01a160b4-0ca4-765f-84a0-13bc078b3513"
         },
         {
           "trial_id": "T37",
@@ -2635,7 +2635,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c1-76ab-aaac-a32962075d22"
+          "result_id": "01a160b4-0cc3-7227-99d1-2d3e524dfc63"
         },
         {
           "trial_id": "T38",
@@ -2657,7 +2657,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14b0-727c-a32a-aafa3d661641"
+          "result_id": "01a160b4-0caf-7137-abf9-302045c0991c"
         },
         {
           "trial_id": "T39",
@@ -2674,7 +2674,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c1-76ab-aaac-a32b528878bd"
+          "result_id": "01a160b4-0cc3-7227-99d1-2d400a60e2d9"
         },
         {
           "trial_id": "T40",
@@ -2691,7 +2691,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14b1-7510-88dd-e88a494fd257"
+          "result_id": "01a160b4-0cb4-77a2-a6c5-d9f84a8c4dcf"
         },
         {
           "trial_id": "T41",
@@ -2713,7 +2713,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c3-7301-b890-de2e04bd87f0"
+          "result_id": "01a160b4-0cae-73d8-a383-b4cfc236e10e"
         },
         {
           "trial_id": "T42",
@@ -2735,7 +2735,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-149a-7131-afd6-056b3c230876"
+          "result_id": "01a160b4-0cbc-7555-a39e-c798baef2df0"
         },
         {
           "trial_id": "T43",
@@ -2752,7 +2752,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c3-7301-b890-de3058e595ad"
+          "result_id": "01a160b4-0cae-73d8-a383-b4d1fc733aea"
         },
         {
           "trial_id": "T44",
@@ -2769,7 +2769,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-149c-7416-a535-7b42a45f1698"
+          "result_id": "01a160b4-0cc2-704f-9b7d-097a394007cf"
         },
         {
           "trial_id": "T45",
@@ -2791,7 +2791,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-149d-7174-b5ab-adf01233af77"
+          "result_id": "01a160b4-0ccf-70e2-a5af-bae6eba3554e"
         },
         {
           "trial_id": "T46",
@@ -2813,7 +2813,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c5-76d3-bae1-70a6abc8c143"
+          "result_id": "01a160b4-0ca7-77a3-95af-dfba226062ac"
         },
         {
           "trial_id": "T47",
@@ -2830,7 +2830,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-149f-76ff-a3b1-94eb4e540122"
+          "result_id": "01a160b4-0ccf-70e2-a5af-bae805ffb30b"
         },
         {
           "trial_id": "T48",
@@ -2847,17 +2847,17 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a14ff1-14c5-76d3-bae1-70a869d7075b"
+          "result_id": "01a160b4-0ca8-745f-8f4d-31f8c9649062"
         }
       ],
       "trials_omitted": 0,
       "case_sets": [],
-      "design_frozen_at": "2026-10-18T16:56:01.937749+00:00",
-      "first_result_at": "2026-10-18T16:56:01.943545+00:00",
-      "package_version": "0.71.0",
+      "design_frozen_at": "2026-10-21T23:02:54.867269+00:00",
+      "first_result_at": "2026-10-21T23:02:54.874073+00:00",
+      "package_version": "0.74.0",
       "reading_scope": {
         "questions_declared": false,
-        "question_post_hoc": false,
+        "question_after_runs": null,
         "exploratory_measures": [],
         "exploratory_dimensions": [],
         "disclosure": "This campaign declares no question, so every finding it supports is exploratory: nothing was asked before the evidence was read, and a pattern found in it is a lead for a campaign that asks, not an answer."
@@ -2891,14 +2891,14 @@
       },
       "measurement_windows": [
         {
-          "run_id": "01a14ff1-1491-74d1-8d56-4b5be58b48a8",
-          "start": "2026-10-18T16:56:01.943545+00:00",
-          "end": "2026-10-18T16:56:02.003055+00:00"
+          "run_id": "01a160b4-0c93-72cb-a83f-4e082cdf3918",
+          "start": "2026-10-21T23:02:54.874073+00:00",
+          "end": "2026-10-21T23:02:54.944494+00:00"
         },
         {
-          "run_id": "01a14ff1-1493-7267-911e-f0e5c108a459",
-          "start": "2026-10-18T16:56:01.943821+00:00",
-          "end": "2026-10-18T16:56:02.003227+00:00"
+          "run_id": "01a160b4-0c95-707e-be93-0ea35a72b0df",
+          "start": "2026-10-21T23:02:54.874474+00:00",
+          "end": "2026-10-21T23:02:54.946791+00:00"
         }
       ],
       "launch_disclosure": null,
@@ -2940,7 +2940,7 @@
       "arm_production_footings": {
         "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b": {
           "runs": {
-            "01a14ff1-1493-7267-911e-f0e5c108a459": {
+            "01a160b4-0c95-707e-be93-0ea35a72b0df": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -2953,7 +2953,7 @@
         },
         "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6": {
           "runs": {
-            "01a14ff1-1491-74d1-8d56-4b5be58b48a8": {
+            "01a160b4-0c93-72cb-a83f-4e082cdf3918": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -2977,30 +2977,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "01a14ff1-1497-7259-b66a-d0b6aa85e593",
-            "01a14ff1-1498-7658-bacb-f0b488f5fa11",
-            "01a14ff1-149c-7416-a535-7b42a45f1698",
-            "01a14ff1-149f-76ff-a3b1-94eb4e540122",
-            "01a14ff1-14a1-778f-b950-717d0b22608d",
-            "01a14ff1-14a4-7664-9145-596814504ccd",
-            "01a14ff1-14a8-73be-9b95-987eb8f32780",
-            "01a14ff1-14ab-72bd-a64e-273613f3fbc0",
-            "01a14ff1-14ac-738e-9a2a-849efc1ed5c8",
-            "01a14ff1-14ae-7317-ba61-33447c0df402",
-            "01a14ff1-14b1-7510-88dd-e88a494fd257",
-            "01a14ff1-14b3-709b-980d-f563e56c678b",
-            "01a14ff1-14b5-725d-bead-39267ea84320",
-            "01a14ff1-14b9-7044-93d0-2839ee1ea0a9",
-            "01a14ff1-14bc-721c-b446-36bb58c296dc",
-            "01a14ff1-14bd-7175-ade9-df59446accd4",
-            "01a14ff1-14bf-755d-9c8b-bfd238973736",
-            "01a14ff1-14c1-76ab-aaac-a32b528878bd",
-            "01a14ff1-14c3-7301-b890-de3058e595ad",
-            "01a14ff1-14c5-76d3-bae1-70a869d7075b",
-            "01a14ff1-14c8-733d-883b-41b6c7d27b9f",
-            "01a14ff1-14cf-762d-bd6a-27bb78471dd5",
-            "01a14ff1-14d0-72c3-be3e-f92e98cfdab3",
-            "01a14ff1-14d3-7383-931d-78ab49d6311f"
+            "01a160b4-0c9a-718d-a30e-fb07381e74a6",
+            "01a160b4-0c9a-718d-a30e-fb0b74c9db5a",
+            "01a160b4-0c9f-718f-9394-cf45745cb8f2",
+            "01a160b4-0ca1-7341-8990-790d0c4f455c",
+            "01a160b4-0ca4-765f-84a0-13bc078b3513",
+            "01a160b4-0ca8-745f-8f4d-31f8c9649062",
+            "01a160b4-0cab-7225-a8a4-152c3bfd8f42",
+            "01a160b4-0cae-73d8-a383-b4d1fc733aea",
+            "01a160b4-0cb4-77a2-a6c5-d9f84a8c4dcf",
+            "01a160b4-0cb5-7285-9a34-1155a2202926",
+            "01a160b4-0cb9-7566-b253-7dfc2ddc06b3",
+            "01a160b4-0cbb-73e4-99aa-422dea624899",
+            "01a160b4-0cc2-704f-9b7d-097a394007cf",
+            "01a160b4-0cc3-7227-99d1-2d400a60e2d9",
+            "01a160b4-0cc6-7235-8648-ca6ef7393cf7",
+            "01a160b4-0cc9-7605-bf9b-93b763b586c1",
+            "01a160b4-0ccc-77a2-97ad-0eb6999d0c3e",
+            "01a160b4-0ccf-70e2-a5af-bae805ffb30b",
+            "01a160b4-0cd1-7024-a875-07bf3666f12e",
+            "01a160b4-0cd5-7662-82c7-d345acc1ee57",
+            "01a160b4-0cd7-75c2-bd1f-fb65bb2dd7d8",
+            "01a160b4-0cdb-70f3-b600-b8d2b4be7903",
+            "01a160b4-0cde-759b-8801-bdfc4ea66181",
+            "01a160b4-0ce2-7522-a785-7da5374d2b70"
           ],
           "unknown_dimensions": []
         },
@@ -3013,30 +3013,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "01a14ff1-1497-7259-b66a-d0b4e154ab0c",
-            "01a14ff1-1498-7658-bacb-f0b23b52454a",
-            "01a14ff1-149a-7131-afd6-056b3c230876",
-            "01a14ff1-149d-7174-b5ab-adf01233af77",
-            "01a14ff1-149f-76ff-a3b1-94ed4b66edd6",
-            "01a14ff1-14a2-75b1-985a-3e819c62d325",
-            "01a14ff1-14a6-71ff-8978-a5b1c3da5e6d",
-            "01a14ff1-14a8-73be-9b95-98800f508ff6",
-            "01a14ff1-14ab-72bd-a64e-2738eae51010",
-            "01a14ff1-14ae-7317-ba61-33429e0b1b05",
-            "01a14ff1-14b0-727c-a32a-aafa3d661641",
-            "01a14ff1-14b2-74b4-90b9-a039464700c2",
-            "01a14ff1-14b5-725d-bead-39244e884c2a",
-            "01a14ff1-14b7-722a-9201-e2f9c51966c5",
-            "01a14ff1-14bc-721c-b446-36b9942e229b",
-            "01a14ff1-14bc-721c-b446-36bd65b85cd1",
-            "01a14ff1-14be-71f8-a6e4-5a56a30bdaea",
-            "01a14ff1-14c1-76ab-aaac-a32962075d22",
-            "01a14ff1-14c3-7301-b890-de2e04bd87f0",
-            "01a14ff1-14c5-76d3-bae1-70a6abc8c143",
-            "01a14ff1-14c7-7177-ba97-703340f64747",
-            "01a14ff1-14c9-7470-96bf-f8754e690ba5",
-            "01a14ff1-14cf-762d-bd6a-27bd14e26818",
-            "01a14ff1-14d3-7383-931d-78a9207fb03f"
+            "01a160b4-0c9a-718d-a30e-fb051374ec97",
+            "01a160b4-0c9a-718d-a30e-fb0950c451d4",
+            "01a160b4-0c9f-718f-9394-cf43722596e8",
+            "01a160b4-0c9f-718f-9394-cf47775f1ddf",
+            "01a160b4-0ca4-765f-84a0-13ba28491aeb",
+            "01a160b4-0ca7-77a3-95af-dfba226062ac",
+            "01a160b4-0cab-7225-a8a4-152a1832cca3",
+            "01a160b4-0cae-73d8-a383-b4cfc236e10e",
+            "01a160b4-0caf-7137-abf9-302045c0991c",
+            "01a160b4-0cb5-7285-9a34-115306d3e263",
+            "01a160b4-0cb5-7285-9a34-115718bfab46",
+            "01a160b4-0cb9-7566-b253-7dfe26d8eadb",
+            "01a160b4-0cbc-7555-a39e-c798baef2df0",
+            "01a160b4-0cc3-7227-99d1-2d3e524dfc63",
+            "01a160b4-0cc5-74a1-ae39-bcd95884b8a0",
+            "01a160b4-0cc9-7605-bf9b-93b591397a7b",
+            "01a160b4-0ccc-77a2-97ad-0eb44a894448",
+            "01a160b4-0ccf-70e2-a5af-bae6eba3554e",
+            "01a160b4-0cd1-7024-a875-07bd2738600c",
+            "01a160b4-0cd3-7350-a4ea-f6d08a26feb6",
+            "01a160b4-0cd7-75c2-bd1f-fb63908eb6ad",
+            "01a160b4-0cda-70b6-accb-0afecf30c09f",
+            "01a160b4-0cde-759b-8801-bdfad559abce",
+            "01a160b4-0ce0-7395-80ec-affa6d285e49"
           ],
           "unknown_dimensions": []
         }
@@ -3547,7 +3547,7 @@
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "apparatus_class_id": "baa7449f304b814aebfc03744a092b5e603697a09def6dd14cb48b2aa9df1e15",
           "run_ids": [
-            "01a14ff1-1491-74d1-8d56-4b5be58b48a8"
+            "01a160b4-0c93-72cb-a83f-4e082cdf3918"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -3818,13 +3818,13 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "bug → bug": 4,
-                  "billing → billing": 6,
-                  "feature_request → bug": 4,
-                  "feature_request → billing": 2,
-                  "account → account": 4,
                   "billing → account": 2,
-                  "bug → account": 2
+                  "account → account": 4,
+                  "billing → billing": 6,
+                  "feature_request → billing": 2,
+                  "bug → account": 2,
+                  "feature_request → bug": 4,
+                  "bug → bug": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -3891,7 +3891,7 @@
           "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
           "apparatus_class_id": "baa7449f304b814aebfc03744a092b5e603697a09def6dd14cb48b2aa9df1e15",
           "run_ids": [
-            "01a14ff1-1493-7267-911e-f0e5c108a459"
+            "01a160b4-0c95-707e-be93-0ea35a72b0df"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -4206,10 +4206,10 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "bug → bug": 6,
                   "billing → billing": 6,
-                  "feature_request → feature_request": 6,
                   "account → account": 4,
+                  "feature_request → feature_request": 6,
+                  "bug → bug": 6,
                   "billing → bug": 2
                 },
                 "rate": null,
@@ -4275,7 +4275,7 @@
         }
       ],
       "time_axis": null,
-      "time_axis_withheld": "every run started on one day (2026-10-18) and the host labels no build",
+      "time_axis_withheld": "every run started on one day (2026-10-21) and the host labels no build",
       "confound_catalog": {},
       "prior_insights": [],
       "prior_insights_omitted": 0,

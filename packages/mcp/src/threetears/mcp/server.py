@@ -204,7 +204,8 @@ class McpServer:
 
         try:
             identity = await self._identity_provider.identify()
-        except Exception as exc:
+        except RuntimeError as exc:
+            # the one type the IdentityProvider protocol raises for "no identity"; anything else is a bug
             contain(
                 exc,
                 log=log,

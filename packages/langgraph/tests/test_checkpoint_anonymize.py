@@ -43,6 +43,7 @@ from threetears.langgraph import (
     metadata_key_classification,
     unclassified_metadata_keys,
 )
+from threetears.langgraph.serde import UUIDSafeSerializer
 
 _UNSCOPED = CheckpointScope.unscoped(reason="tests drive a single-tenant saver")
 _THREAD = "thread-erase"
@@ -751,6 +752,34 @@ class TestTheCachesAreEvicted:
             await saver.aanonymize_threads([_THREAD])
 
 
+class _RefusingEncoder(UUIDSafeSerializer):
+    """the saver's serializer, but one whose encoder refuses every value."""
+
+    def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
+        """
+        :param obj: the value
+        :ptype obj: Any
+        :return: never
+        :rtype: tuple[str, bytes]
+        :raises ValueError: always
+        """
+        raise ValueError("value cannot be encoded")
+
+
+class _RetaggingEncoder(UUIDSafeSerializer):
+    """the saver's serializer, but one that stores a rewrite under another type tag."""
+
+    def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
+        """
+        :param obj: the value
+        :ptype obj: Any
+        :return: the default encoding under the tag ``retagged``
+        :rtype: tuple[str, bytes]
+        """
+        _type, blob = super().dumps_typed(obj)
+        return "retagged", blob
+
+
 class TestAFailedErasureCanBeFound:
     """an erasure over many threads that fails must say where, and a row that can never be
     rewritten must not stop every row after it."""
@@ -816,6 +845,73 @@ class TestAFailedErasureCanBeFound:
         assert "writing checkpoint ns=" in notes
         [logged] = [r for r in caplog.records if "anonymization failed" in r.getMessage()]
         assert (logged.__dict__["thread_id"], logged.__dict__["stage"]) == (_THREAD, "checkpoints")
+
+    async def test_a_blob_the_serializer_cannot_re_encode_is_reported(
+        self, executor: SqliteQueryExecutor, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the encoder is the same serializer boundary as the decoder: its failure is one row reported."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+        before = executor.blobs()
+        saver.serde = _RefusingEncoder()
+
+        with caplog.at_level("ERROR", logger="threetears.langgraph.checkpoint"):
+            result = await saver.aanonymize_threads([_THREAD])
+
+        assert result.unreadable, "every blob the rule changed is reported"
+        assert {reported.error_type for reported in result.unreadable} == {"ValueError"}
+        assert (result.checkpoints_rewritten, result.writes_rewritten) == (0, 0)
+        assert executor.blobs() == before, "a blob that cannot be re-encoded is left as it is"
+        assert any("cannot be anonymized" in record.getMessage() for record in caplog.records)
+
+    async def test_a_re_encoding_that_changes_the_serde_type_is_reported(
+        self, executor: SqliteQueryExecutor, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a rewrite stored under another type tag would be read back with the wrong decoder."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+        before = executor.blobs()
+        saver.serde = _RetaggingEncoder()
+
+        with caplog.at_level("ERROR", logger="threetears.langgraph.checkpoint"):
+            result = await saver.aanonymize_threads([_THREAD])
+
+        assert result.unreadable, "every blob the rule changed is reported"
+        assert {reported.error_type for reported in result.unreadable} == {"ValueError"}
+        assert (result.checkpoints_rewritten, result.writes_rewritten) == (0, 0)
+        assert executor.blobs() == before, "a blob whose type would change is left as it is"
+        logged = [record for record in caplog.records if "change its serde type" in record.getMessage()]
+        assert len(logged) == len(result.unreadable)
+        assert {record.__dict__["rewritten_type"] for record in logged} == {"retagged"}
+
+    @pytest.mark.parametrize(
+        ("rule", "fault"),
+        [
+            ("anonymize_checkpoint_value", AttributeError("'NoneType' object has no attribute 'model_copy'")),
+            ("anonymize_checkpoint_value", TypeError("unhashable type: 'list'")),
+            ("unclassified_metadata_keys", KeyError("metadata")),
+        ],
+    )
+    async def test_a_fault_in_the_rule_raises_instead_of_reporting_the_row(
+        self, executor: SqliteQueryExecutor, monkeypatch: pytest.MonkeyPatch, rule: str, fault: Exception
+    ) -> None:
+        """a bug in the rule is not an unreadable blob: reporting it would name every row as unreadable
+        and hide the bug behind a per-row report."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+
+        def broken(*args: object, **kwargs: object) -> object:
+            raise fault
+
+        monkeypatch.setattr(f"threetears.langgraph.checkpoint.{rule}", broken)
+
+        with pytest.raises(type(fault)) as raised:
+            await saver.aanonymize_threads([_THREAD])
+
+        assert raised.value is fault
+        notes = "\n".join(getattr(raised.value, "__notes__", []))
+        assert repr(_THREAD) in notes and "(checkpoints)" in notes
+        assert _leaks(executor), "nothing was rewritten"
 
 
 def _fresh_key(stem: str) -> str:

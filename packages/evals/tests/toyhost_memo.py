@@ -239,6 +239,7 @@ def memo_payload(bundle: CampaignBundle | AnalysisContextBundle) -> dict[str, An
                 "means": "Both widths were measured over the same documents and the wider one is slower by a wide margin.",
             }
         ],
+        "summary": "The narrow width is much faster on every document, so it is the width to run.",
         "next": [
             {
                 "title": "sweep the retriever width at the narrow chunk",

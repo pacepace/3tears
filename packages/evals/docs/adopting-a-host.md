@@ -790,13 +790,14 @@ for profile in dropped.judge_profiles:                # the one kind that does n
 `drop_derived` deletes nothing else: runs, results, cassettes and every durable document stay. Analyses come back by
 generating them again and insights with the analyses that mint them; a judge profile only by recording it again, and
 until then a campaign that took its judges' tier from it reads its own evidence's tier. The campaign rewrite (durable v16) is such a bump
-(regenerable v12: one memo per campaign). A cassette is not touched by that bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
+(regenerable v12: one memo per campaign), and so is the memo's summary across its aspects (regenerable v13). A
+cassette is not touched by either bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
 when the cassette itself changes, because re-capturing a corpus calls your third-party tools again. A cassette
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v15.5), durable documents (v16.0), regenerable documents
-(v12), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
+(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
 (`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
@@ -1341,10 +1342,16 @@ definition = {
   at creation, over runs its aspects already hold; or `set_campaign_control` once the control's run has joined), and
   the server reads its variant key and lever map from the first; runs of one arm carrying two keys are refused,
   naming each. The control comes first. A candidate nobody names is read off the runs, one per other variant. A
-  control named after an aspect's first result makes that aspect's comparisons post hoc.
+  control named after an aspect's first result dates that aspect's question at the naming, which its pages
+  disclose as set after the runs.
 - **Each aspect holds its own runs.** A run joins one aspect of a campaign, by its template, or by the aspect
   `add_runs_to_campaign` (`campaign_runs_add`) names; a run another template ran, or one two aspects could take,
   is refused naming them.
+- **An aspect may leave its label out.** It is then named after the campaign's behavior, each `/` written `-`
+  (`tools/search` is `tools-search`), since `/` separates a floor key's parts. A form sends no label rather than
+  copying that rule. One aspect at most leaves it out: two would share a label, and the create (or update) is
+  refused, asking you to label each. A floor names its aspect by label, so a write declaring a floor labels the
+  aspect it sits on; the label the server gave is on the returned `CampaignLine`'s `aspects` for a later write.
 - **A floor is a typed clause on one aspect**, never words: `{kind: "rate_drop", max_points, reading?}` (a
   `RateDrop`: no pass rate drops by more than `max_points`; with `reading`, one goal-state check by its verbatim
   text, a pass/fail judged dimension by its name, or a check measure by its key) or `{kind: "cost_lower"}` (a
@@ -1354,9 +1361,9 @@ definition = {
   only warns**: it never blocks, never writes the verdict, and never rewrites what the writer recommends.
 - **The declaration is frozen once any aspect holds a run.** To ask again, create a campaign that adopts the aspects
   it keeps (`aspects_from`, each a campaign id, or `{campaign_id, label}` to relabel a campaign's one aspect): each
-  keeps its template, runs, design and the time its question was asked, so its readings stay as confirmatory as
-  they were. A `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one that never
-  declared one included. Whatever the new campaign adds is dated now and marked as declared after the runs.
+  keeps its template, runs, design and the time its question was asked, so nothing re-dates its question. A
+  `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one that never declared one
+  included. Whatever the new campaign adds is dated now and marked as declared after the runs.
 ### Recording the call
 
 **Code reports, the writer recommends, a person decides, and the decision is recorded.** `campaign_record` (the

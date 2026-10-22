@@ -35,7 +35,7 @@ in the methods: ``style: N violations``.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
@@ -348,6 +348,54 @@ class MemoStyle:
             self.violations += remaining
             kept.append(fixed)
         return " ".join(kept)
+
+    def summary(self, text: str) -> str:
+        """The memo's one sentence across its aspects, held to every rule as a sentence on what to run next is.
+
+        Where that pass would leave none of it, and none of it proposed a sample size or cost, it is kept as written (its
+        arms named) and nothing is recorded as dropped, as a finding's title is kept: the page opens on the read the memo
+        was written for, and the tables beside it say any number it restates. A summary proposing a sample or cost no
+        code computed is dropped and listed in the methods, as any such sentence is.
+
+        :param text: What the memo wrote.
+        :ptype text: str
+        :return: The summary to print; empty only where it proposed a sample or cost.
+        :rtype: str
+        """
+        return self.or_as_written(lambda: self.prose(text, plans=True), text)
+
+    def or_as_written(self, styled: Callable[[], str], written: str) -> str:
+        """What ``styled`` leaves of a sentence the page never lays out without (a summary, a finding's title), or, where
+        it leaves none, ``written`` kept as written (:meth:`kept`) with nothing recorded as dropped, since the page
+        prints it. Where the pass dropped it for proposing a sample size or cost no code computed, nothing: that is
+        dropped and listed in the methods, as any such sentence is. The one place the drop count is put back.
+
+        :param styled: The style pass over the sentence, run here once; it may record what it drops on this style.
+        :ptype styled: Callable[[], str]
+        :param written: The sentence as the memo wrote it, its arms named by the caller where it reads several aspects.
+        :ptype written: str
+        :return: The sentence to print; empty only where the pass recorded it as proposing a sample or cost.
+        :rtype: str
+        """
+        proposed, dropped = len(self.proposed), self.dropped
+        if said := styled().strip():
+            return said
+        if len(self.proposed) > proposed:
+            return ""
+        self.dropped = dropped
+        return self.kept(written)
+
+    def kept(self, text: str) -> str:
+        """``text`` printed as written, its arms named: every rule it still breaks is recorded, so the methods list it.
+
+        :param text: What the memo wrote.
+        :ptype text: str
+        :return: The text to print.
+        :rtype: str
+        """
+        kept = self.names_arms(" ".join(text.split()))
+        self.violations += lint_prose(kept, question=self.question)
+        return kept
 
     def offending(self) -> list[str]:
         """Each sentence still breaking a rule, once, with the rules it breaks."""

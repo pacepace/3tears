@@ -124,7 +124,9 @@ ARMS_DESCRIPTION = (
 
 #: What a campaign's aspects are, said once.
 ASPECTS_DESCRIPTION = (
-    "Where the question is measured, each {label, template_id?, margin?, design?, run_ids?}. design is what the aspect "
+    "Where the question is measured, each {label?, template_id?, margin?, design?, run_ids?}. label omitted names the "
+    "aspect after the campaign's behavior, each / written - (tools/search is tools-search, as aspect_label_for writes "
+    "it); one aspect at most omits it. design is what the aspect "
     "sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever "
     "or open-family member this host declares), held_fixed ({stimulus: controlled|uncontrolled, stimulus_reason "
     "(required when uncontrolled), apparatus: commissioned|witnessed}), and optionally merit_axes, bars "
@@ -231,7 +233,8 @@ class AnalysisLine(EvalBaseModel):
     verdict: str = Field(
         description=(
             "The report's verdict line over the evidence the analysis was written from, as code writes it — never a "
-            "headline the memo wrote."
+            "headline the memo wrote. It leads, as the report does, with every bar an arm misses and then every floor "
+            "a candidate breaks, each in the report's own words; with neither, it is the verdict alone."
         )
     )
     findings: int = Field(ge=0, description="How many findings the memo holds.")

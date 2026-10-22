@@ -799,8 +799,25 @@ class TestCallProxyRouting:
 # -- malformed request tests --
 
 
+class TestACallBeforeTheProxyStarts:
+    """there is no connection to answer on, so the fault is logged and propagates."""
+
+    @pytest.mark.asyncio
+    async def test_a_call_before_start_raises_and_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        proxy = _make_proxy(ToolCatalog(), namespace="test")
+        before = asyncio.all_tasks()
+        with caplog.at_level("ERROR"):
+            await proxy.handle_call(_make_nats_msg(data=_make_call_request().model_dump_json().encode("utf-8")))
+            (dispatch,) = asyncio.all_tasks() - before
+            with pytest.raises(RuntimeError, match="before NATS connected"):
+                await dispatch
+        assert [r.getMessage() for r in caplog.records if "inside the registry" in r.getMessage()] == [
+            "tool call failed inside the registry (RuntimeError)"
+        ]
+
+
 class TestCallProxyMalformedRequest:
-    """a request that does not parse is answered malformed; a bug while parsing propagates."""
+    """a request that does not parse is answered malformed; a bug while parsing propagates, answered as the registry's fault."""
 
     @pytest.mark.asyncio
     async def test_a_body_that_is_not_a_request_is_answered_malformed(self) -> None:
@@ -834,7 +851,10 @@ class TestCallProxyMalformedRequest:
 
         with pytest.raises(TypeError, match="a bug in the parse"):
             await dispatch
-        nc.publish_reply.assert_not_awaited()
+        # answered, so the caller is not left to its deadline, but as the registry's fault: never
+        # as MALFORMED_REQUEST, which blames the caller
+        nc.publish_reply.assert_awaited_once()
+        assert nc.publish_reply.call_args.kwargs["message"].error_code == "REGISTRY_INTERNAL_ERROR"
 
 
 # -- lifecycle tests --

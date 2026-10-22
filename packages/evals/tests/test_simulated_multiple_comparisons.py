@@ -386,7 +386,7 @@ def _seeded_campaign(
                     )
                 )
         results[run.id] = members
-    # Asked no later than the first run, so it scopes a family (``asked_in_time``).
+    # Asked no later than the first run, so the bundle carries no flag that it was set after it.
     campaign = make_aspect_campaign(
         label="b",
         run_ids=[run.id for run in runs],

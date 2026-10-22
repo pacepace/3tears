@@ -30,6 +30,7 @@ from threetears.agent.memory.extraction import (
     MemoryExtractor,
 )
 from threetears.agent.memory.integration import MemoryIntegration, extract_memories
+from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -192,6 +193,7 @@ def _make_extractor(
     on_memory_created: Any = None,
     rate_limit_bucket_create_if_missing: bool = True,
     rate_limit_key_scope: str | None = None,
+    prompts: ExtractionPrompts | None = None,
 ) -> MemoryExtractor:
     """build a :class:`MemoryExtractor` with a registry-bound Collection."""
     real_pool = pool or _make_pool()
@@ -207,7 +209,12 @@ def _make_extractor(
         on_memory_created=on_memory_created,
         rate_limit_bucket_create_if_missing=rate_limit_bucket_create_if_missing,
         rate_limit_key_scope=rate_limit_key_scope,
+        prompts=prompts,
     )
+
+
+#: a prompt template naming a field the extractor never supplies: a bug of ours, not the model's.
+_A_TEMPLATE_WITH_AN_UNKNOWN_FIELD = "{no_such_field}"
 
 
 # -- Heuristic gate tests ----------------------------------------------------
@@ -944,6 +951,20 @@ class TestWorthinessGate:
         with pytest.raises(ExtractionModelFailedError, match="worthiness model call failed: RuntimeError"):
             await ext.check_worthiness("hello world", "response text")
 
+    async def test_a_bug_in_the_worthiness_prompt_is_raised_as_itself_not_as_a_failed_call(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = CountingChatModelFactory(worthiness_content=json.dumps({"worthy": True}))
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            factory=factory,
+            prompts=ExtractionPrompts(worthiness=_A_TEMPLATE_WITH_AN_UNKNOWN_FIELD),
+        )
+        with pytest.raises(KeyError, match="no_such_field"):
+            await ext.check_worthiness("hello world", "response text")
+        assert factory.calls["worthiness"] == 0
+
     async def test_a_turn_whose_worthiness_call_fails_answers_failed_and_extracts_nothing(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
@@ -1015,6 +1036,28 @@ class TestExtractCandidates:
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         with pytest.raises(ExtractionModelFailedError, match="was dict, not a list"):
             await ext.extract_candidates("msg", "resp")
+
+    async def test_a_failed_call_is_raised_not_read_as_nothing_found(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(error_on={"extraction"}))
+        with pytest.raises(ExtractionModelFailedError, match="extraction model call failed: RuntimeError"):
+            await ext.extract_candidates("msg", "resp")
+
+    async def test_a_bug_in_the_extraction_prompt_is_raised_as_itself_not_as_a_failed_call(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = CountingChatModelFactory(extraction_content="[]")
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            factory=factory,
+            prompts=ExtractionPrompts(extraction=_A_TEMPLATE_WITH_AN_UNKNOWN_FIELD),
+        )
+        with pytest.raises(KeyError, match="no_such_field"):
+            await ext.extract_candidates("msg", "resp")
+        assert factory.calls["extraction"] == 0
 
     async def test_markdown_wrapped_json_parsed(
         self,
@@ -1122,6 +1165,20 @@ class TestResolveActions:
         ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(error_on={"resolution"}))
         with pytest.raises(ExtractionModelFailedError, match="resolution model call failed: RuntimeError"):
             await ext.resolve_actions(_CANDIDATES_WITH_A_NEAR_DUPLICATE)
+
+    async def test_a_bug_in_the_resolution_prompt_is_raised_as_itself_not_as_a_failed_call(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = CountingChatModelFactory(resolution_content="[]")
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            factory=factory,
+            prompts=ExtractionPrompts(resolution=_A_TEMPLATE_WITH_AN_UNKNOWN_FIELD),
+        )
+        with pytest.raises(KeyError, match="no_such_field"):
+            await ext.resolve_actions(_CANDIDATES_WITH_A_NEAR_DUPLICATE)
+        assert factory.calls["resolution"] == 0
 
     @pytest.mark.parametrize(
         ("reply", "why"),

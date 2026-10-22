@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from typing import ClassVar, Protocol, runtime_checkable
 
-from threetears.backup.process import feed_stdin, stream_stdout
+from threetears.backup.process import feed_stdin, pipe_through, stream_stdout
 
 __all__ = [
     "DbDumpDriver",
@@ -51,7 +51,15 @@ class DbDumpDriver(ABC):
 
     @abstractmethod
     def restore_argv(self, dsn: str) -> list[str]:
-        """Argv that restores into ``dsn`` from stdin."""
+        """Argv that restores into ``dsn`` from plain SQL on stdin."""
+
+    def archive_to_sql_argv(self) -> list[str] | None:
+        """The command that turns this driver's archive into plain SQL, or None when it already is.
+
+        :return: argv reading the archive on stdin and writing SQL to stdout, or None
+        :rtype: list[str] | None
+        """
+        return None
 
     def restore_pg_options(self, *, copy_rows_per_transaction: int | None = None) -> str:
         """libpq options the RESTORE session needs, as a ``PGOPTIONS`` fragment.
@@ -112,6 +120,18 @@ class DbDumpDriver(ABC):
             :meth:`YugabyteDriver.restore_pg_options` for why an unbounded one is a problem.
         :ptype copy_rows_per_transaction: int | None
         """
+        to_sql = self.archive_to_sql_argv()
+        if to_sql is not None:
+            # a custom-format archive becomes SQL first, so the filter below can read it; the
+            # converter needs no database, so it gets the caller's environment untouched.
+            source = pipe_through(to_sql, source, env=env, timeout=timeout)
+        # Every dump carries `COMMENT ON EXTENSION` after each extension, and only the
+        # extension's OWNER may run it. A restore runs as the application role, which
+        # deliberately does not own extensions (a superuser installs them), so under
+        # ON_ERROR_STOP that one statement fails the whole restore with "must be owner of
+        # extension". Nothing is lost by dropping it: CREATE EXTENSION sets the same comment from
+        # the extension's control file.
+        source = _skip_extension_comments(source)
         options = self.restore_pg_options(copy_rows_per_transaction=copy_rows_per_transaction)
         if options:
             # `feed_stdin` passes a mapping straight to the child as its WHOLE environment, so
@@ -125,7 +145,7 @@ class DbDumpDriver(ABC):
 
 
 class PostgresDriver(DbDumpDriver):
-    """Vanilla PostgreSQL via ``pg_dump`` (custom format) + ``pg_restore``."""
+    """Vanilla PostgreSQL via ``pg_dump`` (custom format), restored as ``pg_restore`` SQL through ``psql``."""
 
     name: ClassVar[str] = "postgres"
     compressed: ClassVar[bool] = True  # pg_dump custom format is zlib-compressed already
@@ -137,8 +157,14 @@ class PostgresDriver(DbDumpDriver):
         return argv
 
     def restore_argv(self, dsn: str) -> list[str]:
-        # a fresh (empty) target — the verifier's temp db — so no --clean is needed; fail loudly.
-        return ["pg_restore", "--dbname", dsn, "--no-owner", "--no-privileges", "--exit-on-error"]
+        # the archive arrives as SQL (archive_to_sql_argv), so psql loads it; ON_ERROR_STOP fails
+        # loudly, as pg_restore's --exit-on-error did. A fresh (empty) target, so no --clean.
+        return ["psql", "--dbname", dsn, "--quiet", "--set", "ON_ERROR_STOP=1"]
+
+    def archive_to_sql_argv(self) -> list[str]:
+        # `--file=-` makes pg_restore write the archive out as SQL instead of connecting, so the
+        # extension-comment filter can run between it and psql. Reads a non-seekable stdin fine.
+        return ["pg_restore", "--no-owner", "--no-privileges", "--file=-"]
 
     def dump_globals_argv(self, dsn: str) -> list[str]:
         return ["pg_dumpall", "--dbname", dsn, "--globals-only", "--no-role-passwords"]
@@ -218,6 +244,60 @@ class YugabyteDriver(DbDumpDriver):
 
     def restore_sql_argv(self, dsn: str) -> list[str]:
         return ["ysqlsh", "--dbname", dsn, "--quiet", "--set", "ON_ERROR_STOP=1"]
+
+
+_EXTENSION_COMMENT = b"COMMENT ON EXTENSION "
+_COPY_END = b"\\."
+
+
+async def _skip_extension_comments(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Yield ``source`` line by line, minus each top-level ``COMMENT ON EXTENSION`` statement.
+
+    Lines inside a ``COPY ... FROM stdin;`` block are row data, never statements, so they pass
+    through untouched even when one happens to start with the same words. A statement that
+    spans lines (a comment literal holding a newline) is dropped through the line that ends it
+    with ``;``. Lines may arrive split across chunks; a final line without a newline is kept.
+
+    :param source: the decompressed plain-SQL dump stream
+    :ptype source: AsyncIterator[bytes]
+    :return: the filtered stream, re-chunked at line boundaries
+    :rtype: AsyncIterator[bytes]
+    """
+    pending = bytearray()
+    in_copy = False
+    skipping = False
+
+    def keep(line: bytes) -> bool:
+        nonlocal in_copy, skipping
+        result = True
+        if in_copy:
+            in_copy = line != _COPY_END
+        elif skipping:
+            skipping = not line.rstrip().endswith(b";")
+            result = False
+        elif line.startswith(_EXTENSION_COMMENT):
+            skipping = not line.rstrip().endswith(b";")
+            result = False
+        elif line.startswith(b"COPY ") and line.rstrip().endswith(b"FROM stdin;"):
+            in_copy = True
+        return result
+
+    async for chunk in source:
+        out = bytearray()
+        start = 0
+        while (newline := chunk.find(b"\n", start)) != -1:
+            pending += chunk[start:newline]
+            line = bytes(pending)
+            pending.clear()
+            if keep(line):
+                out += line
+                out += b"\n"
+            start = newline + 1
+        pending += chunk[start:]
+        if out:
+            yield bytes(out)
+    if pending and keep(bytes(pending)):
+        yield bytes(pending)
 
 
 def driver_by_name(name: str) -> DbDumpDriver:

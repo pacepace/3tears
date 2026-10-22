@@ -105,7 +105,11 @@ from threetears.evals.analysis.report.decision import (
     settles,
     settles_cost,
 )
-from threetears.evals.analysis.report.campaign_page import campaign_verdict
+from threetears.evals.analysis.report.campaign_page import (
+    campaign_verdict,
+    campaign_warnings,
+    question_after_runs_lines,
+)
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
@@ -191,7 +195,7 @@ from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR, 
 #: What the methods say of a report no analysis was written for.
 NO_ANALYSIS = "none written; the analysis_generate action writes one from this same evidence"
 
-#: The ``Scope`` fact on a finding resting wholly on readings no question declared before the run asked about.
+#: The ``Scope`` fact on a finding resting wholly on readings no declared question asked about.
 EXPLORATORY_FINDING = "exploratory: no declared question asked about its readings, so it is a lead"
 
 #: How a guardrail is decided, said once in the methods' disclosures.
@@ -324,7 +328,7 @@ def _floor_verdicts(bundle: AnalysisContextBundle, arm: Callable[[str], str]) ->
 
 
 def _question(bundle: AnalysisContextBundle) -> str | None:
-    """The question the campaign asked before the aspect's first run, in its words; None where none was."""
+    """The question the campaign asks the aspect, in its words, whenever it was asked; None where none is."""
     declared = bundle.declared
     if declared is None or not bundle.question_declared:
         return None
@@ -441,10 +445,15 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never the
     memo's words.
 
-    An analysis of one aspect is listed by the verdict line that aspect's page opens with, over its frozen bundle. An
-    analysis of several aspects is listed by its campaign's verdict, as the campaign's page reads it: what code read on
-    each aspect, in the campaign's order, over the readings frozen with it
-    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`).
+    It opens as the analysis's page opens: every bar an arm misses, then every floor a candidate breaks, each in the
+    page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings and
+    floors frozen with it, without the writer's why beside them; then, where the question was set after an aspect's
+    runs began, the line saying when each happened
+    (:func:`~threetears.evals.analysis.report.campaign_page.question_after_runs_lines`). Then the verdict. An analysis
+    of one aspect is listed by the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed
+    by its campaign's verdict, as the campaign's page reads it: what code read on each aspect, in the campaign's order
+    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`). With no bar missed and no floor
+    broken and no question set after the runs, the line is the verdict alone.
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
@@ -452,12 +461,16 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     :rtype: str
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
+    campaign = analysis_campaign_bundle(analysis)
+    readings = campaign.readings
+    warnings = campaign_warnings(analysis.design_snapshot.floors, readings)
+    warnings += question_after_runs_lines(campaign.aspects)
     if len(analysis.aspects) > 1:
-        readings = analysis_campaign_bundle(analysis).readings
-        return campaign_verdict(readings, [aspect.label for aspect in analysis.aspects])
-    bundle = analysis_bundle(analysis)
-    names = _arm_names(bundle)
-    return verdict_line(bundle, _namer(names), case_name=_case_namer(bundle)).text
+        verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects])
+    else:
+        bundle = campaign.aspects[0]
+        verdict = verdict_line(bundle, _namer(_arm_names(bundle)), case_name=_case_namer(bundle)).text
+    return " ".join([*warnings, verdict])
 
 
 def _page(
@@ -609,7 +622,7 @@ def _namer(names: dict[str, ArmName]) -> Callable[[str], str]:
 
 
 def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) -> str:
-    """The title, a name: the campaign's, with the question it asks where none was declared before the run.
+    """The title, a name: the campaign's, with the question it asks where none was declared.
 
     A name that is itself a question (the quick path's ``does v2 do better than v1?``) is the title as written. A
     declared question is never cut down to a title: it is quoted whole on its own line (:func:`_question_line`).
@@ -643,14 +656,18 @@ def _heading_blocks(
 ) -> list[ReportBlock]:
     """The first screen's lines between the title and the verdict.
 
-    With no question declared before the run, the arms line alone (line 2). With one, the question quoted on its own
-    line, then the subhead carrying what the question need not: the arms line, each arm with its version.
+    With no question declared, the arms line alone (line 2). With one, the question quoted on its own line, and where
+    it was set after the runs began the line saying when each happened, then the subhead carrying what the question
+    need not: the arms line, each arm with its version.
     """
     arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
     asked = _question_line(bundle)
     if asked is None:
         return [arms]
-    return [DisclosureBlock(section="header", source="basis", text=asked), arms]
+    timing = [
+        DisclosureBlock(section="header", source="timing", text=line) for line in question_after_runs_lines([bundle])
+    ]
+    return [DisclosureBlock(section="header", source="basis", text=asked), *timing, arms]
 
 
 def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
@@ -666,7 +683,7 @@ def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], st
 
 
 def _question_line(bundle: AnalysisContextBundle) -> str | None:
-    """Under the title: the question declared before the run, quoted whole and alone on its line — the contract the
+    """Under the title: the question declared, quoted whole and alone on its line — the contract the
     verdict reads, never paraphrased, its first plain word capitalized as a sentence starts; None where none was
     declared. The arms' versions are the subhead's (:func:`_heading_blocks`), so a question need not carry them.
     """
@@ -1176,7 +1193,8 @@ def _memo_blocks(
     names: dict[str, ArmName],
     style: MemoStyle,
 ) -> list[ReportBlock]:
-    """The memo: the writer's summary of the aspect, the findings, the recommendation and the next steps.
+    """The memo: the writer's summary across the campaign, its summary of the aspect, the findings, the recommendation
+    and the next steps.
 
     A finding is one sentence its writer wrote and a table code built from the readings the writer chose; everything
     else it carries sits in a closed ``Evidence`` fold. Every word the memo contributes passes ``style`` first
@@ -1192,6 +1210,9 @@ def _memo_blocks(
     arm = _ref_namer(held.decision_surface, {**names, **_arm_names(bundle, held.variant_index)})
     axes = _question_axes(bundle)
     blocks: list[ReportBlock] = []
+    if said := style.summary(document.summary):
+        # The writer's read across the campaign leads its memo here as it leads the campaign's page.
+        blocks.append(TextBlock(section="memo", role="summary", body=said))
     for summary in document.aspect_summaries:
         if summary.aspect != held.label:
             continue
@@ -1826,8 +1847,8 @@ def _with_interval(
 
 
 def _question_axes(bundle: AnalysisContextBundle) -> list[MeritAxis] | None:
-    """The merit axes the question asked before the aspect's first run names, ``[]`` for every axis; None where none
-    was asked in time, so every finding is a lead."""
+    """The merit axes the aspect's question names, ``[]`` for every axis; None where none is asked, so every finding
+    is a lead."""
     declared = bundle.declared
     if declared is None or not bundle.question_declared:
         return None
@@ -1882,6 +1903,23 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
             _readings_table("unasked", "Unasked readings", [{"reading": name} for name in exploratory]),
         ]
     return blocks
+
+
+def _question_words(bundle: AnalysisContextBundle) -> str:
+    """What the methods call the aspect's design, as the line under the question words it: a question declared before
+    the runs; after them, or undated so possibly after them; its control named after them; or none."""
+    if not bundle.question_declared:
+        return "exploratory"
+    late = bundle.reading_scope.question_after_runs
+    if late is None:
+        return "question declared before the runs"
+    if late.late == "control":
+        if late.at is None:
+            return "question declared before the runs, control named at a time that cannot be ordered"
+        return "question declared before the runs, control named after they began"
+    if late.at is None:
+        return "question undated, so possibly declared after the runs began"
+    return "question declared after the runs began"
 
 
 def _readings_table(name: str, title: str, rows: list[dict[str, CellValue]]) -> TableBlock:
@@ -3666,7 +3704,7 @@ def _methods_table(
     rows.append(
         (
             "Design",
-            ("question declared before the run" if bundle.question_declared else "exploratory")
+            _question_words(bundle)
             + (f", frozen {_date(bundle.design_frozen_at)}" if bundle.design_frozen_at else ", not frozen"),
         )
     )

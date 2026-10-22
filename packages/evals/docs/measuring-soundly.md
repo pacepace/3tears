@@ -148,25 +148,28 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
 | `aspects[].design.crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
 | `floors` | Lines a candidate is warned for crossing, each `{aspect, clause}` on a declared aspect: `{kind: "rate_drop", max_points, reading?}` or `{kind: "cost_lower"}`, typed, never words. A floor reads a candidate against the control, so a campaign naming none is refused one. A broken floor opens the page; no floor decides anything ([declaring them](adopting-a-host.md#declaring-what-a-campaign-asks)). | a warning nobody can miss |
 
-**A question counts only if it was asked before the evidence.** Each aspect keeps the time its question was asked
-(`asked_at`), and a reading confirms only what was asked before that aspect's first run; a control named after the aspect's
-first result (`set_campaign_control`) makes it post hoc too. So the declaration is frozen once any aspect holds a run:
-`update_campaign` (the `campaign_update` action) refuses `question`, `aspects` and `floors` in any form from then
-on, and names a control only while none is. To amend a question after the runs, create a new campaign that adopts
-the aspects it keeps (`aspects_from`): each adopted aspect keeps its own `asked_at`, so its readings stay as
-confirmatory as they were, and whatever the new campaign adds (a margin, a floor, an arm, the question's new
-words) is dated now and marked on the page as declared after the runs.
+**A question asked after the runs is said, not demoted.** Each aspect keeps the time its question was asked
+(`asked_at`). A question asked after that aspect's first run reads as one asked before it: the operator is trusted
+to have fixed it in good faith (in a plan, say, before the runs), and every page saying the aspect's readings also
+says when the question was set and when the runs began, so a reader can judge. A control named after the aspect's
+first result (`set_campaign_control`) dates the question at the naming. The declaration is frozen once any aspect
+holds a run: `update_campaign` (the `campaign_update` action) refuses `question`, `aspects` and `floors` in any
+form from then on, and names a control only while none is. To amend a question after the runs, create a new
+campaign that adopts the aspects it keeps (`aspects_from`): each adopted aspect keeps its own `asked_at`, so nothing
+re-dates its question, and whatever the new campaign adds (a margin, a floor, an arm, the question's new words) is
+dated now and marked on the page as declared after the runs.
 
 **Declare a design when you know the question; explore when you do not.** Either is a choice you state when the
 campaign is created: a `design` on an aspect, or `exploratory=True`. Declare
 one when the question is settled before the runs: you know which lever you are comparing, against which
-control, and what answer would change what you do. Only a question asked in time can confirm anything, so a
-decision you will act on needs one. Leave it out when you are learning how to run evals, or testing an
+control, and what answer would change what you do. Only a declared question can confirm anything, so a
+decision you will act on needs one; declare it before the runs where you can, since one set after them is disclosed
+as such. Leave it out when you are learning how to run evals, or testing an
 intuition you cannot yet put as a question. A campaign with no design is **exploratory**: its report and its
 bundle say so once, at the top, and its readings confirm nothing. Its analysis reads the design inferred from
 the runs, and never calls that design declared. Do not declare a design you do not have just to get past this:
 a made-up question makes leads read as answers, which is worse than declaring none. When an exploratory
-campaign finds something worth knowing, declare the campaign that tests it, before its runs. A design that names
+campaign finds something worth knowing, declare the campaign that tests it. A design that names
 an axis your host cannot vary is refused naming `declarable_axes()`, which lists the levers and open families
 your host accepts.
 
