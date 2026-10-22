@@ -165,6 +165,27 @@ def cap_words(exclusions: Iterable[ArmExclusions] = ()) -> str:
     return said + (", and unreported on some" if unreported else "")
 
 
+#: The remedy for ``infra`` losses on an arm that measured nothing (:func:`measured_nothing`), in place of the
+#: rerun the infra remedy offers: a provider that declined every call is a setup to change, not a moment to wait out.
+NOTHING_MEASURED_REMEDY: Final = (
+    "nothing was measured, so its run failed: fix what the lost trials' errors below name (a broken part of the setup,"
+    " a model no allowed provider serves, or a rate limit or overload that lasted the run), then rerun {every}"
+)
+
+
+def measured_nothing(exclusions: Iterable[ArmExclusions]) -> bool:
+    """Whether an arm's every trial was lost to an ``infra`` cause, so it measured nothing and its run failed.
+
+    :param exclusions: The arm's cells' exclusions (:func:`arm_exclusions`).
+    :ptype exclusions: Iterable[ArmExclusions]
+    :return: True when the arm ran trials and every one was excluded as ``infra``.
+    :rtype: bool
+    """
+    cells = list(exclusions)
+    ran = sum(cell.n_trials for cell in cells)
+    return ran > 0 and sum(cell.by_cause.get("infra", 0) for cell in cells) == ran
+
+
 def loss_words(cause: str, *, exclusions: Iterable[ArmExclusions] = (), arms: int = 2) -> CauseWords:
     """Why trials were lost to ``cause``, in words, with its remedy.
 
@@ -176,19 +197,22 @@ def loss_words(cause: str, *, exclusions: Iterable[ArmExclusions] = (), arms: in
     :param arms: How many arms the campaign ran, which the remedy names.
     :ptype arms: int
     :return: The words. A cause this build has no words for is named as itself and says so, rather than taking another
-        cause's remedy.
+        cause's remedy. ``infra`` on an arm that measured nothing (:func:`measured_nothing`) takes
+        :data:`NOTHING_MEASURED_REMEDY`, never the rerun.
     :rtype: CauseWords
     """
+    cells = list(exclusions)
     worded = LOSS_CAUSE_WORDS.get(cause)
     if worded is None:
         return CauseWords(
             words=f"{cause} (a cause this build has no words for)", remedy="read the lost trials' errors below"
         )
-    cap = cap_words(exclusions)
+    cap = cap_words(cells)
     sent = f"sent {cap.split(' tokens', 1)[0]}" if " tokens" in cap and cap[0].isdigit() else cap
     every = "both arms" if arms == 2 else "every arm"
+    remedy = NOTHING_MEASURED_REMEDY if cause == "infra" and measured_nothing(cells) else worded.remedy
     return CauseWords(
-        words=worded.words.format(cap=cap), remedy=worded.remedy.format(sent=sent, every=every), short=worded.short
+        words=worded.words.format(cap=cap), remedy=remedy.format(sent=sent, every=every), short=worded.short
     )
 
 
@@ -382,9 +406,10 @@ def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str
         if said.remedy not in remedies:
             remedies.append(said.remedy)
     gap_words = "" if over else " The arms lost different shares of their trials, so they were not measured alike."
-    return (
-        f"No verdict: the test setup failed, not the models. {' '.join(parts)}{gap_words} Fix: {'; '.join(remedies)}."
-    )
+    lead = "the test setup failed, not the models"
+    if all(measured_nothing(exclusions.get(board.variant_key, ())) for board in boards):
+        lead = "nothing was measured, because the test setup failed or the provider declined every call"
+    return f"No verdict: {lead}. {' '.join(parts)}{gap_words} Fix: {'; '.join(remedies)}."
 
 
 def _declared(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
@@ -435,6 +460,7 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
 __all__ = [
     "FAIL_CAUSE_WORDS",
     "LOSS_CAUSE_WORDS",
+    "NOTHING_MEASURED_REMEDY",
     "MIN_CASES",
     "SETUP_GATE_SHARE",
     "CauseWords",
@@ -446,6 +472,7 @@ __all__ = [
     "cause_short",
     "fail_words",
     "loss_words",
+    "measured_nothing",
     "lost_share",
     "verdict_line",
 ]

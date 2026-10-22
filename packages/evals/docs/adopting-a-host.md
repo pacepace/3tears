@@ -1804,7 +1804,12 @@ fault of the measuring rig rather than of the world under test is an `ApparatusE
 tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
 `invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
 the kind had reported through its sink, and goes on. A run whose every cell the rig excluded measured
-nothing, and ends `failed`.
+nothing, and ends `failed` (`EveryCellApparatusFailedError`). So does a run whose every cell was excluded for any
+other fault outside the candidate (`NothingMeasuredError`): a provider that declined every call, a judge call that
+failed on every cell, a candidate that could not be built. Its reason quotes the cells' own errors, the status and
+the provider's message among them, so a sustained rate limit or overload, or an OpenRouter model no allowed provider
+serves, reads as a setup fault to fix rather than a run to wait out. A run lost entirely to a judge that could not
+tell, or to judge replies cut off at their cap, still completes: the judge read evidence the run did measure.
 
 A cell cut off by its deadline or by its run's cancel is recorded the same way, from its sink; when the
 cut lands while the cell is being judged, the evidence and the scores that came back are kept and the

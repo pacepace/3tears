@@ -244,7 +244,11 @@ async def test_a_judge_that_prices_nothing_leaves_its_spend_unknown_never_zero()
 async def test_a_judge_reply_that_will_not_parse_excludes_the_cell_and_says_so() -> None:
     summary = await _summary(CASES[:1], answer, [short, _judge(_FakeJudgeClient(reply="no json here"))])
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
-    assert summary.errors and all(": judge: " in error for error in summary.errors)
+    # The run's one cell was excluded, so it measured nothing and failed, quoting the judge's error.
+    assert summary.status == "failed"
+    cells = [error for error in summary.errors if "the run measured nothing" not in error]
+    assert cells and all(": judge: " in error for error in cells)
+    assert any("the run measured nothing" in error and "Failed to parse" in error for error in summary.errors)
     # Every attempt the judge made was paid for, parsed or not, so its spend is still counted.
     assert (
         summary.role_spend("judge").calls >= 2
@@ -260,6 +264,16 @@ async def test_a_judge_that_cannot_tell_is_counted_apart_and_excludes_nothing() 
     assert (dimension.name, dimension.n, dimension.mean, dimension.cannot_tell) == ("answer.helpful", 0, None, 1)
     assert summary.n_excluded == 0
     assert "answer.helpful (judged): no result carries a score, the judge could not tell on 1" in summary.render()
+
+
+async def test_a_run_the_judge_could_not_tell_on_anywhere_still_completes() -> None:
+    """A judge that could not tell read evidence the run did measure: no cell is an infra loss, so nothing fails."""
+    reply = json.dumps({"reasoning": "the answer is not shown", "criteria_scores": {"answer.helpful": "cannot_tell"}})
+    summary = await _summary(CASES, answer, [_judge(_FakeJudgeClient(reply=reply), rubric={"helpful": "Helps."})])
+    (dimension,) = summary.judged
+    assert dimension.n == 0 and dimension.cannot_tell == len(CASES)
+    assert summary.status == "completed" and summary.n_excluded == 0
+    assert not any("the run measured nothing" in error for error in summary.errors)
 
 
 async def test_a_rubric_of_engine_dimensions_keeps_their_names_and_scales() -> None:

@@ -20,6 +20,12 @@ packages (bumped in lock-step).
   seconds, any wait at most 20 seconds and none past one request's own timeout, at most three attempts in all, each
   resend logged at WARNING. `retry=DeclinedRetry(...)` sets the policy (`attempts=1` sends once). The error that stands
   says how many attempts it took. An account's or the candidate's failure is never sent again.
+- **A run that measured nothing ends `failed` (#849).** When every cell was excluded for an infra cause (most often a
+  provider that declined every call: a rate limit or overload that lasted the run, or an OpenRouter model no allowed
+  provider serves), the run fails with `NothingMeasuredError`, quoting the cells' errors, instead of completing. The
+  quick command exits 1, and the page says nothing was measured and asks for the cause to be fixed, not rerun. A run
+  that measured at least one cell completes as before, its exclusions shown; a run lost entirely to a judge that could
+  not tell, or to judge replies cut off at their cap, still completes.
 - **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
   `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
   returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and

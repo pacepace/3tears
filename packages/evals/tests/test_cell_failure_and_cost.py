@@ -62,7 +62,13 @@ from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.jobs import EvalJobManager
-from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, grade_goal_checks
+from threetears.evals.run.runner import (
+    EveryCellApparatusFailedError,
+    NothingMeasuredError,
+    RunnerOptions,
+    execute_run,
+    grade_goal_checks,
+)
 from packages.evals.tests.job_support import InMemoryRunStore, settled
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from packages.evals.tests.scripted_table import ScriptedTable, actor
@@ -231,6 +237,18 @@ async def _driven(kind_for: KindFor | None = None, **kwargs: Any) -> _Drive:
     return drive
 
 
+async def _driven_to_nothing_measured(**kwargs: Any) -> _Drive:
+    """:func:`_drive` over one cell its judge excluded, run to its end: having measured nothing, the run raises.
+
+    The one cell is stored first, as every excluded cell is; the run then ends as one that measured nothing does
+    (``NothingMeasuredError``, which the job manager files ``failed``), never as a defect stopping it early.
+    """
+    drive, go = off_loop(_drive, None, **kwargs)
+    with pytest.raises(NothingMeasuredError):
+        await go()
+    return drive
+
+
 def _dim_of(system: str) -> str:
     """The dim a judge prompt asks to be scored."""
     match = re.search(r'the single key "(.+?)"', system)
@@ -324,7 +342,7 @@ async def test_a_cannot_tell_whose_reasoning_is_not_a_string_is_a_judge_defect_n
         default={"reasoning": {"missing": "the totals"}, "criteria_scores": {FAITHFULNESS_DIM: CANNOT_TELL}}
     )
 
-    drive = await _driven(judge=judge)
+    drive = await _driven_to_nothing_measured(judge=judge)
 
     (result,) = drive.results
     assert result.judge_error is not None and FAITHFULNESS_DIM in result.judge_error
@@ -498,7 +516,7 @@ def _two_dim_template() -> EvalTemplate:
 async def test_a_deadline_in_the_judge_phase_keeps_the_evidence_and_the_scores_that_came_back():
     judge = _ScriptedJudge(replies={FAITHFULNESS_DIM: _scored(FAITHFULNESS_DIM, 5)}, hangs={_SECOND_DIM})
 
-    drive = await _driven(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
+    drive = await _driven_to_nothing_measured(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
 
     (result,) = drive.results
     assert result.termination == "cell_timeout"
@@ -519,7 +537,7 @@ async def test_a_deadline_in_the_judge_phase_keeps_the_evidence_and_the_scores_t
 
 async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_of_the_unfinished_dim():
     judge = _ScriptedJudge(replies={FAITHFULNESS_DIM: _scored(FAITHFULNESS_DIM, 5)}, hangs={_SECOND_DIM})
-    drive = await _driven(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
+    drive = await _driven_to_nothing_measured(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
     (result,) = drive.results
     judge.hangs.clear()
     judge.replies[_SECOND_DIM] = _scored(_SECOND_DIM, 3)
@@ -630,11 +648,15 @@ async def test_a_run_failed_by_a_judge_completion_s_defect_says_so_where_an_oper
     await manager.shutdown()
 
 
-async def test_a_provider_error_on_a_judge_call_stays_that_dim_s_error_and_the_run_completes():
-    """The counterpart: a provider's failure is a judging outcome, recorded on the dim it struck."""
+async def test_a_provider_error_on_a_judge_call_stays_that_dim_s_error_and_never_stops_the_run_as_a_defect():
+    """The counterpart: a provider's failure is a judging outcome, recorded on the dim it struck.
+
+    The run's one cell is excluded for it, so the run ends having measured nothing, after the cell is stored: never
+    stopped mid-cell as the defect above stops it.
+    """
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), raises={_SECOND_DIM})
 
-    drive = await _driven(judge=judge, template=_two_dim_template())
+    drive = await _driven_to_nothing_measured(judge=judge, template=_two_dim_template())
 
     (result,) = drive.results
     assert [score.dim for score in result.rubric_scores] == [FAITHFULNESS_DIM]

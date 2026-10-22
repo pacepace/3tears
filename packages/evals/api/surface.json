@@ -4086,6 +4086,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.run.NothingMeasuredError": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.run.plan_judge": {
       "kind": "function",
       "signature": "plan_judge(host: EvalHost, template: EvalTemplate, judge_model: str, selection: Mapping[str, str] | None = None, *, judged_artifact: JudgedArtifact) -> PlannedJudge",

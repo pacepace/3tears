@@ -24,6 +24,7 @@ import pydantic
 import pytest
 
 from threetears.evals import Eval, grader
+from threetears.evals.analysis import report_markdown
 from threetears.evals.analysis.stats import wilson_interval
 from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
 from threetears.evals.kernel.host import EvalHost, KindContract
@@ -98,6 +99,63 @@ async def test_whose_failure_a_runners_provider_call_was_decides_whether_its_cel
     else:
         assert summary.status == "exhausted", "every later call is behind the same refused key"
         assert summary.n_candidate_failed == 0
+
+
+def _declining(error: Exception, *, served: frozenset[int] = frozenset()) -> Any:
+    """A runner whose provider declines every case's call with ``error``, but serves the cases numbered in ``served``."""
+
+    async def calls(case: Mapping[str, Any]) -> int:
+        if case["n"] not in served:
+            raise error
+        return int(case["n"])
+
+    return calls
+
+
+_OVERLOADED = json.dumps({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})
+_MISROUTED = json.dumps(
+    {"error": {"code": 503, "message": "No allowed providers are available for the selected model."}}
+)
+
+
+@pytest.mark.parametrize(
+    ("provider", "status", "body", "quoted"),
+    [
+        ("anthropic", 529, _OVERLOADED, "anthropic 529: Overloaded"),
+        ("openrouter", 503, _MISROUTED, "openrouter 503: No allowed providers are available for the selected model."),
+    ],
+    ids=["overloaded on every call", "an OpenRouter model no allowed provider serves"],
+)
+async def test_a_run_whose_every_call_the_provider_declined_measured_nothing_and_fails_naming_the_answer(
+    provider: Any, status: int, body: str, quoted: str
+) -> None:
+    """Nothing was measured, so the run fails, quoting the provider's answer once, and the command exits 1."""
+    error = error_from_response(provider, status, body)
+    result = await Eval(CASES, _declining(error), [size], k=1).run(store=MEMORY, scope=SCOPE)
+    summary = result.summary
+    assert summary.status == "failed", "a run that measured nothing did not finish"
+    assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 3)
+    [reason] = [error for error in summary.errors if "the run measured nothing" in error]
+    assert reason.count(quoted) == 1, "the provider's answer is quoted, once for every cell it declined"
+    assert result.exit_code() == 1
+    assert "the run measured nothing" in result.render()
+    page = report_markdown(result.report)
+    assert (
+        "No verdict: nothing was measured, because the test setup failed or the provider declined every call." in page
+    )
+    assert "needs no fix" not in page, "a provider that declined every call is not a moment to wait out"
+
+
+async def test_a_run_that_measured_one_cell_and_had_the_rest_declined_completes_showing_the_exclusions() -> None:
+    error = error_from_response("anthropic", 529, _OVERLOADED)
+    result = await Eval(CASES, _declining(error, served=frozenset({1})), [size], k=1).run(store=MEMORY, scope=SCOPE)
+    summary = result.summary
+    assert summary.status == "completed"
+    assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (1, 0, 2)
+    assert not any("the run measured nothing" in error for error in summary.errors)
+    assert sum("was declined by the provider: anthropic 529: Overloaded" in error for error in summary.errors) == 2
+    assert result.exit_code() == 0
+    assert "nothing was measured" not in report_markdown(result.report)
 
 
 @pytest.mark.parametrize(
