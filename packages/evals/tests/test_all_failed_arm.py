@@ -456,7 +456,7 @@ def _late_failure_campaign() -> AnalysisContextBundle:
             case,
             ms=40_000.0 + 10 * index,
             cost=0.40,
-            candidate_error="provider 503 on turn 6",
+            candidate_error="provider 500 on turn 6",
             turns_delivered=5,
             goal_state_outcomes=[GoalStateOutcome(expression=_CHECK, passed=False)],
         )

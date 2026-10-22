@@ -164,7 +164,8 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   marked `▸` in a table. Only the arms line and the verdict name a model.
 - **Verdict**, written by code and never by a memo, result first: one sentence for the result, a second only for
   a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
-  models.`, the arm, the cause, the fix); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
+  models.`, the arm, the cause, the fix; `No verdict: nothing was measured, because the test setup failed or the
+  provider declined every call.` when every arm's run failed having measured nothing); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
   gdpr-delete, …`, each case by the name its author gave it, else `case N`); which arm passed more, when an arm is
   under the case floor; a declared question's contrasts (`Declared question: v2 worse than v1 on Accuracy; …`);
   `Exploratory:` (linked to the glossary) and what separated, or `nothing separated v2 from v1 on any reading`,
@@ -488,8 +489,11 @@ description stay editable, and an amended question is a new campaign that adopts
 ## Excluded trials by cause
 
 A trial is left out of an arm's measures for one of three causes (`trial_exclusion`): `infra`, the harness faulted
-it or the provider rationed one of its calls (a 429 that is not a spent quota, which says nothing about the model:
-it needs no fix, only a rerun once the provider has capacity, and the trial's error says which it was);
+it or the provider declined one of its calls (a 429 that is not a spent quota, or a 529 overloaded or 503
+unavailable, which says nothing about the model: it needs no fix, only a rerun once the provider can serve it, and the
+trial's error says which it was; but when an arm lost every trial this way and its run ended `failed` for it, the
+page says nothing was measured and asks for the cause to be fixed before a rerun, not waited out; and when the
+account stopped the run, the fix names the account);
 `truncated`, a judge reply was cut off at the output cap it was sent and was not bought again; and
 `judge_cannot_tell`, the judge could not score a capability dimension, which leaves the trial out of pass^k and the
 composite only. A candidate's own failure is never an exclusion: it fails, and is counted. The bundle's

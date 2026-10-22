@@ -107,7 +107,7 @@ JUDGE_LABEL_AGREEMENT_MEASURE = "judge_label_agreement"
 #:                    short by the provider) — a parse failure, which is what parse validity counts.
 #:   ``no_reply``     the judge's call itself failed, so there was no reply to read, and no measure reads it; the
 #:                    cell is charged by whose failure the call was (``JudgeOutcome.owner``): the judge's own
-#:                    fails it, and one the account or the provider declined excludes it.
+#:                    fails it, and a call refused for the account or declined by the provider excludes it.
 JudgeTrialOutcome = Literal["scored", "cannot_tell", "invalid", "no_reply"]
 
 

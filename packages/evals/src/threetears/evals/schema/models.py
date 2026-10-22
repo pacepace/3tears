@@ -2935,6 +2935,27 @@ StoredCellTimeoutOrigin = Annotated[
 ]
 
 
+#: Why a run the job manager filed ``failed`` failed, when the failure is one a reader acts on by kind
+#: (:attr:`EvalRun.failed_because`): ``nothing_measured`` — every cell was excluded for a fault the harness recorded on
+#: it (a provider that declined every call, a candidate that could not be built), so the run measured nothing
+#: (:class:`~threetears.evals.run.NothingMeasuredError`). A run that failed for any other reason records none.
+#:
+#: An open vocabulary, its values this build knows registered in :data:`FAILED_BECAUSE`: a value a newer minor added is
+#: read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+FailedBecause = str
+
+#: A value of :data:`FailedBecause` this build knows, as a type: what this build writes.
+KnownFailedBecause = Literal["nothing_measured"]
+
+#: The values of :data:`FailedBecause` this build knows.
+FAILED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownFailedBecause)
+
+#: The type of the stored field: one of :data:`FAILED_BECAUSE`, or, on the stored read of a newer minor's document, a
+#: value that minor added.
+StoredFailedBecause = Annotated[FailedBecause, known_unless_newer_minor("failed-because reason", FAILED_BECAUSE)]
+
+
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
     """Every dim a judged cell of this kind is scored on, in the order the judge phase calls them.
 
@@ -4040,6 +4061,16 @@ class EvalRun(CoreDocumentModel):
             "width's worth of cells. Both are recorded when both tripped at the same boundary. Written with the "
             "``budget_stopped`` status. None on a run no ceiling stopped, including a run stopped by its wall-clock "
             "budget (``budget_stop_reason``) and one whose writer predates the field."
+        ),
+    )
+    failed_because: StoredFailedBecause | None = Field(
+        default=None,
+        description=(
+            "Why the run failed, as a kind a reader acts on, beside its ``error_details`` entry: ``nothing_measured`` "
+            "when every cell was excluded for a fault the harness recorded on it, so the run measured nothing (a "
+            "sweep goes on past such an arm). Written once, by the job manager, with the ``failed`` status. None on "
+            "every other run: one that did not fail, one that failed for any other reason, and one stored before "
+            "the field existed."
         ),
     )
     error_details: list[str] = Field(
@@ -6115,6 +6146,10 @@ __all__ = [
     "KnownCostCapOrigin",
     "KnownMeteredCallOrigin",
     "KnownCellTimeoutOrigin",
+    "KnownFailedBecause",
+    "FailedBecause",
+    "FAILED_BECAUSE",
+    "StoredFailedBecause",
     "KnownReasoningEffort",
     "KnownUsageRole",
     "KnownSimulatorPurpose",

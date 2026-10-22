@@ -99,12 +99,12 @@ def test_the_word_tables_cover_exactly_their_causes() -> None:
     assert set(FAIL_CAUSE_WORDS) == set(get_args(FailCause))
 
 
-def test_a_setup_loss_says_a_rationed_call_needs_no_fix_only_a_rerun() -> None:
+def test_a_setup_loss_says_a_declined_call_needs_no_fix_only_a_rerun() -> None:
     worded = loss_words("infra")
-    assert worded.words.endswith(", or the provider rationed a call")
+    assert worded.words.endswith(", or the provider declined a call")
     assert worded.remedy.endswith(
-        "a call the provider rationed needs no fix, only a rerun once it has capacity (fewer calls at once, or a"
-        " higher rate limit)"
+        "a call the provider declined needs no fix, only a rerun once the provider can serve it (later, or with"
+        " fewer calls at once)"
     )
 
 

@@ -152,7 +152,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`AsyncDeliveryStatus`** · literal · Where one piece of background work stood when the cell ended.
   <br>`'delivered'` | `'failed'` | `'undelivered'`
-- **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment, a rate limit), or the `candidate` (anything else, charged to whoever made the call).
+- **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment: a rate limit, 429, or the provider overloaded or unavailable, 529 or 503), or the `candidate` (anything else, charged to whoever made the call).
   <br>`'account'` | `'provider'` | `'candidate'`
 - **`KnownCellTimeoutOrigin`** · *host contract* · literal · A value of `CellTimeoutOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'launch'` | `'kind'` | `'default'`
@@ -192,7 +192,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 5`
+  <br>`= 6`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.

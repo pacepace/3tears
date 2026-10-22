@@ -123,9 +123,10 @@ pass it to every entrypoint. It holds:
   count against the run's judge ceiling. A re-judge, a judge repeat, a second judge and a witnessed cell's judging raise it the same way;
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say whose failure a
   call was (`ProviderFailure.owner`): the calling `account`'s (a refused key, spent credit), which stops a run
-  rather than excluding its cells; the `provider`'s (it rationed the call, a 429), which excludes the cell and lets
-  the run go on; or the `candidate`'s, charged as any failure. `withhold_failure_detail` is the honest one for an
-  app with no error types of its own, and says `candidate` for every failure;
+  rather than excluding its cells; the `provider`'s (it declined the call: a 429 rate limit, or a 529 overloaded or
+  503 unavailable), which excludes the cell and lets the run go on; or the `candidate`'s, charged as any failure.
+  `withhold_failure_detail` is the honest one for an app with no error types of its own, and says `candidate` for
+  every failure;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
@@ -291,10 +292,20 @@ the provider takes one (Anthropic's `thinking.budget_tokens`, OpenRouter's `reas
 and not only the cap, and as the effort word its share of the cap reads as (`high`) where only words are taken
 (OpenAI's chat completions, a model that refused a budget), which the completion's `sent_settings` names
 (`unsent_reasoning_max_tokens=8192`); a budget not below `max_tokens` is refused naming both, never clamped;
-the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Nothing is retried: the only resends answer a
-provider's refusal of a setting, below. `describe_failure` reads the client's one error type, `ProviderError` (the
-provider, the status and its own message, never the body, and `account` for a refused key or spent credit, which
-stops a run), and an `httpx` transport error by the host it was sending to.
+the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Two resends, and nothing else is retried: one
+answers a provider's refusal of a setting, below; the other sends a call the provider declined (a 429 that is not a
+spent quota, a 529 overloaded, a 503 unavailable, as a status or as the code a 200's body carries) again after a
+wait, the provider's `retry-after` or one then two seconds, at most three attempts in all, each resend logged at
+WARNING (`retry=DeclinedRetry(...)` on `Model` sets it; `attempts=1` sends once). A provider that asks to wait longer
+than 20 seconds is not sent it again: its answer stands. Every wait and resend ends within one request's timeout of
+the first attempt (a resend still running then is cut, and the decline before it stands), so a call ends one
+request's timeout after it started, or when its first attempt does if that took longer. A resend lost on the way (a
+reset, a connect timeout) also leaves the decline before it standing. A setting refusal and a decline are not
+billed; a resend cut at the time bound may already have been, and its spend is not recorded, since no reply came
+back to carry it.
+`describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
+never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
+credit, which stops a run), and an `httpx` transport error by the host it was sending to.
 
 **A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
 the resending are `threetears.evals.negotiation`'s, the same a client of your own uses (below), and each completion's
@@ -1816,7 +1827,14 @@ fault of the measuring rig rather than of the world under test is an `ApparatusE
 tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
 `invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
 the kind had reported through its sink, and goes on. A run whose every cell the rig excluded measured
-nothing, and ends `failed`.
+nothing, and ends `failed` (`EveryCellApparatusFailedError`). So does a run whose every cell was excluded for any
+other fault the harness recorded on the cell (`NothingMeasuredError`): a provider that declined every call, a
+candidate that could not be built. Its reason quotes the cells' own errors, the status and the provider's message
+among them, so a sustained rate limit or overload, or an OpenRouter model no allowed provider serves, reads as a
+setup fault to fix rather than a run to wait out. A run lost only to judge-call errors still completes, since a
+re-judge recovers it without paying for the candidate again; so does a run lost entirely to a judge that could not
+tell, or to judge replies cut off at their cap: the judge read evidence the run did measure. In a sweep, an arm that
+measured nothing fails alone, and the other arms still run.
 
 A cell cut off by its deadline or by its run's cancel is recorded the same way, from its sink; when the
 cut lands while the cell is being judged, the evidence and the scores that came back are kept and the

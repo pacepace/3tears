@@ -235,8 +235,10 @@ async def negotiate[R](
     when it is of a setting the refused request carried, and not one this call already answered, with a resend at
     the closest settings the model then takes, at most once per setting and :data:`MAX_RESENDS` times per call. A
     request the provider refused generated nothing, so a resend is not a hidden retry, and the call's price is one
-    request's; its time is not: each refused send can take up to ``send``'s own timeout, so a wall-clock ceiling
-    around this call allows ``MAX_RESENDS`` × that timeout past the served request's. In particular:
+    request's; its time is not: each refused send takes what one ``send`` takes, so a wall-clock ceiling around this
+    call allows ``MAX_RESENDS`` more of them past the served request's. One ``send`` may itself send its request
+    more than once: the package's client resends a call the provider declined, within one request's timeout
+    (:class:`~threetears.evals.providers.DeclinedRetry`). In particular:
 
     * **A router's 404 under enforcement** (``enforcement``, naming nothing) is answered in a fixed order, whatever
       the facts say: a temperature the request carried goes first, keeping enforcement (a catalogue listing

@@ -7,13 +7,14 @@ recording.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import httpx
 import pytest
@@ -24,6 +25,7 @@ from threetears.evals.providers import (
     Catalogue,
     Clients,
     Completion,
+    DeclinedRetry,
     Model,
     PriceSource,
     ProviderError,
@@ -686,16 +688,32 @@ async def test_an_error_in_a_200_body_is_a_failure_not_a_reply() -> None:
             "account",
         ),
         ("openai", 429, {"error": {"message": "quota", "code": "insufficient_quota"}}, "account"),
-        # The provider: it rationed the call, which says nothing about the model.
+        # The provider: it declined the call (rate-limited, overloaded or unavailable), which says nothing about the
+        # model.
         ("openai", 429, {"error": {"message": "slow down", "code": "rate_limit_exceeded"}}, "provider"),
         ("openrouter", 429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
         ("anthropic", 429, {"error": {"type": "rate_limit_error", "message": "Number of requests"}}, "provider"),
         ("openai", 429, "", "provider"),
+        (
+            "anthropic",
+            529,
+            {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+            "provider",
+        ),
+        ("openrouter", 503, {"error": {"code": 503, "message": "No available provider"}}, "provider"),
+        ("openai", 503, "<html>Service Unavailable</html>", "provider"),
         # The candidate: everything else, charged as any failure.
         ("openrouter", 403, {"error": {"message": "flagged by moderation"}}, "candidate"),
         ("anthropic", 400, {"error": {"type": "invalid_request_error", "message": "bad request"}}, "candidate"),
         ("openai", 500, "<html>oops</html>", "candidate"),
+        (
+            "anthropic",
+            500,
+            {"type": "error", "error": {"type": "api_error", "message": "Internal server error"}},
+            "candidate",
+        ),
         ("openrouter", 502, {"error": {"code": 502, "message": "upstream died"}}, "candidate"),
+        ("anthropic", 502, "<html>Bad Gateway</html>", "candidate"),
     ],
 )
 def test_whose_failure_a_providers_answer_is_read_off_its_status_and_body(
@@ -709,7 +727,10 @@ def test_whose_failure_a_providers_answer_is_read_off_its_status_and_body(
     assert describe_failure(error).owner == owner
 
 
-@pytest.mark.parametrize(("code", "owner"), [(429, "provider"), (402, "account"), (502, "candidate")])
+@pytest.mark.parametrize(
+    ("code", "owner"),
+    [(429, "provider"), (529, "provider"), (503, "provider"), (402, "account"), (500, "candidate"), (502, "candidate")],
+)
 def test_an_error_in_a_200_body_is_owned_by_the_code_it_names(code: int, owner: str) -> None:
     """OpenRouter answers some failures with a 200 and the status in the body: the body's code is the one read."""
     from threetears.evals.providers.wire import read_reply
@@ -718,6 +739,246 @@ def test_an_error_in_a_200_body_is_owned_by_the_code_it_names(code: int, owner: 
         read_reply("openrouter", "vendor/m", 200, {"error": {"code": code, "message": "upstream said no"}})
     assert raised.value.status == code
     assert raised.value.owner == owner and describe_failure(raised.value).owner == owner
+
+
+class Waits:
+    """The retry's sleep, waiting for nothing and keeping each wait it was asked for, in seconds."""
+
+    def __init__(self) -> None:
+        self.asked: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.asked.append(seconds)
+
+
+class Answers:
+    """A provider answering each request in turn with a status, a body and headers (the last answer repeating)."""
+
+    def __init__(self, *answers: tuple[int, Mapping[str, Any], Mapping[str, str]]) -> None:
+        self._answers = list(answers)
+        self.sent = 0
+        self.bodies: list[dict[str, Any]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.sent += 1
+        self.bodies.append(json.loads(request.content))
+        status, body, headers = self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+        return httpx.Response(status, json=body, headers=dict(headers))
+
+
+def answering(
+    server: Any,
+    waits: Waits,
+    *,
+    timeout: float = 600.0,
+    model_id: str = "claude-haiku-5-5",
+    provider: Any = "anthropic",
+    temperature: float | None = None,
+    **retry: Any,
+) -> Model:
+    """A model (Anthropic's, unless named) sending through ``server``, waiting through ``waits``."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(server), timeout=timeout)
+    return Model(
+        model_id,
+        provider=provider,
+        api_key="test-key",
+        catalogue=catalogue(),
+        http=client,
+        temperature=temperature,
+        retry=DeclinedRetry(sleep=waits, **retry),
+    )
+
+
+_OVERLOADED: Final = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+_UNAVAILABLE: Final = {"type": "error", "error": {"type": "api_error", "message": "Service unavailable"}}
+
+
+async def test_an_overloaded_call_is_sent_again_and_its_answer_returned() -> None:
+    status, reply = message()
+    server, waits = Answers((529, _OVERLOADED, {}), (status, reply, {})), Waits()
+    completion = await answering(server, waits).generate(system="", user="x")
+    assert completion.content == "hello"
+    assert server.sent == 2 and waits.asked == [1.0], "one resend, after the first backoff wait"
+
+
+async def test_a_call_declined_on_every_attempt_raises_the_providers_answer_after_three() -> None:
+    server, waits = Answers((503, _UNAVAILABLE, {})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits).generate(system="", user="x")
+    assert server.sent == 3 and waits.asked == [1.0, 2.0], "three attempts, the wait doubling"
+    assert (raised.value.owner, raised.value.attempts, raised.value.status) == ("provider", 3, 503)
+    assert str(raised.value) == "anthropic 503: Service unavailable (after 3 attempts)"
+    assert describe_failure(raised.value).owner == "provider"
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "waited"),
+    [("2", 2.0), ("0.5", 0.5), ("20", 20.0), ("soon", 1.0)],
+    ids=["seconds", "a fraction", "at the cap", "unreadable: the backoff's own"],
+)
+async def test_a_resend_waits_the_providers_retry_after_at_most_the_cap(retry_after: str, waited: float) -> None:
+    status, reply = message()
+    server, waits = Answers((429, _OVERLOADED, {"retry-after": retry_after}), (status, reply, {})), Waits()
+    await answering(server, waits).generate(system="", user="x")
+    assert waits.asked == [waited]
+
+
+@pytest.mark.parametrize(
+    ("offset_s", "zone", "low", "high"),
+    [(10, "GMT", 8.0, 10.0), (10, "-0000", 8.0, 10.0), (-60, "GMT", 0.0, 0.0)],
+    ids=["ahead", "a date naming no zone (-0000), read as UTC", "past: resent at once"],
+)
+async def test_a_retry_after_given_as_a_date_waits_until_then(
+    offset_s: int, zone: str, low: float, high: float
+) -> None:
+    status, reply = message()
+    when = (datetime.now(UTC) + timedelta(seconds=offset_s)).strftime(f"%a, %d %b %Y %H:%M:%S {zone}")
+    server, waits = Answers((529, _OVERLOADED, {"retry-after": when}), (status, reply, {})), Waits()
+    await answering(server, waits).generate(system="", user="x")
+    [wait] = waits.asked
+    assert low <= wait <= high
+
+
+async def test_a_provider_that_asks_to_wait_past_the_cap_is_not_sent_the_call_again() -> None:
+    """Waiting 20 s for a provider that asked for 120 would meet the same answer: its answer is raised at once."""
+    server, waits = Answers((429, _OVERLOADED, {"retry-after": "120"})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits).generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == []
+    assert (raised.value.owner, raised.value.attempts) == ("provider", 1)
+
+
+async def test_a_decline_in_a_200_body_is_sent_again_as_a_declined_status_is() -> None:
+    """OpenRouter answers an upstream's overload as a 200 carrying the code; it is the same decline."""
+    status, reply = chat()
+    server, waits = Answers((200, {"error": {"code": 529, "message": "Overloaded"}}, {}), (status, reply, {})), Waits()
+    completion = await answering(server, waits, model_id="vendor/m", provider="openrouter").generate(
+        system="", user="x"
+    )
+    assert completion.content == "hello" and server.sent == 2 and waits.asked == [1.0]
+
+    every, waits = Answers((200, {"error": {"code": 503, "message": "No allowed providers"}}, {})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(every, waits, model_id="vendor/m", provider="openrouter").generate(system="", user="x")
+    assert every.sent == 3 and (raised.value.status, raised.value.owner, raised.value.attempts) == (503, "provider", 3)
+
+
+async def test_an_error_in_a_200_body_that_is_no_decline_is_never_sent_again() -> None:
+    server, waits = Answers((200, {"error": {"code": 502, "message": "upstream died"}}, {})), Waits()
+    with pytest.raises(ProviderError, match="openrouter 502: upstream died$"):
+        await answering(server, waits, model_id="vendor/m", provider="openrouter").generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == []
+
+
+async def test_a_resend_still_running_at_the_calls_time_bound_is_cut_and_the_decline_raised() -> None:
+    """No attempt outlives one request's timeout from the call's first: the resend is cut, the 529 before it stands."""
+    sent: list[float] = []
+
+    async def overloaded_then_slow(request: httpx.Request) -> httpx.Response:
+        sent.append(time.monotonic())
+        if len(sent) == 1:
+            return httpx.Response(529, json=_OVERLOADED, headers={"retry-after": "0"})
+        await asyncio.sleep(30)
+        raise AssertionError("unreachable: the resend is cut at the bound")
+
+    waits = Waits()
+    started = time.monotonic()
+    with pytest.raises(ProviderError) as raised:
+        await answering(overloaded_then_slow, waits, timeout=0.5).generate(system="", user="x")
+    took = time.monotonic() - started
+    assert len(sent) == 2 and took < 5.0, "the resend was cut at the bound, not run to its own end"
+    assert (raised.value.status, raised.value.owner, raised.value.attempts) == (529, "provider", 2)
+
+
+@pytest.mark.parametrize(
+    "lost",
+    [httpx.ConnectError("connection reset by peer"), httpx.ConnectTimeout("connect timed out")],
+    ids=["a reset", "a connect timeout"],
+)
+async def test_a_resend_lost_on_the_way_raises_the_decline_before_it_never_the_transport_error(lost: Exception) -> None:
+    """The provider declined; the retry's own transport failing says nothing about the candidate."""
+    sent: list[int] = []
+
+    def unavailable_then_lost(request: httpx.Request) -> httpx.Response:
+        sent.append(1)
+        if len(sent) == 1:
+            return httpx.Response(503, json=_UNAVAILABLE)
+        raise lost
+
+    with pytest.raises(ProviderError) as raised:
+        await answering(unavailable_then_lost, Waits()).generate(system="", user="x")
+    assert len(sent) == 2
+    assert (raised.value.status, raised.value.owner, raised.value.attempts) == (503, "provider", 2)
+    assert raised.value.__cause__ is lost
+    assert describe_failure(raised.value).owner == "provider"
+
+
+async def test_a_derived_model_keeps_its_retry_policy() -> None:
+    status, reply = message()
+    server, waits = Answers((529, _OVERLOADED, {}), (status, reply, {})), Waits()
+    derived = answering(server, waits, first_wait_s=0.25).derive(temperature=None)
+    await derived.generate(system="", user="x")
+    assert server.sent == 2 and waits.asked == [0.25]
+
+
+async def test_a_decline_then_a_setting_refusal_is_resent_once_for_each() -> None:
+    """The 529 is sent again after its wait; the temperature the provider then refused is dropped and sent once more."""
+    status, reply = message()
+    refused = {
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": "`temperature` is deprecated for this model."},
+    }
+    server = Answers((529, _OVERLOADED, {}), (400, refused, {}), (status, reply, {}))
+    waits = Waits()
+    completion = await answering(server, waits, model_id="claude-sonnet-4-6", temperature=0.5).generate(
+        system="", user="x"
+    )
+    assert server.sent == 3 and waits.asked == [1.0]
+    assert ["temperature" in body for body in server.bodies] == [True, True, False]
+    assert completion.temperature is None
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (401, {"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
+        (500, {"type": "error", "error": {"type": "api_error", "message": "Internal server error"}}),
+        (502, {"type": "error", "error": {"type": "api_error", "message": "Bad gateway"}}),
+        (429, {"error": {"message": "quota", "code": "insufficient_quota"}}),
+    ],
+    ids=["the account's 401", "the candidate's 500", "the candidate's 502", "the account's spent quota"],
+)
+async def test_a_failure_the_provider_did_not_decline_is_never_sent_again(status: int, body: dict[str, Any]) -> None:
+    server, waits = Answers((status, body, {"retry-after": "1"})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits).generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == []
+    assert raised.value.attempts == 1 and "attempts" not in str(raised.value)
+
+
+async def test_one_attempt_sends_a_declined_call_once() -> None:
+    server, waits = Answers((529, _OVERLOADED, {})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits, attempts=1).generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == [] and raised.value.owner == "provider"
+
+
+async def test_no_resend_waits_past_the_requests_own_timeout() -> None:
+    """A wait that would end after one request's timeout, counted from the first attempt, is not waited."""
+    server, waits = Answers((529, _OVERLOADED, {"retry-after": "5"})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits, timeout=3.0).generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == [] and raised.value.attempts == 1
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [{"attempts": 0}, {"attempts": True}, {"first_wait_s": -1.0}, {"max_wait_s": float("inf")}],
+    ids=["no attempt", "a bool", "a negative wait", "an unbounded cap"],
+)
+def test_a_retry_policy_that_sends_nothing_or_waits_unboundedly_is_refused(policy: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="DeclinedRetry"):
+        DeclinedRetry(**policy)
 
 
 @pytest.mark.parametrize(
