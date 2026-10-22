@@ -79,7 +79,7 @@ def test_every_sentence_naming_campaign_update_says_it_refuses_once_runs_exist()
     named = [sentence for text in _help_texts() for sentence in _sentences(text) if "campaign_update" in sentence]
     assert named, "the help says what campaign_update cannot do here"
     for sentence in named:
-        assert "refuses" in sentence or "frozen" in sentence, sentence
+        assert "refuses" in sentence, sentence
     for text in _help_texts():
         assert "campaign_create" in text and "from_run_ids" in text
 
@@ -87,6 +87,8 @@ def test_every_sentence_naming_campaign_update_says_it_refuses_once_runs_exist()
 async def test_the_declaration_the_help_names_is_made_over_a_real_sweeps_runs(evals: MountedTool) -> None:
     host, storage, swept, run_ids = await _swept()
     assert run_ids and set(run_ids) == set(swept.run_ids), "the sweep's job result names the runs its campaign holds"
+    first = off_loop(storage.load_eval_runs, run_ids[:1], TOYHOST_SCOPE)
+    assert [run.overlays["prompt_style"] for run in first] == [STYLES[0]], "run_ids are in arm order"
     design = toyhost_aspect_design().model_dump(mode="json")
     aspect = {"label": swept.behavior, "run_ids": run_ids, "margin": 5.0, "design": design}
 

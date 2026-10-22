@@ -32,8 +32,8 @@ Two more terms, and a rule:
 
 Before the design comes the choice of levers, and a host with many has more than a campaign can afford. Read where
 the evidence is already thin. Each aspect's fold on `report_read`'s page has a Not tested section that lists every
-`thin` and `unswept` lever. The page's JSON form carries the full rows, with `n` and dispersion, as each aspect's
-`bundle.coverage`.
+`thin` and `unswept` lever. The full rows, with `n` and dispersion, are each aspect's `bundle.coverage`, in the
+`bundle-<aspect>.json` written beside a saved page (the command line's `report --out`).
 
 Sweep the `thin` or `unswept` levers that could change a decision, and leave out one whose every level would be
 shipped the same. Predicting an unrun cell and ranking what to run next is
