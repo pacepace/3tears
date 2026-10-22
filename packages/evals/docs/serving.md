@@ -311,7 +311,8 @@ launches one arm after another and `concurrent` launches them all at once, each 
 also declare `measure_latency`, which every arm's launch takes and which runs the arms sequential. Launched one after
 another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
 the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design, and its readings are leads: to ask a
-question of what it found, declare a campaign before the runs that answer it. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+question of what it found, `campaign_create` an aspect over the sweep's runs (`run_ids` from `job_poll`) with its arms
+named by `from_run_ids`; the question reads as asked after the runs, and the page discloses when. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
 the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a

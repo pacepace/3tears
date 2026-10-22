@@ -60,9 +60,9 @@ to this constant — it is always handed a prompt resolved from the registry.
 
 from __future__ import annotations
 
-#: The prompt's character ceiling. It only falls -- once raised, 24,000 to 24,500 (owner, 2026-10-16), for the one-claim
-#: clause, rather than trading away the reasons other rules give. It sits just above the prompt (24,050 characters), so
-#: the prompt cannot grow unnoticed; making it shorter is a measured change (an eval of the writer), not a cut by eye.
+#: The prompt's character ceiling. It only falls, and sits just above the prompt so any growth fails
+#: ``test_gen_prompt_budget.py``; making the prompt shorter is a measured change (an eval of the writer), not a cut by
+#: eye.
 PROMPT_CHAR_BUDGET = 24_100
 
 #: The most rules the prompt carries, not its numbered headings. It only falls.

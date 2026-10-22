@@ -33,8 +33,8 @@ judge: it is left to the launch's own pin resolution, so no model grades its own
 **Its campaign is exploratory.** A sweep takes no design, so the campaign it creates declares none, and says so
 (``exploratory``) rather than leaving the caller to. A campaign's declaration is frozen once it holds a run, so
 ``campaign_update`` refuses to add one; what the arms were swept to learn is declared with ``campaign_create``: an
-aspect over the sweep's ``run_ids``, its arms named with ``from_run_ids``. A question asked after the runs reads as
-asked, with ``question_after_runs`` disclosing when.
+aspect over the sweep's ``run_ids`` (its job result names them), its arms named with ``from_run_ids``. A question
+asked after the runs reads as asked, with ``question_after_runs`` disclosing when.
 
 **When it stops early.** If an arm is refused at its launch (the host's admission ceiling, say), or an arm's run
 ends ``failed``, no further arm is launched and the sweep ends ``failed``, naming it. A harness fault is not
