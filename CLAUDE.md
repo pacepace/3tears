@@ -152,7 +152,7 @@ uv sync                    # install all packages in dev mode
 
 Extra args pass through: `./scripts/test.sh core -v -x`
 
-Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run. There, a package run skips its integration tests, which `test-integration.sh` covers, and `-x`, `--maxfail`, `-n` or `--lf` make testament run it locally instead.
+Where `testament` is installed, `test.sh` hands the run to testament's runners (outside CI); `TESTAMENT=off` forces the local run. There, a package run skips its integration tests, which `test-integration.sh` covers, and `-x`, `--maxfail`, `-n` or `--lf` make testament run it locally instead. `test.sh` itself stays local for a run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`) or one that passes `-m`, since on the pool those would skip or lose their marker.
 
 `test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 

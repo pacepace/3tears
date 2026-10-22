@@ -26,7 +26,24 @@ EXTRA_ARGS=("$@")
 # Where testament is installed (see .testament.toml), it runs the tests on its runners instead,
 # outside CI and unless TESTAMENT=off. It distributes the tests itself, so no `-n 4`, and its
 # manifest command carries `-m "not integration"`, so a package run there skips integration tests.
-if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ]; then
+#
+# Two kinds of run stay local, because the pool would quietly change them. A run gated by an
+# environment variable (RECORD, THREETEARS_LIVE_*, THREETEARS_EVALS_PAID*) would reach runners that
+# do not have it, so its tests would skip -- and a skip reads like a pass. And a run that selects
+# with `-m` would meet the manifest's own `-m "not integration"`, where pytest keeps only one.
+local_only=""
+if env | grep -qE '^(RECORD|THREETEARS_LIVE_[A-Z_]*|THREETEARS_EVALS_PAID[A-Z_]*)='; then
+    local_only="an environment gate is set"
+fi
+for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do
+    case "$arg" in
+        -m | -m*) local_only="-m selects the tests" ;;
+    esac
+done
+if command -v testament >/dev/null 2>&1 && [ -n "$local_only" ]; then
+    echo "test.sh: running locally, not via testament: ${local_only}" >&2
+fi
+if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ] && [ -z "$local_only" ]; then
     echo "test.sh: via testament (integration tests run only locally; TESTAMENT=off for the old path)" >&2
     if [ -n "$PACKAGE" ]; then
         exec testament run -- "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
