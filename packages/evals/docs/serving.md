@@ -394,10 +394,10 @@ is dated now and reads as declared after the runs.
 |---|---|
 | `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 2) |
 | `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
-| `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason |
+| `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
 | `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |
 | `call` | the recorded call (`CampaignCall`), or null |
-| `aspects` | each aspect's `aspect`, `bundle_fingerprint`, `bundle_schema_version` and `question_after_runs`: what was set after its runs (`late`: `question` or `control`), when (`at`, null with no orderable time) and when the runs began (`first_run_at`), or null. Its readings read as asked either way; this says when, for a reader to judge |
+| `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v2:` and a digest; one with no prefix was recorded before fingerprints rounded floats), `bundle_schema_version` and `question_after_runs`: what was set after its runs (`late`: `question` or `control`), when (`at`, null with no orderable time) and when the runs began (`first_run_at`), or null. Its readings read as asked either way; this says when, for a reader to judge |
 
 Each aspect's bundle is not inlined: it is written beside the page as `bundle-<aspect>.json` (the label in lower case, hyphenated),
 and the fingerprint names it. Branch on the typed fields, never on a row's `reason`, which is words.

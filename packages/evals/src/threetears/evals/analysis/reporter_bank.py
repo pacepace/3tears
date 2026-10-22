@@ -105,7 +105,9 @@ def case_limits(
     """
     limits: list[str] = []
     fingerprint = bundle.fingerprint()
-    if recorded_fingerprint is not None and recorded_fingerprint != fingerprint:
+    # Compared in the recorded fingerprint's version, so a memo generated before fingerprints rounded their floats is
+    # still reproduced by the evidence it read; the sentence names today's fingerprint as the case records it.
+    if recorded_fingerprint is not None and recorded_fingerprint != bundle.fingerprint(like=recorded_fingerprint):
         limits.append(
             f"This bundle is today's re-assembly and does not reproduce the one the recorded memo was written "
             f"from (recorded {recorded_fingerprint}, now {fingerprint}): either the evidence moved or the bundle's "

@@ -2217,7 +2217,10 @@ def freeze_reporter_case(
     same_verdicts = len(live) == 1 and _label_set(live[0][1].labels, criterion=False) == _label_set(
         parsed, criterion=False
     )
-    same_evidence = len(live) == 1 and live[0][1].bundle_fingerprint == fingerprint
+    # Today's bundle in the live case's fingerprint version, so a case frozen before fingerprints rounded their
+    # floats still matches the evidence it froze; the case this freeze stores carries the current version.
+    as_frozen = bundle.fingerprint(like=live[0][1].bundle_fingerprint) if len(live) == 1 else fingerprint
+    same_evidence = len(live) == 1 and live[0][1].bundle_fingerprint == as_frozen
     # The digest rides with the message: a live case that froze this text without the digest its
     # analysis records is not the case this freeze would store.
     same_message = len(live) == 1 and (live[0][1].writer_message, live[0][1].recorded_writer_message_digest) == (

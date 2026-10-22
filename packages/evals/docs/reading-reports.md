@@ -27,7 +27,8 @@ page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is th
 printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
 (by label and variant key) and confidence, the call, and each aspect's bundle by its fingerprint
 ([its shape](serving.md#the-campaign-json)). Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
-`AnalysisContextBundle.from_json(...).fingerprint()` over the file returns the fingerprint the page names. A host that
+`AnalysisContextBundle.from_json(...).fingerprint(like=named)` over the file returns the fingerprint the page names
+(`like` computes it in the named one's version: see below). A host that
 wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return
 `campaign.json`. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
 
@@ -564,7 +565,15 @@ An analysis is written from the campaign's **bundle** alone (`AnalysisContextBun
 in it is a reference code resolves against that bundle. Save the bundle (`bundle.to_json()`), reload it
 (`AnalysisContextBundle.from_json`) and its `fingerprint()` is unchanged, so `generate_analysis` over the
 saved file under a second prompt compares the two prompts and nothing else; each analysis records the
-fingerprint it read on `generation.bundle_fingerprint`. The insight-ledger cutoff (`bundle_assembled_at`),
+fingerprint it read on `generation.bundle_fingerprint`.
+
+A fingerprint is `v2:` and the sha256 of the bundle's canonical JSON with every float rounded to twelve significant
+figures. The bundle's intervals and multipliers come from C maths (`math.lgamma`, `NormalDist().inv_cdf`) whose last
+bits differ between two builds of one Python, so the rounding is what makes one evidence fingerprint alike on a
+laptop, in a container image and on another architecture, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. The rounding is in the fingerprint only: the bundle keeps
+its figures as computed. A fingerprint recorded before the rounding has no prefix, and every comparison computes the
+fresh one in the recorded one's version (`fingerprint(like=recorded)`), so an analysis or a reporter case recorded then
+still matches its evidence on the machine that recorded it. The insight-ledger cutoff (`bundle_assembled_at`),
 the generation time and its cost are on that provenance, not in the bundle.
 
 The provenance also records the bundle `schema_version` the generation ran over and the

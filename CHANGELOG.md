@@ -67,6 +67,15 @@ packages (bumped in lock-step).
   characters (#822). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
   quote, the reader conformance suite, `FailureOwner` and others) are
   stable, and its import list is refreshed.
+- **A bundle fingerprints alike across Python builds**, except, rarely, a value that falls exactly on a 12th-figure
+  rounding boundary. The fingerprint hashed the bundle's floats in full, and their last bits come from C maths that
+  two builds of one Python (uv-managed and Debian's CPython 3.14.6) compute differently, so a reporter case re-frozen
+  on another machine was refused as moved evidence and recorded a false "does not reproduce" limit. A fingerprint is
+  now `v2:` and a digest with every float rounded to twelve significant figures, in the fingerprint only. A fingerprint
+  stored before is compared as it was taken, so stored cases keep matching on the build that recorded them. The page
+  JSON and the writer's message serve every float to twelve figures, and the writer's view keeps a bar verdict's
+  figures and a scoreboard row's costs to its four. Finish a rolling deploy before generating: a pod on the previous
+  build can't render what this one generates.
 
 **Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
 moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
@@ -74,7 +83,7 @@ moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move fro
 and host; the `judge_case_author` action and operation need `attests_person` (a host without one authors no judge case through
 either, its own direct call included), and the operation's `author=` keyword becomes `collected_by=`; the
 `reporter_case_freeze` action and operation need `attests_person` for reader verdicts (a freeze with labels), and the
-operation takes `collected_by=`; `ReporterLabel` gains `reader` and `collected_by`; durable schema 16.1. A v16.0 pod
+operation takes `collected_by=`; `ReporterLabel` gains `reader` and `collected_by`; a bundle fingerprint is `v2:`-prefixed; durable schema 16.1. A v16.0 pod
 cannot read a relayed case: one relayed reporter label stops that whole reporter template there (launches, prices,
 freezes, calibration reads, restores), and a relayed judge case stops every launch of its judge template that runs
 it, until the pod upgrades. So during a rolling deploy across 16.0 and 16.1, the first labelled freeze through the

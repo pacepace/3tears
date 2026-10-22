@@ -333,9 +333,10 @@ def _frozen_store() -> tuple[OpsFixture, EvalTestCase, str]:
     The case's labels, the shape under test, are kept exactly as stored. Its evidence is taken from this machine's own
     freeze of the same campaign and memo: the Python build's own maths (``lgamma``, ``NormalDist.inv_cdf``) differs in
     the last digit between builds, and the fixture's bundle fingerprint hashed those digits, so the build that froze
-    it and the test pool's re-assembled this corpus to two fingerprints (fixed in #907 by rounding computed floats to
-    12 significant figures). A re-freeze whose evidence moved is refused for that reason alone, which would hide what
-    this file pins.
+    it and the test pool's re-assembled this corpus to two fingerprints. A ``v2:`` fingerprint rounds those digits
+    away, but this fixture keeps the unprefixed (v1) one it was frozen with, which is still compared unrounded, so the
+    swap stays needed. A re-freeze whose evidence moved is refused for that reason alone, which would hide what this
+    file pins.
     """
     from threetears.evals.analysis import freeze_reporter_case
     from threetears.evals.run import get_template
