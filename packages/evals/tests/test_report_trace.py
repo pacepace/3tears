@@ -186,55 +186,65 @@ def _untraced(blocks: Sequence[Any]) -> list[int | None]:
 
 
 class _Landings(HTMLParser):
-    """Every id and whether a closed ``<details>`` holds it; every link and the table it sits in."""
+    """Every id with the closed ``<details>`` holding it, and every link with the closed ``<details>`` holding it and
+    the table it sits in."""
 
     _VOID = frozenset({"meta", "br", "img", "input", "hr", "link", "wbr"})
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.stack: list[tuple[str, bool, str | None]] = []
-        self.hidden: dict[str, bool] = {}
-        self.links: list[tuple[str, str | None]] = []
+        self.stack: list[tuple[str, int | None, str | None]] = []
+        self.folds = 0
+        self.held: dict[str, frozenset[int]] = {}
+        self.links: list[tuple[str, frozenset[int], str | None]] = []
 
-    def _start(self, tag: str, attrs: list[tuple[str, str | None]]) -> str | None:
+    def _shut(self) -> frozenset[int]:
+        return frozenset(fold for _, fold, _ in self.stack if fold is not None)
+
+    def _start(self, tag: str, attrs: list[tuple[str, str | None]]) -> tuple[int | None, str | None]:
         found = dict(attrs)
         if (name := found.get("id")) is not None:
-            assert name not in self.hidden, f"the id {name} is carried twice"
-            self.hidden[name] = any(closed for _, closed, _ in self.stack)
+            assert name not in self.held, f"the id {name} is carried twice"
+            self.held[name] = self._shut()
         table = found.get("data-table") or (self.stack[-1][2] if self.stack else None)
         if tag == "a" and (href := found.get("href")) is not None:
             # A link in a table's body is a figure's or a trial's; a header's links its glossary term.
             in_cell = any(open_tag == "td" for open_tag, _, _ in self.stack)
-            self.links.append((href, table if in_cell else None))
-        return table
+            self.links.append((href, self._shut(), table if in_cell else None))
+        fold = None
+        if tag == "details" and "open" not in found:
+            self.folds += 1
+            fold = self.folds
+        return fold, table
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        table = self._start(tag, attrs)
+        fold, table = self._start(tag, attrs)
         if tag not in self._VOID:
-            self.stack.append((tag, tag == "details" and "open" not in dict(attrs), table))
+            self.stack.append((tag, fold, table))
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._start(tag, attrs)
 
     def handle_endtag(self, tag: str) -> None:
-        while self.stack:
-            if self.stack.pop()[0] == tag:
-                break
+        assert any(open_tag == tag for open_tag, _, _ in self.stack), f"</{tag}> closes nothing open"
+        while self.stack.pop()[0] != tag:
+            pass
 
 
 def _trace_links_land_in_sight(page: str) -> list[str]:
-    """Every trace link's target, after checking each is fragment-only and lands where every browser shows it: on an
-    id the page carries, and outside every closed ``<details>`` (the fold's own ``<details>`` or the section around a
-    fold counts as outside it). Every other link on the page lands on an id it carries."""
+    """Every trace link's target, after checking every link on the page is fragment-only and lands where every
+    browser shows it: on an id the page carries, held by no closed ``<details>`` the reader has not already opened to
+    see the link (a fold's own ``<details>``, or the section around it, is outside it)."""
     parsed = _Landings()
     parsed.feed(page)
     parsed.close()
+    assert not parsed.stack, "an element is left open"
     targets = []
-    for href, table in parsed.links:
+    for href, shut, table in parsed.links:
         assert href.startswith("#"), f"{href} is not a link to a place on the page"
-        assert href[1:] in parsed.hidden, f"{href} lands nowhere"
+        assert href[1:] in parsed.held, f"{href} lands nowhere"
+        assert parsed.held[href[1:]] <= shut, f"{href} lands inside a closed fold"
         if table in _TRACE_TABLES:
-            assert not parsed.hidden[href[1:]], f"{href} lands inside a closed fold"
             targets.append(href[1:])
     assert "<base" not in page
     return targets
@@ -286,6 +296,37 @@ async def test_a_finding_s_trial_ids_link_to_the_trials_heading_and_trace_it() -
     # The record is in the closed Trials section; the link lands on its heading, which every browser shows.
     assert '<a href="#trials">T1</a>' in facts and '<section id="trials">' in html
     assert "trials" in _trace_links_land_in_sight(html)
+
+
+async def test_a_trial_id_the_page_does_not_hold_is_not_linked() -> None:
+    _, analysis, _ = await toy_report()
+    finding = analysis.document.findings[0].model_copy(update={"trials": ["T1", "T999"]})
+    page = build_report(
+        analysis.model_copy(update={"document": analysis.document.model_copy(update={"findings": [finding]})})
+    )
+    html = report_html(page)
+    facts = html[html.index('data-table="finding_facts"') :].split("</table>", 1)[0]
+    assert '<a href="#trials">T1</a>' in facts and "T999" in facts and 'href="#T999"' not in facts
+    _trace_links_land_in_sight(html)
+
+
+async def test_every_link_on_both_pages_lands_in_sight() -> None:
+    """The nav, a glossary term, a case's trial ids: each lands on the nearest place outside every closed fold the
+    reader has not opened, on the aspect page and the campaign page alike."""
+    host, analysis, page = await toy_report()
+    html = report_html(page)
+    nav = html[html.index("<nav>") : html.index("</nav>")]
+    assert 'href="#cases"' in nav and "-body" not in nav
+    assert 'href="#glossary"' in html and 'href="#g-' not in html
+    _trace_links_land_in_sight(html)
+    campaign = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+    campaign_html = campaign_report_html(campaign)
+    (fold_id,) = campaign.fold_ids
+    nav = campaign_html[campaign_html.index("<nav>") : campaign_html.index("</nav>")]
+    assert f'href="#aspect-{fold_id}"' in nav and "-body" not in nav
+    # A case's trial ids, inside the aspect's fold, land on that fold's Trials section, which the reader then opens.
+    assert f'href="#a-{fold_id}-trials"' in campaign_html
+    _trace_links_land_in_sight(campaign_html)
 
 
 async def test_a_figure_never_lands_on_another_number() -> None:
@@ -498,6 +539,9 @@ async def test_a_report_refuses_one_id_on_two_cells() -> None:
     _, _, page = await toy_report()
     with pytest.raises(ValueError, match="more than once"):
         _with_cells(page, TableCell(value=1, anchor="r-1"), TableCell(value=2, anchor="r-1"))
+    # A block's id counts too: the first finding's headline is F1.
+    with pytest.raises(ValueError, match="more than once"):
+        _with_cells(page, TableCell(value=1, anchor="F1"))
 
 
 async def test_a_campaign_page_refuses_a_link_anywhere_but_a_fold() -> None:

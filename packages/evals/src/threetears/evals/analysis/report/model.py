@@ -848,17 +848,20 @@ class Report(EvalDocumentModel):
 
     @model_validator(mode="after")
     def _every_link_lands(self) -> Self:
-        """Refuse two cells carrying one id, and a cell linking to an id no cell or block on the page carries.
+        """Refuse one id carried twice, by cells or blocks, and a cell linking to an id nothing on the page carries.
 
         A finding's trace links a figure only where the page prints the same figure; a finding whose trace reaches
         nothing says so in words instead (:data:`~threetears.evals.analysis.report.words.UNTRACED`).
 
         :raises ValueError: An id is carried twice, or a link names one nothing carries.
         """
-        anchors = [cell.anchor for cell in _cells(self.blocks) if cell.anchor is not None]
+        anchors = [
+            *(cell.anchor for cell in _cells(self.blocks) if cell.anchor is not None),
+            *(block.anchor for block in self.blocks if block.anchor is not None),
+        ]
         if twice := sorted({anchor for anchor in anchors if anchors.count(anchor) > 1}):
-            raise ValueError(f"cells carry the ids {twice} more than once, and an id names one place on the page")
-        places = {*anchors, *(block.anchor for block in self.blocks if block.anchor is not None)}
+            raise ValueError(f"the ids {twice} are carried more than once, and an id names one place on the page")
+        places = set(anchors)
         if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
             raise ValueError(f"cells link to {stray}, which nothing on the page carries")
         return self
@@ -1099,7 +1102,10 @@ class CampaignReport(EvalDocumentModel):
                 if isinstance(block, DisclosureBlock)
                 else []
             )
-            linked += [term for term in found if term is not None and term not in linked]
+            for term in found:
+                # Two columns of one table can link one term: it is defined once.
+                if term is not None and term not in linked:
+                    linked.append(term)
         for fold in self.aspects:
             linked += [term for term in fold.report.terms if term not in linked]
         return linked

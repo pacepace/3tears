@@ -594,9 +594,8 @@ def _traced(blocks: Sequence[ReportBlock], bundle: AnalysisContextBundle) -> lis
     landing: dict[str, str] = {}
     claimed: set[str] = set()
     tables = {index: block for index, block in enumerate(placed) if isinstance(block, TableBlock)}
-    order = sorted(
-        tables, key=lambda index: (_shown(tables[index]) != "open", tables[index].section != "contrasts", index)
-    )
+    rank = {"open": 0, "folded": 1, "hidden": 2}
+    order = sorted(tables, key=lambda index: (rank[_shown(tables[index])], tables[index].section != "contrasts", index))
     for index in order:
         table = tables[index]
         shown = _shown(table)
@@ -1095,11 +1094,8 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             return []
         return [DisclosureBlock(section="decision", source="floor", text=f"No floor was declared on {bundle.aspect}.")]
     cost = _cost_ruler(bundle)
-    surface = bundle_decision_surface(bundle)
     others = list(read)
     rows: list[dict[str, CellValue]] = []
-    # Each row's two figures where they are costs per reply, which a finding citing that cost lands on.
-    costs: list[tuple[str, float | None, float | None] | None] = []
     projected: list[tuple[FloorVerdict, str, SampleProjection]] = []
     joined: list[SampleProjection] = []
     pointed = False
@@ -1141,11 +1137,6 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             for index, (reading, ours, theirs, outcome) in enumerate(
                 shown or [("—", None, None, f"{verdict.outcome}: {verdict.reason}")]
             ):
-                costs.append(
-                    (key, readings.control_cost, readings.candidate_cost)
-                    if isinstance(verdict.floor.clause, CostLower) and readings is not None
-                    else None
-                )
                 rows.append(
                     {
                         "floor": verdict.statement if index == 0 else None,
@@ -1172,10 +1163,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             name="decision",
             title=f"Floors on {bundle.aspect}",
             columns=columns,
-            rows=[
-                _floor_costs_at(table_row({column.key: row[column.key] for column in columns}), surface, control, cost)
-                for row, cost in zip(rows, costs, strict=True)
-            ],
+            rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
             order="floor by floor, each arm against the control",
             total_rows=len(rows),
         ),
@@ -1187,24 +1175,6 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
         ),
         *_projection_blocks(bundle, projected, joined, single=single),
     ]
-
-
-def _floor_costs_at(
-    row: dict[str, TableCell],
-    surface: DecisionSurface,
-    control: str,
-    costs: tuple[str, float | None, float | None] | None,
-) -> dict[str, TableCell]:
-    """A floors row whose figures are each arm's cost per reply, each carrying the id a finding citing that cost lands
-    on (:func:`_arm_cost_at`); any other row as it is."""
-    if costs is None:
-        return row
-    candidate, ours, theirs = costs
-    return {
-        **row,
-        "control": _arm_cost_at(row["control"], surface, control, ours),
-        "candidate": _arm_cost_at(row["candidate"], surface, candidate, theirs),
-    }
 
 
 #: What the Decision section says once, under the floors: a floor warns and decides nothing, and which interval it

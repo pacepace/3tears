@@ -195,7 +195,10 @@ reading.
 ### The rest of the page
 
 The sections follow in this order, each reached from a sticky nav; Cases, Trials, Not tested, Methods and the
-Glossary start folded, and a nav link opens the one it lands on.
+Glossary start folded, and a nav link lands on the folded section's heading, which the reader opens. No link on the
+page lands inside a closed fold the reader has not opened, since not every browser opens one for a link: a term lands
+on the Glossary's heading (its definition is also the link's hover text), and a case's trial id on the Trials
+heading.
 
 - **Decision**: the aspect's floors, in the `Floors on <aspect>` table: one row per floor and reading, the floor's
   own sentence first (`no pass rate drops by more than 5 points`; a floor naming one reading says `no tone rate drops
@@ -235,9 +238,9 @@ Glossary start folded, and a nav link opens the one it lands on.
   figure of the same reading on the same arm: a contrast's arm or control, a guardrail's mean, a one-arm page's
   reading, an arm's cost per reply; a figure printed only in the closed `Bars` table links to that fold. A figure is
   never linked to a different number: a contrast that read fewer cases prints a paired mean, which is another figure.
-  Each trial id in its `Evidence` fold links to the Trials heading. On a campaign's page each finding's `Evidence`
-  fold lists what it cites with its figure, each linked to the heading of the aspect's fold that prints it. No trace
-  link lands inside a closed fold, so it is seen in every browser. Code draws every link from the cells and trials the
+  Each trial id in its `Evidence` fold links to the Trials heading; one the page does not hold is not linked. On a
+  campaign's page each finding's `Evidence` fold lists what it cites with its figure, each linked to the heading of
+  the aspect's fold that prints it. Code draws every link from the cells and trials the
   memo cites, never from its words; a finding none of whose figures or trials the page prints says
   `No contrast, guardrail, bar or cost on this page shows this finding's figures.` in its fold.
 - **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
