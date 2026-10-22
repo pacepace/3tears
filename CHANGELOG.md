@@ -152,6 +152,14 @@ reformats 56 files: that is its own change, after this release.
 - **The lease numbers live on the light schema (#825).** `DEFAULT_JOB_LEASE_S`, `JOB_LEASE_RENEWAL_FRACTION` and
   `LEASE_POOL_WORKERS` are host-contract on `threetears.evals.schema`, which imports no kernel, so a host sizing its
   pool reads them cheaply.
+- **A row no worse than the margin says so in the headline table.** A change's `By aspect` row read only
+  `shown better`, `shown worse` or `unclear`, so an aspect whose floor held at the margin read `unclear` in the
+  headline beside a `held` floor, and its `To show no worse than the margin` row said no more cases were needed. A
+  row neither shown better nor shown worse now reads `no worse than the margin` (`within_margin` in the JSON) where
+  the floor's own reading of its pass rate, at 95% and uncorrected, keeps the drop within the margin, since the claim
+  it feeds holds only when every asked aspect holds and needs no correction; the cases that would settle an unclear
+  row are counted at that same level, so the row's count is its floor's. A floor and a row that still part, on the
+  points they read against or on a check's rate the floor also reads, get a line under the table saying which.
 - **Smaller fixes.** `sweep_launch`'s help names a route that works: declare the design afterwards with
   `campaign_create` over the sweep's `run_ids`, which a sweep's job result now carries (#843). `measuring-soundly.md`
   says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,300

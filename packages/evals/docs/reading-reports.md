@@ -87,8 +87,11 @@ Each arm's gains and its drops are each shown wrongly at most 2.5% of the time.
 ```
 
 **The readings.** A change reads each candidate on each aspect as **shown better** (its gain's interval lies wholly
-above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin) or **unclear**, and an
-aspect declaring no margin is never shown worse. A reading on an aspect the question does not ask about is
+above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin), **no worse than the margin**
+(neither, and its drop's interval at 95%, the floor's own, lies wholly within the margin: `within_margin` in the
+JSON) or **unclear**, and an aspect declaring no margin is never shown worse or no worse than it. "Shown worse" is a
+drop past the margin, which is worse than the control; "no worse than the margin" says the margin, since within it
+the candidate may still be a little worse. A reading on an aspect the question does not ask about is
 marked `a lead`: worth chasing, not yet shown. A choice reads each pair: one arm **ahead** where the whole interval
 lies on one side of zero, else `no separation`; ahead is a reading, not a pick. A measurement reads each measure with
 its interval, the pass rate as a count (`45 of 60`).
@@ -99,11 +102,14 @@ There is no correction across candidates: with several, one of them is shown bet
 A choice's pairs have no direction, so every pair on every aspect is one family. Each row's interval is read at the
 level its row was tested at, so a reading and its interval never disagree, and a campaign of one aspect reads at
 95%, as a floor does, so a floor and the reading on the same margin cannot disagree
-([why](measuring-soundly.md#one-family-per-candidate)).
+([why](measuring-soundly.md#one-family-per-candidate)). A row no worse than the margin is not corrected: it is the
+floor's own reading of the pass rate at 95%, so a `RateDrop` floor on the pass rate at the margin's points and the
+row read one interval and say one thing. Where a floor and a row still part, on the points they read against or on
+a check's rate the floor also reads, a line under the table says which.
 
 **To settle.** Each unclear row of a change says, in the `To show no worse than the margin` table, how many cases
-would show the candidate no worse than the margin, if no difference and if as observed, with the cost; it is the
-floor projection below, per aspect.
+would show the candidate no worse than the margin, if no difference and if as observed, with the cost. It is counted
+at 95%, as the floor projection below is, so a floor on the same rate and points gives the same count.
 
 **The call** is the last line: who decided, which arm, when and why (where runs joined after it, the line counts
 them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it overrides,

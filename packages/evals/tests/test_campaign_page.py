@@ -33,7 +33,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.bundle.schema import QuestionAfterRuns
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
-from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, NO_CALL, NO_RECOMMENDATION
+from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, NO_CALL, NO_RECOMMENDATION, campaign_verdict
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
     CampaignAspectFold,
@@ -86,8 +86,9 @@ def _paged(stamp: str) -> str:
 
 
 async def _aspect(label: str) -> MeasuredAspect:
-    """Each fixture aspect, measured once for the module: billing regresses past its floor, tone improves, and late
-    improves on a question asked only after its runs."""
+    """Each fixture aspect, measured once for the module: billing regresses past its floor, tone improves, steady
+    holds within a 20-point floor and margin (both arms pass every case, which on twenty cases bounds the drop at 19
+    points), and late improves on a question asked only after its runs."""
     if label not in _MEASURED:
         if label == "billing":
             _MEASURED[label] = await measured_aspect(
@@ -95,6 +96,10 @@ async def _aspect(label: str) -> MeasuredAspect:
             )
         elif label == "tone":
             _MEASURED[label] = await measured_aspect("tone", production=6, candidate=19)
+        elif label == "steady":
+            _MEASURED[label] = await measured_aspect(
+                "steady", production=20, candidate=20, margin=20, floors=(RateDrop(max_points=20),)
+            )
         else:
             _MEASURED[label] = await measured_aspect(label, production=6, candidate=19, asked_at=_ASKED_LATE)
     return _MEASURED[label]
@@ -711,6 +716,75 @@ async def test_an_unclear_row_s_cases_show_it_no_worse_than_the_margin_and_not_b
     note = page.blocks[page.blocks.index(settle) + 1]
     assert isinstance(note, DisclosureBlock)
     assert "would not show the arm better, so its row stays unclear unless its gain clears too" in note.text
+
+
+async def test_a_row_no_worse_than_the_margin_reads_so_beside_its_held_floor_and_has_nothing_to_settle() -> None:
+    page = await _page("steady", "tone")
+    (row,) = page.readings.on_aspect("steady")
+    (status,) = page.readings.floors
+    assert row.reading == "within_margin" and status.status == "held"
+    table = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects")
+    readings = {cells["aspect"].text: cells["reading"].text for cells in table.rows}
+    assert readings == {"steady": "no worse than the margin", "tone": "shown better"}
+    # The headline row and the floor read one interval, so neither contradicts the other, and nothing is to settle.
+    assert not any(isinstance(block, TableBlock) and block.name == "to_settle" for block in page.blocks)
+    first = _first_screen_markdown(page)
+    assert (
+        "A row no worse than the margin reads its interval at 95% on its own, as a floor does: a candidate is no "
+        "worse only where it holds on every asked aspect, which needs no correction." in first
+    )
+    # The one corrected row is tone's, read in v2's family of two at 97.5%, so it is not called a floor's level; the
+    # error-rate line is said whatever the rows read.
+    assert "The interval is read at 97.5%, corrected across each arm's aspects." in first
+    assert "Each arm's gains and its drops are each shown wrongly at most 2.5% of the time." in first
+    assert "such an interval clearing zero is not a gain shown" not in first
+    markdown = campaign_report_markdown(page)
+    steady = markdown[markdown.index("## steady") : markdown.index("## tone")]
+    assert "v2 no worse than the margin." in steady
+    assert (
+        campaign_verdict(page.readings, ["steady", "tone"])
+        == "steady: v2 no worse than the margin; tone: v2 shown better"
+    )
+
+
+async def test_a_page_whose_every_row_is_no_worse_still_states_the_error_rate_and_that_nothing_corrects_across_arms() -> (
+    None
+):
+    def all_within(readings: CampaignReadings) -> CampaignReadings:
+        rows = [
+            row.model_copy(update={"reading": "within_margin", "within_interval": (1.3, 62.7), "projection": None})
+            for row in readings.readings
+        ]
+        return readings.model_copy(update={"readings": rows + [rows[0].model_copy(update={"arm": "v3"})]})
+
+    page = await _page("steady", "tone", readings=all_within)
+    first = _first_screen_markdown(page)
+    assert "The interval is read at" not in first and "Each interval is read at" not in first
+    assert "Each arm's gains and its drops are each shown wrongly at most 2.5% of the time." in first
+    assert (
+        "Nothing corrects across arms, so with several arms one is shown better or worse by chance more often." in first
+    )
+    assert (
+        "Its gain is still read corrected across the arm's aspects, so such an interval clearing zero is not a gain "
+        "shown." in first
+    )
+
+
+async def test_a_floor_held_beside_a_row_left_unclear_says_the_two_read_different_points() -> None:
+    # The same interval against a 10-point margin is unclear while the 20-point floor holds.
+    page = await _page("steady", margins={"steady": 10.0})
+    (row,) = page.readings.on_aspect("steady")
+    (status,) = page.readings.floors
+    assert row.reading == "unclear" and status.status == "held"
+    assert (
+        "The floor held on steady for v2 reads its pass rate against 20 points, while its row reads the pass rate "
+        "against the 10-point margin." in _first_screen_markdown(page)
+    )
+    settle = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "to_settle")
+    assert [cells["aspect"].text for cells in settle.rows] == ["steady"]
+    note = page.blocks[page.blocks.index(settle) + 1]
+    assert isinstance(note, DisclosureBlock)
+    assert "read at 95% as a floor's count is, so a floor on the same rate and points gives the same count" in note.text
 
 
 async def test_a_code_only_page_refuses_a_fold_that_renders_an_analysis() -> None:
