@@ -347,9 +347,14 @@ class ToyhostStorage:
         self._ratings[rating.id] = rating
 
     def query_calibration_ratings(
-        self, scope_id: str, *, run_id: str | None = None, run_ids: Sequence[str] | None = None
+        self,
+        scope_id: str,
+        *,
+        run_id: str | None = None,
+        run_ids: Sequence[str] | None = None,
+        result_id: str | None = None,
     ) -> list[CalibrationRating]:
-        """The ratings in one scope, narrowed by run or by several runs, oldest first."""
+        """The ratings in one scope, narrowed by run, by several runs or by result, oldest first."""
         return sorted(
             (
                 rating
@@ -357,6 +362,7 @@ class ToyhostStorage:
                 if rating.scope_id == scope_id
                 and (run_id is None or rating.run_id == run_id)
                 and (run_ids is None or rating.run_id in run_ids)
+                and (result_id is None or rating.result_id == result_id)
             ),
             key=lambda rating: rating.rated_at,
         )

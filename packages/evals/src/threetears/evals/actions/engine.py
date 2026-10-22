@@ -118,6 +118,7 @@ from threetears.evals.ops import (
     reporter_cases_list,
     result_get,
     result_rate,
+    result_rate_person,
     results_list,
     run_archive,
     run_label,
@@ -697,6 +698,31 @@ class ResultRateParams(EvalBaseModel):
     ]
     score: Annotated[int, Field(description="The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail).")]
     rating_reason: Annotated[str, Field(min_length=1, description="Why that score, in the rater's own words.")]
+
+
+class ResultRatePersonParams(ResultRateParams):
+    """``result_rate_person``."""
+
+    person: Annotated[
+        str,
+        Field(
+            min_length=1, description="Who gave the rating, as the host names its people; the host must attest them."
+        ),
+    ]
+    rating_source: Annotated[
+        str, Field(min_length=1, description="Where the person gave the rating, e.g. a blind read's id.")
+    ]
+    rated_at: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            description=(
+                "When the person gave the rating, ISO-8601 with an offset, not in the future; omitted is now and "
+                "replaces their stored rating of the same thing. Dated, it replaces one given at the same time or "
+                "earlier; one they gave later stands, and this call is refused (conflict, 409)."
+            ),
+        ),
+    ] = None
 
 
 class ResultRegradeParams(EvalBaseModel):
@@ -1328,6 +1354,26 @@ async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) 
             score=params.score,
             reason=params.rating_reason,
             rater=caller.identity,
+        ),
+        eval_host,
+        params.result_id,
+        caller.scope_id,
+    )
+
+
+async def _result_rate_person(host: OpsHost, caller: Caller, params: ResultRatePersonParams) -> ResultRated:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            result_rate_person,
+            rubric_dim=params.rubric_dim,
+            score=params.score,
+            reason=params.rating_reason,
+            person=params.person,
+            source=params.rating_source,
+            collected_by=caller.identity,
+            rated_at=params.rated_at,
         ),
         eval_host,
         params.result_id,
@@ -2469,7 +2515,36 @@ def engine_actions() -> tuple[Action, ...]:
             detail=(
                 "Recorded as the caller's identity with rater_kind agent, fixed here: an agent rating through a tool "
                 "is another model's opinion, so it is listed beside people's ratings and never enters the judge's "
-                "agreement with people. A second rating of the same dimension of the same result replaces the first."
+                "agreement with people. A second rating of the same dimension of the same result replaces the first. "
+                "A person's rating the caller relays for them goes through result_rate_person."
+            ),
+        ),
+        Action(
+            name="result_rate_person",
+            summary="Record a person's rating of one judged dimension, relayed by a caller the host attests for them.",
+            workflow=CURATE,
+            permission="write",
+            params=ResultRatePersonParams,
+            result=ResultRated,
+            handler=_result_rate_person,
+            render=render.render_model,
+            example={
+                "result_id": "result-1",
+                "rubric_dim": "chat.tone",
+                "score": 2,
+                "rating_reason": "flat, misses the ask",
+                "person": "ana@example.com",
+                "rating_source": "blind_read:2026-10-17",
+                "rated_at": "2026-10-17T14:30:00+00:00",
+            },
+            detail=(
+                "Recorded with rater_kind person, under the host's name for the person, so it counts in the judge's "
+                "agreement with people and is a label for judge cases of its output. The stored rating names the "
+                "source and the caller that relayed it. It replaces the person's rating of the same dimension of the "
+                "same result, and the result says what it replaced; with rated_at, one they gave later stands, and "
+                "the call is refused (conflict, 409). The host decides whether this caller "
+                "relays this person's ratings; without its word the call is refused (refused, 403) and nothing is "
+                "written. An agent's own opinion goes through result_rate."
             ),
         ),
         Action(

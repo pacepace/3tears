@@ -121,9 +121,11 @@ pass it to every entrypoint. It holds:
   recorded excluded (`apparatus_failed`) with what it was billed, so the run's totals and its cost cap count it, as
   a cell failed by a `CandidateKindDefect` is. A judged witnessed cell is not recorded, but its billed judge calls
   count against the run's judge ceiling. A re-judge, a judge repeat, a second judge and a witnessed cell's judging raise it the same way;
-- your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
-  was refused for the calling account, which stops a run rather than excluding its cells;
-  `withhold_failure_detail` is the honest one for an app with no error types of its own;
+- your `failure_describer` — how a raised provider call reads. It is the only thing that can say whose failure a
+  call was (`ProviderFailure.owner`): the calling `account`'s (a refused key, spent credit), which stops a run
+  rather than excluding its cells; the `provider`'s (it rationed the call, a 429), which excludes the cell and lets
+  the run go on; or the `candidate`'s, charged as any failure. `withhold_failure_detail` is the honest one for an
+  app with no error types of its own, and says `candidate` for every failure;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
@@ -144,7 +146,15 @@ pass it to every entrypoint. It holds:
   unchecked; a check with nothing to refuse is a function that returns `None`. To test one of your checks alone,
   call `admit_template(template, profile=, checks=, active_judge_config=)` (from `threetears.evals.run`), the one list
   of create-time gates `create_template` and the seed both admit through, with your `TemplateChecks`: it takes no
-  store, and returns the admitted template or raises the refusal.
+  store, and returns the admitted template or raises the refusal;
+- if callers relay people's ratings (an agent carrying a person's blind-read verdicts), your word on who may:
+  `attests_person=<check>`, called as `check(scope_id=, caller=, person=)` (`AttestsPerson`, from
+  `threetears.evals.kernel.host`). It returns your own name for that person when that caller relays their ratings,
+  and `None` otherwise. The `result_rate_person` action asks it before it reads anything, and stores the rating under
+  the name you return, so two spellings you know as one person are one rater. On `None`, or with no check (`None`, the
+  default), the call is refused (`refused`, 403), a warning names the caller, the person and the scope, and nothing
+  is written. A check that raises propagates as your defect, and nothing is written. No other action records a
+  calibration rating as a person's.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -620,6 +630,25 @@ code follows the same rule. A synchronous function that takes the storage or the
 fn, ...)`, as the action catalogue does for every synchronous operation. An async operation (`run_launch`,
 `job_poll`) offloads its own.
 
+**Size the database pool for the job leases too.** Beside the store calls on `blocking_executor`, each process
+renews its jobs' leases on a pool of its own, `LEASE_POOL_WORKERS` threads, every one of which may want a connection
+at once. Give the pool your `blocking_executor`'s workers plus `LEASE_POOL_WORKERS`, so a renewal never waits for a
+connection behind cell work, and keep a checkout's wait under the renewal interval, the lease times
+`JOB_LEASE_RENEWAL_FRACTION` (20s at `DEFAULT_JOB_LEASE_S`): a renewal that cannot get a connection then fails and is
+tried again within its lease, rather than holding up the next one. A renewal stuck in the store retires the lease pool
+with its calls still waiting on the store, and a fresh pool takes the next renewals, so through a store brownout the
+leases can briefly want more than `LEASE_POOL_WORKERS` connections; the checkout wait is what keeps that extra from
+starving cell work. Read the numbers instead of copying them;
+`threetears.evals.schema` loads no other part of the engine, so your config can import it as it loads:
+
+```python
+from threetears.evals.schema import DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION, LEASE_POOL_WORKERS
+
+job_lease_s = DEFAULT_JOB_LEASE_S  # or the LaunchHost.job_lease_s you set
+pool_size = blocking_workers + LEASE_POOL_WORKERS
+checkout_timeout_s = job_lease_s * JOB_LEASE_RENEWAL_FRACTION
+```
+
 **If your database driver is async**, write your adapter against it as an `AsyncDocumentStore` (in
 `threetears.evals.schema`: the same port, every method awaited and `iter_by_doc_type` an async iterator;
 `AsyncStoreClock` for its clock) and hand the
@@ -978,7 +1007,7 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 520 names, mapped by rung in [the surface](surface.md).
+The first two tiers are the declared surface, about 540 names, mapped by rung in [the surface](surface.md).
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names

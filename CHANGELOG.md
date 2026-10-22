@@ -8,6 +8,44 @@ packages (bumped in lock-step).
 
 ## v0.75.0 -- 2026-10-21
 
+### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
+
+- **A call the provider rationed is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
+  replaced by `owner`, one of `account`, `provider` or `candidate` (`FailureOwner`), and `ProviderError.account` by
+  `ProviderError.owner`. A 429 that is not `insufficient_quota` is `provider`: on a reporter or judge call, and on the
+  quick path, the cell is excluded and the run goes on. A 429 `insufficient_quota` (or a 402) is `account` and stops
+  the run, as before. A rationed repair or parse retry says so in its error, and the page's setup-fault words cover a
+  rationed call.
+- **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
+  `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
+  returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and
+  `collected_by`. A relay may carry the person's own `rated_at`; a dated relay older than that person's stored rating
+  is refused (409), so a newer opinion stands. `ResultRated` says what a write replaced.
+- **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
+  finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
+  the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
+  inside a closed fold, since a host's sandboxed frame runs no script to open one: nav, glossary and trial links land
+  on the fold or section heading when their exact target is folded away.
+- **A lease holder's own writes keep its lease (#811).** A run's progress and status writes, and every held record
+  write, extend the lease as a renewal does, through one method (`JobLeases.write_own`); a lapsed lease is never
+  revived. A renewal that hangs is never resent and costs one retired pool thread, not the job. A renewal landing late
+  logs one line separating loop, pool and store waits. A grid test runs launches at several widths and store
+  latencies, with a degraded control that must lapse (#810).
+- **The lease numbers live on the light schema (#825).** `DEFAULT_JOB_LEASE_S`, `JOB_LEASE_RENEWAL_FRACTION` and
+  `LEASE_POOL_WORKERS` are host-contract on `threetears.evals.schema`, which imports no kernel, so a host sizing its
+  pool reads them cheaply.
+- **Smaller fixes.** `sweep_launch`'s help names a route that works: declare the design afterwards with
+  `campaign_create` over the sweep's `run_ids`, which a sweep's job result now carries (#843). `measuring-soundly.md`
+  says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,100
+  characters (#822). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
+  quote, the reader conformance suite, `FailureOwner` and others) are
+  stable, and its import list is refreshed.
+
+**Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
+moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
+`threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
+and host; durable schema 16.1. See `packages/evals/MIGRATIONS.toml`.
+
 ### search: a transport failure says which HTTP status the provider answered with; core's retry error describes the last attempt
 
 **Added:** `TransportFailed.status` (`int | None`), and `status` on its `FailureRecord`. The SearXNG and Tavily
@@ -148,7 +186,6 @@ now records the same ledgers as a full render.
 profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
 59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
 replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
-
 
 ## v0.74.0 -- 2026-10-20
 
@@ -4967,7 +5004,6 @@ client retired when it moved off a lame-duck server.
 - **Fixed, `DiscordAdapter`:** its handlers are registered as `on_message` and `on_ready`, the names
   discord.py dispatches to. `Client.event` registered them under their own names, `_on_message` and
   `_on_ready`, so no inbound message ever reached a router.
-
 
 ### Security: `ScrapeTool`'s SSRF guard checks every request, not only the target URL
 
@@ -10771,7 +10807,6 @@ Full rationale, and which consumer owns which step, in `docs/design-durable-coor
 - A test fails any tool under `agent/tools` that writes a truncation phrase of its
   own. It is what found the analyser and the save node.
 
-
 ## v0.42.0 -- 2026-09-15
 
 ### Added
@@ -11708,7 +11743,6 @@ has no such attribute at 0.35.0.
   key, or with no cache supplied, the family is revoked exactly as before, so
   every existing caller keeps today's behaviour.
 
-
 ## v0.31.0 -- 2026-09-01
 
 ### Added
@@ -12045,7 +12079,6 @@ has no such attribute at 0.35.0.
   hnsw index does not index a NULL vector, and a similarity scan skips NULL
   embeddings either way.
 
-
 ## v0.28.0 -- 2026-08-24
 
 ### Added
@@ -12093,7 +12126,6 @@ has no such attribute at 0.35.0.
   `kv_key_scope_for` has required UUIDs since scopes became per-principal. The
   module raised at permission-build time and never reached the broker it exists
   to test.
-
 
 ### Added
 
@@ -14612,7 +14644,6 @@ and makes impossible to repeat. See **Added -- enforcement** below.
   primary mechanism.
 
   Opt-in per collection, and degrades to uncached when no registry is present.
-
 
 ## v0.23.5 -- 2026-08-07
 

@@ -1455,6 +1455,12 @@ class CalibrationRating(DurableDocumentModel):
     (``freeze_judge_cases(from_labels=True)``); ``run_id`` and ``result_id`` are provenance, and may dangle. When the
     content cannot be rebuilt (a template edited after the run, a score with no label key), the person's judgment
     is still stored, with ``rated_withheld`` saying why, and every reader that rebuilds cases from labels names it.
+
+    **A person's rating relayed for them says who relayed it** (durable v16.1). A person's verdicts often reach the
+    store through someone else, an agent or a host's import, rather than the person's own write. Such a rating carries
+    ``collected_by`` (the caller the host attested for that person, through ``EvalHost.attests_person``) and
+    ``source`` (where the person gave it), so it reads as a person's and still names the
+    caller that put it there. An agent's rating carries neither: it is its writer's own.
     """
 
     doc_type: Literal["calibration_rating"] = "calibration_rating"
@@ -1476,6 +1482,24 @@ class CalibrationRating(DurableDocumentModel):
             "Whether a person or an agent wrote the rating. Only a person's rating calibrates the judge against "
             "people: an agent's is another model's opinion, read apart and never pooled into judge-versus-human "
             "agreement."
+        ),
+    )
+    source: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Where the person gave the rating, as the relaying caller names it (a blind read's id, a review session). "
+            "Set with collected_by on a person's rating someone else relayed, or not at all; None on an agent's "
+            "rating, and on a person's the host recorded itself."
+        ),
+    )
+    collected_by: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Who relayed the person's rating into the store: the calling identity the host attested for this person "
+            "(EvalHost.attests_person). Set with source, on a person's rating only, so a person's rating an agent "
+            "relayed names the agent beside the person."
         ),
     )
     id: str = Field(
@@ -1569,12 +1593,14 @@ class CalibrationRating(DurableDocumentModel):
     @model_validator(mode="after")
     def _score_on_scale_and_id_derived(self) -> CalibrationRating:
         """Refuse a score its scale cannot hold, half a label key, rated content that is not what the key says or
-        not stated either way, and an id that is not the one its fields derive."""
+        not stated either way, half a relay record or one on an agent's rating, and an id that is not the one its
+        fields derive."""
         low, high = SCALES[self.scale].scores
         if not low <= self.score <= high:
             raise ValueError(f"score {self.score!r} is not on the {self.scale} scale of {self.rubric_dim!r}")
         key = _label_key_halves(self.output_fingerprint, self.criterion_fingerprint, "calibration rating")
         self._check_rated(key)
+        self._check_relayed()
         derived = _calibration_rating_id(self.result_id, self.rubric_dim, self.rater, self.rater_kind)
         if self.id != derived:
             raise ValueError(
@@ -1582,6 +1608,22 @@ class CalibrationRating(DurableDocumentModel):
                 "under another id would stand beside the rater's own rating of the same thing instead of replacing it"
             )
         return self
+
+    def _check_relayed(self) -> None:
+        """Refuse half a relay record, and a relay record on an agent's rating, which no one relays for it.
+
+        :raises ValueError: Naming which half is missing, or that the rating is an agent's.
+        """
+        if (self.source is None) != (self.collected_by is None):
+            raise ValueError(
+                "a relayed rating names where the person gave it (source) and who relayed it (collected_by), both or "
+                f"neither; this one sets only {'source' if self.source is not None else 'collected_by'}"
+            )
+        if self.source is not None and self.rater_kind != "person":
+            raise ValueError(
+                "source and collected_by record a person's rating relayed for them; an agent's rating is its own "
+                "writer's, so it carries neither"
+            )
 
     def _check_rated(self, key: LabelKey | None) -> None:
         """Refuse a rating that states neither or both of ``rated`` and ``rated_withheld``, and rated content its

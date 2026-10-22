@@ -32,9 +32,10 @@ which :meth:`Report.write` puts beside the page, and the page names its fingerpr
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Literal, Self, get_args
 
@@ -52,6 +53,49 @@ from threetears.evals.schema.prose import ModelProse
 #: A table cell's value: a number, words, a boolean, or None where there is none.
 CellValue = str | int | float | bool | None
 
+#: An id a cell carries or links to: a letter, then letters, digits, hyphens or underscores. No space, since a fold's
+#: ids are prefixed word by word, and nothing HTML would have to escape.
+_ID = r"^[A-Za-z][A-Za-z0-9_-]*$"
+
+
+def reading_anchor(cell: str, measure_id: str, reading: str) -> str:
+    """The id of the place on a page where code states one reading at one cell, which a finding citing that reading
+    links to.
+
+    One id per reading at a cell, whichever table states it, so the cell a finding's evidence names and the table
+    row that tests it meet without either reading the other's words.
+
+    :param cell: The cell, as a full ``cell_ref`` (``<variant_key>:<apparatus_class_id>``).
+    :ptype cell: str
+    :param measure_id: The measure or judged dimension.
+    :ptype measure_id: str
+    :param reading: ``measure``, ``judged``, or ``trial`` for the overall pass rate.
+    :ptype reading: str
+    :return: The id, ``r-`` and twelve hex digits.
+    :rtype: str
+    """
+    return "r-" + hashlib.sha256(f"{cell}\0{reading}\0{measure_id}".encode()).hexdigest()[:12]
+
+
+def fold_ids(labels: Sequence[str]) -> list[str]:
+    """Each aspect's fold on a campaign's page as the id its section and every id inside it are named by: the label
+    in lower case, each run of other characters one hyphen, numbered where two would read alike.
+
+    :param labels: The aspects' labels, in the campaign's order.
+    :ptype labels: Sequence[str]
+    :return: One id per label, in the same order.
+    :rtype: list[str]
+    """
+    ids: list[str] = []
+    for label in labels:
+        slug = re.sub(r"[^a-z0-9]+", "-", label.casefold()).strip("-") or "aspect"
+        named, number = slug, len(ids) + 1
+        while named in ids:
+            named, number = f"{slug}-{number}", number + 1
+        ids.append(named)
+    return ids
+
+
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
 
@@ -63,6 +107,10 @@ ReportBasis = Literal["analysis", "code_only"]
 ReportSection = Literal[
     "header", "scoreboard", "decision", "memo", "contrasts", "cases", "trials", "not_tested", "methods", "glossary"
 ]
+
+#: The sections a reader opens on demand, each laid out closed: the cases, the trials, what was not tested, the
+#: methods and the glossary.
+FOLDED_SECTIONS: frozenset[str] = frozenset({"cases", "trials", "not_tested", "methods", "glossary"})
 
 #: Each section's heading, in reading order — the order every serializer lays the sections out in, each three words
 #: or fewer. The first screen (``header`` and ``scoreboard``) carries no heading: it is the page's own head. A page
@@ -402,6 +450,23 @@ class TableCell(EvalDocumentModel):
         description=(
             "Whether the number is a difference, read against zero: the glyph holds zero on its scale and draws a "
             "line there. False for a figure read on its own scale."
+        ),
+    )
+    anchor: str | None = Field(
+        default=None,
+        pattern=_ID,
+        description=(
+            "The id this cell carries, so a link elsewhere on the page lands on it: a cell printing one reading's own "
+            "figure at one cell (:func:`reading_anchor`), the first such cell on the page. None for none."
+        ),
+    )
+    ref: str | None = Field(
+        default=None,
+        pattern=_ID,
+        description=(
+            "An id on the page the cell links to: a finding's figure links to another cell printing the same figure "
+            "of the same reading at the same cell, or to the heading of the closed fold holding it; a campaign's "
+            "trace links to the heading of the aspect's fold that prints it. None where nothing on the page prints it."
         ),
     )
 
@@ -782,6 +847,26 @@ class Report(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _every_link_lands(self) -> Self:
+        """Refuse one id carried twice, by cells or blocks, and a cell linking to an id nothing on the page carries.
+
+        A finding's trace links a figure only where the page prints the same figure; a finding whose trace reaches
+        nothing says so in words instead (:data:`~threetears.evals.analysis.report.words.UNTRACED`).
+
+        :raises ValueError: An id is carried twice, or a link names one nothing carries.
+        """
+        anchors = [
+            *(cell.anchor for cell in _cells(self.blocks) if cell.anchor is not None),
+            *(block.anchor for block in self.blocks if block.anchor is not None),
+        ]
+        if twice := sorted({anchor for anchor in anchors if anchors.count(anchor) > 1}):
+            raise ValueError(f"the ids {twice} are carried more than once, and an id names one place on the page")
+        places = set(anchors)
+        if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
+            raise ValueError(f"cells link to {stray}, which nothing on the page carries")
+        return self
+
+    @model_validator(mode="after")
     def _the_basis_matches_what_the_report_holds(self) -> Self:
         """Refuse a report whose basis disagrees with its source or its blocks.
 
@@ -962,6 +1047,19 @@ class CampaignReport(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _every_link_lands_in_a_fold(self) -> Self:
+        """Refuse a cell linking anywhere but an aspect's fold, by the id of the section around it
+        (``aspect-<fold id>``): a fold is closed, and a link landing inside one is lost where a browser does not open
+        it, so a trace lands on the fold's heading.
+
+        :raises ValueError: A link names something other than a fold.
+        """
+        places = {f"aspect-{fold_id}" for fold_id in self.fold_ids}
+        if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
+            raise ValueError(f"cells link to {stray}, which is no aspect's fold")
+        return self
+
+    @model_validator(mode="after")
     def _the_basis_matches_what_the_page_holds(self) -> Self:
         """Refuse a code-only page holding a finding or a writer's words, and a block linked to a finding not held.
 
@@ -1004,7 +1102,10 @@ class CampaignReport(EvalDocumentModel):
                 if isinstance(block, DisclosureBlock)
                 else []
             )
-            linked += [term for term in found if term is not None and term not in linked]
+            for term in found:
+                # Two columns of one table can link one term: it is defined once.
+                if term is not None and term not in linked:
+                    linked.append(term)
         for fold in self.aspects:
             linked += [term for term in fold.report.terms if term not in linked]
         return linked
@@ -1052,11 +1153,7 @@ class CampaignReport(EvalDocumentModel):
     def fold_ids(self) -> list[str]:
         """Each aspect's fold as the id its section and every id inside it are named by: the label in lower case,
         each run of other characters one hyphen, numbered where two would read alike."""
-        ids: list[str] = []
-        for fold in self.aspects:
-            slug = re.sub(r"[^a-z0-9]+", "-", fold.aspect.casefold()).strip("-") or "aspect"
-            ids.append(f"{slug}-{len(ids) + 1}" if slug in ids else slug)
-        return ids
+        return fold_ids([fold.aspect for fold in self.aspects])
 
     def json_document(self) -> dict[str, object]:
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
@@ -1096,10 +1193,16 @@ class CampaignReport(EvalDocumentModel):
         }
 
 
+def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:
+    """Every cell of every table among ``blocks``, in reading order."""
+    return [cell for block in blocks if isinstance(block, TableBlock) for row in block.rows for cell in row.values()]
+
+
 __all__ = [
     "CAMPAIGN_JSON_SHAPE",
     "FINDING_ROLES",
     "FIRST_SCREEN",
+    "FOLDED_SECTIONS",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",
@@ -1131,7 +1234,9 @@ __all__ = [
     "Verdict",
     "VerdictKind",
     "VerdictReason",
+    "fold_ids",
     "interval_text",
     "interval_value_text",
+    "reading_anchor",
     "table_row",
 ]

@@ -29,7 +29,7 @@ from threetears.evals.providers import (
     ProviderError,
     describe_failure,
 )
-from threetears.evals.schema import ClientRequestSettings
+from threetears.evals.schema import ClientRequestSettings, ProviderFailure
 from threetears.evals.testing import (
     RecordedCompletions,
     RecordingRefused,
@@ -660,9 +660,9 @@ async def test_any_other_failure_is_raised_naming_the_provider_and_never_its_env
     with pytest.raises(ProviderError) as raised:
         await model("vendor/m", Scripted((402, envelope))).generate(system="", user="x")
     assert str(raised.value) == "openrouter 402: Insufficient credits"
-    assert raised.value.account and "acct-SECRET" not in str(raised.value)
+    assert raised.value.owner == "account" and "acct-SECRET" not in str(raised.value)
     failure = describe_failure(raised.value)
-    assert (failure.description, failure.payload_withheld, failure.account_refused) == (str(raised.value), False, True)
+    assert (failure.description, failure.payload_withheld, failure.owner) == (str(raised.value), False, "account")
 
 
 async def test_an_error_in_a_200_body_is_a_failure_not_a_reply() -> None:
@@ -673,30 +673,71 @@ async def test_an_error_in_a_200_body_is_a_failure_not_a_reply() -> None:
 
 
 @pytest.mark.parametrize(
-    ("provider_name", "status", "body", "account"),
+    ("provider_name", "status", "body", "owner"),
     [
-        ("openrouter", 401, {"error": {"message": "bad key"}}, True),
-        ("openrouter", 403, {"error": {"message": "flagged by moderation"}}, False),
+        # The account: every model behind the key would get the same answer.
+        ("openrouter", 401, {"error": {"message": "bad key"}}, "account"),
+        ("openrouter", 402, {"error": {"message": "Insufficient credits"}}, "account"),
+        ("anthropic", 403, {"error": {"type": "permission_error", "message": "key not allowed"}}, "account"),
         (
             "anthropic",
             400,
             {"error": {"type": "invalid_request_error", "message": "Your credit balance is too low"}},
-            True,
+            "account",
         ),
-        ("openai", 429, {"error": {"message": "quota", "code": "insufficient_quota"}}, True),
-        ("openai", 429, {"error": {"message": "slow down", "code": "rate_limit_exceeded"}}, False),
-        ("openai", 500, "<html>oops</html>", False),
+        ("openai", 429, {"error": {"message": "quota", "code": "insufficient_quota"}}, "account"),
+        # The provider: it rationed the call, which says nothing about the model.
+        ("openai", 429, {"error": {"message": "slow down", "code": "rate_limit_exceeded"}}, "provider"),
+        ("openrouter", 429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
+        ("anthropic", 429, {"error": {"type": "rate_limit_error", "message": "Number of requests"}}, "provider"),
+        ("openai", 429, "", "provider"),
+        # The candidate: everything else, charged as any failure.
+        ("openrouter", 403, {"error": {"message": "flagged by moderation"}}, "candidate"),
+        ("anthropic", 400, {"error": {"type": "invalid_request_error", "message": "bad request"}}, "candidate"),
+        ("openai", 500, "<html>oops</html>", "candidate"),
+        ("openrouter", 502, {"error": {"code": 502, "message": "upstream died"}}, "candidate"),
     ],
 )
-def test_the_account_flag_is_set_where_every_model_behind_the_key_would_be_refused(
-    provider_name: Any, status: int, body: object, account: bool
+def test_whose_failure_a_providers_answer_is_read_off_its_status_and_body(
+    provider_name: Any, status: int, body: object, owner: str
 ) -> None:
     from threetears.evals.providers.failures import error_from_response
 
     raw = body if isinstance(body, str) else json.dumps(body)
     error = error_from_response(provider_name, status, raw)
-    assert error.account is account
-    assert describe_failure(error).account_refused is account
+    assert error.owner == owner
+    assert describe_failure(error).owner == owner
+
+
+@pytest.mark.parametrize(("code", "owner"), [(429, "provider"), (402, "account"), (502, "candidate")])
+def test_an_error_in_a_200_body_is_owned_by_the_code_it_names(code: int, owner: str) -> None:
+    """OpenRouter answers some failures with a 200 and the status in the body: the body's code is the one read."""
+    from threetears.evals.providers.wire import read_reply
+
+    with pytest.raises(ProviderError) as raised:
+        read_reply("openrouter", "vendor/m", 200, {"error": {"code": code, "message": "upstream said no"}})
+    assert raised.value.status == code
+    assert raised.value.owner == owner and describe_failure(raised.value).owner == owner
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httpx.ReadTimeout("read timed out"),
+        httpx.ConnectError("refused"),
+        TimeoutError(),
+        RuntimeError("the client's own defect"),
+    ],
+)
+def test_a_failure_that_is_not_a_providers_answer_is_the_candidates(exc: BaseException) -> None:
+    assert describe_failure(exc).owner == "candidate"
+
+
+def test_an_owner_outside_the_three_is_refused_at_construction() -> None:
+    with pytest.raises(
+        ValueError, match="ProviderFailure.owner is 'Provider'; it is one of account, provider, candidate"
+    ):
+        ProviderFailure("openrouter 429: slow down", payload_withheld=False, owner="Provider")  # type: ignore[arg-type]
 
 
 def test_describe_failure_is_total_and_withholds_what_it_cannot_vouch_for() -> None:

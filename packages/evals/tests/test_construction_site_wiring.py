@@ -238,7 +238,7 @@ def test_every_non_test_site_names_how_a_failed_call_reads(symbol):
     """A describer that cannot tell an account refusal means an unwired site never stops.
 
     ``withhold_failure_detail`` is right for a host with no error types and wrong for this one: it
-    answers ``account_refused=False`` for every failure, so a judge or simulated user refused for an
+    answers ``owner="candidate"`` for every failure, so a judge or simulated user refused for an
     exhausted account excludes its cell and the run launches the next one into the same key.
     ``JudgeService`` (like ``EvalHost``) takes no default at all, so a site that names none fails
     on construction and this gate is its second line; ``EvalService`` still defaults it, and is

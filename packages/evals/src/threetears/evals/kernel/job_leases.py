@@ -6,7 +6,8 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
 
 - **The holder keeps a lease.** A job's record is written with a lease (:class:`~threetears.evals.schema.JobLease`:
   the holding process's id and an expiry) before its work starts, and :class:`JobLeases` — one per job manager,
-  so one per process — renews it with a conditional write every third of its duration while the work runs.
+  so one per process — renews it with a conditional write every
+  :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of its duration while the work runs.
 - **A job is lost only when its record has not ended and its lease has lapsed** (or it carries none: a run a
   launch prepared and never started). Every process answers that the same, and the first reader to see it WRITES it
   (:func:`settle_job_record`): the record takes its own ending and :class:`~threetears.evals.schema.JobLoss`, with
@@ -20,6 +21,10 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
   write takes nothing over a record carrying ``lost``, its own ending included, and the process that lost it
   neither broadcasts that ending nor tells the run-end hook. The one thing a holder whose renewals failed for a whole
   lease still writes is why, as a fault on its record (``faults``, every kind alike), never its status or its ending.
+- **A holder's own writes keep its lease too.** Every conditional write a job makes of its own record — a run's
+  progress and status, a launch's, a sweep's or an attempt's record — goes through :meth:`JobLeases.write_own`, which
+  extends the lease as a renewal does. So a job whose writes keep beating its renewals to the record keeps its lease,
+  and hears a cancel asked of it, as a renewal would have; a lease the store's clock reads lapsed is never revived.
 - **A cancel is a field on the record** (``cancel_requested_at``), written by whichever process was asked
   (:func:`request_job_cancel`); the holder reads it at its next renewal and ends the job ``cancelled``, so a cancel
   lands within one renewal interval from anywhere.
@@ -39,11 +44,12 @@ the engine runs.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import random
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal, cast
@@ -51,29 +57,29 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
-from threetears.evals.kernel.errors import ConflictError, JobFenced
+from threetears.evals.kernel.errors import ConflictError, JobFenced, StorageError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.scoring import reconstruct_completeness
 from threetears.evals.kernel.storage import RUN_LOST_STATUS, JobRecordStore, LeaseStore
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.job_lease import JobLease, JobLoss, LeasedRecord, with_fault
+from threetears.evals.schema.job_lease import (
+    DEFAULT_JOB_LEASE_S,
+    JOB_LEASE_RENEWAL_FRACTION,
+    LEASE_POOL_WORKERS,
+    JobLease,
+    JobLoss,
+    LeasedRecord,
+    with_fault,
+)
 from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
-#: How long a lease lasts unless renewed, in seconds: the engine's default. A host sets its own on the launching
-#: host (``LaunchHost.job_lease_s``); a job is read lost this long after its process last renewed it.
-DEFAULT_JOB_LEASE_S = 60.0
-
 #: How many times a lease write (a renewal, a lost write, a holder's own write) re-reads and re-applies after losing
 #: its conditional write to another writer, before it gives up for now. Small: each attempt is a fresh read, and a
 #: record that refuses three in a row is contended past what a retry fixes — the next renewal tries again.
 LEASE_WRITE_ATTEMPTS = 3
-
-#: How many threads the leases' own pool (:class:`JobLeases`) runs store round-trips on: enough that every lease a busy
-#: launch holds (a launch and each of its runs) renews at once; renewals past it wait only for each other.
-LEASE_POOL_WORKERS = 8
 
 #: How many more times a renewal that lost :data:`LEASE_WRITE_ATTEMPTS` races to the holder's own writes is tried again,
 #: within the same interval, before it waits the whole interval.
@@ -434,11 +440,11 @@ def write_held_record[R: EvalDocumentModel](
 
     Reads the stored record and writes ``record`` over it with ``if_match``, carrying the stored lease, cancel
     request, loss and faults rather than this copy's (the holder's copy is older than a renewal, a request or a
-    fault written on the record); a lost race
-    re-reads and re-applies.
-    A stored record that has ended — written lost by a reader that found the lease lapsed,
-    or by a shutdown — refuses the write: the job writes nothing more. A record never stored (a generation run
-    inline, which records its attempt only as it ends) is written as it is.
+    fault written on the record); a lost race re-reads and re-applies. A stored record that has ended — written lost
+    by a reader that found the lease lapsed, or by a shutdown — refuses the write: the job writes nothing more. A
+    record never stored (a generation run inline, which records its attempt only as it ends) is written as it is.
+
+    With ``leases``, the write is the holder's own (:meth:`JobLeases.write_own`), which extends the lease it holds.
 
     :param store: Where the record lives.
     :ptype store: JobRecordStore
@@ -453,7 +459,8 @@ def write_held_record[R: EvalDocumentModel](
     :ptype leases: JobLeases | None
     :return: The record as written.
     :rtype: R
-    :raises JobFenced: The stored record has already ended, or this process let go of it; nothing was written.
+    :raises JobFenced: The stored record has already ended, its lease has lapsed by the store's time, or this process
+        let go of it; nothing was written.
     :raises ConflictError: Every attempt lost its race.
     :raises StorageError: A read or write failed.
     """
@@ -475,8 +482,14 @@ def write_held_record[R: EvalDocumentModel](
                     "faults": held.faults,
                 }
             )
+
+        def save(document: R, etag: str | None = etag) -> None:
+            store.save_job_record(_document(document), if_match=etag)
+
         try:
-            store.save_job_record(_document(written), if_match=etag)
+            if leases is not None and stored is not None:
+                return leases.write_own(stored, written, save)
+            save(written)
         except ConflictError:
             # NOSILENT: a lost race re-reads and re-applies; exhausting the attempts raises below
             continue
@@ -534,9 +547,14 @@ class _Held:
     #: when the failures cost the lease (:meth:`JobLeases._expire`).
     last_failure: str | None = field(default=None)
     #: When the lease was last known extended, on this process's monotonic clock: as it was held (just after the
-    #: write carrying its grant), then as each successful renewal's write was issued — before it, so the reckoning
-    #: never credits the lease with more life than the store gave it.
+    #: write carrying its grant), then as each successful renewal's write, or the holder's own write extending it
+    #: (:meth:`JobLeases.write_own`), was issued — before it, so the reckoning never credits the lease with more life
+    #: than the store gave it. Moved on the event loop only.
     renewed_at: float = field(default_factory=time.monotonic)
+    #: The renewal store call that outlived its deadline and has not yet returned, and when it was issued: while it is
+    #: stuck no second renewal of the record is sent (:meth:`JobLeases._renew_one`).
+    stuck_call: Future[tuple[float, RenewalVerdict, str | None]] | None = field(default=None)
+    stuck_since: float = field(default=0.0)
 
 
 class JobLeases:
@@ -547,7 +565,8 @@ class JobLeases:
     every record it holds. A job is held from its record's first write (:meth:`grant` stamps the lease that write
     carries, :meth:`hold` starts renewing it) to its own terminal write (:meth:`release`).
 
-    Every :attr:`renew_every_s` (a third of :attr:`lease_s`) each held record is re-read and its lease extended with
+    Every :attr:`renew_every_s` (:data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of :attr:`lease_s`) each
+    held record is re-read and its lease extended with
     a conditional write. What the read finds is acted on there: a cancel asked of the job is handed to the job's
     ``cancel`` (once), and a record ended by someone else, or a lease that lapsed before it was renewed, stops the
     job through its ``stop`` and releases it — the holder writes nothing more. **A holder whose renewals keep
@@ -561,7 +580,12 @@ class JobLeases:
     held lease renews at once, one hop each, so one slow record delays no other. The store is called from that pool's
     threads as it is from the host's: a store must be safe to call from several threads. A renewal that loses its
     conditional writes to the holder's own progress writes is tried again within the interval after a short jittered
-    wait (:data:`CONTENDED_BACKOFF_S`).
+    wait (:data:`CONTENDED_BACKOFF_S`), and the holder's own writes (:meth:`write_own`) extend the lease themselves,
+    so a renewal that keeps losing to them costs the job nothing.
+
+    **A renewal that lands late says so**: one landing more than one and a half renewal intervals after the lease was
+    last extended logs a warning naming how long since, the interval and the lease, how long the renewal waited to be
+    scheduled and how long its store call took — so a starved process reads apart from a slow store in the logs.
     """
 
     def __init__(
@@ -574,7 +598,8 @@ class JobLeases:
 
         :param store: Where every held record lives.
         :ptype store: LeaseStore
-        :param lease_s: How long a lease lasts unless renewed, in seconds; renewed every third of it.
+        :param lease_s: How long a lease lasts unless renewed, in seconds; renewed every
+            :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of it.
         :ptype lease_s: float
         :raises ValueError: ``lease_s`` is not positive.
         """
@@ -589,6 +614,8 @@ class JobLeases:
         # this process's own count — whose jobs have not yet ended. See fenced.
         self._let_go: set[str] = set()
         self._renewer: asyncio.Task[None] | None = None
+        # The loop the leases are held on (:meth:`hold`), where an own write's bookkeeping is done (:meth:`write_own`).
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def holder_id(self) -> str:
@@ -602,8 +629,9 @@ class JobLeases:
 
     @property
     def renew_every_s(self) -> float:
-        """How often every held lease is renewed: a third of :attr:`lease_s`, so two renewals may fail before it lapses."""
-        return self._lease_s / 3
+        """How often every held lease is renewed: :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of
+        :attr:`lease_s`."""
+        return self._lease_s * JOB_LEASE_RENEWAL_FRACTION
 
     def grant(self) -> JobLease:
         """A fresh lease for a record about to be written: this process, until :attr:`lease_s` from the store's now.
@@ -622,13 +650,161 @@ class JobLeases:
         return self._executor
 
     def _close_pool(self) -> None:
-        """Let the pool go: work already handed to it finishes, and its idle threads exit."""
+        """Let the pool go: work already handed to it finishes, and its idle threads exit. Done when no lease is held,
+        and when a renewal's call is found stuck in it, which retires it with the stuck thread."""
         pool, self._executor = self._executor, None
         if pool is not None:
             pool.shutdown(wait=False)
 
     def _expiry(self, now: datetime) -> str:
         return (now + timedelta(seconds=self._lease_s)).isoformat()
+
+    def _extended(self, leased: LeasedRecord, now: datetime) -> JobLease | None:
+        """The lease ``leased`` is extended to at ``now``, by a renewal or a holder's own write; ``None`` when it is not
+        this process's to extend — another holder's, none, or lapsed by ``now``, which nothing revives."""
+        lease = leased.lease
+        if lease is None or lease.holder != self._holder_id or lease_lapsed(leased, now):
+            return None
+        return JobLease(holder=self._holder_id, expires_at=self._expiry(now))
+
+    def write_own[R: EvalDocumentModel](self, stored: R, written: R, save: Callable[[R], None]) -> R:
+        """The holder's own conditional write of a record it holds: ``written`` lands through ``save``, keeping the lease.
+
+        ``stored`` is the record as just read, and ``save`` makes the conditional write under the etag read with it,
+        raising :class:`~threetears.evals.kernel.ConflictError` on a lost race. When this process holds the record
+        and the stored lease names it, the record goes out with the lease **extended as a renewal extends it** (to
+        :attr:`lease_s` from the store's now), and once the write lands it counts as a renewal: the lease is reckoned
+        extended from when the write was issued, and a cancel asked of the job is handed to it, on the event loop the
+        leases are held on. So a job whose own writes keep beating its renewals to the record keeps its lease, and
+        hears a cancel. Any other record — another process's lease, one this process does not hold — goes out with
+        its lease as stored, and so does a write that ends the job (its lease no longer matters, and a cancel would
+        reach a job already over) and one made while the lease was extended under half a renewal interval ago (no
+        renewal is due, so the store's clock is not read for it: a job ticking fast pays that round-trip at most twice
+        an interval).
+
+        A lease the store's clock reads lapsed is never revived: the record is written lost, as a renewal writes it,
+        this process lets it go and stops its job, and nothing is written. A store clock that cannot be read leaves the
+        lease as stored, logged: the write it was only to extend still lands.
+
+        Blocking: call it off the event loop, as every store call is.
+
+        :param stored: The record as read for this write.
+        :ptype stored: R
+        :param written: The record as the job writes it; its lease is replaced.
+        :ptype written: R
+        :param save: Makes the conditional write of the record handed to it.
+        :ptype save: Callable[[R], None]
+        :return: The record as written.
+        :rtype: R
+        :raises JobFenced: The lease has lapsed by the store's time; nothing was written.
+        :raises ConflictError: ``save`` lost its race.
+        :raises StorageError: ``save`` failed.
+        """
+        leased = _leased(stored)
+        held = self._held.get(leased.id)
+        lease = leased.lease
+        issued = time.monotonic()  # before the store's time is read for the extension, as a renewal's is
+        extended: JobLease | None = None
+        if (
+            held is not None
+            and lease is not None
+            and lease.holder == self._holder_id
+            and not held.kind.ended(written)
+            and issued - held.renewed_at >= self.renew_every_s / 2
+        ):
+            try:
+                now = self._store.store_time()
+            # prawduct:ok-broad-except — the clock read only extends the lease; whatever failed it, the write still lands
+            except Exception as unread:
+                # NOSILENT: the write carries the lease as stored, as an own write did before it extended one; the
+                # renewals keep the lease as they did then, and this line says the extension was skipped and why.
+                contain(
+                    unread,
+                    log=log,
+                    what=(
+                        f"eval.job_lease {held.kind.name}={leased.id} scope={leased.scope_id}: the store's time could "
+                        "not be read to extend the lease on the job's own write; the write carries it as stored"
+                    ),
+                    level="warning",
+                )
+            else:
+                extended = self._extended(leased, now)
+                if extended is None:
+                    self._fence_lapsed(held)
+                    raise JobFenced(
+                        f"{held.kind.name} job '{leased.id}': its lease lapsed at {lease.expires_at} by the store's "
+                        "time; it writes nothing more"
+                    )
+        out = written.model_copy(update={"lease": extended if extended is not None else lease})
+        save(out)
+        if held is not None and extended is not None:
+            asked = (leased.cancel_request_reason,) if leased.cancel_requested_at is not None else None
+            self._on_loop(self._renewed_by_own_write, held, issued, asked)
+        return out
+
+    def _fence_lapsed(self, held: _Held) -> None:
+        """Let go of a record whose lease its own write found lapsed by the store's time, write it lost as a renewal
+        does, and stop its job on the loop — asked first, so a loss write that raises never keeps the job running.
+        Called off the loop, from :meth:`write_own`."""
+        self.let_go(held.record_id)
+        log.warning(
+            "eval.job_lease %s=%s scope=%s: its own write found its lease lapsed by the store's time — stopping it",
+            held.kind.name,
+            held.record_id,
+            held.scope_id,
+        )
+        self._on_loop(held.stop)  # first: the loss write below may raise, and the job must stop regardless
+        try:
+            settle_job_record(self._store, held.kind, held.record_id, held.scope_id)
+        except (ConflictError, StorageError) as unsettled:
+            # The job is let go of and stopped regardless, and its lapsed lease reads lost to every reader, the first
+            # of which writes the loss this write could not.
+            contain(
+                unsettled,
+                log=log,
+                what=(
+                    f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: the loss could not be "
+                    "written here; the next reader writes it"
+                ),
+                level="warning",
+            )
+
+    def _on_loop(self, callback: Callable[..., object], *args: object) -> None:
+        """Run ``callback(*args)`` on the loop the leases are held on: now when called there, else as soon as it can."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return  # nothing is held on a loop that is gone: there is nothing to keep or stop
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            callback(*args)
+            return
+        try:
+            loop.call_soon_threadsafe(callback, *args)
+        except RuntimeError as closed:
+            # The loop closed between the check above and the call: a process shutting down. Dropping the callback
+            # is safe — it only counts a lease renewed (left counted older than it is) or stops a job the shutdown is
+            # stopping — and the write that posted it has landed, so it must not read as failed.
+            contain(
+                closed, log=log, what="eval.job_lease bookkeeping dropped: the event loop had closed", level="warning"
+            )
+
+    def _renewed_by_own_write(self, held: _Held, issued: float, asked: tuple[str | None] | None) -> None:
+        """Count a landed extending own write as a renewal, on the loop: from when it was issued, and with the cancel
+        asked of the job, if any, handed to it once."""
+        if self._held.get(held.record_id) is not held:
+            return  # released or let go since: its job has ended, or no longer holds it
+        self._renewed(held, issued)
+        if asked is not None:
+            self._act_on(held, "cancel", asked[0], self.renew_every_s)
+
+    @staticmethod
+    def _renewed(held: _Held, issued: float) -> None:
+        """Reckon ``held``'s lease extended by a write issued at ``issued``, clearing the last renewal failure."""
+        held.renewed_at = max(held.renewed_at, issued)
+        held.last_failure = None
 
     def holds(self, record_id: str) -> bool:
         """Whether this process holds ``record_id``'s lease."""
@@ -661,6 +837,7 @@ class JobLeases:
         :ptype stop: Callable[[], object]
         """
         self._held[record_id] = _Held(kind=kind, record_id=record_id, scope_id=scope_id, cancel=cancel, stop=stop)
+        self._loop = asyncio.get_running_loop()
         if self._renewer is None or self._renewer.done():
             self._renewer = asyncio.create_task(self._renew_while_held(), name="eval-job-leases")
 
@@ -715,10 +892,11 @@ class JobLeases:
                     if task.done():
                         del renewing[record_id]
                         self._log_renewal_fault(record_id, task)
+                due = time.monotonic()
                 for record_id, held in list(self._held.items()):
                     if record_id not in renewing:
                         renewing[record_id] = asyncio.create_task(
-                            self._renew_one(record_id, held), name=f"eval-job-lease-{record_id}"
+                            self._renew_one(record_id, held, due), name=f"eval-job-lease-{record_id}"
                         )
         finally:
             for task in renewing.values():
@@ -732,32 +910,52 @@ class JobLeases:
             # NOSILENT: logged here; the next interval starts the record's renewal again
             log.error("eval.job_lease renewal of %s raised", record_id, exc_info=task.exception())
 
-    async def _renew_one(self, record_id: str, held: _Held) -> None:
-        """Renew one held lease, and act on what the renewal found.
+    async def _renew_one(self, record_id: str, held: _Held, due: float) -> None:
+        """Renew one held lease, due at ``due`` (monotonic), and act on what the renewal found.
 
         A renewal that lost every conditional write to the holder's own writes is tried again after a short jittered
         wait, a few times, before it is left to the next interval. **The store call is bounded by what is left of the
         lease** by this holder's own count: one that has not returned by then counts as a failed renewal for a whole
         lease and expires the record (:meth:`_expire`) whether or not the call ever returns, its fault naming the
-        hung renewal. The call's worker thread is left to finish on its own.
+        hung renewal — unless the job's own writes extended the lease while it hung (:meth:`write_own`). The call's
+        worker thread is left to finish on its own, and **no second renewal of the record is sent while it is stuck**.
+        The pool it is stuck in is retired (:meth:`_close_pool`): it takes no new work, and the next renewal of any
+        record makes a fresh one, so a stuck call costs one abandoned thread, never a slot of the live pool, however
+        many hangs a long-lived process meets. While the call stays stuck, the record is kept by its job's own writes,
+        each interval logging that it is stuck; with none, it is expired once the lease is a whole lease unextended.
         """
+        if held.stuck_call is not None:
+            if not held.stuck_call.done():
+                await self._while_stuck(held)
+                return
+            held.stuck_call = None
         for round_ in range(CONTENDED_RENEWAL_RETRIES + 1):
             issued = time.monotonic()
+            started = issued
             verdict: RenewalVerdict | None = None
             reason: str | None = None
             # The store call gets only what is left of the lease by this holder's own count: a call that never
             # returns must not keep the record from being expired (_expire), as the check below only runs once it has.
             hung = False
+            pool: ThreadPoolExecutor | None = None
+            call: Future[tuple[float, RenewalVerdict, str | None]] | None = None
             left = held.renewed_at + self._lease_s - time.monotonic()
             try:
                 if (
                     left > 0
                 ):  # none left: the lease is already unrenewed for a whole lease, and the last failure says why
+                    pool = self._pool()
+                    call = pool.submit(contextvars.copy_context().run, self._renew, held)
                     async with asyncio.timeout(left) as deadline:
-                        verdict, reason = await run_blocking(self._pool(), self._renew, held)
+                        renewal = await asyncio.wrap_future(call)
+                    started, verdict, reason = renewal
             # prawduct:ok-broad-except — a failed renewal is retried next interval; the lease outlives two failures
             except Exception as error:
                 hung = deadline.expired()
+                if hung and call is not None and not call.done():
+                    held.stuck_call, held.stuck_since = call, issued
+                    if self._executor is pool:
+                        self._close_pool()  # retired: the stuck thread is abandoned with it, the next need makes another
                 # The store's own error when it raised one; a hung call is named as such, not as the timeout's
                 # cancellation. Only a renewal that lost every write (a "contended" verdict, never an exception) is
                 # a lost race.
@@ -786,10 +984,12 @@ class JobLeases:
             if self._held.get(record_id) is not held:
                 return  # released while the renewal ran: its job wrote its own ending
             if verdict in ("renewed", "cancel"):
-                held.renewed_at = max(held.renewed_at, issued)
-                held.last_failure = None
-            elif hung or (verdict in (None, "contended") and time.monotonic() - held.renewed_at >= self._lease_s):
-                # Not renewed — failed, hung, or every write lost its race — for a whole lease.
+                self._log_if_late(held, due, issued, started, time.monotonic())
+                self._renewed(held, issued)
+            elif verdict in (None, "contended") and time.monotonic() - held.renewed_at >= self._lease_s:
+                # Not renewed — failed, hung, or every write lost its race — for a whole lease. A hung call's deadline
+                # was the lease as it stood when the call began; the job's own writes may have extended it since
+                # (write_own), and then the lease is not lost, and the next interval renews it again.
                 await self._expire(held)
                 return
             wait = 0.0
@@ -802,8 +1002,58 @@ class JobLeases:
             if not wait:
                 return
             await asyncio.sleep(wait)
+            due = time.monotonic()
             if self._held.get(record_id) is not held:
                 return
+
+    async def _while_stuck(self, held: _Held) -> None:
+        """A renewal of ``held`` is due while its last one's store call is still stuck: send none. Expire the record once
+        its lease is a whole lease unextended, as any record no renewal reaches; otherwise its job's own writes are
+        keeping it, and the stuck call is logged."""
+        now = time.monotonic()
+        stuck = TimeoutError(
+            f"the renewal's store call has not returned in {now - held.stuck_since:.1f}s; no second renewal is sent "
+            "while it is stuck, and its lease-pool thread was abandoned with the pool it ran on"
+        )
+        if now - held.renewed_at >= self._lease_s:
+            held.last_failure = f"{type(stuck).__name__}: {stuck}"
+            await self._expire(held)
+            return
+        # NOSILENT: the job's own writes are keeping the lease (write_own); this line names the call still stuck.
+        contain(
+            stuck,
+            log=log,
+            what=(
+                f"eval.job_lease {held.kind.name}={held.record_id} scope={held.scope_id}: renewal stuck — kept by "
+                "the job's own writes"
+            ),
+            level="warning",
+        )
+
+    def _log_if_late(self, held: _Held, due: float, issued: float, started: float, landed: float) -> None:
+        """Log a renewal landing more than one and a half intervals after the lease was last extended.
+
+        The line separates the ways a renewal runs late: the loop's wait (from when it was due to when the loop sent
+        it) and the pool's wait (from then to when a lease-pool thread started it) are a starved or crowded process;
+        the store call (from then until it returned) is a slow store.
+        """
+        since = landed - held.renewed_at
+        if since <= 1.5 * self.renew_every_s:
+            return
+        log.warning(
+            "eval.job_lease %s=%s scope=%s renewal landed late: %.1fs since the lease was last extended, against a "
+            "%.1fs renewal interval and a %.1fs lease; the loop's wait %.2fs, the lease pool's wait %.2fs, the store "
+            "call %.2fs",
+            held.kind.name,
+            held.record_id,
+            held.scope_id,
+            since,
+            self.renew_every_s,
+            self._lease_s,
+            issued - due,
+            started - issued,
+            landed - started,
+        )
 
     async def _expire(self, held: _Held) -> None:
         """Stop a job whose renewals have failed for a whole lease: its lease has lapsed by this process's own count.
@@ -935,12 +1185,18 @@ class JobLeases:
                 retry_in_s,
             )
 
-    def _renew(self, held: _Held) -> tuple[RenewalVerdict, str | None]:
+    def _renew(self, held: _Held) -> tuple[float, RenewalVerdict, str | None]:
         """Renew one held lease: the blocking half of a renewal, one worker hop.
 
-        :return: The verdict, and the cancel's reason when one was asked.
-        :rtype: tuple[RenewalVerdict, str | None]
+        :return: When the worker started it (:func:`time.monotonic`), the verdict, and the cancel's reason when one was
+            asked.
+        :rtype: tuple[float, RenewalVerdict, str | None]
         """
+        started = time.monotonic()
+        return (started, *self._renewal_round_trips(held))
+
+    def _renewal_round_trips(self, held: _Held) -> tuple[RenewalVerdict, str | None]:
+        """A renewal's reads and conditional writes: the verdict, and the cancel's reason when one was asked."""
         for _ in range(LEASE_WRITE_ATTEMPTS):
             record, etag = self._store.load_job_record(held.kind.model, held.record_id, held.scope_id)
             if record is None:
@@ -952,15 +1208,14 @@ class JobLeases:
                 return "ended", None
             if leased.lease is None or leased.lease.holder != self._holder_id:
                 return "fenced", None
-            now = self._store.store_time()
-            if lease_lapsed(leased, now):
-                # Past its own expiry the lease is gone, whoever has noticed: written lost here as any reader
-                # would, so this holder's later writes are refused by the record rather than by its own memory.
+            extended = self._extended(leased, self._store.store_time())
+            if extended is None:
+                # This process's lease, so lapsed: past its own expiry the lease is gone, whoever has noticed. Written
+                # lost here as any reader would, so this holder's later writes are refused by the record rather than
+                # by its own memory.
                 settle_job_record(self._store, held.kind, held.record_id, held.scope_id)
                 return "fenced", None
-            renewed = record.model_copy(
-                update={"lease": JobLease(holder=self._holder_id, expires_at=self._expiry(now))}
-            )
+            renewed = record.model_copy(update={"lease": extended})
             asked = leased.cancel_requested_at is not None
             try:
                 self._store.save_job_record(_document(renewed), if_match=etag)
@@ -1030,7 +1285,6 @@ class JobLeases:
 
 __all__ = [
     "ANALYSIS_JOB",
-    "DEFAULT_JOB_LEASE_S",
     "LEASE_WRITE_ATTEMPTS",
     "RUN_JOB",
     "SHUTDOWN_CAUSE",

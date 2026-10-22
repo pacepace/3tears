@@ -42,7 +42,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.arms import arm_names, short_digest
+from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import (
     AspectReading,
     BarStatus,
@@ -53,6 +55,7 @@ from threetears.evals.analysis.campaign_readings import (
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS
 from threetears.evals.analysis.report.decision import floor_statement, projected_cell
+from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.report.model import (
     CampaignAspectFold,
@@ -67,13 +70,21 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     TextBlock,
     TextRole,
+    fold_ids,
     interval_text,
+    reading_anchor,
     table_row,
 )
-from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, NO_RECOMMENDATION_WORDS
+from threetears.evals.analysis.report.words import (
+    CONFIDENCE_WORDS,
+    NO_RECOMMENDATION_WORDS,
+    UNTRACED,
+    evidence_figure,
+    reading_heading,
+)
 from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, measure_name, sentences
-from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis
-from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis, Finding
+from threetears.evals.kernel.campaign import EvalCampaign, FindingResolution
 from threetears.evals.kernel.declaration import (
     CampaignCall,
     CostLower,
@@ -113,6 +124,8 @@ def build_campaign_report(
     *,
     call: CampaignCall | None = None,
     recommended_variant_key: str | None = None,
+    resolutions: Sequence[FindingResolution] = (),
+    trial_ids: Mapping[str, tuple[str, str]] | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as its page: code's warnings first, the writer's summary and recommendation, code's readings
     on each aspect, the person's call, the findings, then one fold per aspect.
@@ -132,6 +145,12 @@ def build_campaign_report(
         (``EvalAnalysis.recommended_variant_key``); required where the page holds a recommendation, which a
         measurement's never does.
     :ptype recommended_variant_key: str | None
+    :param resolutions: What code filled for each of the memo's findings, by position (``EvalAnalysis.resolutions``),
+        which each finding's trace reads the readings it cites off; empty traces only the trials each names.
+    :ptype resolutions: Sequence[FindingResolution]
+    :param trial_ids: The ids the memo names trials by, each to its aspect and its id in that aspect's bundle
+        (:meth:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.trial_ids`); None traces no trial.
+    :ptype trial_ids: Mapping[str, tuple[str, str]] | None
     :return: The page, ``basis="analysis"`` with a memo, ``code_only`` without one.
     :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
@@ -175,7 +194,7 @@ def build_campaign_report(
     blocks += _bar_blocks(readings, reports)
     if kind != "measurement" or call is not None:
         blocks += _call_blocks(campaign, readings, call)
-    blocks += _memo_blocks(memo, style)
+    blocks += _memo_blocks(memo, style, _Trace.over(campaign, readings, reports, resolutions, trial_ids or {}))
     summaries = {summary.aspect: summary for summary in (memo.aspect_summaries if memo is not None else [])}
     folds = [
         CampaignAspectFold(
@@ -905,9 +924,9 @@ def _date(stamp: str) -> str:
 # =============================================================================
 
 
-def _memo_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
-    """The memo's findings, each its headline and body, then its next steps, every word through the style pass;
-    nothing with no memo."""
+def _memo_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle, trace: _Trace) -> list[ReportBlock]:
+    """The memo's findings, each its headline and body and, folded, its trace; then its next steps, every word through
+    the style pass; nothing with no memo."""
     if memo is None:
         return []
     blocks: list[ReportBlock] = []
@@ -918,10 +937,135 @@ def _memo_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -
         )
         if body := style.prose(finding.body):
             blocks.append(TextBlock(section="memo", role="finding_body", body=body, finding=position))
+        blocks += trace.blocks(position, finding)
     for step in memo.next:
         if title := style.sentence(step.title, plans=True):
             blocks.append(TextBlock(section="memo", role="next_step", body=title))
     return blocks
+
+
+@dataclass(frozen=True)
+class _Trace:
+    """What each finding cites, with the figure code filled for it, linked to the aspect's fold that prints it.
+
+    A fold is closed, and a link landing inside a closed ``<details>`` is lost where a browser does not open it, so a
+    trace lands on the fold's heading (``aspect-<fold id>``), outside it, and states the figure itself: the reader
+    sees the number without a click, and the link says which fold holds it.
+    """
+
+    campaign: EvalCampaign
+    labels: Mapping[str, str]
+    reports: Mapping[str, Report]
+    resolutions: Sequence[FindingResolution]
+    trial_ids: Mapping[str, tuple[str, str]]
+
+    @classmethod
+    def over(
+        cls,
+        campaign: EvalCampaign,
+        readings: CampaignReadings,
+        reports: Mapping[str, Report],
+        resolutions: Sequence[FindingResolution],
+        trial_ids: Mapping[str, tuple[str, str]],
+    ) -> _Trace:
+        """The trace over the campaign's folds, each arm named by its campaign label as the folds name it."""
+        return cls(
+            campaign=campaign,
+            labels=readings.arm_labels(),
+            reports=reports,
+            resolutions=resolutions,
+            trial_ids=trial_ids,
+        )
+
+    def blocks(self, position: int, finding: Finding) -> list[ReportBlock]:
+        """One finding's trace, in its ``Evidence`` fold: a row per reading it cites and per trial it names, each
+        figure linked to the fold that prints it; where nothing links, the line saying so (:data:`UNTRACED`)."""
+        rows = [*self._readings(position), *(self._trial(trial) for trial in finding.trials)]
+        blocks: list[ReportBlock] = []
+        if rows:
+            several = len(self.campaign.aspects) > 1
+            columns = [
+                *([TableColumn(key="aspect", header="Aspect", term="aspect")] if several else []),
+                TableColumn(key="arm", header="Arm"),
+                TableColumn(key="reading", header="Reading"),
+                TableColumn(key="value", header="Value"),
+            ]
+            blocks.append(
+                TableBlock(
+                    section="memo",
+                    finding=position,
+                    name="trace",
+                    title="Cites",
+                    columns=columns,
+                    rows=[{column.key: row[column.key] for column in columns} for row in rows],
+                    order="each reading as the finding cites it, then each trial",
+                    total_rows=len(rows),
+                    fold="Evidence",
+                )
+            )
+        if not any(cell.ref is not None for row in rows for cell in row.values()):
+            blocks.append(
+                DisclosureBlock(section="memo", source="memo", text=UNTRACED, finding=position, fold="Evidence")
+            )
+        return blocks
+
+    def _readings(self, position: int) -> list[dict[str, TableCell]]:
+        """A row per reading the finding cites, read on the aspect it was resolved on, its figure linked to the fold
+        where a cell there prints the same figure."""
+        if position >= len(self.resolutions):
+            return []
+        rows = []
+        for row in self.resolutions[position].evidence:
+            report = self.reports[row.aspect]
+            surface = bundle_decision_surface(report.bundle)
+            ruler = report_rulers(surface, report.bundle.measure_catalog).of(row.measure_id, row.reading)
+            place = reading_anchor(row.cell_ref, row.measure_id, row.reading)
+            printed = any(
+                cell.anchor == place
+                for block in report.blocks
+                if isinstance(block, TableBlock)
+                for line in block.rows
+                for cell in line.values()
+            )
+            figure = evidence_figure(row, ruler)
+            rows.append(
+                {
+                    "aspect": TableCell(value=row.aspect),
+                    "arm": TableCell(value=self._arm(row.aspect, variant_of_cell_ref(row.cell_ref) or row.cell_ref)),
+                    "reading": TableCell(value=ruler.scaled(reading_heading(surface, row.measure_id, row.reading))),
+                    "value": figure.model_copy(update={"ref": self._fold(row.aspect) if printed else None}),
+                }
+            )
+        return rows
+
+    def _trial(self, trial: str) -> dict[str, TableCell]:
+        """A trial the finding names by its campaign id, shown by its id in its aspect's fold, where the reader finds
+        its record, and linked to that fold; an id the campaign does not hold, listed as written and linked nowhere."""
+        if (where := self.trial_ids.get(trial)) is None:
+            return {
+                "aspect": TableCell(value=None),
+                "arm": TableCell(value=None),
+                "reading": TableCell(value="trial"),
+                "value": TableCell(value=trial),
+            }
+        aspect, own = where
+        arm = next((held.arm for held in self.reports[aspect].bundle.trials if held.trial_id == own), None)
+        return {
+            "aspect": TableCell(value=aspect),
+            "arm": TableCell(value=self._arm(aspect, arm) if arm is not None else None),
+            "reading": TableCell(value="trial"),
+            "value": TableCell(value=own, ref=self._fold(aspect) if arm is not None else None),
+        }
+
+    def _arm(self, aspect: str, variant_key: str) -> str:
+        """An arm as the aspect's fold names it: by the campaign's label, else its variant's name."""
+        names = _names(self.reports[aspect].bundle, self.labels)
+        return names[variant_key].label if variant_key in names else f"unplaced arm {short_digest(variant_key)}"
+
+    def _fold(self, aspect: str) -> str:
+        """The id of the section around ``aspect``'s fold, outside its closed ``<details>``."""
+        labels = [held.label for held in self.campaign.aspects]
+        return f"aspect-{fold_ids(labels)[labels.index(aspect)]}"
 
 
 def _summary_blocks(summary: AspectSummary | None, style: _CampaignStyle) -> list[ReportBlock]:

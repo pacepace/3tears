@@ -41,6 +41,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.completion import (
     CompletionProtocolDefect,
     CompletionResult,
+    FailureOwner,
     ProviderFailureDescriber,
     sent_settings_of,
 )
@@ -70,6 +71,13 @@ _JUDGE_PARSE_RETRIES = 1
 #: host's client, so a caller sizing a judge phase's wall clock multiplies the host's own request ceiling
 #: by this (``Ceilings().judge_phase_ceiling_s`` of :class:`~threetears.evals.run.Ceilings`).
 JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
+
+#: What a judge call that raised is said to have done, by whose failure the host's describer read it as.
+_FAILED_BECAUSE: dict[FailureOwner, str] = {
+    "account": "was refused for the calling account",
+    "provider": "was rationed by the provider",
+    "candidate": "failed",
+}
 
 #: How hard the eval judge reasons before it answers, as the effort word its reasoning budget reads as.
 #:
@@ -417,9 +425,11 @@ async def run_judge_llm(
         refused; when it did not, the answer is a reply that broke the protocol.
     :ptype cannot_tell_offered: bool
     :param failure_describer: The host's reading of what ``client`` raises. When given, a raised call's
-        error is its description, and the result carries ``account_refused`` — set when the
-        provider refused the call for the calling account, which no retry or other model
-        changes. ``None`` — a host caller that acts on no account fault — keeps the raised text.
+        error is its description, and the result carries its ``owner``
+        (:data:`~threetears.evals.schema.FailureOwner`): ``account`` when the provider refused the
+        call for the calling account, which no retry or other model changes; ``provider`` when it
+        rationed the call. ``None`` — a host caller that acts on no account fault — keeps the
+        raised text and carries no owner.
     :ptype failure_describer: ProviderFailureDescriber | None
     :return: Parsed result dict with ``criteria_scores`` (normalised to 0-1),
         ``criteria_ordinal_scores`` (the stored integers: 1-5, or 1/0 for pass/fail), ``criteria_names``,
@@ -561,10 +571,13 @@ async def run_judge_llm(
                 message="%s LLM call failed for case %s",
                 args=(label, case_id),
             )
-            reason = "was refused for the calling account" if failure.account_refused else "failed"
+            reason = _FAILED_BECAUSE[failure.owner]
+            # A call after one that returned is the retry an unreadable reply bought: named, so a reader of the
+            # lost score knows the judge had already answered once in a shape that did not parse.
+            call = "LLM call" if attempts_made == 0 else "LLM call's parse retry, after its first reply did not parse,"
             return {
-                "error": f"{label} LLM call {reason}: {failure.description}",
-                "account_refused": failure.account_refused,
+                "error": f"{label} {call} {reason}: {failure.description}",
+                "owner": failure.owner,
                 "judge_usage": _cumulative_usage(),
             }
 

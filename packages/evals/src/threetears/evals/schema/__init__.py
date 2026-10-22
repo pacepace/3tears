@@ -34,6 +34,7 @@ from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocO
 from threetears.evals.schema.completion import (
     BoundCompletionClient,
     CompletionClient,
+    FailureOwner,
     PricedCompletion,
     ProviderFailure,
     ProviderFailureDescriber,
@@ -202,8 +203,11 @@ from threetears.evals.schema.store_port import (
     refuse_on_event_loop,
 )
 from threetears.evals.schema.job_lease import (
+    DEFAULT_JOB_LEASE_S,
     JOB_FAULT_MAX_CHARS,
     JOB_FAULTS_MAX,
+    JOB_LEASE_RENEWAL_FRACTION,
+    LEASE_POOL_WORKERS,
     CancelRequestedAtField,
     CancelRequestReasonField,
     FaultsField,
@@ -284,6 +288,9 @@ __all__ = [
     "FaultsField",
     "JOB_FAULTS_MAX",
     "JOB_FAULT_MAX_CHARS",
+    "DEFAULT_JOB_LEASE_S",
+    "JOB_LEASE_RENEWAL_FRACTION",
+    "LEASE_POOL_WORKERS",
     "with_fault",
     "REFUSAL_KINDS",
     "JobRefusal",
@@ -420,6 +427,7 @@ __all__ = [
     "PreconditionOutcome",
     "ProposedDimSuggestion",
     "ProposedTemplate",
+    "FailureOwner",
     "ProviderFailure",
     "ProviderFailureDescriber",
     "RecordedCall",

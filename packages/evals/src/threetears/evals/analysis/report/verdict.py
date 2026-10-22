@@ -71,8 +71,15 @@ class CauseWords:
 #: ``truncated``'s words and remedy name the cap the judge was sent, filled in by :func:`loss_words`.
 LOSS_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
     "infra": CauseWords(
-        words="the test setup faulted (a simulator, a tool, the deadline or the judge's call failed)",
-        remedy="read the lost trials' errors below, fix that part of the setup, then rerun every arm",
+        words=(
+            "the test setup faulted (a simulator, a tool, the deadline or the judge's call failed), or the provider"
+            " rationed a call"
+        ),
+        remedy=(
+            "read the lost trials' errors below: fix the part of the setup that faulted, then rerun every arm; a call"
+            " the provider rationed needs no fix, only a rerun once it has capacity (fewer calls at once, or a higher"
+            " rate limit)"
+        ),
         short="setup fault",
     ),
     "judge_cannot_tell": CauseWords(

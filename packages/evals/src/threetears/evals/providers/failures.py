@@ -22,7 +22,7 @@ from threetears.evals.negotiation import (
     read_openai_refusal,
     read_router_refusal,
 )
-from threetears.evals.schema import ProviderFailure
+from threetears.evals.schema import FailureOwner, ProviderFailure
 
 __all__ = ["Provider", "ProviderError", "describe_failure", "error_from_response"]
 
@@ -59,15 +59,18 @@ class ProviderError(Exception):
     """A request the provider refused or failed: who, the HTTP status, and the provider's own message.
 
     ``str(error)`` is the provider, the status and the message (at most 500 characters), never the response body,
-    so it is safe to log and to store. ``account`` says the provider refused the calling account rather than the
-    request (a key it refuses, credit spent, a quota exhausted): every model behind the key would get the same
-    answer, so a run stops instead of charging the candidate.
+    so it is safe to log and to store. ``owner`` says whose failure it was, read off the status, and off the body
+    where one status means two things: the calling ``account`` when every model behind the key would get the same
+    answer (a key it refuses, credit spent, a quota exhausted), so a run stops instead of charging the candidate; the
+    ``provider`` when it rationed the call (any other 429), which says nothing about the model, so the cell is
+    excluded and the run goes on; otherwise the ``candidate``, as any failure is charged.
 
     :ivar provider: The provider that answered.
     :ivar status: The HTTP status, or the code an in-body error named (OpenRouter answers some failures with a 200).
     :ivar message: The provider's own message, or ``None`` when its answer carried none.
-    :ivar account: Whether the account was refused: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
-        402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``.
+    :ivar owner: Whose failure it was. ``account``: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
+        402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``. ``provider``: any other
+        429. ``candidate``: everything else.
     """
 
     def __init__(self, provider: Provider, status: int, message: str | None, *, body: object = None) -> None:
@@ -88,13 +91,14 @@ class ProviderError(Exception):
         self._body = body
         code = _error_object(_parsed(body)).get("code")
         credit = status == 400 and provider == "anthropic" and _CREDIT_NOTICE in (message or "").lower()
-        self.account = (
+        account = (
             status == 401
             or status == 402
             or (status == 403 and provider != "openrouter")
             or credit
             or (status == 429 and code == "insufficient_quota")
         )
+        self.owner: FailureOwner = "account" if account else "provider" if status == 429 else "candidate"
         said = f": {self.message}" if self.message else " (the response carried no message)"
         super().__init__(f"{provider} {status}{said}")
 
@@ -137,10 +141,11 @@ def describe_failure(exc: BaseException) -> ProviderFailure:
     """What the engine may know of a call through the client that raised: the host's ``failure_describer``.
 
     Total over ``BaseException``. A :class:`ProviderError` is its own text (the provider, the status, the
-    message; never the body) with its ``account`` flag. An ``httpx`` timeout or transport error names the host it
+    message; never the body) with its ``owner``. An ``httpx`` timeout or transport error names the host it
     was talking to and the error's type. A reply :meth:`~threetears.evals.providers.Model.json` could not validate
     names the schema and the first error, leaving out the reply itself. Anything else is withheld, since its text is
-    unknown, as :func:`~threetears.evals.kernel.withhold_failure_detail` does.
+    unknown, as :func:`~threetears.evals.kernel.withhold_failure_detail` does. Every failure but a
+    :class:`ProviderError` is the ``candidate``'s: nothing in it says the account or the provider declined the call.
 
     :param exc: Whatever the client raised, or anything else the engine caught around the call.
     :ptype exc: BaseException
@@ -148,17 +153,15 @@ def describe_failure(exc: BaseException) -> ProviderFailure:
     :rtype: ProviderFailure
     """
     if isinstance(exc, ProviderError):
-        return ProviderFailure(str(exc), payload_withheld=False, account_refused=exc.account)
+        return ProviderFailure(str(exc), payload_withheld=False, owner=exc.owner)
     if isinstance(exc, httpx.TimeoutException | httpx.TransportError):
         host = exc.request.url.host if _has_request(exc) else "the provider"
         what = "timed out" if isinstance(exc, httpx.TimeoutException) else "could not be sent"
         return ProviderFailure(
-            f"the request to {host} {what} ({type(exc).__name__})", payload_withheld=False, account_refused=False
+            f"the request to {host} {what} ({type(exc).__name__})", payload_withheld=False, owner="candidate"
         )
     if isinstance(exc, TimeoutError):
-        return ProviderFailure(
-            f"the call timed out ({type(exc).__name__})", payload_withheld=False, account_refused=False
-        )
+        return ProviderFailure(f"the call timed out ({type(exc).__name__})", payload_withheld=False, owner="candidate")
     if isinstance(exc, pydantic.ValidationError):
         first = exc.errors()[0] if exc.error_count() else None
         where = ".".join(str(part) for part in first["loc"]) if first else ""
@@ -166,12 +169,12 @@ def describe_failure(exc: BaseException) -> ProviderFailure:
         return ProviderFailure(
             f"the reply did not validate as {exc.title} ({exc.error_count()} errors{said}; the reply is withheld)",
             payload_withheld=True,
-            account_refused=False,
+            owner="candidate",
         )
     return ProviderFailure(
         f"{type(exc).__name__} (its text is withheld: the client does not know what it carries)",
         payload_withheld=True,
-        account_refused=False,
+        owner="candidate",
     )
 
 
