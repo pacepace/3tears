@@ -28,7 +28,7 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.aspects import aspect_view, aspect_views
-from threetears.evals.analysis.bundle.schema import asked_in_time
+from threetears.evals.analysis.bundle.schema import QuestionAfterRuns, asks_a_question, question_after_runs
 from threetears.evals.analysis.campaigns import (
     add_runs_to_campaign,
     campaign_arms,
@@ -304,10 +304,11 @@ def _source(storage: EvalStorage, label: str, template_id: str, control: str | N
     return source
 
 
-def _confirms(campaign: EvalCampaign, label: str) -> bool:
-    """Whether the aspect's question was asked before its first run, as every per-aspect reader decides it."""
+def _asked_before_its_runs(campaign: EvalCampaign, label: str) -> bool:
+    """Whether the aspect's question was asked before its first run, so no page says it was set after them."""
     (template_id,) = {aspect.template_id for aspect in campaign.aspects if aspect.label == label}
-    return asked_in_time(aspect_view(campaign, label).declared, _RAN[str(template_id)])
+    declared = aspect_view(campaign, label).declared
+    return asks_a_question(declared) and question_after_runs(declared, _RAN[str(template_id)]) is None
 
 
 def _after_the_runs(stamp: str | None, label: str, campaign: EvalCampaign) -> bool:
@@ -316,16 +317,16 @@ def _after_the_runs(stamp: str | None, label: str, campaign: EvalCampaign) -> bo
     return stamp is not None and stamp > _RAN[str(template_id)]
 
 
-def test_adopted_aspects_keep_their_own_times_so_each_stays_confirmatory() -> None:
+def test_adopted_aspects_keep_their_own_times_so_neither_reads_as_set_after_its_runs() -> None:
     """Each source asked its question before its own runs; the tools source's time is after the tone source's runs,
-    so dating the adoption by its latest source would turn the tone aspect post hoc."""
+    so dating the adoption by its latest source would say the tone aspect's question was set after its runs."""
     storage, _ = _store()
     tone, tools = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools")
 
     adopted = _create(storage, aspects_from=(tone.id, tools.id))
 
     assert [aspect.asked_at for aspect in adopted.aspects] == [_ASKED["tpl-tone"], _ASKED["tpl-tools"]]
-    assert _confirms(adopted, "tone") and _confirms(adopted, "tools")
+    assert _asked_before_its_runs(adopted, "tone") and _asked_before_its_runs(adopted, "tools")
     assert [aspect.run_ids for aspect in adopted.aspects] == [tone.run_ids, tools.run_ids]
     assert adopted.question == f"{tone.question}\n\n{tools.question}", "the sources' questions, joined"
     assert (adopted.declared_at, adopted.declared_by) == (_ASKED["tpl-tools"], "author"), "the words: the latest"
@@ -345,7 +346,7 @@ def test_a_source_declared_at_a_time_that_cannot_be_ordered_refuses_the_adoption
     assert "declared_at" in refused.value.remedy
 
 
-def test_what_is_added_at_adoption_is_dated_now_by_itself_and_the_adopted_aspects_stay_confirmatory() -> None:
+def test_what_is_added_at_adoption_is_dated_now_by_itself_and_the_adopted_aspects_keep_their_times() -> None:
     storage, _ = _store()
     tone, tools = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools")
 
@@ -357,16 +358,18 @@ def test_what_is_added_at_adoption_is_dated_now_by_itself_and_the_adopted_aspect
         margins={"tone": 2.5},
     )
 
-    assert _confirms(adopted, "tone") and _confirms(adopted, "tools"), "nothing added re-dates an adopted aspect"
+    assert _asked_before_its_runs(adopted, "tone") and _asked_before_its_runs(adopted, "tools"), (
+        "nothing added re-dates an adopted aspect"
+    )
     tools_view = aspect_view(adopted, "tools").declared
     assert tools_view is not None
     added = {floor.key: floor.declared_at for floor in tools_view.floors}
     assert added["tools/rate_drop/*"] is None, "the source's floor was declared with its question"
-    assert _after_the_runs(added["tools/cost_lower/*"], "tools", adopted), "the added floor reads post hoc"
+    assert _after_the_runs(added["tools/cost_lower/*"], "tools", adopted), "the added floor reads as declared after"
     tone_view = aspect_view(adopted, "tone").declared
     assert tone_view is not None and tone_view.margin == 2.5
-    assert _after_the_runs(tone_view.margin_declared_at, "tone", adopted), "the added margin reads post hoc"
-    assert _after_the_runs(tone_view.question_declared_at, "tone", adopted), "the new words read post hoc"
+    assert _after_the_runs(tone_view.margin_declared_at, "tone", adopted), "the added margin reads as declared after"
+    assert _after_the_runs(tone_view.question_declared_at, "tone", adopted), "the new words read as declared after"
     assert tone_view.asked_at == _ASKED["tpl-tone"]
     assert adopted.declared_by == "op"
 
@@ -485,16 +488,20 @@ def test_a_control_named_before_any_result_lands_leaves_the_question_confirmator
     campaign, bundle = _toy_campaign_launched_into(control_before_results=True)
 
     assert campaign.control is not None and bundle.design.control_arm is not None
-    assert bundle.question_declared is True
+    assert bundle.question_declared is True and bundle.reading_scope.question_after_runs is None
     assert bundle.declared is not None and bundle.declared.asked_at == campaign.aspects[0].asked_at
 
 
-def test_a_control_named_after_the_first_result_turns_the_aspect_s_readings_post_hoc() -> None:
-    """Choosing what is read against once the evidence exists makes the reading post hoc, whatever the question."""
+def test_a_control_named_after_the_first_result_dates_the_question_after_the_runs_and_says_so() -> None:
+    """Choosing what is read against once the evidence exists dates the question at the naming: disclosed, with both
+    times, while the readings read as an asked question's do."""
     campaign, bundle = _toy_campaign_launched_into(control_before_results=False)
 
-    assert campaign.control is not None
-    assert bundle.question_declared is False and bundle.reading_scope.question_post_hoc is True
+    assert campaign.control is not None and campaign.control.named_at is not None
+    assert bundle.question_declared is True
+    assert bundle.reading_scope.question_after_runs == QuestionAfterRuns(
+        late="control", at=campaign.control.named_at, first_run_at=bundle.design_frozen_at
+    )
     assert bundle.declared is not None and bundle.declared.asked_at == campaign.control.named_at
     assert campaign.aspects[0].asked_at != campaign.control.named_at, "the stored question keeps its own time"
 
@@ -521,7 +528,7 @@ def test_a_floor_added_at_adoption_reads_as_declared_after_the_evidence_only_onc
     assert view is not None
     added = {floor.key: floor.declared_at for floor in view.floors}["tone/cost_lower/*"]
     assert _declared_before_the_evidence(added, scored) is not results_first
-    assert _confirms(adopted, "tone"), "the adopted aspect keeps its own standing"
+    assert _asked_before_its_runs(adopted, "tone"), "the adopted aspect keeps its own standing"
 
 
 def test_an_arm_named_at_adoption_is_dated_now_and_one_the_source_already_named_keeps_its_time() -> None:

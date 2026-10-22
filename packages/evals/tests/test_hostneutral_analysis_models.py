@@ -110,6 +110,7 @@ def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None
         findings=[finding],
         recommendation=[recommendation or _recommendation()],
         aspect_summaries=[],
+        summary="One finding, and nothing yet argues for a switch.",
         next=[],
     )
     aspect = analysed_aspect(

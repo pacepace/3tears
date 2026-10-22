@@ -464,6 +464,7 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
                 }
             ],
             "aspect_summaries": [],
+            "summary": "Keep the current assistant prompt.",
             "next": [],
         }
     )

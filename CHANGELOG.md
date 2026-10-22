@@ -81,6 +81,41 @@ now records the same ledgers as a full render.
 `threetears.agent.wake.tools.schedule_tools`, renamed from their private forms because
 `webhook_tools` uses them too.
 
+### evals: the campaign page opens on a summary across its aspects; the listing, the page JSON and the aspect label follow the page; a question set after the runs is disclosed, not demoted
+
+- **The memo reads across its aspects (#864).** `AuthoredCampaignAnalysis.summary` is required of every kind: one
+  sentence across every aspect saying what the campaign found and what it means for its question, held to the same
+  figure references and style pass as the rest of the memo. An empty one is refused through the repair round, so a
+  measurement's memo and a choice with no clear winner now say what they found too. The writer prompt asks for it in
+  rule 11 (no new rule; 23,908 of 24,500 characters).
+- **The page reads summary, then recommendation, then the aspects (#864).** After the missed bars, broken floors and
+  guardrails and the question: the writer's summary, the recommendation (now above a choice's pairs), then the aspect
+  table, pairs or measures, To settle, bars and the call, then the findings and one fold per aspect. The summary leads
+  the one-aspect page's memo and the reporter's memo text (`render_memo_as_written`) too, and where the style pass
+  would drop all of its one sentence it is kept as written.
+- **The listing line says what the page opens with (#895).** `analyses_list` (`analysis_verdict`) leads each line with
+  every bar an arm misses, then every floor a candidate breaks, in the page's own words over what was frozen with the
+  analysis, then the verdict. An analysis with neither lists what it did before.
+- **The page JSON keys its recommendation (#880).** `recommendation` is `{arm, variant_key, confidence}`, the key being
+  the one the analysis recorded, so a reader matches a recorded call by key and a relabelled arm no longer miscounts.
+  `CAMPAIGN_JSON_SHAPE` is 2.
+- **One rule names an aspect after its behavior (#879).** `aspect_label_for(behavior)` (`threetears.evals.schema`,
+  `/` written `-`) replaces three hand copies. An aspect in `campaign_create` or `campaign_update` may leave out its
+  `label` and is named by the rule; two unlabelled aspects in one write are refused.
+- **A question set after the runs is disclosed, not demoted (#901).** A campaign whose question was asked after an
+  aspect's first run reads that aspect exactly as if the question had come first: its own comparison family, rows and
+  pairs `confirmatory`, and a change may recommend a candidate on them. The bundle carries both times
+  (`reading_scope.question_after_runs`: `late`, `question` or `control`; `at`; `first_run_at`), the page JSON carries
+  it per aspect, and the campaign's page, each aspect's page and `analyses_list` say it in one sentence under the
+  question ("The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named
+  on …" for a control named after the first result); the writer's summary says it once, with the page's dates. A
+  margin or floor added after a late question is still said as declared after its first result. Bundle shape 60.
+
+**Breaking (pre-release line, no shims):** regenerable schema 12 -> 13, so stored analyses, insights and judge
+profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
+59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
+replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
+
 
 ## v0.74.0 -- 2026-10-20
 

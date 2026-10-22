@@ -1,8 +1,8 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the question declared before the run quoted and the subhead under it, the arms line, the
-verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
+campaign's name —, the question declared quoted, when it was set where that was after the runs, and the subhead under
+it, the arms line, the verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
 cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
@@ -84,8 +84,10 @@ SECTION_TITLES: dict[str, str] = {
 #: The sections the first screen is made of.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
 
-#: What a text block's author wrote it as.
+#: What a text block's author wrote it as. ``summary`` is the memo's read across every aspect, which a campaign's page
+#: opens on after its warnings.
 TextRole = Literal[
+    "summary",
     "answer",
     "recommendation",
     "reason",
@@ -104,7 +106,8 @@ TextRole = Literal[
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
 #: scoreboard that changes how the verdict is read, in normal weight: the case floor, an arm's label that its own row
-#: contradicts. ``basis``: the question declared before the run, quoted whole under the title. ``floor``: on the first
+#: contradicts. ``basis``: the question declared, quoted whole under the title. ``timing``: under it, that the question
+#: was set after the runs, with when each happened, or that it carries no date. ``floor``: on the first
 #: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
 #: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
 #: verdict line. ``design``, ``charts`` and
@@ -124,6 +127,7 @@ DisclosureSource = Literal[
     "call",
     "caveat",
     "basis",
+    "timing",
     "floor",
     "verdict",
     "design",
@@ -860,7 +864,7 @@ class Report(EvalDocumentModel):
 
 #: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
 #: shape would misread the new one.
-CAMPAIGN_JSON_SHAPE = 1
+CAMPAIGN_JSON_SHAPE = 2
 
 
 class CampaignAspectFold(EvalDocumentModel):
@@ -888,11 +892,12 @@ class CampaignAspectFold(EvalDocumentModel):
     @property
     def head(self) -> list[ReportBlock]:
         """The aspect page's first screen as the fold lays it out: its arms line, scoreboard and caveats, without its
-        question and broken floors, which the campaign's first screen carries once, or its verdict line, which reads
-        the aspect alone and could contradict, or pick an arm against, the campaign's table. An aspect of one arm keeps
-        its verdict line: it counts that arm's cases passed and missed, and has no other arm to pick against."""
+        question, when it was set and its broken floors, which the campaign's first screen carries once, or its verdict
+        line, which reads the aspect alone and could contradict, or pick an arm against, the campaign's table. An aspect
+        of one arm keeps its verdict line: it counts that arm's cases passed and missed, and has no other arm to pick
+        against."""
         one_arm = len(self.report.bundle.scoreboard) == 1
-        dropped = {"floor", "basis"} if one_arm else {"floor", "basis", "verdict"}
+        dropped = {"floor", "basis", "timing"} if one_arm else {"floor", "basis", "timing", "verdict"}
         return [
             block
             for block in self.report.blocks
@@ -902,11 +907,12 @@ class CampaignAspectFold(EvalDocumentModel):
 
 
 class CampaignReport(EvalDocumentModel):
-    """A campaign's page: what code read across its aspects, the writer's recommendation, the person's call, then one
-    fold per aspect.
+    """A campaign's page: the writer's summary and recommendation, what code read across its aspects, the person's
+    call, then one fold per aspect.
 
-    **The first screen, in order** (:attr:`blocks`, every one in the ``header`` section): every broken floor, one loud
-    line each, above the title; the question; the writer's recommendation, or a line saying none was written; code's
+    **The first screen, in order** (:attr:`blocks`, in the ``header`` and ``scoreboard`` sections): every missed bar,
+    broken floor and guardrail an arm is not shown safe on, one loud line each, above the title; the question; the
+    writer's summary across every aspect; the writer's recommendation, or a line saying none was written; code's
     table of every aspect × candidate (its change against the control, the interval it was read on, the margin and
     what it shows); the cases that would settle each unclear row; the person's call, or that none is recorded, and
     any broken floor it overrides. :attr:`blocks` may also hold the memo's findings and next steps (``memo``), which
@@ -932,6 +938,28 @@ class CampaignReport(EvalDocumentModel):
     recommendation: Recommendation | None = Field(
         default=None, description="The writer's recommendation, as the memo holds it; None with no memo."
     )
+    recommended_variant_key: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The variant key of the arm the recommendation names, as the analysis recorded it when it was saved "
+            "(`EvalAnalysis.recommended_variant_key`): what a reader matches a call's `variant_key` to, whatever "
+            "later relabels the arm. Set exactly when the page holds a recommendation."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _the_recommendation_is_keyed(self) -> Self:
+        """Refuse a recommendation without its arm's key, and a key with no recommendation to name.
+
+        :raises ValueError: One of ``recommendation`` and ``recommended_variant_key`` is set without the other.
+        """
+        if (self.recommendation is None) != (self.recommended_variant_key is None):
+            raise ValueError(
+                "recommended_variant_key is the key of the arm the recommendation names: set exactly when the page "
+                "holds a recommendation"
+            )
+        return self
 
     @model_validator(mode="after")
     def _the_basis_matches_what_the_page_holds(self) -> Self:
@@ -1032,8 +1060,9 @@ class CampaignReport(EvalDocumentModel):
 
     def json_document(self) -> dict[str, object]:
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
-        the writer's recommendation (its arm and how sure) where there is a memo, the call, and each aspect's bundle by
-        its fingerprint and shape.
+        the writer's recommendation (its arm's label and variant key, and how sure) where there is a memo, the call,
+        and each aspect's bundle by its fingerprint and shape, with what of its question was set after its runs and
+        when (``question_after_runs``, null where nothing was), since its readings read as asked either way.
 
         :return: A JSON-ready mapping.
         :rtype: dict[str, object]
@@ -1047,7 +1076,11 @@ class CampaignReport(EvalDocumentModel):
             "analysis_id": self.analysis_id,
             "recommendation": None
             if recommendation is None
-            else {"arm": recommendation.arm, "confidence": recommendation.confidence},
+            else {
+                "arm": recommendation.arm,
+                "variant_key": self.recommended_variant_key,
+                "confidence": recommendation.confidence,
+            },
             "readings": self.readings.to_dict(),
             "call": self.call.to_dict() if self.call is not None else None,
             "aspects": [
@@ -1055,8 +1088,10 @@ class CampaignReport(EvalDocumentModel):
                     "aspect": fold.aspect,
                     "bundle_fingerprint": fold.report.source.bundle_fingerprint,
                     "bundle_schema_version": fold.report.bundle.schema_version,
+                    "question_after_runs": None if late is None else late.to_dict(),
                 }
                 for fold in self.aspects
+                for late in [fold.report.bundle.reading_scope.question_after_runs]
             ],
         }
 

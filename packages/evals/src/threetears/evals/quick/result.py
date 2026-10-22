@@ -72,6 +72,7 @@ from threetears.evals.kernel import (
     tier_of,
 )
 from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale
+from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -979,7 +980,7 @@ def declare(
     # asks no question, so it declares no margin on the pass rate and none is assumed: its readings are never shown
     # worse.
     aspect: dict[str, Any] = {
-        "label": behavior.replace("/", "-"),
+        "label": aspect_label_for(behavior),
         "run_ids": [summary.run_id for summary in arms.values()],
         "design": design,
     }

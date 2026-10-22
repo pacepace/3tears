@@ -326,7 +326,12 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   generating again; a judge profile only when the operator runs ``judge_profiles_record`` over its runs, which the
 #:   drop returns (``DerivedDropped.judge_profiles``) — until then a campaign that took its judges' tier from it reads
 #:   its own evidence's tier. The refusal of an old document names this step.
-REGENERABLE_SCHEMA_VERSION: int = 12
+#: - **v13** — the memo reads across its aspects: ``AuthoredCampaignAnalysis.summary``, the writer's read across every
+#:   aspect, required of every kind (a measurement's and a no-clear-winner choice's memo included), which the
+#:   campaign's page opens on after code's warnings. A v12 analysis has no summary to read, so it is refused on read,
+#:   never given an empty one, and the operator step is v12's: ``EvalStorage.drop_derived(scopes)``, then generate
+#:   again. Insights and judge profiles are refused with it, as every regenerable bump refuses them.
+REGENERABLE_SCHEMA_VERSION: int = 13
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
 A bump is a drop: regenerable documents written under the old version are refused on read

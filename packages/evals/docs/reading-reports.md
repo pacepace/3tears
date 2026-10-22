@@ -13,7 +13,8 @@ Every campaign is read through one **page**, and every door into it returns the 
 glance, and then holds one fold per aspect, each that aspect's own page. Each door builds it with the one builder over
 the campaign's evidence, so none adds, drops or reorders anything. Most of what a reader needs is countable — who
 ran, what got lost and why, which case failed, what the judge said — so code writes all of it; a model's analysis,
-when one was written, adds only findings and a recommendation, each pinned to the evidence it rests on.
+when one was written, adds only a summary across the aspects, findings and a recommendation, each finding and the
+recommendation pinned to the evidence it rests on.
 
 ```python
 page = result.page                                           # the quick path
@@ -24,8 +25,8 @@ files = page.write("eval-report")  # report.html, report.md, campaign.json, bund
 `report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
 page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
 printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
-and confidence, the call, and each aspect's bundle by its fingerprint ([its shape](serving.md#the-campaign-json)).
-Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
+(by label and variant key) and confidence, the call, and each aspect's bundle by its fingerprint
+([its shape](serving.md#the-campaign-json)). Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
 `AnalysisContextBundle.from_json(...).fingerprint()` over the file returns the fingerprint the page names. A host that
 wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return
 `campaign.json`. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
@@ -39,16 +40,24 @@ first screen. Top to bottom:
 |---|---|---|---|
 | 1 | each missed bar, then each broken floor | each missed bar | each missed bar |
 | 2 | title and question | title and question | title and question |
-| 3 | the writer's recommendation | **By aspect, pair by pair** | **By aspect, measure by measure** |
-| 4 | **By aspect**: each candidate against the control | the writer's recommendation | **Bars** |
-| 5 | **Bars**, then **To show no worse than the margin** | **Bars** | |
-| 6 | the call | the call | |
+| 3 | the writer's summary | the writer's summary | the writer's summary |
+| 4 | the writer's recommendation | the writer's recommendation, or no clear winner | **By aspect, measure by measure** |
+| 5 | **By aspect**: each candidate against the control, then **To show no worse than the margin** | **By aspect, pair by pair** | **Bars** |
+| 6 | **Bars**, then the call | **Bars**, then the call | |
 
 The warnings are bold, above the title (in HTML each a `<p role="alert">`), and the writer's why sits beside each
 one the recommendation answers. A warning only warns: nothing on the page picks an arm, and the bars and floors decide
-nothing.
+nothing. The summary is the memo's one sentence across every aspect, written for every kind, so a measurement and a
+choice with no clear winner open on what they found too. A page with no memo has no summary, and says where the
+recommendation goes that none was written (a measurement, which recommends nothing, says nothing there).
 
-A change of two aspects, one regressing past its floor and one improving, opens:
+`analyses_list` lists each stored analysis by the same warnings, word for word and without the writer's why, then
+its verdict: the aspect page's verdict line for one aspect, what code read on each aspect for several
+(`billing: candidate shown worse; tone: candidate shown better`). With no missed bar and no broken floor, the line is
+the verdict alone.
+
+A change of two aspects, one regressing past its floor and one improving, with a memo recommending production,
+opens:
 
 ```markdown
 **Bar missed on tone: candidate misses the bar on Measuring spend, all roles: its whole interval is on the bad side of the bar.**
@@ -58,7 +67,11 @@ A change of two aspects, one regressing past its floor and one improving, opens:
 # support queue
 "Does the candidate answer support requests as well as production?"
 
-No recommendation was written: no analysis has been generated over this campaign.
+The candidate answers in the house tone far more often but fails billing, so it is not yet the better arm.
+
+**Recommended:** production (high confidence)
+
+- Billing is where refunds are lost, and the candidate breaks its floor there.
 
 **By aspect**
 
@@ -74,7 +87,7 @@ Each arm's gains and its drops are each shown wrongly at most 2.5% of the time.
 
 **The readings.** A change reads each candidate on each aspect as **shown better** (its gain's interval lies wholly
 above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin) or **unclear**, and an
-aspect declaring no margin is never shown worse. A reading the question did not ask before the first result is
+aspect declaring no margin is never shown worse. A reading on an aspect the question does not ask about is
 marked `a lead`: worth chasing, not yet shown. A choice reads each pair: one arm **ahead** where the whole interval
 lies on one side of zero, else `no separation`; ahead is a reading, not a pick. A measurement reads each measure with
 its interval, the pass rate as a count (`45 of 60`).
@@ -121,7 +134,7 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 | v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.07036 |
 ```
 
-A campaign that asked its question before the run opens on its name, then the question quoted on its own line,
+A campaign that asks a question opens on its name, then the question quoted on its own line,
 then the arms line and the verdict. Where a candidate broke a floor, the warning comes first, above the title. A
 declared triage campaign whose v2 broke its 5-point floor renders:
 
@@ -141,9 +154,9 @@ The first screen carries the minimum a reader needs to grasp the result; every c
 - **A broken floor**, where one is: the page's first line, bold, above the title (in HTML a
   `<p class="floor" role="alert">`), one per broken floor, naming the aspect, the arm, the margin and the interval.
   A floor warns and never decides: the verdict below it still says what the contrasts came to.
-- **Title**: a name — the campaign's (`triage v2`), with what it compares where no question was asked before the
-  run (`invoices: does v2 do better than v1?`). A declared question is never cut down to a title.
-- **The question**, where one was asked before the run: quoted alone on the line under the title. It is the
+- **Title**: a name — the campaign's (`triage v2`), with what it compares where no question was asked
+  (`invoices: does v2 do better than v1?`). A declared question is never cut down to a title.
+- **The question**, where one is asked: quoted alone on the line under the title. It is the
   contract the verdict reads, so it is never paraphrased, and it is quoted whole: declare it short.
 - **The arms line**: each arm named in full once (`deepseek-v4.1-flash (production, control)`), by the version its
   responses named where that is one model other than the one asked for (`deepseek-v4-flash-20261001`), then the
@@ -216,8 +229,8 @@ Glossary start folded, and a nav link opens the one it lands on.
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Findings are
   evidence: one that names no reading is not a finding, so it is not laid out here but noted in one line under Not
   tested (`The analysis also noted: …`). The memo's words are held to the page's style (below).
-  A campaign's recommendation is on its first screen, not in a fold; the writer's summary of the aspect opens
-  the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
+  A campaign's summary and recommendation are on its first screen, not in a fold; the writer's summary of the aspect
+  opens the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
 - **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
   Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
   ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
@@ -258,8 +271,8 @@ identifier passes on its way to a reader. A memo's sentence breaking a rule code
 restating a measured number becomes the table's own row); one saying the evidence cannot confirm a difference a
 floor read broken or held becomes code's counts on that reading, the size of the difference left to more cases, and
 is disclosed in Methods. No floor rewrites a memo's recommendation: a floor only warns, and the page's first line is
-the warning. Where the memo says what to run next (a next step and its `Why`, an aspect summary's
-meaning), it states no sample size or cost of its own: a sentence proposing more cases at a count the `To
+the warning. Where the memo says what to run next (a next step and its `Why`, the summary, a reason, an aspect
+summary's meaning), it states no sample size or cost of its own: a sentence proposing more cases at a count the `To
 show the floors hold` table does not state, or naming a cost it does not price, becomes code's sentence on the cases
 showing the floors hold needs once and is dropped after
 (a next step it replaces keeps none of the writer's facts, and one with nothing projected goes); each is listed in
@@ -316,8 +329,8 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
   bought. Near 1, the cases' own differences cancelled and the paired test is far more sensitive than an
   unpaired one; near 0 pairing bought nothing; below 0 the paired test is less sensitive than an unpaired one
   would have been. Blank for an unpaired test, below three paired cases, and where an arm's values do not vary.
-- **Adjusted p** is Holm-corrected within the family: the aspect's, where the campaign's question was asked
-  before the aspect's first run (the readings on the aspect's merit axes, and the pass rate where the aspect
+- **Adjusted p** is Holm-corrected within the family: the aspect's, where the campaign asks it a question, whenever
+  that was asked (the readings on the aspect's merit axes, and the pass rate where the aspect
   declares a margin), or else one exploratory family over every reading on a merit axis. A measure
   on no axis is never tested. That keeps the rig's own readings out: the judge's time (`judge_ms`), the
   drain wait, and `cost_usd` and `program_cost`, which include what the judge spent. The candidate's spend
@@ -439,18 +452,23 @@ writer may adopt nothing. A campaign that declared no design at all is an explor
 says so: its readings confirm nothing, and the design its comparisons read was inferred from the runs, not declared
 ([when to declare one](measuring-soundly.md#start-from-the-question)). A guardrail is never exploratory.
 
-**A question counts only if it was asked before the evidence.** A question confirms nothing on an aspect when it was
-asked after the aspect's first member run was created, since it may have been asked of results that already
-existed. Each aspect carries its own time (`Aspect.asked_at`), read against its earliest member run's `created_at`
-(`asked_in_time`), and a control named after the aspect's first result (the earliest result the aspect reads)
-makes it post hoc too. Every reader that scopes a
-reading by the question (the comparison family, the reading scope, the verdict order, the disclosure) reads that one
-time, so they cannot disagree. A late question builds no family, `reading_scope.question_post_hoc` says so, and
-`question_declared` is true only when the question was asked in time. When it came late, the one disclosure says
-so. An aspect adopted from another campaign (`aspects_from`) keeps its source's time, so adopting it never re-dates
-its readings; a margin, floor or arm added at adoption carries its own time, and reads as declared after the runs
-where that is later than the aspect's first run. To keep a question from coming late, a campaign's declaration is
-frozen once any aspect holds a run: `campaign_update` refuses `question`, `aspects` and `floors` in any form, and
+**A question asked after the runs is said, never demoted.** A question asked after an aspect's first member run was
+created may have been asked with its results in view, so the page says so; its readings read exactly as they would
+had it been asked first, because the operator is trusted to have set it in good faith, and the line lets a reader
+judge. Each aspect carries its own time (`Aspect.asked_at`), read against its earliest member run's `created_at`; a
+control named after the aspect's first result (the earliest result the aspect reads) is disclosed the same way.
+Where either came after, the bundle says what was late and when (`reading_scope.question_after_runs`: `late`,
+`question` or `control`; `at`, null when no time was recorded; `first_run_at`), the page JSON carries it beside each
+aspect, and the campaign's page, each aspect's page and the analysis listing say it in one sentence under the
+question: "The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named on
+…". Each date is in its stamp's own offset, as every other date on the page is; where the later does not fall on
+a later day than the earlier, both carry their times of day and offsets. The writer says it once in its summary, with the page's dates.
+A margin or a floor declared no later than a late question is said by that line; one added later is still said as
+declared after its first result. A question with no date, and a control named late, hold nothing back. `question_declared` is true wherever a
+question is asked, whenever. An aspect adopted from another campaign (`aspects_from`) keeps its source's time, so
+adopting it never re-dates its question; a margin, floor or arm added at adoption carries its own time, and reads as
+declared after the runs where that is later than the aspect's first run. To keep a question from coming late, a
+campaign's declaration is frozen once any aspect holds a run: `campaign_update` refuses `question`, `aspects` and `floors` in any form, and
 refuses re-pointing or clearing the control (which may be named once, from a run, while none is); the name and
 description stay editable, and an amended question is a new campaign that adopts the aspects it keeps.
 
@@ -545,12 +563,16 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
-**One memo per campaign: findings, one recommendation, a summary per aspect.** The writer authors no headline, no
-chart and no count: the first screen is code's. It reads the campaign bundle (each aspect's readings, trials, their
-states, causes, failed checks and the judge's reasons) and writes findings, each naming in `trials` the trials it is
-drawn from; at most one recommendation (`Recommendation`: an arm, reasons, confidence, the findings it `rests_on`);
-one summary per aspect (what changed, how sure, what it means here), laid out at the top of that aspect's fold; and
-next steps. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
+**One memo per campaign: a summary, findings, one recommendation, a summary per aspect.** The writer authors no
+headline, no chart and no count: the warnings and readings are code's. It reads the campaign bundle (each aspect's
+readings, trials, their states, causes, failed checks and the judge's reasons) and writes one `summary`, its read
+across every aspect in a sentence, required of every kind and laid out after the warnings and the question; findings,
+each naming in `trials` the trials it is drawn from; at most one recommendation (`Recommendation`: an arm, reasons,
+confidence, the findings it `rests_on`); one summary per aspect (what changed, how sure, what it means here), laid out
+at the top of that aspect's fold; and next steps. The summary is prose like a finding's body: a number in it is a
+figure reference code renders, an empty one is refused through the one repair round, and the page holds it to the
+style pass. It is one sentence, so where the pass would leave none of it the page keeps it as written, as it keeps a
+finding's title; a summary proposing a sample size or cost no code computed is dropped and listed in Methods. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
 
 | Kind | The writer must | The writer may not |
 |---|---|---|

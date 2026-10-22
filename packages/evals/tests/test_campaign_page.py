@@ -2,19 +2,22 @@
 
 The fixture is two real runs read as one campaign of two aspects: on billing the candidate regresses (it passes six of
 twenty cases to production's eighteen) and breaks the 10-point floor declared there; on tone it improves (nineteen to
-six). Both readings are on the first screen, the broken floor first of all; the writer's recommendation, when there is
-a memo, comes next, then code's table, then the person's call. Each aspect's own page sits in its fold.
+six). Both readings are on the first screen, the broken floor first of all; the writer's summary across the aspects
+and its recommendation, when there is a memo, come next, then code's table, then the person's call. Each aspect's own
+page sits in its fold.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from collections.abc import Callable
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Literal
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -28,6 +31,7 @@ from threetears.evals.analysis import (
     report_html,
     serialize_report,
 )
+from threetears.evals.analysis.bundle.schema import QuestionAfterRuns
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import (
@@ -37,7 +41,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TextBlock,
 )
-from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
+from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED, NO_RECOMMENDATION_WORDS
 from threetears.evals.analysis.style import lint_page
 from threetears.evals.kernel.authored import (
     AspectSummary,
@@ -50,7 +54,8 @@ from threetears.evals.kernel.authored import (
     Recommendation,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import BarOverride, CampaignCall, OverriddenBar, RateDrop
+from threetears.evals.kernel.declaration import BarOverride, CampaignCall, Floor, OverriddenBar, RateDrop
+from threetears.evals.kernel.errors import RefusedInput
 
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
@@ -67,6 +72,18 @@ from packages.evals.tests.campaign_support import (
 
 _MEASURED: dict[str, MeasuredAspect] = {}
 
+#: What a flag says was set after the runs.
+QuestionAfterRunsLate = Literal["question", "control"]
+
+#: When the late aspect's question was asked: long after its runs.
+_ASKED_LATE = "2099-01-01T00:00:00+00:00"
+
+
+def _paged(stamp: str) -> str:
+    """An ISO-8601 instant as the page dates it: ``1 Jan 2099``."""
+    moment = datetime.fromisoformat(stamp)
+    return f"{moment.day} {moment:%b %Y}"
+
 
 async def _aspect(label: str) -> MeasuredAspect:
     """Each fixture aspect, measured once for the module: billing regresses past its floor, tone improves, and late
@@ -79,7 +96,7 @@ async def _aspect(label: str) -> MeasuredAspect:
         elif label == "tone":
             _MEASURED[label] = await measured_aspect("tone", production=6, candidate=19)
         else:
-            _MEASURED[label] = await measured_aspect(label, production=6, candidate=19, asked_at=None)
+            _MEASURED[label] = await measured_aspect(label, production=6, candidate=19, asked_at=_ASKED_LATE)
     return _MEASURED[label]
 
 
@@ -120,7 +137,17 @@ async def _page(
         )
         for label, evidence in bundles.items()
     }
-    return build_campaign_report(campaign, read, reports, memo, call=call)
+    return build_campaign_report(
+        campaign, read, reports, memo, call=call, recommended_variant_key=_recorded_key(read, memo)
+    )
+
+
+def _recorded_key(read: CampaignReadings, memo: AuthoredCampaignAnalysis | None) -> str | None:
+    """The key an analysis records for the arm its memo recommends: the arm the readings label so."""
+    recommended = memo.recommended() if memo is not None else None
+    if recommended is None:
+        return None
+    return {label: key for key, label in read.arm_labels().items()}.get(recommended.arm)
 
 
 def _memo() -> AuthoredCampaignAnalysis:
@@ -162,12 +189,31 @@ def _memo() -> AuthoredCampaignAnalysis:
                 means="Worth keeping for a later candidate.",
             ),
         ],
+        summary=_SUMMARY,
         next=[
             NextStep(
                 title="Fix the billing prompt and run again.", why="It is the only loss.", leverage="high", lever=""
             )
         ],
     )
+
+
+#: The test memo's read across its aspects.
+_SUMMARY = "v2 wins on tone and loses billing, where refunds are lost, so production stays."
+
+
+def _opening(page: CampaignReport) -> list[tuple[str, str]]:
+    """What the page says after its warnings and its question, up to the first table: each text block by its role,
+    each line by its source and text."""
+    said: list[tuple[str, str]] = []
+    for block in page.blocks:
+        if isinstance(block, TableBlock):
+            break
+        if isinstance(block, TextBlock) and block.role != "override":
+            said.append(("text", block.role))
+        elif isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis"}:
+            said.append((block.source, block.text))
+    return said
 
 
 def _first_screen_markdown(page: CampaignReport) -> str:
@@ -198,12 +244,14 @@ async def test_both_aspects_readings_are_on_the_first_screen_and_the_broken_floo
     assert header.count('role="alert"') == 1
 
 
-async def test_the_first_screen_runs_in_order_floor_question_recommendation_table_call() -> None:
+async def test_the_first_screen_runs_in_order_floor_question_summary_recommendation_table_call() -> None:
+    """A change with a recommendation reads its summary, then the recommendation, then the aspect table."""
     page = await _page("billing", "tone", memo=_memo())
     first = _first_screen_markdown(page)
     order = [
         first.index("**Floor broken on billing"),
         first.index(f'"{QUESTION}"'),
+        first.index(_SUMMARY),
         first.index(f"**Recommended:** {CONTROL_LABEL} (high confidence)"),
         first.index("- The billing floor is broken"),
         first.index("**By aspect**"),
@@ -211,6 +259,23 @@ async def test_the_first_screen_runs_in_order_floor_question_recommendation_tabl
     ]
     assert order == sorted(order)
     assert page.basis == "analysis" and page.finding_count == 1
+    header = _header_html(page)
+    order = [
+        header.index('role="alert"'),
+        header.index("<h1>"),
+        header.index('data-role="summary"'),
+        header.index('data-role="recommendation"'),
+        header.index('data-table="aspects"'),
+    ]
+    assert order == sorted(order)
+    assert _opening(page) == [("text", "summary"), ("text", "recommendation"), ("text", "reason")]
+
+
+async def test_a_code_only_page_has_no_summary_and_says_no_recommendation_was_written_before_the_table() -> None:
+    page = await _page("billing", "tone")
+    first = _first_screen_markdown(page)
+    assert first.index(f'"{QUESTION}"') < first.index(NO_RECOMMENDATION) < first.index("**By aspect**")
+    assert _opening(page)[0] == ("memo", NO_RECOMMENDATION)
 
 
 async def test_with_no_memo_the_page_says_no_recommendation_was_written_and_holds_no_writer_s_words() -> None:
@@ -326,13 +391,173 @@ async def test_a_margin_late_on_some_aspects_is_one_line_naming_them() -> None:
     assert first.count("after its first result") == 1 and first.count("after the first result") == 1
 
 
-async def test_an_aspect_asked_after_its_runs_reads_as_a_lead() -> None:
+async def test_an_aspect_asked_after_its_runs_reads_as_asked_and_the_page_says_when_under_the_question() -> None:
+    """Owner ruling (2026-10-21): disclosed, not enforced. Its row reads as tone's, asked in time, does: no lead."""
     page = await _page("billing", "late")
     first = _first_screen_markdown(page)
-    assert "The question was asked after the first run on late, so its readings are leads." in first
-    assert "shown better, a lead" in first
+    late_bundle = page.aspects[1].report.bundle
+    assert late_bundle.design_frozen_at is not None
+    began = _paged(late_bundle.design_frozen_at)
+    said = f"The question was set on 1 Jan 2099, after the runs on late began on {began}."
+    assert said in first, "billing was asked in time, so the line names the aspect it holds on"
+    assert first.index(QUESTION) < first.index(said)
+    assert "a lead" not in first
     (late,) = page.readings.on_aspect("late")
-    assert not late.confirmatory
+    assert late.confirmatory and late.reading == "better"
+    (tone,) = (await _page("billing", "tone")).readings.on_aspect("tone")
+    assert (late.reading, late.change, late.gain_interval) == (tone.reading, tone.change, tone.gain_interval)
+    assert "was set on" not in _first_screen_markdown(await _page("billing", "tone")), "asked in time: nothing said"
+
+
+async def test_a_question_with_no_recorded_date_is_said_to_be_possibly_after_the_runs() -> None:
+    def undated(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        late = bundle.reading_scope.question_after_runs
+        if late is None:
+            return bundle
+        scope = bundle.reading_scope.model_copy(update={"question_after_runs": late.model_copy(update={"at": None})})
+        return bundle.model_copy(update={"reading_scope": scope})
+
+    page = await _page("billing", "late", bundle=undated)
+    first = _first_screen_markdown(page)
+    assert "The question carries no date, so it may have been set after the runs on late began on " in first
+
+
+#: When billing's question is flagged as set below: after its runs began, which these tests take as given.
+_SET = "2099-01-01T00:00:00+00:00"
+
+#: Later than :data:`_SET`: something declared after the late question.
+_LATER = "2099-06-01T00:00:00+00:00"
+
+
+def _flagged(
+    late: QuestionAfterRunsLate = "question", at: str | None = _SET, *, margin_at: str | None = _SET
+) -> Callable[[AnalysisContextBundle], AnalysisContextBundle]:
+    """Billing's bundle with what was set after its runs flagged at ``at``, its question worded then, and its margin
+    declared at ``margin_at``."""
+
+    def change(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        if bundle.aspect != "billing":
+            return bundle
+        assert bundle.declared is not None and bundle.design_frozen_at is not None
+        flag = QuestionAfterRuns(late=late, at=at, first_run_at=bundle.design_frozen_at)
+        scope = bundle.reading_scope.model_copy(update={"question_after_runs": flag})
+        declared = bundle.declared.model_copy(update={"question_declared_at": _SET, "margin_declared_at": margin_at})
+        return bundle.model_copy(update={"reading_scope": scope, "declared": declared})
+
+    return change
+
+
+async def _billing_floor_at(stamp: str | None) -> list[Floor]:
+    (floor,) = (await _aspect("billing")).campaign.floors
+    return [floor.model_copy(update={"declared_at": stamp})]
+
+
+async def test_a_margin_and_a_floor_added_after_a_question_set_late_are_still_said() -> None:
+    """The line under the question says what was declared with it; what came later is said as any late stamp is."""
+    later = await _page("billing", "tone", bundle=_flagged(margin_at=_LATER), floors=await _billing_floor_at(_LATER))
+    first = _first_screen_markdown(later)
+    assert "The question was set on 1 Jan 2099, after the runs on billing began on " in first
+    assert "The margin on billing was declared after its first result." in first
+    assert (
+        "The floor that no pass rate drops by more than 10 points on billing was declared after its first result."
+        in first
+    )
+    assert "worded after" not in first, "worded when it was set: the line under the question says it"
+
+    with_it = await _page("billing", "tone", bundle=_flagged(), floors=await _billing_floor_at(_SET))
+    assert "declared after its first result" not in _first_screen_markdown(with_it), "declared with the question"
+
+
+async def test_an_undated_question_or_a_late_control_holds_no_late_stamp_back() -> None:
+    """Neither orders the margin against the question: a question with no date orders nothing, and a control named
+    late dates only itself, so a margin later than the first result is said either way."""
+    for flag in (_flagged("question", None), _flagged("control", _SET)):
+        first = _first_screen_markdown(await _page("billing", "tone", bundle=flag))
+        assert "The margin on billing was declared after its first result." in first
+
+
+async def test_a_control_named_after_the_first_result_is_said_as_the_control_not_the_question() -> None:
+    first = _first_screen_markdown(await _page("billing", "tone", bundle=_flagged("control", _SET)))
+    assert "The control was named on 1 Jan 2099, after the runs on billing began on " in first
+    assert "The question was set" not in first
+    undated = _first_screen_markdown(await _page("billing", "tone", bundle=_flagged("control", None)))
+    assert (
+        "The control was named at a time that cannot be ordered, so it may have been named after the runs on" in undated
+    )
+
+
+def test_two_times_on_one_day_carry_their_times_of_day() -> None:
+    same = QuestionAfterRuns(late="question", at="2026-10-14T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
+    assert same.page_dates() == ("14 Oct 2026 at 15:00 UTC", "14 Oct 2026 at 09:30 UTC")
+    apart = QuestionAfterRuns(late="question", at="2026-10-20T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
+    assert apart.page_dates() == ("20 Oct 2026", "14 Oct 2026")
+    undated = QuestionAfterRuns(late="question", at=None, first_run_at="2026-10-14T09:30:00+00:00")
+    assert undated.page_dates() == (None, "14 Oct 2026")
+
+
+def test_each_time_is_dated_in_its_own_offset_as_the_rest_of_the_page_dates_it() -> None:
+    """The Methods row dates the design's freeze in the stamp's own offset; the line under the question dates the same
+    instant the same way, so one page never prints one instant as two days. Where the later time falls on no later day
+    than the earlier in their own offsets, both carry their times of day and offsets, so it never reads as earlier."""
+    began = "2026-10-15T01:00:00+00:00"
+    apart = QuestionAfterRuns(late="question", at="2026-10-16T23:30:00-05:00", first_run_at=began)
+    assert apart.page_dates() == ("16 Oct 2026", "15 Oct 2026")
+    # 04:30 UTC on 15 Oct, after the runs; in its own offset, still 14 Oct.
+    crossed = QuestionAfterRuns(late="question", at="2026-10-14T23:30:00-05:00", first_run_at=began)
+    assert crossed.page_dates() == ("14 Oct 2026 at 23:30 UTC-05:00", "15 Oct 2026 at 01:00 UTC")
+
+
+@pytest.mark.parametrize("field", ["at", "first_run_at"])
+@pytest.mark.parametrize("stamp", ["sometime in October", "2026-10-14T09:30:00"])
+def test_a_flag_whose_time_cannot_be_ordered_is_refused_not_printed_raw(field: str, stamp: str) -> None:
+    times = {"at": "2026-10-20T15:00:00+00:00", "first_run_at": "2026-10-14T09:30:00+00:00", field: stamp}
+    with pytest.raises(ValidationError, match=rf"the late-question flag's {field} is stamped {re.escape(repr(stamp))}"):
+        QuestionAfterRuns(late="question", **times)
+    flag = QuestionAfterRuns(late="question", at="2026-10-20T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
+    assert flag.page_dates() == ("20 Oct 2026", "14 Oct 2026"), "the same flag with ordered times is read"
+
+
+@pytest.mark.parametrize(
+    ("flag", "said"),
+    [
+        (None, "question declared before the runs"),
+        (("question", _SET), "question declared after the runs began"),
+        (("question", None), "question undated, so possibly declared after the runs began"),
+        (("control", _SET), "question declared before the runs, control named after they began"),
+        (("control", None), "question declared before the runs, control named at a time that cannot be ordered"),
+    ],
+)
+async def test_the_methods_name_the_design_as_the_line_under_the_question_does(
+    flag: tuple[QuestionAfterRunsLate, str | None] | None, said: str
+) -> None:
+    bundle = (await _aspect("billing")).bundle
+    if flag is not None:
+        bundle = _flagged(*flag)(bundle)
+    report = build_code_only_report(bundle, assembled_at=ASSEMBLED_AT)
+    (methods,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "methods"]
+    (design,) = [str(row["value"].value) for row in methods.rows if row["item"].value == "Design"]
+    assert design.startswith(said + ", frozen ")
+
+
+async def test_the_page_json_carries_each_aspect_s_flag_beside_its_readings() -> None:
+    page = await _page("billing", "tone", bundle=_flagged())
+    aspects = page.json_document()["aspects"]
+    assert isinstance(aspects, list)
+    billing = (await _aspect("billing")).bundle
+    assert [aspect["question_after_runs"] for aspect in aspects] == [
+        {"late": "question", "at": _SET, "first_run_at": billing.design_frozen_at},
+        None,
+    ]
+
+
+async def test_the_line_saying_when_the_question_was_set_shows_no_field_name() -> None:
+    page = await _page("billing", "late")
+    (said,) = [
+        block.text
+        for block in page.blocks
+        if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "timing"
+    ]
+    assert "_" not in said and "after_runs" not in campaign_report_html(page)
 
 
 class _Tags(HTMLParser):
@@ -387,9 +612,30 @@ async def test_json_is_the_readings_and_each_aspect_s_bundle_by_its_fingerprint(
     assert serialize_report(page, "html") == campaign_report_html(page)
 
 
-async def test_with_a_memo_the_json_carries_the_recommendation() -> None:
-    document = json.loads(serialize_report(await _page("billing", "tone", memo=_memo()), "json"))
-    assert document["recommendation"] == {"arm": CONTROL_LABEL, "confidence": "high"}
+async def test_with_a_memo_the_json_carries_the_recommendation_its_arm_named_by_label_and_by_key() -> None:
+    page = await _page("billing", "tone", memo=_memo())
+    document = json.loads(serialize_report(page, "json"))
+    control = page.readings.control
+    assert control is not None and page.recommended_variant_key == control
+    assert document["recommendation"] == {"arm": CONTROL_LABEL, "variant_key": control, "confidence": "high"}
+
+
+async def test_a_page_whose_memo_recommends_an_arm_is_refused_without_that_arm_s_key() -> None:
+    campaign, measured = await _campaign("billing", "tone")
+    bundles = {one.bundle.aspect: one.bundle for one in measured}
+    read = campaign_readings(campaign, bundles, arms=arms_of(measured[0]))
+    reports = {
+        label: build_code_only_report(
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+        )
+        for label, evidence in bundles.items()
+    }
+    with pytest.raises(RefusedInput, match="no variant key for that arm") as refused:
+        build_campaign_report(campaign, read, reports, _memo())
+    assert "EvalAnalysis.recommended_variant_key" in refused.value.remedy
+    # A key is the recommendation's: a page with none holds none.
+    page = build_campaign_report(campaign, read, reports, None, recommended_variant_key="a" * 64)
+    assert (page.recommendation, page.recommended_variant_key) == (None, None)
 
 
 async def test_a_fold_names_the_arms_as_the_campaign_s_table_does() -> None:
@@ -570,7 +816,7 @@ async def _kind_page(
         )
         for label, evidence in bundles.items()
     }
-    return build_campaign_report(campaign, read, reports, memo)
+    return build_campaign_report(campaign, read, reports, memo, recommended_variant_key=_recorded_key(read, memo))
 
 
 def _choice_memo(arm: str = "beta") -> AuthoredCampaignAnalysis:
@@ -591,11 +837,97 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
     ]
     first = _first_screen_markdown(page)
     assert CHOICE_NOTE in first
-    # The pairs, then the writer's recommendation; no control-based table.
-    assert first.index("**By aspect, pair by pair**") < first.index("**Recommended:** beta (high confidence)")
+    # The writer's summary and recommendation, then the pairs; no control-based table.
+    assert first.index(_SUMMARY) < first.index("**Recommended:** beta (high confidence)")
+    assert first.index("**Recommended:** beta (high confidence)") < first.index("**By aspect, pair by pair**")
     assert "**By aspect**\n" not in first
     markdown = campaign_report_markdown(page)
     assert "alpha ahead of beta." in markdown and "alpha and beta not separated." in markdown
+
+
+def _recommending_nothing(summary: str) -> AuthoredCampaignAnalysis:
+    """The test memo recommending no arm, with ``summary`` read across its aspects."""
+    return _memo().model_copy(update={"recommendation": [], "aspect_summaries": [], "summary": summary})
+
+
+async def test_a_choice_with_no_clear_winner_opens_on_its_summary_then_says_so_then_the_pairs() -> None:
+    summary = "Neither arm pulls ahead on billing or refunds, so cost is the only thing left to choose on."
+    page = await _kind_page("billing", "refunds", memo=_recommending_nothing(summary))
+    assert page.readings.kind == "choice" and page.recommendation is None
+    assert _opening(page) == [("text", "summary"), ("memo", NO_RECOMMENDATION_WORDS["choice"])]
+    first = _first_screen_markdown(page)
+    assert first.index(summary) < first.index("No clear winner") < first.index("**By aspect, pair by pair**")
+    header = _header_html(page)
+    assert header.index("<h1>") < header.index('data-role="summary"') < header.index('data-table="pairs"')
+
+
+async def test_a_measurement_opens_after_its_warning_on_its_summary_then_its_measures() -> None:
+    summary = "Alpha passes most cases on solo and costs too much a reply to meet its bar."
+    page = await _kind_page("solo", memo=_recommending_nothing(summary))
+    assert page.readings.kind == "measurement"
+    assert _opening(page) == [("text", "summary")]
+    first = _first_screen_markdown(page)
+    assert first.startswith("**Bar missed on solo:")
+    assert first.index("# ") < first.index(summary) < first.index("**By aspect, measure by measure**")
+    header = _header_html(page)
+    assert header.index('role="alert"') < header.index("<h1>") < header.index('data-role="summary"')
+    assert header.index('data-role="summary"') < header.index('data-table="measures"')
+
+
+#: A summary sentence the style pass keeps.
+_KEPT = "Production stays, since billing is where refunds are lost."
+
+
+async def test_the_summary_is_held_to_the_style_pass_like_any_of_the_memo_s_words() -> None:
+    """A sentence restating a measured number is dropped from the summary as from a finding's body."""
+    page = await _page(
+        "billing",
+        "tone",
+        memo=_memo().model_copy(update={"summary": f"Production passed 54 of 60 billing trials. {_KEPT}"}),
+    )
+    (summary,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
+    assert summary.body == _KEPT
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert any("restated a measured number" in text for text in methods)
+
+
+async def test_a_summary_the_style_pass_would_drop_whole_is_kept_as_written() -> None:
+    """The summary is one sentence, so a pass that would leave none of it keeps it as written, as a finding's title is:
+    the page still opens on the writer's read across the aspects."""
+    restated = "Production passed 54 of 60 billing trials, so it stays."
+    page = await _page("billing", "tone", memo=_memo().model_copy(update={"summary": restated}))
+    (summary,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
+    assert summary.body == restated
+    assert _opening(page)[0] == ("text", "summary")
+    # The page prints it, so the methods never say it was left to the tables.
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert not any("restated a measured number" in text for text in methods)
+
+
+async def test_a_title_the_style_pass_would_drop_whole_is_printed_listed_as_breaking_a_rule_and_not_counted_dropped() -> (
+    None
+):
+    """A finding keeps its headline as written where the pass would leave none of it, so the methods list the rule it
+    breaks and never say the tables said it instead."""
+    memo = _memo()
+    banned = "The verdict rests on billing."
+    finding = memo.findings[0].model_copy(update={"title": banned})
+    page = await _page("billing", "tone", memo=memo.model_copy(update={"findings": [finding]}))
+    (title,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_title"]
+    assert title.body == banned
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert not any("restated a measured number" in text for text in methods)
+    assert any("banned" in text and banned in text for text in methods)
+
+
+async def test_a_summary_proposing_a_sample_no_code_computed_is_dropped_and_listed() -> None:
+    """Kept as written never reaches a sample size or cost no projection states: that summary is dropped, as any such
+    sentence is, and the methods list it."""
+    proposing = "Run 200 more billing cases for about $40 to settle it."
+    page = await _page("billing", "tone", memo=_memo().model_copy(update={"summary": proposing}))
+    assert not [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
+    methods = [block.text for block in page.blocks if block.section == "methods"]
+    assert any("a sample size or cost no code computed" in text and "200 more" in text for text in methods)
 
 
 async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:
@@ -684,7 +1016,7 @@ async def test_a_choice_s_why_for_an_arm_shown_behind_sits_beside_the_pairs() ->
     first = _first_screen_markdown(page)
     pairs = first.index("**By aspect, pair by pair**")
     why = first.index("**The memo recommends beta over alpha, ahead on tone:** Tone matters less than cost here.")
-    assert pairs < why < first.index("**Recommended:** beta")
+    assert first.index("**Recommended:** beta") < pairs < why
 
 
 async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:
