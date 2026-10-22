@@ -26,6 +26,7 @@ template nor writable as stored ids in git: the seed names a set's cases by thei
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -113,7 +114,19 @@ def test_a_seeded_case_is_the_case_judge_case_author_writes_and_a_second_boot_wr
         expected=seed.expected,
         note=seed.note,
     )
-    report = judge_case_author(toyhost_host(storage=storage), authored, TOYHOST_SCOPE, author=seed.author)
+    # An agent relays the same case for the seed's author, whom the host attests it for: the relay is provenance, not
+    # content, so it names the seeded case.
+    relay = "agent:relay"
+
+    def attests(*, scope_id: str, caller: str, person: str) -> str | None:
+        return person if (caller, person) == (relay, seed.author) else None
+
+    report = judge_case_author(
+        replace(toyhost_host(storage=storage), attests_person=attests),
+        authored.model_copy(update={"person": seed.author}),
+        TOYHOST_SCOPE,
+        collected_by=relay,
+    )
     assert [(c.test_case_id, c.created) for c in report.cases] == [(case_id, False)], "one door, one case"
 
 

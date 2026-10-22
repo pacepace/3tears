@@ -710,7 +710,11 @@ seeded = await run_blocking(
 `authored=` also rides beside `run_ids` or `from_labels`, so one case set can list both kinds. A verdict the
 dimension's scale cannot hold (`"fail"` on an ordinal dimension, `7`, `3` on pass/fail) is refused when the case is
 written, naming both. Through an agent, the `judge_case_author` action writes one case, naming the dimension by its
-template (`criterion_template_id`, `criterion`) and recording the caller as its author. A host that ships its hard
+template (`criterion_template_id`, `criterion`). Its verdict is read as a person's, so the action asks your host's
+`attests_person` check first, as `result_rate_person` does: the case's author is the `person` the call names (the
+caller when it names none), stored under the host's name for them, and only when the host attests this caller for
+them; otherwise the call is refused and nothing is written. The case records the caller as `collected_by`, outside
+its identity, so the same case relayed again, or seeded, is the stored one. A host that ships its hard
 negatives seeds them at boot instead: its definition seed corpus has a `judge_cases` slot (`SeedJudgeCase`, the
 templates named by name), which `seed_eval_definitions` builds through the same door as `judge_case_author` and
 writes only into a judge template holding no cases yet; a case added or changed later waits for a definition reset

@@ -18,7 +18,10 @@ packages (bumped in lock-step).
   `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
   returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and
   `collected_by`. A relay may carry the person's own `rated_at`; a dated relay older than that person's stored rating
-  is refused (409), so a newer opinion stands. `ResultRated` says what a write replaced.
+  is refused (409), so a newer opinion stands. `ResultRated` says what a write replaced. An authored judge case's
+  verdict is a person's label too, so `judge_case_author` asks the same check: a caller authors for the `person` it
+  names, or as itself, only when the host attests it, and the case records the caller as `collected_by`, outside its
+  identity. A seed corpus's cases are the host's own and ask nothing.
 - **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
   finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
   the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
@@ -42,7 +45,9 @@ packages (bumped in lock-step).
 **Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
 moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
 `threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
-and host; durable schema 16.1. See `packages/evals/MIGRATIONS.toml`.
+and host; the `judge_case_author` action needs `attests_person` (a host without one authors no judge case through an
+action), and the operation's `author=` keyword becomes `collected_by=`; durable schema 16.1. See
+`packages/evals/MIGRATIONS.toml`.
 
 ## v0.75.0 -- 2026-10-21
 

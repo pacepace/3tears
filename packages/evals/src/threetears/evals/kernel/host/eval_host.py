@@ -158,6 +158,9 @@ class AttestsPerson(Protocol):
     host, which knows its accounts and how the rating reached it, says whether this caller may record this person's
     rating, and under which name. Keyword-only, so the caller and the person cannot be swapped where the host writes
     the check.
+
+    An authored judge case asks it too (``judge_case_author``): its verdict is its one label, read downstream as its
+    author's rating, so a caller authors one only for a person the host attests it for, itself included.
     """
 
     def __call__(self, *, scope_id: str, caller: str, person: str) -> str | None:
@@ -167,7 +170,7 @@ class AttestsPerson(Protocol):
         :ptype scope_id: str
         :param caller: The calling identity, as the host resolved it for the call (``Caller.identity``).
         :ptype caller: str
-        :param person: Who the caller says gave the rating, in the caller's spelling.
+        :param person: Who the caller says gave the rating (or the judge case's verdict), in the caller's spelling.
         :ptype person: str
         :return: The host's own name for that person (one name however the caller spells them: the rating is stored
             under it, so an alias or a case-folded email is the same rater); ``None`` refuses, and nothing is written.
@@ -252,9 +255,10 @@ class EvalHost:
         template reads from here. ``None`` for a product that authors no template through the engine (a quick
         ``Eval`` stores its own), and an entrypoint that admits one refuses rather than admitting it unchecked.
     :ivar attests_person: The host's check that a caller relays a person's rating (:class:`AttestsPerson`), read by
-        the one operation that records a person's rating for a caller (``result_rate_person``). ``None`` for a host
-        that vouches for no one, and that operation then refuses every call: the engine never takes a rating as a
-        person's on a caller's word.
+        the two operations that record a person's verdict for a caller (``result_rate_person``, and
+        ``judge_case_author``, whose case's verdict is its author's label). ``None`` for a host that vouches for no
+        one, and those operations then refuse every call: the engine never takes a verdict as a person's on a
+        caller's word.
     """
 
     profile: HostProfile

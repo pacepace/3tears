@@ -1328,7 +1328,7 @@
     },
     "threetears.evals.kernel.AuthoredJudgeCase": {
       "kind": "model",
-      "signature": "AuthoredJudgeCase(criterion: RubricDim, output: str, case_material: str, intent: str, expected: AuthoredVerdict, author: str, note: str, subject: str | None = None, judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT)",
+      "signature": "AuthoredJudgeCase(criterion: RubricDim, output: str, case_material: str, intent: str, expected: AuthoredVerdict, author: str, note: str, collected_by: str | None = None, subject: str | None = None, judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT)",
       "tier": "stable"
     },
     "threetears.evals.kernel.AuthoredVerdict": {
@@ -7003,7 +7003,7 @@
     },
     "threetears.evals.ops.judge_case_author": {
       "kind": "function",
-      "signature": "judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, author: str) -> JudgeCaseFreezeReport",
+      "signature": "judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, collected_by: str) -> JudgeCaseFreezeReport",
       "tier": "stable"
     },
     "threetears.evals.ops.judge_cases_freeze": {
@@ -7078,7 +7078,7 @@
     },
     "threetears.evals.ops.JudgeCaseAuthor": {
       "kind": "model",
-      "signature": "JudgeCaseAuthor(template_id: Annotated[str, LaunchArguments.model_fields['template_id']], criterion_template_id: str, criterion: str, output: str, case_material: str, expected: AuthoredVerdict, note: str, scenario: str | None = None, subject: str | None = None, judged_artifact: Literal['document', 'transcript'] = 'document')",
+      "signature": "JudgeCaseAuthor(template_id: Annotated[str, LaunchArguments.model_fields['template_id']], criterion_template_id: str, criterion: str, output: str, case_material: str, expected: AuthoredVerdict, note: str, scenario: str | None = None, subject: str | None = None, judged_artifact: Literal['document', 'transcript'] = 'document', person: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.ops.JudgeCasesFreeze": {

@@ -153,8 +153,14 @@ pass it to every entrypoint. It holds:
   and `None` otherwise. The `result_rate_person` action asks it before it reads anything, and stores the rating under
   the name you return, so two spellings you know as one person are one rater. On `None`, or with no check (`None`, the
   default), the call is refused (`refused`, 403), a warning names the caller, the person and the scope, and nothing
-  is written. A check that raises propagates as your defect, and nothing is written. No other action records a
-  calibration rating as a person's.
+  is written. A check that raises propagates as your defect, and nothing is written. The `judge_case_author` action
+  asks it too, since an authored case's verdict is its one label and every label reads as a person's rating: a caller
+  authors a case for the `person` it names, or for itself when it names none, and only when you attest it for them.
+  The case's author is the name you return, and the case records the caller (`collected_by`), which is not part of
+  the case, so the same case relayed by two callers, or seeded, is one case under one id. Without a check, no action
+  authors a judge case. No other action records a verdict as a person's; your own code (the seed corpus's
+  `judge_cases`, `freeze_judge_cases` with `authored=`, `rate_result` with `rater_kind="person"`) asks no
+  attestation, since you name your people yourself there.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -1589,8 +1595,9 @@ nothing.
 `load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (host contract, from `threetears.evals.run`;
 in memory, `SeedCorpus(judge_cases=...)`): `judge_case_author`'s arguments with its two templates named by `name`
 (`judge_template`, `criterion_template`, since a corpus cannot know a seeded template's id), the `criterion`, the
-`output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`. `seed_eval_definitions`
-builds each through the door `judge_case_author` uses (`author_judge_case`: the criterion read from the template
+`output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`, taken as you write it:
+the corpus is yours, so no `attests_person` is asked and the case records no relay (`collected_by` is None).
+`seed_eval_definitions` builds each through the door `judge_case_author` uses (`author_judge_case`: the criterion read from the template
 that words it, the verdict held to its scale) before anything is written, refusing the whole seed by name for any
 case authoring would refuse, then freezes it into its judge template after the templates are written, as the same
 `AuthoredJudgeCase` under the same content-derived id. A case already stored is reported `already present` under

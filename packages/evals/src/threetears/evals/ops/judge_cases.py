@@ -7,8 +7,9 @@ takes that step, answering with the receipt every surface renders
 (:class:`~threetears.evals.run.JudgeCaseFreezeReport`): the cases, the case set listing them, and every result it
 could not freeze, with why. :func:`judge_case_author` writes a case by hand instead (:class:`JudgeCaseAuthor`):
 a hard negative no run stored, its criterion named by the subject template that words it and its expected verdict
-its label. :func:`judge_template_create` writes the judge template they are frozen into — the judge kind and an
-intent, which is all a judge template is.
+its label, a person's, so written only under the name the host attests (``EvalHost.attests_person``).
+:func:`judge_template_create` writes the judge template they are frozen into — the judge kind and an intent, which is
+all a judge template is.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredVerdict, judge_case_of
 from threetears.evals.kernel.remedies import FIND_TEMPLATE
 from threetears.evals.ops.host import OpsHost
-from threetears.evals.ops.runs import LaunchArguments, TemplateLine
+from threetears.evals.ops.runs import PERSON_DESCRIPTION, LaunchArguments, TemplateLine, attested_person
 from threetears.evals.run.authoring import get_template
 from threetears.evals.run.judge_kind import JudgeCaseFreezeReport, author_judge_case, freeze_judge_cases
 from threetears.evals.schema.base import EvalBaseModel
@@ -110,7 +111,8 @@ class JudgeCaseAuthor(EvalBaseModel):
 
     The one declaration of the ``judge_case_author`` action's parameters. The criterion is named by the subject
     template whose rubric words it, never restated: its wording is what a judge profile is keyed by, so a case on a
-    reworded copy would calibrate a criterion no campaign asks. The author is whoever authors it (the caller).
+    reworded copy would calibrate a criterion no campaign asks. The verdict is read as a person's (``person``, the
+    caller when omitted), so the host attests the caller for that person before anything is written.
     """
 
     template_id: Annotated[str, LaunchArguments.model_fields["template_id"]]
@@ -143,31 +145,73 @@ class JudgeCaseAuthor(EvalBaseModel):
         default="document",
         description="'document' (judged against its material) or 'transcript' (a conversation's).",
     )
+    # Omitted, the verdict is the caller's own: the action's detail says so, since the description is shared with
+    # result_rate_person, where the person is required.
+    person: str | None = Field(default=None, min_length=1, description=PERSON_DESCRIPTION)
 
 
-def judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, author: str) -> JudgeCaseFreezeReport:
+#: What a caller authoring a judge case does when the host vouches for no one.
+_AUTHOR_UNCHECKED_REMEDY = (
+    "ask this host's operator to attest the people who author judge cases (attests_person=<its check>); until then "
+    "the host's own corpus seeds them (judge_cases)"
+)
+
+#: What a caller authoring a judge case does when the host does not attest it for the person named.
+_AUTHOR_REFUSED_REMEDY = "author it as a caller the host attests for the person it names (person; omitted, yourself)"
+
+
+def judge_case_author(
+    host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, collected_by: str
+) -> JudgeCaseFreezeReport:
     """Write one judge case by hand into a judge template: an output, its criterion, and the verdict it must get.
 
-    The criterion is read from the template that words it, and the case is frozen as every authored case is
-    (:func:`~threetears.evals.run.freeze_judge_cases`, ``authored=``): its verdict its one label, by ``author``.
-    Authoring the same case again names the stored one. It mints no case set: a launch with none runs every live
-    case of the template, and ``case_set_mint`` lists the ones a launch should run.
+    The verdict is the case's one label, and every label is read downstream as a person's rating: a judge campaign's
+    agreement with people, and the judge profile it records. So the host is asked first (``EvalHost.attests_person``,
+    as ``result_rate_person`` asks it) whether it vouches that the caller (``collected_by``) authors for the person
+    named (``case.person``, the caller itself when omitted), before either template is read, so a refused caller
+    learns nothing of them. Refused, nothing is written. Attested, the case's author and its label's rater is the
+    host's own name for the person, and the case records the caller that relayed it
+    (``JudgeCaseAuthoring.collected_by``), which is not part of the case: authoring it again, from any caller, names
+    the stored one, as does the same case a seed corpus wrote.
 
-    :param host: The host whose store holds both templates and receives the case.
+    The criterion is read from the template that words it, and the case is frozen as every authored case is
+    (:func:`~threetears.evals.run.freeze_judge_cases`, ``authored=``). It mints no case set: a launch with none runs
+    every live case of the template, and ``case_set_mint`` lists the ones a launch should run.
+
+    A host's own code that writes cases it already trusts (its seed corpus, or ``author_judge_case`` with
+    ``freeze_judge_cases``) asks no attestation, as it may record a person's rating with ``rate_result``.
+
+    A host check that raises is a defect in the host, not a refusal: it propagates, and nothing is written.
+
+    :param host: The host whose store holds both templates and receives the case, and whose check attests the person.
     :ptype host: EvalHost
     :param case: What to author.
     :ptype case: JudgeCaseAuthor
     :param scope_id: The scope both templates live in, and the case is stored in.
     :ptype scope_id: str
-    :param author: Who is authoring it: the label's rater.
-    :ptype author: str
+    :param collected_by: The calling identity that authors it, as the host resolved it.
+    :ptype collected_by: str
     :return: The receipt, listing the one case.
     :rtype: JudgeCaseFreezeReport
+    :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
+        for this person. Nothing is written.
+    :raises TypeError: The host's check returned something other than a non-blank name or ``None``: a defect in the
+        host.
     :raises NotFoundError: Either template is not in the scope.
     :raises ValidationFailedError: The judge template is not of the judge kind, the criterion template has no such
         rubric dimension, or the dimension's scale cannot hold the verdict (naming both).
     :raises StorageError: The case could not be persisted.
     """
+    author = attested_person(
+        host,
+        scope_id=scope_id,
+        collected_by=collected_by,
+        person=case.person if case.person is not None else collected_by,
+        operation="judge_case_author",
+        what="judge case",
+        unchecked_remedy=_AUTHOR_UNCHECKED_REMEDY,
+        refused_remedy=_AUTHOR_REFUSED_REMEDY,
+    )
     authored = author_judge_case(
         get_template(host, case.criterion_template_id, scope_id),
         case.criterion,
@@ -176,6 +220,7 @@ def judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, a
         expected=case.expected,
         note=case.note,
         author=author,
+        collected_by=collected_by,
         scenario=case.scenario,
         subject=case.subject,
         judged_artifact=JudgedArtifact(case.judged_artifact),

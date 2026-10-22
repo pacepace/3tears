@@ -853,7 +853,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`job_poll`** · async function · Where a job stands, read from the record its work writes — the same answer in every process.
   <br>`job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus`
 - **`judge_case_author`** · function · Write one judge case by hand into a judge template: an output, its criterion, and the verdict it must get.
-  <br>`judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, author: str) -> JudgeCaseFreezeReport`
+  <br>`judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, collected_by: str) -> JudgeCaseFreezeReport`
 - **`judge_profiles_record`** · function · Record the profile of every judge and criterion a judge campaign's runs measured.
   <br>`judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id: str) -> JudgeProfileRecording`
 - **`plan_reporter_arm`** · function · A reporter arm's plan, for its `LaunchableKind.plan_arm`: every refusal first, then what it will run.
@@ -1585,7 +1585,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
 | `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
 | `judge_cases_list` | `read` | `template_id` | List a judge template's stored cases: each id, criterion, expected verdict and whether it is live. |
-| `judge_case_author` | `write` | `template_id`, `criterion_template_id`, `criterion`, `output`, `case_material`, `expected`, `note`, `scenario?`, `subject?`, `judged_artifact?` | Write a judge case by hand: an output, the rubric dimension it is judged on, and its verdict. |
+| `judge_case_author` | `write` | `template_id`, `criterion_template_id`, `criterion`, `output`, `case_material`, `expected`, `note`, `scenario?`, `subject?`, `judged_artifact?`, `person?` | Write a judge case by hand: an output, the rubric dimension it is judged on, and its verdict. |
 | `judge_profiles_record` | `write` | `judge_run_ids` | Store what a judge campaign measured each judge to be, per criterion, for other campaigns to read. |
 | `judge_profiles_list` | `read` | `criterion_dim?` | List the stored judge profiles: each judge and criterion measured, on what, when, and its tier. |
 | `scope_pivot` | `read` | `row_factor`, `column_factor`, `metric?`, `weighting?`, `subject_filter?`, `run_status?`, `predicted_cost?`, `launched_run_ids?` | Aggregate one measure over the scope's observations by two coordinates, cell by cell. |
@@ -1705,7 +1705,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `output` | `string` | The output under review, as the judge reads it. |
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
 | `part` | `'record'` \| `'judge'` \| `'spans'` | Which part of the stored trace to return: record (the output the kind stored, its call ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans). |
-| `person` | `string` | Who gave the rating, as the host names its people; the host must attest them. |
+| `person` (on `result_rate_person`) | `string` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
+| `person` (on `judge_case_author`) | `string` or `null` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
 | `predicted_cost` | `object` or `null` | A cost pivot's plan: the structured result launch_estimate returned before these runs. The cell at each priced arm's model and template then shows its predicted cost beside the cost observed. |
 | `purpose_filter` | `'variation'` \| `'proposer'` \| `'analysis'` \| `'judge'` \| `'second_judge'` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft), analysis (an analysis generation), judge (a judge's repeat or temperature comparison) or second_judge (a second judge's pass). |
 | `question` (on `campaign_create`) | `string` | The one question the campaign asks of its arms, in the operator's words: what would make a candidate the one to adopt. A decision rule is never written here; its clauses are floors. Empty asks none. |

@@ -416,12 +416,18 @@ def author_judge_case(
     expected: AuthoredVerdict,
     note: str,
     author: str,
+    collected_by: str | None = None,
     scenario: str | None = None,
     subject: str | None = None,
     judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT,
 ) -> AuthoredJudgeCase:
     """One hand-written judge case, its criterion read from the template that words it: the one door every authored
     case passes, ``judge_case_author`` and the definition seed's ``judge_cases`` alike.
+
+    It checks nothing about ``author``: the caller names them. ``judge_case_author`` names the person the host
+    attests (``EvalHost.attests_person``) and the caller that relayed the case; the definition seed and a host's own
+    code are trusted to name their authors, as a host may record a person's rating with ``rate_result``, and relay
+    nothing (``collected_by`` None).
 
     :param criterion_template: The subject template whose rubric words the criterion.
     :ptype criterion_template: EvalTemplate
@@ -437,6 +443,9 @@ def author_judge_case(
     :ptype note: str
     :param author: Who wrote it: the label's rater.
     :ptype author: str
+    :param collected_by: The calling identity that relayed it, which the host attested for ``author``; ``None`` for a
+        case the host's own code writes. Provenance only: in no digest, so not in the case's id.
+    :ptype collected_by: str | None
     :param scenario: The scenario the judge reads; ``None`` reads the template's intent.
     :ptype scenario: str | None
     :param subject: Who or what produced the output, or ``None``.
@@ -464,6 +473,7 @@ def author_judge_case(
             expected=expected,
             author=author,
             note=note,
+            collected_by=collected_by,
             subject=subject,
             judged_artifact=judged_artifact,
         )
@@ -533,7 +543,10 @@ def freeze_judge_cases(
     fail its criterion, an output that looks wrong and must pass — is frozen as written
     (:meth:`~threetears.evals.kernel.JudgeCase.from_authored`), its expected verdict its one label, reading nothing
     stored. Authoring the same case twice names the stored case; one whose verdict or note changed is a new case.
-    The authored cases come first in the receipt and in the case set.
+    The authored cases come first in the receipt and in the case set. Their authors are taken as named: this is the
+    host's own door, trusted as its seed corpus is, and an action reaches it only through ``judge_case_author``,
+    which writes a case under the name the host attests (``EvalHost.attests_person``). Who relayed a case
+    (``collected_by``) is not part of it, so it never moves the id.
 
     With ``case_set``, the freeze then mints the next version of that case set listing exactly this freeze's cases,
     in order — the set a launch targets, so cases a later freeze superseded are not run by it. A freeze whose cases
