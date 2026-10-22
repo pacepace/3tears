@@ -33,6 +33,11 @@ evidence, the score carries no label key), the person's judgment is still record
 ``rated_withheld`` set to the refusal, and a warning is logged naming it. It is a label that cannot outlive its
 evidence, and every reader that rebuilds cases from labels names it.
 
+**A person's rating relayed for them names who relayed it** (durable v16.1): ``collected_by``, the caller the host
+attested for that person, and ``source``, where the person gave it. An agent relaying a person's blind-read verdicts
+records them as the person's through :func:`~threetears.evals.ops.result_rate_person`, which asks the host
+(``EvalHost.attests_person``) before it writes; the engine never decides on its own that a rating is a person's.
+
 **Deleting a result does not delete its ratings.** They stay, and every agreement read lists them as
 ``result_unresolved`` — a person's judgement is not regenerable, and a rating that silently
 disappeared would shrink a dimension's n with nothing saying why.
@@ -40,11 +45,12 @@ disappeared would shrink a dimension's n with nothing saying why.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Protocol
 
 from pydantic import ValidationError
 
-from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.storage import UnreadableRecordError
 from threetears.evals.run.rejudge import JudgeInputStore, reproducible_judge_inputs
 from threetears.evals.schema.models import (
@@ -56,8 +62,9 @@ from threetears.evals.schema.models import (
     RaterKind,
     RubricScore,
     label_key_of,
+    utc_now_iso,
 )
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT, SCHEMA_REMEDY
 
 log = get_logger(__name__)
@@ -83,6 +90,10 @@ class RatingStore(JudgeInputStore, Protocol):
         """Write a rating; raises ``StorageError`` on failure rather than returning a flag."""
         ...
 
+    def query_calibration_ratings(self, scope_id: str, /, *, result_id: str | None = None) -> list[CalibrationRating]:
+        """The ratings in a scope, narrowed to one result's: read for the rating a dated write would replace."""
+        ...
+
 
 def rate_result(
     storage: RatingStore,
@@ -94,6 +105,9 @@ def rate_result(
     rater_kind: RaterKind,
     score: int,
     reason: str,
+    source: str | None = None,
+    collected_by: str | None = None,
+    rated_at: str | None = None,
 ) -> CalibrationRating:
     """Record one rater's score for one judged dimension of one result — a person's, or an agent's.
 
@@ -116,15 +130,30 @@ def rate_result(
     :ptype score: int
     :param reason: The rater's own words for the score.
     :ptype reason: str
+    :param source: Where the person gave the rating, when someone else relays it for them (a blind read's id);
+        ``None`` for a rating its rater, or the host for its person, records directly. Set with ``collected_by``.
+    :ptype source: str | None
+    :param collected_by: Who relayed the person's rating: the caller the host attested for that person. The caller
+        vouches here, not this function: a host's own code is the host, and an action caller reaches this only through
+        :func:`~threetears.evals.ops.result_rate_person`, which asks the host first. Set with ``source``.
+    :ptype collected_by: str | None
+    :param rated_at: When the rater gave the rating, ISO-8601 with an offset and no later than now; stored in UTC.
+        ``None`` is now. A relay names the person's own time, because a dated write decides which of the rater's
+        ratings stands (below).
+    :ptype rated_at: str | None
     :return: The rating as written, carrying the judge score's label key (the fingerprints of the output read
         and of the criterion) when the score has one, and what was rated (``rated``) or why it could not be
-        rebuilt (``rated_withheld``). A second rating by the same rater, of the same kind, of the same dimension
-        of the same result replaces the first.
+        rebuilt (``rated_withheld``). A rater holds one rating of one dimension of one result, of one kind. An
+        undated write replaces the stored one. A dated write replaces a stored rating given at the same time or
+        earlier, and is refused when the stored one was given later, which then stands unchanged.
     :rtype: CalibrationRating
+    :raises ConflictError: ``rated_at`` is named, and the rater's stored rating of the same dimension of the same
+        result was given later; the refusal names its time and source, and nothing is written.
     :raises NotFoundError: No such result in the scope.
     :raises ValidationFailedError: The judge scored no such dimension on the result; or the score is
-        not on its scale, the dimension name is not namespaced, the rater or reason is blank, or ``rater_kind``
-        is neither ``person`` nor ``agent``.
+        not on its scale, the dimension name is not namespaced, the rater or reason is blank, ``rater_kind``
+        is neither ``person`` nor ``agent``, or ``source`` and ``collected_by`` are not both set on a person's rating
+        or both ``None``, or ``rated_at`` is not an ISO-8601 time with an offset at or before now.
     :raises StorageError: The write failed.
     """
     result = storage.load_eval_result(result_id, scope_id)
@@ -144,6 +173,11 @@ def rate_result(
             remedy=f"rate a dimension the result was judged on: {scored or 'it was judged on none'}",
         )
     rated = _rated_content(storage, result, judged)
+    if rated_at is None:
+        given_at = utc_now_iso()
+    else:
+        given_at = _rated_at(rated_at)
+        _refuse_an_older_than_the_stored(storage, result, rubric_dim, rater, rater_kind, given_at)
     try:
         rating = CalibrationRating(
             scope_id=result.scope_id,
@@ -155,6 +189,9 @@ def rate_result(
             scale=judged.scale,
             score=score,
             reason=reason,
+            source=source,
+            collected_by=collected_by,
+            rated_at=given_at,
             # What the rater read, as the judge stamped it: the label then holds for every judgement of a
             # byte-identical output on the same criterion, not only this result's (#628).
             output_fingerprint=judged.output_fingerprint,
@@ -177,7 +214,7 @@ def rate_result(
             rating.rated_withheld,
         )
     log.info(
-        "eval.rate_result result=%s run=%s scope=%s dim=%s rater=%s rater_kind=%s score=%s",
+        "eval.rate_result result=%s run=%s scope=%s dim=%s rater=%s rater_kind=%s score=%s collected_by=%s",
         result.id,
         result.eval_run_id,
         result.scope_id,
@@ -185,8 +222,82 @@ def rate_result(
         rater,
         rater_kind,
         score,
+        collected_by,
     )
     return rating
+
+
+def _refuse_an_older_than_the_stored(
+    storage: RatingStore, result: EvalResult, rubric_dim: str, rater: str, rater_kind: RaterKind, given_at: str
+) -> None:
+    """Refuse a dated rating given before the one the same rater already holds of the same thing, which stands.
+
+    A person's newer opinion is not regenerable; a relay of an older one (a blind read backfilled after the person
+    rated directly) would otherwise erase it under the shared id. Asked only of a write that names when it was given:
+    an undated write is the rater's word now, and replaces whatever a clock elsewhere stamped. A stored time that is
+    not an aware ISO-8601 instant (written by a host's own code) cannot be ordered: it is recorded, and does not block.
+
+    :raises ConflictError: The stored rating was given later than ``given_at``, named with its time and source.
+    """
+    stored = next(
+        (
+            rating
+            for rating in storage.query_calibration_ratings(result.scope_id, result_id=result.id)
+            if (rating.rubric_dim, rating.rater, rating.rater_kind) == (rubric_dim, rater, rater_kind)
+        ),
+        None,
+    )
+    if stored is None:
+        return
+    try:
+        stored_at = datetime.fromisoformat(stored.rated_at)
+        if stored_at.tzinfo is None:
+            raise ValueError(f"{stored.rated_at!r} names no offset")
+    except ValueError as unordered:
+        contain(
+            unordered,
+            log=log,
+            what=(
+                f"eval.rate_result rating={stored.id} stored rated_at {stored.rated_at!r} is not an aware ISO-8601 "
+                "instant, so whether it was given after this write cannot be told; the write replaces it"
+            ),
+            extra={"rating_id": stored.id, "rated_at": stored.rated_at},
+        )
+        return
+    if stored_at <= datetime.fromisoformat(given_at):
+        return
+    source = stored.source if stored.source is not None else "none: recorded directly"
+    raise ConflictError(
+        f"{rater}'s stored rating of {rubric_dim!r} on result {result.id!r} was given at {stored.rated_at} (source "
+        f"{source}), later than this one's {given_at}, so it stands and this one is not written",
+        remedy=f"relay only a rating {rater} gave after {stored.rated_at}; their newer rating is the one that stands",
+    )
+
+
+def _rated_at(stamp: str) -> str:
+    """``stamp`` in UTC, as every rating's time is written, so ratings order by when they were given.
+
+    No lower bound: a witnessed result's ``scored_at`` is when the host recorded it, which can follow a person's
+    reading of the reply it records.
+
+    :param stamp: When the rater says they rated.
+    :ptype stamp: str
+    :raises ValidationFailedError: It is not ISO-8601 with an offset, or it is after now.
+    """
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError:
+        instant = None
+    if instant is None or instant.tzinfo is None:
+        raise ValidationFailedError(
+            f"rated_at {stamp!r} is not an ISO-8601 time with an offset",
+            remedy="give when the rater rated as e.g. 2026-10-17T14:30:00+00:00, or omit it for now",
+        )
+    if instant > datetime.now(UTC):
+        raise ValidationFailedError(
+            f"rated_at {stamp!r} is later than now", remedy="give when the rater rated, which has happened"
+        )
+    return instant.astimezone(UTC).isoformat()
 
 
 def _rated_content(storage: RatingStore, result: EvalResult, judged: RubricScore) -> RatedOutput | str:
