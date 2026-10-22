@@ -532,7 +532,7 @@ async def test_whose_failure_a_generator_call_was_decides_whether_its_cell_fails
         assert stopped is None, "a rationed call stops nothing: the next one may be served"
         assert len(results) == 2, "the run went on to its other cell"
         assert answered.candidate_error is None, "a rationed call is never charged to the candidate"
-        assert answered.infra_error == f"apparatus: reporter: the provider rationed the generator call: {error}"
+        assert answered.infra_error == f"apparatus: reporter: the generator call was rationed by the provider: {error}"
     else:
         assert isinstance(stopped, AccountExhaustedError), "every later call is behind the same refused key"
         assert answered.candidate_error is None
@@ -559,7 +559,7 @@ async def test_a_repair_call_the_provider_rationed_excludes_its_cell_naming_the_
     (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
     assert result.candidate_error is None, "a rationed repair is never charged to the candidate"
     assert result.infra_error == (
-        "apparatus: reporter: the provider rationed the generator's repair call, after its first reply was refused: "
+        "apparatus: reporter: the generator's repair call, after its first reply was refused, was rationed by the provider: "
         f"{error}"
     )
     assert (result.turns_delivered, result.cost_usd) == (1, pytest.approx(0.15))

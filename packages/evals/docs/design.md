@@ -371,8 +371,8 @@ Six steps, each fixing the last:
    goes on, on every path the package runs (a quick run, the reporter, the judge kind), and only the account's
    refusal stops a run. A model's own failures stay its outcome, as in step 4: rationing is the provider
    declining the call, not the model failing it. The lost trials are bounded in every verdict, and an arm
-   that loses more than a tenth of its trials to one cause is flagged (`differential_exclusions`). Rejected: a second `rationed` flag beside `account_refused`,
-   two flags for one question that could both be set.
+   that loses more than a tenth of its trials to one cause is flagged (`differential_exclusions`). Rejected: a
+   second `rationed` flag beside `account_refused`, two flags for one question that could both be set.
 
 *Evidence:* agent with tools, account spend limit reached mid-campaign, 54 runs voided, 2026-10, single campaign.
 Rationing: a model decision whose arm met sustained 429s from a pinned upstream in six of seven runs, 2026-10,

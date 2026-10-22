@@ -889,7 +889,7 @@ class ReporterKind:
                     # A call after one that returned is the repair the first reply's refusal bought: named, so a
                     # reader of an excluded cell knows the candidate had already written a memo that was refused.
                     call = (
-                        "generator's repair call, after its first reply was refused"
+                        "generator's repair call, after its first reply was refused,"
                         if recorder.results
                         else "generator call"
                     )
@@ -919,7 +919,7 @@ class ReporterKind:
                         )
                         return CandidateOutput(
                             infra_errors=[
-                                f"apparatus: reporter: the provider rationed the {call}: {failure.description}"
+                                f"apparatus: reporter: the {call} was rationed by the provider: {failure.description}"
                             ],
                             telemetry=telemetry,
                         )
