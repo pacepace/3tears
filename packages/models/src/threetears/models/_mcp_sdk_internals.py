@@ -7,7 +7,7 @@ table, so rebinding ``tools/call`` on a borrower's copy would rebind it on the o
 borrower shares (:func:`threetears.models.claude_cli_pool._context_bound_server`).
 
 mcp 1.x keeps the table public (``Server.request_handlers``) and never reaches this module. When
-3tears drops mcp 1.x (0.76), this stays until the SDK grows a public way to copy the table.
+3tears drops mcp 1.x (the owner decides when), this stays until the SDK grows a public way to copy the table.
 """
 
 from __future__ import annotations

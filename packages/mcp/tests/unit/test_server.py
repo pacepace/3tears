@@ -496,7 +496,7 @@ class TestTheSdkDecoratorsDutiesHoldOnEitherSdk:
     """what mcp 1.x's ``call_tool`` decorator did for the server, McpServer now does on 2.x too.
 
     2.x's low-level server dropped the decorator: it neither checks arguments against the tool's
-    ``inputSchema`` nor fills in a missing ``arguments``. 3tears supports both majors until 0.76,
+    ``inputSchema`` nor fills in a missing ``arguments``. 3tears supports both majors until the owner drops 1.x,
     and each of these holds on both (``scripts/test-mcp-v1.sh`` runs this file on 1.x).
     """
 

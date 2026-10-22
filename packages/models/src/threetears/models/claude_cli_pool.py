@@ -822,7 +822,7 @@ def _context_bound_server(server: Any, context: contextvars.Context) -> Any:
     it: from SDK 0.2.163 the SDK serves the server through its own ``run()``, which reads the
     server's own ``request_handlers``, and a wrapper forwarding ``run`` reached the original's
     table and ran the call in the first caller's context again. mcp 1.x and 2.x keep that table
-    differently; both are handled (3tears runs on either until 0.76).
+    differently; both are handled (3tears runs on either until the owner drops 1.x).
 
     :param server: an in-process MCP server instance
     :ptype server: Any

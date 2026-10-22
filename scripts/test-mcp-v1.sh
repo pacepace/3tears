@@ -13,7 +13,7 @@ cd "$REPO_ROOT"
 #
 # How: overlay the newest mcp 1.x and the fastmcp 3.x that requires it (fastmcp 4 needs mcp 2) on
 # the locked environment, and run the tests of every package that touches the MCP SDK. Remove
-# this script, its CI step and the 1.x branches it guards when 3tears requires mcp 2 (0.76).
+# this script, its CI step and the 1.x branches it guards when 3tears drops mcp 1.x -- the owner decides when; no release is set.
 #
 # Usage: ./scripts/test-mcp-v1.sh [extra pytest args...]
 

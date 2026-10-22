@@ -13,7 +13,8 @@ packages (bumped in lock-step).
 **Changed:** the workspace now locks `mcp` 2.3 and `fastmcp` 4.0, and declares `mcp>=1.27,<3`
 (3tears-mcp, 3tears-models) and `fastmcp>=3.4.2,<5` (evals). A consumer still on mcp 1.x keeps
 working; one that moves to 2.x needs nothing from 3tears to do it. fastmcp follows mcp on its own
-(fastmcp 3 requires mcp 1, fastmcp 4 mcp 2). 0.76 drops mcp 1.x.
+(fastmcp 3 requires mcp 1, fastmcp 4 mcp 2). mcp 1.x support stays until the owner drops it; no
+release is set for that.
 
 - `McpServer` registers its handlers through whichever API the installed SDK has: 1.x's
   `@list_tools()` / `@call_tool()` decorators, or 2.x's `Server(on_list_tools=, on_call_tool=)`.
@@ -54,6 +55,9 @@ whose text is one paragraph many times over now extracts as that paragraph once 
 `thin_page_chars`, reads as a thin page (whose single same-site frame `extract` then follows).
 pydantic 2.14 no longer reports `populate_by_name`'s `validate_by_*` expansion in `model_config`;
 aliased fields still validate by either name.
+asyncpg 0.32 terminates a pool's connections itself when its initialisation fails;
+`create_pool_with_startup_timeout`'s retry warning still counts every connection the failed attempt
+opened (`connections_closed`), and still closes any asyncpg left open.
 
 **Not yet:** `pillow` 13.0 (24 advisories) and `certifi` 2026.10.19 are younger than the lock's
 14-day cooldown and land when they clear it (Oct 30, Nov 3). `ruff` stays below 0.16, which

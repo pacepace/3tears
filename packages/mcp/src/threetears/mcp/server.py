@@ -53,7 +53,7 @@ log = get_logger(__name__)
 
 #: mcp 1.x registers handlers with ``@server.list_tools()`` / ``@server.call_tool()``; 2.x removed
 #: both and takes ``on_list_tools`` / ``on_call_tool`` in the constructor. 3tears runs on either
-#: (``mcp>=1.27,<3``) until 0.76, so consumers can move to 2.x on their own schedule.
+#: (``mcp>=1.27,<3``), so consumers move to 2.x on their own schedule; 1.x is dropped when the owner says.
 _SDK_V1 = hasattr(_SdkServer, "call_tool")
 
 
