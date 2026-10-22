@@ -61,6 +61,7 @@ import hashlib
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -396,18 +397,20 @@ class BackgroundDispatch:
         self._started.add(fire_id)
         # local import: the same optional-NATS stance as the tick engine's own lock import.
         from threetears.core.coordination import LockHeld, nats_distributed_lock  # noqa: PLC0415
-        from threetears.nats.errors import KvError  # noqa: PLC0415
+        from threetears.nats.errors import KvError, NatsClientError  # noqa: PLC0415
 
         outcome: _Outcome | None = None
         try:
+            # cancel_on_loss=False: the in-flight lock only saves duplicate work across pods
+            # (see the KvError branch below); interrupting a fire that is already running
+            # because the lock was lost would fail work that is correct to finish.
+            lock = nats_distributed_lock(self._nats_client, in_flight_lock_key(trigger.kind), cancel_on_loss=False)
+            # Entered and left by hand so that only the lock is guarded: the body's own failures are
+            # recorded by _call, and anything else it raises is a fault, not the lock's.
+            held = False
             try:
-                # cancel_on_loss=False: the in-flight lock only saves duplicate work across pods
-                # (see the KvError branch below); interrupting a fire that is already running
-                # because the lock was lost would fail work that is correct to finish.
-                async with nats_distributed_lock(
-                    self._nats_client, in_flight_lock_key(trigger.kind), cancel_on_loss=False
-                ):
-                    outcome = await self._run_body(callback, trigger, fire_id)
+                await lock.__aenter__()
+                held = True
             except LockHeld:
                 _log_skip(trigger, fire_id, _SKIPPED_ELSEWHERE)
                 outcome = _Outcome(
@@ -415,43 +418,58 @@ class BackgroundDispatch:
                 )
             except KvError as exc:
                 # The lock only saves duplicate work across pods; losing it must not silence the
-                # fire (the tick lock takes the same stance). Raised AFTER the body ran, it is the
-                # lock's release that failed, and the fire's own result stands.
-                log.warning(
-                    "scheduled_jobs background: in-flight lock unavailable",
-                    extra={
-                        "extra_data": {
-                            "kind": trigger.kind,
-                            "body_ran": outcome is not None,
-                            "error_type": type(exc).__name__,
-                            "error": str(exc),
-                        }
-                    },
-                )
-                if outcome is None:
-                    outcome = await self._run_body(callback, trigger, fire_id)
-            except Exception as exc:  # noqa: BLE001 - boundary: a lock that fails for any other reason (a misconfigured bucket, a TTL mismatch) must fail the fire loudly, not vanish with the task
+                # fire (the tick lock takes the same stance). The body runs unlocked.
+                _log_lock_unavailable(trigger, exc, body_ran=False)
+            except (ValueError, NatsClientError) as exc:
+                # A misconfigured lock (a TTL mismatch, a bucket whose config or subjects another
+                # stream owns) fails every fire the same way, so it fails this one loudly.
                 contain(
                     exc,
                     log=log,
                     what="scheduled_jobs background: the in-flight lock failed",
-                    extra={"kind": trigger.kind, "body_ran": outcome is not None},
+                    extra={"kind": trigger.kind, "body_ran": False},
                     level="error",
                 )
-                if outcome is None:
-                    outcome = _Outcome(
-                        JobFireResult(
-                            status="failed",
-                            error=(
-                                f"{trigger.kind}: the in-flight lock failed "
-                                f"({type(exc).__name__}: {str(exc) or 'no detail'}); the fire was not run"
-                            ),
+                outcome = _Outcome(
+                    JobFireResult(
+                        status="failed",
+                        error=(
+                            f"{trigger.kind}: the in-flight lock failed "
+                            f"({type(exc).__name__}: {str(exc) or 'no detail'}); the fire was not run"
                         ),
-                        _OTHER,
-                    )
+                    ),
+                    _OTHER,
+                )
+            if outcome is None:
+                try:
+                    outcome = await self._run_body(callback, trigger, fire_id)
+                except BaseException as exc:
+                    if held:
+                        await _release_in_flight_lock(lock, trigger, exc, body_ran=False)
+                    raise
+                if held:
+                    await _release_in_flight_lock(lock, trigger, None, body_ran=True)
         except asyncio.CancelledError:
             if outcome is None:
                 outcome = _Outcome(self._cancelled(trigger, self._handed_off_at(fire_id)), _CANCELLED)
+            raise
+        except Exception as exc:  # noqa: BLE001 - boundary: re-raised; caught only to record the row and log the fault
+            # Past every failure the lock and the body are expected to have: a fault of ours. The row
+            # records it, and it leaves the task logged with its traceback, since join gathers the
+            # fires without reading what they raised.
+            log.error(
+                "scheduled_jobs background: a fire failed on an internal fault",
+                exc_info=exc,
+                extra={"extra_data": {"kind": trigger.kind, "body_ran": outcome is not None}},
+            )
+            if outcome is None:
+                outcome = _Outcome(
+                    JobFireResult(
+                        status="failed",
+                        error=f"{trigger.kind}: the fire failed on an internal fault ({type(exc).__name__})",
+                    ),
+                    _OTHER,
+                )
             raise
         finally:
             await self._settle(trigger, fire_id, outcome)
@@ -795,6 +813,39 @@ def _log_skip(trigger: JobTrigger, fire_id: UUID, reason: str) -> None:
             }
         },
     )
+
+
+def _log_lock_unavailable(trigger: JobTrigger, exc: Exception, *, body_ran: bool) -> None:
+    log.warning(
+        "scheduled_jobs background: in-flight lock unavailable",
+        extra={
+            "extra_data": {
+                "kind": trigger.kind,
+                "body_ran": body_ran,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        },
+    )
+
+
+async def _release_in_flight_lock(
+    lock: AbstractAsyncContextManager[object], trigger: JobTrigger, exc: BaseException | None, *, body_ran: bool
+) -> None:
+    """Leave the in-flight lock as ``async with`` would, with the body's exception if it raised one.
+
+    A ``KvError`` here is the release that failed: the fire's own result stands, and the bucket's TTL
+    frees the entry nobody deleted.
+    """
+    from threetears.nats.errors import KvError  # noqa: PLC0415
+
+    try:
+        if exc is None:
+            await lock.__aexit__(None, None, None)
+        else:
+            await lock.__aexit__(type(exc), exc, exc.__traceback__)
+    except KvError as release_exc:
+        _log_lock_unavailable(trigger, release_exc, body_ran=body_ran)
 
 
 def _elapsed_ms(started: float) -> int:

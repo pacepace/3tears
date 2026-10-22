@@ -62,6 +62,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, ClassVar, Final, Literal
 
+from pydantic import ValidationError
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.derived import BuildLock, BuildLockHeld, DerivedCollection
 from threetears.core.collections.registry import CollectionRegistry
@@ -88,8 +89,15 @@ _INDEX_ERRORS: Final = (KvError, ConcurrentModificationError)
 
 _Action = tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]
 
-#: purges keys (relative to the owner's scope) so they leave no marker; returns how many it purged
+#: purges keys (relative to the owner's scope) so they leave no marker; returns how many it purged.
+#: It raises :class:`CollectionKeysRequestError` when the purge did not happen (no hub answered, the hub
+#: refused or failed) and pydantic's ``ValidationError`` when a key breaks the request's bounds, as
+#: ``purge_pod_collection_keys`` does; the markers then stay. Anything else it raises is a bug, and
+#: reaches whoever runs the retirement.
 KeyPurger = Callable[[list[str]], Awaitable[int]]
+
+#: what a :data:`KeyPurger` raises when the markers merely stay
+_PURGE_ERRORS: Final = (CollectionKeysRequestError, ValidationError)
 
 
 #: the shards of each version's digest index
@@ -331,9 +339,22 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :return: nothing
         :rtype: None
         """
-        task = asyncio.get_running_loop().create_task(work)
+        task = asyncio.get_running_loop().create_task(self._awaited_in_background(work))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
+
+    async def _awaited_in_background(self, work: Coroutine[Any, Any, None]) -> None:
+        """await ``work``, recording what it raises: nothing else awaits a background task.
+
+        :param work: the coroutine
+        :ptype work: Coroutine[Any, Any, None]
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await work
+        except Exception as exc:  # noqa: BLE001 -- no caller awaits background work, so what it raises is recorded here or nowhere
+            contain(exc, log=log, what=f"background work failed: table={self.table_name}", level="error")
 
     def key_of(self, version: str, request: str) -> tuple[str, str]:
         """the key of ``request``'s answer at ``version``.
@@ -380,6 +401,8 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :rtype: int
         :raises KvError: when the index or an entry could not be read or changed
         :raises ConcurrentModificationError: when the index kept changing past the retry budget
+        :raises Exception: whatever the purger raises outside its contract (:data:`KeyPurger`), once
+            every retired version is cleared
         """
         taken: dict[str, int] = {}
 
@@ -395,9 +418,32 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
 
         # first the floor: from here no replica records a version below it, so what is listed is final
         await self._index.l2_cas_mutate(_VERSIONS, raise_floor)
+        # the purge runs once every version is cleared, so a purger that fails outside its contract
+        # cannot leave a version's answers behind; keys already deleted are purged even when a later
+        # version fails, since a forgotten version is never visited again
+        touched: list[str] = []
+        try:
+            deleted = await self._clear_versions(taken, touched)
+        except Exception:
+            await self._purge(touched)
+            raise
+        await self._purge(touched)
+        if deleted:
+            log.info("retired old answers: table=%s below=%d deleted=%d", self.table_name, order, deleted)
+        return deleted
+
+    async def _clear_versions(self, taken: dict[str, int], touched: list[str]) -> int:
+        """delete every answer of the versions taken below the floor, forgetting each one emptied.
+
+        :param taken: each version below the floor, with its order
+        :ptype taken: dict[str, int]
+        :param touched: the keys deleted, relative to the owner's scope, to purge
+        :ptype touched: list[str]
+        :return: how many answers were deleted
+        :rtype: int
+        """
         deleted = 0
         for version, older in sorted(taken.items()):
-            touched: list[str] = []
             emptied = True
             for shard in _SHARDS:
                 answers, shard_emptied = await self._clear_shard(f"{version}.{shard}", touched)
@@ -407,9 +453,6 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 # every digest is accounted for: the version is forgotten; otherwise the next retirement
                 # finishes it, once the writers still at work have written or gone
                 await self._index.l2_cas_mutate(_VERSIONS, _forget(version, older))
-            await self._purge(touched)
-        if deleted:
-            log.info("retired old answers: table=%s below=%d deleted=%d", self.table_name, order, deleted)
         return deleted
 
     # ------------------------------------------------------------------
@@ -567,6 +610,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :ptype keys: list[str]
         :return: nothing
         :rtype: None
+        :raises Exception: whatever the purger raises outside its contract (:data:`KeyPurger`)
         """
         if not keys:
             return
@@ -575,7 +619,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 raise CollectionKeysRequestError("no purger: this owner keeps the delete markers")
             for start in range(0, len(keys), MAX_PURGED_KEYS):
                 await self._purger(keys[start : start + MAX_PURGED_KEYS])
-        except Exception as exc:  # noqa: BLE001 -- a purge never fails a read nor wedges a retirement: a marker left is space, never a wrong answer
+        except _PURGE_ERRORS as exc:  # a marker left is space, never a wrong answer
             # NOSILENT: said once, not per retirement
             if not self._markers_kept_logged:
                 self._markers_kept_logged = True

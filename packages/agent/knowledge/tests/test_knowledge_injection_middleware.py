@@ -487,6 +487,39 @@ class TestAFaultAfterTheInvariantsAreKnown:
         records = [r for r in caplog.records if "past its invariants" in r.getMessage()]
         assert [getattr(r, "extra_data", {}).get("exc_type") for r in records] == ["RuntimeError"]
 
+    def test_the_invariants_alone_still_reach_the_footer_and_the_anonymizer(self) -> None:
+        platform = _entry_snapshot(title="Platform rule", always_inject=True)
+        override = EntrySnapshot(
+            id=uuid7(),
+            scope=Scope.CUSTOMER,
+            title="Customer override",
+            body="include archived accounts",
+            always_inject=True,
+            datasource_id=None,
+            origin_entry_id=platform.id,
+        )
+        concept = _concept_snapshot(name="revenue", definition="net of refunds", always_inject=True)
+        situational = _entry_snapshot(title="Sometimes", body="use the weekly view")
+        integration = _integration(
+            entries=[platform, override, situational],
+            concepts=[concept],
+            embedding_model=_FixedEmbedder([1.0, 0.0]),
+            embeddings={situational.id: [_UnmultipliableComponent(), _UnmultipliableComponent()]},  # type: ignore[list-item]
+        )
+        req, out = _drive(
+            KnowledgeInjectionMiddleware(token_budget=10_000),
+            _request(SystemMessage(content="base")),
+            _configurable(integration),
+        )
+        assert "could not be applied" in _system_text(req)
+        metadata = _metadata(out)
+        assert metadata["knowledge_injected_entries"] == [{"scope": "customer"}]
+        assert metadata["knowledge_injected_concepts"] == [{"scope": concept.scope.value}]
+        assert [(d["entry_id"], d["shadows_scope"]) for d in metadata["knowledge_shadow_disclosures"]] == [
+            (str(override.id), "platform")
+        ]
+        assert metadata["knowledge_concept_shadow_disclosures"] == []
+
     def test_a_fault_before_the_invariants_are_known_still_fails_closed(self) -> None:
         integration = _integration(entries=[_entry_snapshot(always_inject=True)], entry_raises=True)
         with pytest.raises(GovernedKnowledgeUnavailableError):

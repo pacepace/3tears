@@ -19,6 +19,12 @@ each package runs in one worker in its usual order, and packages run side by sid
 single-package run (`./scripts/test.sh core`) stays serial. Pass `-n 0` to run the whole suite
 serially, for a debugger or to rule out the parallel run.
 
+CI runs the same thing as five sessions, through `./scripts/ci-unit-tests.sh`: evals, core with
+datasources, the agent family, every other package, then `tests/`. A worker's memory only grows
+over its session, and one session over the whole suite grew four workers past the runner's 16 GB,
+so the job was killed with no summary. Each session starts fresh workers, and together they
+collect exactly the tests one session would.
+
 Two things break under a parallel run that a serial one hides. A fixed `asyncio.sleep` that
 waits for background work loses the race on a loaded machine: wait for the event itself. And a
 `conftest.py` fixture named like the root one replaces it rather than adding to it, which drops

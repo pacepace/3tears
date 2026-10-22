@@ -2,11 +2,12 @@
 
 the v2 HTTP identity provider resolves the calling :class:`Identity`
 per request from a bearer token via an injected token->identity
-resolver. these tests exercise the four contract points:
+resolver. these tests exercise its contract:
 
 - a resolvable token returns the expected identity;
 - an absent token raises ``RuntimeError``;
 - an unresolvable token (resolver raises) raises ``RuntimeError``;
+- a token source that fails raises ``RuntimeError``;
 - two requests with two different tokens resolve to two different
   identities (per-request, never a cached single identity).
 """
@@ -132,6 +133,21 @@ class TestBearerTokenIdentityProvider:
         )
         with pytest.raises(RuntimeError):
             await provider.identify()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_token_source_surfaces_as_runtime_error(self) -> None:
+        """the injected token source has no error contract, so its failure is held to the Protocol's."""
+
+        def _unreadable() -> str | None:
+            raise LookupError("request context not set")
+
+        provider = BearerTokenIdentityProvider(
+            resolver=_resolver_over({}),
+            token_source=_unreadable,
+        )
+        with pytest.raises(RuntimeError) as raised:
+            await provider.identify()
+        assert isinstance(raised.value.__cause__, LookupError)
 
     @pytest.mark.asyncio
     async def test_per_request_reresolution_two_tokens_two_identities(self) -> None:

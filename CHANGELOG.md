@@ -6,6 +6,81 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.75.0 -- 2026-10-21
+
+### backup: a restore no longer fails on an extension the restoring role does not own
+
+**Fixed:** every restore of a database holding an extension a superuser installed (pgvector)
+failed when run as the application role, which is how restores run: `ysqlsh exit 3: ... must be
+owner of extension vector` on Yugabyte, and the same from `pg_restore` on Postgres. So restore
+verification never passed, and a disaster-recovery restore would stop part-way. Both dump tools
+write `COMMENT ON EXTENSION` after each extension, and only the extension's owner may run it. A
+restore now drops top-level `COMMENT ON EXTENSION` statements before loading (row data inside
+`COPY` blocks is never touched). Nothing is lost: `CREATE EXTENSION` sets the same comment from
+the extension's control file.
+
+**Changed:** a Postgres restore now runs `pg_restore --file=-` to turn the custom-format archive
+into SQL, and loads that through `psql --set ON_ERROR_STOP=1`, instead of `pg_restore --dbname`.
+`PostgresDriver.restore_argv` is therefore `psql`; a failing statement still stops the restore.
+
+**Added:** `threetears.backup.process.pipe_through`, which feeds a child's stdin and streams its
+stdout at once, with the same kill, timeout, stderr and short-feed guarantees as `feed_stdin`
+and `stream_stdout`. Also `DbDumpDriver.archive_to_sql_argv`, which a driver whose archive is
+not plain SQL overrides.
+
+### agent-memory: a failed memory replace never writes twice
+
+**Fixed:** when `memory_add` replaced a near-duplicate and a step after the new memory's commit
+failed, the tool answered "store failed". The agent retried, and the retry left two current
+memories (with an alias, "Alias already used"). Only the near-duplicate search may now fall
+through to a plain write, since nothing is written yet; once the replace starts, a failure is
+answered and never followed by a second write. A failure after the commit no longer stops the
+rest either: a lagging generation or a lost edge still lets the replaced memory be marked
+superseded, so it never stays current beside its replacement, and the worst unfinished step is
+the one reported.
+
+**Added:** `WriteIncompleteError` in `threetears.agent.memory.revisions`, raised when the new
+memory committed and a later step did not. Its `unfinished` is `generation`, `edges` or `mark`. It
+subclasses `DataLayerUnavailableError`, so existing storage handlers catch it as before.
+`memory_add` and `memory_update` now say the memory is stored, which step was not done and which
+memory may still read as current, and tell the agent not to store it again.
+
+**Fixed:** `memory_update` no longer moves a name back onto the old memory once the replacement
+holds it. A name cleared under a stale generation now goes ahead instead of reporting "nothing
+was changed".
+
+### Swallowed exceptions: eleven broad handlers guard only the call they mean (#893)
+
+**Changed:** a bug in an MCP identity provider, the registry's result wait, a langgraph
+anonymize rule, a scheduled-jobs fire body, or a host `KeyPurger` now propagates instead of
+being reported as an outage. A host `KeyPurger` that raises outside
+`(CollectionKeysRequestError, ValidationError)` makes `VersionedAnswers.retire_older_than` raise,
+after every retired version is cleared. A scheduled-jobs fire body that faults no longer runs
+twice. The fault is recorded on the row.
+
+**Fixed:** a JetStream result whose ack cannot be sent is returned, not failed. The tool already ran.
+
+### registry: a call the registry fails is answered `REGISTRY_INTERNAL_ERROR`
+
+**Added:** error code `REGISTRY_INTERNAL_ERROR`. A fault inside the registry while it handles a
+call, from parsing the request on, used to leave the agent with no reply until its own deadline.
+It is now logged at ERROR (with the call's log tags once the request parses), answered on the
+subject the agent is listening on (the inbox, or the delivery subject once the call was
+accepted), and propagates. The answer does not say whether the tool ran. A host maps it like any other registry failure.
+
+### agent-knowledge: invariants injected alone still reach the provenance footer
+
+**Fixed:** when ranking the situational knowledge faulted and the invariants were injected alone,
+the turn's metadata carried only the block: no `knowledge_injected_*` counts and no shadow
+disclosures, so the provenance footer and the anonymizer missed what was injected. The fallback
+now records the same ledgers as a full render.
+
+### agent-wake: the reply helpers webhook tools share are public
+
+**Added:** `tool_error`, `no_change`, `validate_name` and `skill_label` in
+`threetears.agent.wake.tools.schedule_tools`, renamed from their private forms because
+`webhook_tools` uses them too.
+
 ### evals: the campaign page opens on a summary across its aspects; the listing, the page JSON and the aspect label follow the page; a question set after the runs is disclosed, not demoted
 
 - **The memo reads across its aspects (#864).** `AuthoredCampaignAnalysis.summary` is required of every kind: one
@@ -40,6 +115,7 @@ packages (bumped in lock-step).
 profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
 59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
 replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
+
 
 ## v0.74.0 -- 2026-10-20
 
