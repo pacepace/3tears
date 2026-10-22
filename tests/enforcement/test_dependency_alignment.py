@@ -53,8 +53,8 @@ _DEPENDENCY_FLOORS = (
             "nothing else. The grant store (LocalGrantAuthorizer, rbac, migrations) is heavily used by "
             "other apps but is the only part that needs core, epoch, nats and sqlalchemy, so it rides "
             "the [grants] extra; as a hard dependency it put nats-py, asyncpg and sqlalchemy into every "
-            "server, though a server with its own Authorizer loads none of them. jsonschema added 2026-10-22 "
-            "(pending owner sign-off): mcp 2.x's low-level server no longer checks a call's arguments against "
+            "server, though a server with its own Authorizer loads none of them. jsonschema added by "
+            "owner ruling 2026-10-22: mcp 2.x's low-level server no longer checks a call's arguments against "
             "the tool's inputSchema, so McpServer does, with the library mcp itself depends on "
             "(mcp requires jsonschema>=4.20) -- declared, it adds nothing to an install"
         ),
